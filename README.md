@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/tylerreckart/index" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg" alt="License"></a>
   <img src="https://img.shields.io/github/tag/tylerreckart/index" alt="Current tag">
 </p>
 
@@ -185,4 +185,4 @@ index --send reviewer "review: if (arr.length = 0) return;"
 
 ## License
 
-MIT
+CC BY-NC 4.0
