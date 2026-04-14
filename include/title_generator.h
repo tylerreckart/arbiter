@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/title_generator.h
+// index/include/title_generator.h
 //
 // Session-title generation and the turn-rule separator helper — both pulled
 // out of main.cpp so the REPL doesn't have to host every one-off formatting

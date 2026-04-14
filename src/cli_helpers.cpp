@@ -1,4 +1,4 @@
-// claudius/src/cli_helpers.cpp — see cli_helpers.h
+// index/src/cli_helpers.cpp — see cli_helpers.h
 
 #include "cli_helpers.h"
 #include "commands.h"
@@ -51,7 +51,7 @@ const char* BANNER =
     "\n";
 
 std::string agent_color(const std::string& agent_id) {
-    if (agent_id == "claudius") return "\033[38;5;208m";  // orange
+    if (agent_id == "index") return "\033[38;5;208m";  // orange
 
     static const int palette[] = {
         75,   // cornflower blue
@@ -80,7 +80,7 @@ std::string agent_color(const std::string& agent_id) {
 std::string get_config_dir() {
     const char* home = std::getenv("HOME");
     if (!home) home = ".";
-    std::string dir = std::string(home) + "/.claudius";
+    std::string dir = std::string(home) + "/.index";
     fs::create_directories(dir);
     return dir;
 }
@@ -115,7 +115,7 @@ std::string get_api_key() {
         if (!k.empty()) return k;
     }
 
-    std::cerr << "ERR: Set ANTHROPIC_API_KEY or write key to ~/.claudius/api_key\n";
+    std::cerr << "ERR: Set ANTHROPIC_API_KEY or write key to ~/.index/api_key\n";
     std::exit(1);
 }
 

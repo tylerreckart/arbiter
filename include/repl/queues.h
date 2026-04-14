@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/repl/queues.h
+// index/include/repl/queues.h
 //
 // Two thread-safe queues used to decouple the REPL's readline-owning main
 // thread from the background execution thread(s):

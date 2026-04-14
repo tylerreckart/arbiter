@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# index-cli — Remote client for claudius server
+# index-cli — Remote client for index server
 # Usage: index-cli <host> <port> <token> [command...]
 #
 # Interactive:  index-cli myserver.local 9077 <token>

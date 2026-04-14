@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/api_client.h — Claude API client over raw TLS sockets
+// index/include/api_client.h — Claude API client over raw TLS sockets
 // Zero dependencies beyond OpenSSL. Reuses connections.
 
 #include "json.h"

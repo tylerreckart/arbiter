@@ -1,12 +1,12 @@
-// claudius/src/main.cpp — Entry point
+// index/src/main.cpp — Entry point
 // Modes: interactive CLI, server (remote access), one-shot command
 //
 // Usage:
-//   claudius                          — interactive REPL
-//   claudius --serve [--port 9077]    — start TCP server
-//   claudius --send <agent> <msg>     — one-shot message
-//   claudius --init                   — generate token + example agents
-//   claudius --gen-token              — generate new auth token
+//   index                          — interactive REPL
+//   index --serve [--port 9077]    — start TCP server
+//   index --send <agent> <msg>     — one-shot message
+//   index --init                   — generate token + example agents
+//   index --gen-token              — generate new auth token
 
 #include "orchestrator.h"
 #include "commands.h"
@@ -140,7 +140,7 @@ static void cmd_interactive() {
     orch.set_memory_dir(get_memory_dir());
     orch.load_agents(dir + "/agents");
 
-    std::string current_agent = "claudius";
+    std::string current_agent = "index";
     std::string current_model = orch.get_agent_model(current_agent);
 
     // Init TUI before any output (clears screen, sets scroll region, draws header).
@@ -148,7 +148,7 @@ static void cmd_interactive() {
     tui.init(current_agent, current_model, agent_color(current_agent));
 
     // Session files are scoped to the working directory so that starting
-    // claudius in different repos doesn't bleed history across contexts.
+    // index in different repos doesn't bleed history across contexts.
     // We hash the cwd to produce a short, filesystem-safe filename.
     auto cwd_session_key = []() -> std::string {
         std::string cwd = fs::current_path().string();
@@ -286,7 +286,7 @@ static void cmd_interactive() {
             if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
                 cmd == "reset" || cmd == "compact") {
                 auto agents = orch.list_agents();
-                agents.push_back("claudius");
+                agents.push_back("index");
                 return match(agents);
             }
 
@@ -347,7 +347,7 @@ static void cmd_interactive() {
             if (cmd == "use" || cmd == "switch") {
                 std::string id;
                 iss >> id;
-                if (id == "claudius" || orch.has_agent(id)) {
+                if (id == "index" || orch.has_agent(id)) {
                     current_agent = id;
                     current_model = orch.get_agent_model(id);
                     tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
@@ -390,7 +390,7 @@ static void cmd_interactive() {
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
                 try {
                     index_ai::MarkdownRenderer md;
-                    auto resp = orch.send_streaming("claudius", query,
+                    auto resp = orch.send_streaming("index", query,
                         [&md, &output_queue](const std::string& chunk) {
                             auto s = md.feed(chunk);
                             if (!s.empty()) output_queue.push(s);
@@ -399,7 +399,7 @@ static void cmd_interactive() {
                     if (!tail.empty()) output_queue.push(tail);
                     output_queue.push("\n");
                     if (resp.ok) {
-                        tracker.record("claudius", orch.get_agent_model("claudius"), resp);
+                        tracker.record("index", orch.get_agent_model("index"), resp);
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                         maybe_generate_title(query, resp.content);
                     } else {
@@ -418,7 +418,7 @@ static void cmd_interactive() {
                     config.name = id;
                     orch.create_agent(id, std::move(config));
                     output_queue.push("Created: " + id + " (default config)\n");
-                    output_queue.push("Edit ~/.claudius/agents/" + id + ".json to customize\n");
+                    output_queue.push("Edit ~/.index/agents/" + id + ".json to customize\n");
                 } catch (const std::exception& e) {
                     output_queue.push("ERR: " + std::string(e.what()) + "\n");
                 }
@@ -429,7 +429,7 @@ static void cmd_interactive() {
                 iss >> id;
                 orch.remove_agent(id);
                 output_queue.push("Removed: " + id + "\n");
-                if (current_agent == id) current_agent = "claudius";
+                if (current_agent == id) current_agent = "index";
                 return;
             }
             if (cmd == "reset") {
@@ -475,7 +475,7 @@ static void cmd_interactive() {
                     output_queue.push("Usage: /loop <agent> <initial prompt>\n");
                     return;
                 }
-                if (id != "claudius" && !orch.has_agent(id)) {
+                if (id != "index" && !orch.has_agent(id)) {
                     output_queue.push("ERR: no agent '" + id + "'\n");
                     return;
                 }
@@ -745,7 +745,7 @@ static void cmd_interactive() {
                 output_queue.push(
                     "Commands:\n"
                     "  /send <agent> <msg>              — send to specific agent\n"
-                    "  /ask <query>                     — ask claudius master\n"
+                    "  /ask <query>                     — ask index master\n"
                     "  /use <agent>                     — switch current agent\n"
                     "  /list                            — list agents\n"
                     "  /status                          — system status\n"
@@ -1032,7 +1032,7 @@ int main(int argc, char* argv[]) {
         }
         if (arg1 == "--send" || arg1 == "send") {
             if (argc < 4) {
-                std::cerr << "Usage: claudius --send <agent_id> <message>\n";
+                std::cerr << "Usage: index --send <agent_id> <message>\n";
                 return 1;
             }
             std::string agent = argv[2];
@@ -1048,15 +1048,15 @@ int main(int argc, char* argv[]) {
             std::cout << BANNER;
             std::cout <<
                 "Usage:\n"
-                "  claudius                          Interactive REPL\n"
-                "  claudius --serve [--port N]        Start TCP server (default 9077)\n"
-                "  claudius --send <agent> <msg>      One-shot message\n"
-                "  claudius --init                    Initialize config + tokens\n"
-                "  claudius --gen-token               Generate new auth token\n"
-                "  claudius --help                    This help\n\n"
+                "  index                          Interactive REPL\n"
+                "  index --serve [--port N]        Start TCP server (default 9077)\n"
+                "  index --send <agent> <msg>      One-shot message\n"
+                "  index --init                    Initialize config + tokens\n"
+                "  index --gen-token               Generate new auth token\n"
+                "  index --help                    This help\n\n"
                 "Environment:\n"
                 "  ANTHROPIC_API_KEY                  Claude API key\n\n"
-                "Config: ~/.claudius/\n"
+                "Config: ~/.index/\n"
                 "  api_key                            API key file\n"
                 "  auth_tokens                        Hashed access tokens\n"
                 "  agents/*.json                      Agent constitutions\n";

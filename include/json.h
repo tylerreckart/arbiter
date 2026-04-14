@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/json.h — Minimal JSON parser/writer. No deps.
+// index/include/json.h — Minimal JSON parser/writer. No deps.
 // Supports: string, number, bool, null, object, array.
 // Not exhaustive — built for API request/response marshaling.
 

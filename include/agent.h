@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/agent.h — Individual agent with conversation history + constitution
+// index/include/agent.h — Individual agent with conversation history + constitution
 
 #include "constitution.h"
 #include "api_client.h"

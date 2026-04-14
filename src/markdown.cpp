@@ -1,4 +1,4 @@
-// claudius/src/markdown.cpp — Markdown-to-ANSI terminal renderer
+// index/src/markdown.cpp — Markdown-to-ANSI terminal renderer
 
 #include "markdown.h"
 #include <cctype>

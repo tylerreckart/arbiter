@@ -37,7 +37,7 @@ void cmd_init() {
     auth.add_token(token);
     auth.save(token_path);
 
-    std::cout << "Initialized ~/.index_ai/\n";
+    std::cout << "Initialized ~/.index/\n";
     std::cout << "Auth token (save this): " << token << "\n";
     std::cout << "Tokens stored (hashed) in: " << token_path << "\n\n";
 

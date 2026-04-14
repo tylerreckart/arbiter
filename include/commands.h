@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/commands.h — Agent-invocable command execution
+// index/include/commands.h — Agent-invocable command execution
 
 #include <string>
 #include <vector>

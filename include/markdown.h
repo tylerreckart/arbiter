@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/markdown.h — Markdown-to-ANSI terminal renderer
+// index/include/markdown.h — Markdown-to-ANSI terminal renderer
 
 #include <string>
 

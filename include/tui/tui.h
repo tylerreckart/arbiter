@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/tui/tui.h
+// index/include/tui/tui.h
 //
 // Terminal UI — owns the alternate-screen layout for the interactive REPL.
 //
@@ -122,7 +122,7 @@ private:
     int  input_rows_ = 1;
     bool status_active_ = false;
     std::atomic<bool> queue_indicator_shown_{false};
-    std::string current_agent_ = "claudius";
+    std::string current_agent_ = "index";
     std::string current_stats_;
     std::string session_title_;
     std::string current_status_;       // cached so resize() can redraw it

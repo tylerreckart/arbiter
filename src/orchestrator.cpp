@@ -1,4 +1,4 @@
-// claudius/src/orchestrator.cpp
+// index/src/orchestrator.cpp
 #include "orchestrator.h"
 #include "commands.h"
 #include <cctype>
@@ -17,13 +17,13 @@ namespace index_ai {
 Orchestrator::Orchestrator(const std::string& api_key)
     : client_(api_key)
 {
-    // Default memory directory: ~/.claudius/memory
+    // Default memory directory: ~/.index/memory
     const char* home = std::getenv("HOME");
-    memory_dir_ = (home ? std::string(home) : std::string(".")) + "/.claudius/memory";
+    memory_dir_ = (home ? std::string(home) : std::string(".")) + "/.index/memory";
 
-    // Create master Claudius agent
+    // Create master Index agent
     auto master = master_constitution();
-    claudius_master_ = std::make_unique<Agent>("claudius", master, client_);
+    index_master_ = std::make_unique<Agent>("index", master, client_);
 }
 
 Agent& Orchestrator::create_agent(const std::string& id, Constitution config) {
@@ -83,7 +83,7 @@ void Orchestrator::load_agents(const std::string& dir) {
 
 // Build an AgentInvoker that runs a sub-agent through the full dispatch loop.
 // Sub-agents receive their own tool access (/fetch, /exec, /write, /agent).
-// depth prevents runaway delegation chains (max 2 levels: claudius → agent → sub-agent).
+// depth prevents runaway delegation chains (max 2 levels: index → agent → sub-agent).
 AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth) {
     if (depth >= 2) {
         return [](const std::string&, const std::string&) -> std::string {
@@ -92,7 +92,7 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth)
     }
     return [this, caller_id, depth](const std::string& sub_id, const std::string& sub_msg) -> std::string {
         if (sub_id == caller_id) return "ERR: agent cannot invoke itself";
-        if (sub_id == "claudius") return "ERR: claudius cannot be delegated to";
+        if (sub_id == "index") return "ERR: index cannot be delegated to";
         {
             std::lock_guard<std::mutex> lk(agents_mutex_);
             if (!agents_.count(sub_id))
@@ -106,7 +106,7 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth)
 }
 
 ApiResponse Orchestrator::ask_index_ai(const std::string& query) {
-    return send("claudius", query);
+    return send("index", query);
 }
 
 void Orchestrator::set_progress_callback(ProgressCallback cb) {
@@ -128,8 +128,8 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
     Agent* agent_ptr;
     std::string current_msg;
 
-    if (agent_id == "claudius") {
-        agent_ptr   = claudius_master_.get();
+    if (agent_id == "index") {
+        agent_ptr   = index_master_.get();
         current_msg = global_status() + "\n\nQUERY: " + message;
     } else {
         agent_ptr   = &get_agent(agent_id);
@@ -174,8 +174,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     Agent* agent_ptr;
     std::string current_msg;
 
-    if (agent_id == "claudius") {
-        agent_ptr   = claudius_master_.get();
+    if (agent_id == "index") {
+        agent_ptr   = index_master_.get();
         current_msg = global_status() + "\n\nQUERY: " + message;
     } else {
         agent_ptr   = &get_agent(agent_id);
@@ -209,7 +209,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
 
 
 std::string Orchestrator::get_agent_model(const std::string& id) const {
-    if (id == "claudius") return claudius_master_->config().model;
+    if (id == "index") return index_master_->config().model;
     std::lock_guard<std::mutex> lock(agents_mutex_);
     auto it = agents_.find(id);
     if (it == agents_.end()) return "";
@@ -326,8 +326,8 @@ std::string Orchestrator::global_status() const {
 // ─── Context compaction ───────────────────────────────────────────────────────
 
 std::string Orchestrator::compact_agent(const std::string& agent_id) {
-    if (agent_id == "claudius") {
-        return claudius_master_->compact();
+    if (agent_id == "index") {
+        return index_master_->compact();
     }
     return get_agent(agent_id).compact();
 }
@@ -476,7 +476,7 @@ Orchestrator::PlanResult Orchestrator::execute_plan(
 
         // Validate agent exists (skip "direct" — handled inline)
         bool is_direct = (phase.agent == "direct");
-        if (!is_direct && phase.agent != "claudius" && !has_agent(phase.agent)) {
+        if (!is_direct && phase.agent != "index" && !has_agent(phase.agent)) {
             result.ok = false;
             result.error = "Phase " + std::to_string(phase.number) +
                            ": agent '" + phase.agent + "' not loaded.";
@@ -580,8 +580,8 @@ void Orchestrator::save_session(const std::string& path) const {
     auto& m = root->as_object_mut();
     m["version"] = jnum(1);
 
-    // Claudius master history
-    m["claudius"] = messages_to_json(claudius_master_->history());
+    // Index master history
+    m["index"] = messages_to_json(index_master_->history());
 
     // All loaded agents
     auto agents_obj = jobj();
@@ -611,11 +611,11 @@ bool Orchestrator::load_session(const std::string& path) {
         auto root = json_parse(raw);
         bool any_restored = false;
 
-        // Restore claudius master
-        auto cval = root->get("claudius");
+        // Restore index master
+        auto cval = root->get("index");
         auto cmsgs = messages_from_json(cval.get());
         if (!cmsgs.empty()) {
-            claudius_master_->set_history(std::move(cmsgs));
+            index_master_->set_history(std::move(cmsgs));
             any_restored = true;
         }
 

@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/constitution.h — Constitution system
+// index/include/constitution.h — Constitution system
 // Master constitution (caveman-derived) + per-agent personality overlays.
 
 #include <string>
@@ -24,7 +24,7 @@ struct Constitution {
     std::string model = "claude-sonnet-4-20250514";
 
     // Agent mode — selects the base system prompt.
-    // ""/"standard": compressed claudius voice (default for all agents)
+    // ""/"standard": compressed index voice (default for all agents)
     // "writer": full-prose mode — disables compression, enables writing guidance
     std::string mode;
 
@@ -40,7 +40,7 @@ struct Constitution {
 
     // --- Routing signal ---
     // Tools this agent is designed to use.  Shown in the master's roster so
-    // claudius can route based on capability rather than inferring from goal text.
+    // index can route based on capability rather than inferring from goal text.
     // Example: {"/fetch", "/mem"} for researcher, {"/exec", "/write"} for devops.
     std::vector<std::string> capabilities;
 

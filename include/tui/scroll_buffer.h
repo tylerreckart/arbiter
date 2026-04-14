@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/tui/scroll_buffer.h
+// index/include/tui/scroll_buffer.h
 //
 // Bounded, ANSI-preserving, visual-row-aware history of model output.  Replaces
 // the naive std::vector<std::string> the REPL used to hoard, which counted one
@@ -49,7 +49,7 @@ public:
     // Number of logical lines stored.
     size_t size() const { return lines_.size(); }
 
-    // Render into the terminal region [top_row, bottom_row] (1-claudiused, inclusive).
+    // Render into the terminal region [top_row, bottom_row] (1-indexed, inclusive).
     // visual_offset is measured in visual rows above the tail; 0 = newest
     // content pinned to the bottom of the region.  Saves and restores the
     // cursor so readline's notion of position is not disturbed.

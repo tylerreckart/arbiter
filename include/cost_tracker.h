@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/cost_tracker.h — Token usage and cost estimation per agent
+// index/include/cost_tracker.h — Token usage and cost estimation per agent
 
 #include "api_client.h"
 #include <string>

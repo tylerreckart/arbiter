@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/readline_wrapper.h — Line editing abstraction (readline / libedit)
+// index/include/readline_wrapper.h — Line editing abstraction (readline / libedit)
 
 #include <string>
 #include <vector>

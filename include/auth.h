@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/auth.h — Token-based auth for remote access
+// index/include/auth.h — Token-based auth for remote access
 
 #include <string>
 #include <unordered_set>

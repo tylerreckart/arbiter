@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/server.h — TCP server for remote CLI access
+// index/include/server.h — TCP server for remote CLI access
 // Simple line-protocol: AUTH <token>\n then AGENT <id> MSG <text>\n
 
 #include "orchestrator.h"

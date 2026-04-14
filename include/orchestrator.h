@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/orchestrator.h — Multi-agent orchestrator
+// index/include/orchestrator.h — Multi-agent orchestrator
 
 #include "agent.h"
 #include "api_client.h"
@@ -16,7 +16,7 @@ class Orchestrator {
 public:
     explicit Orchestrator(const std::string& api_key);
 
-    // Set directory used for agent memory files (default: ~/.claudius/memory).
+    // Set directory used for agent memory files (default: ~/.index/memory).
     void set_memory_dir(const std::string& dir) { memory_dir_ = dir; }
 
     // Optional callback fired after each sub-agent turn (depth > 0).
@@ -61,10 +61,10 @@ public:
                                const std::string& message,
                                StreamCallback cb);
 
-    // Ask claudius (master) about system state — used by the TCP server.
+    // Ask index (master) about system state — used by the TCP server.
     ApiResponse ask_index_ai(const std::string& query);
 
-    // Return the model string for a given agent (or master if id == "claudius")
+    // Return the model string for a given agent (or master if id == "index")
     std::string get_agent_model(const std::string& id) const;
 
     // Global stats
@@ -72,7 +72,7 @@ public:
 
     // Context compaction — summarize and clear one agent's history.
     // Returns the summary text, or "" if history was empty or the API call failed.
-    // Works for "claudius" (master) and any loaded agent.
+    // Works for "index" (master) and any loaded agent.
     std::string compact_agent(const std::string& agent_id);
 
     // ── Plan execution ──────────────────────────────────────────────────────────
@@ -129,11 +129,11 @@ private:
     CostCallback       cost_cb_;
     AgentStartCallback start_cb_;
 
-    // Master claudius agent for meta-queries
-    std::unique_ptr<Agent> claudius_master_;
+    // Master index agent for meta-queries
+    std::unique_ptr<Agent> index_master_;
 
     // Core dispatch loop shared by send() and sub-agent invocations.
-    // depth controls delegation nesting (max 2: claudius → agent → sub-agent).
+    // depth controls delegation nesting (max 2: index → agent → sub-agent).
     ApiResponse send_internal(const std::string& agent_id,
                               const std::string& message,
                               int depth = 0);

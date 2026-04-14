@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/tui/line_editor.h
+// index/include/tui/line_editor.h
 //
 // Minimal in-house line editor.  We do this ourselves because libedit's
 // interactive machinery is essentially undocumented — rl_getc_function is not
@@ -101,10 +101,10 @@ private:
 
     // Per read_line() state
     std::string buffer_;
-    int         cursor_      = 0;     // byte claudius into buffer_
+    int         cursor_      = 0;     // byte index into buffer_
     std::string prompt_;
     int         prompt_cols_ = 0;     // visible width of prompt_
-    int         history_idx_ = -1;    // -1 = live buffer, >=0 = claudius in history_
+    int         history_idx_ = -1;    // -1 = live buffer, >=0 = index in history_
     std::string saved_live_;          // buffer before entering history
 
     std::atomic<bool> interrupt_flag_{false};

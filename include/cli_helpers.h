@@ -1,10 +1,10 @@
 #pragma once
-// claudius/include/cli_helpers.h — Shared helpers for CLI entry points and the REPL.
+// index/include/cli_helpers.h — Shared helpers for CLI entry points and the REPL.
 //
 // Covers:
 //   • BANNER — ASCII startup banner
 //   • agent_color — stable per-agent ANSI color
-//   • Config path helpers (~/.claudius, ~/.claudius/memory, API key resolution)
+//   • Config path helpers (~/.index, ~/.index/memory, API key resolution)
 //   • Thin wrappers around index_ai::cmd_mem_* and cmd_fetch so the REPL
 //     doesn't have to thread memory_dir through every call site
 //   • term_cols / term_rows — terminal dimensions via TIOCGWINSZ
@@ -16,16 +16,16 @@ namespace index_ai {
 extern const char* BANNER;
 
 // Stable ANSI color for a given agent id (hash-mapped into a fixed palette).
-// "claudius" always maps to orange.
+// "index" always maps to orange.
 std::string agent_color(const std::string& agent_id);
 
-// ~/.claudius (created if missing).
+// ~/.index (created if missing).
 std::string get_config_dir();
 
-// ~/.claudius/memory (created if missing).
+// ~/.index/memory (created if missing).
 std::string get_memory_dir();
 
-// ANTHROPIC_API_KEY env var, else ~/.claudius/api_key.
+// ANTHROPIC_API_KEY env var, else ~/.index/api_key.
 // Prints to stderr and exits(1) if neither is set.
 std::string get_api_key();
 

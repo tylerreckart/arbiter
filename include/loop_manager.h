@@ -1,5 +1,5 @@
 #pragma once
-// claudius/include/loop_manager.h
+// index/include/loop_manager.h
 //
 // LoopManager owns autonomous agent "loops": an agent is invoked repeatedly in
 // a dedicated thread, each iteration running until the agent stops producing

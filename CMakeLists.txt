@@ -49,14 +49,14 @@ set(INDEX_AI_SOURCES
     src/markdown.cpp
 )
 
-add_executable(index_ai ${INDEX_AI_SOURCES})
+add_executable(index ${INDEX_AI_SOURCES})
 
-target_include_directories(index_ai PRIVATE
+target_include_directories(index PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${OPENSSL_INCLUDE_DIR}
 )
 
-target_link_libraries(index_ai PRIVATE
+target_link_libraries(index PRIVATE
     Threads::Threads
     OpenSSL::SSL
     OpenSSL::Crypto
@@ -77,17 +77,17 @@ endif()
 
 if(EDITLINE_LIB AND EDITLINE_INCLUDE)
     message(STATUS "Found readline/libedit: ${EDITLINE_LIB}")
-    target_compile_definitions(index_ai PRIVATE INDEX_AI_HAS_READLINE)
+    target_compile_definitions(index PRIVATE INDEX_AI_HAS_READLINE)
     if(NOT READLINE_GNU)
-        target_compile_definitions(index_ai PRIVATE INDEX_AI_USE_EDITLINE)
+        target_compile_definitions(index PRIVATE INDEX_AI_USE_EDITLINE)
     endif()
-    target_include_directories(index_ai PRIVATE ${EDITLINE_INCLUDE})
-    target_link_libraries(index_ai PRIVATE ${EDITLINE_LIB})
+    target_include_directories(index PRIVATE ${EDITLINE_INCLUDE})
+    target_link_libraries(index PRIVATE ${EDITLINE_LIB})
 else()
     message(WARNING "readline/libedit not found; falling back to raw getline (no line editing)")
 endif()
 
 # --- Install ---
-install(TARGETS index_ai RUNTIME DESTINATION bin)
-install(DIRECTORY agents/ DESTINATION share/index_ai/agents
+install(TARGETS index RUNTIME DESTINATION bin)
+install(DIRECTORY agents/ DESTINATION share/index/agents
         FILES_MATCHING PATTERN "*.json")
