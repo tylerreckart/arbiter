@@ -30,7 +30,7 @@ void TUI::init(const std::string& agent,
     draw_header();
     draw_sep();
     erase_chrome_row(input_row());
-    erase_chrome_row(pad_row());
+    draw_footer_hint();
     std::printf("\033[%d;1H", kHeaderRows + 1);
     std::fflush(stdout);
 }
@@ -43,7 +43,7 @@ void TUI::resize() {
     draw_header();         // redraws identity; current_status_ preserved
     draw_sep();
     erase_chrome_row(input_row());
-    erase_chrome_row(pad_row());
+    draw_footer_hint();
     std::fflush(stdout);
 }
 
@@ -190,7 +190,7 @@ void TUI::draw_header_locked() {
     // the transient/important signal (thinking..., queued, scroll position).
     const bool have_status = !current_status_.empty();
     const std::string& right_text = have_status ? current_status_ : current_stats_;
-    std::string right_vis = right_text.empty() ? "" : right_text + "   ";
+    std::string right_vis = right_text.empty() ? "" : right_text;
     int pad = std::max(0, cols_ - (int)left_vis.size() - (int)right_vis.size());
 
     std::printf("\0337");
@@ -211,6 +211,24 @@ void TUI::draw_header_locked() {
     std::printf("\033[0m");
 
     std::printf("\0338");
+    std::fflush(stdout);
+}
+
+void TUI::draw_footer_hint() {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    static constexpr const char* kLeft  = "esc \033[2minterrupt\033[0m";
+    static constexpr int         kLeftVis  = 4 + 9;
+    static constexpr const char* kRight = "/agents \033[2mlist agents\033[0m  "
+                                          "/help \033[2mlist commands\033[0m";
+    static constexpr int         kRightVis = 8 + 11 + 2 + 6 + 13;
+    int pad = std::max(1, cols_ - kLeftVis - kRightVis);
+    std::printf("\0337");
+    std::printf("\033[%d;1H\033[2K\033[38;5;237m", hint_sep_row());
+    for (int i = 0; i < cols_; ++i) std::printf("─");
+    std::printf("\033[0m");
+    std::printf("\033[%d;1H\033[2K", pad_row());
+    std::printf("%s%*s%s", kLeft, pad, "", kRight);
+    std::printf("\033[0m\0338");
     std::fflush(stdout);
 }
 

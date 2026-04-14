@@ -64,7 +64,7 @@ index
 
 | Command | Description |
 |---------|-------------|
-| `/list` | List loaded agents |
+| `/agents` | List loaded agents |
 | `/status` | System status and per-agent stats |
 | `/tokens` | Full token usage breakdown with costs |
 | `/create <id>` | Create agent with default config |

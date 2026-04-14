@@ -10,8 +10,9 @@
 //   row 2            dim separator
 //   rows 3..N-3      scroll region (streamed model output lives here)
 //   row  N-2         mid separator above input
-//   rows N-1..N-k    readline input area (1..kMaxInputRows, grows on wrap)
-//   row  N           blank padding
+//   rows N-2..N-k-1  readline input area (1..kMaxInputRows, grows on wrap)
+//   row  N-1         dim separator above hint row
+//   row  N           hint row (key / command hints)
 //
 // Status is on the same row as identity; when active it preempts stats on the
 // right side (stats are already dim and unimportant vs a live "thinking..."
@@ -45,7 +46,7 @@ public:
     static constexpr int kHeaderRows   = 2;
     static constexpr int kSepRows      = 1;   // mid separator above input area
     static constexpr int kMaxInputRows = 5;
-    static constexpr int kBottomPadRows = 1;  // blank row at the bottom
+    static constexpr int kBottomPadRows = 2;  // hint separator + hint row
 
     // Enter alternate screen, set scroll region, draw chrome.
     void init(const std::string& agent,
@@ -132,12 +133,14 @@ private:
     int sep_row()       const { return rows_ - kBottomPadRows - input_rows_; }
     int input_top_row() const { return rows_ - kBottomPadRows - input_rows_ + 1; }
     int input_row()     const { return rows_ - kBottomPadRows; }
+    int hint_sep_row()  const { return rows_ - 1; }
     int pad_row()       const { return rows_; }
 
     void set_scroll_region();
     void erase_chrome_row(int row);
     void draw_header();
     void draw_header_locked();
+    void draw_footer_hint();
 };
 
 // Background spinner that ticks a "thinking..." label into TUI::set_status.

@@ -275,7 +275,7 @@ static void cmd_interactive() {
 
             // Completing the slash command itself
             if (only_cmd || buf.empty()) {
-                return match({"/send","/ask","/use","/list","/status","/tokens",
+                return match({"/send","/ask","/use","/agents","/status","/tokens",
                               "/create","/remove","/reset","/compact","/model",
                               "/loop","/loops","/log","/watch",
                               "/kill","/suspend","/resume","/inject",
@@ -331,7 +331,7 @@ static void cmd_interactive() {
                 quit_requested = true; return;
             }
 
-            if (cmd == "list") {
+            if (cmd == "agents") {
                 for (auto& id : orch.list_agents())
                     output_queue.push("  " + id + "\n");
                 return;
@@ -747,7 +747,7 @@ static void cmd_interactive() {
                     "  /send <agent> <msg>              — send to specific agent\n"
                     "  /ask <query>                     — ask index master\n"
                     "  /use <agent>                     — switch current agent\n"
-                    "  /list                            — list agents\n"
+                    "  /agents                          — list agents\n"
                     "  /status                          — system status\n"
                     "  /tokens                          — token usage\n"
                     "  /create <id>                     — create agent (default config)\n"
