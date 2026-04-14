@@ -12,6 +12,8 @@
   <img src="https://img.shields.io/github/tag/tylerreckart/index" alt="Current tag">
 </p>
 
+![Screenshot of the Index TUI](./content/index_tui.png)
+
 Index is a terminal-native multi-agent system. It runs a full-screen TUI with a persistent header, a command queue so you can type while agents are working, and a depth-limited delegation chain that lets the master agent dispatch tasks to specialists. Built on raw TLS — no libcurl, no HTTP framework.
 
 > **Note:** Index is an experimental project. Changes to the architecture may break the experience. Agent constitutions and orchestration methods are currently subject to change. Index's `/exec` commands are currently un-sandboxed. Use at your own risk.
