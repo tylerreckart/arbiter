@@ -1,8 +1,6 @@
-> **Note:** Index is an experimental project. Changes to the architecture may break the experience. Agent constitutions and orchestration methods are currently subject to change. Index's `/exec` commands are currently un-sandboxed. Use at your own risk.
-
-<div style="display: flex; justify-content: center;">
+<p align="center">
   <img src="./content/index.png" width="64">
-</div>
+</p>
 <h1 align="center">Index</h1>
 
 <p align="center">
@@ -13,9 +11,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/tylerreckart/index?style=flat" alt="License"></a>
 </p>
 
-![index demo](./content/index.gif)
-
 Index is a terminal-native multi-agent system. It runs a full-screen TUI with a persistent header, a command queue so you can type while agents are working, and a depth-limited delegation chain that lets the master agent dispatch tasks to specialists. Built on raw TLS — no libcurl, no HTTP framework.
+
+> **Note:** Index is an experimental project. Changes to the architecture may break the experience. Agent constitutions and orchestration methods are currently subject to change. Index's `/exec` commands are currently un-sandboxed. Use at your own risk.
 
 ## Install
 
