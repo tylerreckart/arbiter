@@ -8,7 +8,8 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/tylerreckart/index?style=flat" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/tylerreckart/index" alt="License"></a>
+  <img src="https://img.shields.io/github/tag/tylerreckart/index" alt="Current tag">
 </p>
 
 Index is a terminal-native multi-agent system. It runs a full-screen TUI with a persistent header, a command queue so you can type while agents are working, and a depth-limited delegation chain that lets the master agent dispatch tasks to specialists. Built on raw TLS — no libcurl, no HTTP framework.
