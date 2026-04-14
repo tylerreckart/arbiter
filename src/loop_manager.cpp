@@ -1,4 +1,4 @@
-// claudius/src/loop_manager.cpp — see loop_manager.h
+// index_ai/src/loop_manager.cpp — see loop_manager.h
 
 #include "loop_manager.h"
 #include "markdown.h"
@@ -7,7 +7,7 @@
 #include <sstream>
 #include <vector>
 
-namespace claudius {
+namespace index_ai {
 
 const char* loop_state_str(LoopState s) {
     switch (s) {
@@ -316,4 +316,4 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
     e->state = LoopState::Stopped;
 }
 
-} // namespace claudius
+} // namespace index_ai

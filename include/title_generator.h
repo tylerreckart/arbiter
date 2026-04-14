@@ -19,7 +19,7 @@
 #include <functional>
 #include <string>
 
-namespace claudius {
+namespace index_ai {
 
 void print_turn_rule(const std::string& label,
                      const std::string& color,
@@ -31,4 +31,4 @@ void generate_title_async(ApiClient& client,
                           const std::string& assistant_snippet,
                           std::function<void(const std::string&)> on_title);
 
-} // namespace claudius
+} // namespace index_ai

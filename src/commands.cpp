@@ -1,4 +1,4 @@
-// claudius/src/commands.cpp — Agent-invocable command execution
+// index_ai/src/commands.cpp — Agent-invocable command execution
 #include "commands.h"
 
 #include <cstdio>
@@ -11,7 +11,7 @@
 
 namespace fs = std::filesystem;
 
-namespace claudius {
+namespace index_ai {
 
 // ---------------------------------------------------------------------------
 // parse_agent_commands
@@ -491,4 +491,4 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
     return out.str();
 }
 
-} // namespace claudius
+} // namespace index_ai

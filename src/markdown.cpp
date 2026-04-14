@@ -4,7 +4,7 @@
 #include <cctype>
 #include <string>
 
-namespace claudius {
+namespace index_ai {
 
 // ─── ANSI primitives ─────────────────────────────────────────────────────────
 
@@ -263,4 +263,4 @@ std::string render_markdown(const std::string& text) {
     return result;
 }
 
-} // namespace claudius
+} // namespace index_ai

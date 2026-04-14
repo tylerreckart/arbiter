@@ -5,13 +5,13 @@
 //   • BANNER — ASCII startup banner
 //   • agent_color — stable per-agent ANSI color
 //   • Config path helpers (~/.claudius, ~/.claudius/memory, API key resolution)
-//   • Thin wrappers around claudius::cmd_mem_* and cmd_fetch so the REPL
+//   • Thin wrappers around index_ai::cmd_mem_* and cmd_fetch so the REPL
 //     doesn't have to thread memory_dir through every call site
 //   • term_cols / term_rows — terminal dimensions via TIOCGWINSZ
 
 #include <string>
 
-namespace claudius {
+namespace index_ai {
 
 extern const char* BANNER;
 
@@ -39,4 +39,4 @@ std::string fetch_url   (const std::string& url);
 int term_cols();
 int term_rows();
 
-} // namespace claudius
+} // namespace index_ai

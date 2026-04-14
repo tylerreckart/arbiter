@@ -1,9 +1,9 @@
-// claudius/src/agent.cpp
+// index_ai/src/agent.cpp
 #include "agent.h"
 #include "json.h"
 #include <sstream>
 
-namespace claudius {
+namespace index_ai {
 
 Agent::Agent(const std::string& id, Constitution config, ApiClient& client)
     : id_(id), config_(std::move(config)), client_(client)
@@ -222,4 +222,4 @@ std::string Agent::to_json() const {
     return json_serialize(*obj);
 }
 
-} // namespace claudius
+} // namespace index_ai

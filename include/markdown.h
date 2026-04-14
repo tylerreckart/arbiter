@@ -3,7 +3,7 @@
 
 #include <string>
 
-namespace claudius {
+namespace index_ai {
 
 // Incremental renderer for streaming output.
 // Feed chunks as they arrive; complete styled lines are returned immediately.
@@ -28,4 +28,4 @@ private:
 // Render a complete markdown string to ANSI-styled output.
 std::string render_markdown(const std::string& text);
 
-} // namespace claudius
+} // namespace index_ai

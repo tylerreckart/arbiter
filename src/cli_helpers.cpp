@@ -16,7 +16,7 @@
 
 namespace fs = std::filesystem;
 
-namespace claudius {
+namespace index_ai {
 
 const char* BANNER =
     "                   iiii              iiii                   \n"
@@ -92,15 +92,15 @@ std::string get_memory_dir() {
 }
 
 void write_memory(const std::string& agent_id, const std::string& text) {
-    claudius::cmd_mem_write(agent_id, text, get_memory_dir());
+    index_ai::cmd_mem_write(agent_id, text, get_memory_dir());
 }
 
 std::string read_memory(const std::string& agent_id) {
-    return claudius::cmd_mem_read(agent_id, get_memory_dir());
+    return index_ai::cmd_mem_read(agent_id, get_memory_dir());
 }
 
 std::string fetch_url(const std::string& url) {
-    return claudius::cmd_fetch(url);
+    return index_ai::cmd_fetch(url);
 }
 
 std::string get_api_key() {
@@ -133,4 +133,4 @@ int term_rows() {
     return 24;
 }
 
-} // namespace claudius
+} // namespace index_ai

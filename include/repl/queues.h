@@ -19,7 +19,7 @@
 #include <queue>
 #include <string>
 
-namespace claudius {
+namespace index_ai {
 
 class CommandQueue {
 public:
@@ -59,4 +59,4 @@ private:
     std::string buf_;
 };
 
-} // namespace claudius
+} // namespace index_ai

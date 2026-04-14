@@ -1,10 +1,10 @@
-// claudius/src/json.cpp — Minimal JSON parser + serializer
+// index_ai/src/json.cpp — Minimal JSON parser + serializer
 #include "json.h"
 #include <cctype>
 #include <charconv>
 #include <cstring>
 
-namespace claudius {
+namespace index_ai {
 
 // ============================================================
 // Serializer
@@ -254,4 +254,4 @@ std::shared_ptr<JsonValue> json_parse(std::string_view input) {
     return val;
 }
 
-} // namespace claudius
+} // namespace index_ai

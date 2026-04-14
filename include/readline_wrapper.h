@@ -5,7 +5,7 @@
 #include <vector>
 #include <functional>
 
-namespace claudius {
+namespace index_ai {
 
 // Completion provider: given current buffer and token being completed,
 // return a list of candidate strings.
@@ -91,4 +91,4 @@ private:
     int         max_history_ = 1000;
 };
 
-} // namespace claudius
+} // namespace index_ai

@@ -1,11 +1,11 @@
-// claudius/src/constitution.cpp
+// index_ai/src/constitution.cpp
 #include "constitution.h"
 #include "json.h"
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 
-namespace claudius {
+namespace index_ai {
 
 std::string brevity_to_string(Brevity b) {
     switch (b) {
@@ -22,12 +22,12 @@ Brevity brevity_from_string(const std::string& s) {
     return Brevity::Full;
 }
 
-static std::string claudius_prompt(Brevity level) {
-    // claudius constitution: formal brevity, caveman token efficiency.
+static std::string index_ai_prompt(Brevity level) {
+    // index_ai constitution: formal brevity, caveman token efficiency.
     // Personality is composed and authoritative — not theatrical.
     // Compression rules derived from JuliusBrussee/caveman.
     std::string base =
-        "You are claudius — an agent within an orchestrated system. "
+        "You are index_ai — an agent within an orchestrated system. "
         "You are formal in register, ruthless in economy. No word without purpose. "
         "Every response is a dispatch, not a conversation.\n\n"
 
@@ -199,7 +199,7 @@ static std::string planner_prompt() {
         "  What you found in the environment. Relevant constraints, existing state.\n\n"
         "  ## Phases\n"
         "  ### Phase N: <name>\n"
-        "  **Agent:** <agent_id> (or 'direct' if claudius handles it)\n"
+        "  **Agent:** <agent_id> (or 'direct' if index_ai handles it)\n"
         "  **Depends on:** <phase numbers, or 'none'>\n"
         "  **Task:** Precise instruction for the agent. Full context, expected output, format.\n"
         "  **Output:** What this phase produces (file path, command result, etc.)\n"
@@ -214,7 +214,7 @@ static std::string planner_prompt() {
         "  reviewer    — code review, defect analysis, PR feedback\n"
         "  writer      — essays, READMEs, docs, PRDs, reports (always produces a file)\n"
         "  devops      — shell, git, Docker, CI/CD, build systems, infra\n"
-        "  direct      — simple commands claudius handles without delegation\n"
+        "  direct      — simple commands index_ai handles without delegation\n"
         "  planner     — do not recurse into planner from a plan\n\n"
 
         "TASK INSTRUCTIONS — write these so each agent can execute independently:\n"
@@ -252,7 +252,7 @@ std::string Constitution::build_system_prompt() const {
     } else if (mode == "planner") {
         ss << planner_prompt();
     } else {
-        ss << claudius_prompt(brevity);
+        ss << index_ai_prompt(brevity);
     }
 
     // Layer 2: agent identity
@@ -277,7 +277,7 @@ std::string Constitution::build_system_prompt() const {
 
 Constitution master_constitution() {
     Constitution c;
-    c.name = "claudius";
+    c.name = "index_ai";
     c.role = "orchestrator";
     c.brevity = Brevity::Full;
     c.temperature = 0.3;
@@ -412,4 +412,4 @@ void Constitution::save(const std::string& path) const {
     f << to_json();
 }
 
-} // namespace claudius
+} // namespace index_ai

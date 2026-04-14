@@ -34,7 +34,7 @@
 #include <string>
 #include <thread>
 
-namespace claudius {
+namespace index_ai {
 
 class TUI {
 public:
@@ -155,4 +155,4 @@ private:
     std::thread       thread_;
 };
 
-} // namespace claudius
+} // namespace index_ai

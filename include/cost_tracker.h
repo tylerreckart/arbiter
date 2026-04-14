@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <mutex>
 
-namespace claudius {
+namespace index_ai {
 
 struct ModelPricing {
     double input_per_mtok;        // $ per 1M plain input tokens
@@ -60,4 +60,4 @@ private:
     static std::string fmt_dollars(double d);
 };
 
-} // namespace claudius
+} // namespace index_ai

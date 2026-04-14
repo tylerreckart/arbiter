@@ -1,8 +1,8 @@
-// claudius/src/repl/queues.cpp — see repl/queues.h
+// index_ai/src/repl/queues.cpp — see repl/queues.h
 
 #include "repl/queues.h"
 
-namespace claudius {
+namespace index_ai {
 
 // ─── CommandQueue ────────────────────────────────────────────────────────────
 
@@ -49,4 +49,4 @@ std::string OutputQueue::drain() {
     return std::move(buf_);
 }
 
-} // namespace claudius
+} // namespace index_ai

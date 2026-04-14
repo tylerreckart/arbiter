@@ -7,7 +7,7 @@
 #include <vector>
 #include <chrono>
 
-namespace claudius {
+namespace index_ai {
 
 struct AgentStats {
     int total_input_tokens  = 0;
@@ -67,4 +67,4 @@ private:
     std::string context_summary_;
 };
 
-} // namespace claudius
+} // namespace index_ai

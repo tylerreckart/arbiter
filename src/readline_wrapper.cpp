@@ -16,7 +16,7 @@
 #  include <iostream>
 #endif
 
-namespace claudius {
+namespace index_ai {
 
 // ─── Global state (readline uses C callbacks) ────────────────────────────────
 
@@ -211,4 +211,4 @@ int ReadlineWrapper::current_display_rows(int term_cols) const {
 #endif
 }
 
-} // namespace claudius
+} // namespace index_ai

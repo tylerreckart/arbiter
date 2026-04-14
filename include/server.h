@@ -9,7 +9,7 @@
 #include <thread>
 #include <vector>
 
-namespace claudius {
+namespace index_ai {
 
 class Server {
 public:
@@ -35,4 +35,4 @@ private:
     std::string process_command(const std::string& line, bool& authenticated);
 };
 
-} // namespace claudius
+} // namespace index_ai

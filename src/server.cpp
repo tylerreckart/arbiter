@@ -1,4 +1,4 @@
-// claudius/src/server.cpp — TCP server for remote CLI
+// index_ai/src/server.cpp — TCP server for remote CLI
 #include "server.h"
 
 #include <cstring>
@@ -11,7 +11,7 @@
 #include <arpa/inet.h>
 #include <signal.h>
 
-namespace claudius {
+namespace index_ai {
 
 Server::Server(Orchestrator& orch, Auth& auth, int port)
     : orch_(orch), auth_(auth), port_(port)
@@ -105,7 +105,7 @@ static void send_line(int fd, const std::string& msg) {
 }
 
 void Server::handle_client(int client_fd) {
-    send_line(client_fd, "claudius v0.1 — AUTH required");
+    send_line(client_fd, "index_ai v0.1 — AUTH required");
     bool authenticated = false;
 
     while (running_) {
@@ -227,12 +227,12 @@ std::string Server::process_command(const std::string& line, bool& authenticated
     }
 
     if (CMD == "ASK") {
-        // ASK <query...> — ask claudius master
+        // ASK <query...> — ask index_ai master
         std::string query;
         std::getline(iss, query);
         if (!query.empty() && query[0] == ' ') query.erase(0, 1);
         try {
-            auto resp = orch_.ask_claudius(query);
+            auto resp = orch_.ask_index_ai(query);
             if (!resp.ok) return "ERR " + resp.error;
             std::ostringstream os;
             os << "OK [in:" << resp.input_tokens
@@ -262,4 +262,4 @@ std::string Server::process_command(const std::string& line, bool& authenticated
     return "ERR unknown command. Send HELP";
 }
 
-} // namespace claudius
+} // namespace index_ai

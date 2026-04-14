@@ -1,10 +1,10 @@
-// claudius/src/cost_tracker.cpp — Token usage and cost estimation
+// index_ai/src/cost_tracker.cpp — Token usage and cost estimation
 
 #include "cost_tracker.h"
 #include <sstream>
 #include <iomanip>
 
-namespace claudius {
+namespace index_ai {
 
 // ─── Pricing table ───────────────────────────────────────────────────────────
 // Prices per million tokens. Source: Anthropic list pricing, April 2026.
@@ -161,4 +161,4 @@ std::string CostTracker::format_session_stats() const {
     return ss.str();
 }
 
-} // namespace claudius
+} // namespace index_ai

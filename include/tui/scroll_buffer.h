@@ -23,7 +23,7 @@
 #include <string>
 #include <string_view>
 
-namespace claudius {
+namespace index_ai {
 
 class ScrollBuffer {
 public:
@@ -74,4 +74,4 @@ private:
     int              cols_ = 80;
 };
 
-} // namespace claudius
+} // namespace index_ai

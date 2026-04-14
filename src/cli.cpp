@@ -1,4 +1,4 @@
-// claudius/src/cli.cpp — see cli.h
+// index_ai/src/cli.cpp — see cli.h
 
 #include "cli.h"
 #include "cli_helpers.h"
@@ -16,7 +16,7 @@
 
 namespace fs = std::filesystem;
 
-namespace claudius {
+namespace index_ai {
 
 // Shared SIGINT/SIGTERM flag used by cmd_serve.
 namespace {
@@ -37,7 +37,7 @@ void cmd_init() {
     auth.add_token(token);
     auth.save(token_path);
 
-    std::cout << "Initialized ~/.claudius/\n";
+    std::cout << "Initialized ~/.index_ai/\n";
     std::cout << "Auth token (save this): " << token << "\n";
     std::cout << "Tokens stored (hashed) in: " << token_path << "\n\n";
 
@@ -166,7 +166,7 @@ void cmd_init() {
             "Auth and authorization are not optional — flag any endpoint missing them.",
             "Use /exec to inspect the codebase, schema, or environment before prescribing changes.",
             "Write migrations, config, and code to files with /write — not display-only.",
-            "Flag N+1 queries, missing claudiuses, and unbounded queries explicitly.",
+            "Flag N+1 queries, missing index_aies, and unbounded queries explicitly.",
             "Security: no secrets in logs, no raw SQL with user input, validate at the boundary.",
         };
         c.capabilities = {"/exec", "/write", "/agent", "/mem shared"};
@@ -258,7 +258,7 @@ void cmd_init() {
     std::cout << "  frontend.json   — components, state, accessibility, performance\n";
     std::cout << "  marketer.json   — strategy, positioning, campaign concepts\n";
     std::cout << "  social.json     — platform-native content, growth, engagement\n\n";
-    std::cout << "Edit these or add your own. Then run: claudius\n";
+    std::cout << "Edit these or add your own. Then run: index_ai\n";
 }
 
 void cmd_gen_token() {
@@ -288,7 +288,7 @@ void cmd_serve(int port) {
     auth.load(dir + "/auth_tokens");
 
     if (auth.token_count() == 0) {
-        std::cerr << "WARN: No auth tokens. Run: claudius --init\n";
+        std::cerr << "WARN: No auth tokens. Run: index_ai --init\n";
     }
 
     Server server(orch, auth, port);
@@ -332,4 +332,4 @@ void cmd_oneshot(const std::string& agent_id, const std::string& msg) {
     }
 }
 
-} // namespace claudius
+} // namespace index_ai

@@ -12,7 +12,7 @@
 
 namespace fs = std::filesystem;
 
-namespace claudius {
+namespace index_ai {
 
 Orchestrator::Orchestrator(const std::string& api_key)
     : client_(api_key)
@@ -105,7 +105,7 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth)
     };
 }
 
-ApiResponse Orchestrator::ask_claudius(const std::string& query) {
+ApiResponse Orchestrator::ask_index_ai(const std::string& query) {
     return send("claudius", query);
 }
 
@@ -639,4 +639,4 @@ bool Orchestrator::load_session(const std::string& path) {
     }
 }
 
-} // namespace claudius
+} // namespace index_ai

@@ -1,4 +1,4 @@
-// claudius/src/auth.cpp
+// index_ai/src/auth.cpp
 #include "auth.h"
 #include <openssl/sha.h>
 #include <openssl/rand.h>
@@ -7,7 +7,7 @@
 #include <iomanip>
 #include <stdexcept>
 
-namespace claudius {
+namespace index_ai {
 
 static std::string bytes_to_hex(const unsigned char* data, size_t len) {
     std::ostringstream ss;
@@ -65,8 +65,8 @@ void Auth::save(const std::string& path) const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::ofstream f(path);
     if (!f.is_open()) throw std::runtime_error("Cannot write auth file: " + path);
-    f << "# claudius auth tokens (hashed)\n";
+    f << "# index_ai auth tokens (hashed)\n";
     for (auto& h : token_hashes_) f << h << "\n";
 }
 
-} // namespace claudius
+} // namespace index_ai

@@ -5,7 +5,7 @@
 #include <vector>
 #include <functional>
 
-namespace claudius {
+namespace index_ai {
 
 struct AgentCommand {
     std::string name;    // "fetch", "mem", "exec", "agent", "write"
@@ -56,4 +56,4 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    const std::string& memory_dir,
                                    AgentInvoker agent_invoker = nullptr);
 
-} // namespace claudius
+} // namespace index_ai

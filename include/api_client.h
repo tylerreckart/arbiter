@@ -12,7 +12,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-namespace claudius {
+namespace index_ai {
 
 struct Message {
     std::string role;    // "user" | "assistant"
@@ -95,4 +95,4 @@ private:
     static ApiResponse parse_response(const std::string& body);
 };
 
-} // namespace claudius
+} // namespace index_ai

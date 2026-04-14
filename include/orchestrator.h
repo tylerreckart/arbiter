@@ -10,7 +10,7 @@
 #include <mutex>
 #include <vector>
 
-namespace claudius {
+namespace index_ai {
 
 class Orchestrator {
 public:
@@ -62,7 +62,7 @@ public:
                                StreamCallback cb);
 
     // Ask claudius (master) about system state — used by the TCP server.
-    ApiResponse ask_claudius(const std::string& query);
+    ApiResponse ask_index_ai(const std::string& query);
 
     // Return the model string for a given agent (or master if id == "claudius")
     std::string get_agent_model(const std::string& id) const;
@@ -143,4 +143,4 @@ private:
     AgentInvoker make_invoker(const std::string& caller_id, int depth = 0);
 };
 
-} // namespace claudius
+} // namespace index_ai

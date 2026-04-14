@@ -13,7 +13,7 @@
 #include <stdexcept>
 #include <cmath>
 
-namespace claudius {
+namespace index_ai {
 
 struct JsonValue;
 using JsonObject = std::unordered_map<std::string, std::shared_ptr<JsonValue>>;
@@ -102,4 +102,4 @@ std::string json_serialize(const JsonValue& val);
 // --- Parser ---
 std::shared_ptr<JsonValue> json_parse(std::string_view input);
 
-} // namespace claudius
+} // namespace index_ai

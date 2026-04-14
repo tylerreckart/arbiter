@@ -23,7 +23,7 @@
 #include <string_view>
 #include <vector>
 
-namespace claudius {
+namespace index_ai {
 
 class LineEditor {
 public:
@@ -110,4 +110,4 @@ private:
     std::atomic<bool> interrupt_flag_{false};
 };
 
-} // namespace claudius
+} // namespace index_ai

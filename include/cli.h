@@ -13,11 +13,11 @@
 
 #include <string>
 
-namespace claudius {
+namespace index_ai {
 
 void cmd_init();
 void cmd_gen_token();
 void cmd_serve(int port);
 void cmd_oneshot(const std::string& agent_id, const std::string& msg);
 
-} // namespace claudius
+} // namespace index_ai

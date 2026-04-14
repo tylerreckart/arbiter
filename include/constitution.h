@@ -6,7 +6,7 @@
 #include <vector>
 #include <optional>
 
-namespace claudius {
+namespace index_ai {
 
 // Caveman compression level
 enum class Brevity { Lite, Full, Ultra };
@@ -60,4 +60,4 @@ Constitution master_constitution();
 std::string brevity_to_string(Brevity b);
 Brevity brevity_from_string(const std::string& s);
 
-} // namespace claudius
+} // namespace index_ai

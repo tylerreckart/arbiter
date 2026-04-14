@@ -41,14 +41,14 @@
 
 namespace fs = std::filesystem;
 
-using claudius::BANNER;
-using claudius::agent_color;
-using claudius::get_config_dir;
-using claudius::get_memory_dir;
-using claudius::get_api_key;
-using claudius::write_memory;
-using claudius::read_memory;
-using claudius::fetch_url;
+using index_ai::BANNER;
+using index_ai::agent_color;
+using index_ai::get_config_dir;
+using index_ai::get_memory_dir;
+using index_ai::get_api_key;
+using index_ai::write_memory;
+using index_ai::read_memory;
+using index_ai::fetch_url;
 
 
 // ─── Terminal / TUI ──────────────────────────────────────────────────────────
@@ -57,11 +57,11 @@ static volatile sig_atomic_t g_winch = 0;
 static void sigwinch_handler(int) { g_winch = 1; }
 
 
-using claudius::TUI;
-using claudius::ThinkingIndicator;
-using claudius::CommandQueue;
-using claudius::OutputQueue;
-using claudius::LoopManager;
+using index_ai::TUI;
+using index_ai::ThinkingIndicator;
+using index_ai::CommandQueue;
+using index_ai::OutputQueue;
+using index_ai::LoopManager;
 
 // ─── Filtered getc — the one character-source hook that works in both ────────
 // GNU readline and libedit.  Every character readline reads goes through here,
@@ -76,11 +76,11 @@ using claudius::LoopManager;
 struct ReplGetcState {
     OutputQueue*              output_queue       = nullptr;
     TUI*                      tui                = nullptr;
-    claudius::ScrollBuffer*   history            = nullptr;
+    index_ai::ScrollBuffer*   history            = nullptr;
     int*                      scroll_offset      = nullptr;   // in VISUAL rows
     int*                      new_while_scrolled = nullptr;   // in VISUAL rows
     std::atomic<bool>*        quit_requested     = nullptr;
-    claudius::Orchestrator*   orch               = nullptr;
+    index_ai::Orchestrator*   orch               = nullptr;
     std::string*              multiline_accum    = nullptr;
 };
 static ReplGetcState g_getc_state;
@@ -136,7 +136,7 @@ static void cmd_interactive() {
     std::string dir = get_config_dir();
     std::string api_key = get_api_key();
 
-    claudius::Orchestrator orch(api_key);
+    index_ai::Orchestrator orch(api_key);
     orch.set_memory_dir(get_memory_dir());
     orch.load_agents(dir + "/agents");
 
@@ -208,7 +208,7 @@ static void cmd_interactive() {
 
     ThinkingIndicator thinking(&tui);
     LoopManager loops;
-    claudius::CostTracker tracker;
+    index_ai::CostTracker tracker;
 
     // ── Raw stdin ──────────────────────────────────────────────────────────
     // Our filter thread (below) owns stdin and reads byte-by-byte.  libedit's
@@ -230,12 +230,12 @@ static void cmd_interactive() {
     // why libedit is no longer in the interactive path.  ReadlineWrapper
     // still owns history file I/O though, and we'll hand its contents to
     // the editor below after they're loaded.
-    claudius::LineEditor editor(tui);
+    index_ai::LineEditor editor(tui);
 
     // Record sub-agent token costs that bypass the top-level REPL handler.
     orch.set_cost_callback([&tracker](const std::string& agent_id,
                                        const std::string& model,
-                                       const claudius::ApiResponse& resp) {
+                                       const index_ai::ApiResponse& resp) {
         tracker.record(agent_id, model, resp);
     });
 
@@ -313,7 +313,7 @@ static void cmd_interactive() {
     auto maybe_generate_title = [&](const std::string& user_msg,
                                      const std::string& response_snippet) {
         if (title_generated.exchange(true)) return;  // already done
-        claudius::generate_title_async(orch.client(), user_msg, response_snippet,
+        index_ai::generate_title_async(orch.client(), user_msg, response_snippet,
             [&tui](const std::string& t){ tui.set_title(t); });
     };
 
@@ -363,7 +363,7 @@ static void cmd_interactive() {
                 std::getline(iss, msg);
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 try {
-                    claudius::MarkdownRenderer md;
+                    index_ai::MarkdownRenderer md;
                     auto resp = orch.send_streaming(id, msg,
                         [&md, &output_queue](const std::string& chunk) {
                             auto s = md.feed(chunk);
@@ -389,7 +389,7 @@ static void cmd_interactive() {
                 std::getline(iss, query);
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
                 try {
-                    claudius::MarkdownRenderer md;
+                    index_ai::MarkdownRenderer md;
                     auto resp = orch.send_streaming("claudius", query,
                         [&md, &output_queue](const std::string& chunk) {
                             auto s = md.feed(chunk);
@@ -414,7 +414,7 @@ static void cmd_interactive() {
                 std::string id;
                 iss >> id;
                 try {
-                    auto config = claudius::master_constitution();
+                    auto config = index_ai::master_constitution();
                     config.name = id;
                     orch.create_agent(id, std::move(config));
                     output_queue.push("Created: " + id + " (default config)\n");
@@ -603,7 +603,7 @@ static void cmd_interactive() {
                     auto resp = orch.send(current_agent, msg);
                     thinking.stop();
                     if (resp.ok) {
-                        output_queue.push(claudius::render_markdown(resp.content) + "\n");
+                        output_queue.push(index_ai::render_markdown(resp.content) + "\n");
                         tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                     } else {
@@ -629,16 +629,16 @@ static void cmd_interactive() {
                             output_queue.push("Usage: /mem shared write <text>\n");
                             return;
                         }
-                        claudius::cmd_mem_shared_write(text, get_memory_dir());
+                        index_ai::cmd_mem_shared_write(text, get_memory_dir());
                         output_queue.push("Written to shared scratchpad\n");
                     } else if (action == "read" || action == "show") {
-                        std::string mem = claudius::cmd_mem_shared_read(get_memory_dir());
+                        std::string mem = index_ai::cmd_mem_shared_read(get_memory_dir());
                         if (mem.empty())
                             output_queue.push("Shared scratchpad is empty\n");
                         else
                             output_queue.push(mem + "\n");
                     } else if (action == "clear") {
-                        claudius::cmd_mem_shared_clear(get_memory_dir());
+                        index_ai::cmd_mem_shared_clear(get_memory_dir());
                         output_queue.push("Shared scratchpad cleared\n");
                     } else {
                         output_queue.push("Usage: /mem shared write <text> | /mem shared read | /mem shared clear\n");
@@ -666,7 +666,7 @@ static void cmd_interactive() {
                         auto resp = orch.send(current_agent, msg);
                         thinking.stop();
                         if (resp.ok) {
-                            output_queue.push(claudius::render_markdown(resp.content) + "\n");
+                            output_queue.push(index_ai::render_markdown(resp.content) + "\n");
                             tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
                             tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                         } else {
@@ -736,7 +736,7 @@ static void cmd_interactive() {
                     // Print final phase output (the deliverable)
                     if (!result.phases.empty()) {
                         auto& [num, name, out] = result.phases.back();
-                        output_queue.push(claudius::render_markdown(out) + "\n");
+                        output_queue.push(index_ai::render_markdown(out) + "\n");
                     }
                 }
                 return;
@@ -788,7 +788,7 @@ static void cmd_interactive() {
 
         // Plain text → stream to current agent
         try {
-            claudius::MarkdownRenderer md;
+            index_ai::MarkdownRenderer md;
             auto resp = orch.send_streaming(current_agent, line,
                 [&md, &output_queue](const std::string& chunk) {
                     auto s = md.feed(chunk);
@@ -828,7 +828,7 @@ static void cmd_interactive() {
 
     // Scroll history back-buffer: bounded, visual-row-aware.  PgUp/PgDn and
     // the mouse wheel adjust scroll_offset (in VISUAL rows); offset=0 is live.
-    claudius::ScrollBuffer history;
+    index_ai::ScrollBuffer history;
     history.set_cols(tui.cols());
     int scroll_offset      = 0;   // visual rows above the tail (0 = live view)
     int new_while_scrolled = 0;   // visual rows accumulated while scrolled back
@@ -1015,11 +1015,11 @@ int main(int argc, char* argv[]) {
         std::string arg1 = argv[1];
 
         if (arg1 == "--init" || arg1 == "init") {
-            claudius::cmd_init();
+            index_ai::cmd_init();
             return 0;
         }
         if (arg1 == "--gen-token" || arg1 == "gen-token") {
-            claudius::cmd_gen_token();
+            index_ai::cmd_gen_token();
             return 0;
         }
         if (arg1 == "--serve" || arg1 == "serve") {
@@ -1027,7 +1027,7 @@ int main(int argc, char* argv[]) {
             if (argc >= 4 && std::string(argv[2]) == "--port") {
                 port = std::atoi(argv[3]);
             }
-            claudius::cmd_serve(port);
+            index_ai::cmd_serve(port);
             return 0;
         }
         if (arg1 == "--send" || arg1 == "send") {
@@ -1041,7 +1041,7 @@ int main(int argc, char* argv[]) {
                 if (i > 3) msg += " ";
                 msg += argv[i];
             }
-            claudius::cmd_oneshot(agent, msg);
+            index_ai::cmd_oneshot(agent, msg);
             return 0;
         }
         if (arg1 == "--help" || arg1 == "-h" || arg1 == "help") {

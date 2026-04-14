@@ -5,7 +5,7 @@
 #include <unordered_set>
 #include <mutex>
 
-namespace claudius {
+namespace index_ai {
 
 class Auth {
 public:
@@ -31,4 +31,4 @@ private:
     std::unordered_set<std::string> token_hashes_;
 };
 
-} // namespace claudius
+} // namespace index_ai

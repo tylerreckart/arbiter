@@ -1,11 +1,11 @@
-// claudius/src/tui/scroll_buffer.cpp — see tui/scroll_buffer.h
+// index_ai/src/tui/scroll_buffer.cpp — see tui/scroll_buffer.h
 
 #include "tui/scroll_buffer.h"
 
 #include <algorithm>
 #include <cstdio>
 
-namespace claudius {
+namespace index_ai {
 
 ScrollBuffer::ScrollBuffer(size_t max_lines) : max_lines_(max_lines) {}
 
@@ -97,7 +97,7 @@ void ScrollBuffer::render(int top_row, int bottom_row, int visual_offset) const 
     int end_idx   = 0;
     int acc       = 0;   // visual rows accumulated walking back
 
-    // Find end_idx (exclusive): first claudius where acc ≥ want_bot_v.
+    // Find end_idx (exclusive): first index_ai where acc ≥ want_bot_v.
     bool found_end = false;
     for (int i = (int)lines_.size() - 1; i >= 0; --i) {
         int vr = rows_of(lines_[i]);
@@ -139,4 +139,4 @@ void ScrollBuffer::render(int top_row, int bottom_row, int visual_offset) const 
     std::fflush(stdout);
 }
 
-} // namespace claudius
+} // namespace index_ai

@@ -1,4 +1,4 @@
-// claudius/src/title_generator.cpp — see title_generator.h
+// index_ai/src/title_generator.cpp — see title_generator.h
 
 #include "title_generator.h"
 
@@ -7,7 +7,7 @@
 #include <string>
 #include <thread>
 
-namespace claudius {
+namespace index_ai {
 
 void print_turn_rule(const std::string& label,
                      const std::string& color,
@@ -82,4 +82,4 @@ void generate_title_async(ApiClient& client,
     }).detach();
 }
 
-} // namespace claudius
+} // namespace index_ai

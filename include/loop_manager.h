@@ -37,7 +37,7 @@
 #include <thread>
 #include <vector>
 
-namespace claudius {
+namespace index_ai {
 
 enum class LoopState { Running, Suspended, Stopped };
 const char* loop_state_str(LoopState s);
@@ -109,4 +109,4 @@ private:
     int next_id_ = 0;
 };
 
-} // namespace claudius
+} // namespace index_ai

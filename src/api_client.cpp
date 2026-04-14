@@ -1,4 +1,4 @@
-// claudius/src/api_client.cpp — Claude API client implementation
+// index_ai/src/api_client.cpp — Claude API client implementation
 #include "api_client.h"
 
 #include <cstring>
@@ -16,7 +16,7 @@ static constexpr int         API_PORT = 443;
 static constexpr const char* API_PATH = "/v1/messages";
 static constexpr const char* API_VERSION = "2023-06-01";
 
-namespace claudius {
+namespace index_ai {
 
 ApiClient::ApiClient(const std::string& api_key) : api_key_(api_key) {
     SSL_library_init();
@@ -582,4 +582,4 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     return r;
 }
 
-} // namespace claudius
+} // namespace index_ai

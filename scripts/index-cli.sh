@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# claudius-cli — Remote client for claudius server
-# Usage: claudius-cli <host> <port> <token> [command...]
+# index-cli — Remote client for claudius server
+# Usage: index-cli <host> <port> <token> [command...]
 #
-# Interactive:  claudius-cli myserver.local 9077 <token>
-# One-shot:     claudius-cli myserver.local 9077 <token> SEND reviewer "review this code"
+# Interactive:  index-cli myserver.local 9077 <token>
+# One-shot:     index-cli myserver.local 9077 <token> SEND reviewer "review this code"
 
 set -euo pipefail
 
-HOST="${1:?Usage: claudius-cli <host> <port> <token> [cmd...]}"
-PORT="${2:?Usage: claudius-cli <host> <port> <token> [cmd...]}"
-TOKEN="${3:?Usage: claudius-cli <host> <port> <token> [cmd...]}"
+HOST="${1:?Usage: index-cli <host> <port> <token> [cmd...]}"
+PORT="${2:?Usage: index-cli <host> <port> <token> [cmd...]}"
+TOKEN="${3:?Usage: index-cli <host> <port> <token> [cmd...]}"
 shift 3
 
 # Use a persistent TCP connection via bash /dev/tcp or nc
