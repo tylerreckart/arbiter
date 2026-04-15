@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(index_ai VERSION 0.2.1 LANGUAGES CXX)
+project(index_ai VERSION 0.3.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,6 +50,11 @@ set(INDEX_AI_SOURCES
 )
 
 add_executable(index ${INDEX_AI_SOURCES})
+
+# Surface the project version to C++ so the welcome card can render it on
+# the bottom border.  Keep CMakeLists.txt's `project(... VERSION x.y.z)` in
+# sync with your brew formula / release tags.
+target_compile_definitions(index PRIVATE INDEX_VERSION="${PROJECT_VERSION}")
 
 target_include_directories(index PRIVATE
     ${CMAKE_SOURCE_DIR}/include

@@ -57,7 +57,7 @@ public:
     // Replace the FILE* readline reads characters from.
     // Call before install_callback().  Used to interpose a filter pipe so that
     // bytes written to the write end are what readline sees, while the real
-    // stdin is read by our own loop (for mouse-event interception, etc.).
+    // stdin is read by our own loop (for input filtering, etc.).
     void set_instream(FILE* f);
 
     // Force readline/libedit to (re)initialize now, picking up the current

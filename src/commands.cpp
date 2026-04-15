@@ -429,7 +429,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    const std::string& agent_id,
                                    const std::string& memory_dir,
                                    AgentInvoker agent_invoker,
-                                   ConfirmFn    confirm) {
+                                   ConfirmFn    confirm,
+                                   std::map<std::string, std::string>* dedup_cache) {
     std::ostringstream out;
     out << "[TOOL RESULTS]\n";
 
@@ -440,6 +441,12 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
     static constexpr int    kMaxFetches     = 3;
     int fetch_count = 0;
 
+    auto uppercase_tag = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c){ return (char)std::toupper(c); });
+        return s;
+    };
+
     for (auto& cmd : cmds) {
         // Enforce total budget
         if (out.tellp() >= static_cast<std::streampos>(kTotalLimit)) {
@@ -447,22 +454,58 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             break;
         }
 
-        if (cmd.name == "fetch") {
-            if (fetch_count >= kMaxFetches) {
-                out << "[/fetch " << cmd.args << "]\n"
-                    << "SKIPPED: max " << kMaxFetches << " fetches per turn\n"
-                    << "[END FETCH]\n\n";
+        // ── Dedup gate ────────────────────────────────────────────────────
+        // If the same (cmd, args[, content]) already ran this turn, don't
+        // re-dispatch — synthesise a result block that quotes the prior
+        // output and tells the agent to adapt.  Distinct content for /write
+        // bypasses the dedup so writing two different files to the same path
+        // still works (rare, but not technically a repeat).
+        std::string dedup_key = cmd.name + "|" + cmd.args;
+        if (cmd.name == "write") {
+            dedup_key += "|" + std::to_string(std::hash<std::string>{}(cmd.content));
+        }
+        if (dedup_cache) {
+            auto it = dedup_cache->find(dedup_key);
+            if (it != dedup_cache->end()) {
+                std::string tag = uppercase_tag(cmd.name);
+                out << "[/" << cmd.name << " " << cmd.args << "]\n";
+                out << "DUPLICATE — you already ran this exact call earlier in "
+                       "this turn.  Do not retry the same arguments; adapt "
+                       "(different brief, different agent, or proceed using the "
+                       "prior result).\n";
+                out << "Previous result:\n" << it->second;
+                if (!it->second.empty() && it->second.back() != '\n') out << "\n";
+                out << "[END " << tag << "]\n\n";
                 continue;
             }
-            ++fetch_count;
-            out << "[/fetch " << cmd.args << "]\n";
-            std::string fetched = cmd_fetch(cmd.args);
-            if (fetched.size() > kPerFetchLimit) {
-                fetched.resize(kPerFetchLimit);
-                fetched += "\n... [truncated]";
+        }
+
+        // Capture each command's full block (header + body + footer) in a
+        // local stream so we can feed it to the dedup cache after it runs.
+        std::ostringstream block;
+
+        // Set to false when the result shouldn't be cached for dedup — e.g.
+        // fetch-budget-skip, or user-declined confirms: a later re-issue is
+        // a legitimate retry, not a duplicate.
+        bool cache_result = true;
+
+        if (cmd.name == "fetch") {
+            if (fetch_count >= kMaxFetches) {
+                block << "[/fetch " << cmd.args << "]\n"
+                      << "SKIPPED: max " << kMaxFetches << " fetches per turn\n"
+                      << "[END FETCH]\n\n";
+                cache_result = false;
+            } else {
+                ++fetch_count;
+                block << "[/fetch " << cmd.args << "]\n";
+                std::string fetched = cmd_fetch(cmd.args);
+                if (fetched.size() > kPerFetchLimit) {
+                    fetched.resize(kPerFetchLimit);
+                    fetched += "\n... [truncated]";
+                }
+                block << fetched << "\n";
+                block << "[END FETCH]\n\n";
             }
-            out << fetched << "\n";
-            out << "[END FETCH]\n\n";
 
         } else if (cmd.name == "mem") {
             std::istringstream iss(cmd.args);
@@ -478,18 +521,19 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     std::getline(iss, text);
                     if (!text.empty() && text[0] == ' ') text.erase(0, 1);
                     cmd_mem_shared_write(text, memory_dir);
-                    out << "[/mem shared write] OK: written to shared scratchpad\n\n";
+                    block << "[/mem shared write] OK: written to shared scratchpad\n\n";
                 } else if (action == "read" || action == "show") {
                     std::string mem = cmd_mem_shared_read(memory_dir);
-                    out << "[/mem shared read]\n"
-                        << (mem.empty() ? "(shared scratchpad empty)" : mem)
-                        << "\n[END SHARED MEMORY]\n\n";
+                    block << "[/mem shared read]\n"
+                          << (mem.empty() ? "(shared scratchpad empty)" : mem)
+                          << "\n[END SHARED MEMORY]\n\n";
                 } else if (action == "clear") {
                     cmd_mem_shared_clear(memory_dir);
-                    out << "[/mem shared clear] OK: shared scratchpad cleared\n\n";
+                    block << "[/mem shared clear] OK: shared scratchpad cleared\n\n";
                 } else {
-                    out << "[/mem shared] ERR: unknown action '" << action
-                        << "' — use write, read, or clear\n\n";
+                    block << "[/mem shared] ERR: unknown action '" << action
+                          << "' — use write, read, or clear\n\n";
+                    cache_result = false;
                 }
 
             } else if (subcmd == "write") {
@@ -497,34 +541,35 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 std::getline(iss, text);
                 if (!text.empty() && text[0] == ' ') text.erase(0, 1);
                 cmd_mem_write(agent_id, text, memory_dir);
-                out << "[/mem write] OK: written\n\n";
+                block << "[/mem write] OK: written\n\n";
 
             } else if (subcmd == "read") {
                 std::string mem = cmd_mem_read(agent_id, memory_dir);
-                out << "[/mem read]\n"
-                    << (mem.empty() ? "(no memory)" : mem)
-                    << "\n[END MEMORY]\n\n";
+                block << "[/mem read]\n"
+                      << (mem.empty() ? "(no memory)" : mem)
+                      << "\n[END MEMORY]\n\n";
 
             } else if (subcmd == "show") {
                 std::string mem = cmd_mem_read(agent_id, memory_dir);
-                out << "[/mem show]\n"
-                    << (mem.empty() ? "(no memory)" : mem)
-                    << "\n[END MEMORY]\n\n";
+                block << "[/mem show]\n"
+                      << (mem.empty() ? "(no memory)" : mem)
+                      << "\n[END MEMORY]\n\n";
 
             } else if (subcmd == "clear") {
                 cmd_mem_clear(agent_id, memory_dir);
-                out << "[/mem clear] OK: memory cleared\n\n";
+                block << "[/mem clear] OK: memory cleared\n\n";
             }
 
         } else if (cmd.name == "exec") {
-            out << "[/exec " << cmd.args << "]\n";
+            block << "[/exec " << cmd.args << "]\n";
             if (confirm && is_destructive_exec(cmd.args) &&
                 !confirm("exec '" + cmd.args + "'?")) {
-                out << "ERR: user declined\n";
+                block << "ERR: user declined\n";
+                cache_result = false;  // user may want to approve a retry
             } else {
-                out << cmd_exec(cmd.args) << "\n";
+                block << cmd_exec(cmd.args) << "\n";
             }
-            out << "[END EXEC]\n\n";
+            block << "[END EXEC]\n\n";
 
         } else if (cmd.name == "agent") {
             // /agent <sub_agent_id> <message>
@@ -535,16 +580,33 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             std::getline(iss, sub_msg);
             if (!sub_msg.empty() && sub_msg[0] == ' ') sub_msg.erase(0, 1);
 
-            out << "[/agent " << sub_id << "]\n";
-            if (agent_invoker) {
-                out << agent_invoker(sub_id, sub_msg) << "\n";
+            block << "[/agent " << sub_id << "]\n";
+            if (!agent_invoker) {
+                block << "ERR: agent invocation unavailable in this context\n";
             } else {
-                out << "ERR: agent invocation unavailable in this context\n";
+                std::string sub_resp = agent_invoker(sub_id, sub_msg);
+                block << sub_resp << "\n";
+                // Clearer failure signal: when the sub-agent returns an upstream
+                // error, tell the calling agent NOT to retry the identical brief.
+                // The internal ApiClient already burned 4 backoff retries before
+                // the sub-agent returned ERR, so a same-turn reinvocation is
+                // almost certainly going to fail the same way.  Prescribe the
+                // adaptation paths so the master doesn't just repeat itself.
+                if (sub_resp.size() >= 4 && sub_resp.compare(0, 4, "ERR:") == 0) {
+                    block << "UPSTREAM FAILED — the sub-agent returned an error "
+                             "after the API client's internal retry/backoff chain. "
+                             "The same brief will fail again.  Do NOT re-invoke "
+                             "/agent " << sub_id << " with the same arguments.  "
+                             "Options: adapt the brief (narrower scope, different "
+                             "angle), try a different agent whose capabilities "
+                             "overlap, or proceed with partial results and flag "
+                             "the gap in your synthesis.\n";
+                }
             }
-            out << "[END AGENT]\n\n";
+            block << "[END AGENT]\n\n";
 
         } else if (cmd.name == "write") {
-            out << "[/write " << cmd.args << "]\n";
+            block << "[/write " << cmd.args << "]\n";
             if (confirm) {
                 size_t lines = std::count(cmd.content.begin(), cmd.content.end(), '\n');
                 if (!cmd.content.empty() && cmd.content.back() != '\n') ++lines;
@@ -552,13 +614,23 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                 std::to_string(lines) + " lines, " +
                                 std::to_string(cmd.content.size()) + " bytes)?";
                 if (!confirm(p)) {
-                    out << "ERR: user declined\n";
-                    out << "[END WRITE]\n\n";
+                    block << "ERR: user declined\n";
+                    block << "[END WRITE]\n\n";
+                    cache_result = false;  // user may want to approve a retry
+                    out << block.str();
                     continue;
                 }
             }
-            out << cmd_write(cmd.args, cmd.content) << "\n";
-            out << "[END WRITE]\n\n";
+            block << cmd_write(cmd.args, cmd.content) << "\n";
+            block << "[END WRITE]\n\n";
+        }
+
+        // Flush per-command block into the aggregate and record it in the
+        // dedup cache so a same-turn repeat short-circuits to the quote path.
+        std::string block_str = block.str();
+        out << block_str;
+        if (dedup_cache && cache_result && !block_str.empty()) {
+            (*dedup_cache)[dedup_key] = block_str;
         }
     }
 

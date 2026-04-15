@@ -1,6 +1,8 @@
-// index_ai/src/api_client.cpp — Claude API client implementation
+// index_ai/src/api_client.cpp — Multi-provider LLM client.
+// See api_client.h for the routing model.
 #include "api_client.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 #include <stdexcept>
@@ -11,12 +13,110 @@
 #include <netdb.h>
 #include <netinet/tcp.h>
 
-static constexpr const char* API_HOST = "api.anthropic.com";
-static constexpr int         API_PORT = 443;
-static constexpr const char* API_PATH = "/v1/messages";
-static constexpr const char* API_VERSION = "2023-06-01";
-
 namespace index_ai {
+
+// ─── Provider registry ────────────────────────────────────────────────────────
+//
+// First entry whose `prefix` matches the start of the model string wins.  An
+// empty prefix is the catch-all (bare model names like "claude-sonnet-4-…").
+// To add a provider: append a row here, teach build_body_*/parse_body_* if
+// the format differs, done.  Ollama is reached via OLLAMA_HOST (defaults to
+// http://localhost:11434); other providers wanting a configurable host can
+// follow the same pattern.
+
+namespace {
+
+struct ParsedHost { std::string scheme, host; int port; };
+
+// Parse a URL-ish string into scheme/host/port.  Accepts:
+//   "http://host:port", "https://host:port", "host:port", "host".
+static ParsedHost parse_host(const std::string& s,
+                              const std::string& default_scheme,
+                              int default_port) {
+    ParsedHost r{default_scheme, "", default_port};
+    std::string rest = s;
+    auto scheme_end = rest.find("://");
+    if (scheme_end != std::string::npos) {
+        r.scheme = rest.substr(0, scheme_end);
+        rest = rest.substr(scheme_end + 3);
+    }
+    auto colon = rest.find(':');
+    if (colon != std::string::npos) {
+        r.host = rest.substr(0, colon);
+        r.port = std::atoi(rest.c_str() + colon + 1);
+        if (r.port <= 0) r.port = default_port;
+    } else {
+        r.host = rest;
+    }
+    if (r.host.empty()) r.host = "localhost";
+    return r;
+}
+
+static Provider make_anthropic_provider() {
+    Provider p;
+    p.name = "anthropic";
+    p.prefix = "";                      // catch-all; also matches "claude-…"
+    p.host = "api.anthropic.com";
+    p.port = 443;
+    p.path = "/v1/messages";
+    p.tls = true;
+    p.uses_api_key = true;
+    p.format = Provider::FORMAT_ANTHROPIC;
+    return p;
+}
+
+static Provider make_ollama_provider() {
+    Provider p;
+    p.name = "ollama";
+    p.prefix = "ollama/";
+    const char* env = std::getenv("OLLAMA_HOST");
+    auto ph = parse_host(env ? env : "http://localhost:11434", "http", 11434);
+    p.host = ph.host;
+    p.port = ph.port;
+    p.tls  = (ph.scheme == "https");
+    p.path = "/v1/chat/completions";    // OpenAI-compatible surface
+    p.uses_api_key = false;
+    p.format = Provider::FORMAT_OPENAI_CHAT;
+    return p;
+}
+
+// NOTE: order matters — longest/most-specific prefix first, fallback last.
+static const std::vector<Provider>& registry() {
+    static const std::vector<Provider> kProviders = {
+        make_ollama_provider(),
+        make_anthropic_provider(),
+    };
+    return kProviders;
+}
+
+} // namespace
+
+const Provider& provider_for(const std::string& model) {
+    const auto& reg = registry();
+    for (const auto& p : reg) {
+        if (!p.prefix.empty() &&
+            model.size() >= p.prefix.size() &&
+            model.compare(0, p.prefix.size(), p.prefix) == 0) {
+            return p;
+        }
+    }
+    // Fallback: first provider with an empty prefix.
+    for (const auto& p : reg) if (p.prefix.empty()) return p;
+    return reg.front();
+}
+
+bool is_priced(const std::string& model) {
+    return provider_for(model).name == "anthropic";
+}
+
+std::string strip_model_prefix(const std::string& model) {
+    const auto& p = provider_for(model);
+    if (!p.prefix.empty() && model.compare(0, p.prefix.size(), p.prefix) == 0)
+        return model.substr(p.prefix.size());
+    return model;
+}
+
+// ─── ApiClient lifecycle ─────────────────────────────────────────────────────
 
 ApiClient::ApiClient(const std::string& api_key) : api_key_(api_key) {
     SSL_library_init();
@@ -31,89 +131,119 @@ ApiClient::ApiClient(const std::string& api_key) : api_key_(api_key) {
 }
 
 ApiClient::~ApiClient() {
-    close_connection();
+    for (auto& [_, c] : conns_) close_connection(c);
     if (ssl_ctx_) SSL_CTX_free(ssl_ctx_);
 }
 
-bool ApiClient::ensure_connection() {
-    if (connected_) return true;
+// ─── Connection management ───────────────────────────────────────────────────
 
-    // Resolve host
+bool ApiClient::ensure_connection(const Provider& p, Conn& c) {
+    if (c.connected) return true;
+
     struct addrinfo hints{}, *res = nullptr;
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    int gai = getaddrinfo(API_HOST, "443", &hints, &res);
+    std::string port_str = std::to_string(p.port);
+    int gai = getaddrinfo(p.host.c_str(), port_str.c_str(), &hints, &res);
     if (gai != 0) {
-        last_conn_error_ = std::string("DNS lookup failed: ") + gai_strerror(gai);
+        c.last_error = "DNS lookup failed (" + p.host + "): " + gai_strerror(gai);
         return false;
     }
 
-    sock_ = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (sock_ < 0) {
-        last_conn_error_ = std::string("socket() failed: ") + strerror(errno);
+    c.sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (c.sock < 0) {
+        c.last_error = std::string("socket() failed: ") + strerror(errno);
         freeaddrinfo(res);
         return false;
     }
 
-    // TCP_NODELAY for low latency
     int flag = 1;
-    setsockopt(sock_, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+    setsockopt(c.sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
-    if (connect(sock_, res->ai_addr, res->ai_addrlen) != 0) {
-        last_conn_error_ = std::string("connect() failed: ") + strerror(errno);
+    if (connect(c.sock, res->ai_addr, res->ai_addrlen) != 0) {
+        c.last_error = std::string("connect() failed (") + p.host + ":" +
+                       port_str + "): " + strerror(errno);
         freeaddrinfo(res);
-        close(sock_);
-        sock_ = -1;
+        close(c.sock);
+        c.sock = -1;
         return false;
     }
     freeaddrinfo(res);
 
-    // TLS handshake
-    ssl_ = SSL_new(ssl_ctx_);
-    SSL_set_fd(ssl_, sock_);
-    SSL_set_tlsext_host_name(ssl_, API_HOST);
+    c.tls = p.tls;
+    if (p.tls) {
+        c.ssl = SSL_new(ssl_ctx_);
+        SSL_set_fd(c.ssl, c.sock);
+        SSL_set_tlsext_host_name(c.ssl, p.host.c_str());
 
-    if (SSL_connect(ssl_) != 1) {
-        unsigned long err = ERR_get_error();
-        char errbuf[256];
-        ERR_error_string_n(err, errbuf, sizeof(errbuf));
-        last_conn_error_ = std::string("TLS handshake failed: ") + errbuf;
-        SSL_free(ssl_);
-        ssl_ = nullptr;
-        close(sock_);
-        sock_ = -1;
-        return false;
+        if (SSL_connect(c.ssl) != 1) {
+            unsigned long err = ERR_get_error();
+            char errbuf[256];
+            ERR_error_string_n(err, errbuf, sizeof(errbuf));
+            c.last_error = std::string("TLS handshake failed: ") + errbuf;
+            SSL_free(c.ssl);
+            c.ssl = nullptr;
+            close(c.sock);
+            c.sock = -1;
+            return false;
+        }
     }
 
-    connected_ = true;
+    c.connected = true;
+    c.last_error.clear();
     return true;
+}
+
+void ApiClient::close_connection(Conn& c) {
+    if (c.ssl) {
+        SSL_shutdown(c.ssl);
+        SSL_free(c.ssl);
+        c.ssl = nullptr;
+    }
+    if (c.sock >= 0) {
+        close(c.sock);
+        c.sock = -1;
+    }
+    c.connected = false;
 }
 
 void ApiClient::cancel() {
     cancelled_.store(true);
-    // Shut down the socket so any blocking SSL_read returns immediately.
-    // We use shutdown() rather than close() to avoid a race with the thread
-    // that owns the fd — the streaming loop will call close_connection() on
-    // its own after seeing the error.
     std::lock_guard<std::mutex> lk(conn_mutex_);
-    if (sock_ >= 0) ::shutdown(sock_, SHUT_RDWR);
+    for (auto& [_, c] : conns_) {
+        if (c.sock >= 0) ::shutdown(c.sock, SHUT_RDWR);
+    }
 }
 
-void ApiClient::close_connection() {
-    if (ssl_) {
-        SSL_shutdown(ssl_);
-        SSL_free(ssl_);
-        ssl_ = nullptr;
-    }
-    if (sock_ >= 0) {
-        close(sock_);
-        sock_ = -1;
-    }
-    connected_ = false;
+// ─── I/O helpers (format-agnostic) ───────────────────────────────────────────
+
+namespace {
+
+// Unified read/write that respects TLS vs plain TCP.
+static int conn_write(ApiClient::Conn& c_like, const char* data, int n) {
+    // c_like is a forward-declared-looking hack; we can't forward-declare
+    // ApiClient::Conn in an anonymous namespace so we template it.
+    (void)c_like; (void)data; (void)n;
+    return -1;
 }
 
-std::string ApiClient::build_request_body(const ApiRequest& req, bool streaming) {
+} // namespace
+
+// Internal helpers — non-namespace-anon so they can friend into ApiClient::Conn.
+static int conn_send(index_ai::ApiClient::Conn& c, const char* data, int n) {
+    if (c.ssl) return SSL_write(c.ssl, data, n);
+    return (int)::send(c.sock, data, n, 0);
+}
+
+static int conn_recv(index_ai::ApiClient::Conn& c, char* data, int n) {
+    if (c.ssl) return SSL_read(c.ssl, data, n);
+    return (int)::recv(c.sock, data, n, 0);
+}
+
+// ─── Request body builders ───────────────────────────────────────────────────
+
+std::string ApiClient::build_body_anthropic(const ApiRequest& req, bool streaming) {
     auto obj = jobj();
     auto& m = obj->as_object_mut();
     m["model"] = jstr(req.model);
@@ -121,8 +251,6 @@ std::string ApiClient::build_request_body(const ApiRequest& req, bool streaming)
     m["temperature"] = jnum(req.temperature);
 
     if (!req.system_prompt.empty()) {
-        // Structured system block with prompt caching — cached tokens count at
-        // 1/10th toward input rate limits after the first request in a 5-min window.
         auto cache_ctrl = jobj();
         cache_ctrl->as_object_mut()["type"] = jstr("ephemeral");
 
@@ -146,11 +274,8 @@ std::string ApiClient::build_request_body(const ApiRequest& req, bool streaming)
     }
     m["messages"] = msgs;
 
-    if (streaming) {
-        m["stream"] = jbool(true);
-    }
+    if (streaming) m["stream"] = jbool(true);
 
-    // Advisor tool (beta: advisor-tool-2026-03-01)
     if (!req.advisor_model.empty()) {
         auto tool = jobj();
         tool->as_object_mut()["type"]  = jstr("advisor_20260301");
@@ -164,17 +289,59 @@ std::string ApiClient::build_request_body(const ApiRequest& req, bool streaming)
     return json_serialize(*obj);
 }
 
-std::string ApiClient::send_request(const std::string& body, bool streaming, bool advisor) {
+std::string ApiClient::build_body_openai(const ApiRequest& req, bool streaming) {
+    // OpenAI chat completions: single flat messages array with optional
+    // "system" role at index 0.  No prompt-caching metadata, no Anthropic
+    // advisor tool.  Model name has any provider prefix stripped.
+    auto obj = jobj();
+    auto& m = obj->as_object_mut();
+    m["model"] = jstr(strip_model_prefix(req.model));
+    m["max_tokens"] = jnum(static_cast<double>(req.max_tokens));
+    m["temperature"] = jnum(req.temperature);
+    if (streaming) m["stream"] = jbool(true);
+
+    auto msgs = jarr();
+    if (!req.system_prompt.empty()) {
+        auto sm = jobj();
+        sm->as_object_mut()["role"]    = jstr("system");
+        sm->as_object_mut()["content"] = jstr(req.system_prompt);
+        msgs->as_array_mut().push_back(sm);
+    }
+    for (auto& msg : req.messages) {
+        auto mo = jobj();
+        mo->as_object_mut()["role"] = jstr(msg.role);
+        mo->as_object_mut()["content"] = jstr(msg.content);
+        msgs->as_array_mut().push_back(mo);
+    }
+    m["messages"] = msgs;
+
+    return json_serialize(*obj);
+}
+
+// ─── Outgoing HTTP request ───────────────────────────────────────────────────
+
+void ApiClient::send_request(const Provider& p, Conn& c,
+                              const std::string& body, bool streaming, bool advisor) {
     std::ostringstream http;
-    http << "POST " << API_PATH << " HTTP/1.1\r\n";
-    http << "Host: " << API_HOST << "\r\n";
+    http << "POST " << p.path << " HTTP/1.1\r\n";
+    http << "Host: " << p.host;
+    // Ollama + typical non-443 local servers want the port in the Host header
+    // even for http; harmless for Anthropic (servers ignore a :443 there).
+    if (!((p.tls && p.port == 443) || (!p.tls && p.port == 80))) {
+        http << ":" << p.port;
+    }
+    http << "\r\n";
     http << "Content-Type: application/json\r\n";
-    http << "x-api-key: " << api_key_ << "\r\n";
-    http << "anthropic-version: " << API_VERSION << "\r\n";
-    // Combine all beta features into a single header
-    std::string beta = "prompt-caching-2024-07-31";
-    if (advisor) beta += ", advisor-tool-2026-03-01";
-    http << "anthropic-beta: " << beta << "\r\n";
+    if (p.uses_api_key && p.format == Provider::FORMAT_ANTHROPIC) {
+        http << "x-api-key: " << api_key_ << "\r\n";
+        http << "anthropic-version: 2023-06-01\r\n";
+        std::string beta = "prompt-caching-2024-07-31";
+        if (advisor) beta += ", advisor-tool-2026-03-01";
+        http << "anthropic-beta: " << beta << "\r\n";
+    } else if (p.uses_api_key) {
+        // Generic bearer-auth path — useful when we later add openai-proper.
+        http << "Authorization: Bearer " << api_key_ << "\r\n";
+    }
     http << "Content-Length: " << body.size() << "\r\n";
     if (streaming) http << "Accept: text/event-stream\r\n";
     http << "Connection: keep-alive\r\n";
@@ -185,29 +352,25 @@ std::string ApiClient::send_request(const std::string& body, bool streaming, boo
     int total = static_cast<int>(raw.size());
     int sent = 0;
     while (sent < total) {
-        int n = SSL_write(ssl_, raw.data() + sent, total - sent);
+        int n = conn_send(c, raw.data() + sent, total - sent);
         if (n <= 0) {
-            close_connection();
-            throw std::runtime_error("SSL write failed");
+            close_connection(c);
+            throw std::runtime_error("write failed");
         }
         sent += n;
     }
-
-    return {};  // response read separately
 }
 
-// ─── HTTP response helpers ────────────────────────────────────────────────────
+// ─── Incoming HTTP response helpers ──────────────────────────────────────────
 
-// Parse HTTP status code from the first response line ("HTTP/1.1 200 OK\r\n...").
 static int parse_http_status(const std::string& headers) {
     auto sp = headers.find(' ');
     if (sp == std::string::npos) return 0;
     return std::atoi(headers.c_str() + sp + 1);
 }
 
-// Read the full response body (handles both chunked and content-length).
-// Used to capture error bodies that aren't SSE streams.
-static std::string read_response_body(SSL* ssl, const std::string& headers) {
+static std::string read_response_body(index_ai::ApiClient::Conn& c,
+                                       const std::string& headers) {
     bool chunked = headers.find("Transfer-Encoding: chunked") != std::string::npos;
     int content_length = -1;
     auto cl_pos = headers.find("Content-Length: ");
@@ -221,7 +384,7 @@ static std::string read_response_body(SSL* ssl, const std::string& headers) {
         while (true) {
             std::string size_line;
             while (true) {
-                int n = SSL_read(ssl, buf, 1);
+                int n = conn_recv(c, buf, 1);
                 if (n <= 0) goto body_done;
                 if (buf[0] == '\n') break;
                 if (buf[0] != '\r') size_line += buf[0];
@@ -230,17 +393,17 @@ static std::string read_response_body(SSL* ssl, const std::string& headers) {
             if (chunk_size == 0) break;
             int rd = 0;
             while (rd < chunk_size) {
-                int n = SSL_read(ssl, buf, std::min(chunk_size - rd, (int)sizeof(buf)));
+                int n = conn_recv(c, buf, std::min(chunk_size - rd, (int)sizeof(buf)));
                 if (n <= 0) goto body_done;
                 body.append(buf, n);
                 rd += n;
             }
-            SSL_read(ssl, buf, 2);  // trailing \r\n
+            conn_recv(c, buf, 2);  // trailing \r\n
         }
     } else if (content_length > 0) {
         int rd = 0;
         while (rd < content_length) {
-            int n = SSL_read(ssl, buf, std::min(content_length - rd, (int)sizeof(buf)));
+            int n = conn_recv(c, buf, std::min(content_length - rd, (int)sizeof(buf)));
             if (n <= 0) break;
             body.append(buf, n);
             rd += n;
@@ -250,24 +413,19 @@ body_done:
     return body;
 }
 
-std::string ApiClient::read_response(bool /*streaming*/, StreamCallback /*cb*/) {
+std::string ApiClient::read_response(Conn& c) {
     std::string headers;
     char buf[1];
     while (true) {
-        int n = SSL_read(ssl_, buf, 1);
+        int n = conn_recv(c, buf, 1);
         if (n <= 0) return {};
         headers += buf[0];
         if (headers.size() >= 4 &&
             headers.substr(headers.size() - 4) == "\r\n\r\n") break;
     }
-
-    // Return status + body as a combined string so complete() can detect errors.
-    // Format: first line is "HTTP_STATUS <code>\n", rest is the response body.
     int status = parse_http_status(headers);
-    std::string body = read_response_body(ssl_, headers);
+    std::string body = read_response_body(c, headers);
     if (status != 200) {
-        // Wrap non-200 so parse_response sees an API error JSON.
-        // If body is already JSON with an error field, return it directly.
         if (body.find("\"error\"") != std::string::npos) return body;
         return "{\"error\":{\"type\":\"http_error\",\"message\":\"HTTP "
                + std::to_string(status) + "\"}}";
@@ -275,14 +433,13 @@ std::string ApiClient::read_response(bool /*streaming*/, StreamCallback /*cb*/) 
     return body;
 }
 
-ApiResponse ApiClient::parse_response(const std::string& body) {
+// ─── Response parsers ────────────────────────────────────────────────────────
+
+ApiResponse ApiClient::parse_body_anthropic(const std::string& body) {
     ApiResponse resp;
     resp.raw_body = body;
-
     try {
         auto root = json_parse(body);
-
-        // Check for error
         auto err = root->get("error");
         if (err && err->is_object()) {
             resp.ok         = false;
@@ -290,8 +447,6 @@ ApiResponse ApiClient::parse_response(const std::string& body) {
             resp.error      = err->get_string("message", "Unknown API error");
             return resp;
         }
-
-        // Extract content
         auto content = root->get("content");
         if (content && content->is_array()) {
             for (auto& block : content->as_array()) {
@@ -300,10 +455,7 @@ ApiResponse ApiClient::parse_response(const std::string& body) {
                 }
             }
         }
-
         resp.stop_reason = root->get_string("stop_reason");
-
-        // Token usage — including prompt cache fields
         auto usage = root->get("usage");
         if (usage && usage->is_object()) {
             resp.input_tokens          = usage->get_int("input_tokens");
@@ -311,48 +463,88 @@ ApiResponse ApiClient::parse_response(const std::string& body) {
             resp.cache_read_tokens     = usage->get_int("cache_read_input_tokens");
             resp.cache_creation_tokens = usage->get_int("cache_creation_input_tokens");
         }
-
         resp.ok = true;
     } catch (const std::exception& e) {
         resp.ok    = false;
         resp.error = std::string("Parse error: ") + e.what();
     }
-
     return resp;
 }
 
-// Retryable error types — rate limit and transient overload.
+ApiResponse ApiClient::parse_body_openai(const std::string& body) {
+    ApiResponse resp;
+    resp.raw_body = body;
+    try {
+        auto root = json_parse(body);
+        auto err = root->get("error");
+        if (err && err->is_object()) {
+            resp.ok         = false;
+            resp.error_type = err->get_string("type");
+            resp.error      = err->get_string("message", "Unknown API error");
+            return resp;
+        }
+        // choices[0].message.content — single assistant turn, we ignore n>1.
+        auto choices = root->get("choices");
+        if (choices && choices->is_array() && !choices->as_array().empty()) {
+            auto& ch0 = choices->as_array().front();
+            if (ch0) {
+                auto msg = ch0->get("message");
+                if (msg) resp.content = msg->get_string("content");
+                resp.stop_reason = ch0->get_string("finish_reason");
+            }
+        }
+        // Usage is optional on openai-compat servers.  Ollama reports it.
+        auto usage = root->get("usage");
+        if (usage && usage->is_object()) {
+            resp.input_tokens  = usage->get_int("prompt_tokens");
+            resp.output_tokens = usage->get_int("completion_tokens");
+        }
+        resp.ok = true;
+    } catch (const std::exception& e) {
+        resp.ok    = false;
+        resp.error = std::string("Parse error: ") + e.what();
+    }
+    return resp;
+}
+
+// ─── Retry policy ────────────────────────────────────────────────────────────
+
 static bool is_retryable(const std::string& error_type) {
     return error_type == "rate_limit_error" || error_type == "overloaded_error";
 }
 
+// ─── Blocking complete() ─────────────────────────────────────────────────────
+
 ApiResponse ApiClient::complete(const ApiRequest& req) {
     static const int kMaxAttempts = 4;
+    const Provider& prov = provider_for(req.model);
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (attempt > 0) {
-            // Exponential backoff outside the mutex: 1s, 2s, 4s
-            usleep((1 << (attempt - 1)) * 1000000);
-        }
+        if (attempt > 0) usleep((1 << (attempt - 1)) * 1000000);
 
         ApiResponse resp;
         bool threw = false;
 
         {
             std::lock_guard<std::mutex> lock(conn_mutex_);
+            Conn& c = conns_[prov.name];
             try {
-                if (!ensure_connection()) {
+                if (!ensure_connection(prov, c)) {
                     ApiResponse r;
                     r.ok    = false;
-                    r.error = last_conn_error_.empty() ? "Connection failed" : last_conn_error_;
+                    r.error = c.last_error.empty() ? "Connection failed" : c.last_error;
                     return r;
                 }
-                std::string body = build_request_body(req, false);
-                send_request(body, false, !req.advisor_model.empty());
-                std::string raw = read_response(false, nullptr);
-                resp = parse_response(raw);
+                std::string body = (prov.format == Provider::FORMAT_ANTHROPIC)
+                                   ? build_body_anthropic(req, false)
+                                   : build_body_openai(req, false);
+                send_request(prov, c, body, false, !req.advisor_model.empty());
+                std::string raw = read_response(c);
+                resp = (prov.format == Provider::FORMAT_ANTHROPIC)
+                       ? parse_body_anthropic(raw)
+                       : parse_body_openai(raw);
             } catch (...) {
-                close_connection();
+                close_connection(c);
                 threw = true;
             }
         }
@@ -373,11 +565,7 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
             return resp;
         }
 
-        // Non-retryable error — return immediately
-        if (!is_retryable(resp.error_type) || attempt >= kMaxAttempts - 1) {
-            return resp;
-        }
-        // Otherwise loop with backoff
+        if (!is_retryable(resp.error_type) || attempt >= kMaxAttempts - 1) return resp;
     }
 
     ApiResponse r;
@@ -386,17 +574,19 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     return r;
 }
 
-// ─── SSE helpers ─────────────────────────────────────────────────────────────
+// ─── Streaming ───────────────────────────────────────────────────────────────
 
-static void process_sse_event(const std::string& data,
-                              std::string& content,
-                              ApiResponse& resp,
-                              StreamCallback cb) {
+// Anthropic event-stream: `event: <type>\ndata: <json>\n\n`.  We key off the
+// JSON's "type" field rather than the event: line — same information, and
+// message_start / message_delta carry token usage.
+static void process_anthropic_event(const std::string& data,
+                                     std::string& content,
+                                     ApiResponse& resp,
+                                     StreamCallback cb) {
     if (data.empty() || data == "[DONE]") return;
     try {
         auto root = json_parse(data);
         std::string type = root->get_string("type");
-
         if (type == "content_block_delta") {
             auto delta = root->get("delta");
             if (delta && delta->get_string("type") == "text_delta") {
@@ -425,21 +615,64 @@ static void process_sse_event(const std::string& data,
             if (err) resp.error = err->get_string("message", "Stream error");
         }
     } catch (...) {
-        // Ignore malformed SSE events
+        // Malformed SSE payloads are skipped silently.
     }
 }
 
-ApiResponse ApiClient::read_streaming_response(StreamCallback cb) {
+// OpenAI-compat chunk: `data: {..., "choices":[{"delta":{"content":"…"}}]}`
+// and a terminating `data: [DONE]`.  Token usage shows up in the final chunk
+// when `stream_options.include_usage` is set — Ollama emits it by default.
+static void process_openai_event(const std::string& data,
+                                  std::string& content,
+                                  ApiResponse& resp,
+                                  StreamCallback cb) {
+    if (data.empty() || data == "[DONE]") return;
+    try {
+        auto root = json_parse(data);
+        auto err = root->get("error");
+        if (err && err->is_object()) {
+            resp.ok         = false;
+            resp.error_type = err->get_string("type");
+            resp.error      = err->get_string("message", "Stream error");
+            return;
+        }
+        auto choices = root->get("choices");
+        if (choices && choices->is_array() && !choices->as_array().empty()) {
+            auto& ch0 = choices->as_array().front();
+            if (ch0) {
+                auto delta = ch0->get("delta");
+                if (delta) {
+                    std::string text = delta->get_string("content");
+                    if (!text.empty()) {
+                        content += text;
+                        if (cb) cb(text);
+                    }
+                }
+                std::string finish = ch0->get_string("finish_reason");
+                if (!finish.empty()) resp.stop_reason = finish;
+            }
+        }
+        auto usage = root->get("usage");
+        if (usage && usage->is_object()) {
+            resp.input_tokens  = usage->get_int("prompt_tokens");
+            resp.output_tokens = usage->get_int("completion_tokens");
+        }
+    } catch (...) {
+        // Ignore malformed chunk.
+    }
+}
+
+ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
+                                                 Provider::Format fmt) {
     ApiResponse resp;
     resp.ok = true;
     std::string content;
 
-    // Read HTTP headers byte-by-byte
     std::string headers;
     {
         char ch;
         while (true) {
-            int n = SSL_read(ssl_, &ch, 1);
+            int n = conn_recv(c, &ch, 1);
             if (n <= 0) { resp.ok = false; resp.error = "Connection closed reading headers"; return resp; }
             headers += ch;
             if (headers.size() >= 4 &&
@@ -447,19 +680,20 @@ ApiResponse ApiClient::read_streaming_response(StreamCallback cb) {
         }
     }
 
-    // Non-200 responses are JSON error bodies, not SSE streams — parse them directly.
     int http_status = parse_http_status(headers);
     if (http_status != 200) {
-        std::string body = read_response_body(ssl_, headers);
-        close_connection();
-        return parse_response(body.empty()
-            ? "{\"error\":{\"type\":\"http_error\",\"message\":\"HTTP " + std::to_string(http_status) + "\"}}"
-            : body);
+        std::string body = read_response_body(c, headers);
+        close_connection(c);
+        if (body.empty())
+            body = "{\"error\":{\"type\":\"http_error\",\"message\":\"HTTP "
+                   + std::to_string(http_status) + "\"}}";
+        return (fmt == Provider::FORMAT_ANTHROPIC)
+               ? parse_body_anthropic(body)
+               : parse_body_openai(body);
     }
 
     bool chunked = headers.find("Transfer-Encoding: chunked") != std::string::npos;
 
-    // Line buffer for SSE event reassembly across chunk boundaries
     std::string line_buf;
     char buf[4096];
 
@@ -468,7 +702,10 @@ ApiResponse ApiClient::read_streaming_response(StreamCallback cb) {
         if (line.size() > 6 && line.substr(0, 6) == "data: ") {
             std::string data = line.substr(6);
             if (!data.empty() && data.back() == '\r') data.pop_back();
-            process_sse_event(data, content, resp, cb);
+            if (fmt == Provider::FORMAT_ANTHROPIC)
+                process_anthropic_event(data, content, resp, cb);
+            else
+                process_openai_event(data, content, resp, cb);
         }
     };
 
@@ -485,10 +722,9 @@ ApiResponse ApiClient::read_streaming_response(StreamCallback cb) {
 
     if (chunked) {
         while (!cancelled_.load()) {
-            // Read chunk size line
             std::string size_line;
             while (true) {
-                int n = SSL_read(ssl_, buf, 1);
+                int n = conn_recv(c, buf, 1);
                 if (n <= 0 || cancelled_.load()) goto stream_done;
                 if (buf[0] == '\n') break;
                 if (buf[0] != '\r') size_line += buf[0];
@@ -500,14 +736,14 @@ ApiResponse ApiClient::read_streaming_response(StreamCallback cb) {
             while (read_so_far < chunk_size) {
                 if (cancelled_.load()) goto stream_done;
                 int to_read = std::min(chunk_size - read_so_far, (int)sizeof(buf));
-                int n = SSL_read(ssl_, buf, to_read);
+                int n = conn_recv(c, buf, to_read);
                 if (n <= 0) goto stream_done;
                 feed(buf, n);
                 read_so_far += n;
             }
-            SSL_read(ssl_, buf, 2);  // trailing \r\n
+            conn_recv(c, buf, 2);  // trailing \r\n
         }
-        if (!cancelled_.load()) SSL_read(ssl_, buf, 2);  // final \r\n
+        if (!cancelled_.load()) conn_recv(c, buf, 2);
     } else {
         int content_length = -1;
         auto cl_pos = headers.find("Content-Length: ");
@@ -515,7 +751,7 @@ ApiResponse ApiClient::read_streaming_response(StreamCallback cb) {
             content_length = std::atoi(headers.c_str() + cl_pos + 16);
         int read_so_far = 0;
         while ((content_length < 0 || read_so_far < content_length) && !cancelled_.load()) {
-            int n = SSL_read(ssl_, buf, sizeof(buf));
+            int n = conn_recv(c, buf, sizeof(buf));
             if (n <= 0) break;
             feed(buf, n);
             read_so_far += n;
@@ -529,31 +765,32 @@ stream_done:
 }
 
 ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
-    cancelled_.store(false);  // clear any prior interrupt before starting
+    cancelled_.store(false);
     static const int kMaxAttempts = 3;
+    const Provider& prov = provider_for(req.model);
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (attempt > 0) {
-            // Brief backoff between retries (only safe if no content was sent yet).
-            usleep((1 << (attempt - 1)) * 1000000);
-        }
+        if (attempt > 0) usleep((1 << (attempt - 1)) * 1000000);
 
         ApiResponse resp;
         bool threw = false;
 
         {
             std::lock_guard<std::mutex> lock(conn_mutex_);
+            Conn& c = conns_[prov.name];
             try {
-                if (!ensure_connection()) {
+                if (!ensure_connection(prov, c)) {
                     resp.ok    = false;
-                    resp.error = last_conn_error_.empty() ? "Connection failed" : last_conn_error_;
+                    resp.error = c.last_error.empty() ? "Connection failed" : c.last_error;
                 } else {
-                    std::string body = build_request_body(req, true);
-                    send_request(body, true, !req.advisor_model.empty());
-                    resp = read_streaming_response(cb);
+                    std::string body = (prov.format == Provider::FORMAT_ANTHROPIC)
+                                       ? build_body_anthropic(req, true)
+                                       : build_body_openai(req, true);
+                    send_request(prov, c, body, true, !req.advisor_model.empty());
+                    resp = read_streaming_response(c, cb, prov.format);
                 }
             } catch (const std::exception& e) {
-                close_connection();
+                close_connection(c);
                 threw = true;
                 resp.ok    = false;
                 resp.error = std::string("Stream error: ") + e.what();
@@ -566,14 +803,14 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
             return resp;
         }
 
-        // Only retry if no content reached the caller (avoids duplicate output).
         bool can_retry = resp.content.empty() &&
                          (threw || is_retryable(resp.error_type));
-        if (!can_retry || attempt >= kMaxAttempts - 1) {
-            return resp;
-        }
+        if (!can_retry || attempt >= kMaxAttempts - 1) return resp;
 
-        close_connection();  // force fresh connection on retry
+        {
+            std::lock_guard<std::mutex> lock(conn_mutex_);
+            close_connection(conns_[prov.name]);
+        }
     }
 
     ApiResponse r;

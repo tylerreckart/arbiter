@@ -58,6 +58,14 @@ private:
     AgentStats stats_;
     std::string context_summary_;
     CompactCallback compact_cb_;
+
+    // Concat continuation turns onto `resp` until the model actually finishes
+    // (stop_reason != "max_tokens") or a cap is hit.  Pushes partial assistant
+    // + "continue" prompts into history_ during the loop and pops them before
+    // returning so the caller can commit a single merged assistant turn.
+    // `cb` may be null — null triggers the blocking client_.complete() path,
+    // non-null triggers client_.stream() so additional chunks flow through.
+    void continue_until_done(ApiResponse& resp, StreamCallback cb);
 };
 
 } // namespace index_ai

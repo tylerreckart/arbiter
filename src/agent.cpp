@@ -26,6 +26,59 @@ static constexpr size_t kAutoCompactAt  = 20;
 static constexpr size_t kHardTrimAt     = 28;
 static constexpr int    kKeepAfterTrim  = 16;
 
+void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
+    // Long responses hit the per-turn max_tokens ceiling and stop mid-sentence
+    // (or worse, mid-/write block).  We feed the partial back as the assistant
+    // turn, ask "continue", and concatenate until the model finishes cleanly.
+    // The caller sees one merged response and one merged assistant history
+    // entry — the intermediate partials are pushed here and popped before we
+    // return so history stays clean.
+    static constexpr int kMaxContinues = 3;
+    static const std::string kContinuePrompt =
+        "Continue exactly where you left off mid-generation.  Do NOT repeat "
+        "anything already written.  Do NOT add preamble, headers, or "
+        "acknowledgements.  Pick up at the exact character where the previous "
+        "response was cut off — even mid-word or mid-line — and keep going "
+        "until the response is genuinely complete.";
+
+    int continues = 0;
+    while (resp.ok && resp.stop_reason == "max_tokens" && continues < kMaxContinues) {
+        ++continues;
+
+        history_.push_back(Message{"assistant", resp.content});
+        history_.push_back(Message{"user", kContinuePrompt});
+
+        ApiRequest req;
+        req.model         = config_.model;
+        req.system_prompt = config_.build_system_prompt();
+        req.max_tokens    = config_.max_tokens;
+        req.temperature   = config_.temperature;
+        req.messages      = inject_summary(context_summary_, history_);
+        req.advisor_model = config_.advisor_model;
+
+        ApiResponse more = cb ? client_.stream(req, cb) : client_.complete(req);
+
+        history_.pop_back();   // remove continue prompt
+        history_.pop_back();   // remove partial assistant
+
+        if (!more.ok) {
+            // Keep whatever we already accumulated; stop_reason stays
+            // "max_tokens" so the caller knows the response is unfinished,
+            // and resp.error surfaces the continuation failure.
+            resp.error = more.error.empty() ? "continuation failed"
+                                            : "continuation failed: " + more.error;
+            break;
+        }
+
+        resp.content               += more.content;
+        resp.input_tokens          += more.input_tokens;
+        resp.output_tokens         += more.output_tokens;
+        resp.cache_read_tokens     += more.cache_read_tokens;
+        resp.cache_creation_tokens += more.cache_creation_tokens;
+        resp.stop_reason            = more.stop_reason;
+    }
+}
+
 ApiResponse Agent::send(const std::string& user_message) {
     // Auto-compact before adding the new message so the summary reflects the
     // complete prior conversation, not a half-appended state.
@@ -58,6 +111,8 @@ ApiResponse Agent::send(const std::string& user_message) {
     auto resp = client_.complete(req);
 
     if (resp.ok) {
+        continue_until_done(resp, nullptr);
+
         // Tombstone: if the user message we just sent was a large [TOOL RESULTS]
         // block, compress it in history now that the agent has processed it.
         // The agent's response already incorporates those results; carrying the
@@ -111,6 +166,8 @@ ApiResponse Agent::stream(const std::string& user_message, StreamCallback cb) {
     auto resp = client_.stream(req, cb);
 
     if (resp.ok) {
+        continue_until_done(resp, cb);
+
         static constexpr size_t kTombstoneThreshold = 4096;
         if (!history_.empty()) {
             auto& last_user = history_.back();

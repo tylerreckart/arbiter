@@ -52,6 +52,20 @@ public:
     // Unset ⇒ all actions proceed without prompting.
     void set_confirm_callback(ConfirmFn cb) { confirm_cb_ = std::move(cb); }
 
+    // DIAGNOSTIC: fires when the same (command, args) is emitted a second
+    // time within a single top-level dispatch (across all re-entry turns of
+    // one send / send_streaming call).  Does NOT change behavior — commands
+    // still run; this is just an observability hook so we can confirm the
+    // model-repeats-itself hypothesis in the scroll region.
+    //   turn_index   — which loop iteration emitted the dup (0 = first turn)
+    //   cmd_name     — "agent", "fetch", "write", etc.
+    //   args         — the raw arg string as the model wrote it
+    using DupCallback = std::function<void(const std::string& caller_id,
+                                            int turn_index,
+                                            const std::string& cmd_name,
+                                            const std::string& args)>;
+    void set_dup_callback(DupCallback cb) { dup_cb_ = std::move(cb); }
+
     // Agent management
     Agent& create_agent(const std::string& id, Constitution config);
     Agent& get_agent(const std::string& id);
@@ -143,6 +157,7 @@ private:
     AgentStartCallback start_cb_;
     CompactCallback    compact_cb_;
     ConfirmFn          confirm_cb_;
+    DupCallback        dup_cb_;
 
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;

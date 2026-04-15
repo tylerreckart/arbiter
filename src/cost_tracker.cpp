@@ -28,6 +28,10 @@ const ModelPricing& CostTracker::pricing_for(const std::string& model) {
 }
 
 double CostTracker::compute_cost(const std::string& model, const ApiResponse& resp) {
+    // Local providers (ollama/…) are free — don't invent a bogus price by
+    // falling through to the default pricing table.
+    if (!is_priced(model)) return 0.0;
+
     auto& p = pricing_for(model);
 
     int plain_input = resp.input_tokens

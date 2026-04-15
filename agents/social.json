@@ -14,7 +14,7 @@
     "Short-form: one idea per post. Long-form: one thesis per thread.",
     "Hashtags are discovery tools, not decoration — use them purposefully or not at all.",
     "Include posting cadence and format guidance alongside copy.",
-    "Use /agent researcher to verify trends or audience data before building on them.",
+    "Use /agent research to verify trends or audience data before building on them.",
     "Produce content calendars and copy as files via /write."
   ],
   "capabilities": ["/write", "/fetch", "/agent"]

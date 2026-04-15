@@ -172,7 +172,7 @@ static std::string writer_prompt() {
         "  The user cannot save terminal output. /write is the only way to deliver work.\n"
         "  /write <path> followed by full content, closed by /endwrite on its own line.\n"
         "- To inspect a codebase before writing docs: use /exec to read files and structure.\n"
-        "- To gather facts before writing: use /agent researcher <query> or /fetch <url>.\n"
+        "- To gather facts before writing: use /agent research <query> or /fetch <url>.\n"
         "- To preserve an outline or draft across sessions: use /mem write.\n";
 }
 
@@ -186,7 +186,7 @@ static std::string planner_prompt() {
         "PLANNING METHODOLOGY:\n"
         "1. Inspect the environment first. Use /exec to read project structure, "
         "check git state, list files, or run any command that reveals relevant constraints.\n"
-        "2. Gather missing domain knowledge. Use /agent researcher <query> or /fetch <url> "
+        "2. Gather missing domain knowledge. Use /agent research <query> or /fetch <url> "
         "if the task requires external facts before a plan can be formed.\n"
         "3. Produce the plan. Write it to a file with /write. Never just display it.\n"
         "4. Execute Phase 1 immediately if instructed. Otherwise, stop after the plan file.\n\n"
@@ -210,7 +210,7 @@ static std::string planner_prompt() {
         "  Known unknowns and failure modes with mitigations.\n\n"
 
         "AGENT ASSIGNMENTS — map each phase to the right agent:\n"
-        "  researcher  — facts, URLs, competitive analysis, domain knowledge\n"
+        "  research  — facts, URLs, competitive analysis, domain knowledge\n"
         "  reviewer    — code review, defect analysis, PR feedback\n"
         "  writer      — essays, READMEs, docs, PRDs, reports (always produces a file)\n"
         "  devops      — shell, git, Docker, CI/CD, build systems, infra\n"
@@ -291,7 +291,7 @@ Constitution master_constitution() {
         // Routing
         "Read the AVAILABLE AGENTS block at the top of each query. Route based on agent role and goal.",
         "Route based on what is being requested:",
-        "  - Research, facts, URLs, competitive analysis → /agent researcher",
+        "  - Research, facts, URLs, competitive analysis → /agent research",
         "  - Code review, defect analysis, PR feedback → /agent reviewer",
         "  - Essays, READMEs, docs, PRDs, reports, creative writing → /agent writer",
         "  - Shell commands, git, Docker, CI/CD, infra → /agent devops",
@@ -318,14 +318,14 @@ Constitution master_constitution() {
         "  4. VERBATIM — URLs, file paths, identifiers, code snippets, quoted text to preserve unchanged.",
         "  5. CONTEXT — prior findings from earlier agents in this pipeline, if any.",
         "  6. SUCCESS — what makes this done (e.g. 'file exists at X', 'N sources cited', 'builds clean').",
-        "Example — instead of '/agent researcher what is X', use: "
-        "'/agent researcher GOAL: gather facts on X for a technical audience. "
+        "Example — instead of '/agent research what is X', use: "
+        "'/agent research GOAL: gather facts on X for a technical audience. "
         "FORMAT: bulleted list with sources. CONSTRAINTS: focus on Y and Z, skip marketing fluff. "
         "SUCCESS: at least 5 sources with publication dates and confidence levels.'",
 
         // Pipeline composition
         "Compose pipelines for complex tasks. Chain sequentially — each step feeds the next. Examples:",
-        "  - 'Write a research report on X' → /agent researcher (gather facts) → "
+        "  - 'Write a research report on X' → /agent research (gather facts) → "
         "    /agent writer (draft using those facts, with /write to produce the file)",
         "  - 'Audit and document this codebase' → /agent devops (inspect structure) → "
         "    /agent reviewer (find issues) → /agent writer (write docs using both outputs)",

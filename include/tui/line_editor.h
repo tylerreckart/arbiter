@@ -6,7 +6,7 @@
 // called from its blocking readline(), interposing a PTY breaks the internal
 // cursor-tracking state, and echo silently fails under our TUI layout.  The
 // editor below handles what we actually need: printable inserts, backspace,
-// arrow navigation, history, tab completion, and forwards mouse / page-scroll
+// arrow navigation, history, tab completion, and forwards PgUp/PgDn scroll
 // events to the caller.
 //
 // Threading model: read_line() is called on the main thread and blocks there
@@ -43,8 +43,8 @@ public:
     void add_to_history(const std::string& line);
     void set_max_history(int n) { max_history_ = n; }
 
-    // Mouse-wheel and PgUp/PgDn events.  direction: -1 = scroll up (toward
-    // older content), +1 = scroll down.  step is measured in visual rows.
+    // PgUp/PgDn scroll events.  direction: -1 = scroll up (toward older
+    // content), +1 = scroll down.  step is measured in visual rows.
     using ScrollHandler = std::function<void(int direction, int step)>;
     void set_scroll_handler(ScrollHandler fn) { scroll_handler_ = std::move(fn); }
 

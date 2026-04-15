@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <map>
 
 namespace index_ai {
 
@@ -62,10 +63,16 @@ bool is_destructive_exec(const std::string& cmd);
 // suitable for feeding back to the agent.
 // agent_invoker: optional — if provided, /agent commands are dispatched through it.
 // confirm:       optional — gates /write (always) and destructive /exec.
+// dedup_cache:   optional — keyed by (cmd|args[|content-hash]); when a command
+//                repeats within the same cache, the second call is NOT dispatched;
+//                instead a synthetic DUPLICATE block is emitted quoting the prior
+//                result.  Caller owns the map and should clear/reset it between
+//                independent top-level user requests.
 std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    const std::string& agent_id,
                                    const std::string& memory_dir,
                                    AgentInvoker agent_invoker = nullptr,
-                                   ConfirmFn    confirm       = nullptr);
+                                   ConfirmFn    confirm       = nullptr,
+                                   std::map<std::string, std::string>* dedup_cache = nullptr);
 
 } // namespace index_ai

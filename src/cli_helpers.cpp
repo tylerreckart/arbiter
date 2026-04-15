@@ -19,6 +19,7 @@ namespace fs = std::filesystem;
 namespace index_ai {
 
 const char* BANNER =
+    "\n"
     "                   iiii              iiii                   \n"
     "                 iiiiiiii          iiiiiiii                 \n"
     "               iiiiiiiiiiii      iiiiiiiiiiii               \n"

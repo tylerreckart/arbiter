@@ -387,19 +387,6 @@ bool LineEditor::read_line(const std::string& prompt, std::string& out) {
                 while (true) {
                     int b3;
                     if (!read_byte_timed(b3, 50)) break;
-                    if (b3 == 'M') {
-                        // X10 mouse: 3 more bytes follow (btn, col, row).
-                        int bb, xx, yy;
-                        if (!read_byte_timed(bb, 50)) break;
-                        if (!read_byte_timed(xx, 50)) break;
-                        if (!read_byte_timed(yy, 50)) break;
-                        int btn = bb - 32;
-                        if ((btn & 64) && scroll_handler_) {
-                            int dir = (btn & 1) ? +1 : -1;
-                            scroll_handler_(dir, 3);
-                        }
-                        break;
-                    }
                     if ((b3 >= '0' && b3 <= '9') || b3 == ';') {
                         params += (char)b3;
                         continue;

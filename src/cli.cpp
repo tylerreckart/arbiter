@@ -61,7 +61,7 @@ void cmd_init() {
     }
     {
         Constitution c;
-        c.name         = "researcher";
+        c.name         = "research";
         c.role         = "research-analyst";
         c.brevity      = Brevity::Lite;
         c.model        = "claude-haiku-4-5-20251001";
@@ -76,9 +76,25 @@ void cmd_init() {
             "Separate what is known from what is inferred.",
             "When uncertain, state it plainly.",
             "Prefer primary sources. Verify claims with /fetch before stating them as fact.",
+
+            // Advisor usage — you are a Haiku-tier executor with an Opus advisor
+            // available.  Consulting costs an extra API call at Opus rates, so
+            // use it sparingly on the questions that actually reward the spend.
+            "Consult the advisor when: synthesizing contradictory sources and you need "
+            "to adjudicate which to weight; deciding what primary sources to seek for a "
+            "novel topic; building a taxonomy or framework that will structure the rest "
+            "of the research; judging whether a claim is supported well enough to state "
+            "as fact rather than inference; or when confidence across gathered evidence "
+            "is genuinely mixed and the answer hinges on nuance.",
+            "Do NOT consult the advisor for: single-fact lookups, URL fetches, rephrasing, "
+            "formatting the report, or any question you can resolve from one primary source. "
+            "If you already know the answer with high confidence, state it — don't escalate.",
+            "Budget: at most 2 advisor consults per turn. If you find yourself wanting a "
+            "third, the task is probably under-scoped — report what you have and flag the "
+            "open questions rather than consulting again.",
         };
         c.capabilities = {"/fetch", "/mem", "/agent"};
-        c.save(agents_dir + "/researcher.json");
+        c.save(agents_dir + "/research.json");
     }
     {
         Constitution c;
@@ -137,7 +153,7 @@ void cmd_init() {
                         "Never skips steps. Assigns each phase to the right specialist.";
         c.rules = {
             "Inspect the environment with /exec before writing any plan that touches code or files.",
-            "Gather missing domain knowledge with /agent researcher before planning unfamiliar territory.",
+            "Gather missing domain knowledge with /agent research before planning unfamiliar territory.",
             "Write the plan to a file — default: plan.md. Never just display it.",
             "Each phase task description must be self-contained: include end goal, output format, file path.",
             "Mark which phases can run in parallel and which are sequential.",
@@ -214,7 +230,7 @@ void cmd_init() {
             "Define the target audience and their pain before anything else.",
             "Lead with value, not features. Benefits, not specs.",
             "Every claim needs evidence or should be framed as a hypothesis.",
-            "Use /agent researcher to validate market data before building strategy on it.",
+            "Use /agent research to validate market data before building strategy on it.",
             "Tailor tone and channel to the audience segment — B2B copy is not B2C copy.",
             "Produce deliverables as files via /write — briefs, copy, strategy docs.",
             "Include success metrics for every campaign or strategy you propose.",
@@ -241,7 +257,7 @@ void cmd_init() {
             "Short-form: one idea per post. Long-form: one thesis per thread.",
             "Hashtags are discovery tools, not decoration — use them purposefully or not at all.",
             "Include posting cadence and format guidance alongside copy.",
-            "Use /agent researcher to verify trends or audience data before building on them.",
+            "Use /agent research to verify trends or audience data before building on them.",
             "Produce content calendars and copy as files via /write.",
         };
         c.capabilities = {"/write", "/fetch", "/agent"};
@@ -250,7 +266,7 @@ void cmd_init() {
 
     std::cout << "Example agents created in " << agents_dir << "/\n";
     std::cout << "  reviewer.json   — code review (ultra)\n";
-    std::cout << "  researcher.json — research analyst (haiku + opus advisor)\n";
+    std::cout << "  research.json — research analyst (haiku + opus advisor)\n";
     std::cout << "  devops.json     — infrastructure (full)\n";
     std::cout << "  writer.json     — essays, docs, READMEs, creative writing\n";
     std::cout << "  planner.json    — task decomposition, phased execution plans\n";

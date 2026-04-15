@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -142,6 +144,13 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
 
     auto invoker = make_invoker(agent_id, depth);
 
+    // Per-dispatch dedup cache.  Shared with execute_agent_commands which
+    // consults it to short-circuit repeated (cmd, args) pairs — a same-turn
+    // second call is replaced by a synthetic DUPLICATE block that quotes the
+    // prior result, so the model is told "you already ran this, adapt" rather
+    // than given the chance to burn tokens on an identical re-dispatch.
+    std::map<std::string, std::string> dedup_cache;
+
     ApiResponse resp;
     static constexpr int kMaxTurns = 6;
     for (int i = 0; i < kMaxTurns; ++i) {
@@ -161,8 +170,21 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         auto cmds = parse_agent_commands(resp.content);
         if (cmds.empty()) break;
 
+        // Surface each duplicate in the REPL before we dispatch.  The cache
+        // entry is added by execute_agent_commands on the first invocation,
+        // so its presence here means this command ran earlier in this loop.
+        if (dup_cb_) {
+            for (const auto& c : cmds) {
+                std::string key = c.name + "|" + c.args;
+                if (c.name == "write")
+                    key += "|" + std::to_string(std::hash<std::string>{}(c.content));
+                if (dedup_cache.count(key)) dup_cb_(agent_id, i, c.name, c.args);
+            }
+        }
+
         resp.had_tool_calls = true;
-        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_, invoker, confirm_cb_);
+        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
+                                              invoker, confirm_cb_, &dedup_cache);
     }
 
     return resp;
@@ -195,17 +217,42 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
 
     auto invoker = make_invoker(agent_id, 0);
 
+    // Per-dispatch dedup cache — see send_internal for full rationale.  We
+    // surface duplicates via dup_cb_ right before each batch dispatches so
+    // the REPL can log them; execute_agent_commands then replaces the repeat
+    // with a DUPLICATE block that quotes the prior result.
+    std::map<std::string, std::string> dedup_cache;
+    auto dedup_key_for = [](const AgentCommand& c) {
+        std::string k = c.name + "|" + c.args;
+        if (c.name == "write")
+            k += "|" + std::to_string(std::hash<std::string>{}(c.content));
+        return k;
+    };
+    if (dup_cb_) {
+        for (const auto& c : cmds) {
+            if (dedup_cache.count(dedup_key_for(c))) dup_cb_(agent_id, 0, c.name, c.args);
+        }
+    }
+
     // Tool-call re-entry turns: stream each so the user can follow progress
     resp.had_tool_calls = true;
     static constexpr int kMaxReentryTurns = 5;
     for (int i = 0; i < kMaxReentryTurns; ++i) {
         cb("\n");
-        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_, invoker, confirm_cb_);
+        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
+                                              invoker, confirm_cb_, &dedup_cache);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) return resp;
         cmds = parse_agent_commands(resp.content);
         if (cmds.empty()) break;
         resp.had_tool_calls = true;
+
+        if (dup_cb_) {
+            for (const auto& c : cmds) {
+                // turn index is i+1 because the first turn is the pre-loop one
+                if (dedup_cache.count(dedup_key_for(c))) dup_cb_(agent_id, i + 1, c.name, c.args);
+            }
+        }
     }
 
     return resp;

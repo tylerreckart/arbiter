@@ -104,6 +104,19 @@ public:
     // Clear only the "N queued" indicator without disturbing an active spinner.
     void clear_queue_indicator();
 
+    // One-shot welcome card painted into the middle of the scroll region on
+    // cold starts (no session to restore).  Box + hello text on the left,
+    // 3-line ASCII sigil on the right.  Pushes the rendered card into the
+    // given scroll buffer so it's part of scrollback, and paints at the top
+    // of the live scroll region so it's visible before any output arrives.
+    void draw_welcome(ScrollBuffer& history);
+
+    // Blank every row in the scroll region.  Used to dismiss the welcome
+    // card the moment the user sends their first message — the REPL also
+    // clears the backing ScrollBuffer so the card doesn't come back on the
+    // next PgUp.  Doesn't touch chrome (header/footer/input).
+    void clear_scroll_region();
+
     int cols() const { return cols_; }
     int input_top_row_pub() const { return input_top_row(); }
     int input_bottom_row_pub() const { return input_row(); }

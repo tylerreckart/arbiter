@@ -163,7 +163,7 @@ static void cmd_interactive() {
         const char* rst      = "\033[0m";
         int cols = tui.cols();
 
-        std::string label = agent_id + " (sub)";
+        std::string label = "\033[38;5;214m" + agent_id + "\033[38;5;238m (sub)";
         int fill = std::max(0, cols - 4 - (int)label.size() - 2);
         std::string rule = std::string(dim_rule) + "── " + label + " ";
         for (int i = 0; i < fill; ++i) rule += "─";
@@ -217,6 +217,22 @@ static void cmd_interactive() {
     orch.set_compact_callback([&tui](const std::string& agent_id, size_t n) {
         tui.set_status(agent_id + ": compacting context (" +
                        std::to_string(n) + " msgs)");
+    });
+
+    // Diagnostic: log when the same tool command is emitted more than once
+    // within a single top-level dispatch.  Purely observational — the
+    // orchestrator still runs every command the model writes; this tells us
+    // whether the "/agent dispatched twice" symptom is the model repeating
+    // itself (expected to fire) vs a real dispatch bug (should never fire).
+    orch.set_dup_callback([&output_queue](const std::string& caller_id,
+                                            int turn_index,
+                                            const std::string& cmd_name,
+                                            const std::string& args) {
+        std::string msg = "\033[38;5;214m[dup] ";
+        msg += caller_id + " turn " + std::to_string(turn_index)
+             + ": /" + cmd_name + " " + args;
+        msg += "\033[0m\n";
+        output_queue.push(msg);
     });
 
     // ── Confirm dialog for destructive agent actions ──────────────────────
@@ -694,7 +710,7 @@ static void cmd_interactive() {
                 iss >> id >> model;
                 if (id.empty() || model.empty()) {
                     output_queue.push("Usage: /model <agent-id> <model-id>\n");
-                    output_queue.push("  e.g. /model researcher claude-haiku-4-5-20251001\n");
+                    output_queue.push("  e.g. /model research claude-haiku-4-5-20251001\n");
                     return;
                 }
                 try {
@@ -775,7 +791,7 @@ static void cmd_interactive() {
                     "\n"
                     "  /quit                            — exit\n"
                     "\n"
-                    "Plain text sends to current agent.\n");
+                    "Plain text sends to current agent.\n\n");
                 return;
             }
 
@@ -824,15 +840,21 @@ static void cmd_interactive() {
     // ── Main readline loop ──────────────────────────────────────────────────
     std::string multiline_accum;           // accumulated prefix from backslash continuation
 
-    // Scroll history back-buffer: bounded, visual-row-aware.  PgUp/PgDn and
-    // the mouse wheel adjust scroll_offset (in VISUAL rows); offset=0 is live.
+    // Scroll history back-buffer: bounded, visual-row-aware.  PgUp/PgDn
+    // adjust scroll_offset (in VISUAL rows); offset=0 is live.
     index_ai::ScrollBuffer history;
     history.set_cols(tui.cols());
     int scroll_offset      = 0;   // visual rows above the tail (0 = live view)
     int new_while_scrolled = 0;   // visual rows accumulated while scrolled back
 
-    // ── Wire filtered_getc as readline's character source ──────────────────
-    // All input classification (mouse, scroll, ESC interrupt, output draining,
+    // Welcome card — always shown at startup, whether or not a session was
+    // restored.  Rendered into history so it's part of scrollback, and
+    // painted live so it's visible before any prompt input.  Dismissed the
+    // moment the user sends their first message (see `welcome_visible` in
+    // the REPL loop) so it doesn't linger in scrollback alongside real work.
+    tui.draw_welcome(history);
+    bool welcome_visible = true;
+
     // ── State exposed to getc_flush_output (called by the pump thread) ────
     g_getc_state.output_queue       = &output_queue;
     g_getc_state.tui                = &tui;
@@ -844,8 +866,8 @@ static void cmd_interactive() {
     g_getc_state.multiline_accum    = &multiline_accum;
 
     // ── Scroll/cancel handlers for the line editor ─────────────────────────
-    // The editor reads stdin itself; when it sees a mouse-wheel or PgUp/PgDn
-    // event it defers the actual scrollback update to us via these callbacks.
+    // The editor reads stdin itself; when it sees a PgUp/PgDn event it
+    // defers the actual scrollback update to us via these callbacks.
     auto apply_scroll = [&](int direction, int step) {
         int max_off = history.total_visual_rows();
         if (direction < 0) {
@@ -883,6 +905,11 @@ static void cmd_interactive() {
                 g_winch = 0;
                 tui.resize();
                 history.set_cols(tui.cols());
+                // resize() cleared the screen and only redrew chrome — repaint
+                // the scroll region from history so the welcome card + any
+                // prior output survives terminal resizes (incl. the implicit
+                // SIGWINCH some emulators fire on initial attach).
+                tui.render_scrollback(history, scroll_offset, new_while_scrolled);
             }
             getc_flush_output();
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -950,8 +977,8 @@ static void cmd_interactive() {
             ? tui.build_prompt()
             : "\001\033[38;5;241m\002…\001\033[0m\002 ";
 
-        // LineEditor owns stdin while reading.  Mouse / page-scroll events
-        // are dispatched to our scroll handler and don't return from here;
+        // LineEditor owns stdin while reading.  Page-scroll events are
+        // dispatched to our scroll handler and don't return from here;
         // Enter returns with the full line, Ctrl-D on an empty buffer
         // returns false (treated as EOF below).
         std::string line;
@@ -995,6 +1022,18 @@ static void cmd_interactive() {
                 cmd_queue.drain();
                 break;
             }
+        }
+
+        // First real message dismisses the welcome card — clear both the
+        // scroll buffer (so PgUp doesn't resurrect it) and the on-screen
+        // scroll region (so the user's echo starts on a blank canvas rather
+        // than appearing below the card).
+        if (welcome_visible) {
+            welcome_visible = false;
+            history.clear();
+            scroll_offset      = 0;
+            new_while_scrolled = 0;
+            tui.clear_scroll_region();
         }
 
         // Echo the user's prompt into the scroll region so it persists in the

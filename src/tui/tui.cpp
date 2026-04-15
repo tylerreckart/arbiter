@@ -22,7 +22,10 @@ void TUI::init(const std::string& agent,
 
     std::printf("\033[?1049h");   // enter alternate screen
     std::printf("\033[2J");       // clear
-    std::printf("\033[?1000h");   // enable X10 mouse reporting
+    // NOTE: X10 mouse reporting is intentionally NOT enabled.  Capturing
+    // mouse events disables native text selection in the terminal, and being
+    // able to copy output matters more than wheel-scrolling our scroll region.
+    // PgUp / PgDn drive the scroll handler from the keyboard instead.
     set_scroll_region();
     std::fflush(stdout);
     draw_header();
@@ -46,6 +49,8 @@ void TUI::resize() {
 }
 
 void TUI::shutdown() {
+    // Belt-and-suspenders: if a prior version (or a misbehaving terminal)
+    // left mouse reporting on, turn it back off before leaving alt-screen.
     std::printf("\033[?1000l");
     std::printf("\033[?1049l");
     std::fflush(stdout);
@@ -220,8 +225,9 @@ void TUI::draw_header_locked() {
 
 void TUI::draw_footer_hint() {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    static constexpr const char* kLeft  = "esc \033[2minterrupt\033[0m";
-    static constexpr int         kLeftVis  = 4 + 9;
+    static constexpr const char* kLeft  = "esc \033[2minterrupt\033[0m  "
+                                          "pgup/dn \033[2mscroll\033[0m";
+    static constexpr int         kLeftVis  = 4 + 9 + 2 + 8 + 6;
     static constexpr const char* kRight = "/agents \033[2mlist agents\033[0m  "
                                           "/help \033[2mlist commands\033[0m";
     static constexpr int         kRightVis = 8 + 11 + 2 + 6 + 13;
@@ -233,6 +239,164 @@ void TUI::draw_footer_hint() {
     std::printf("\033[%d;1H\033[2K", pad_row());
     std::printf("%s%*s%s", kLeft, pad, "", kRight);
     std::printf("\033[0m\0338");
+    std::fflush(stdout);
+}
+
+// ─── Scroll-region utilities ─────────────────────────────────────────────────
+
+void TUI::clear_scroll_region() {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    std::printf("\0337");                                 // save cursor
+    for (int r = kHeaderRows + 1; r <= last_scroll_row(); ++r) {
+        std::printf("\033[%d;1H\033[2K", r);              // goto row, clear line
+    }
+    std::printf("\0338");                                 // restore cursor
+    std::fflush(stdout);
+}
+
+// ─── Welcome card ────────────────────────────────────────────────────────────
+
+void TUI::draw_welcome(ScrollBuffer& history) {
+    // Agent sigil (3 terminal-cell-wide rows).  Chars are single-width block
+    // glyphs so visible width == glyph count per row == 8.
+    static const char* kArt[3] = {
+        " \u2593\u2588\u2588\u2588\u2588\u2593 ",   //  ▓████▓
+        "\u2591\u2592 \u2588\u2588 \u2592\u2591",   // ░▒ ██ ▒░
+        " \u2593\u2588\u2588\u2588\u2588\u2593 ",   //  ▓████▓
+    };
+    static constexpr int kArtCells = 8;
+
+    // Greeting in index's own voice — the administrator of this roster.
+    // ASCII-only punctuation: em-dashes (U+2014) have ambiguous East-Asian
+    // Width and render as 2 cells in some terminals, which would push
+    // content rows past the box's right border.  Periods, colons, and
+    // semicolons cover the pacing without that hazard.
+    static const char* kText[3] = {
+        "hello, i'm index. this system's orchestrator.",
+        "describe a task; i'll route it to the right specialist.",
+        "what would you like to accompplish today?",
+    };
+
+    // Cell width, not byte count — so em-dashes and middots don't skew the
+    // right-border alignment.  Treats each non-continuation UTF-8 byte as
+    // one terminal cell (good enough for dashes, middots, and block glyphs).
+    auto cell_w = [](const char* s) {
+        int w = 0;
+        for (const unsigned char* p = (const unsigned char*)s; *p; ++p) {
+            if ((*p & 0xC0) != 0x80) ++w;   // skip continuation bytes
+        }
+        return w;
+    };
+
+    int text_w = 0;
+    for (auto* t : kText) { int w = cell_w(t); if (w > text_w) text_w = w; }
+
+    // Two-column interior: [pad sigil pad] │ [pad text pad]
+    static constexpr int kPadL = 2, kDivGapL = 2;   // sigil column padding
+    static constexpr int kDivGapR = 2, kPadR = 2;   // text  column padding
+    int art_col_w  = kPadL + kArtCells + kDivGapL;
+    int text_col_w = kDivGapR + text_w + kPadR;
+    int inner      = art_col_w + 1 /*divider*/ + text_col_w;
+    int box_w      = inner + 2;
+    int margin     = std::max(0, (cols_ - box_w) / 2);
+    std::string left_pad(margin, ' ');
+
+    const char* DIM = "\033[2m";
+    const char* RST = "\033[0m";
+
+    auto border = [&](const char* l_corner, const char* junction, const char* r_corner) {
+        std::string s = left_pad;
+        s += DIM;
+        s += l_corner;
+        for (int i = 0; i < art_col_w;  ++i) s += "\u2500";    // ─
+        s += junction;
+        for (int i = 0; i < text_col_w; ++i) s += "\u2500";
+        s += r_corner;
+        s += RST;
+        s += "\n";
+        return s;
+    };
+    auto blank_row = [&]() {
+        std::string s = left_pad;
+        s += DIM;
+        s += "\u2502";                                     // │
+        s += std::string(art_col_w,  ' ');
+        s += "\u2502";                                     // divider │
+        s += std::string(text_col_w, ' ');
+        s += "\u2502";
+        s += RST;
+        s += "\n";
+        return s;
+    };
+
+    // Bottom border with the project version inset in the lower-right —
+    // the border's ─ run is replaced by " v<version> " near the right corner
+    // so it reads like a tag stamped onto the frame.  Falls back to the
+    // uniform border if the version string can't fit without collision.
+    auto bottom_with_version = [&](const char* version) {
+        const int right_margin = 2;   // dashes between version and ╯
+        std::string tag = " v";
+        tag += version;
+        tag += " ";
+        int tag_w = cell_w(tag.c_str());
+        int fill_left = text_col_w - tag_w - right_margin;
+        if (fill_left < 1) {
+            // No room for the inset; fall back to a clean corner.
+            return border("\u2570", "\u2534", "\u256F");
+        }
+        std::string s = left_pad;
+        s += DIM;
+        s += "\u2570";                                     // ╰
+        for (int i = 0; i < art_col_w; ++i) s += "\u2500";
+        s += "\u2534";                                     // ┴
+        for (int i = 0; i < fill_left;  ++i) s += "\u2500";
+        s += tag;
+        for (int i = 0; i < right_margin; ++i) s += "\u2500";
+        s += "\u256F";                                     // ╯
+        s += RST;
+        s += "\n";
+        return s;
+    };
+
+    std::string card;
+    card += border("\u256D", "\u252C", "\u256E");          // ╭ ┬ ╮
+    card += blank_row();
+    for (int i = 0; i < 3; ++i) {
+        std::string s = left_pad;
+        s += DIM; s += "\u2502"; s += RST;                 // left border
+        s += std::string(kPadL, ' ');
+        s += kArt[i];
+        s += std::string(kDivGapL, ' ');
+        s += DIM; s += "\u2502"; s += RST;                 // divider
+        s += std::string(kDivGapR, ' ');
+        s += kText[i];
+        s += std::string(text_w - cell_w(kText[i]) + kPadR, ' ');
+        s += DIM; s += "\u2502"; s += RST;                 // right border
+        s += "\n";
+        card += s;
+    }
+    card += blank_row();
+#ifdef INDEX_VERSION
+    card += bottom_with_version(INDEX_VERSION);
+#else
+    card += border("\u2570", "\u2534", "\u256F");
+#endif
+
+    // Vertically center in the scroll region.  Prepend blank lines so the
+    // card lands mid-region rather than flush to the top; once the user
+    // starts sending messages, new output scrolls the card up naturally.
+    int card_h = 7;  // top border + blank + 3 content + blank + bottom border
+    int lead   = std::max(0, (scroll_region_rows() - card_h) / 2);
+    std::string pre(lead, '\n');
+    std::string full = pre + card;
+
+    history.push(full);
+
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    std::printf("\0337");
+    std::printf("\033[%d;1H", kHeaderRows + 1);  // top of scroll region
+    std::fwrite(full.data(), 1, full.size(), stdout);
+    std::printf("\0338");
     std::fflush(stdout);
 }
 
