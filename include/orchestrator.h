@@ -16,7 +16,9 @@ class Orchestrator {
 public:
     explicit Orchestrator(const std::string& api_key);
 
-    // Set directory used for agent memory files (default: ~/.index/memory).
+    // Set directory used for agent memory files.  The REPL passes the
+    // cwd-scoped path from get_memory_dir(); the default below is a harmless
+    // fallback for callers (tests, --send one-shots) that forget to set it.
     void set_memory_dir(const std::string& dir) { memory_dir_ = dir; }
 
     // Optional callback fired after each sub-agent turn (depth > 0).
@@ -38,6 +40,17 @@ public:
     // Use to show a "working..." indicator in the UI.
     using AgentStartCallback = std::function<void(const std::string& agent_id)>;
     void set_agent_start_callback(AgentStartCallback cb);
+
+    // Fired when an agent auto-compacts its context.  Wired to every managed
+    // agent (master + existing + future) so newly-loaded agents also report.
+    using CompactCallback = Agent::CompactCallback;
+    void set_compact_callback(CompactCallback cb);
+
+    // Gatekeeper for destructive agent actions — /write (always) and /exec
+    // when the command matches a destructive pattern.  Called on the exec
+    // thread; implementations must be thread-safe vs the main REPL thread.
+    // Unset ⇒ all actions proceed without prompting.
+    void set_confirm_callback(ConfirmFn cb) { confirm_cb_ = std::move(cb); }
 
     // Agent management
     Agent& create_agent(const std::string& id, Constitution config);
@@ -128,6 +141,8 @@ private:
     ProgressCallback   progress_cb_;
     CostCallback       cost_cb_;
     AgentStartCallback start_cb_;
+    CompactCallback    compact_cb_;
+    ConfirmFn          confirm_cb_;
 
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;

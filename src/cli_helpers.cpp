@@ -86,9 +86,11 @@ std::string get_config_dir() {
 }
 
 std::string get_memory_dir() {
-    std::string dir = get_config_dir() + "/memory";
-    fs::create_directories(dir);
-    return dir;
+    // Memory is cwd-scoped: agents never see notes from other projects.
+    // The directory is created lazily by the writers (cmd_mem_write etc.) —
+    // don't auto-create on every resolve or we'd scatter empty .index/memory
+    // folders into every cwd that happens to launch the binary.
+    return (fs::current_path() / ".index" / "memory").string();
 }
 
 void write_memory(const std::string& agent_id, const std::string& text) {

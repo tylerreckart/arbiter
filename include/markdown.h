@@ -21,6 +21,11 @@ public:
 private:
     std::string line_buf_;
     bool        in_code_block_ = false;
+    // Models often open with a leading blank line; the REPL already pushes a
+    // "\n" pad before the stream, so emitting another produces a double gap
+    // under the user's prompt.  Swallow leading empty lines until the first
+    // non-empty content arrives.
+    bool        seen_content_  = false;
 
     std::string process_line(const std::string& line);
 };

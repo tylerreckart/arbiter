@@ -31,6 +31,7 @@
 #include "tui/scroll_buffer.h"
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -69,8 +70,10 @@ public:
     void draw_sep();
 
     // Reset the input area to 1 row, redraw separator, park the cursor ready
-    // for readline.  queued > 0 shows "N queued" in the status bar.
-    void begin_input(int queued = 0);
+    // for readline.  `pending_fn`, if provided, is queried under tty_mu_ so the
+    // queue count is atomic with the status-bar repaint — passing a stale int
+    // races with the exec thread popping and would leave "N queued" stuck.
+    void begin_input(std::function<int()> pending_fn = {});
 
     // Grow the input area to `needed` rows (clamped to kMaxInputRows) when
     // readline's buffer has wrapped to another visual line.
@@ -103,6 +106,8 @@ public:
 
     int cols() const { return cols_; }
     int input_top_row_pub() const { return input_top_row(); }
+    int input_bottom_row_pub() const { return input_row(); }
+    int input_rows() const { return input_rows_; }
 
     // Thread-safe: called from the async title-generation thread.
     void set_title(const std::string& title);

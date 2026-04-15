@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake:*)",
+      "Bash(python3:*)",
+      "Bash(grep -E \"\\\\.\\(json|ts|js|py\\)$\")",
+      "Bash(make)",
+      "Bash(wc:*)",
+      "Bash(awk 'NR<760 || NR>1093' src/main.cpp)",
+      "Bash(grep -n \"^#if 0\\\\|^#endif$\" /Users/tyler/dev/claudius/src/main.cpp)",
+      "Bash(awk 'NR<54 || NR>351' src/main.cpp)",
+      "Bash(/Users/tyler/dev/claudius/build/claudius --help)",
+      "Bash(grep -n \"^class TUI\\\\|^class ThinkingIndicator\\\\|^};$\\\\|g_winch\\\\|sigwinch\" /Users/tyler/dev/claudius/src/main.cpp)",
+      "Bash(awk 'NR<145 || NR>288' /Users/tyler/dev/claudius/src/main.cpp)",
+      "Bash(find include:*)",
+      "Bash(./build/index --help)"
+    ]
+  }
+}

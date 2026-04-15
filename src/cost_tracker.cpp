@@ -1,4 +1,4 @@
-// index_ai/src/cost_tracker.cpp — Token usage and cost estimation
+// index_ai/src/cost_tracker.cpp
 
 #include "cost_tracker.h"
 #include <sstream>
@@ -7,7 +7,7 @@
 namespace index_ai {
 
 // ─── Pricing table ───────────────────────────────────────────────────────────
-// Prices per million tokens. Source: Anthropic list pricing, April 2026.
+// https://platform.claude.com/docs/en/about-claude/pricing
 
 static const struct {
     const char* prefix;

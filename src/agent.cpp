@@ -30,8 +30,7 @@ ApiResponse Agent::send(const std::string& user_message) {
     // Auto-compact before adding the new message so the summary reflects the
     // complete prior conversation, not a half-appended state.
     if (history_.size() >= kAutoCompactAt) {
-        fprintf(stderr, "[%s] auto-compacting context (%zu msgs)\n",
-                id_.c_str(), history_.size());
+        if (compact_cb_) compact_cb_(id_, history_.size());
         compact();
     }
 
@@ -88,8 +87,7 @@ ApiResponse Agent::send(const std::string& user_message) {
 
 ApiResponse Agent::stream(const std::string& user_message, StreamCallback cb) {
     if (history_.size() >= kAutoCompactAt) {
-        fprintf(stderr, "[%s] auto-compacting context (%zu msgs)\n",
-                id_.c_str(), history_.size());
+        if (compact_cb_) compact_cb_(id_, history_.size());
         compact();
     }
 

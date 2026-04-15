@@ -95,23 +95,48 @@ int LineEditor::visible_width(std::string_view s) const {
 
 void LineEditor::redraw() {
     std::lock_guard<std::recursive_mutex> lk(tui_.tty_mutex());
-    // \r moves cursor to column 1 of the current row.  \033[K clears from
-    // cursor to end of line.  Then we re-emit prompt + buffer.
-    std::fputs("\r\033[K", stdout);
+
+    // Wrap-aware redraw.  The naive "\r\033[K" approach only clears the
+    // current row, so once the buffer wrapped to a second line, old wrapped
+    // text ghosted below the new prompt.  Instead: expand the input area to
+    // fit the wrapped content, clear every row in it, reprint from the top,
+    // then place the cursor using absolute row/col arithmetic.
+    int cols = tui_.cols();
+    if (cols <= 0) cols = 80;
+
+    int total_vis   = prompt_cols_ + visible_width(buffer_);
+    // +1 row so the cursor has somewhere to sit when the buffer fills an
+    // entire row exactly (cursor-at-end wraps to the next line).
+    int needed_rows = std::max(1, (total_vis + cols) / cols);
+    tui_.grow_input(needed_rows);
+
+    int top = tui_.input_top_row_pub();
+    int bot = tui_.input_bottom_row_pub();
+    for (int r = top; r <= bot; ++r)
+        std::printf("\033[%d;1H\033[2K", r);
+
+    std::printf("\033[%d;1H", top);
     std::fwrite(prompt_.data(), 1, prompt_.size(), stdout);
     std::fwrite(buffer_.data(), 1, buffer_.size(), stdout);
-    // Move cursor back to insertion point.
-    int tail = visible_width(std::string_view(buffer_).substr(cursor_));
-    if (tail > 0) std::printf("\033[%dD", tail);
+
+    int cursor_vis = prompt_cols_ + visible_width(std::string_view(buffer_).substr(0, cursor_));
+    int cursor_row = top + (cursor_vis / cols);
+    int cursor_col = (cursor_vis % cols) + 1;
+    std::printf("\033[%d;%dH", cursor_row, cursor_col);
+
     std::fflush(stdout);
 }
 
 void LineEditor::move_cursor_to_insertion() {
-    // Same idea without a full redraw — we only use this after a move_*.
+    // No redraw — just place the cursor at the right wrapped row/col.
     std::lock_guard<std::recursive_mutex> lk(tui_.tty_mutex());
-    std::fputs("\r", stdout);
-    int col = prompt_cols_ + visible_width(std::string_view(buffer_).substr(0, cursor_));
-    if (col > 0) std::printf("\033[%dC", col);
+    int cols = tui_.cols();
+    if (cols <= 0) cols = 80;
+    int top = tui_.input_top_row_pub();
+    int cursor_vis = prompt_cols_ + visible_width(std::string_view(buffer_).substr(0, cursor_));
+    int cursor_row = top + (cursor_vis / cols);
+    int cursor_col = (cursor_vis % cols) + 1;
+    std::printf("\033[%d;%dH", cursor_row, cursor_col);
     std::fflush(stdout);
 }
 

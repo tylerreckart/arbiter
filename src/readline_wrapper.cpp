@@ -1,4 +1,4 @@
-// index/src/readline_wrapper.cpp — readline / libedit wrapper
+// index/src/readline_wrapper.cpp
 
 #include "readline_wrapper.h"
 
@@ -18,7 +18,7 @@
 
 namespace index_ai {
 
-// ─── Global state (readline uses C callbacks) ────────────────────────────────
+// ─── Global state ────────────────────────────────
 
 #ifdef INDEX_AI_HAS_READLINE
 static CompletionProvider g_provider;

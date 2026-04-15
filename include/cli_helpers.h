@@ -4,7 +4,8 @@
 // Covers:
 //   • BANNER — ASCII startup banner
 //   • agent_color — stable per-agent ANSI color
-//   • Config path helpers (~/.index, ~/.index/memory, API key resolution)
+//   • Config path helpers (~/.index for config, $PWD/.index/memory for memory,
+//     API key resolution)
 //   • Thin wrappers around index_ai::cmd_mem_* and cmd_fetch so the REPL
 //     doesn't have to thread memory_dir through every call site
 //   • term_cols / term_rows — terminal dimensions via TIOCGWINSZ
@@ -22,7 +23,8 @@ std::string agent_color(const std::string& agent_id);
 // ~/.index (created if missing).
 std::string get_config_dir();
 
-// ~/.index/memory (created if missing).
+// $PWD/.index/memory — cwd-scoped so context never bleeds between projects.
+// Not auto-created on resolve; writers create lazily when notes are first saved.
 std::string get_memory_dir();
 
 // ANTHROPIC_API_KEY env var, else ~/.index/api_key.

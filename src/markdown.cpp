@@ -145,9 +145,7 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
     // Empty line
     if (line.empty()) return line;
 
-    // Agent-issued command lines (/fetch, /exec, /agent, /write, /mem, /endwrite).
-    // Rendered in dim amber with a right-arrow prefix so they are clearly
-    // system actions, not user input or prose.
+    // Agent-issued command lines (/fetch, /exec, /agent, /write, /mem, /endwrite)
     if (!line.empty() && line[0] == '/') {
         static const char* kCmdPrefixes[] = {
             "/fetch ", "/exec ", "/agent ", "/write ", "/mem ", "/endwrite", nullptr
@@ -155,7 +153,7 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
         for (auto** p = kCmdPrefixes; *p; ++p) {
             size_t plen = strlen(*p);
             if (line.size() >= plen && line.substr(0, plen) == *p) {
-                return fg(172) + std::string(DIM) + "> " + line + fg(252) + RST;
+                return fg(172) + std::string(DIM) + "> " + line + fg(252) + RST + "\n";
             }
         }
     }
@@ -231,6 +229,10 @@ std::string MarkdownRenderer::feed(const std::string& chunk) {
     std::string result;
     for (char c : chunk) {
         if (c == '\n') {
+            // Drop leading blank lines — the REPL already padded below the
+            // user prompt, so echoing another blank would stack them.
+            if (!seen_content_ && line_buf_.empty()) continue;
+            seen_content_ = true;
             result += process_line(line_buf_);
             result += '\n';
             line_buf_.clear();
@@ -251,6 +253,7 @@ std::string MarkdownRenderer::flush() {
 void MarkdownRenderer::reset() {
     line_buf_.clear();
     in_code_block_ = false;
+    seen_content_  = false;
 }
 
 // ─── Convenience: full-document render ───────────────────────────────────────

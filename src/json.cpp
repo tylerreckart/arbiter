@@ -2,6 +2,7 @@
 #include "json.h"
 #include <cctype>
 #include <charconv>
+#include <cstdint>
 #include <cstring>
 
 namespace index_ai {
@@ -10,26 +11,67 @@ namespace index_ai {
 // Serializer
 // ============================================================
 
+// Emit U+FFFD (REPLACEMENT CHARACTER, EF BF BD) for any byte sequence that
+// isn't valid strict UTF-8.  The Anthropic API rejects surrogate-range
+// encodings and malformed sequences outright, so letting arbitrary bytes
+// through (e.g. from /exec on a binary file) fails the whole request.
+static void emit_replacement(std::ostringstream& os) {
+    os << "\xEF\xBF\xBD";
+}
+
 static void escape_string(std::ostringstream& os, const std::string& s) {
     os << '"';
-    for (char c : s) {
-        switch (c) {
-            case '"':  os << "\\\""; break;
-            case '\\': os << "\\\\"; break;
-            case '\b': os << "\\b";  break;
-            case '\f': os << "\\f";  break;
-            case '\n': os << "\\n";  break;
-            case '\r': os << "\\r";  break;
-            case '\t': os << "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
-                    os << buf;
-                } else {
-                    os << c;
-                }
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(s.data());
+    size_t n = s.size();
+    size_t i = 0;
+    while (i < n) {
+        unsigned char c = p[i];
+        if (c == '"')       { os << "\\\""; ++i; continue; }
+        if (c == '\\')      { os << "\\\\"; ++i; continue; }
+        if (c == '\b')      { os << "\\b";  ++i; continue; }
+        if (c == '\f')      { os << "\\f";  ++i; continue; }
+        if (c == '\n')      { os << "\\n";  ++i; continue; }
+        if (c == '\r')      { os << "\\r";  ++i; continue; }
+        if (c == '\t')      { os << "\\t";  ++i; continue; }
+        if (c < 0x20) {
+            char buf[8];
+            std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
+            os << buf;
+            ++i;
+            continue;
         }
+        // UTF-8 validation.  Determine expected sequence length from the
+        // leading byte; verify the required continuation bytes; reject
+        // overlong encodings and surrogate-range code points (U+D800..DFFF).
+        if (c < 0x80) {                // 1-byte ASCII
+            os << static_cast<char>(c);
+            ++i;
+            continue;
+        }
+        int need;
+        uint32_t cp;
+        uint32_t min_cp;
+        if      ((c & 0xE0) == 0xC0) { need = 1; cp = c & 0x1F; min_cp = 0x80; }
+        else if ((c & 0xF0) == 0xE0) { need = 2; cp = c & 0x0F; min_cp = 0x800; }
+        else if ((c & 0xF8) == 0xF0) { need = 3; cp = c & 0x07; min_cp = 0x10000; }
+        else                         { emit_replacement(os); ++i; continue; }
+
+        if (i + need >= n) { emit_replacement(os); ++i; continue; }
+        bool ok = true;
+        for (int k = 1; k <= need; ++k) {
+            unsigned char cc = p[i + k];
+            if ((cc & 0xC0) != 0x80) { ok = false; break; }
+            cp = (cp << 6) | (cc & 0x3F);
+        }
+        if (!ok || cp < min_cp || cp > 0x10FFFF ||
+            (cp >= 0xD800 && cp <= 0xDFFF)) {
+            emit_replacement(os);
+            ++i;
+            continue;
+        }
+        // Valid — emit the original bytes verbatim.
+        for (int k = 0; k <= need; ++k) os << static_cast<char>(p[i + k]);
+        i += need + 1;
     }
     os << '"';
 }

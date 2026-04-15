@@ -48,12 +48,24 @@ void        cmd_mem_shared_clear(const std::string& memory_dir);
 // returns the sub-agent's response text or an "ERR: ..." string.
 using AgentInvoker = std::function<std::string(const std::string&, const std::string&)>;
 
+// Gatekeeper for potentially-destructive operations.  Given a human-readable
+// prompt (e.g. "write agents/foo.md?"), returns true to proceed, false to
+// abort.  If unset, every guarded command runs without prompting.
+using ConfirmFn = std::function<bool(const std::string& prompt)>;
+
+// True if `cmd` matches a pattern we always want to confirm before exec'ing
+// (rm, rm -rf, redirects, sudo, mkfs, git force-push, find -delete, etc.).
+// Conservative — misses creative destruction, but catches the common footguns.
+bool is_destructive_exec(const std::string& cmd);
+
 // Execute a parsed command list and return a [TOOL RESULTS] message
 // suitable for feeding back to the agent.
 // agent_invoker: optional — if provided, /agent commands are dispatched through it.
+// confirm:       optional — gates /write (always) and destructive /exec.
 std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    const std::string& agent_id,
                                    const std::string& memory_dir,
-                                   AgentInvoker agent_invoker = nullptr);
+                                   AgentInvoker agent_invoker = nullptr,
+                                   ConfirmFn    confirm       = nullptr);
 
 } // namespace index_ai

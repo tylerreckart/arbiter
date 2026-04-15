@@ -1,6 +1,3 @@
-// index/src/main.cpp — Entry point
-// Modes: interactive CLI, server (remote access), one-shot command
-//
 // Usage:
 //   index                          — interactive REPL
 //   index --serve [--port 9077]    — start TCP server
@@ -31,6 +28,8 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <future>
+#include <mutex>
 #include <sstream>
 #include <ctime>
 #include <cstdio>
@@ -63,16 +62,6 @@ using index_ai::CommandQueue;
 using index_ai::OutputQueue;
 using index_ai::LoopManager;
 
-// ─── Filtered getc — the one character-source hook that works in both ────────
-// GNU readline and libedit.  Every character readline reads goes through here,
-// giving us a clean place to:
-//   • drain async exec output to the TUI scroll region
-//   • handle SIGWINCH
-//   • intercept X10 mouse events (scroll wheel) and PgUp/PgDn
-//   • pass everything else straight through to readline
-//
-// Populated by cmd_interactive() before calling rl.set_getc_function().
-
 struct ReplGetcState {
     OutputQueue*              output_queue       = nullptr;
     TUI*                      tui                = nullptr;
@@ -83,13 +72,9 @@ struct ReplGetcState {
     index_ai::Orchestrator*   orch               = nullptr;
     std::string*              multiline_accum    = nullptr;
 };
+
 static ReplGetcState g_getc_state;
 
-// Write `s` to stdout, turning every '\n' into "\r\n".  Readline puts the
-// terminal in raw output mode, so a bare LF moves the cursor down without
-// resetting the column — the next character then lands on the next row at
-// whatever column we left off at, which for content longer than the scroll
-// region spills straight into the input rows.  Emitting CRLF fixes it.
 static void fwrite_crlf(const std::string& s) {
     size_t start = 0;
     for (size_t i = 0; i < s.size(); ++i) {
@@ -103,9 +88,6 @@ static void fwrite_crlf(const std::string& s) {
 }
 
 // Drain any pending exec output, record it in the scroll buffer, and render.
-// Uses ANSI save/restore so the cursor returns to where readline left it.
-// Takes TUI's tty mutex for the duration of any stdout write — pump thread,
-// exec thread, and main thread all reach stdout through here.
 static void getc_flush_output() {
     auto& S = g_getc_state;
     if (!S.output_queue || !S.history || !S.tui) return;
@@ -159,27 +141,22 @@ static void cmd_interactive() {
         snprintf(buf, sizeof(buf), "%08x", h);
         return buf;
     };
+    
     std::string sessions_dir = dir + "/sessions";
     fs::create_directories(sessions_dir);
     std::string session_path = sessions_dir + "/" + cwd_session_key() + ".json";
+    
     bool restored = orch.load_session(session_path);
 
-    std::cout << "\n";
-    if (restored)
-        std::cout << "\033[2mSession restored.\033[0m\n\n";
-    else
-        std::cout << "/help for commands\n\n";
     std::cout.flush();
 
     signal(SIGWINCH, sigwinch_handler);
 
     // Output queue: exec and loop threads push here; main thread flushes
-    // (with CRLF expansion) via getc_flush_output.  Defined ahead of the
-    // progress callback so that callback can route through it instead of
-    // writing to stdout directly — direct writes would skip the CRLF fix.
+    // (with CRLF expansion) via getc_flush_output.
     OutputQueue output_queue;
 
-    // Wire sub-agent progress: enqueue each sub-agent turn dimmed and indented.
+    // sub-agent progress
     orch.set_progress_callback([&tui, &output_queue](const std::string& agent_id,
                                                      const std::string& content) {
         const char* dim_rule = "\033[38;5;238m";
@@ -211,9 +188,6 @@ static void cmd_interactive() {
     index_ai::CostTracker tracker;
 
     // ── Raw stdin ──────────────────────────────────────────────────────────
-    // Our filter thread (below) owns stdin and reads byte-by-byte.  libedit's
-    // own terminal setup happens on the PTY slave, not on stdin, so its
-    // tcsetattr will not clobber these settings.
     struct termios orig_stdin_tm;
     bool stdin_is_tty = (::tcgetattr(STDIN_FILENO, &orig_stdin_tm) == 0);
     if (stdin_is_tty) {
@@ -226,10 +200,6 @@ static void cmd_interactive() {
     }
 
     // ── Line editor ────────────────────────────────────────────────────────
-    // We read and echo input ourselves — see include/tui/line_editor.h for
-    // why libedit is no longer in the interactive path.  ReadlineWrapper
-    // still owns history file I/O though, and we'll hand its contents to
-    // the editor below after they're loaded.
     index_ai::LineEditor editor(tui);
 
     // Record sub-agent token costs that bypass the top-level REPL handler.
@@ -239,9 +209,32 @@ static void cmd_interactive() {
         tracker.record(agent_id, model, resp);
     });
 
-    // Show which sub-agent is working in the status bar before each API call.
-    orch.set_agent_start_callback([&tui](const std::string& agent_id) {
-        tui.set_status(agent_id + ": thinking...");
+    orch.set_agent_start_callback([&thinking](const std::string& agent_id) {
+        thinking.start(agent_id + ": thinking");
+    });
+
+    // Surface auto-compact events in the header instead of leaking to stderr.
+    orch.set_compact_callback([&tui](const std::string& agent_id, size_t n) {
+        tui.set_status(agent_id + ": compacting context (" +
+                       std::to_string(n) + " msgs)");
+    });
+
+    // ── Confirm dialog for destructive agent actions ──────────────────────
+    struct ConfirmState {
+        std::mutex            mu;
+        std::string           prompt;
+        std::promise<bool>*   pending = nullptr;
+    } confirm_state;
+    orch.set_confirm_callback([&confirm_state, &editor](const std::string& p) -> bool {
+        std::promise<bool> done;
+        auto fut = done.get_future();
+        {
+            std::lock_guard<std::mutex> lk(confirm_state.mu);
+            confirm_state.prompt  = p;
+            confirm_state.pending = &done;
+        }
+        editor.interrupt();
+        return fut.get();
     });
 
     editor.set_max_history(1000);
@@ -363,6 +356,7 @@ static void cmd_interactive() {
                 std::getline(iss, msg);
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 try {
+                    output_queue.push("\n");
                     index_ai::MarkdownRenderer md;
                     auto resp = orch.send_streaming(id, msg,
                         [&md, &output_queue](const std::string& chunk) {
@@ -371,7 +365,7 @@ static void cmd_interactive() {
                         });
                     auto tail = md.flush();
                     if (!tail.empty()) output_queue.push(tail);
-                    output_queue.push("\n");
+                    output_queue.push("\n\n");
                     if (resp.ok) {
                         tracker.record(id, orch.get_agent_model(id), resp);
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
@@ -382,6 +376,7 @@ static void cmd_interactive() {
                 } catch (const std::exception& e) {
                     output_queue.push("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m\n");
                 }
+                thinking.stop();
                 return;
             }
             if (cmd == "ask") {
@@ -389,6 +384,7 @@ static void cmd_interactive() {
                 std::getline(iss, query);
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
                 try {
+                    output_queue.push("\n");
                     index_ai::MarkdownRenderer md;
                     auto resp = orch.send_streaming("index", query,
                         [&md, &output_queue](const std::string& chunk) {
@@ -397,7 +393,7 @@ static void cmd_interactive() {
                         });
                     auto tail = md.flush();
                     if (!tail.empty()) output_queue.push(tail);
-                    output_queue.push("\n");
+                    output_queue.push("\n\n");
                     if (resp.ok) {
                         tracker.record("index", orch.get_agent_model("index"), resp);
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
@@ -408,6 +404,7 @@ static void cmd_interactive() {
                 } catch (const std::exception& e) {
                     output_queue.push("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m\n");
                 }
+                thinking.stop();
                 return;
             }
             if (cmd == "create") {
@@ -456,7 +453,7 @@ static void cmd_interactive() {
                         output_queue.push("Nothing to compact: " + id + " has no history.\n");
                     } else {
                         output_queue.push(
-                            "\033[2m[compacted — context window cleared, summary held in session]\033[0m\n"
+                            "\n\033[2m[compacted — context window cleared, summary held in session]\033[0m\n"
                             "\033[2m" + summary + "\033[0m\n");
                     }
                 } catch (const std::exception& e) {
@@ -788,6 +785,7 @@ static void cmd_interactive() {
 
         // Plain text → stream to current agent
         try {
+            output_queue.push("\n");
             index_ai::MarkdownRenderer md;
             auto resp = orch.send_streaming(current_agent, line,
                 [&md, &output_queue](const std::string& chunk) {
@@ -796,7 +794,7 @@ static void cmd_interactive() {
                 });
             auto tail = md.flush();
             if (!tail.empty()) output_queue.push(tail);
-            output_queue.push("\n");
+            output_queue.push("\n\n");
             if (resp.ok) {
                 tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
                 tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
@@ -807,6 +805,7 @@ static void cmd_interactive() {
         } catch (const std::exception& e) {
             output_queue.push("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m\n");
         }
+        thinking.stop();
     };  // end handle lambda
 
     // Execution thread: drains the command queue serially.
@@ -823,7 +822,6 @@ static void cmd_interactive() {
     });
 
     // ── Main readline loop ──────────────────────────────────────────────────
-    bool        exit_warned    = false;
     std::string multiline_accum;           // accumulated prefix from backslash continuation
 
     // Scroll history back-buffer: bounded, visual-row-aware.  PgUp/PgDn and
@@ -863,7 +861,7 @@ static void cmd_interactive() {
     editor.set_cancel_handler([&]() {
         orch.cancel();
         multiline_accum.clear();
-        output_queue.push("\033[38;5;167m[interrupted]\033[0m\n");
+        output_queue.push("\n\033[38;5;167m[interrupted]\033[0m\n");
     });
 
     // ── Output pump ────────────────────────────────────────────────────────
@@ -892,8 +890,60 @@ static void cmd_interactive() {
         getc_flush_output();   // final drain on shutdown
     });
 
+    // Service a pending confirm request from the exec thread.  Returns true
+    // if one was handled (caller should loop back without treating read_line's
+    // return as EOF).  Called in TWO places: (a) before entering read_line,
+    // since editor.interrupt() can fire after the previous iteration returned
+    // but before we re-enter — read_line resets interrupt_flag_ on entry, so
+    // the interrupt would otherwise be lost; (b) after read_line returns
+    // false, for the case where the interrupt arrived DURING read_line.
+    auto service_confirm = [&]() -> bool {
+        std::promise<bool>* pending = nullptr;
+        std::string         conf_prompt;
+        {
+            std::lock_guard<std::mutex> lk(confirm_state.mu);
+            pending = confirm_state.pending;
+            conf_prompt = confirm_state.prompt;
+            confirm_state.pending = nullptr;
+        }
+        if (!pending) return false;
+
+        std::string rendered =
+            "\n\033[38;5;214m" + conf_prompt + " [y/N] \033[0m";
+        history.push(rendered);
+        {
+            std::lock_guard<std::recursive_mutex> lk(tui.tty_mutex());
+            printf("\0337");
+            printf("\033[%d;1H", tui.last_scroll_row());
+            fwrite_crlf(rendered);
+            printf("\0338");
+            fflush(stdout);
+        }
+        unsigned char ch = 0;
+        ssize_t n = ::read(STDIN_FILENO, &ch, 1);
+        bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
+        std::string answer = yes ? std::string("y\n\n") : std::string("n\n\n");
+        history.push(answer);
+        {
+            std::lock_guard<std::recursive_mutex> lk(tui.tty_mutex());
+            printf("\0337");
+            printf("\033[%d;1H", tui.last_scroll_row());
+            fwrite_crlf(answer);
+            printf("\0338");
+            fflush(stdout);
+        }
+        pending->set_value(yes);
+        return true;
+    };
+
     while (!quit_requested) {
-        tui.begin_input(cmd_queue.pending());
+        // Before entering read_line, check if the exec thread queued a
+        // confirm while we were away.  Handling it here closes the race
+        // where interrupt() fires between iterations and read_line's reset
+        // would swallow the flag.
+        while (service_confirm()) {}
+
+        tui.begin_input([&cmd_queue]() { return cmd_queue.pending(); });
 
         // Continuation prompt ("…") when accumulating a multi-line input.
         std::string prompt = multiline_accum.empty()
@@ -905,7 +955,10 @@ static void cmd_interactive() {
         // Enter returns with the full line, Ctrl-D on an empty buffer
         // returns false (treated as EOF below).
         std::string line;
-        if (!editor.read_line(prompt, line)) break;
+        if (!editor.read_line(prompt, line)) {
+            if (service_confirm()) continue;
+            break;   // real EOF
+        }
         if (quit_requested) break;
         if (!line.empty()) editor.add_to_history(line);
 
@@ -933,16 +986,15 @@ static void cmd_interactive() {
             if (lower == "exit" || lower == "quit" || lower == "q" ||
                 lower == "bye"  || lower == ":q"   ||
                 lower == "/quit"|| lower == "/exit" || lower == "/q") {
-                int waiting = cmd_queue.pending() + (cmd_queue.is_busy() ? 1 : 0);
-                if (waiting > 0 && !exit_warned) {
-                    output_queue.push("WARN: " + std::to_string(waiting) +
-                                      " command(s) in flight — type 'exit' again to force quit\n");
-                    exit_warned = true;
-                    continue;
-                }
+                // Always quit — cancel any in-flight work so the exec thread
+                // unblocks and join()s cleanly during shutdown.  ESC handles
+                // the "cancel without exiting" case; having exit ALSO require
+                // confirmation was redundant and trapped users behind a
+                // blocking agent call.
+                orch.cancel();
+                cmd_queue.drain();
                 break;
             }
-            exit_warned = false;
         }
 
         // Echo the user's prompt into the scroll region so it persists in the
@@ -960,7 +1012,7 @@ static void cmd_interactive() {
                 fflush(stdout);
             }
 
-            std::string echo = "\033[38;5;244m> \033[38;5;250m" + line + "\033[0m\n\n";
+            std::string echo = "\033[38;5;244m> \033[38;5;250m" + line + "\033[0m\n";
             history.push(echo);
             {
                 std::lock_guard<std::recursive_mutex> lk(tui.tty_mutex());

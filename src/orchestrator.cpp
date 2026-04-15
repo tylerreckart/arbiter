@@ -17,10 +17,8 @@ namespace index_ai {
 Orchestrator::Orchestrator(const std::string& api_key)
     : client_(api_key)
 {
-    // Default memory directory: ~/.index/memory
-    const char* home = std::getenv("HOME");
-    memory_dir_ = (home ? std::string(home) : std::string(".")) + "/.index/memory";
-
+    // Default memory directory is cwd-scoped ($PWD/.index/memory)
+    memory_dir_ = (fs::current_path() / ".index" / "memory").string();
     // Create master Index agent
     auto master = master_constitution();
     index_master_ = std::make_unique<Agent>("index", master, client_);
@@ -32,6 +30,7 @@ Agent& Orchestrator::create_agent(const std::string& id, Constitution config) {
         throw std::runtime_error("Agent already exists: " + id);
     }
     auto agent = std::make_unique<Agent>(id, std::move(config), client_);
+    if (compact_cb_) agent->set_compact_callback(compact_cb_);
     auto& ref = *agent;
     agents_[id] = std::move(agent);
     return ref;
@@ -82,8 +81,6 @@ void Orchestrator::load_agents(const std::string& dir) {
 }
 
 // Build an AgentInvoker that runs a sub-agent through the full dispatch loop.
-// Sub-agents receive their own tool access (/fetch, /exec, /write, /agent).
-// depth prevents runaway delegation chains (max 2 levels: index → agent → sub-agent).
 AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth) {
     if (depth >= 2) {
         return [](const std::string&, const std::string&) -> std::string {
@@ -121,7 +118,14 @@ void Orchestrator::set_agent_start_callback(AgentStartCallback cb) {
     start_cb_ = std::move(cb);
 }
 
-// Core agentic dispatch loop — used by both send() and sub-agent invocations.
+void Orchestrator::set_compact_callback(CompactCallback cb) {
+    compact_cb_ = std::move(cb);
+    if (index_master_) index_master_->set_compact_callback(compact_cb_);
+    std::lock_guard<std::mutex> lock(agents_mutex_);
+    for (auto& [_, a] : agents_) a->set_compact_callback(compact_cb_);
+}
+
+// Core agentic dispatch loop
 ApiResponse Orchestrator::send_internal(const std::string& agent_id,
                                         const std::string& message,
                                         int depth) {
@@ -158,7 +162,7 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         if (cmds.empty()) break;
 
         resp.had_tool_calls = true;
-        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_, invoker);
+        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_, invoker, confirm_cb_);
     }
 
     return resp;
@@ -196,7 +200,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     static constexpr int kMaxReentryTurns = 5;
     for (int i = 0; i < kMaxReentryTurns; ++i) {
         cb("\n");
-        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_, invoker);
+        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_, invoker, confirm_cb_);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) return resp;
         cmds = parse_agent_commands(resp.content);

@@ -12,17 +12,15 @@
   <img src="https://img.shields.io/github/tag/tylerreckart/index" alt="Current tag">
 </p>
 
+Index is a terminal-native multi-agent system built around token efficiency. Match the model to the task and pair cheap executors with smarter advisor models. It runs a full-screen TUI with a persistent header, a command queue so you can type while agents are working, and a depth-limited delegation chain that lets the master agent dispatch tasks to specialists.
+
 ![Screenshot of the Index TUI](./content/index_tui.png)
 
-Index is a terminal-native multi-agent system built around **token efficiency**: match the model to the task, pair cheap executors with smarter advisors, and pay Haiku rates for Opus-grade reasoning. It runs a full-screen TUI with a persistent header, a command queue so you can type while agents are working, and a depth-limited delegation chain that lets the master agent dispatch tasks to specialists. Built on raw TLS — no libcurl, no HTTP framework.
-
-### Why Index
-
-- **Model per agent, not per project.** Each agent declares its own model. Route prose to Sonnet, triage to Haiku, architecture to Opus — never overpay for a task.
-- **Advisor tooling.** A smaller executor (Haiku) drives the work while an advisor (Opus) weighs in mid-generation. Bulk token spend stays at the cheap-model rate; the expensive model only pays for the reasoning that actually needs it.
-- **Brevity as a first-class setting.** `lite` / `full` / `ultra` modes shape output length at the constitution level, so agents don't burn tokens on filler.
-- **Per-agent memory.** Persistent notes at `~/.index/memory/<agent>.md` keep context across sessions instead of rehydrating it into every prompt.
-- **Visibility.** `/tokens` breaks down usage and cost by agent so you can see where the spend is going.
+- Each agent declares its own model. Route prose to Sonnet, triage to Haiku, architecture to Opus — never overpay for a task.
+- A smaller executor (Haiku) drives the work while an advisor (Opus) weighs in mid-generation. Bulk token spend stays at the cheap-model rate; the expensive model only pays for the reasoning that actually needs it.
+- `lite` / `full` / `ultra` modes shape output length at the constitution level, so agents don't burn tokens on filler.
+- Persistent notes at `~/.index/memory/<agent>.md` keep context across sessions instead of rehydrating it into every prompt.
+- `/tokens` breaks down usage and cost by agent so you can see where the spend is going.
 
 > **Note:** Index is an experimental project. Changes to the architecture may break the experience. Agent constitutions and orchestration methods are currently subject to change. Index's `/exec` commands are currently un-sandboxed. Use at your own risk.
 

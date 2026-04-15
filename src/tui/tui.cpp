@@ -14,8 +14,6 @@ namespace index_ai {
 void TUI::init(const std::string& agent,
                const std::string& /*model*/,
                const std::string& color) {
-    // Unbuffer stdout so libedit's single-character echo appears immediately,
-    // instead of sitting in the line-buffer until the next \n.
     ::setvbuf(stdout, nullptr, _IONBF, 0);
 
     cols_ = term_cols();
@@ -40,7 +38,7 @@ void TUI::resize() {
     rows_ = term_rows();
     std::printf("\033[2J");
     set_scroll_region();
-    draw_header();         // redraws identity; current_status_ preserved
+    draw_header();
     draw_sep();
     erase_chrome_row(input_row());
     draw_footer_hint();
@@ -71,8 +69,9 @@ void TUI::draw_sep() {
     std::fflush(stdout);
 }
 
-void TUI::begin_input(int queued) {
+void TUI::begin_input(std::function<int()> pending_fn) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    int queued = pending_fn ? pending_fn() : 0;
     // Clear all rows the previous (possibly taller) input area might have
     // occupied, down to and including the last terminal row.
     int old_top = input_top_row();
@@ -85,21 +84,31 @@ void TUI::begin_input(int queued) {
     std::printf("\033[%d;1H\033[2K", input_top_row());
     std::printf("\033[%d;1H",        input_top_row());
     std::fflush(stdout);
+
     if (queued > 0) {
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%d queued", queued);
         set_status(buf);
         queue_indicator_shown_ = true;
+    } else if (queue_indicator_shown_) {
+        clear_status();
     }
 }
 
 void TUI::grow_input(int needed) {
-    needed = std::min(needed, kMaxInputRows);
-    if (needed <= input_rows_) return;
+    needed = std::max(1, std::min(needed, kMaxInputRows));
+    if (needed == input_rows_) return;
 
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    // Clear every row that was part of the input area under the old layout,
+    // AND every row that will be under the new layout.  That covers both the
+    // grow case (new rows reclaimed from scroll region, need to be blank)
+    // and the shrink case (rows we're releasing back to the scroll region
+    // shouldn't carry stale input text into the scroll view).
+    int old_top = input_top_row();
     int new_top = rows_ - kBottomPadRows - needed + 1;
-    for (int r = new_top; r <= input_row(); ++r)
+    int clear_top = std::min(old_top, new_top);
+    for (int r = clear_top; r <= input_row(); ++r)
         std::printf("\033[%d;1H\033[2K", r);
 
     input_rows_ = needed;
@@ -133,8 +142,6 @@ void TUI::render_scrollback(const ScrollBuffer& buf,
 void TUI::set_status(const std::string& msg) {
     current_status_ = msg;
     status_active_ = true;
-    // Header row 1 shows "status" on the right side when one is active, so
-    // re-rendering the header is how we paint (or clear) it.
     draw_header();
 }
 
@@ -180,26 +187,23 @@ void TUI::draw_header() {
 }
 
 void TUI::draw_header_locked() {
-    // Left: " agent title  "
-    std::string left_vis = "  " + current_agent_;
+    int left_w = (int)current_agent_.size() + 2;
     if (!session_title_.empty())
-        left_vis += "" + session_title_;
-    left_vis += " ";
+        left_w += 1 + (int)session_title_.size();
 
-    // Right: status (when active) preempts stats.  Both are dim; status is
-    // the transient/important signal (thinking..., queued, scroll position).
     const bool have_status = !current_status_.empty();
     const std::string& right_text = have_status ? current_status_ : current_stats_;
-    std::string right_vis = right_text.empty() ? "" : right_text;
-    int pad = std::max(0, cols_ - (int)left_vis.size() - (int)right_vis.size());
+    std::string right_vis = right_text;
+    int avail = std::max(0, cols_ - left_w);
+    if ((int)right_vis.size() > avail) right_vis.resize(avail);
+    int pad = avail - (int)right_vis.size();
 
     std::printf("\0337");
-
     // Row 1 — identity on the left, status-or-stats on the right.
     std::printf("\033[%d;1H\033[2K", kIdentityRow);
-    std::printf(current_agent_.c_str());
+    std::printf("%s", current_agent_.c_str());
     if (!session_title_.empty())
-        std::printf("\033[2m   %s\033[0m", session_title_.c_str());
+        std::printf(" \033[2m%s\033[0m", session_title_.c_str());
     std::printf("  ");
     std::printf("%*s", pad, "");
     if (!right_vis.empty())
@@ -235,15 +239,26 @@ void TUI::draw_footer_hint() {
 // ─── ThinkingIndicator ───────────────────────────────────────────────────────
 
 void ThinkingIndicator::start(const std::string& label) {
+    // Idempotent: cleanly stop any prior animation so callers can use
+    // start(new_label) as a "switch label" operation without leaking threads.
+    stop();
     label_   = label;
     running_ = true;
     thread_  = std::thread([this]() {
-        static const char* dots[] = {"", " .", " ..", " ..."};
+        static const char* frames[] = {
+            "\u2801", "\u2802", "\u2804", "\u2840", "\u2848", "\u2850",
+            "\u2860", "\u28C0", "\u28C1", "\u28C2", "\u28C4", "\u28CC",
+            "\u28D4", "\u28E4", "\u28E5", "\u28E6", "\u28EE", "\u28F6",
+            "\u28F7", "\u28FF", "\u287F", "\u283F", "\u281F", "\u281F",
+            "\u285B", "\u281B", "\u282B", "\u288B", "\u280B", "\u280D",
+            "\u2809", "\u2809", "\u2811", "\u2821", "\u2881"
+        };
+        static const int kFrames = sizeof(frames) / sizeof(frames[0]);
         int i = 0;
         while (running_.load()) {
-            if (tui_) tui_->set_status(label_ + dots[i % 4]);
+            if (tui_) tui_->set_status(label_ + " " + frames[i % kFrames]);
             ++i;
-            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
         }
         if (tui_) tui_->clear_status();
     });

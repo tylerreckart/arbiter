@@ -1,6 +1,7 @@
 // index_ai/src/commands.cpp — Agent-invocable command execution
 #include "commands.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -368,10 +369,67 @@ void cmd_mem_shared_clear(const std::string& memory_dir) {
 // execute_agent_commands
 // ---------------------------------------------------------------------------
 
+// Conservative pattern check — matches commonly-destructive shell forms.
+// Expanding this is cheap; the callsite bails to a y/N prompt on a match.
+bool is_destructive_exec(const std::string& cmd) {
+    // Normalise: lowercase + collapse whitespace, preserve literal chars like '>'.
+    std::string s;
+    s.reserve(cmd.size());
+    bool prev_space = true;
+    for (char c : cmd) {
+        char lc = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+        if (lc == ' ' || lc == '\t') {
+            if (!prev_space) { s += ' '; prev_space = true; }
+        } else {
+            s += lc;
+            prev_space = false;
+        }
+    }
+    if (!s.empty() && s.back() == ' ') s.pop_back();
+    // Pad with spaces so word-boundary checks (" rm ") hit tokens at the ends.
+    std::string padded = " " + s + " ";
+
+    auto has = [&](const char* needle) {
+        return padded.find(needle) != std::string::npos;
+    };
+
+    // Destructive filesystem + process tools.
+    if (has(" rm ") || has(" rmdir ") || has(" unlink ") ||
+        has(" shred ") || has(" truncate ") ||
+        has(" dd ")  || has(" mkfs")      || has(" wipefs") ||
+        has(" fdisk ") || has(" parted ") ||
+        has(" chmod -r") || has(" chown -r")) return true;
+
+    // Privilege escalation — anything can happen past sudo.
+    if (has(" sudo ") || has(" doas ")) return true;
+
+    // Shell redirection overwrites/appends files.  We gate both since an
+    // agent-issued `>` is the moral equivalent of /write.
+    if (padded.find(" > ") != std::string::npos ||
+        padded.find(">>") != std::string::npos) return true;
+
+    // find -delete / find -exec rm …
+    if (has(" find ") && (has(" -delete") ||
+                          padded.find(" -exec rm") != std::string::npos ||
+                          padded.find(" -execdir rm") != std::string::npos))
+        return true;
+
+    // Git operations that rewrite or discard history.
+    if (has(" git ")) {
+        if (has(" reset --hard") || has(" clean -f") ||
+            has(" push --force") || has(" push -f ") ||
+            has(" branch -d") || has(" branch -D") ||
+            has(" checkout --") || has(" restore .")) return true;
+    }
+
+    return false;
+}
+
 std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    const std::string& agent_id,
                                    const std::string& memory_dir,
-                                   AgentInvoker agent_invoker) {
+                                   AgentInvoker agent_invoker,
+                                   ConfirmFn    confirm) {
     std::ostringstream out;
     out << "[TOOL RESULTS]\n";
 
@@ -460,7 +518,12 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
 
         } else if (cmd.name == "exec") {
             out << "[/exec " << cmd.args << "]\n";
-            out << cmd_exec(cmd.args) << "\n";
+            if (confirm && is_destructive_exec(cmd.args) &&
+                !confirm("exec '" + cmd.args + "'?")) {
+                out << "ERR: user declined\n";
+            } else {
+                out << cmd_exec(cmd.args) << "\n";
+            }
             out << "[END EXEC]\n\n";
 
         } else if (cmd.name == "agent") {
@@ -482,6 +545,18 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
 
         } else if (cmd.name == "write") {
             out << "[/write " << cmd.args << "]\n";
+            if (confirm) {
+                size_t lines = std::count(cmd.content.begin(), cmd.content.end(), '\n');
+                if (!cmd.content.empty() && cmd.content.back() != '\n') ++lines;
+                std::string p = "write " + cmd.args + " (" +
+                                std::to_string(lines) + " lines, " +
+                                std::to_string(cmd.content.size()) + " bytes)?";
+                if (!confirm(p)) {
+                    out << "ERR: user declined\n";
+                    out << "[END WRITE]\n\n";
+                    continue;
+                }
+            }
             out << cmd_write(cmd.args, cmd.content) << "\n";
             out << "[END WRITE]\n\n";
         }
