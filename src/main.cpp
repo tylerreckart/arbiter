@@ -157,24 +157,16 @@ static void cmd_interactive() {
     OutputQueue output_queue;
 
     // sub-agent progress
-    orch.set_progress_callback([&tui, &output_queue](const std::string& agent_id,
-                                                     const std::string& content) {
-        const char* dim_rule = "\033[38;5;238m";
-        const char* rst      = "\033[0m";
-        int cols = tui.cols();
-
-        std::string label = "\033[38;5;214m" + agent_id + "\033[38;5;238m (sub)";
-        int fill = std::max(0, cols - 4 - (int)label.size() - 2);
-        std::string rule = std::string(dim_rule) + "── " + label + " ";
-        for (int i = 0; i < fill; ++i) rule += "─";
-        rule += rst;
-
+    orch.set_progress_callback([&output_queue](const std::string& agent_id,
+                                                const std::string& content) {
+        const char* dim = "\033[38;5;238m";
+        const char* rst = "\033[0m";
         std::string buf;
-        buf += "\n" + rule + "\n";
+        buf += "\n";
         std::istringstream ss(content);
         std::string ln;
         while (std::getline(ss, ln)) {
-            buf += dim_rule;
+            buf += dim;
             buf += "  ";
             buf += ln;
             buf += rst;
