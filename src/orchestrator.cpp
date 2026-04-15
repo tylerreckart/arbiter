@@ -104,6 +104,53 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth)
     };
 }
 
+AdvisorInvoker Orchestrator::make_advisor_invoker(const std::string& caller_id) {
+    return [this, caller_id](const std::string& question) -> std::string {
+        // Resolve the advisor model from the caller's constitution.
+        std::string advisor_model;
+        if (caller_id == "index") {
+            advisor_model = index_master_->config().advisor_model;
+        } else {
+            std::lock_guard<std::mutex> lk(agents_mutex_);
+            auto it = agents_.find(caller_id);
+            if (it == agents_.end()) return "ERR: no agent '" + caller_id + "'";
+            advisor_model = it->second->config().advisor_model;
+        }
+        if (advisor_model.empty()) {
+            return "ERR: no advisor_model configured for '" + caller_id + "'";
+        }
+
+        // One-shot, history-less call.  The advisor sees ONLY the question
+        // text — no prior turn leaks in, so the executor must state the
+        // decision and constraints in the question itself (matching how
+        // Anthropic's beta advisor tool was designed to be used).  This
+        // keeps advisor calls cheap, cache-friendly, and predictable.
+        ApiRequest req;
+        req.model         = advisor_model;
+        req.max_tokens    = 1024;      // advisor replies are meant to be short
+        req.temperature   = 0.3;       // deterministic judgment
+        req.system_prompt =
+            "You are an advisor consulted by another AI agent.  Answer the "
+            "question directly and concisely.  Prescribe a specific option "
+            "when the question calls for one; if you genuinely can't decide, "
+            "state the tradeoff in one sentence and name the better-odds "
+            "path.  No preamble.  No pleasantries.  No restating the "
+            "question.  No offers to help further — the executor will "
+            "re-engage if it needs more.";
+        req.messages = {{"user", question}};
+
+        ApiResponse resp = client_.complete(req);
+        if (!resp.ok) return "ERR: " + resp.error;
+
+        // Attribute the advisor's cost to the caller's ledger but use the
+        // advisor model's pricing.  Accurate per-caller spend attribution
+        // even when the advisor is a different provider.
+        if (cost_cb_) cost_cb_(caller_id, advisor_model, resp);
+
+        return resp.content;
+    };
+}
+
 ApiResponse Orchestrator::ask_index_ai(const std::string& query) {
     return send("index", query);
 }
@@ -142,7 +189,8 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         current_msg = message;
     }
 
-    auto invoker = make_invoker(agent_id, depth);
+    auto invoker         = make_invoker(agent_id, depth);
+    auto advisor_invoker = make_advisor_invoker(agent_id);
 
     // Per-dispatch dedup cache.  Shared with execute_agent_commands which
     // consults it to short-circuit repeated (cmd, args) pairs — a same-turn
@@ -184,7 +232,8 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
 
         resp.had_tool_calls = true;
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
-                                              invoker, confirm_cb_, &dedup_cache);
+                                              invoker, confirm_cb_, &dedup_cache,
+                                              advisor_invoker);
     }
 
     return resp;
@@ -215,7 +264,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     auto cmds = parse_agent_commands(resp.content);
     if (cmds.empty()) return resp;
 
-    auto invoker = make_invoker(agent_id, 0);
+    auto invoker         = make_invoker(agent_id, 0);
+    auto advisor_invoker = make_advisor_invoker(agent_id);
 
     // Per-dispatch dedup cache — see send_internal for full rationale.  We
     // surface duplicates via dup_cb_ right before each batch dispatches so
@@ -240,7 +290,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     for (int i = 0; i < kMaxReentryTurns; ++i) {
         cb("\n");
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
-                                              invoker, confirm_cb_, &dedup_cache);
+                                              invoker, confirm_cb_, &dedup_cache,
+                                              advisor_invoker);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) return resp;
         cmds = parse_agent_commands(resp.content);

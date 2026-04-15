@@ -1,5 +1,6 @@
 // index_ai/src/constitution.cpp
 #include "constitution.h"
+#include "api_client.h"   // is_weak_executor
 #include "json.h"
 #include <fstream>
 #include <sstream>
@@ -243,7 +244,98 @@ static std::string planner_prompt() {
         "- After writing the plan, confirm the file path in your response.\n";
 }
 
+// Weak-executor prompt profile.  Used when the agent's `model` points at a
+// non-Anthropic provider (currently any ollama/* target).  Small local
+// instruction-tuned models ignore abstract guidance about "when to use
+// tools" — they need the tool vocabulary leading the prompt, concrete
+// examples showing correct emission, and less competition from meta
+// guidance (brevity levels, index voice, etc.) they don't translate well.
+// The weak profile drops Layer 1's mode-based base prompt entirely and
+// leads with commands, an /advise example (when an advisor is configured),
+// then identity + rules.  Layer 4's advisor block is merged inline so the
+// model sees the tool description right next to the example that uses it.
+static std::string weak_executor_prompt(const Constitution& c) {
+    std::ostringstream ss;
+
+    ss << "You are an agent in a multi-agent system.  You receive tasks from "
+          "an orchestrator and respond using a small vocabulary of commands "
+          "plus plain prose.  Emit each command on its own line, starting at "
+          "column 0.  Plain prose between commands is allowed and expected.\n\n";
+
+    ss << "COMMANDS:\n";
+    ss << "  /fetch <url>         fetch a web page; returns readable text\n";
+    ss << "  /exec <shell>        run a shell command; returns stdout+stderr\n";
+    ss << "  /write <path>        write a file; content follows, end with /endwrite on its own line\n";
+    ss << "  /agent <id> <msg>    delegate to another specialist agent\n";
+    ss << "  /mem <verb> <arg>    persistent notes (/mem write, /mem read, /mem clear)\n";
+    if (!c.advisor_model.empty()) {
+        ss << "  /advise <question>   consult the advisor model — described below\n";
+    }
+    ss << "\n";
+
+    if (!c.advisor_model.empty()) {
+        ss << "ADVISOR — model: " << c.advisor_model << "\n";
+        ss << "The advisor answers ONE question you pose, then you continue.  "
+              "It sees only the text after /advise, nothing from prior "
+              "conversation.  State the decision being made and the "
+              "constraints in the question itself.\n";
+        ss << "Emit /advise BEFORE committing to:\n";
+        ss << "  - a decision between two reasonable paths (architectural, "
+              "methodological, editorial)\n";
+        ss << "  - an interpretation of ambiguous or contradictory evidence\n";
+        ss << "  - a judgment about whether a claim is well-supported enough "
+              "to state as fact\n";
+        ss << "Do NOT emit /advise for single-fact lookups, formatting "
+              "choices, style decisions, or anything a primary source can "
+              "resolve.  Budget: at most 2 consults per turn.\n\n";
+
+        ss << "EXAMPLE — consulting the advisor on a judgment call:\n";
+        ss << "---\n";
+        ss << "User task: \"Research competing JavaScript bundlers and "
+              "recommend one for a new team project.\"\n\n";
+        ss << "Your response:\n";
+        ss << "/fetch https://webpack.js.org/concepts/\n";
+        ss << "/fetch https://vitejs.dev/guide/why.html\n\n";
+        ss << "I now have feature and positioning material from both.  The "
+              "choice hinges on the team's priorities.\n\n";
+        ss << "/advise I'm comparing Webpack and Vite for a new team "
+              "project.  Webpack is mature with the broadest plugin "
+              "ecosystem; Vite is significantly faster in the dev loop but "
+              "its production story is newer and has fewer enterprise case "
+              "studies.  Assume a team of six that values long-term "
+              "stability and onboarding predictability over dev-loop speed.  "
+              "Which should they pick, and what's the single strongest "
+              "reason?\n\n";
+        ss << "[advisor replies, e.g. \"Webpack.  Its plugin ecosystem and "
+              "production maturity reduce integration risk...\"]\n\n";
+        ss << "Based on the advisor's guidance, I write my final "
+              "recommendation with the reasoning baked in.\n";
+        ss << "---\n\n";
+    }
+
+    // Identity + explicit rules from the agent's constitution.
+    if (!c.name.empty())        ss << "NAME: " << c.name << "\n";
+    if (!c.role.empty())        ss << "ROLE: " << c.role << "\n";
+    if (!c.personality.empty()) ss << "PERSONALITY: " << c.personality << "\n";
+    if (!c.goal.empty())        ss << "GOAL: " << c.goal << "\n";
+
+    if (!c.rules.empty()) {
+        ss << "\nRULES:\n";
+        for (auto& r : c.rules) ss << "- " << r << "\n";
+    }
+
+    return ss.str();
+}
+
 std::string Constitution::build_system_prompt() const {
+    // Non-Anthropic executors (currently ollama/*) use a tool-vocabulary-
+    // first, example-driven prompt profile.  The standard layered assembly
+    // below is tuned for Claude's instruction-following; local models
+    // ignore the abstractions and need concrete templates to mimic.
+    if (is_weak_executor(model)) {
+        return weak_executor_prompt(*this);
+    }
+
     std::ostringstream ss;
 
     // Layer 1: base prompt depends on mode
@@ -270,6 +362,32 @@ std::string Constitution::build_system_prompt() const {
         ss << "\nRULES:\n";
         for (auto& r : rules)
             ss << "- " << r << "\n";
+    }
+
+    // Layer 4: advisor affordance.  When advisor_model is set, the executor
+    // has access to /advise <question> — a one-shot consult against a more
+    // capable model (and potentially a different provider, e.g. ollama
+    // executor + claude-opus advisor).  Zero prior context leaks in, so the
+    // question must be self-contained.
+    if (!advisor_model.empty()) {
+        ss << "\nADVISOR:\n";
+        ss << "You have an advisor model (" << advisor_model
+           << ") available via:\n";
+        ss << "  /advise <question>\n";
+        ss << "The advisor is a one-shot consult — it sees ONLY the text you "
+              "write after /advise, nothing else.  State the decision you are "
+              "making and the constraints.  It replies once; there is no "
+              "back-and-forth.\n";
+        ss << "Consult when: architectural tradeoffs, genuine ambiguity, "
+              "multi-step planning decisions, adjudicating contradictory "
+              "evidence.\n";
+        ss << "Do NOT consult for: single-fact lookups, formatting choices, "
+              "style decisions, anything a primary source or /fetch can "
+              "resolve.  If you already know the answer with high confidence, "
+              "state it — don't escalate.\n";
+        ss << "Budget: at most 2 consults per turn.  A third wanted consult "
+              "means the task is under-scoped — deliver what you have and "
+              "flag the open question instead.\n";
     }
 
     return ss.str();

@@ -96,3 +96,36 @@ endif()
 install(TARGETS index RUNTIME DESTINATION bin)
 install(DIRECTORY agents/ DESTINATION share/index/agents
         FILES_MATCHING PATTERN "*.json")
+
+# --- Tests ---
+# PTY-based integration tests that drive the real `index` binary through a
+# pseudo-terminal.  Enabled by default; disable with -DINDEX_BUILD_TESTS=OFF
+# if you're cross-compiling or just don't want the extra target.
+option(INDEX_BUILD_TESTS "Build TUI integration tests" ON)
+if(INDEX_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(index_tests
+        tests/pty_harness.cpp
+        tests/test_tui.cpp
+        tests/test_line_editor.cpp
+    )
+    target_include_directories(index_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/tests
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    # Absolute path so tests find the binary regardless of CWD when ctest runs.
+    target_compile_definitions(index_tests PRIVATE
+        INDEX_TEST_BINARY="$<TARGET_FILE:index>"
+    )
+    # forkpty() lives in libutil on Linux; Darwin has it in libSystem so no
+    # link flag needed, but target_link_libraries for libutil is a no-op
+    # there — safe either way.
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(index_tests PRIVATE util)
+    endif()
+
+    add_test(NAME tui_integration COMMAND index_tests)
+    # The tests spawn index; they'll fail fast if the binary isn't built yet.
+    add_dependencies(index_tests index)
+endif()

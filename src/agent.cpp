@@ -54,7 +54,6 @@ void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
         req.max_tokens    = config_.max_tokens;
         req.temperature   = config_.temperature;
         req.messages      = inject_summary(context_summary_, history_);
-        req.advisor_model = config_.advisor_model;
 
         ApiResponse more = cb ? client_.stream(req, cb) : client_.complete(req);
 
@@ -106,7 +105,6 @@ ApiResponse Agent::send(const std::string& user_message) {
     req.max_tokens    = config_.max_tokens;
     req.temperature   = config_.temperature;
     req.messages      = inject_summary(context_summary_, history_);
-    req.advisor_model = config_.advisor_model;
 
     auto resp = client_.complete(req);
 
@@ -161,7 +159,6 @@ ApiResponse Agent::stream(const std::string& user_message, StreamCallback cb) {
     req.max_tokens    = config_.max_tokens;
     req.temperature   = config_.temperature;
     req.messages      = inject_summary(context_summary_, history_);
-    req.advisor_model = config_.advisor_model;
 
     auto resp = client_.stream(req, cb);
 

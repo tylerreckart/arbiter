@@ -109,6 +109,10 @@ bool is_priced(const std::string& model) {
     return provider_for(model).name == "anthropic";
 }
 
+bool is_weak_executor(const std::string& model) {
+    return provider_for(model).name != "anthropic";
+}
+
 std::string strip_model_prefix(const std::string& model) {
     const auto& p = provider_for(model);
     if (!p.prefix.empty() && model.compare(0, p.prefix.size(), p.prefix) == 0)
@@ -151,25 +155,40 @@ bool ApiClient::ensure_connection(const Provider& p, Conn& c) {
         return false;
     }
 
-    c.sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (c.sock < 0) {
-        c.last_error = std::string("socket() failed: ") + strerror(errno);
-        freeaddrinfo(res);
-        return false;
-    }
+    // Walk the addrinfo list and try each entry until one connects.  macOS
+    // (and most Linuxes with IPv6 enabled) return AAAA records first, so
+    // localhost resolves to ::1 ahead of 127.0.0.1 — but services like
+    // Ollama bind IPv4-only by default.  If we only ever tried the first
+    // entry we'd get ECONNREFUSED against the IPv6 address and never
+    // discover that 127.0.0.1 works.  curl walks the list; we do too.
+    std::string last_connect_err;
+    int sock = -1;
+    for (struct addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
+        sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (sock < 0) {
+            last_connect_err = std::string("socket() failed: ") + strerror(errno);
+            continue;
+        }
+        int flag = 1;
+        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
-    int flag = 1;
-    setsockopt(c.sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
-
-    if (connect(c.sock, res->ai_addr, res->ai_addrlen) != 0) {
-        c.last_error = std::string("connect() failed (") + p.host + ":" +
-                       port_str + "): " + strerror(errno);
-        freeaddrinfo(res);
-        close(c.sock);
-        c.sock = -1;
-        return false;
+        if (connect(sock, ai->ai_addr, ai->ai_addrlen) == 0) {
+            break;                                     // success
+        }
+        last_connect_err = std::string("connect() failed (") + p.host + ":" +
+                           port_str + "): " + strerror(errno);
+        close(sock);
+        sock = -1;
     }
     freeaddrinfo(res);
+
+    if (sock < 0) {
+        c.last_error = last_connect_err.empty()
+            ? "connect() failed: no usable address returned by getaddrinfo"
+            : last_connect_err;
+        return false;
+    }
+    c.sock = sock;
 
     c.tls = p.tls;
     if (p.tls) {
@@ -276,23 +295,13 @@ std::string ApiClient::build_body_anthropic(const ApiRequest& req, bool streamin
 
     if (streaming) m["stream"] = jbool(true);
 
-    if (!req.advisor_model.empty()) {
-        auto tool = jobj();
-        tool->as_object_mut()["type"]  = jstr("advisor_20260301");
-        tool->as_object_mut()["name"]  = jstr("advisor");
-        tool->as_object_mut()["model"] = jstr(req.advisor_model);
-        auto tools_arr = jarr();
-        tools_arr->as_array_mut().push_back(tool);
-        m["tools"] = tools_arr;
-    }
-
     return json_serialize(*obj);
 }
 
 std::string ApiClient::build_body_openai(const ApiRequest& req, bool streaming) {
     // OpenAI chat completions: single flat messages array with optional
-    // "system" role at index 0.  No prompt-caching metadata, no Anthropic
-    // advisor tool.  Model name has any provider prefix stripped.
+    // "system" role at index 0.  No prompt-caching metadata.  Model name
+    // has any provider prefix stripped.
     auto obj = jobj();
     auto& m = obj->as_object_mut();
     m["model"] = jstr(strip_model_prefix(req.model));
@@ -321,7 +330,7 @@ std::string ApiClient::build_body_openai(const ApiRequest& req, bool streaming) 
 // ─── Outgoing HTTP request ───────────────────────────────────────────────────
 
 void ApiClient::send_request(const Provider& p, Conn& c,
-                              const std::string& body, bool streaming, bool advisor) {
+                              const std::string& body, bool streaming) {
     std::ostringstream http;
     http << "POST " << p.path << " HTTP/1.1\r\n";
     http << "Host: " << p.host;
@@ -335,9 +344,7 @@ void ApiClient::send_request(const Provider& p, Conn& c,
     if (p.uses_api_key && p.format == Provider::FORMAT_ANTHROPIC) {
         http << "x-api-key: " << api_key_ << "\r\n";
         http << "anthropic-version: 2023-06-01\r\n";
-        std::string beta = "prompt-caching-2024-07-31";
-        if (advisor) beta += ", advisor-tool-2026-03-01";
-        http << "anthropic-beta: " << beta << "\r\n";
+        http << "anthropic-beta: prompt-caching-2024-07-31\r\n";
     } else if (p.uses_api_key) {
         // Generic bearer-auth path — useful when we later add openai-proper.
         http << "Authorization: Bearer " << api_key_ << "\r\n";
@@ -538,7 +545,7 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
                 std::string body = (prov.format == Provider::FORMAT_ANTHROPIC)
                                    ? build_body_anthropic(req, false)
                                    : build_body_openai(req, false);
-                send_request(prov, c, body, false, !req.advisor_model.empty());
+                send_request(prov, c, body, false);
                 std::string raw = read_response(c);
                 resp = (prov.format == Provider::FORMAT_ANTHROPIC)
                        ? parse_body_anthropic(raw)
@@ -786,7 +793,7 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
                     std::string body = (prov.format == Provider::FORMAT_ANTHROPIC)
                                        ? build_body_anthropic(req, true)
                                        : build_body_openai(req, true);
-                    send_request(prov, c, body, true, !req.advisor_model.empty());
+                    send_request(prov, c, body, true);
                     resp = read_streaming_response(c, cb, prov.format);
                 }
             } catch (const std::exception& e) {

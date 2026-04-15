@@ -9,7 +9,7 @@
 namespace index_ai {
 
 struct AgentCommand {
-    std::string name;    // "fetch", "mem", "exec", "agent", "write"
+    std::string name;    // "fetch", "mem", "exec", "agent", "write", "advise"
     std::string args;    // rest of the command line
     std::string content; // multiline body (used by /write)
 };
@@ -49,6 +49,16 @@ void        cmd_mem_shared_clear(const std::string& memory_dir);
 // returns the sub-agent's response text or an "ERR: ..." string.
 using AgentInvoker = std::function<std::string(const std::string&, const std::string&)>;
 
+// Callback for advisor consultation: given a question string, fires a
+// one-shot, history-less API call against the calling agent's configured
+// advisor_model and returns the advisor's reply (or an "ERR: ..." string).
+// The question is opaque to the invoker — advisor sees ONLY what the
+// executor wrote, no prior turn context leaks in.  Replaces the Anthropic
+// `advisor_20260301` beta tool with a provider-agnostic text convention,
+// so ollama/* executors can pair with claude-* advisors (or vice versa)
+// through the same ApiClient's prefix-based routing.
+using AdvisorInvoker = std::function<std::string(const std::string& question)>;
+
 // Gatekeeper for potentially-destructive operations.  Given a human-readable
 // prompt (e.g. "write agents/foo.md?"), returns true to proceed, false to
 // abort.  If unset, every guarded command runs without prompting.
@@ -68,11 +78,14 @@ bool is_destructive_exec(const std::string& cmd);
 //                instead a synthetic DUPLICATE block is emitted quoting the prior
 //                result.  Caller owns the map and should clear/reset it between
 //                independent top-level user requests.
+// advisor_invoker: optional — if provided, /advise commands are dispatched
+//                  through it.  Without one, /advise returns an ERR.
 std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    const std::string& agent_id,
                                    const std::string& memory_dir,
                                    AgentInvoker agent_invoker = nullptr,
                                    ConfirmFn    confirm       = nullptr,
-                                   std::map<std::string, std::string>* dedup_cache = nullptr);
+                                   std::map<std::string, std::string>* dedup_cache = nullptr,
+                                   AdvisorInvoker advisor_invoker = nullptr);
 
 } // namespace index_ai

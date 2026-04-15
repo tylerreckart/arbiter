@@ -109,8 +109,8 @@ std::string CostTracker::format_summary() const {
     if (agents_.empty()) return "  No requests recorded yet.\n";
 
     std::ostringstream ss;
-    ss << "Session Cost: " << fmt_dollars(session_total_) << "\n";
-    ss << "  (Costs are estimates based on list pricing.)\n\n";
+    ss << "\nSession Cost: " << fmt_dollars(session_total_) << "\n\n";
+    ss << "Costs are estimates based on list pricing.\n\n";
 
     ss << std::left
        << "  " << std::setw(16) << "Agent"

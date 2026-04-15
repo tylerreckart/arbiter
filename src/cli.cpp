@@ -64,7 +64,7 @@ void cmd_init() {
         c.name         = "research";
         c.role         = "research-analyst";
         c.brevity      = Brevity::Lite;
-        c.model        = "claude-haiku-4-5-20251001";
+        c.model        = "ollama/qwen2.5-coder:7b";
         c.advisor_model= "claude-opus-4-6";
         c.max_tokens   = 2048;
         c.temperature  = 0.5;

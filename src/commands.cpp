@@ -55,6 +55,12 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = line.substr(7);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
+        } else if (line.size() > 8 && line.substr(0, 8) == "/advise ") {
+            AgentCommand cmd;
+            cmd.name = "advise";
+            cmd.args = line.substr(8);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+
         } else if (line.size() > 6 && line.substr(0, 6) == "/exec ") {
             AgentCommand cmd;
             cmd.name = "exec";
@@ -430,9 +436,10 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    const std::string& memory_dir,
                                    AgentInvoker agent_invoker,
                                    ConfirmFn    confirm,
-                                   std::map<std::string, std::string>* dedup_cache) {
+                                   std::map<std::string, std::string>* dedup_cache,
+                                   AdvisorInvoker advisor_invoker) {
     std::ostringstream out;
-    out << "[TOOL RESULTS]\n";
+    out << "\n";
 
     // Caps: 16 KB per fetch (stripped text), max 3 fetches per turn,
     // and a total tool-result budget of 32 KB.
@@ -450,7 +457,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
     for (auto& cmd : cmds) {
         // Enforce total budget
         if (out.tellp() >= static_cast<std::streampos>(kTotalLimit)) {
-            out << "[TOOL RESULTS TRUNCATED: budget exhausted]\n";
+            out << "[TOOL RESULTS TRUNCATED: budget exhausted]\n\n";
             break;
         }
 
@@ -570,6 +577,34 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << cmd_exec(cmd.args) << "\n";
             }
             block << "[END EXEC]\n\n";
+
+        } else if (cmd.name == "advise") {
+            // /advise <question>
+            // Fires a one-shot, zero-context call against the caller's
+            // configured advisor_model.  Replaces Anthropic's beta
+            // `advisor_20260301` tool with a provider-portable path, so
+            // cheap executors (ollama/*) can pair with smart advisors
+            // (claude-opus-*) without relying on Anthropic-only plumbing.
+            block << "[/advise]\n";
+            if (!advisor_invoker) {
+                block << "ERR: advisor not configured — set advisor_model in "
+                         "the agent config to enable /advise.\n";
+                cache_result = false;
+            } else {
+                std::string answer = advisor_invoker(cmd.args);
+                block << answer;
+                if (!answer.empty() && answer.back() != '\n') block << "\n";
+                // Same upstream-failed framing as /agent — don't let the
+                // executor burn retries against a failing advisor.
+                if (answer.size() >= 4 && answer.compare(0, 4, "ERR:") == 0) {
+                    block << "UPSTREAM FAILED — the advisor returned an error. "
+                             "Same question will fail again.  Do NOT re-issue "
+                             "the identical /advise.  Proceed with your own "
+                             "judgment and note the open question in your "
+                             "output.\n";
+                }
+            }
+            block << "[END ADVISE]\n\n";
 
         } else if (cmd.name == "agent") {
             // /agent <sub_agent_id> <message>

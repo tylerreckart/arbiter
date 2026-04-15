@@ -28,9 +28,6 @@ struct ApiRequest {
     std::vector<Message> messages;
     int max_tokens = 1024;
     double temperature = 0.3;
-    // Advisor tool: if non-empty, include advisor_20260301 tool and beta header.
-    // Anthropic-only — silently ignored for non-Anthropic providers.
-    std::string advisor_model;
 };
 
 struct ApiResponse {
@@ -73,6 +70,15 @@ const Provider& provider_for(const std::string& model);
 // True when pricing tables in cost_tracker apply.  Local providers return
 // false so CostTracker can skip them.
 bool is_priced(const std::string& model);
+
+// True when the model likely needs the "weak-executor" prompt profile — a
+// leaner, tool-vocabulary-first system prompt with few-shot examples of
+// tool emission.  Currently any non-Anthropic provider qualifies, since
+// small local models (qwen-7b, llama3-8b, etc.) don't reliably invoke
+// tools from abstract instructions the way Claude does.  If we ever add a
+// local model that's tool-fluent, the rule can be tightened without
+// changing callers.
+bool is_weak_executor(const std::string& model);
 
 // Strip any provider prefix from a model string (e.g. "ollama/llama3:8b"
 // → "llama3:8b").  What the actual API expects as the model name.
@@ -125,7 +131,7 @@ private:
 
     // Wire I/O — `c` is assumed connected.
     void send_request(const Provider& p, Conn& c,
-                      const std::string& body, bool streaming, bool advisor);
+                      const std::string& body, bool streaming);
     std::string read_response(Conn& c);
     ApiResponse read_streaming_response(Conn& c, StreamCallback cb,
                                          Provider::Format fmt);

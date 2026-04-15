@@ -4,7 +4,7 @@
 <h1 align="center">Index</h1>
 
 <p align="center">
-  <strong>A lean agent orchestration runtime for the Claude API.</strong>
+  <strong>A lean agent orchestration runtime and TUI.</strong>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@ Index is a terminal-native multi-agent system built around token efficiency. Mat
 ![Screenshot of the Index TUI](./content/index_tui.png)
 
 - Each agent declares its own model. Route prose to Sonnet, triage to Haiku, architecture to Opus — never overpay for a task.
-- A smaller executor (Haiku) drives the work while an advisor (Opus) weighs in mid-generation. Bulk token spend stays at the cheap-model rate; the expensive model only pays for the reasoning that actually needs it.
+- A smaller executor (Haiku, or a local Ollama model) drives the work and escalates hard judgment calls to a smarter advisor (Opus) via `/advise`. Bulk token spend stays at the cheap-model rate; the expensive model only pays for the reasoning that actually needs it.
 - `lite` / `full` / `ultra` modes shape output length at the constitution level, so agents don't burn tokens on filler.
 - Persistent notes at `~/.index/memory/<agent>.md` keep context across sessions instead of rehydrating it into every prompt.
 - `/tokens` breaks down usage and cost by agent so you can see where the spend is going.
@@ -103,6 +103,7 @@ Agents issue these commands in their responses. The orchestrator executes them a
 | `/exec <shell command>` | Run a shell command; stdout+stderr returned |
 | `/write <path>` | Write a file (content follows until `/endwrite`). Backs up existing files to `<path>.bak` before overwriting. |
 | `/agent <id> <message>` | Invoke a sub-agent |
+| `/advise <question>` | Consult the configured advisor model (see [Advisor model](#advisor-model)) |
 | `/mem write <text>` | Append note to agent's persistent memory |
 | `/mem read` | Load agent memory into context |
 | `/mem show` | Print raw memory file |
@@ -117,7 +118,7 @@ Memory is stored per-agent at `~/.index/memory/<agent-id>.md`.
 | Agent | Role | Notes |
 |-------|------|-------|
 | `index` | Orchestrator (built-in) | Routes tasks, delegates, synthesizes |
-| `researcher` | Research analyst | Haiku executor + Opus advisor for cost efficiency |
+| `research` | Research analyst | Haiku executor + Opus advisor for cost efficiency |
 | `reviewer` | Code reviewer | Ultra-brevity mode |
 | `writer` | Content writer | Full prose mode, 8192 token cap, temp 0.7 |
 | `devops` | Infrastructure engineer | Shell, git, Docker, CI/CD |
@@ -162,9 +163,11 @@ Set `"mode"` in the constitution to change the base system prompt:
 | `"writer"` | Full prose mode — complete sentences, format guidance, no compression |
 | `"planner"` | Decomposition mode — structured plan output, always writes to file |
 
-### Advisor tool
+### Advisor model
 
-Pair a cheap executor model with a smarter advisor for cost-efficient reasoning:
+The advisor pattern lets a cheap executor model call out to a smarter model for hard judgment calls — architectural tradeoffs, ambiguity resolution, multi-step planning. The executor handles bulk work at the cheap rate; the advisor only burns tokens when the reasoning actually warrants it.
+
+Set `advisor_model` in the executor's constitution:
 
 ```json
 {
@@ -173,7 +176,66 @@ Pair a cheap executor model with a smarter advisor for cost-efficient reasoning:
 }
 ```
 
-Opus plans mid-generation; Haiku executes. The bulk of token spend is at Haiku rates.
+When `advisor_model` is set, the executor's system prompt gains a new capability:
+
+```
+/advise <question>
+```
+
+It emits this command in its response just like `/fetch` or `/agent`. The orchestrator fires a one-shot API call against the advisor model, returns the reply as a tool result, and the executor continues its turn.
+
+- The advisor sees only the text the executor wrote after `/advise` — nothing from the prior conversation leaks in. This forces the executor to pose self-contained questions (state the decision being made, the constraints) and keeps advisor calls cheap and predictable.
+- Routing is by model-string prefix, so executor and advisor can be on different providers. The canonical mix is a local executor (`ollama/gemma4:latest`) paired with a cloud advisor (`claude-opus-4-6`) — bulk tokens stay local and free, only the hard-reasoning turns hit the cloud meter. See [Model providers](#model-providers) below.
+- The constitution layer caps consultation at two `/advise` calls per turn — a third desired consult means the task is under-scoped and the executor is told to deliver what it has and flag the open question.
+- The advisor's tokens post to the *caller's* cost ledger using the advisor's model pricing. `/tokens` shows exactly which agent drove which advisor spend, even across providers.
+
+## Model providers
+
+Each agent's `model` field is routed by prefix:
+
+| Prefix | Provider | Endpoint |
+|---|---|---|
+| `claude-*` (or any bare model id) | Anthropic | `api.anthropic.com` (TLS) |
+| `ollama/<model>` | Ollama (OpenAI-compat) | `$OLLAMA_HOST`, default `http://localhost:11434` |
+
+Adding a new provider is a single entry in the registry table in `src/api_client.cpp` plus a body-builder / parser if the wire format differs; the rest of the orchestrator is format-agnostic.
+
+### Ollama
+
+Point an agent at a local model by prefixing the id with `ollama/`:
+
+```json
+{
+  "name": "executor",
+  "model": "ollama/qwen2.5-coder:14b",
+  "advisor_model": "claude-opus-4-6",
+  "max_tokens": 4096,
+  "temperature": 0.3
+}
+```
+
+The executor turns run entirely on your Ollama server (zero API cost); only `/advise` consults hit the cloud.
+
+**Setup:**
+
+```bash
+**`OLLAMA_HOST` override** — set this before launching `index` to point at a non-default Ollama server. Accepted forms:
+
+- `http://host:port` — full URL (use `https://...` for TLS)
+- `host:port` — assumes `http://`
+- `host` — assumes port 11434
+- unset — defaults to `http://localhost:11434`
+
+```bash
+export OLLAMA_HOST=http://gpu-box.local:11434
+index
+```
+
+**Caveats**
+
+- Smaller models (≤14B) follow the `/exec` / `/write` / `/agent` text conventions less reliably than cloud providers. Expect occasional missed tool calls, looser adherence to brevity rules, and sloppier synthesis.
+- Ollama turns don't benefit from cache discounts; the system prompt is re-sent each turn.
+- Token usage is populated from Ollama's `usage` block when present. Some Ollama builds omit it — those turns will show `in:0 out:0` in `/tokens`.
 
 ## Server mode
 

@@ -171,6 +171,13 @@ private:
     // Build an AgentInvoker lambda for use in command dispatch.
     // depth is the current nesting level; invoker refuses beyond depth 2.
     AgentInvoker make_invoker(const std::string& caller_id, int depth = 0);
+
+    // Build an AdvisorInvoker bound to a specific caller.  Returns a lambda
+    // that makes a one-shot, history-less call against the caller's
+    // configured advisor_model (from the caller's Constitution).  If the
+    // caller has no advisor_model set, the returned lambda returns an
+    // ERR string explaining the misconfiguration.
+    AdvisorInvoker make_advisor_invoker(const std::string& caller_id);
 };
 
 } // namespace index_ai
