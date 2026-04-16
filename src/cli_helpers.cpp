@@ -94,8 +94,8 @@ std::string get_memory_dir() {
     return (fs::current_path() / ".index" / "memory").string();
 }
 
-void write_memory(const std::string& agent_id, const std::string& text) {
-    index_ai::cmd_mem_write(agent_id, text, get_memory_dir());
+std::string write_memory(const std::string& agent_id, const std::string& text) {
+    return index_ai::cmd_mem_write(agent_id, text, get_memory_dir());
 }
 
 std::string read_memory(const std::string& agent_id) {

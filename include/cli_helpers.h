@@ -33,7 +33,7 @@ std::string get_api_key();
 
 // Thin wrappers: commands.cpp's cmd_mem_*/cmd_fetch but with memory_dir
 // supplied automatically.
-void        write_memory(const std::string& agent_id, const std::string& text);
+std::string write_memory(const std::string& agent_id, const std::string& text);
 std::string read_memory (const std::string& agent_id);
 std::string fetch_url   (const std::string& url);
 

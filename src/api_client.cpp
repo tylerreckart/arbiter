@@ -284,11 +284,37 @@ std::string ApiClient::build_body_anthropic(const ApiRequest& req, bool streamin
         m["system"] = sys_arr;
     }
 
+    // Anthropic prompt caching: we put a cache breakpoint on the system block
+    // (above) and one on the LAST message of the history.  This makes the
+    // entire prompt through that final message a cacheable prefix — the next
+    // turn appends new messages and hits the cache for everything before its
+    // own tail, paying only for the delta tokens.
+    //
+    // cache_control requires block-form content (the string form doesn't
+    // accept the key), so only the tail message is restructured.  All other
+    // messages stay as plain strings to keep the request body small.
     auto msgs = jarr();
-    for (auto& msg : req.messages) {
+    const size_t count = req.messages.size();
+    for (size_t i = 0; i < count; ++i) {
+        const auto& msg = req.messages[i];
         auto mo = jobj();
         mo->as_object_mut()["role"] = jstr(msg.role);
-        mo->as_object_mut()["content"] = jstr(msg.content);
+        if (i + 1 == count) {
+            auto cc = jobj();
+            cc->as_object_mut()["type"] = jstr("ephemeral");
+
+            auto block = jobj();
+            auto& bm = block->as_object_mut();
+            bm["type"]          = jstr("text");
+            bm["text"]          = jstr(msg.content);
+            bm["cache_control"] = cc;
+
+            auto arr = jarr();
+            arr->as_array_mut().push_back(block);
+            mo->as_object_mut()["content"] = arr;
+        } else {
+            mo->as_object_mut()["content"] = jstr(msg.content);
+        }
         msgs->as_array_mut().push_back(mo);
     }
     m["messages"] = msgs;
@@ -376,13 +402,62 @@ static int parse_http_status(const std::string& headers) {
     return std::atoi(headers.c_str() + sp + 1);
 }
 
+// Read HTTP headers in buffered chunks instead of one byte at a time.  The
+// sentinel "\r\n\r\n" can straddle a read boundary, so each scan revisits the
+// last 3 bytes of the prior buffer.  Bytes past the sentinel belong to the
+// response body and are returned via `leftover` for the body reader to
+// consume before touching the socket again.
+static bool read_http_headers(index_ai::ApiClient::Conn& c,
+                              std::string& headers,
+                              std::string& leftover) {
+    headers.clear();
+    headers.reserve(2048);
+    leftover.clear();
+    char buf[4096];
+    while (true) {
+        int n = conn_recv(c, buf, sizeof(buf));
+        if (n <= 0) return false;
+        size_t old_len = headers.size();
+        headers.append(buf, n);
+        size_t scan_from = old_len >= 3 ? old_len - 3 : 0;
+        for (size_t i = scan_from; i + 4 <= headers.size(); ++i) {
+            if (headers[i]     == '\r' && headers[i + 1] == '\n' &&
+                headers[i + 2] == '\r' && headers[i + 3] == '\n') {
+                size_t end = i + 4;
+                leftover.assign(headers, end, headers.size() - end);
+                headers.resize(end);
+                return true;
+            }
+        }
+    }
+}
+
+// Drain `prefix` before reading from the socket.  Lets the body reader
+// consume header-read leftovers transparently — we use a small helper
+// closure inside read_response_body / read_streaming_response to keep the
+// consume-then-recv pattern tidy.
+namespace { struct PrefixCursor { const std::string& s; size_t pos = 0; }; }
+
 static std::string read_response_body(index_ai::ApiClient::Conn& c,
-                                       const std::string& headers) {
+                                       const std::string& headers,
+                                       const std::string& prefix) {
     bool chunked = headers.find("Transfer-Encoding: chunked") != std::string::npos;
     int content_length = -1;
     auto cl_pos = headers.find("Content-Length: ");
     if (cl_pos != std::string::npos)
         content_length = std::atoi(headers.c_str() + cl_pos + 16);
+
+    PrefixCursor pc{prefix, 0};
+    auto recv_some = [&](char* dst, int want) -> int {
+        if (pc.pos < pc.s.size()) {
+            int avail = static_cast<int>(pc.s.size() - pc.pos);
+            int take = std::min(want, avail);
+            std::memcpy(dst, pc.s.data() + pc.pos, take);
+            pc.pos += take;
+            return take;
+        }
+        return conn_recv(c, dst, want);
+    };
 
     std::string body;
     char buf[4096];
@@ -391,7 +466,7 @@ static std::string read_response_body(index_ai::ApiClient::Conn& c,
         while (true) {
             std::string size_line;
             while (true) {
-                int n = conn_recv(c, buf, 1);
+                int n = recv_some(buf, 1);
                 if (n <= 0) goto body_done;
                 if (buf[0] == '\n') break;
                 if (buf[0] != '\r') size_line += buf[0];
@@ -400,17 +475,17 @@ static std::string read_response_body(index_ai::ApiClient::Conn& c,
             if (chunk_size == 0) break;
             int rd = 0;
             while (rd < chunk_size) {
-                int n = conn_recv(c, buf, std::min(chunk_size - rd, (int)sizeof(buf)));
+                int n = recv_some(buf, std::min(chunk_size - rd, (int)sizeof(buf)));
                 if (n <= 0) goto body_done;
                 body.append(buf, n);
                 rd += n;
             }
-            conn_recv(c, buf, 2);  // trailing \r\n
+            recv_some(buf, 2);  // trailing \r\n
         }
     } else if (content_length > 0) {
         int rd = 0;
         while (rd < content_length) {
-            int n = conn_recv(c, buf, std::min(content_length - rd, (int)sizeof(buf)));
+            int n = recv_some(buf, std::min(content_length - rd, (int)sizeof(buf)));
             if (n <= 0) break;
             body.append(buf, n);
             rd += n;
@@ -421,17 +496,10 @@ body_done:
 }
 
 std::string ApiClient::read_response(Conn& c) {
-    std::string headers;
-    char buf[1];
-    while (true) {
-        int n = conn_recv(c, buf, 1);
-        if (n <= 0) return {};
-        headers += buf[0];
-        if (headers.size() >= 4 &&
-            headers.substr(headers.size() - 4) == "\r\n\r\n") break;
-    }
+    std::string headers, leftover;
+    if (!read_http_headers(c, headers, leftover)) return {};
     int status = parse_http_status(headers);
-    std::string body = read_response_body(c, headers);
+    std::string body = read_response_body(c, headers, leftover);
     if (status != 200) {
         if (body.find("\"error\"") != std::string::npos) return body;
         return "{\"error\":{\"type\":\"http_error\",\"message\":\"HTTP "
@@ -675,21 +743,16 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
     resp.ok = true;
     std::string content;
 
-    std::string headers;
-    {
-        char ch;
-        while (true) {
-            int n = conn_recv(c, &ch, 1);
-            if (n <= 0) { resp.ok = false; resp.error = "Connection closed reading headers"; return resp; }
-            headers += ch;
-            if (headers.size() >= 4 &&
-                headers.substr(headers.size() - 4) == "\r\n\r\n") break;
-        }
+    std::string headers, leftover;
+    if (!read_http_headers(c, headers, leftover)) {
+        resp.ok = false;
+        resp.error = "Connection closed reading headers";
+        return resp;
     }
 
     int http_status = parse_http_status(headers);
     if (http_status != 200) {
-        std::string body = read_response_body(c, headers);
+        std::string body = read_response_body(c, headers, leftover);
         close_connection(c);
         if (body.empty())
             body = "{\"error\":{\"type\":\"http_error\",\"message\":\"HTTP "
@@ -702,11 +765,27 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
     bool chunked = headers.find("Transfer-Encoding: chunked") != std::string::npos;
 
     std::string line_buf;
+    line_buf.reserve(1024);
     char buf[4096];
+
+    // Drain `leftover` before reading from the socket — same pattern as
+    // read_response_body, so body bytes caught during the buffered header
+    // read don't get dropped.
+    PrefixCursor pc{leftover, 0};
+    auto recv_some = [&](char* dst, int want) -> int {
+        if (pc.pos < pc.s.size()) {
+            int avail = static_cast<int>(pc.s.size() - pc.pos);
+            int take = std::min(want, avail);
+            std::memcpy(dst, pc.s.data() + pc.pos, take);
+            pc.pos += take;
+            return take;
+        }
+        return conn_recv(c, dst, want);
+    };
 
     auto process_line = [&](const std::string& line) {
         if (line.empty() || line == "\r") return;
-        if (line.size() > 6 && line.substr(0, 6) == "data: ") {
+        if (line.size() > 6 && line.compare(0, 6, "data: ") == 0) {
             std::string data = line.substr(6);
             if (!data.empty() && data.back() == '\r') data.pop_back();
             if (fmt == Provider::FORMAT_ANTHROPIC)
@@ -731,7 +810,7 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
         while (!cancelled_.load()) {
             std::string size_line;
             while (true) {
-                int n = conn_recv(c, buf, 1);
+                int n = recv_some(buf, 1);
                 if (n <= 0 || cancelled_.load()) goto stream_done;
                 if (buf[0] == '\n') break;
                 if (buf[0] != '\r') size_line += buf[0];
@@ -743,14 +822,14 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
             while (read_so_far < chunk_size) {
                 if (cancelled_.load()) goto stream_done;
                 int to_read = std::min(chunk_size - read_so_far, (int)sizeof(buf));
-                int n = conn_recv(c, buf, to_read);
+                int n = recv_some(buf, to_read);
                 if (n <= 0) goto stream_done;
                 feed(buf, n);
                 read_so_far += n;
             }
-            conn_recv(c, buf, 2);  // trailing \r\n
+            recv_some(buf, 2);  // trailing \r\n
         }
-        if (!cancelled_.load()) conn_recv(c, buf, 2);
+        if (!cancelled_.load()) recv_some(buf, 2);
     } else {
         int content_length = -1;
         auto cl_pos = headers.find("Content-Length: ");
@@ -758,7 +837,7 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
             content_length = std::atoi(headers.c_str() + cl_pos + 16);
         int read_so_far = 0;
         while ((content_length < 0 || read_so_far < content_length) && !cancelled_.load()) {
-            int n = conn_recv(c, buf, sizeof(buf));
+            int n = recv_some(buf, sizeof(buf));
             if (n <= 0) break;
             feed(buf, n);
             read_so_far += n;

@@ -216,19 +216,8 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         }
 
         auto cmds = parse_agent_commands(resp.content);
+        recover_truncated_writes(agent_ptr, resp, cmds, nullptr);
         if (cmds.empty()) break;
-
-        // Surface each duplicate in the REPL before we dispatch.  The cache
-        // entry is added by execute_agent_commands on the first invocation,
-        // so its presence here means this command ran earlier in this loop.
-        if (dup_cb_) {
-            for (const auto& c : cmds) {
-                std::string key = c.name + "|" + c.args;
-                if (c.name == "write")
-                    key += "|" + std::to_string(std::hash<std::string>{}(c.content));
-                if (dedup_cache.count(key)) dup_cb_(agent_id, i, c.name, c.args);
-            }
-        }
 
         resp.had_tool_calls = true;
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
@@ -241,6 +230,61 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
 
 ApiResponse Orchestrator::send(const std::string& agent_id, const std::string& message) {
     return send_internal(agent_id, message, 0);
+}
+
+void Orchestrator::recover_truncated_writes(Agent* agent,
+                                            ApiResponse& resp,
+                                            std::vector<AgentCommand>& cmds,
+                                            StreamCallback cb) {
+    // Hard cap retries — if the model can't close a /write block in a few
+    // turns, something is wrong with the model or the content, and looping
+    // forever just burns tokens.
+    static constexpr int kMaxRetries = 3;
+
+    for (int retry = 0; retry < kMaxRetries; ++retry) {
+        std::string trunc_path;
+        for (const auto& c : cmds) {
+            if (c.name == "write" && c.truncated) {
+                trunc_path = c.args;
+                break;
+            }
+        }
+        if (trunc_path.empty()) return;   // no unclosed /write — done
+
+        if (cb) cb("\n\033[2m[resuming truncated /write " + trunc_path + "]\033[0m\n");
+
+        // The previous assistant turn (with the partial /write body) is
+        // already in agent history — that's the "cache" of the original
+        // prompt and partial output the model needs to resume from.  We
+        // just nudge it to emit the remaining bytes plus /endwrite.
+        std::string prompt =
+            "Your previous response was cut off mid-file while writing to `" +
+            trunc_path + "`.  The `/endwrite` sentinel was never emitted, so "
+            "the file body is incomplete.\n\n"
+            "Resume by emitting ONLY the remaining file content — the exact "
+            "bytes that should follow where the previous response ended — "
+            "then the literal line `/endwrite` on its own.  Do NOT repeat "
+            "any content already written.  Do NOT re-emit `/write " + trunc_path +
+            "`.  Do NOT add preamble, explanation, or commentary.  Start your "
+            "response at the exact character where the previous response "
+            "ended — even mid-word or mid-line — and close the block.";
+
+        ApiResponse more = cb ? agent->stream(prompt, cb) : agent->send(prompt);
+        if (!more.ok) return;   // leave resp as-is; caller sees the partial
+
+        resp.content               += more.content;
+        resp.input_tokens          += more.input_tokens;
+        resp.output_tokens         += more.output_tokens;
+        resp.cache_read_tokens     += more.cache_read_tokens;
+        resp.cache_creation_tokens += more.cache_creation_tokens;
+        resp.stop_reason            = more.stop_reason;
+
+        // Re-parse the spliced response.  If the model obeyed instructions,
+        // the previously-truncated /write now has a matching /endwrite and
+        // the whole body is in one command.  If the model emitted more
+        // tool calls (unlikely given the prompt), they'll surface here too.
+        cmds = parse_agent_commands(resp.content);
+    }
 }
 
 ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
@@ -262,27 +306,15 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     if (!resp.ok) return resp;
 
     auto cmds = parse_agent_commands(resp.content);
+    recover_truncated_writes(agent_ptr, resp, cmds, cb);
     if (cmds.empty()) return resp;
 
     auto invoker         = make_invoker(agent_id, 0);
     auto advisor_invoker = make_advisor_invoker(agent_id);
 
-    // Per-dispatch dedup cache — see send_internal for full rationale.  We
-    // surface duplicates via dup_cb_ right before each batch dispatches so
-    // the REPL can log them; execute_agent_commands then replaces the repeat
-    // with a DUPLICATE block that quotes the prior result.
+    // Per-dispatch dedup cache.  Shared with execute_agent_commands which
+    // consults it to silently drop same-turn repeats of (cmd, args[, content]).
     std::map<std::string, std::string> dedup_cache;
-    auto dedup_key_for = [](const AgentCommand& c) {
-        std::string k = c.name + "|" + c.args;
-        if (c.name == "write")
-            k += "|" + std::to_string(std::hash<std::string>{}(c.content));
-        return k;
-    };
-    if (dup_cb_) {
-        for (const auto& c : cmds) {
-            if (dedup_cache.count(dedup_key_for(c))) dup_cb_(agent_id, 0, c.name, c.args);
-        }
-    }
 
     // Tool-call re-entry turns: stream each so the user can follow progress
     resp.had_tool_calls = true;
@@ -295,15 +327,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) return resp;
         cmds = parse_agent_commands(resp.content);
+        recover_truncated_writes(agent_ptr, resp, cmds, cb);
         if (cmds.empty()) break;
         resp.had_tool_calls = true;
-
-        if (dup_cb_) {
-            for (const auto& c : cmds) {
-                // turn index is i+1 because the first turn is the pre-loop one
-                if (dedup_cache.count(dedup_key_for(c))) dup_cb_(agent_id, i + 1, c.name, c.args);
-            }
-        }
     }
 
     return resp;

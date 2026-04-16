@@ -16,12 +16,6 @@ Index is a terminal-native multi-agent system built around token efficiency. Mat
 
 ![Screenshot of the Index TUI](./content/index_tui.png)
 
-- Each agent declares its own model. Route prose to Sonnet, triage to Haiku, architecture to Opus — never overpay for a task.
-- A smaller executor (Haiku, or a local Ollama model) drives the work and escalates hard judgment calls to a smarter advisor (Opus) via `/advise`. Bulk token spend stays at the cheap-model rate; the expensive model only pays for the reasoning that actually needs it.
-- `lite` / `full` / `ultra` modes shape output length at the constitution level, so agents don't burn tokens on filler.
-- Persistent notes at `~/.index/memory/<agent>.md` keep context across sessions instead of rehydrating it into every prompt.
-- `/tokens` breaks down usage and cost by agent so you can see where the spend is going.
-
 > **Note:** Index is an experimental project. Changes to the architecture may break the experience. Agent constitutions and orchestration methods are currently subject to change. Index's `/exec` commands are currently un-sandboxed. Use at your own risk.
 
 ## Install

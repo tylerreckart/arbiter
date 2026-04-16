@@ -12,6 +12,10 @@ struct AgentCommand {
     std::string name;    // "fetch", "mem", "exec", "agent", "write", "advise"
     std::string args;    // rest of the command line
     std::string content; // multiline body (used by /write)
+    // True when a /write block was opened but /endwrite was never seen — the
+    // model's response was cut off mid-file.  Caller should request a
+    // continuation before executing the write to avoid persisting a partial.
+    bool truncated = false;
 };
 
 // Parse /command lines from an agent response.
@@ -33,8 +37,9 @@ std::string cmd_write(const std::string& path, const std::string& content);
 std::string cmd_mem_read(const std::string& agent_id, const std::string& memory_dir);
 
 // Append a timestamped note to the agent's memory file.
-void cmd_mem_write(const std::string& agent_id, const std::string& text,
-                   const std::string& memory_dir);
+// Returns "OK: ..." on success or "ERR: ..." on failure.
+std::string cmd_mem_write(const std::string& agent_id, const std::string& text,
+                          const std::string& memory_dir);
 
 // Delete the agent's memory file.
 void cmd_mem_clear(const std::string& agent_id, const std::string& memory_dir);

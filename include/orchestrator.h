@@ -52,20 +52,6 @@ public:
     // Unset ⇒ all actions proceed without prompting.
     void set_confirm_callback(ConfirmFn cb) { confirm_cb_ = std::move(cb); }
 
-    // DIAGNOSTIC: fires when the same (command, args) is emitted a second
-    // time within a single top-level dispatch (across all re-entry turns of
-    // one send / send_streaming call).  Does NOT change behavior — commands
-    // still run; this is just an observability hook so we can confirm the
-    // model-repeats-itself hypothesis in the scroll region.
-    //   turn_index   — which loop iteration emitted the dup (0 = first turn)
-    //   cmd_name     — "agent", "fetch", "write", etc.
-    //   args         — the raw arg string as the model wrote it
-    using DupCallback = std::function<void(const std::string& caller_id,
-                                            int turn_index,
-                                            const std::string& cmd_name,
-                                            const std::string& args)>;
-    void set_dup_callback(DupCallback cb) { dup_cb_ = std::move(cb); }
-
     // Agent management
     Agent& create_agent(const std::string& id, Constitution config);
     Agent& get_agent(const std::string& id);
@@ -157,7 +143,6 @@ private:
     AgentStartCallback start_cb_;
     CompactCallback    compact_cb_;
     ConfirmFn          confirm_cb_;
-    DupCallback        dup_cb_;
 
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;
@@ -178,6 +163,19 @@ private:
     // caller has no advisor_model set, the returned lambda returns an
     // ERR string explaining the misconfiguration.
     AdvisorInvoker make_advisor_invoker(const std::string& caller_id);
+
+    // Truncation recovery.  If `cmds` contains an unclosed /write block
+    // (body ended before /endwrite, typically because the model stopped
+    // mid-file), ask the agent to resume at the exact cutoff and close
+    // the block.  The continuation text is appended to `resp.content`
+    // and `cmds` is re-parsed so callers see one complete /write instead
+    // of persisting a half-written file.  Bounded retry count — if the
+    // model can't close the block after a few tries, we give up and let
+    // the caller execute whatever it has (with the truncation note).
+    void recover_truncated_writes(Agent* agent,
+                                  ApiResponse& resp,
+                                  std::vector<AgentCommand>& cmds,
+                                  StreamCallback cb);
 };
 
 } // namespace index_ai

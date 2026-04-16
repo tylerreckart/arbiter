@@ -51,12 +51,30 @@ private:
 
 class OutputQueue {
 public:
+    // Append a raw chunk.  Use for streaming — many push() calls followed by
+    // a single end_message() make up one logical message.  If a prior
+    // message ended (via end_message or push_msg), the first push that
+    // follows automatically gets a blank-line separator prepended.
     void push(const std::string& s);
+
+    // Mark the current message as complete.  Idempotent — multiple
+    // end_message() calls in a row collapse to a single separator.  No
+    // content is written to the buffer until the next push; the separator
+    // is materialised there so a drain in between doesn't emit it twice.
+    void end_message();
+
+    // Convenience — push(s) + end_message().  Use for single-call messages
+    // (errors, status lines, one-shot command output).
+    void push_msg(const std::string& s);
+
     std::string drain();
 
 private:
     std::mutex  mu_;
     std::string buf_;
+    // True when the previous push ended a message — the next push applies
+    // exactly one blank-line separator before appending its content.
+    bool        need_sep_ = false;
 };
 
 } // namespace index_ai

@@ -90,7 +90,9 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.content = body.str();
             if (!cmd.content.empty() && cmd.content.back() == '\n')
                 cmd.content.pop_back();
-            (void)closed; // content valid even if sentinel was missing (EOF)
+            // Mid-stream cutoff: no /endwrite sentinel ⇒ body is incomplete.
+            // Orchestrator uses this to request a continuation before writing.
+            cmd.truncated = !closed;
             result.push_back(std::move(cmd));
         }
     }
@@ -304,10 +306,31 @@ std::string cmd_write(const std::string& path, const std::string& content) {
     if (!content.empty() && content.back() != '\n') f << '\n';
 
     if (f.fail()) return "ERR: write failed: " + path;
+    f.close();
+
+    // Verify: read the file back and compare bytes.  Catches silent
+    // disk-level truncation (partial fs writes, ENOSPC, etc.) and gives
+    // the agent a concrete signal when the file on disk doesn't match
+    // what it intended to write.
+    size_t expected = content.size();
+    if (!content.empty() && content.back() != '\n') ++expected;  // we added one
+
+    std::ifstream v(path, std::ios::binary | std::ios::ate);
+    if (!v.is_open())
+        return "ERR: wrote " + std::to_string(content.size())
+             + " bytes to " + path + " but cannot re-open to verify";
+
+    size_t on_disk = static_cast<size_t>(v.tellg());
+    v.close();
+
+    if (on_disk != expected)
+        return "ERR: write verification failed for " + path
+             + " (expected " + std::to_string(expected)
+             + " bytes, found " + std::to_string(on_disk) + ")";
 
     std::string action = overwrite ? "overwrote" : "wrote";
     return "OK: " + action + " " + std::to_string(content.size())
-           + " bytes to " + path + bak_note;
+           + " bytes to " + path + bak_note + " (verified)";
 }
 
 // ---------------------------------------------------------------------------
@@ -323,17 +346,22 @@ std::string cmd_mem_read(const std::string& agent_id, const std::string& memory_
     return ss.str();
 }
 
-void cmd_mem_write(const std::string& agent_id, const std::string& text,
-                   const std::string& memory_dir) {
-    fs::create_directories(memory_dir);
+std::string cmd_mem_write(const std::string& agent_id, const std::string& text,
+                          const std::string& memory_dir) {
+    std::error_code ec;
+    fs::create_directories(memory_dir, ec);
+    if (ec) return "ERR: cannot create memory dir " + memory_dir + ": " + ec.message();
+
     std::string path = memory_dir + "/" + agent_id + ".md";
     std::ofstream f(path, std::ios::app);
-    if (!f.is_open()) return;
+    if (!f.is_open()) return "ERR: cannot open " + path + " for writing";
 
     std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     f << "\n<!-- " << ts << " -->\n" << text << "\n";
+    if (f.fail()) return "ERR: write failed for " + path;
+    return "OK: memory written to " + path;
 }
 
 void cmd_mem_clear(const std::string& agent_id, const std::string& memory_dir) {
@@ -448,12 +476,6 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
     static constexpr int    kMaxFetches     = 3;
     int fetch_count = 0;
 
-    auto uppercase_tag = [](std::string s) {
-        std::transform(s.begin(), s.end(), s.begin(),
-                       [](unsigned char c){ return (char)std::toupper(c); });
-        return s;
-    };
-
     for (auto& cmd : cmds) {
         // Enforce total budget
         if (out.tellp() >= static_cast<std::streampos>(kTotalLimit)) {
@@ -462,29 +484,16 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         }
 
         // ── Dedup gate ────────────────────────────────────────────────────
-        // If the same (cmd, args[, content]) already ran this turn, don't
-        // re-dispatch — synthesise a result block that quotes the prior
-        // output and tells the agent to adapt.  Distinct content for /write
-        // bypasses the dedup so writing two different files to the same path
-        // still works (rare, but not technically a repeat).
+        // If the same (cmd, args[, content]) already ran this turn, drop the
+        // repeat silently — do NOT re-dispatch and do NOT emit anything for
+        // the user or the model.  Distinct content for /write bypasses the
+        // dedup so writing two different files to the same path still works.
         std::string dedup_key = cmd.name + "|" + cmd.args;
         if (cmd.name == "write") {
             dedup_key += "|" + std::to_string(std::hash<std::string>{}(cmd.content));
         }
-        if (dedup_cache) {
-            auto it = dedup_cache->find(dedup_key);
-            if (it != dedup_cache->end()) {
-                std::string tag = uppercase_tag(cmd.name);
-                out << "[/" << cmd.name << " " << cmd.args << "]\n";
-                out << "DUPLICATE — you already ran this exact call earlier in "
-                       "this turn.  Do not retry the same arguments; adapt "
-                       "(different brief, different agent, or proceed using the "
-                       "prior result).\n";
-                out << "Previous result:\n" << it->second;
-                if (!it->second.empty() && it->second.back() != '\n') out << "\n";
-                out << "[END " << tag << "]\n\n";
-                continue;
-            }
+        if (dedup_cache && dedup_cache->find(dedup_key) != dedup_cache->end()) {
+            continue;
         }
 
         // Capture each command's full block (header + body + footer) in a
@@ -547,8 +556,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 std::string text;
                 std::getline(iss, text);
                 if (!text.empty() && text[0] == ' ') text.erase(0, 1);
-                cmd_mem_write(agent_id, text, memory_dir);
-                block << "[/mem write] OK: written\n\n";
+                std::string result = cmd_mem_write(agent_id, text, memory_dir);
+                block << "[/mem write] " << result << "\n\n";
 
             } else if (subcmd == "read") {
                 std::string mem = cmd_mem_read(agent_id, memory_dir);
@@ -642,6 +651,20 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
 
         } else if (cmd.name == "write") {
             block << "[/write " << cmd.args << "]\n";
+            // Orchestrator attempted to recover unclosed /write blocks before
+            // we got here.  If `truncated` is STILL set, recovery exhausted
+            // its retries — refuse to persist the partial and tell the model
+            // explicitly so the next turn can retry with a fresh /write.
+            if (cmd.truncated) {
+                block << "ERR: /write block for " << cmd.args
+                      << " was truncated mid-generation (missing /endwrite) "
+                         "and could not be recovered.  File NOT written.  "
+                         "Re-emit the full /write block from scratch.\n";
+                block << "[END WRITE]\n\n";
+                cache_result = false;   // allow a clean retry
+                out << block.str();
+                continue;
+            }
             if (confirm) {
                 size_t lines = std::count(cmd.content.begin(), cmd.content.end(), '\n');
                 if (!cmd.content.empty() && cmd.content.back() != '\n') ++lines;

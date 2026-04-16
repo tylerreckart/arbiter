@@ -192,6 +192,16 @@ void TUI::draw_header() {
 }
 
 void TUI::draw_header_locked() {
+    // UTF-8 cell-width (not byte count) — the thinking-indicator spinner uses
+    // 3-byte braille glyphs that render as 1 cell.  Computing pad from bytes
+    // under-pads, leaving visible whitespace to the right of the status.
+    auto cell_w = [](const std::string& s) {
+        int w = 0;
+        for (unsigned char c : s)
+            if ((c & 0xC0) != 0x80) ++w;  // non-continuation byte
+        return w;
+    };
+
     int left_w = (int)current_agent_.size() + 2;
     if (!session_title_.empty())
         left_w += 1 + (int)session_title_.size();
@@ -200,8 +210,14 @@ void TUI::draw_header_locked() {
     const std::string& right_text = have_status ? current_status_ : current_stats_;
     std::string right_vis = right_text;
     int avail = std::max(0, cols_ - left_w);
-    if ((int)right_vis.size() > avail) right_vis.resize(avail);
-    int pad = avail - (int)right_vis.size();
+    int right_cells = cell_w(right_vis);
+    if (right_cells > avail) {
+        // Truncate to `avail` cells (byte-safe for ASCII; multi-byte status
+        // tails never exceed avail in practice, so a byte-resize is fine).
+        right_vis.resize(avail);
+        right_cells = cell_w(right_vis);
+    }
+    int pad = avail - right_cells;
 
     std::printf("\0337");
     // Row 1 — identity on the left, status-or-stats on the right.
@@ -257,29 +273,19 @@ void TUI::clear_scroll_region() {
 // ─── Welcome card ────────────────────────────────────────────────────────────
 
 void TUI::draw_welcome(ScrollBuffer& history) {
-    // Agent sigil (3 terminal-cell-wide rows).  Chars are single-width block
-    // glyphs so visible width == glyph count per row == 8.
     static const char* kArt[3] = {
-        " \u2593\u2588\u2588\u2588\u2588\u2593 ",   //  ▓████▓
-        "\u2591\u2592 \u2588\u2588 \u2592\u2591",   // ░▒ ██ ▒░
-        " \u2593\u2588\u2588\u2588\u2588\u2593 ",   //  ▓████▓
+        " \u2593\u2588\u2588\u2588\u2588\u2593 ", //  ▓████▓
+        "\u2591\u2592 \u2588\u2588 \u2592\u2591", // ░▒ ██ ▒░
+        " \u2593\u2588\u2580\u2580\u2588\u2593 ", //  ▓█▀▀█▓
     };
     static constexpr int kArtCells = 8;
 
-    // Greeting in index's own voice — the administrator of this roster.
-    // ASCII-only punctuation: em-dashes (U+2014) have ambiguous East-Asian
-    // Width and render as 2 cells in some terminals, which would push
-    // content rows past the box's right border.  Periods, colons, and
-    // semicolons cover the pacing without that hazard.
     static const char* kText[3] = {
-        "hello, i'm index. this system's orchestrator.",
-        "describe a task; i'll route it to the right specialist.",
+        "hello, i am index.",
+        "",
         "what would you like to accompplish today?",
     };
 
-    // Cell width, not byte count — so em-dashes and middots don't skew the
-    // right-border alignment.  Treats each non-continuation UTF-8 byte as
-    // one terminal cell (good enough for dashes, middots, and block glyphs).
     auto cell_w = [](const char* s) {
         int w = 0;
         for (const unsigned char* p = (const unsigned char*)s; *p; ++p) {
@@ -382,20 +388,20 @@ void TUI::draw_welcome(ScrollBuffer& history) {
     card += border("\u2570", "\u2534", "\u256F");
 #endif
 
-    // Vertically center in the scroll region.  Prepend blank lines so the
-    // card lands mid-region rather than flush to the top; once the user
-    // starts sending messages, new output scrolls the card up naturally.
+    // Vertically center the card in the scroll region.  The centering is
+    // purely visual — we position the cursor at the centered row rather than
+    // prepending newlines to the content, so the scroll buffer stays clean
+    // and the card is cleared entirely on first user input.
     int card_h = 7;  // top border + blank + 3 content + blank + bottom border
-    int lead   = std::max(0, (scroll_region_rows() - card_h) / 2);
-    std::string pre(lead, '\n');
-    std::string full = pre + card;
+    int start_row = kHeaderRows + 1 +
+                    std::max(0, (scroll_region_rows() - card_h) / 2);
 
-    history.push(full);
+    history.push(card);
 
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     std::printf("\0337");
-    std::printf("\033[%d;1H", kHeaderRows + 1);  // top of scroll region
-    std::fwrite(full.data(), 1, full.size(), stdout);
+    std::printf("\033[%d;1H", start_row);
+    std::fwrite(card.data(), 1, card.size(), stdout);
     std::printf("\0338");
     std::fflush(stdout);
 }

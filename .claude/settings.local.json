@@ -4,7 +4,8 @@
       "Bash(cmake:*)",
       "Bash(make)",
       "Bash(./build/index --help)",
-      "Bash(curl -sL https://raw.githubusercontent.com/doctest/doctest/v2.4.11/doctest/doctest.h -o /Users/tyler/dev/index/third_party/doctest/doctest.h)"
+      "Bash(curl -sL https://raw.githubusercontent.com/doctest/doctest/v2.4.11/doctest/doctest.h -o /Users/tyler/dev/index/third_party/doctest/doctest.h)",
+      "Bash(./build/index_tests)"
     ]
   }
 }

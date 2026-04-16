@@ -152,8 +152,8 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
         };
         for (auto** p = kCmdPrefixes; *p; ++p) {
             size_t plen = strlen(*p);
-            if (line.size() >= plen && line.substr(0, plen) == *p) {
-                return fg(172) + std::string(DIM) + "> " + line + fg(252) + RST + "\n";
+            if (line.size() >= plen && line.compare(0, plen, *p) == 0) {
+                return fg(214) + std::string(DIM) + "> " + line + fg(252) + RST + "\n";
             }
         }
     }
@@ -225,6 +225,17 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
 
 // ─── MarkdownRenderer methods ─────────────────────────────────────────────────
 
+// True if `s`, after trimming trailing whitespace, is exactly `/endwrite`.
+// The /endwrite sentinel closes a /write block but has no value to the human
+// reading the session — the file content itself is the informative part, and
+// the write result is reported via the subsequent [/write ...] tool block.
+static bool is_endwrite_line(const std::string& s) {
+    size_t end = s.size();
+    while (end > 0 && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\r'))
+        --end;
+    return end == 9 && s.compare(0, 9, "/endwrite") == 0;
+}
+
 std::string MarkdownRenderer::feed(const std::string& chunk) {
     std::string result;
     for (char c : chunk) {
@@ -232,6 +243,12 @@ std::string MarkdownRenderer::feed(const std::string& chunk) {
             // Drop leading blank lines — the REPL already padded below the
             // user prompt, so echoing another blank would stack them.
             if (!seen_content_ && line_buf_.empty()) continue;
+            // Hide the /endwrite sentinel from the session window.  It's a
+            // parser-facing marker, not content the user needs to see.
+            if (is_endwrite_line(line_buf_)) {
+                line_buf_.clear();
+                continue;
+            }
             seen_content_ = true;
             result += process_line(line_buf_);
             result += '\n';
@@ -245,8 +262,13 @@ std::string MarkdownRenderer::feed(const std::string& chunk) {
 
 std::string MarkdownRenderer::flush() {
     if (line_buf_.empty()) return {};
+    if (is_endwrite_line(line_buf_)) { line_buf_.clear(); return {}; }
     std::string result = process_line(line_buf_);
     line_buf_.clear();
+    // Always terminate with a newline so the caller can append a single
+    // separator `\n` and get exactly one blank line — regardless of whether
+    // the model's last chunk had a trailing newline or not.
+    if (result.empty() || result.back() != '\n') result += '\n';
     return result;
 }
 

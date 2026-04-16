@@ -153,7 +153,11 @@ static void cmd_interactive() {
     signal(SIGWINCH, sigwinch_handler);
 
     // Output queue: exec and loop threads push here; main thread flushes
-    // (with CRLF expansion) via getc_flush_output.
+    // (with CRLF expansion) via getc_flush_output.  Message separation is
+    // handled by the queue itself — callers use output_queue.push_msg() for single-call
+    // messages or push() + end_message() for streamed messages; the queue
+    // materialises exactly one blank-line separator between adjacent
+    // messages so per-call strings never need trailing `\n\n`.
     OutputQueue output_queue;
 
     // sub-agent progress
@@ -162,7 +166,6 @@ static void cmd_interactive() {
         const char* dim = "\033[38;5;238m";
         const char* rst = "\033[0m";
         std::string buf;
-        buf += "\n";
         std::istringstream ss(content);
         std::string ln;
         while (std::getline(ss, ln)) {
@@ -172,7 +175,7 @@ static void cmd_interactive() {
             buf += rst;
             buf += "\n";
         }
-        output_queue.push(buf);
+        output_queue.push_msg(buf);
     });
 
     ThinkingIndicator thinking(&tui);
@@ -211,21 +214,9 @@ static void cmd_interactive() {
                        std::to_string(n) + " msgs)");
     });
 
-    // Diagnostic: log when the same tool command is emitted more than once
-    // within a single top-level dispatch.  Purely observational — the
-    // orchestrator still runs every command the model writes; this tells us
-    // whether the "/agent dispatched twice" symptom is the model repeating
-    // itself (expected to fire) vs a real dispatch bug (should never fire).
-    orch.set_dup_callback([&output_queue](const std::string& caller_id,
-                                            int turn_index,
-                                            const std::string& cmd_name,
-                                            const std::string& args) {
-        std::string msg = "\033[38;5;214m[dup] ";
-        msg += caller_id + " turn " + std::to_string(turn_index)
-             + ": /" + cmd_name + " " + args;
-        msg += "\033[0m\n";
-        output_queue.push(msg);
-    });
+    // Duplicate tool calls are silently swallowed by execute_agent_commands'
+    // dedup gate — no [dup] banner, no DUPLICATE block fed back to the model.
+    // No callback registered here on purpose.
 
     // ── Confirm dialog for destructive agent actions ──────────────────────
     struct ConfirmState {
@@ -333,16 +324,18 @@ static void cmd_interactive() {
             }
 
             if (cmd == "agents") {
-                for (auto& id : orch.list_agents())
-                    output_queue.push("  " + id + "\n");
+                std::string out;
+                for (auto& id : orch.list_agents()) out += "  " + id + "\n";
+                out += "\n";
+                output_queue.push(out);
                 return;
             }
             if (cmd == "status") {
-                output_queue.push(orch.global_status());
+                output_queue.push_msg(orch.global_status());
                 return;
             }
             if (cmd == "tokens") {
-                output_queue.push(tracker.format_summary());
+                output_queue.push_msg(tracker.format_summary());
                 return;
             }
             if (cmd == "use" || cmd == "switch") {
@@ -353,7 +346,7 @@ static void cmd_interactive() {
                     current_model = orch.get_agent_model(id);
                     tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                 } else {
-                    output_queue.push("ERR: no agent '" + id + "'\n");
+                    output_queue.push_msg("ERR: no agent '" + id + "'");
                 }
                 return;
             }
@@ -364,7 +357,6 @@ static void cmd_interactive() {
                 std::getline(iss, msg);
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 try {
-                    output_queue.push("\n");
                     index_ai::MarkdownRenderer md;
                     auto resp = orch.send_streaming(id, msg,
                         [&md, &output_queue](const std::string& chunk) {
@@ -373,16 +365,19 @@ static void cmd_interactive() {
                         });
                     auto tail = md.flush();
                     if (!tail.empty()) output_queue.push(tail);
-                    output_queue.push("\n\n");
+                    // Separator: md.flush() guarantees the stream ends with
+                    // a `\n`, so one more gives exactly one blank line before
+                    // the next message.
+                    output_queue.end_message();
                     if (resp.ok) {
                         tracker.record(id, orch.get_agent_model(id), resp);
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                         maybe_generate_title(msg, resp.content);
                     } else {
-                        output_queue.push("\033[38;5;167mERR: " + resp.error + "\033[0m\n");
+                        output_queue.push_msg("\033[38;5;167mERR: " + resp.error + "\033[0m");
                     }
                 } catch (const std::exception& e) {
-                    output_queue.push("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m\n");
+                    output_queue.push_msg("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m");
                 }
                 thinking.stop();
                 return;
@@ -392,7 +387,6 @@ static void cmd_interactive() {
                 std::getline(iss, query);
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
                 try {
-                    output_queue.push("\n");
                     index_ai::MarkdownRenderer md;
                     auto resp = orch.send_streaming("index", query,
                         [&md, &output_queue](const std::string& chunk) {
@@ -401,16 +395,16 @@ static void cmd_interactive() {
                         });
                     auto tail = md.flush();
                     if (!tail.empty()) output_queue.push(tail);
-                    output_queue.push("\n\n");
+                    output_queue.end_message();
                     if (resp.ok) {
                         tracker.record("index", orch.get_agent_model("index"), resp);
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                         maybe_generate_title(query, resp.content);
                     } else {
-                        output_queue.push("\033[38;5;167mERR: " + resp.error + "\033[0m\n");
+                        output_queue.push_msg("\033[38;5;167mERR: " + resp.error + "\033[0m");
                     }
                 } catch (const std::exception& e) {
-                    output_queue.push("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m\n");
+                    output_queue.push_msg("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m");
                 }
                 thinking.stop();
                 return;
@@ -422,10 +416,10 @@ static void cmd_interactive() {
                     auto config = index_ai::master_constitution();
                     config.name = id;
                     orch.create_agent(id, std::move(config));
-                    output_queue.push("Created: " + id + " (default config)\n");
-                    output_queue.push("Edit ~/.index/agents/" + id + ".json to customize\n");
+                    output_queue.push_msg("Created: " + id + " (default config)\n"
+                                      "Edit ~/.index/agents/" + id + ".json to customize");
                 } catch (const std::exception& e) {
-                    output_queue.push("ERR: " + std::string(e.what()) + "\n");
+                    output_queue.push_msg("ERR: " + std::string(e.what()));
                 }
                 return;
             }
@@ -433,7 +427,7 @@ static void cmd_interactive() {
                 std::string id;
                 iss >> id;
                 orch.remove_agent(id);
-                output_queue.push("Removed: " + id + "\n");
+                output_queue.push_msg("Removed: " + id);
                 if (current_agent == id) current_agent = "index";
                 return;
             }
@@ -443,9 +437,9 @@ static void cmd_interactive() {
                 if (id.empty()) id = current_agent;
                 try {
                     orch.get_agent(id).reset_history();
-                    output_queue.push("History cleared: " + id + "\n");
+                    output_queue.push_msg("History cleared: " + id);
                 } catch (const std::exception& e) {
-                    output_queue.push("ERR: " + std::string(e.what()) + "\n");
+                    output_queue.push_msg("ERR: " + std::string(e.what()));
                 }
                 return;
             }
@@ -458,15 +452,15 @@ static void cmd_interactive() {
                     std::string summary = orch.compact_agent(id);
                     thinking.stop();
                     if (summary.empty()) {
-                        output_queue.push("Nothing to compact: " + id + " has no history.\n");
+                        output_queue.push_msg("Nothing to compact: " + id + " has no history.");
                     } else {
-                        output_queue.push(
-                            "\n\033[2m[compacted — context window cleared, summary held in session]\033[0m\n"
-                            "\033[2m" + summary + "\033[0m\n");
+                        output_queue.push_msg(
+                            "\033[2m[compacted — context window cleared, summary held in session]\033[0m\n"
+                            "\033[2m" + summary + "\033[0m");
                     }
                 } catch (const std::exception& e) {
                     thinking.stop();
-                    output_queue.push("ERR: " + std::string(e.what()) + "\n");
+                    output_queue.push_msg("ERR: " + std::string(e.what()));
                 }
                 return;
             }
@@ -477,46 +471,46 @@ static void cmd_interactive() {
                 std::getline(iss, prompt);
                 if (!prompt.empty() && prompt[0] == ' ') prompt.erase(0, 1);
                 if (id.empty() || prompt.empty()) {
-                    output_queue.push("Usage: /loop <agent> <initial prompt>\n");
+                    output_queue.push_msg("Usage: /loop <agent> <initial prompt>");
                     return;
                 }
                 if (id != "index" && !orch.has_agent(id)) {
-                    output_queue.push("ERR: no agent '" + id + "'\n");
+                    output_queue.push_msg("ERR: no agent '" + id + "'");
                     return;
                 }
                 std::string lid = loops.start(orch, id, prompt, &tracker, &output_queue);
-                output_queue.push("Loop started: " + lid + " (agent: " + id + ")\n");
+                output_queue.push_msg("Loop started: " + lid + " (agent: " + id + ")");
                 return;
             }
             if (cmd == "loops") {
-                output_queue.push(loops.list());
+                output_queue.push_msg(loops.list());
                 return;
             }
             if (cmd == "kill") {
                 std::string lid;
                 iss >> lid;
                 if (loops.kill(lid))
-                    output_queue.push("Killed: " + lid + "\n");
+                    output_queue.push_msg("Killed: " + lid);
                 else
-                    output_queue.push("ERR: no loop '" + lid + "'\n");
+                    output_queue.push_msg("ERR: no loop '" + lid + "'");
                 return;
             }
             if (cmd == "suspend") {
                 std::string lid;
                 iss >> lid;
                 if (loops.suspend(lid))
-                    output_queue.push("Suspended: " + lid + "\n");
+                    output_queue.push_msg("Suspended: " + lid);
                 else
-                    output_queue.push("ERR: no loop '" + lid + "' or not running\n");
+                    output_queue.push_msg("ERR: no loop '" + lid + "' or not running");
                 return;
             }
             if (cmd == "resume") {
                 std::string lid;
                 iss >> lid;
                 if (loops.resume(lid))
-                    output_queue.push("Resumed: " + lid + "\n");
+                    output_queue.push_msg("Resumed: " + lid);
                 else
-                    output_queue.push("ERR: no loop '" + lid + "' or not suspended\n");
+                    output_queue.push_msg("ERR: no loop '" + lid + "' or not suspended");
                 return;
             }
             if (cmd == "inject") {
@@ -526,32 +520,32 @@ static void cmd_interactive() {
                 std::getline(iss, msg);
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 if (loops.inject(lid, msg))
-                    output_queue.push("Injected into " + lid + "\n");
+                    output_queue.push_msg("Injected into " + lid);
                 else
-                    output_queue.push("ERR: no loop '" + lid + "'\n");
+                    output_queue.push_msg("ERR: no loop '" + lid + "'");
                 return;
             }
             if (cmd == "log") {
                 std::string lid;
                 iss >> lid;
                 if (lid.empty()) {
-                    output_queue.push("Usage: /log <loop-id> [last-N]\n");
+                    output_queue.push_msg("Usage: /log <loop-id> [last-N]");
                     return;
                 }
                 int n = 0;
                 iss >> n;
-                output_queue.push(loops.log(lid, n));
+                output_queue.push_msg(loops.log(lid, n));
                 return;
             }
             if (cmd == "watch") {
                 std::string lid;
                 iss >> lid;
                 if (lid.empty()) {
-                    output_queue.push("Usage: /watch <loop-id>\n");
+                    output_queue.push_msg("Usage: /watch <loop-id>");
                     return;
                 }
                 if (loops.is_stopped(lid) && loops.log_count(lid) == 0) {
-                    output_queue.push("ERR: no loop '" + lid + "'\n");
+                    output_queue.push_msg("ERR: no loop '" + lid + "'");
                     return;
                 }
                 // Dump everything buffered so far
@@ -575,9 +569,9 @@ static void cmd_interactive() {
                         output_queue.push(loops.log_since(lid, seen));
                     }
                     if (loops.is_stopped(lid)) {
-                        output_queue.push("\033[2m--- loop finished ---\033[0m\n");
+                        output_queue.push_msg("\033[2m--- loop finished ---\033[0m");
                     } else {
-                        output_queue.push("\033[2m--- detached ---\033[0m\n");
+                        output_queue.push_msg("\033[2m--- detached ---\033[0m");
                     }
                 }
                 return;
@@ -586,14 +580,14 @@ static void cmd_interactive() {
                 std::string url;
                 iss >> url;
                 if (url.empty()) {
-                    output_queue.push("Usage: /fetch <url>\n");
+                    output_queue.push_msg("Usage: /fetch <url>");
                     return;
                 }
                 thinking.start("fetching");
                 std::string content = fetch_url(url);
                 thinking.stop();
                 if (content.substr(0, 4) == "ERR:") {
-                    output_queue.push("\033[38;5;167m" + content + "\033[0m\n");
+                    output_queue.push_msg("\033[38;5;167m" + content + "\033[0m");
                     return;
                 }
                 static constexpr size_t kFetchLimit = 32768;
@@ -608,15 +602,15 @@ static void cmd_interactive() {
                     auto resp = orch.send(current_agent, msg);
                     thinking.stop();
                     if (resp.ok) {
-                        output_queue.push(index_ai::render_markdown(resp.content) + "\n");
+                        output_queue.push_msg(index_ai::render_markdown(resp.content));
                         tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                     } else {
-                        output_queue.push("\033[38;5;167mERR: " + resp.error + "\033[0m\n");
+                        output_queue.push_msg("\033[38;5;167mERR: " + resp.error + "\033[0m");
                     }
                 } catch (const std::exception& ex) {
                     thinking.stop();
-                    output_queue.push("\033[38;5;167mERR: " + std::string(ex.what()) + "\033[0m\n");
+                    output_queue.push_msg("\033[38;5;167mERR: " + std::string(ex.what()) + "\033[0m");
                 }
                 return;
             }
@@ -631,37 +625,40 @@ static void cmd_interactive() {
                         std::getline(iss, text);
                         if (!text.empty() && text[0] == ' ') text.erase(0, 1);
                         if (text.empty()) {
-                            output_queue.push("Usage: /mem shared write <text>\n");
+                            output_queue.push_msg("Usage: /mem shared write <text>");
                             return;
                         }
                         index_ai::cmd_mem_shared_write(text, get_memory_dir());
-                        output_queue.push("Written to shared scratchpad\n");
+                        output_queue.push_msg("Written to shared scratchpad");
                     } else if (action == "read" || action == "show") {
                         std::string mem = index_ai::cmd_mem_shared_read(get_memory_dir());
                         if (mem.empty())
-                            output_queue.push("Shared scratchpad is empty\n");
+                            output_queue.push_msg("Shared scratchpad is empty");
                         else
-                            output_queue.push(mem + "\n");
+                            output_queue.push_msg(mem);
                     } else if (action == "clear") {
                         index_ai::cmd_mem_shared_clear(get_memory_dir());
-                        output_queue.push("Shared scratchpad cleared\n");
+                        output_queue.push_msg("Shared scratchpad cleared");
                     } else {
-                        output_queue.push("Usage: /mem shared write <text> | /mem shared read | /mem shared clear\n");
+                        output_queue.push_msg("Usage: /mem shared write <text> | /mem shared read | /mem shared clear");
                     }
                 } else if (subcmd == "write") {
                     std::string text;
                     std::getline(iss, text);
                     if (!text.empty() && text[0] == ' ') text.erase(0, 1);
                     if (text.empty()) {
-                        output_queue.push("Usage: /mem write <text>\n");
+                        output_queue.push_msg("Usage: /mem write <text>");
                         return;
                     }
-                    write_memory(current_agent, text);
-                    output_queue.push("Memory written for " + current_agent + "\n");
+                    std::string result = write_memory(current_agent, text);
+                    if (result.compare(0, 3, "ERR") == 0)
+                        output_queue.push_msg("\033[38;5;167m" + result + "\033[0m");
+                    else
+                        output_queue.push_msg("Memory written for " + current_agent);
                 } else if (subcmd == "read") {
                     std::string mem = read_memory(current_agent);
                     if (mem.empty()) {
-                        output_queue.push("No memory for " + current_agent + "\n");
+                        output_queue.push_msg("No memory for " + current_agent);
                         return;
                     }
                     std::string msg = "[MEMORY for " + current_agent + "]:\n" +
@@ -671,29 +668,29 @@ static void cmd_interactive() {
                         auto resp = orch.send(current_agent, msg);
                         thinking.stop();
                         if (resp.ok) {
-                            output_queue.push(index_ai::render_markdown(resp.content) + "\n");
+                            output_queue.push_msg(index_ai::render_markdown(resp.content));
                             tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
                             tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                         } else {
-                            output_queue.push("ERR: " + resp.error + "\n");
+                            output_queue.push_msg("ERR: " + resp.error);
                         }
                     } catch (const std::exception& ex) {
                         thinking.stop();
-                        output_queue.push("ERR: " + std::string(ex.what()) + "\n");
+                        output_queue.push_msg("ERR: " + std::string(ex.what()));
                     }
                 } else if (subcmd == "show") {
                     std::string mem = read_memory(current_agent);
                     if (mem.empty())
-                        output_queue.push("No memory for " + current_agent + "\n");
+                        output_queue.push_msg("No memory for " + current_agent);
                     else
-                        output_queue.push(mem + "\n");
+                        output_queue.push_msg(mem);
                 } else if (subcmd == "clear") {
                     std::string path = get_memory_dir() + "/" + current_agent + ".md";
                     fs::remove(path);
-                    output_queue.push("Memory cleared for " + current_agent + "\n");
+                    output_queue.push_msg("Memory cleared for " + current_agent);
                 } else {
-                    output_queue.push("Usage: /mem write <text> | /mem read | /mem show | /mem clear\n"
-                                      "       /mem shared write <text> | /mem shared read | /mem shared clear\n");
+                    output_queue.push_msg("Usage: /mem write <text> | /mem read | /mem show | /mem clear\n"
+                                      "       /mem shared write <text> | /mem shared read | /mem shared clear");
                 }
                 return;
             }
@@ -701,15 +698,15 @@ static void cmd_interactive() {
                 std::string id, model;
                 iss >> id >> model;
                 if (id.empty() || model.empty()) {
-                    output_queue.push("Usage: /model <agent-id> <model-id>\n");
-                    output_queue.push("  e.g. /model research claude-haiku-4-5-20251001\n");
+                    output_queue.push_msg("Usage: /model <agent-id> <model-id>\n"
+                                      "  e.g. /model research claude-haiku-4-5-20251001");
                     return;
                 }
                 try {
                     orch.get_agent(id).config_mut().model = model;
-                    output_queue.push(id + " model -> " + model + "\n");
+                    output_queue.push_msg(id + " model -> " + model);
                 } catch (const std::exception& ex) {
-                    output_queue.push("ERR: " + std::string(ex.what()) + "\n");
+                    output_queue.push_msg("ERR: " + std::string(ex.what()));
                 }
                 return;
             }
@@ -717,37 +714,37 @@ static void cmd_interactive() {
                 std::string subcmd;
                 iss >> subcmd;
                 if (subcmd != "execute") {
-                    output_queue.push("Usage: /plan execute <path>\n"
+                    output_queue.push_msg("Usage: /plan execute <path>\n"
                                       "  Runs a plan file produced by /agent planner, executing each\n"
-                                      "  phase sequentially and injecting prior outputs into dependents.\n");
+                                      "  phase sequentially and injecting prior outputs into dependents.");
                     return;
                 }
                 std::string path;
                 iss >> path;
                 if (path.empty()) {
-                    output_queue.push("Usage: /plan execute <path>\n");
+                    output_queue.push_msg("Usage: /plan execute <path>");
                     return;
                 }
-                output_queue.push("\033[2m[plan] executing: " + path + "]\033[0m\n");
+                output_queue.push_msg("\033[2m[plan] executing: " + path + "]\033[0m");
                 auto result = orch.execute_plan(path,
                     [&](const std::string& msg) {
-                        output_queue.push("\033[2m" + msg + "\033[0m\n");
+                        output_queue.push_msg("\033[2m" + msg + "\033[0m");
                     });
                 if (!result.ok) {
-                    output_queue.push("\033[38;5;167m[plan] failed: " + result.error + "\033[0m\n");
+                    output_queue.push_msg("\033[38;5;167m[plan] failed: " + result.error + "\033[0m");
                 } else {
-                    output_queue.push("\033[2m[plan] complete — " +
-                                      std::to_string(result.phases.size()) + " phase(s) executed]\033[0m\n");
+                    output_queue.push_msg("\033[2m[plan] complete — " +
+                                      std::to_string(result.phases.size()) + " phase(s) executed]\033[0m");
                     // Print final phase output (the deliverable)
                     if (!result.phases.empty()) {
                         auto& [num, name, out] = result.phases.back();
-                        output_queue.push(index_ai::render_markdown(out) + "\n");
+                        output_queue.push_msg(index_ai::render_markdown(out));
                     }
                 }
                 return;
             }
             if (cmd == "help") {
-                output_queue.push(
+                output_queue.push_msg(
                     "Commands:\n"
                     "  /send <agent> <msg>              — send to specific agent\n"
                     "  /ask <query>                     — ask index master\n"
@@ -783,17 +780,16 @@ static void cmd_interactive() {
                     "\n"
                     "  /quit                            — exit\n"
                     "\n"
-                    "Plain text sends to current agent.\n\n");
+                    "Plain text sends to current agent.");
                 return;
             }
 
-            output_queue.push("Unknown command. /help for list.\n");
+            output_queue.push_msg("Unknown command. /help for list.");
             return;
         }
 
         // Plain text → stream to current agent
         try {
-            output_queue.push("\n");
             index_ai::MarkdownRenderer md;
             auto resp = orch.send_streaming(current_agent, line,
                 [&md, &output_queue](const std::string& chunk) {
@@ -802,16 +798,18 @@ static void cmd_interactive() {
                 });
             auto tail = md.flush();
             if (!tail.empty()) output_queue.push(tail);
-            output_queue.push("\n\n");
+            // md.flush() guarantees the stream ended on `\n`; one more gives
+            // exactly one blank line before the next message.
+            output_queue.end_message();
             if (resp.ok) {
                 tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
                 tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                 maybe_generate_title(line, resp.content);
             } else {
-                output_queue.push("\033[38;5;167mERR: " + resp.error + "\033[0m\n");
+                output_queue.push_msg("\033[38;5;167mERR: " + resp.error + "\033[0m");
             }
         } catch (const std::exception& e) {
-            output_queue.push("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m\n");
+            output_queue.push_msg("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m");
         }
         thinking.stop();
     };  // end handle lambda
@@ -875,7 +873,7 @@ static void cmd_interactive() {
     editor.set_cancel_handler([&]() {
         orch.cancel();
         multiline_accum.clear();
-        output_queue.push("\n\033[38;5;167m[interrupted]\033[0m\n");
+        output_queue.push_msg("\033[38;5;167m[interrupted]\033[0m");
     });
 
     // ── Output pump ────────────────────────────────────────────────────────
@@ -941,7 +939,16 @@ static void cmd_interactive() {
         unsigned char ch = 0;
         ssize_t n = ::read(STDIN_FILENO, &ch, 1);
         bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
-        std::string answer = yes ? std::string("y\n\n") : std::string("n\n\n");
+        // Render the answer as a standalone status line, NOT the raw y/n.
+        // Leading \n is critical — the cursor move lands us on the row that
+        // already holds the prompt, and writing any glyph there overwrites
+        // its first character.  A leading newline scrolls the region up
+        // first so the status lands on a fresh row below the prompt.
+        // Green for accept, red for deny — semantic, matches the rest of
+        // the TUI's color vocabulary (214 orange for the question itself).
+        std::string answer = yes
+            ? std::string("\n\033[38;5;108m[user accepted input]\033[0m\n")
+            : std::string("\n\033[38;5;167m[user denied input]\033[0m\n");
         history.push(answer);
         {
             std::lock_guard<std::recursive_mutex> lk(tui.tty_mutex());
@@ -1031,29 +1038,16 @@ static void cmd_interactive() {
         // Echo the user's prompt into the scroll region so it persists in the
         // session view rather than disappearing when enter is pressed.
         // Styled with a muted arrow prefix to distinguish it from model output.
-        {
-            // Drain any output that arrived while readline was active so the
-            // echo lands after previous command output, not mid-stream.
-            std::string pending = output_queue.drain();
-            if (!pending.empty()) {
-                printf("\0337");
-                printf("\033[%d;1H", tui.last_scroll_row());
-                fwrite(pending.data(), 1, pending.size(), stdout);
-                printf("\0338");
-                fflush(stdout);
-            }
-
-            std::string echo = "\033[38;5;244m> \033[38;5;250m" + line + "\033[0m\n";
-            history.push(echo);
-            {
-                std::lock_guard<std::recursive_mutex> lk(tui.tty_mutex());
-                printf("\0337");
-                printf("\033[%d;1H", tui.last_scroll_row());
-                fwrite_crlf(echo);
-                printf("\0338");
-                fflush(stdout);
-            }
-        }
+        // Route the user-input echo through the output_queue so the pump
+        // owns every scroll-region write.  The prior version did a lockless
+        // pre-drain and then a separate direct stdout write to paint the
+        // echo — if the pump thread was mid-write under tty_mutex at the
+        // same moment, those two printf sequences could interleave and leave
+        // fragments of the bottom separator inside the scroll region.
+        // Queue ordering is FIFO, so exec-thread output still appears after
+        // the user's echo, and the pump serialises all writes.
+        output_queue.push_msg(
+            "\033[38;5;244m> \033[38;5;250m" + line + "\033[0m");
 
         bool was_busy = cmd_queue.is_busy();
         cmd_queue.push(line);
