@@ -283,7 +283,7 @@ void TUI::draw_welcome(ScrollBuffer& history) {
     static const char* kText[3] = {
         "hello, i am index.",
         "",
-        "what would you like to accompplish today?",
+        "what would you like to accomplish today?",
     };
 
     auto cell_w = [](const char* s) {

@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
+#include <openssl/crypto.h>
 
 namespace index_ai {
 
@@ -43,8 +44,13 @@ static ParsedHost parse_host(const std::string& s,
     auto colon = rest.find(':');
     if (colon != std::string::npos) {
         r.host = rest.substr(0, colon);
-        r.port = std::atoi(rest.c_str() + colon + 1);
-        if (r.port <= 0) r.port = default_port;
+        const char* port_start = rest.c_str() + colon + 1;
+        char* end = nullptr;
+        long parsed = std::strtol(port_start, &end, 10);
+        if (end == port_start || parsed < 1 || parsed > 65535)
+            r.port = default_port;
+        else
+            r.port = static_cast<int>(parsed);
     } else {
         r.host = rest;
     }
@@ -123,9 +129,11 @@ std::string strip_model_prefix(const std::string& model) {
 // ─── ApiClient lifecycle ─────────────────────────────────────────────────────
 
 ApiClient::ApiClient(const std::string& api_key) : api_key_(api_key) {
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_library_init();
     SSL_load_error_strings();
     OpenSSL_add_all_algorithms();
+#endif
 
     ssl_ctx_ = SSL_CTX_new(TLS_client_method());
     if (!ssl_ctx_) throw std::runtime_error("Failed to create SSL context");
@@ -135,11 +143,33 @@ ApiClient::ApiClient(const std::string& api_key) : api_key_(api_key) {
 }
 
 ApiClient::~ApiClient() {
+    if (!api_key_.empty()) {
+        OPENSSL_cleanse(api_key_.data(), api_key_.size());
+        api_key_.clear();
+    }
     for (auto& [_, c] : conns_) close_connection(c);
     if (ssl_ctx_) SSL_CTX_free(ssl_ctx_);
 }
 
 // ─── Connection management ───────────────────────────────────────────────────
+
+namespace {
+// RAII wrapper for socket file descriptors — prevents leaks on exception paths.
+struct unique_fd {
+    int fd = -1;
+    unique_fd() = default;
+    explicit unique_fd(int f) : fd(f) {}
+    ~unique_fd() { if (fd >= 0) ::close(fd); }
+    unique_fd(const unique_fd&) = delete;
+    unique_fd& operator=(const unique_fd&) = delete;
+    unique_fd(unique_fd&& o) noexcept : fd(o.fd) { o.fd = -1; }
+    unique_fd& operator=(unique_fd&& o) noexcept {
+        if (fd >= 0) ::close(fd);
+        fd = o.fd; o.fd = -1; return *this;
+    }
+    int release() noexcept { int f = fd; fd = -1; return f; }
+};
+} // namespace
 
 bool ApiClient::ensure_connection(const Provider& p, Conn& c) {
     if (c.connected) return true;
@@ -162,33 +192,32 @@ bool ApiClient::ensure_connection(const Provider& p, Conn& c) {
     // entry we'd get ECONNREFUSED against the IPv6 address and never
     // discover that 127.0.0.1 works.  curl walks the list; we do too.
     std::string last_connect_err;
-    int sock = -1;
+    unique_fd guard;
     for (struct addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
-        sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (sock < 0) {
+        guard = unique_fd(socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol));
+        if (guard.fd < 0) {
             last_connect_err = std::string("socket() failed: ") + strerror(errno);
             continue;
         }
         int flag = 1;
-        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+        setsockopt(guard.fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
-        if (connect(sock, ai->ai_addr, ai->ai_addrlen) == 0) {
+        if (connect(guard.fd, ai->ai_addr, ai->ai_addrlen) == 0) {
             break;                                     // success
         }
         last_connect_err = std::string("connect() failed (") + p.host + ":" +
                            port_str + "): " + strerror(errno);
-        close(sock);
-        sock = -1;
+        guard = unique_fd{};  // close and reset
     }
     freeaddrinfo(res);
 
-    if (sock < 0) {
+    if (guard.fd < 0) {
         c.last_error = last_connect_err.empty()
             ? "connect() failed: no usable address returned by getaddrinfo"
             : last_connect_err;
         return false;
     }
-    c.sock = sock;
+    c.sock = guard.release();  // transfer ownership to Conn
 
     c.tls = p.tls;
     if (p.tls) {
@@ -236,18 +265,6 @@ void ApiClient::cancel() {
 }
 
 // ─── I/O helpers (format-agnostic) ───────────────────────────────────────────
-
-namespace {
-
-// Unified read/write that respects TLS vs plain TCP.
-static int conn_write(ApiClient::Conn& c_like, const char* data, int n) {
-    // c_like is a forward-declared-looking hack; we can't forward-declare
-    // ApiClient::Conn in an anonymous namespace so we template it.
-    (void)c_like; (void)data; (void)n;
-    return -1;
-}
-
-} // namespace
 
 // Internal helpers — non-namespace-anon so they can friend into ApiClient::Conn.
 static int conn_send(index_ai::ApiClient::Conn& c, const char* data, int n) {
@@ -410,6 +427,7 @@ static int parse_http_status(const std::string& headers) {
 static bool read_http_headers(index_ai::ApiClient::Conn& c,
                               std::string& headers,
                               std::string& leftover) {
+    static constexpr size_t kMaxHeaderSize = 65536;
     headers.clear();
     headers.reserve(2048);
     leftover.clear();
@@ -419,6 +437,7 @@ static bool read_http_headers(index_ai::ApiClient::Conn& c,
         if (n <= 0) return false;
         size_t old_len = headers.size();
         headers.append(buf, n);
+        if (headers.size() > kMaxHeaderSize) return false;
         size_t scan_from = old_len >= 3 ? old_len - 3 : 0;
         for (size_t i = scan_from; i + 4 <= headers.size(); ++i) {
             if (headers[i]     == '\r' && headers[i + 1] == '\n' &&
@@ -801,7 +820,9 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
                 process_line(line_buf);
                 line_buf.clear();
             } else {
-                line_buf += data[i];
+                static constexpr size_t kMaxLineSize = 1048576;
+                if (line_buf.size() < kMaxLineSize)
+                    line_buf += data[i];
             }
         }
     };

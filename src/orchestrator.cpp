@@ -27,6 +27,14 @@ Orchestrator::Orchestrator(const std::string& api_key)
 }
 
 Agent& Orchestrator::create_agent(const std::string& id, Constitution config) {
+    if (id.empty())
+        throw std::runtime_error("Agent ID must not be empty");
+    for (char c : id) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
+            throw std::runtime_error(
+                "Agent ID contains invalid character: '" +
+                std::string(1, c) + "' — use [a-zA-Z0-9_-]");
+    }
     std::lock_guard<std::mutex> lock(agents_mutex_);
     if (agents_.count(id)) {
         throw std::runtime_error("Agent already exists: " + id);
@@ -83,13 +91,16 @@ void Orchestrator::load_agents(const std::string& dir) {
 }
 
 // Build an AgentInvoker that runs a sub-agent through the full dispatch loop.
-AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth) {
+AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
+                                       std::map<std::string, std::string>* shared_cache,
+                                       const std::string& original_query) {
     if (depth >= 2) {
         return [](const std::string&, const std::string&) -> std::string {
             return "ERR: delegation depth limit reached (max 2 levels)";
         };
     }
-    return [this, caller_id, depth](const std::string& sub_id, const std::string& sub_msg) -> std::string {
+    return [this, caller_id, depth, shared_cache, original_query](
+               const std::string& sub_id, const std::string& sub_msg) -> std::string {
         if (sub_id == caller_id) return "ERR: agent cannot invoke itself";
         if (sub_id == "index") return "ERR: index cannot be delegated to";
         {
@@ -97,9 +108,28 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth)
             if (!agents_.count(sub_id))
                 return "ERR: no agent '" + sub_id + "'";
         }
+
+        // Inject delegation context so sub-agent knows the user's goal
+        // and its position in the pipeline.
+        std::string enriched_msg;
+        if (!original_query.empty()) {
+            std::string truncated_query = original_query.substr(
+                0, std::min<size_t>(200, original_query.size()));
+            enriched_msg =
+                "[DELEGATION CONTEXT]\n"
+                "Original request: " + truncated_query + "\n"
+                "Delegated by: " + caller_id + "\n"
+                "Pipeline depth: " + std::to_string(depth + 1) + "/2\n"
+                "[END DELEGATION CONTEXT]\n\n" + sub_msg;
+        } else {
+            enriched_msg = sub_msg;
+        }
+
         // Run the full agentic dispatch loop for the sub-agent so it has
         // access to its own tools (/fetch, /exec, /write, /agent, /mem).
-        auto resp = send_internal(sub_id, sub_msg, depth + 1);
+        // Shared cache propagates so sub-agents don't re-fetch URLs.
+        auto resp = send_internal(sub_id, enriched_msg, depth + 1,
+                                  shared_cache, original_query);
         return resp.ok ? resp.content : "ERR: " + resp.error;
     };
 }
@@ -177,9 +207,16 @@ void Orchestrator::set_compact_callback(CompactCallback cb) {
 // Core agentic dispatch loop
 ApiResponse Orchestrator::send_internal(const std::string& agent_id,
                                         const std::string& message,
-                                        int depth) {
+                                        int depth,
+                                        std::map<std::string, std::string>* shared_cache,
+                                        const std::string& original_query) {
     Agent* agent_ptr;
     std::string current_msg;
+
+    // At depth 0, create the shared cache and extract the original query.
+    std::map<std::string, std::string> local_cache;
+    if (!shared_cache) shared_cache = &local_cache;
+    std::string orig_q = original_query.empty() ? message : original_query;
 
     if (agent_id == "index") {
         agent_ptr   = index_master_.get();
@@ -189,15 +226,8 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         current_msg = message;
     }
 
-    auto invoker         = make_invoker(agent_id, depth);
+    auto invoker         = make_invoker(agent_id, depth, shared_cache, orig_q);
     auto advisor_invoker = make_advisor_invoker(agent_id);
-
-    // Per-dispatch dedup cache.  Shared with execute_agent_commands which
-    // consults it to short-circuit repeated (cmd, args) pairs — a same-turn
-    // second call is replaced by a synthetic DUPLICATE block that quotes the
-    // prior result, so the model is told "you already ran this, adapt" rather
-    // than given the chance to burn tokens on an identical re-dispatch.
-    std::map<std::string, std::string> dedup_cache;
 
     ApiResponse resp;
     static constexpr int kMaxTurns = 6;
@@ -221,7 +251,7 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
 
         resp.had_tool_calls = true;
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
-                                              invoker, confirm_cb_, &dedup_cache,
+                                              invoker, confirm_cb_, shared_cache,
                                               advisor_invoker);
     }
 
@@ -309,12 +339,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     recover_truncated_writes(agent_ptr, resp, cmds, cb);
     if (cmds.empty()) return resp;
 
-    auto invoker         = make_invoker(agent_id, 0);
+    std::map<std::string, std::string> shared_cache;
+    auto invoker         = make_invoker(agent_id, 0, &shared_cache, message);
     auto advisor_invoker = make_advisor_invoker(agent_id);
-
-    // Per-dispatch dedup cache.  Shared with execute_agent_commands which
-    // consults it to silently drop same-turn repeats of (cmd, args[, content]).
-    std::map<std::string, std::string> dedup_cache;
 
     // Tool-call re-entry turns: stream each so the user can follow progress
     resp.had_tool_calls = true;
@@ -322,7 +349,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     for (int i = 0; i < kMaxReentryTurns; ++i) {
         cb("\n");
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
-                                              invoker, confirm_cb_, &dedup_cache,
+                                              invoker, confirm_cb_, &shared_cache,
                                               advisor_invoker);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) return resp;
@@ -365,88 +392,28 @@ static std::string short_model(const std::string& model) {
     return s;
 }
 
-// Return the first N words of a rule string, with "…" if truncated.
-static std::string condense_rule(const std::string& rule, int max_words = 7) {
-    std::istringstream iss(rule);
-    std::string word, out;
-    int n = 0;
-    while (iss >> word && n < max_words) {
-        if (n) out += ' ';
-        // Strip leading punctuation artifacts like "-" or "—"
-        size_t start = word.find_first_not_of("-—•*");
-        if (start != std::string::npos && start > 0) word = word.substr(start);
-        if (word.empty()) continue;
-        out += word;
-        ++n;
-    }
-    if (iss >> word) out += "…";
-    return out;
-}
-
 std::string Orchestrator::global_status() const {
     std::lock_guard<std::mutex> lock(agents_mutex_);
     std::ostringstream ss;
 
     if (agents_.empty()) {
-        ss << "AVAILABLE AGENTS: none loaded\n";
+        ss << "AGENTS: none loaded\n";
     } else {
-        ss << "AVAILABLE AGENTS — delegate with /agent <id> <task>:\n";
+        ss << "AGENTS — delegate with /agent <id> <task>:\n";
         for (auto& [id, agent] : agents_) {
-            const auto& cfg  = agent->config();
-            const auto& st   = agent->stats();
-            const auto& hist = agent->history();
-
-            // Line 1: id  [role]  model  brevity  [mode:X]  [advisor:Y]
+            const auto& cfg = agent->config();
+            // One compact line per agent: id [role] model — goal
             ss << "  " << id;
             if (!cfg.role.empty())
-                ss << "  [" << cfg.role << "]";
-            ss << "  " << short_model(cfg.model);
-            if (!cfg.mode.empty())
-                ss << "  mode:" << cfg.mode;
-            else
-                ss << "  " << brevity_to_string(cfg.brevity);
+                ss << " [" << cfg.role << "]";
+            ss << " " << short_model(cfg.model);
             if (!cfg.advisor_model.empty())
-                ss << "  advisor:" << short_model(cfg.advisor_model);
-            ss << "\n";
-
-            // Line 2: Goal
+                ss << "+advisor:" << short_model(cfg.advisor_model);
             if (!cfg.goal.empty())
-                ss << "    Goal: " << cfg.goal << "\n";
-
-            // Line 3: Capabilities (explicit list, or implicit from rules)
-            if (!cfg.capabilities.empty()) {
-                ss << "    Capabilities:";
-                for (auto& cap : cfg.capabilities) ss << " " << cap;
-                ss << "\n";
-            }
-
-            // Line 4: Rules — condensed to first 7 words each, joined with ·
-            if (!cfg.rules.empty()) {
-                ss << "    Rules: ";
-                bool first = true;
-                for (auto& r : cfg.rules) {
-                    std::string condensed = condense_rule(r);
-                    if (condensed.empty()) continue;
-                    if (!first) ss << " · ";
-                    ss << condensed;
-                    first = false;
-                }
-                ss << "\n";
-            }
-
-            // Line 5: context depth + request stats
-            ss << "    Context: " << hist.size() << " msgs"
-               << "  reqs:" << st.total_requests
-               << "  in:" << st.total_input_tokens
-               << "  out:" << st.total_output_tokens;
-            if (!agent->context_summary().empty())
-                ss << "  [compacted]";
+                ss << " — " << cfg.goal;
             ss << "\n";
         }
     }
-
-    ss << "SESSION: in:" << client_.total_input_tokens()
-       << " out:" << client_.total_output_tokens() << "\n";
 
     return ss.str();
 }

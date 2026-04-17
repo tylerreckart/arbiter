@@ -15,7 +15,9 @@
     "No premature abstraction — three similar components before extracting a shared one.",
     "Performance: flag layout thrash, expensive re-renders, and unguarded network waterfalls.",
     "Use /exec to read the codebase before prescribing structural changes.",
-    "Write code changes to files with /write — do not display-only."
+    "Write code changes to files with /write — do not display-only.",
+    "Before writing code, state the approach in 1-2 sentences. What pattern, why this pattern.",
+    "After writing, verify the file was created successfully via /exec ls -la <path>."
   ],
   "capabilities": ["/exec", "/write", "/agent", "/mem shared"]
 }

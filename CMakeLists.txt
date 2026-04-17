@@ -14,16 +14,27 @@ endif()
 
 # --- Sanitizer options (debug builds) ---
 option(INDEX_AI_ASAN "Enable AddressSanitizer" OFF)
+option(INDEX_AI_TSAN "Enable ThreadSanitizer" OFF)
+if(INDEX_AI_ASAN AND INDEX_AI_TSAN)
+    message(FATAL_ERROR "ASAN and TSAN cannot be enabled simultaneously")
+endif()
 if(INDEX_AI_ASAN)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address)
+endif()
+if(INDEX_AI_TSAN)
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=thread)
 endif()
 
 # --- Find system deps ---
 find_package(Threads REQUIRED)
 
-# OpenSSL / LibreSSL for TLS
-find_package(OpenSSL REQUIRED)
+# OpenSSL / LibreSSL for TLS (1.1+ required; deprecated init APIs removed)
+find_package(OpenSSL 1.1 REQUIRED)
+
+# libcurl for safe HTTP fetching (no shell injection via popen)
+find_package(CURL REQUIRED)
 
 # --- Source files ---
 set(INDEX_AI_SOURCES
@@ -65,6 +76,7 @@ target_link_libraries(index PRIVATE
     Threads::Threads
     OpenSSL::SSL
     OpenSSL::Crypto
+    CURL::libcurl
 )
 
 # --- Readline / libedit for interactive line editing ---
@@ -128,4 +140,25 @@ if(INDEX_BUILD_TESTS)
     add_test(NAME tui_integration COMMAND index_tests)
     # The tests spawn index; they'll fail fast if the binary isn't built yet.
     add_dependencies(index_tests index)
+
+    # --- Unit tests for security-critical command functions ---
+    add_executable(unit_commands
+        tests/test_commands.cpp
+        src/commands.cpp
+    )
+    target_include_directories(unit_commands PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_commands PRIVATE CURL::libcurl)
+    add_test(NAME unit_commands COMMAND unit_commands)
+
+    # --- Unit tests for API client parsing logic ---
+    add_executable(unit_api_client
+        tests/test_api_client.cpp
+    )
+    target_include_directories(unit_api_client PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_api_client COMMAND unit_api_client)
 endif()

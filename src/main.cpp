@@ -628,8 +628,8 @@ static void cmd_interactive() {
                             output_queue.push_msg("Usage: /mem shared write <text>");
                             return;
                         }
-                        index_ai::cmd_mem_shared_write(text, get_memory_dir());
-                        output_queue.push_msg("Written to shared scratchpad");
+                        std::string wr = index_ai::cmd_mem_shared_write(text, get_memory_dir());
+                        output_queue.push_msg(wr.substr(0, 3) == "ERR" ? wr : "Written to shared scratchpad");
                     } else if (action == "read" || action == "show") {
                         std::string mem = index_ai::cmd_mem_shared_read(get_memory_dir());
                         if (mem.empty())
@@ -637,8 +637,8 @@ static void cmd_interactive() {
                         else
                             output_queue.push_msg(mem);
                     } else if (action == "clear") {
-                        index_ai::cmd_mem_shared_clear(get_memory_dir());
-                        output_queue.push_msg("Shared scratchpad cleared");
+                        std::string cr = index_ai::cmd_mem_shared_clear(get_memory_dir());
+                        output_queue.push_msg(cr.substr(0, 3) == "ERR" ? cr : "Shared scratchpad cleared");
                     } else {
                         output_queue.push_msg("Usage: /mem shared write <text> | /mem shared read | /mem shared clear");
                     }

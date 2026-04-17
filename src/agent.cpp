@@ -212,19 +212,37 @@ std::string Agent::compact() {
         transcript << m.role << ": " << m.content << "\n\n";
     }
 
-    // One-shot summarization request — does NOT touch history_.
+    // One-shot fact-extraction request — does NOT touch history_.
     ApiRequest req;
     req.model       = config_.model;
-    req.max_tokens  = 1024;
-    req.temperature = 0.3;
+    req.max_tokens  = 1536;
+    req.temperature = 0.2;
     req.system_prompt =
-        "You are a context compactor. Given a conversation transcript, produce a "
-        "concise continuity summary. Capture: decisions made, facts established, "
-        "tasks completed or in-progress, open questions, and current working state. "
-        "Plain text only. No markdown. No pleasantries. Be as brief as the content allows.";
+        "You are a context compactor. Extract structured facts from the transcript.\n\n"
+        "OUTPUT FORMAT — use exactly these sections, omit empty ones:\n\n"
+        "DECISIONS:\n"
+        "- <decision made> (rationale: <why>)\n\n"
+        "FACTS:\n"
+        "- <concrete fact: file paths, URLs, identifiers, numbers, versions, configs>\n\n"
+        "CODE:\n"
+        "- <code snippets, commands, or technical identifiers discussed or produced>\n\n"
+        "TASKS:\n"
+        "- [DONE] <completed task>\n"
+        "- [IN-PROGRESS] <task started but not finished — state what remains>\n"
+        "- [BLOCKED] <task that cannot proceed — state the blocker>\n\n"
+        "OPEN QUESTIONS:\n"
+        "- <unresolved question or ambiguity>\n\n"
+        "WORKING STATE:\n"
+        "- Current focus: <what the conversation was actively working on>\n"
+        "- Next action: <what should happen next>\n\n"
+        "Rules:\n"
+        "- Preserve exact names: file paths, URLs, function names, variable names, error messages.\n"
+        "- Numbers and versions verbatim — never round or paraphrase.\n"
+        "- One fact per bullet. No prose paragraphs.\n"
+        "- If the transcript is trivial (greetings, single Q&A), output only the relevant sections.";
     req.messages = {{
         "user",
-        "Summarize this conversation for context continuity:\n\n"
+        "Extract structured facts from this transcript:\n\n"
         "[TRANSCRIPT]\n" + transcript.str() + "[END TRANSCRIPT]"
     }};
 

@@ -121,7 +121,21 @@ static std::string index_ai_prompt(Brevity level) {
         "- Save facts, findings, preferences, or context worth keeping: use /mem write.\n"
         "  Write to memory proactively when you learn something the user will want\n"
         "  retained across sessions, or when explicitly asked to remember something.\n"
-        "- Before a long research task, load context with /mem read if memory may exist.\n";
+        "- Before a long research task, load context with /mem read if memory may exist.\n"
+
+        "\nREASONING:\n"
+        "- Before acting, state your plan in 1-2 sentences. What will you do and why?\n"
+        "- Before reporting a result, verify it: re-read the user's request, check every part is addressed.\n"
+        "- When a tool result is unexpected, diagnose before retrying. State what you expected vs. got.\n"
+        "- If multiple approaches exist, pick one and state why. Do not enumerate options unless asked.\n"
+        "- When delegating, state what you expect back, then verify the response meets that expectation.\n"
+
+        "\nINTER-AGENT RESPONSE FORMAT:\n"
+        "When invoked via /agent (your output goes to another agent, not the user):\n"
+        "- Lead with RESULT: <one-sentence summary of what you found or did>\n"
+        "- Follow with DETAILS: <structured findings, one bullet per fact>\n"
+        "- End with ARTIFACTS: <list of file paths, URLs, or identifiers produced>\n"
+        "- If incomplete: lead with INCOMPLETE: <what's missing and why>\n";
 
     return base;
 }
@@ -434,12 +448,17 @@ Constitution master_constitution() {
         "  2. FORMAT — file/markdown/shell output, length, structure.",
         "  3. CONSTRAINTS — audience, tone, tech stack, budget, style, must-avoid.",
         "  4. VERBATIM — URLs, file paths, identifiers, code snippets, quoted text to preserve unchanged.",
-        "  5. CONTEXT — prior findings from earlier agents in this pipeline, if any.",
+        "  5. PRIOR FINDINGS — if a previous agent produced results for this pipeline, include key facts "
+        "(not the full output). Max 500 characters. Omit if this is the first agent in the chain.",
         "  6. SUCCESS — what makes this done (e.g. 'file exists at X', 'N sources cited', 'builds clean').",
         "Example — instead of '/agent research what is X', use: "
         "'/agent research GOAL: gather facts on X for a technical audience. "
         "FORMAT: bulleted list with sources. CONSTRAINTS: focus on Y and Z, skip marketing fluff. "
         "SUCCESS: at least 5 sources with publication dates and confidence levels.'",
+
+        // Pipeline output truncation
+        "When an agent response exceeds 2000 characters, extract the key deliverables and facts "
+        "before passing them to the next agent in a pipeline. Do not forward raw multi-KB outputs.",
 
         // Pipeline composition
         "Compose pipelines for complex tasks. Chain sequentially — each step feeds the next. Examples:",
