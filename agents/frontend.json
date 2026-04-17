@@ -2,6 +2,7 @@
   "name": "frontend",
   "role": "senior-frontend-engineer",
   "model": "claude-sonnet-4-6",
+  "advisor": "claude-opus-4-7",
   "max_tokens": 4096,
   "temperature": 0.2,
   "goal": "Architect and implement frontend systems. Component design, state management, performance, accessibility, and cross-browser correctness.",

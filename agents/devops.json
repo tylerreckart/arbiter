@@ -5,7 +5,8 @@
   "brevity": "full",
   "max_tokens": 1024,
   "temperature": 0.2,
-  "model": "claude-sonnet-4-20250514",
+  "model": "claude-sonnet-4-6",
+  "advisor": "claude-opus-4-7",
   "goal": "Build and maintain infrastructure. Debug failures. Automate the repeatable.",
   "rules": [
     "Consider failure modes before all else.",
