@@ -183,6 +183,8 @@ It emits this command in its response just like `/fetch` or `/agent`. The orches
 - The constitution layer caps consultation at two `/advise` calls per turn — a third desired consult means the task is under-scoped and the executor is told to deliver what it has and flag the open question.
 - The advisor's tokens post to the *caller's* cost ledger using the advisor's model pricing. `/tokens` shows exactly which agent drove which advisor spend, even across providers.
 
+![Screenshot of the agent advisor loop](./content/research.png)
+
 ## Model providers
 
 Each agent's `model` field is routed by prefix:

@@ -284,7 +284,7 @@ std::string ApiClient::build_body_anthropic(const ApiRequest& req, bool streamin
     auto& m = obj->as_object_mut();
     m["model"] = jstr(req.model);
     m["max_tokens"] = jnum(static_cast<double>(req.max_tokens));
-    m["temperature"] = jnum(req.temperature);
+    if (req.include_temperature) m["temperature"] = jnum(req.temperature);
 
     if (!req.system_prompt.empty()) {
         auto cache_ctrl = jobj();
@@ -349,7 +349,7 @@ std::string ApiClient::build_body_openai(const ApiRequest& req, bool streaming) 
     auto& m = obj->as_object_mut();
     m["model"] = jstr(strip_model_prefix(req.model));
     m["max_tokens"] = jnum(static_cast<double>(req.max_tokens));
-    m["temperature"] = jnum(req.temperature);
+    if (req.include_temperature) m["temperature"] = jnum(req.temperature);
     if (streaming) m["stream"] = jbool(true);
 
     auto msgs = jarr();

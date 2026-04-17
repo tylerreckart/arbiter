@@ -156,9 +156,9 @@ AdvisorInvoker Orchestrator::make_advisor_invoker(const std::string& caller_id) 
         // Anthropic's beta advisor tool was designed to be used).  This
         // keeps advisor calls cheap, cache-friendly, and predictable.
         ApiRequest req;
-        req.model         = advisor_model;
-        req.max_tokens    = 1024;      // advisor replies are meant to be short
-        req.temperature   = 0.3;       // deterministic judgment
+        req.model               = advisor_model;
+        req.max_tokens          = 1024;  // advisor replies are meant to be short
+        req.include_temperature = false; // deprecated for claude-opus-4-7
         req.system_prompt =
             "You are an advisor consulted by another AI agent.  Answer the "
             "question directly and concisely.  Prescribe a specific option "

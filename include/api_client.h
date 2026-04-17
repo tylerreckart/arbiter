@@ -28,6 +28,7 @@ struct ApiRequest {
     std::vector<Message> messages;
     int max_tokens = 1024;
     double temperature = 0.3;
+    bool include_temperature = true;
 };
 
 struct ApiResponse {
