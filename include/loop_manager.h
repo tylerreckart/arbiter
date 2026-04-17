@@ -73,6 +73,8 @@ struct LoopEntry {
     LoopEntry() = default;
     LoopEntry(const LoopEntry&) = delete;
     LoopEntry& operator=(const LoopEntry&) = delete;
+    LoopEntry(LoopEntry&&) = delete;
+    LoopEntry& operator=(LoopEntry&&) = delete;
 };
 
 class LoopManager {

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <curl/curl.h>
 
 namespace fs = std::filesystem;
 
@@ -194,49 +195,68 @@ static std::string html_to_text(const std::string& html) {
 }
 
 // ---------------------------------------------------------------------------
-// cmd_fetch
+// cmd_fetch  (libcurl — no shell invocation)
 // ---------------------------------------------------------------------------
 
+namespace {
+struct FetchBuffer {
+    std::string data;
+    static constexpr size_t kMaxSize = 512 * 1024;
+};
+
+static size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* buf = static_cast<FetchBuffer*>(userdata);
+    size_t bytes = size * nmemb;
+    if (buf->data.size() + bytes > FetchBuffer::kMaxSize) return 0;
+    buf->data.append(ptr, bytes);
+    return bytes;
+}
+} // namespace
+
 std::string cmd_fetch(const std::string& url) {
-    // Must start with http:// or https://
     if (url.substr(0, 7) != "http://" && url.substr(0, 8) != "https://")
         return "ERR: URL must start with http:// or https://";
 
-    // Reject shell metacharacters to prevent injection
-    for (char c : url) {
-        if (c == '\'' || c == '"' || c == '`' || c == '$' ||
-            c == ';'  || c == '&' || c == '|' || c == '>' ||
-            c == '<'  || c == '\n'|| c == '\r') {
-            return "ERR: URL contains invalid characters";
-        }
-    }
+    CURL* curl = curl_easy_init();
+    if (!curl) return "ERR: failed to initialize curl";
 
-    std::string cmd = "curl -sL --max-time 15 --max-filesize 524288 '" + url + "' 2>&1";
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) return "ERR: failed to run curl";
+    FetchBuffer buf;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE, static_cast<long>(512 * 1024));
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+#if CURL_AT_LEAST_VERSION(7, 85, 0)
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+#endif
 
-    std::string raw;
-    raw.reserve(65536);
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), pipe)) {
-        raw += buf;
-        if (raw.size() > 512 * 1024) break;
-    }
-    pclose(pipe);
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
 
-    // Strip HTML tags and boilerplate to save tokens
-    std::string result = html_to_text(raw);
-    return result;
+    if (res != CURLE_OK)
+        return std::string("ERR: ") + curl_easy_strerror(res);
+
+    return html_to_text(buf.data);
 }
 
 // ---------------------------------------------------------------------------
 // cmd_exec
 // ---------------------------------------------------------------------------
 
-std::string cmd_exec(const std::string& command) {
+std::string cmd_exec(const std::string& command, bool confirmed) {
     static constexpr size_t kMaxOutput = 32768;
 
     if (command.empty()) return "ERR: empty command";
+
+    if (!confirmed && is_destructive_exec(command))
+        return "ERR: destructive command blocked — requires confirmation";
 
     // Capture stdout and stderr together
     std::string shell_cmd = command + " 2>&1";
@@ -276,9 +296,21 @@ std::string cmd_exec(const std::string& command) {
 std::string cmd_write(const std::string& path, const std::string& content) {
     if (path.empty()) return "ERR: empty path";
 
-    // Basic path safety: reject obvious traversal tricks
-    if (path.find("..") != std::string::npos)
-        return "ERR: path traversal not permitted";
+    // Path safety: canonicalize and verify the resolved path stays within cwd.
+    std::error_code path_ec;
+    fs::path cwd = fs::current_path(path_ec);
+    if (path_ec) return "ERR: cannot determine working directory";
+
+    fs::path resolved = fs::weakly_canonical(fs::path(path), path_ec);
+    if (path_ec) return "ERR: invalid path: " + path_ec.message();
+
+    // Resolved path must be a prefix of (or equal to) cwd
+    auto resolved_str = resolved.string();
+    auto cwd_str = cwd.string();
+    if (resolved_str.size() < cwd_str.size() ||
+        resolved_str.compare(0, cwd_str.size(), cwd_str) != 0 ||
+        (resolved_str.size() > cwd_str.size() && resolved_str[cwd_str.size()] != '/'))
+        return "ERR: path escapes project directory";
 
     // Create parent directories
     fs::path p(path);
@@ -385,18 +417,25 @@ std::string cmd_mem_shared_read(const std::string& memory_dir) {
     return ss.str();
 }
 
-void cmd_mem_shared_write(const std::string& text, const std::string& memory_dir) {
-    fs::create_directories(memory_dir);
+std::string cmd_mem_shared_write(const std::string& text, const std::string& memory_dir) {
+    std::error_code ec;
+    fs::create_directories(memory_dir, ec);
+    if (ec) return "ERR: cannot create memory dir: " + ec.message();
     std::ofstream f(shared_mem_path(memory_dir), std::ios::app);
-    if (!f.is_open()) return;
+    if (!f.is_open()) return "ERR: cannot open shared scratchpad for writing";
     std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     f << "\n<!-- " << ts << " -->\n" << text << "\n";
+    if (f.fail()) return "ERR: write failed for shared scratchpad";
+    return "OK";
 }
 
-void cmd_mem_shared_clear(const std::string& memory_dir) {
-    fs::remove(shared_mem_path(memory_dir));
+std::string cmd_mem_shared_clear(const std::string& memory_dir) {
+    std::error_code ec;
+    fs::remove(shared_mem_path(memory_dir), ec);
+    if (ec) return "ERR: cannot clear shared scratchpad: " + ec.message();
+    return "OK";
 }
 
 // ---------------------------------------------------------------------------
@@ -484,15 +523,16 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         }
 
         // ── Dedup gate ────────────────────────────────────────────────────
-        // If the same (cmd, args[, content]) already ran this turn, drop the
-        // repeat silently — do NOT re-dispatch and do NOT emit anything for
-        // the user or the model.  Distinct content for /write bypasses the
-        // dedup so writing two different files to the same path still works.
+        // If the same (cmd, args[, content]) already ran this turn or by a
+        // prior agent in the pipeline, replay the cached result instead of
+        // re-executing.  This shares fetch/exec results across delegation
+        // boundaries when the shared_cache propagates from the orchestrator.
         std::string dedup_key = cmd.name + "|" + cmd.args;
         if (cmd.name == "write") {
             dedup_key += "|" + std::to_string(std::hash<std::string>{}(cmd.content));
         }
         if (dedup_cache && dedup_cache->find(dedup_key) != dedup_cache->end()) {
+            out << (*dedup_cache)[dedup_key];
             continue;
         }
 
@@ -536,16 +576,16 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     std::string text;
                     std::getline(iss, text);
                     if (!text.empty() && text[0] == ' ') text.erase(0, 1);
-                    cmd_mem_shared_write(text, memory_dir);
-                    block << "[/mem shared write] OK: written to shared scratchpad\n\n";
+                    std::string wr = cmd_mem_shared_write(text, memory_dir);
+                    block << "[/mem shared write] " << wr << "\n\n";
                 } else if (action == "read" || action == "show") {
                     std::string mem = cmd_mem_shared_read(memory_dir);
                     block << "[/mem shared read]\n"
                           << (mem.empty() ? "(shared scratchpad empty)" : mem)
                           << "\n[END SHARED MEMORY]\n\n";
                 } else if (action == "clear") {
-                    cmd_mem_shared_clear(memory_dir);
-                    block << "[/mem shared clear] OK: shared scratchpad cleared\n\n";
+                    std::string cr = cmd_mem_shared_clear(memory_dir);
+                    block << "[/mem shared clear] " << cr << "\n\n";
                 } else {
                     block << "[/mem shared] ERR: unknown action '" << action
                           << "' — use write, read, or clear\n\n";
@@ -583,7 +623,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << "ERR: user declined\n";
                 cache_result = false;  // user may want to approve a retry
             } else {
-                block << cmd_exec(cmd.args) << "\n";
+                block << cmd_exec(cmd.args, /*confirmed=*/true) << "\n";
             }
             block << "[END EXEC]\n\n";
 

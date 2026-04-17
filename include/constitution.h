@@ -21,7 +21,7 @@ struct Constitution {
     Brevity brevity = Brevity::Full;
     int     max_tokens = 1024;      // response cap
     double  temperature = 0.3;      // low = deterministic
-    std::string model = "claude-sonnet-4-20250514";
+    std::string model = "claude-sonnet-4-latest";
 
     // Agent mode — selects the base system prompt.
     // ""/"standard": compressed index voice (default for all agents)

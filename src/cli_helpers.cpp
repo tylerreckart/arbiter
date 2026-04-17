@@ -9,10 +9,12 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <pwd.h>
 
 namespace fs = std::filesystem;
 
@@ -80,7 +82,12 @@ std::string agent_color(const std::string& agent_id) {
 
 std::string get_config_dir() {
     const char* home = std::getenv("HOME");
-    if (!home) home = ".";
+    if (!home || home[0] == '\0') {
+        struct passwd* pw = getpwuid(getuid());
+        if (pw) home = pw->pw_dir;
+    }
+    if (!home || home[0] == '\0')
+        throw std::runtime_error("Cannot determine home directory: $HOME unset and getpwuid failed");
     std::string dir = std::string(home) + "/.index";
     fs::create_directories(dir);
     return dir;

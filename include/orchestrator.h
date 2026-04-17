@@ -149,13 +149,20 @@ private:
 
     // Core dispatch loop shared by send() and sub-agent invocations.
     // depth controls delegation nesting (max 2: index → agent → sub-agent).
+    // shared_cache: cross-agent dedup cache (created at depth 0, propagated down).
+    // original_query: user's original request (for sub-agent context injection).
     ApiResponse send_internal(const std::string& agent_id,
                               const std::string& message,
-                              int depth = 0);
+                              int depth = 0,
+                              std::map<std::string, std::string>* shared_cache = nullptr,
+                              const std::string& original_query = "");
 
     // Build an AgentInvoker lambda for use in command dispatch.
     // depth is the current nesting level; invoker refuses beyond depth 2.
-    AgentInvoker make_invoker(const std::string& caller_id, int depth = 0);
+    // shared_cache and original_query propagate through the delegation chain.
+    AgentInvoker make_invoker(const std::string& caller_id, int depth,
+                              std::map<std::string, std::string>* shared_cache,
+                              const std::string& original_query);
 
     // Build an AdvisorInvoker bound to a specific caller.  Returns a lambda
     // that makes a one-shot, history-less call against the caller's

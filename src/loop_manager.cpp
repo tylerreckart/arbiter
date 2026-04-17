@@ -109,15 +109,18 @@ std::string LoopManager::list() const {
            << "  state:" << loop_state_str(e->state)
            << "  iter:" << e->iter
            << "  elapsed:" << secs << "s\n";
-        if (e->state == LoopState::Stopped && !e->stop_reason.empty()) {
-            ss << "    stop: " << e->stop_reason << "\n";
-        } else if (!e->last_output.empty()) {
-            std::string preview = e->last_output.substr(
-                0, std::min<size_t>(120, e->last_output.size()));
-            for (char& c : preview) if (c == '\n') c = ' ';
-            ss << "    last: " << preview;
-            if (e->last_output.size() > 120) ss << "...";
-            ss << "\n";
+        {
+            std::lock_guard<std::mutex> ek(e->mu);
+            if (e->state == LoopState::Stopped && !e->stop_reason.empty()) {
+                ss << "    stop: " << e->stop_reason << "\n";
+            } else if (!e->last_output.empty()) {
+                std::string preview = e->last_output.substr(
+                    0, std::min<size_t>(120, e->last_output.size()));
+                for (char& c : preview) if (c == '\n') c = ' ';
+                ss << "    last: " << preview;
+                if (e->last_output.size() > 120) ss << "...";
+                ss << "\n";
+            }
         }
     }
     return ss.str();
@@ -266,11 +269,11 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
                     entry << "  [in:" << resp.input_tokens
                           << " out:" << resp.output_tokens << "]\n";
                 }
-                e->last_output = resp.content;
             } else {
                 entry << "ERR: " << resp.error << "\n";
             }
             std::lock_guard<std::mutex> ek(e->mu);
+            if (resp.ok) e->last_output = resp.content;
             if (!e->output_log.empty()) {
                 e->output_log.back() = entry.str();
             } else {
@@ -279,7 +282,7 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
         }
 
         if (!resp.ok) {
-            e->stop_reason = resp.error;
+            { std::lock_guard<std::mutex> ek(e->mu); e->stop_reason = resp.error; }
             if (e->oq) {
                 e->oq->push("\n\033[1;31m[" + e->loop_id + "/" +
                             e->agent_id + " FAILED]\033[0m " +
@@ -292,8 +295,11 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
         }
 
         if (consecutive_idle >= kMaxIdle) {
-            e->stop_reason = "task complete (idle after " +
-                             std::to_string(consecutive_idle) + " turns)";
+            {
+                std::lock_guard<std::mutex> ek(e->mu);
+                e->stop_reason = "task complete (idle after " +
+                                 std::to_string(consecutive_idle) + " turns)";
+            }
             if (e->oq) {
                 e->oq->push("\n\033[1;32m[" + e->loop_id + "/" +
                             e->agent_id + " DONE]\033[0m " +

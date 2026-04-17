@@ -27,7 +27,8 @@ std::string cmd_fetch(const std::string& url);
 
 // Execute a shell command. Returns stdout+stderr, or "ERR: ..." on failure.
 // Output is capped at 32 KB. Exit status appended if non-zero.
-std::string cmd_exec(const std::string& command);
+// Destructive commands are blocked unless confirmed=true (gate already passed).
+std::string cmd_exec(const std::string& command, bool confirmed = false);
 
 // Write content to a file at path (creates parent directories).
 // Returns "OK: wrote N bytes to <path>" or "ERR: ...".
@@ -47,8 +48,8 @@ void cmd_mem_clear(const std::string& agent_id, const std::string& memory_dir);
 // Shared scratchpad — pipeline-scoped memory visible to all agents.
 // Stored at memory_dir/shared.md so any agent can read what another wrote.
 std::string cmd_mem_shared_read(const std::string& memory_dir);
-void        cmd_mem_shared_write(const std::string& text, const std::string& memory_dir);
-void        cmd_mem_shared_clear(const std::string& memory_dir);
+std::string cmd_mem_shared_write(const std::string& text, const std::string& memory_dir);
+std::string cmd_mem_shared_clear(const std::string& memory_dir);
 
 // Callback for agent-to-agent invocation: given (sub_agent_id, message),
 // returns the sub-agent's response text or an "ERR: ..." string.
