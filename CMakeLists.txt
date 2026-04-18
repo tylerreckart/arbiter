@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(index_ai VERSION 0.3.4 LANGUAGES CXX)
+project(index_ai VERSION 0.3.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

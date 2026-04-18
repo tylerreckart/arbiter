@@ -1007,10 +1007,10 @@ static void cmd_interactive() {
         // already holds the prompt, and writing any glyph there overwrites
         // its first character.  A leading newline scrolls the region up
         // first so the status lands on a fresh row below the prompt.
-        // Green for accept, red for deny — semantic, matches the rest of
-        // the TUI's color vocabulary (214 orange for the question itself).
+        // Orange for accept, red for deny — semantic, matches the rest of
+        // the TUI's color vocabulary (214 amber for the question itself).
         std::string answer = yes
-            ? std::string("\n\033[38;5;108m[user accepted input]\033[0m\n")
+            ? std::string("\n\033[38;5;208m[user accepted input]\033[0m\n")
             : std::string("\n\033[38;5;167m[user denied input]\033[0m\n");
         history.push(answer);
         {

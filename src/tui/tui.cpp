@@ -563,7 +563,7 @@ std::string ToolCallIndicator::finalize() {
     // separation before the agent's synthesis renders.
     std::string out;
     if (f == 0) {
-        out += "\033[38;5;108m\u2713\033[0m "; // green check
+        out += "\033[38;5;208m\u2713\033[0m "; // orange check
     } else {
         out += "\033[38;5;167m\u2717\033[0m "; // red x
     }
