@@ -52,6 +52,12 @@ public:
     // Unset ⇒ all actions proceed without prompting.
     void set_confirm_callback(ConfirmFn cb) { confirm_cb_ = std::move(cb); }
 
+    // Fired once per executed /cmd with (name, ok).  Wired by the REPL to
+    // ToolCallIndicator so the spinner's count and ✓/✗ summary reflect real
+    // post-exec status.  Fires for every tool call at any delegation depth —
+    // main agent, sub-agent, sub-sub — so the turn's tally is unified.
+    void set_tool_status_callback(ToolStatusFn cb) { tool_status_cb_ = std::move(cb); }
+
     // Agent management
     Agent& create_agent(const std::string& id, Constitution config);
     Agent& get_agent(const std::string& id);
@@ -143,6 +149,7 @@ private:
     AgentStartCallback start_cb_;
     CompactCallback    compact_cb_;
     ConfirmFn          confirm_cb_;
+    ToolStatusFn       tool_status_cb_;
 
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;

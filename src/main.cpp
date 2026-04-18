@@ -18,6 +18,8 @@
 #include "cli.h"
 #include "tui/tui.h"
 #include "tui/line_editor.h"
+#include "tui/stream_filter.h"
+#include "config.h"
 
 #include <iostream>
 #include <string>
@@ -58,6 +60,8 @@ static void sigwinch_handler(int) { g_winch = 1; }
 
 using index_ai::TUI;
 using index_ai::ThinkingIndicator;
+using index_ai::ToolCallIndicator;
+using index_ai::StreamFilter;
 using index_ai::CommandQueue;
 using index_ai::OutputQueue;
 using index_ai::LoopManager;
@@ -160,13 +164,29 @@ static void cmd_interactive() {
     // messages so per-call strings never need trailing `\n\n`.
     OutputQueue output_queue;
 
-    // sub-agent progress
-    orch.set_progress_callback([&output_queue](const std::string& agent_id,
-                                                const std::string& content) {
+    // Per-session runtime configuration.  /verbose flips cfg.verbose and the
+    // StreamFilter wrapping each agent turn checks it on the fly — no need to
+    // rebuild the filter when the flag changes.  Not persisted across
+    // sessions by design.
+    index_ai::Config cfg;
+
+    // sub-agent progress — we dim and indent the sub-agent's prose, but when
+    // stacking mode is active we also strip raw /cmd lines so the user only
+    // sees the narrative, not the mechanics.  Filter state is per-emission
+    // because progress_cb fires with one full response at a time; a local
+    // StreamFilter whose sink accumulates to the formatter is the cleanest
+    // shape.
+    orch.set_progress_callback([&output_queue, &cfg](const std::string& agent_id,
+                                                     const std::string& content) {
         const char* dim = "\033[38;5;238m";
         const char* rst = "\033[0m";
+        std::string filtered;
+        StreamFilter filter(cfg, [&filtered](const std::string& s) { filtered += s; });
+        filter.feed(content);
+        filter.flush();
+        if (filtered.empty()) return;  // entire response was /cmd lines
         std::string buf;
-        std::istringstream ss(content);
+        std::istringstream ss(filtered);
         std::string ln;
         while (std::getline(ss, ln)) {
             buf += dim;
@@ -179,8 +199,17 @@ static void cmd_interactive() {
     });
 
     ThinkingIndicator thinking(&tui);
+    ToolCallIndicator tool_indicator(&tui);
     LoopManager loops;
     index_ai::CostTracker tracker;
+
+    // Fires from the exec thread every time an agent's /cmd finishes.
+    // ToolCallIndicator is thread-safe (bump/render use atomics); the spinner
+    // thread it owns paints the status bar via the same tty_mutex the rest
+    // of the TUI uses.
+    orch.set_tool_status_callback([&tool_indicator](const std::string& kind, bool ok) {
+        tool_indicator.bump(kind, ok);
+    });
 
     // ── Raw stdin ──────────────────────────────────────────────────────────
     struct termios orig_stdin_tm;
@@ -271,7 +300,7 @@ static void cmd_interactive() {
                               "/create","/remove","/reset","/compact","/model",
                               "/loop","/loops","/log","/watch",
                               "/kill","/suspend","/resume","/inject",
-                              "/fetch","/mem","/plan","/quit","/help"});
+                              "/fetch","/mem","/plan","/verbose","/quit","/help"});
             }
 
             // Agent name completion
@@ -358,13 +387,19 @@ static void cmd_interactive() {
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 try {
                     index_ai::MarkdownRenderer md;
-                    auto resp = orch.send_streaming(id, msg,
+                    if (!cfg.verbose) tool_indicator.begin();
+                    StreamFilter filter(cfg,
                         [&md, &output_queue](const std::string& chunk) {
                             auto s = md.feed(chunk);
                             if (!s.empty()) output_queue.push(s);
                         });
+                    auto resp = orch.send_streaming(id, msg,
+                        [&filter](const std::string& chunk) { filter.feed(chunk); });
+                    filter.flush();
                     auto tail = md.flush();
                     if (!tail.empty()) output_queue.push(tail);
+                    auto tool_summary = tool_indicator.finalize();
+                    if (!tool_summary.empty()) output_queue.push(tool_summary);
                     // Separator: md.flush() guarantees the stream ends with
                     // a `\n`, so one more gives exactly one blank line before
                     // the next message.
@@ -388,13 +423,19 @@ static void cmd_interactive() {
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
                 try {
                     index_ai::MarkdownRenderer md;
-                    auto resp = orch.send_streaming("index", query,
+                    if (!cfg.verbose) tool_indicator.begin();
+                    StreamFilter filter(cfg,
                         [&md, &output_queue](const std::string& chunk) {
                             auto s = md.feed(chunk);
                             if (!s.empty()) output_queue.push(s);
                         });
+                    auto resp = orch.send_streaming("index", query,
+                        [&filter](const std::string& chunk) { filter.feed(chunk); });
+                    filter.flush();
                     auto tail = md.flush();
                     if (!tail.empty()) output_queue.push(tail);
+                    auto tool_summary = tool_indicator.finalize();
+                    if (!tool_summary.empty()) output_queue.push(tool_summary);
                     output_queue.end_message();
                     if (resp.ok) {
                         tracker.record("index", orch.get_agent_model("index"), resp);
@@ -778,9 +819,25 @@ static void cmd_interactive() {
                     "\n"
                     "  /plan execute <path>             — execute a planner-produced plan file\n"
                     "\n"
+                    "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
+                    "\n"
                     "  /quit                            — exit\n"
                     "\n"
                     "Plain text sends to current agent.");
+                return;
+            }
+            if (cmd == "verbose") {
+                std::string arg;
+                iss >> arg;
+                if (arg == "on")        cfg.verbose = true;
+                else if (arg == "off")  cfg.verbose = false;
+                else if (arg.empty())   cfg.verbose = !cfg.verbose;
+                else {
+                    output_queue.push_msg("Usage: /verbose [on|off]");
+                    return;
+                }
+                output_queue.push_msg(std::string("verbose: ") +
+                                      (cfg.verbose ? "on" : "off"));
                 return;
             }
 
@@ -791,13 +848,19 @@ static void cmd_interactive() {
         // Plain text → stream to current agent
         try {
             index_ai::MarkdownRenderer md;
-            auto resp = orch.send_streaming(current_agent, line,
+            tool_indicator.begin();
+            StreamFilter filter(cfg,
                 [&md, &output_queue](const std::string& chunk) {
                     auto s = md.feed(chunk);
                     if (!s.empty()) output_queue.push(s);
                 });
+            auto resp = orch.send_streaming(current_agent, line,
+                [&filter](const std::string& chunk) { filter.feed(chunk); });
+            filter.flush();
             auto tail = md.flush();
             if (!tail.empty()) output_queue.push(tail);
+            auto tool_summary = tool_indicator.finalize();
+            if (!tool_summary.empty()) output_queue.push(tool_summary);
             // md.flush() guarantees the stream ended on `\n`; one more gives
             // exactly one blank line before the next message.
             output_queue.end_message();

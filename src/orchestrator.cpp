@@ -252,7 +252,7 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         resp.had_tool_calls = true;
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
                                               invoker, confirm_cb_, shared_cache,
-                                              advisor_invoker);
+                                              advisor_invoker, tool_status_cb_);
     }
 
     return resp;
@@ -342,7 +342,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         cb("\n");
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
                                               invoker, confirm_cb_, &shared_cache,
-                                              advisor_invoker);
+                                              advisor_invoker, tool_status_cb_);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) return resp;
         cmds = parse_agent_commands(resp.content);

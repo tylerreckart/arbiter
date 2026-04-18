@@ -176,4 +176,49 @@ private:
     std::thread       thread_;
 };
 
+// Background spinner + counter for tool-call bursts.  When stacking mode is
+// active (Config::verbose == false), the REPL suppresses the agent's raw
+// /cmd lines from the scroll region and instead surfaces an animated
+// "⠋ N tool calls…" label in the status bar via this indicator.  finalize()
+// prints a single summary row into scrollback — ✓ if every tool call
+// succeeded, ✗ with the fail count otherwise.
+//
+// Lifecycle: begin() starts the spinner thread (idempotent on repeat
+// begin()), bump(kind, ok) records one completed call from any delegation
+// depth, finalize() stops the spinner and returns the one-line summary
+// string for the caller to push into scrollback.  All calls are thread-safe
+// — bump() is invoked from the orchestrator's exec thread while the spinner
+// thread paints the status bar.
+class ToolCallIndicator {
+public:
+    explicit ToolCallIndicator(TUI* tui = nullptr) : tui_(tui) {}
+
+    // Arm the indicator for a new turn.  No spinner paints until bump() is
+    // called at least once — the status bar should stay clean when the
+    // agent's response contains no tool calls at all.
+    void begin();
+
+    // Record one completed /cmd.  First call also starts the spinner thread.
+    void bump(const std::string& kind, bool ok);
+
+    // Stop the spinner, clear the status bar, and return the scrollback
+    // summary line (or empty string if no tool calls occurred this turn).
+    // Thread-safe: finalize() joins the spinner thread before returning.
+    std::string finalize();
+
+    int total()  const { return total_.load(); }
+    int failed() const { return failed_.load(); }
+
+private:
+    void start_spinner();
+    void render_status();
+
+    TUI*              tui_ = nullptr;
+    std::atomic<bool> armed_{false};
+    std::atomic<bool> running_{false};
+    std::atomic<int>  total_{0};
+    std::atomic<int>  failed_{0};
+    std::thread       thread_;
+};
+
 } // namespace index_ai
