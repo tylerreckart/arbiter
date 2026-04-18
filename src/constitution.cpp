@@ -413,7 +413,7 @@ Constitution master_constitution() {
     c.role = "orchestrator";
     c.brevity = Brevity::Full;
     c.temperature = 0.3;
-    c.model = "claude-sonnet-4-20250514";
+    c.model = "claude-sonnet-4-6";
     c.max_tokens = 2048;
     c.goal = "Route tasks to the right agents. Compose multi-agent pipelines when needed. "
              "Synthesize results. Produce real output — files, code, reports — not descriptions of output.";
@@ -538,7 +538,7 @@ Constitution Constitution::from_json(const std::string& json_str) {
     c.brevity       = brevity_from_string(root->get_string("brevity", "full"));
     c.max_tokens    = root->get_int("max_tokens", 1024);
     c.temperature   = root->get_number("temperature", 0.3);
-    c.model         = root->get_string("model", "claude-sonnet-4-20250514");
+    c.model         = root->get_string("model", "claude-sonnet-4-6");
     c.advisor_model = root->get_string("advisor_model");  // "" if absent
     c.mode          = root->get_string("mode");           // "" if absent
     c.goal          = root->get_string("goal");

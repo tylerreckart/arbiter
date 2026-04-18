@@ -130,7 +130,7 @@ Each agent is defined by a JSON file in `~/.index/agents/`:
   "brevity": "ultra",
   "max_tokens": 512,
   "temperature": 0.2,
-  "model": "claude-sonnet-4-20250514",
+  "model": "claude-sonnet-4-6",
   "goal": "Inspect code. Identify defects. Prescribe remedies.",
   "rules": [
     "Defects first, style second.",

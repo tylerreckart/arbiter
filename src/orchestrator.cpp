@@ -266,9 +266,6 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
                                             ApiResponse& resp,
                                             std::vector<AgentCommand>& cmds,
                                             StreamCallback cb) {
-    // Hard cap retries — if the model can't close a /write block in a few
-    // turns, something is wrong with the model or the content, and looping
-    // forever just burns tokens.
     static constexpr int kMaxRetries = 3;
 
     for (int retry = 0; retry < kMaxRetries; ++retry) {
@@ -284,9 +281,8 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
         if (cb) cb("\n\033[2m[resuming truncated /write " + trunc_path + "]\033[0m\n");
 
         // The previous assistant turn (with the partial /write body) is
-        // already in agent history — that's the "cache" of the original
-        // prompt and partial output the model needs to resume from.  We
-        // just nudge it to emit the remaining bytes plus /endwrite.
+        // already in agent history. We  just nudge it to emit the
+        // remaining bytes plus /endwrite.
         std::string prompt =
             "Your previous response was cut off mid-file while writing to `" +
             trunc_path + "`.  The `/endwrite` sentinel was never emitted, so "
@@ -300,7 +296,7 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
             "ended — even mid-word or mid-line — and close the block.";
 
         ApiResponse more = cb ? agent->stream(prompt, cb) : agent->send(prompt);
-        if (!more.ok) return;   // leave resp as-is; caller sees the partial
+        if (!more.ok) return;
 
         resp.content               += more.content;
         resp.input_tokens          += more.input_tokens;
@@ -309,10 +305,6 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
         resp.cache_creation_tokens += more.cache_creation_tokens;
         resp.stop_reason            = more.stop_reason;
 
-        // Re-parse the spliced response.  If the model obeyed instructions,
-        // the previously-truncated /write now has a matching /endwrite and
-        // the whole body is in one command.  If the model emitted more
-        // tool calls (unlikely given the prompt), they'll surface here too.
         cmds = parse_agent_commands(resp.content);
     }
 }
@@ -371,10 +363,6 @@ std::string Orchestrator::get_agent_model(const std::string& id) const {
     return it->second->config().model;
 }
 
-// Strip "claude-" prefix and trailing date suffix (e.g. -20250514) from model IDs.
-// claude-sonnet-4-20250514 → sonnet-4
-// claude-haiku-4-5-20251001 → haiku-4-5
-// claude-sonnet-4-6 → sonnet-4-6
 static std::string short_model(const std::string& model) {
     std::string s = model;
     if (s.size() > 7 && s.substr(0, 7) == "claude-")
