@@ -66,9 +66,29 @@ void TUI::update(const std::string& agent,
 }
 
 void TUI::draw_sep() {
+    // Locking is required because ToolCallIndicator's spinner thread calls
+    // us via set_pre_input_status while the main thread may also be redrawing
+    // chrome.  tty_mu_ is recursive, so nested calls from begin_input /
+    // grow_input (which already hold the lock) are fine.
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     std::printf("\0337");
-    std::printf("\033[%d;1H\033[38;5;237m", sep_row());
-    for (int i = 0; i < cols_; ++i) std::printf("─");
+    std::printf("\033[%d;1H\033[2K\033[38;5;237m", sep_row());
+    if (current_pre_input_status_.empty()) {
+        for (int i = 0; i < cols_; ++i) std::printf("─");
+    } else {
+        auto cell_w = [](const std::string& s) {
+            int w = 0;
+            for (unsigned char c : s)
+                if ((c & 0xC0) != 0x80) ++w;
+            return w;
+        };
+        // Two-space gap on each side so the label reads as inset, not fused
+        // with the dashes.  The remaining width fills with ─ so the row still
+        // reads as a separator.
+        std::printf("  %s  ", current_pre_input_status_.c_str());
+        int used = 4 + cell_w(current_pre_input_status_);
+        for (int i = used; i < cols_; ++i) std::printf("─");
+    }
     std::printf("\033[0m");
     std::printf("\0338");
     std::fflush(stdout);
@@ -160,6 +180,20 @@ void TUI::clear_status() {
 
 void TUI::clear_queue_indicator() {
     if (queue_indicator_shown_) clear_status();
+}
+
+void TUI::set_pre_input_status(const std::string& msg) {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    if (current_pre_input_status_ == msg) return;
+    current_pre_input_status_ = msg;
+    draw_sep();
+}
+
+void TUI::clear_pre_input_status() {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    if (current_pre_input_status_.empty()) return;
+    current_pre_input_status_.clear();
+    draw_sep();
 }
 
 void TUI::set_title(const std::string& title) {
@@ -510,7 +544,7 @@ void ToolCallIndicator::render_status() {
         label += std::to_string(f);
         label += " failed)";
     }
-    tui_->set_status(label);
+    tui_->set_pre_input_status(label);
 }
 
 std::string ToolCallIndicator::finalize() {
@@ -518,7 +552,7 @@ std::string ToolCallIndicator::finalize() {
     armed_ = false;
     running_ = false;
     if (thread_.joinable()) thread_.join();
-    if (tui_) tui_->clear_status();
+    if (tui_) tui_->clear_pre_input_status();
 
     int n = total_.load();
     int f = failed_.load();
@@ -529,7 +563,7 @@ std::string ToolCallIndicator::finalize() {
     // separation before the agent's synthesis renders.
     std::string out;
     if (f == 0) {
-        out += "\033[38;5;108m\u2713\033[0m "; // green check
+        out += "\033[38;5;208m\u2713\033[0m "; // orange check
     } else {
         out += "\033[38;5;167m\u2717\033[0m "; // red x
     }

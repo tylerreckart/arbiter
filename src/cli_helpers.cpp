@@ -57,18 +57,18 @@ std::string agent_color(const std::string& agent_id) {
     if (agent_id == "index") return "\033[38;5;208m";  // orange
 
     static const int palette[] = {
-        75,   // cornflower blue
-        82,   // bright green
-        171,  // magenta
-        51,   // cyan
-        226,  // yellow
-        196,  // red
-        141,  // violet
-        214,  // dark orange
-        85,   // seafoam
-        207,  // pink
-        39,   // sky blue
-        154,  // lime
+        214,  // amber
+        172,  // medium orange
+        166,  // burnt orange
+        220,  // gold
+        209,  // salmon
+        178,  // dark gold
+        216,  // light peach
+        130,  // dark amber
+        173,  // terracotta
+        215,  // soft peach
+        202,  // red-orange
+        180,  // warm tan
     };
     static const int palette_size = sizeof(palette) / sizeof(palette[0]);
 

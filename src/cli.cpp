@@ -64,8 +64,8 @@ void cmd_init() {
         c.name         = "research";
         c.role         = "research-analyst";
         c.brevity      = Brevity::Lite;
-        c.model        = "ollama/qwen2.5-coder:7b";
-        c.advisor_model= "claude-opus-4-6";
+        c.model        = "claude-haiku-4-5";
+        c.advisor_model= "claude-opus-4-7";
         c.max_tokens   = 2048;
         c.temperature  = 0.5;
         c.goal = "Research topics with depth. Synthesize findings. Distinguish fact from inference.";

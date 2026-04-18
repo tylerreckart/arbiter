@@ -90,7 +90,7 @@ static std::string render_inline(const std::string& text) {
             if (cb != std::string::npos && cb + 1 < n && text[cb+1] == '(') {
                 size_t cp = text.find(')', cb + 2);
                 if (cp != std::string::npos) {
-                    result += std::string(UNDL) + fg(75);  // underline + cornflower blue
+                    result += std::string(UNDL) + fg(208);  // underline + bright orange
                     result += text.substr(i + 1, cb - i - 1);
                     result += RST;
                     i = cp + 1;
@@ -137,9 +137,9 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
         in_code_block_ = !in_code_block_;
         return std::string(DIM) + line + RST;
     }
-    // Code block body: dim green
+    // Code block body: amber
     if (in_code_block_) {
-        return fg(71) + line + RST;
+        return fg(214) + line + RST;
     }
 
     // Empty line
@@ -163,8 +163,8 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
         size_t lvl = 0;
         while (lvl < line.size() && line[lvl] == '#') ++lvl;
         if (lvl < line.size() && line[lvl] == ' ') {
-            // 256-color palette: cyan, blue, violet, pink
-            static const int colors[] = {51, 75, 147, 183};
+            // 256-color palette: bright orange, amber, medium orange, burnt orange
+            static const int colors[] = {208, 214, 172, 166};
             int color = colors[std::min(lvl - 1, size_t(3))];
             std::string hashes(lvl, '#');
             std::string content = render_inline(line.substr(lvl + 1));
@@ -204,7 +204,7 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
     if ((line.size() >= 4 && line.substr(0, 4) == "    ") ||
         (!line.empty() && line[0] == '\t')) {
         size_t skip = (line[0] == '\t') ? 1 : 4;
-        return std::string("    ") + fg(71) + line.substr(skip) + RST;
+        return std::string("    ") + fg(214) + line.substr(skip) + RST;
     }
 
     // Numbered list: 1. 2. 10. etc.
