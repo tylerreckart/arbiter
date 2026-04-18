@@ -439,4 +439,111 @@ void ThinkingIndicator::stop() {
     if (thread_.joinable()) thread_.join();
 }
 
+// ─── ToolCallIndicator ───────────────────────────────────────────────────────
+
+namespace {
+// Shared braille frames — matches ThinkingIndicator so the two indicators
+// feel visually related when they switch places during a turn.
+static const char* kToolFrames[] = {
+    "\u2801", "\u2802", "\u2804", "\u2840", "\u2848", "\u2850",
+    "\u2860", "\u28C0", "\u28C1", "\u28C2", "\u28C4", "\u28CC",
+    "\u28D4", "\u28E4", "\u28E5", "\u28E6", "\u28EE", "\u28F6",
+    "\u28F7", "\u28FF", "\u287F", "\u283F", "\u281F", "\u281F",
+    "\u285B", "\u281B", "\u282B", "\u288B", "\u280B", "\u280D",
+    "\u2809", "\u2809", "\u2811", "\u2821", "\u2881"
+};
+static constexpr int kToolFramesCount =
+    sizeof(kToolFrames) / sizeof(kToolFrames[0]);
+}
+
+void ToolCallIndicator::begin() {
+    // Idempotent: if a previous turn was never finalized (shouldn't happen,
+    // but be defensive), tear it down before re-arming.
+    if (running_.load() || thread_.joinable()) {
+        running_ = false;
+        if (thread_.joinable()) thread_.join();
+    }
+    armed_.store(true);
+    total_.store(0);
+    failed_.store(0);
+}
+
+void ToolCallIndicator::bump(const std::string& /*kind*/, bool ok) {
+    if (!armed_.load()) return;
+    total_.fetch_add(1);
+    if (!ok) failed_.fetch_add(1);
+    // First bump starts the spinner — delays spinner start until there's
+    // actually something to count, so a zero-tool-call turn never paints.
+    if (!running_.load()) start_spinner();
+    // Immediate repaint so the count advances the moment bump fires; the
+    // spinner thread then keeps the glyph animating at 80 ms cadence.
+    render_status();
+}
+
+void ToolCallIndicator::start_spinner() {
+    running_ = true;
+    thread_ = std::thread([this]() {
+        while (running_.load()) {
+            render_status();
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        }
+    });
+}
+
+void ToolCallIndicator::render_status() {
+    if (!tui_) return;
+    // Advance the frame on every render (both timer-driven and bump-driven);
+    // a static counter here is safe because render_status only runs from the
+    // spinner thread after start_spinner, and from bump() which is exec-thread
+    // only — they don't race, and a one-frame jitter on the boundary is fine.
+    static thread_local int frame = 0;
+    int n = total_.load();
+    int f = failed_.load();
+    std::string label = kToolFrames[(frame++) % kToolFramesCount];
+    label += " ";
+    label += std::to_string(n);
+    label += " tool call";
+    if (n != 1) label += "s";
+    label += "\u2026"; // ellipsis
+    if (f > 0) {
+        label += " (";
+        label += std::to_string(f);
+        label += " failed)";
+    }
+    tui_->set_status(label);
+}
+
+std::string ToolCallIndicator::finalize() {
+    if (!armed_.load()) return "";
+    armed_ = false;
+    running_ = false;
+    if (thread_.joinable()) thread_.join();
+    if (tui_) tui_->clear_status();
+
+    int n = total_.load();
+    int f = failed_.load();
+    if (n == 0) return "";
+
+    // Dim summary line — ✓ green if clean, ✗ red if any call failed.  One
+    // trailing newline so OutputQueue::end_message() gets the expected
+    // separation before the agent's synthesis renders.
+    std::string out;
+    if (f == 0) {
+        out += "\033[38;5;108m\u2713\033[0m "; // green check
+    } else {
+        out += "\033[38;5;167m\u2717\033[0m "; // red x
+    }
+    out += "\033[2m";
+    out += std::to_string(n);
+    out += " tool call";
+    if (n != 1) out += "s";
+    if (f > 0) {
+        out += " (";
+        out += std::to_string(f);
+        out += " failed)";
+    }
+    out += "\033[0m\n";
+    return out;
+}
+
 } // namespace index_ai

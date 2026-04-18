@@ -47,6 +47,7 @@ set(INDEX_AI_SOURCES
     src/tui/tui.cpp
     src/tui/scroll_buffer.cpp
     src/tui/line_editor.cpp
+    src/tui/stream_filter.cpp
     src/api_client.cpp
     src/agent.cpp
     src/constitution.cpp
@@ -161,4 +162,17 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_api_client COMMAND unit_api_client)
+
+    # --- Unit tests for the tool-call stream filter ---
+    # Exercises line-buffered reassembly, /cmd swallow rules, and the
+    # verbose pass-through path without needing a TUI or the real orchestrator.
+    add_executable(unit_stream_filter
+        tests/test_stream_filter.cpp
+        src/tui/stream_filter.cpp
+    )
+    target_include_directories(unit_stream_filter PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_stream_filter COMMAND unit_stream_filter)
 endif()

@@ -65,6 +65,30 @@ TEST_CASE("is_destructive_exec allows safe commands") {
 // cmd_exec — destructive command blocking
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// is_tool_result_failure
+// ---------------------------------------------------------------------------
+
+TEST_CASE("is_tool_result_failure flags error patterns") {
+    CHECK(is_tool_result_failure("ERR: something failed"));
+    CHECK(is_tool_result_failure("[/exec x]\nERR: boom\n[END EXEC]\n"));
+    CHECK(is_tool_result_failure("UPSTREAM FAILED — retry aborted"));
+    CHECK(is_tool_result_failure("SKIPPED: max 3 fetches per turn"));
+    CHECK(is_tool_result_failure("stdout\n[exit 1]\n"));
+    CHECK(is_tool_result_failure("stdout\n[exit 127]\n"));
+    CHECK(is_tool_result_failure("ERR: /write block was truncated"));
+    CHECK(is_tool_result_failure("TRUNCATED: budget exhausted"));
+}
+
+TEST_CASE("is_tool_result_failure allows clean output") {
+    CHECK_FALSE(is_tool_result_failure("file contents here"));
+    CHECK_FALSE(is_tool_result_failure("[/exec ls]\nfoo.cpp\nbar.cpp\n[END EXEC]\n"));
+    CHECK_FALSE(is_tool_result_failure("OK: wrote 42 bytes to foo.md"));
+    CHECK_FALSE(is_tool_result_failure("stdout\n[exit 0]\n"));
+    // "error" as prose is fine — only "ERR:" exactly is the failure signal
+    CHECK_FALSE(is_tool_result_failure("Discussing errors in general."));
+}
+
 TEST_CASE("cmd_exec blocks destructive commands by default") {
     std::string result = cmd_exec("rm -rf /tmp/test_nonexistent_dir_xyz");
     CHECK(result.find("ERR:") == 0);

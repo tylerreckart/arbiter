@@ -498,13 +498,33 @@ bool is_destructive_exec(const std::string& cmd) {
     return false;
 }
 
+bool is_tool_result_failure(const std::string& block) {
+    // ERR: / UPSTREAM FAILED / SKIPPED: anywhere in the block flags failure.
+    // Also catch exec's "[exit N]" trailer for N != 0, which cmd_exec appends
+    // after non-zero exit status.
+    if (block.find("ERR:") != std::string::npos) return true;
+    if (block.find("UPSTREAM FAILED") != std::string::npos) return true;
+    if (block.find("SKIPPED:") != std::string::npos) return true;
+    if (block.find("TRUNCATED:") != std::string::npos) return true;
+    // cmd_exec annotates non-zero exits as "\n[exit N]\n".  Zero exits are
+    // silent, so any "[exit <digit>" that isn't "[exit 0" is a failure.
+    size_t pos = 0;
+    while ((pos = block.find("[exit ", pos)) != std::string::npos) {
+        size_t end = pos + 6;
+        if (end < block.size() && block[end] != '0') return true;
+        pos = end;
+    }
+    return false;
+}
+
 std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    const std::string& agent_id,
                                    const std::string& memory_dir,
                                    AgentInvoker agent_invoker,
                                    ConfirmFn    confirm,
                                    std::map<std::string, std::string>* dedup_cache,
-                                   AdvisorInvoker advisor_invoker) {
+                                   AdvisorInvoker advisor_invoker,
+                                   ToolStatusFn   tool_status) {
     std::ostringstream out;
     out << "\n";
 
@@ -532,7 +552,12 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             dedup_key += "|" + std::to_string(std::hash<std::string>{}(cmd.content));
         }
         if (dedup_cache && dedup_cache->find(dedup_key) != dedup_cache->end()) {
-            out << (*dedup_cache)[dedup_key];
+            const auto& cached = (*dedup_cache)[dedup_key];
+            out << cached;
+            // Dedup hits still count toward the turn's tool-call tally; the
+            // model emitted a /cmd, so the user's "(N tool calls…)" indicator
+            // should reflect that.  ok/fail mirrors the cached block.
+            if (tool_status) tool_status(cmd.name, !is_tool_result_failure(cached));
             continue;
         }
 
@@ -703,6 +728,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << "[END WRITE]\n\n";
                 cache_result = false;   // allow a clean retry
                 out << block.str();
+                if (tool_status) tool_status(cmd.name, false);
                 continue;
             }
             if (confirm) {
@@ -716,6 +742,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     block << "[END WRITE]\n\n";
                     cache_result = false;  // user may want to approve a retry
                     out << block.str();
+                    if (tool_status) tool_status(cmd.name, false);
                     continue;
                 }
             }
@@ -729,6 +756,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         out << block_str;
         if (dedup_cache && cache_result && !block_str.empty()) {
             (*dedup_cache)[dedup_key] = block_str;
+        }
+        if (tool_status && !block_str.empty()) {
+            tool_status(cmd.name, !is_tool_result_failure(block_str));
         }
     }
 

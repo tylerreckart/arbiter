@@ -70,6 +70,15 @@ using AdvisorInvoker = std::function<std::string(const std::string& question)>;
 // abort.  If unset, every guarded command runs without prompting.
 using ConfirmFn = std::function<bool(const std::string& prompt)>;
 
+// Fired once per executed /cmd, after execution completes, with the command
+// name ("fetch", "exec", "write", "agent", "mem", "advise") and whether the
+// result indicates success.  Success = the command did what it advertised;
+// failure = ERR: prefix, UPSTREAM FAILED, user-declined, budget-skipped, or
+// exec non-zero exit status.  The REPL wires this to ToolCallIndicator so
+// the spinner's ✓/✗ summary reflects real post-exec status, not just a
+// count of /cmd lines in the stream.
+using ToolStatusFn = std::function<void(const std::string& kind, bool ok)>;
+
 // True if `cmd` matches a pattern we always want to confirm before exec'ing
 // (rm, rm -rf, redirects, sudo, mkfs, git force-push, find -delete, etc.).
 // Conservative — misses creative destruction, but catches the common footguns.
@@ -92,6 +101,13 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    AgentInvoker agent_invoker = nullptr,
                                    ConfirmFn    confirm       = nullptr,
                                    std::map<std::string, std::string>* dedup_cache = nullptr,
-                                   AdvisorInvoker advisor_invoker = nullptr);
+                                   AdvisorInvoker advisor_invoker = nullptr,
+                                   ToolStatusFn   tool_status     = nullptr);
+
+// True if a tool-result block indicates the command failed.  Pattern-matches
+// the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.
+// Exposed for testing; callers normally just wire a ToolStatusFn and let
+// execute_agent_commands invoke it.
+bool is_tool_result_failure(const std::string& block);
 
 } // namespace index_ai
