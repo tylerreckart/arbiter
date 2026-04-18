@@ -1,0 +1,26 @@
+name: Bump Homebrew formula
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: index
+          formula-path: index.rb
+          homebrew-tap: tylerreckart/homebrew-tap
+          base-branch: main
+          create-pullrequest: true
+          tag-name: ${{ github.ref_name }}
+          download-url: https://github.com/tylerreckart/index/archive/refs/tags/${{ github.ref_name }}.tar.gz
+          commit-message: |
+            index ${{ github.ref_name }}
+
+            Created by https://github.com/mislav/bump-homebrew-formula-action
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
