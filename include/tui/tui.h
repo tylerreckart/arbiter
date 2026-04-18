@@ -9,7 +9,7 @@
 //                    right: status (when active) — else stats (dim)
 //   row 2            dim separator
 //   rows 3..N-3      scroll region (streamed model output lives here)
-//   row  N-2         mid separator above input
+//   row  N-2         mid separator above input (doubles as pre-input status)
 //   rows N-2..N-k-1  readline input area (1..kMaxInputRows, grows on wrap)
 //   row  N-1         dim separator above hint row
 //   row  N           hint row (key / command hints)
@@ -18,6 +18,12 @@
 // right side (stats are already dim and unimportant vs a live "thinking..."
 // indicator).  A one-row blank pad sits below the input so the readline
 // cursor never butts up against the bottom edge of the terminal.
+//
+// The mid separator has a second use: while tool calls are streaming the
+// ToolCallIndicator paints its animated "⠋ N tool calls…" label onto this
+// row (via set_pre_input_status / clear_pre_input_status).  Keeping tool
+// output on its own row frees the header status for the thinking indicator
+// — previously both fought for row 1 at 80 ms, which flashed.
 //
 // All stdout writes are expected to happen from a single thread (the REPL's
 // main thread).  set_title() is the one exception — it holds header_mu_ so
@@ -101,6 +107,14 @@ public:
     void set_status(const std::string& msg);
     void clear_status();
 
+    // Pre-input status — a dim label inlined with the mid-separator row just
+    // above the readline.  Used by ToolCallIndicator so its spinner doesn't
+    // share row 1 with the header thinking indicator.  An empty label (or
+    // clear) restores the plain dashed separator.  Cheap; safe to call from
+    // background threads (guarded by tty_mu_).
+    void set_pre_input_status(const std::string& msg);
+    void clear_pre_input_status();
+
     // Clear only the "N queued" indicator without disturbing an active spinner.
     void clear_queue_indicator();
 
@@ -145,6 +159,7 @@ private:
     std::string current_stats_;
     std::string session_title_;
     std::string current_status_;       // cached so resize() can redraw it
+    std::string current_pre_input_status_;  // inlined on sep_row() when non-empty
     mutable std::mutex header_mu_;
     std::recursive_mutex tty_mu_;      // serializes concurrent stdout writes
 
@@ -179,16 +194,21 @@ private:
 // Background spinner + counter for tool-call bursts.  When stacking mode is
 // active (Config::verbose == false), the REPL suppresses the agent's raw
 // /cmd lines from the scroll region and instead surfaces an animated
-// "⠋ N tool calls…" label in the status bar via this indicator.  finalize()
-// prints a single summary row into scrollback — ✓ if every tool call
-// succeeded, ✗ with the fail count otherwise.
+// "⠋ N tool calls…" label on the mid-separator row just above the readline
+// (via TUI::set_pre_input_status).  finalize() prints a single summary row
+// into scrollback — ✓ if every tool call succeeded, ✗ with the fail count
+// otherwise.
+//
+// The indicator deliberately does NOT paint the header status row — that
+// slot belongs to the ThinkingIndicator, and having both spinners repaint
+// the same cell at 80 ms produced visible flashing.
 //
 // Lifecycle: begin() starts the spinner thread (idempotent on repeat
 // begin()), bump(kind, ok) records one completed call from any delegation
 // depth, finalize() stops the spinner and returns the one-line summary
 // string for the caller to push into scrollback.  All calls are thread-safe
 // — bump() is invoked from the orchestrator's exec thread while the spinner
-// thread paints the status bar.
+// thread paints the pre-input row.
 class ToolCallIndicator {
 public:
     explicit ToolCallIndicator(TUI* tui = nullptr) : tui_(tui) {}
