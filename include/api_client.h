@@ -116,7 +116,14 @@ public:
     };
 
 private:
-    std::string api_key_;
+    // API key is stored XOR-masked at rest so a passive memory scan / core
+    // dump doesn't surface the raw key.  The mask is a per-process random
+    // buffer generated in the constructor; callers obtain a short-lived
+    // plaintext copy via unmask_api_key() and are expected to cleanse that
+    // copy as soon as the wire representation is flushed.
+    std::vector<unsigned char> api_key_masked_;
+    std::vector<unsigned char> api_key_mask_;
+    std::string unmask_api_key() const;
     SSL_CTX* ssl_ctx_ = nullptr;
 
     std::mutex conn_mutex_;

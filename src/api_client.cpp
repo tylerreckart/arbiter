@@ -13,6 +13,7 @@
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <openssl/crypto.h>
+#include <openssl/rand.h>
 
 namespace index_ai {
 
@@ -128,7 +129,7 @@ std::string strip_model_prefix(const std::string& model) {
 
 // ─── ApiClient lifecycle ─────────────────────────────────────────────────────
 
-ApiClient::ApiClient(const std::string& api_key) : api_key_(api_key) {
+ApiClient::ApiClient(const std::string& api_key) {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_library_init();
     SSL_load_error_strings();
@@ -140,15 +141,45 @@ ApiClient::ApiClient(const std::string& api_key) : api_key_(api_key) {
 
     SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_PEER, nullptr);
     SSL_CTX_set_default_verify_paths(ssl_ctx_);
+
+    // Store the key XOR-masked at rest.  The mask is a same-length
+    // random buffer — trivially reversible by anything running in-process,
+    // but it keeps the plaintext key out of the obvious string-scan paths
+    // (core dumps, debugger strings, memory forensics tools that grep for
+    // "sk-ant-").  Plaintext is only reconstituted on demand in
+    // unmask_api_key(), and callers wipe their copy immediately after use.
+    if (!api_key.empty()) {
+        api_key_masked_.resize(api_key.size());
+        api_key_mask_.resize(api_key.size());
+        if (RAND_bytes(api_key_mask_.data(),
+                        static_cast<int>(api_key_mask_.size())) != 1) {
+            throw std::runtime_error("CSPRNG failure masking API key");
+        }
+        for (size_t i = 0; i < api_key.size(); ++i) {
+            api_key_masked_[i] =
+                static_cast<unsigned char>(api_key[i]) ^ api_key_mask_[i];
+        }
+    }
 }
 
 ApiClient::~ApiClient() {
-    if (!api_key_.empty()) {
-        OPENSSL_cleanse(api_key_.data(), api_key_.size());
-        api_key_.clear();
+    if (!api_key_masked_.empty()) {
+        OPENSSL_cleanse(api_key_masked_.data(), api_key_masked_.size());
+        OPENSSL_cleanse(api_key_mask_.data(),   api_key_mask_.size());
+        api_key_masked_.clear();
+        api_key_mask_.clear();
     }
     for (auto& [_, c] : conns_) close_connection(c);
     if (ssl_ctx_) SSL_CTX_free(ssl_ctx_);
+}
+
+std::string ApiClient::unmask_api_key() const {
+    std::string out;
+    out.resize(api_key_masked_.size());
+    for (size_t i = 0; i < api_key_masked_.size(); ++i) {
+        out[i] = static_cast<char>(api_key_masked_[i] ^ api_key_mask_[i]);
+    }
+    return out;
 }
 
 // ─── Connection management ───────────────────────────────────────────────────
@@ -384,13 +415,20 @@ void ApiClient::send_request(const Provider& p, Conn& c,
     }
     http << "\r\n";
     http << "Content-Type: application/json\r\n";
-    if (p.uses_api_key && p.format == Provider::FORMAT_ANTHROPIC) {
-        http << "x-api-key: " << api_key_ << "\r\n";
-        http << "anthropic-version: 2023-06-01\r\n";
-        http << "anthropic-beta: prompt-caching-2024-07-31\r\n";
-    } else if (p.uses_api_key) {
-        // Generic bearer-auth path — useful when we later add openai-proper.
-        http << "Authorization: Bearer " << api_key_ << "\r\n";
+    // Materialise the plaintext key into a local std::string only while
+    // building the request header, then wipe it before returning.  Limits
+    // the window during which the raw key is present in process memory.
+    std::string key_plain;
+    if (p.uses_api_key) {
+        key_plain = unmask_api_key();
+        if (p.format == Provider::FORMAT_ANTHROPIC) {
+            http << "x-api-key: " << key_plain << "\r\n";
+            http << "anthropic-version: 2023-06-01\r\n";
+            http << "anthropic-beta: prompt-caching-2024-07-31\r\n";
+        } else {
+            // Generic bearer-auth path — useful when we later add openai-proper.
+            http << "Authorization: Bearer " << key_plain << "\r\n";
+        }
     }
     http << "Content-Length: " << body.size() << "\r\n";
     if (streaming) http << "Accept: text/event-stream\r\n";
@@ -398,17 +436,31 @@ void ApiClient::send_request(const Provider& p, Conn& c,
     http << "\r\n";
     http << body;
 
+    // Wipe the temporary unmasked key — the serialized request still holds
+    // it, but that buffer is wiped immediately after send() below.
+    if (!key_plain.empty()) {
+        OPENSSL_cleanse(key_plain.data(), key_plain.size());
+    }
+
     std::string raw = http.str();
     int total = static_cast<int>(raw.size());
     int sent = 0;
     while (sent < total) {
         int n = conn_send(c, raw.data() + sent, total - sent);
         if (n <= 0) {
+            // Wipe before throwing — the key lives in `raw` until the
+            // destructor, which on the error path may be delayed by stack
+            // unwinding through exception handlers.
+            OPENSSL_cleanse(raw.data(), raw.size());
             close_connection(c);
             throw std::runtime_error("write failed");
         }
         sent += n;
     }
+    // Sent successfully — scrub the request buffer now rather than waiting
+    // for std::string's destructor to release it to the allocator's free
+    // list (where it would linger unzeroed until overwritten).
+    OPENSSL_cleanse(raw.data(), raw.size());
 }
 
 // ─── Incoming HTTP response helpers ──────────────────────────────────────────
@@ -784,7 +836,10 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
     bool chunked = headers.find("Transfer-Encoding: chunked") != std::string::npos;
 
     std::string line_buf;
-    line_buf.reserve(1024);
+    // SSE `data:` payloads are whole JSON events; 8 KB covers typical
+    // Anthropic/OpenAI chunks without a realloc, and the growth path is
+    // still there for the occasional large tool-result event.
+    line_buf.reserve(8192);
     char buf[4096];
 
     // Drain `leftover` before reading from the socket — same pattern as
@@ -815,14 +870,29 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
     };
 
     auto feed = [&](const char* data, int n) {
-        for (int i = 0; i < n; ++i) {
-            if (data[i] == '\n') {
+        static constexpr size_t kMaxLineSize = 1048576;
+        int i = 0;
+        while (i < n) {
+            // Bulk-copy the run up to the next '\n'.  SSE events are JSON
+            // blobs that can be several KB; char-by-char `+=` reallocated
+            // the line buffer repeatedly.  memchr lets us append one chunk
+            // per newline rather than one per byte.
+            const char* nl = static_cast<const char*>(
+                std::memchr(data + i, '\n', n - i));
+            int chunk_end = nl ? static_cast<int>(nl - data) : n;
+            int take = chunk_end - i;
+            if (take > 0 && line_buf.size() < kMaxLineSize) {
+                size_t room = kMaxLineSize - line_buf.size();
+                if (static_cast<size_t>(take) > room)
+                    take = static_cast<int>(room);
+                line_buf.append(data + i, take);
+            }
+            if (nl) {
                 process_line(line_buf);
                 line_buf.clear();
+                i = chunk_end + 1;
             } else {
-                static constexpr size_t kMaxLineSize = 1048576;
-                if (line_buf.size() < kMaxLineSize)
-                    line_buf += data[i];
+                i = n;
             }
         }
     };

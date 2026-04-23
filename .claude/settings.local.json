@@ -5,7 +5,11 @@
       "Bash(make)",
       "Bash(./build/index --help)",
       "Bash(./build/index_tests)",
-      "Bash(ctest --output-on-failure)"
+      "Bash(ctest --output-on-failure)",
+      "Bash(ctest --test-dir /Users/tyler/dev/index/build -E tui_integration --output-on-failure)",
+      "WebFetch(domain:platform.openai.com)",
+      "WebSearch",
+      "WebFetch(domain:developers.openai.com)"
     ]
   }
 }

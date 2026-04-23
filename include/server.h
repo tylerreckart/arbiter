@@ -6,6 +6,8 @@
 #include "auth.h"
 #include <string>
 #include <atomic>
+#include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -27,7 +29,15 @@ private:
     int listen_fd_ = -1;
     std::atomic<bool> running_{false};
     std::thread accept_thread_;
-    std::vector<std::thread> client_threads_;
+    // Each worker carries a shared `done` flag set by the worker right
+    // before it returns.  accept_loop scans the vector and reaps any whose
+    // flag is set — lets us bound the vector without resorting to detach,
+    // which would leak orphaned threads if stop() races with a new client.
+    struct ClientWorker {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    std::vector<ClientWorker> client_threads_;
     std::mutex threads_mutex_;
 
     void accept_loop();

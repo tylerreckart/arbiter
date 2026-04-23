@@ -56,8 +56,8 @@ void Server::stop() {
     }
     if (accept_thread_.joinable()) accept_thread_.join();
     std::lock_guard<std::mutex> lock(threads_mutex_);
-    for (auto& t : client_threads_) {
-        if (t.joinable()) t.join();
+    for (auto& w : client_threads_) {
+        if (w.thread.joinable()) w.thread.join();
     }
     client_threads_.clear();
 }
@@ -73,17 +73,25 @@ void Server::accept_loop() {
         }
 
         std::lock_guard<std::mutex> lock(threads_mutex_);
-        // Clean up finished threads
-        client_threads_.erase(
-            std::remove_if(client_threads_.begin(), client_threads_.end(),
-                [](std::thread& t) {
-                    // Can't easily check if done, so we just accumulate
-                    // In production, use a proper thread pool
-                    return false;
-                }),
-            client_threads_.end()
-        );
-        client_threads_.emplace_back(&Server::handle_client, this, client_fd);
+        // Reap workers that have already signalled completion.  Each worker
+        // sets its `done` flag as the last thing it does before returning,
+        // so we can safely join here without blocking.
+        for (auto it = client_threads_.begin(); it != client_threads_.end(); ) {
+            if (it->done && it->done->load()) {
+                if (it->thread.joinable()) it->thread.join();
+                it = client_threads_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        auto done_flag = std::make_shared<std::atomic<bool>>(false);
+        client_threads_.push_back(ClientWorker{
+            std::thread([this, client_fd, done_flag]() {
+                handle_client(client_fd);
+                done_flag->store(true);
+            }),
+            done_flag,
+        });
     }
 }
 
