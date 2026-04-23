@@ -2,6 +2,7 @@
 #include "commands.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -10,6 +11,14 @@
 #include <sstream>
 #include <filesystem>
 #include <curl/curl.h>
+
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -107,10 +116,14 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
 
 static std::string html_to_text(const std::string& html) {
     std::string out;
-    out.reserve(html.size() / 4);
+    // Extracted text is typically 30-50% of raw HTML (more for content-heavy
+    // pages, less for template-heavy ones).  Reserve generously so the hot
+    // append path below never triggers a reallocation mid-run.
+    out.reserve(html.size() / 2);
 
     size_t i = 0;
     const size_t n = html.size();
+    const char* const data = html.data();
 
     // Skip script/style blocks wholesale
     auto skip_block = [&](const char* close_tag) {
@@ -120,7 +133,24 @@ static std::string html_to_text(const std::string& html) {
 
     bool last_was_space = true;
 
+    // Fast path: scan ahead for a run of "plain" bytes (non-special,
+    // non-whitespace) and bulk-append them.  For HTML dominated by text
+    // content this takes the inner loop from one branch + one append per
+    // byte to one scan plus one append per plain-text run.
+    auto is_plain = [](unsigned char c) {
+        return c > ' ' && c != '<' && c != '&' && c != 127;
+    };
+
     while (i < n) {
+        if (is_plain(static_cast<unsigned char>(data[i]))) {
+            size_t j = i + 1;
+            while (j < n && is_plain(static_cast<unsigned char>(data[j]))) ++j;
+            out.append(data + i, j - i);
+            last_was_space = false;
+            i = j;
+            continue;
+        }
+
         if (html[i] == '<') {
             // Peek at the tag name
             size_t j = i + 1;
@@ -211,10 +241,61 @@ static size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata
     buf->data.append(ptr, bytes);
     return bytes;
 }
+
+// SSRF guard: reject private, loopback, link-local, CGNAT, multicast,
+// reserved, and cloud-metadata-adjacent addresses.  Applied per-connection
+// via CURLOPT_OPENSOCKETFUNCTION, so redirects are re-validated too.
+static bool is_blocked_v4(uint32_t ip_host_order) {
+    const uint8_t a = (ip_host_order >> 24) & 0xff;
+    const uint8_t b = (ip_host_order >> 16) & 0xff;
+    if (a == 0)   return true;                       // 0.0.0.0/8
+    if (a == 10)  return true;                       // 10/8 RFC1918
+    if (a == 127) return true;                       // loopback
+    if (a == 169 && b == 254) return true;           // link-local + AWS metadata
+    if (a == 172 && b >= 16 && b <= 31) return true; // 172.16/12 RFC1918
+    if (a == 192 && b == 168) return true;           // 192.168/16 RFC1918
+    if (a == 100 && b >= 64 && b <= 127) return true;// 100.64/10 CGNAT
+    if (a >= 224) return true;                       // multicast + reserved
+    return false;
+}
+
+static bool is_blocked_address(const struct sockaddr* sa) {
+    if (!sa) return true;
+    if (sa->sa_family == AF_INET) {
+        uint32_t ip = ntohl(((const struct sockaddr_in*)sa)->sin_addr.s_addr);
+        return is_blocked_v4(ip);
+    }
+    if (sa->sa_family == AF_INET6) {
+        const auto* a6 = &((const struct sockaddr_in6*)sa)->sin6_addr;
+        if (IN6_IS_ADDR_LOOPBACK(a6))  return true;
+        if (IN6_IS_ADDR_LINKLOCAL(a6)) return true;
+        if (IN6_IS_ADDR_SITELOCAL(a6)) return true;
+        if (IN6_IS_ADDR_MULTICAST(a6)) return true;
+        if (IN6_IS_ADDR_V4MAPPED(a6)) {
+            uint32_t ip = ntohl(((const uint32_t*)a6)[3]);
+            return is_blocked_v4(ip);
+        }
+        const uint8_t first = ((const uint8_t*)a6)[0];
+        if ((first & 0xfe) == 0xfc) return true;     // fc00::/7 unique-local
+        return false;
+    }
+    return true;
+}
+
+static curl_socket_t safe_opensocket_cb(void* /*clientp*/, curlsocktype purpose,
+                                        struct curl_sockaddr* addr) {
+    if (purpose != CURLSOCKTYPE_IPCXN) return CURL_SOCKET_BAD;
+    if (is_blocked_address(&addr->addr)) return CURL_SOCKET_BAD;
+    return ::socket(addr->family, addr->socktype, addr->protocol);
+}
 } // namespace
 
 std::string cmd_fetch(const std::string& url) {
-    if (url.substr(0, 7) != "http://" && url.substr(0, 8) != "https://")
+    // Allocation-free prefix check — substr() would build two temporaries
+    // per fetch just to throw them away.
+    const bool is_http  = url.size() >= 7 && url.compare(0, 7, "http://")  == 0;
+    const bool is_https = url.size() >= 8 && url.compare(0, 8, "https://") == 0;
+    if (!is_http && !is_https)
         return "ERR: URL must start with http:// or https://";
 
     CURL* curl = curl_easy_init();
@@ -227,19 +308,28 @@ std::string cmd_fetch(const std::string& url) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_MAXFILESIZE, static_cast<long>(512 * 1024));
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    // SSRF guard: reject private/loopback/metadata addresses on every
+    // connection attempt, including after redirects.
+    curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, safe_opensocket_cb);
 #if CURL_AT_LEAST_VERSION(7, 85, 0)
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
 #else
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
 #endif
 
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
 
+    if (res == CURLE_COULDNT_CONNECT)
+        return "ERR: refused — target resolved to a private, loopback, or "
+               "link-local address (SSRF guard)";
     if (res != CURLE_OK)
         return std::string("ERR: ") + curl_easy_strerror(res);
 
@@ -297,12 +387,43 @@ std::string cmd_write(const std::string& path, const std::string& content) {
     if (path.empty()) return "ERR: empty path";
 
     // Path safety: canonicalize and verify the resolved path stays within cwd.
+    // The cwd itself is canonicalised so symlinked ancestors (common on macOS,
+    // where /tmp → /private/tmp) don't cause a false mismatch.
     std::error_code path_ec;
-    fs::path cwd = fs::current_path(path_ec);
+    fs::path cwd_raw = fs::current_path(path_ec);
     if (path_ec) return "ERR: cannot determine working directory";
+    fs::path cwd = fs::canonical(cwd_raw, path_ec);
+    if (path_ec) cwd = cwd_raw;  // fall back if cwd itself fails
 
-    fs::path resolved = fs::weakly_canonical(fs::path(path), path_ec);
-    if (path_ec) return "ERR: invalid path: " + path_ec.message();
+    // For the target path we canonicalise the deepest existing ancestor (so
+    // symlink tricks like a symlinked parent dir are resolved) and append the
+    // remaining tail.  This is the symlink-aware analog of weakly_canonical —
+    // which only normalises `.`/`..` and leaves symlinks alone.
+    fs::path target(path);
+    fs::path abs_target = target.is_absolute() ? target : (cwd / target);
+    fs::path existing = abs_target;
+    fs::path tail;
+    while (!existing.empty()) {
+        std::error_code ec;
+        if (fs::exists(existing, ec)) break;
+        tail = existing.filename() / tail;
+        if (!existing.has_parent_path() || existing.parent_path() == existing) {
+            existing.clear();
+            break;
+        }
+        existing = existing.parent_path();
+    }
+    fs::path resolved;
+    if (!existing.empty()) {
+        std::error_code ec;
+        fs::path canon = fs::canonical(existing, ec);
+        if (ec) return "ERR: invalid path: " + ec.message();
+        resolved = tail.empty() ? canon : (canon / tail);
+    } else {
+        resolved = fs::weakly_canonical(abs_target, path_ec);
+        if (path_ec) return "ERR: invalid path: " + path_ec.message();
+    }
+    resolved = resolved.lexically_normal();
 
     // Resolved path must be a prefix of (or equal to) cwd
     auto resolved_str = resolved.string();
@@ -332,12 +453,23 @@ std::string cmd_write(const std::string& path, const std::string& content) {
     }
 
     std::ofstream f(path, std::ios::out | std::ios::trunc);
-    if (!f.is_open()) return "ERR: cannot open for writing: " + path;
+    if (!f.is_open()) {
+        int err = errno;
+        return std::string("ERR: cannot open for writing: ") + path
+             + " (" + std::strerror(err) + ")";
+    }
 
     f << content;
     if (!content.empty() && content.back() != '\n') f << '\n';
 
-    if (f.fail()) return "ERR: write failed: " + path;
+    if (f.fail()) {
+        int err = errno;
+        std::string why = std::strerror(err);
+        if (err == ENOSPC) why = "disk full (ENOSPC)";
+        else if (err == EDQUOT) why = "disk quota exceeded (EDQUOT)";
+        else if (err == EACCES) why = "permission denied (EACCES)";
+        return "ERR: write failed: " + path + " — " + why;
+    }
     f.close();
 
     // Verify: read the file back and compare bytes.  Catches silent
@@ -369,8 +501,69 @@ std::string cmd_write(const std::string& path, const std::string& content) {
 // Memory helpers
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Resolve memory_dir through any symlinks and ensure the result is a real
+// directory we own.  Protects against symlink traversal: a malicious
+// `.index/memory` pointing at `/etc` would otherwise let /mem write happily
+// clobber arbitrary files.  Creates the directory if missing, then
+// canonicalises, then verifies ownership.  Returns the canonical path or an
+// "ERR: ..." string on any failure.
+static std::string resolve_memory_dir(const std::string& memory_dir,
+                                      std::string* err_out) {
+    auto fail = [&](std::string msg) {
+        if (err_out) *err_out = std::move(msg);
+        return std::string();
+    };
+    if (memory_dir.empty()) return fail("ERR: empty memory_dir");
+
+    std::error_code ec;
+    fs::create_directories(memory_dir, ec);
+    if (ec) return fail("ERR: cannot create memory dir " + memory_dir
+                        + ": " + ec.message());
+
+    fs::path canon = fs::canonical(memory_dir, ec);
+    if (ec) return fail("ERR: cannot resolve memory dir: " + ec.message());
+
+    struct stat st{};
+    if (::lstat(canon.c_str(), &st) != 0)
+        return fail(std::string("ERR: lstat memory dir: ") + std::strerror(errno));
+    if (!S_ISDIR(st.st_mode))
+        return fail("ERR: memory dir is not a directory: " + canon.string());
+    if (st.st_uid != ::geteuid())
+        return fail("ERR: memory dir not owned by current user: " + canon.string());
+
+    return canon.string();
+}
+
+// True when `path` exists and is a regular file owned by the current user —
+// the only kind of target /mem and /shared-mem append-writes should touch.
+// Used to abort before open() rather than append to a symlink or a file
+// owned by someone else in a shared-home scenario.
+static std::string verify_mem_target(const std::string& path) {
+    struct stat st{};
+    if (::lstat(path.c_str(), &st) != 0) {
+        if (errno == ENOENT) return "";        // fine — open(O_APPEND) will create
+        return std::string("ERR: lstat ") + path + ": " + std::strerror(errno);
+    }
+    if (S_ISLNK(st.st_mode))
+        return "ERR: refusing to write through symlink: " + path;
+    if (!S_ISREG(st.st_mode))
+        return "ERR: memory target is not a regular file: " + path;
+    if (st.st_uid != ::geteuid())
+        return "ERR: memory file not owned by current user: " + path;
+    return "";
+}
+
+} // namespace
+
 std::string cmd_mem_read(const std::string& agent_id, const std::string& memory_dir) {
-    std::string path = memory_dir + "/" + agent_id + ".md";
+    std::string err;
+    std::string dir = resolve_memory_dir(memory_dir, &err);
+    if (dir.empty()) return "";   // read is non-fatal; silent on access issues
+
+    std::string path = dir + "/" + agent_id + ".md";
+    if (!verify_mem_target(path).empty()) return "";
     std::ifstream f(path);
     if (!f.is_open()) return "";
     std::ostringstream ss;
@@ -380,25 +573,40 @@ std::string cmd_mem_read(const std::string& agent_id, const std::string& memory_
 
 std::string cmd_mem_write(const std::string& agent_id, const std::string& text,
                           const std::string& memory_dir) {
-    std::error_code ec;
-    fs::create_directories(memory_dir, ec);
-    if (ec) return "ERR: cannot create memory dir " + memory_dir + ": " + ec.message();
+    std::string err;
+    std::string dir = resolve_memory_dir(memory_dir, &err);
+    if (dir.empty()) return err;
 
-    std::string path = memory_dir + "/" + agent_id + ".md";
+    std::string path = dir + "/" + agent_id + ".md";
+    std::string verr = verify_mem_target(path);
+    if (!verr.empty()) return verr;
+
     std::ofstream f(path, std::ios::app);
-    if (!f.is_open()) return "ERR: cannot open " + path + " for writing";
+    if (!f.is_open())
+        return std::string("ERR: cannot open ") + path + " for writing ("
+             + std::strerror(errno) + ")";
 
     std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     f << "\n<!-- " << ts << " -->\n" << text << "\n";
-    if (f.fail()) return "ERR: write failed for " + path;
+    if (f.fail()) {
+        int e = errno;
+        std::string why = std::strerror(e);
+        if (e == ENOSPC) why = "disk full (ENOSPC)";
+        return "ERR: write failed for " + path + " — " + why;
+    }
+    // Keep per-user memory files unreadable to other users on shared systems.
+    ::chmod(path.c_str(), 0600);
     return "OK: memory written to " + path;
 }
 
 void cmd_mem_clear(const std::string& agent_id, const std::string& memory_dir) {
-    std::string path = memory_dir + "/" + agent_id + ".md";
-    fs::remove(path);
+    std::string err;
+    std::string dir = resolve_memory_dir(memory_dir, &err);
+    if (dir.empty()) return;
+    std::string path = dir + "/" + agent_id + ".md";
+    if (verify_mem_target(path).empty()) fs::remove(path);
 }
 
 // ---------------------------------------------------------------------------
@@ -410,7 +618,12 @@ static std::string shared_mem_path(const std::string& memory_dir) {
 }
 
 std::string cmd_mem_shared_read(const std::string& memory_dir) {
-    std::ifstream f(shared_mem_path(memory_dir));
+    std::string err;
+    std::string dir = resolve_memory_dir(memory_dir, &err);
+    if (dir.empty()) return "";
+    std::string path = dir + "/shared.md";
+    if (!verify_mem_target(path).empty()) return "";
+    std::ifstream f(path);
     if (!f.is_open()) return "";
     std::ostringstream ss;
     ss << f.rdbuf();
@@ -418,22 +631,37 @@ std::string cmd_mem_shared_read(const std::string& memory_dir) {
 }
 
 std::string cmd_mem_shared_write(const std::string& text, const std::string& memory_dir) {
-    std::error_code ec;
-    fs::create_directories(memory_dir, ec);
-    if (ec) return "ERR: cannot create memory dir: " + ec.message();
-    std::ofstream f(shared_mem_path(memory_dir), std::ios::app);
-    if (!f.is_open()) return "ERR: cannot open shared scratchpad for writing";
+    std::string err;
+    std::string dir = resolve_memory_dir(memory_dir, &err);
+    if (dir.empty()) return err;
+    std::string path = dir + "/shared.md";
+    std::string verr = verify_mem_target(path);
+    if (!verr.empty()) return verr;
+    std::ofstream f(path, std::ios::app);
+    if (!f.is_open())
+        return std::string("ERR: cannot open shared scratchpad: ") + std::strerror(errno);
     std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     f << "\n<!-- " << ts << " -->\n" << text << "\n";
-    if (f.fail()) return "ERR: write failed for shared scratchpad";
+    if (f.fail()) {
+        int e = errno;
+        std::string why = std::strerror(e);
+        if (e == ENOSPC) why = "disk full (ENOSPC)";
+        return "ERR: write failed for shared scratchpad — " + why;
+    }
+    ::chmod(path.c_str(), 0600);
     return "OK";
 }
 
 std::string cmd_mem_shared_clear(const std::string& memory_dir) {
+    std::string err;
+    std::string dir = resolve_memory_dir(memory_dir, &err);
+    if (dir.empty()) return err;
+    std::string path = dir + "/shared.md";
+    if (!verify_mem_target(path).empty()) return "OK";  // nothing safe to remove
     std::error_code ec;
-    fs::remove(shared_mem_path(memory_dir), ec);
+    fs::remove(path, ec);
     if (ec) return "ERR: cannot clear shared scratchpad: " + ec.message();
     return "OK";
 }
@@ -445,6 +673,21 @@ std::string cmd_mem_shared_clear(const std::string& memory_dir) {
 // Conservative pattern check — matches commonly-destructive shell forms.
 // Expanding this is cheap; the callsite bails to a y/N prompt on a match.
 bool is_destructive_exec(const std::string& cmd) {
+    // Shell-meta bypass catch-all.  Without this, an agent can sneak a
+    // destructive call past the token scan via command substitution
+    // (`$(rm -rf ~)`, backticks), chaining (`true; rm -rf ~`), or a literal
+    // newline.  Tripping any of these routes the command through the
+    // confirm() gate — agents can still use pipes/redirects after the user
+    // approves, but the silent bypass vector is closed.
+    for (size_t i = 0; i < cmd.size(); ++i) {
+        char c = cmd[i];
+        if (c == '`' || c == '\n' || c == '\r') return true;
+        if (c == '$' && i + 1 < cmd.size() && cmd[i + 1] == '(') return true;
+        if (c == ';') return true;
+        if ((c == '&' || c == '|') && i + 1 < cmd.size() && cmd[i + 1] == c)
+            return true;  // && or ||
+    }
+
     // Normalise: lowercase + collapse whitespace, preserve literal chars like '>'.
     std::string s;
     s.reserve(cmd.size());
@@ -480,6 +723,11 @@ bool is_destructive_exec(const std::string& cmd) {
     // agent-issued `>` is the moral equivalent of /write.
     if (padded.find(" > ") != std::string::npos ||
         padded.find(">>") != std::string::npos) return true;
+
+    // Piped commands reach a second tool whose token isn't at the command
+    // head, so the " rm " / " dd " checks above won't see it.  Treat any
+    // pipe as confirm-worthy — the user gets one prompt for the whole chain.
+    if (padded.find(" | ") != std::string::npos) return true;
 
     // find -delete / find -exec rm …
     if (has(" find ") && (has(" -delete") ||

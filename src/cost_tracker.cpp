@@ -50,10 +50,23 @@ double CostTracker::compute_cost(const std::string& model, const ApiResponse& re
 // ─── Formatting helpers ───────────────────────────────────────────────────────
 
 std::string CostTracker::fmt_int(int n) {
-    std::string s = std::to_string(n);
-    int pos = static_cast<int>(s.size()) - 3;
-    while (pos > 0) { s.insert(pos, ","); pos -= 3; }
-    return s;
+    // Build right-to-left into a fixed buffer — avoids O(n²) shifts from
+    // insert() in the middle of a growing string.  32 bytes covers any
+    // signed 32-bit int comfortably (incl. sign + commas).
+    if (n == 0) return "0";
+    char out[32];
+    int pos = sizeof(out);
+    bool neg = n < 0;
+    unsigned u = neg ? static_cast<unsigned>(-(long long)n) : static_cast<unsigned>(n);
+    int digits = 0;
+    while (u > 0 && pos > 0) {
+        if (digits > 0 && digits % 3 == 0) out[--pos] = ',';
+        out[--pos] = static_cast<char>('0' + (u % 10));
+        u /= 10;
+        ++digits;
+    }
+    if (neg && pos > 0) out[--pos] = '-';
+    return std::string(out + pos, sizeof(out) - pos);
 }
 
 std::string CostTracker::fmt_dollars(double d) {

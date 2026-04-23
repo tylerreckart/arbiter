@@ -9,6 +9,30 @@
 
 namespace index_ai {
 
+// Per-entry truncation so a single iteration with a huge agent response can't
+// dominate memory; combined with a total-bytes cap applied by trim_log_bytes()
+// this bounds a loop's log footprint regardless of per-turn output size.
+static constexpr size_t kMaxLogEntryBytes = 32 * 1024;   //  32 KB per entry
+static constexpr size_t kMaxLogTotalBytes = 2 * 1024 * 1024;  // 2 MB total
+
+static std::string truncate_entry(const std::string& s) {
+    if (s.size() <= kMaxLogEntryBytes) return s;
+    std::string out = s.substr(0, kMaxLogEntryBytes);
+    out += "\n... [loop-log entry truncated at 32 KB]\n";
+    return out;
+}
+
+// Drop oldest entries until the aggregate byte count fits under
+// kMaxLogTotalBytes.  Called with the entry mutex held.
+static void trim_log_bytes(std::vector<std::string>& log) {
+    size_t total = 0;
+    for (const auto& s : log) total += s.size();
+    while (total > kMaxLogTotalBytes && !log.empty()) {
+        total -= log.front().size();
+        log.erase(log.begin());
+    }
+}
+
 const char* loop_state_str(LoopState s) {
     switch (s) {
         case LoopState::Running:   return "running";
@@ -243,7 +267,8 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
             pre << "[" << e->loop_id << "/" << e->agent_id
                 << " thinking...]\n";
             std::lock_guard<std::mutex> ek(e->mu);
-            e->output_log.push_back(pre.str());
+            e->output_log.push_back(truncate_entry(pre.str()));
+            trim_log_bytes(e->output_log);
         }
 
         auto resp = orch.send(e->agent_id, prompt);
@@ -274,11 +299,13 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
             }
             std::lock_guard<std::mutex> ek(e->mu);
             if (resp.ok) e->last_output = resp.content;
+            std::string e_str = truncate_entry(entry.str());
             if (!e->output_log.empty()) {
-                e->output_log.back() = entry.str();
+                e->output_log.back() = std::move(e_str);
             } else {
-                e->output_log.push_back(entry.str());
+                e->output_log.push_back(std::move(e_str));
             }
+            trim_log_bytes(e->output_log);
         }
 
         if (!resp.ok) {

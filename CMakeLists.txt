@@ -5,6 +5,25 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# --- Default build type ---
+# Single-config generators (make, ninja) silently emit -O0 when
+# CMAKE_BUILD_TYPE is unset, which we discovered costs ~20-30% on every
+# hot path (TLS, JSON parse, HTML strip, markdown render).  Default to
+# Release so fresh clones get optimized binaries; developers can still
+# override with -DCMAKE_BUILD_TYPE=Debug or -DCMAKE_BUILD_TYPE=RelWithDebInfo.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+        "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+
+# --- Link-time optimization ---
+# LTO is a clean win for a mostly-single-binary project; probe availability
+# first since some older toolchains can't do it, and skip when sanitizers
+# are enabled (they don't compose cleanly with LTO).
+include(CheckIPOSupported)
+check_ipo_supported(RESULT HAVE_IPO OUTPUT IPO_ERROR)
+
 # --- Platform detection ---
 if(APPLE)
     add_compile_definitions(INDEX_AI_MACOS)
@@ -67,6 +86,17 @@ add_executable(index ${INDEX_AI_SOURCES})
 # the bottom border.  Keep CMakeLists.txt's `project(... VERSION x.y.z)` in
 # sync with your brew formula / release tags.
 target_compile_definitions(index PRIVATE INDEX_VERSION="${PROJECT_VERSION}")
+
+# Enable IPO/LTO on Release-ish configs when the toolchain supports it and
+# no sanitizer is active.  Guarded here (not globally) so tests and dev
+# builds don't pay the extra link cost.
+if(HAVE_IPO AND NOT INDEX_AI_ASAN AND NOT INDEX_AI_TSAN)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release" OR
+       CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR
+       CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+        set_target_properties(index PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
+endif()
 
 target_include_directories(index PRIVATE
     ${CMAKE_SOURCE_DIR}/include

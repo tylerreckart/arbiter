@@ -30,7 +30,7 @@ static PtySession make_session(int rows = 40, int cols = 120) {
 // Identity anchor — present in the first line regardless of how we tweak
 // the greeting over time.  Used as the "welcome is fully on-screen" signal
 // since the card renders in a single write.
-static constexpr const char* kIdentityAnchor = "i'm index";
+static constexpr const char* kIdentityAnchor = "i am index";
 
 TEST_CASE("welcome card renders on cold start") {
     PtySession s = make_session();
@@ -176,7 +176,7 @@ TEST_CASE("terminal geometry is respected") {
         PtySession s(40, 140);
         s.spawn({ INDEX_TEST_BINARY });
         std::string out = s.read_until(kIdentityAnchor, 3000);
-        CHECK(out.find("i'm index.") != std::string::npos);
+        CHECK(out.find("i am index.") != std::string::npos);
         // We shouldn't see any line-wrap artefacts at 140 cols — no stray
         // 'a multi' mid-fragmentation of the card's text lines.
     }
@@ -185,6 +185,6 @@ TEST_CASE("terminal geometry is respected") {
         PtySession s(40, 80);
         s.spawn({ INDEX_TEST_BINARY });
         std::string out = s.read_until(kIdentityAnchor, 3000);
-        CHECK(out.find("i'm index.") != std::string::npos);
+        CHECK(out.find("i am index.") != std::string::npos);
     }
 }

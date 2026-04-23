@@ -7,6 +7,9 @@
 #include <iomanip>
 #include <stdexcept>
 
+#include <sys/stat.h>
+#include <sys/types.h>
+
 namespace index_ai {
 
 static std::string bytes_to_hex(const unsigned char* data, size_t len) {
@@ -67,6 +70,12 @@ void Auth::save(const std::string& path) const {
     if (!f.is_open()) throw std::runtime_error("Cannot write auth file: " + path);
     f << "# index_ai auth tokens (hashed)\n";
     for (auto& h : token_hashes_) f << h << "\n";
+    f.close();
+    // Restrict to owner-only — hashed or not, the token list is sensitive
+    // and has no reason to be world- or group-readable.  umask might have
+    // left this 0644 (a typical default), which would expose the hashes to
+    // other users on a shared system.
+    ::chmod(path.c_str(), S_IRUSR | S_IWUSR);
 }
 
 } // namespace index_ai

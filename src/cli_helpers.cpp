@@ -13,6 +13,8 @@
 #include <string>
 
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <pwd.h>
 
@@ -118,6 +120,27 @@ std::string get_api_key() {
     if (key && key[0]) return key;
 
     std::string path = get_config_dir() + "/api_key";
+
+    // Enforce 0600 on the key file.  If the user's umask was permissive
+    // when they wrote the key, any process running as another local user
+    // could read it.  Warn if we observe lax modes, then tighten — and
+    // refuse to load if another user owns the file (potential tamper).
+    struct stat st{};
+    if (::stat(path.c_str(), &st) == 0) {
+        if (st.st_uid != ::geteuid()) {
+            std::cerr << "ERR: " << path << " is not owned by the current user; "
+                         "refusing to load (potential credential tamper)\n";
+            std::exit(1);
+        }
+        const mode_t perms = st.st_mode & 0777;
+        if (perms & (S_IRWXG | S_IRWXO)) {
+            std::cerr << "WARN: " << path << " was world/group-accessible "
+                         "(mode " << std::oct << perms << std::dec
+                      << ") — tightening to 0600\n";
+            ::chmod(path.c_str(), S_IRUSR | S_IWUSR);
+        }
+    }
+
     std::ifstream f(path);
     if (f.is_open()) {
         std::string k;
