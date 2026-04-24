@@ -2,6 +2,7 @@
 
 #include "tui/tui.h"
 #include "cli_helpers.h"   // term_cols / term_rows
+#include "theme.h"
 
 #include <algorithm>
 #include <chrono>
@@ -90,9 +91,15 @@ void TUI::draw_sep() {
     // chrome.  tty_mu_ is recursive, so nested calls from begin_input /
     // grow_input (which already hold the lock) are fine.
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    const Theme& t = theme();
     std::printf("\0337\033[?25l");
     erase_pane_row(sep_row());
-    std::printf("\033[38;5;237m");
+    // Top border of the readline.  In multi-pane mode the focused pane
+    // accents its border; everyone else stays dim.  Single-pane always
+    // dim — there's nothing to contrast with.
+    const std::string& top_border =
+        focus_accent_ ? t.border_active : t.border_inactive;
+    std::printf("%s", top_border.c_str());
     if (current_pre_input_status_.empty()) {
         for (int i = 0; i < rect_.w; ++i) std::printf("─");
     } else {
@@ -109,8 +116,7 @@ void TUI::draw_sep() {
         int used = 4 + cell_w(current_pre_input_status_);
         for (int i = used; i < rect_.w; ++i) std::printf("─");
     }
-    std::printf("\033[0m");
-    std::printf("\0338\033[?25h");
+    std::printf("%s\0338\033[?25h", t.reset.c_str());
     std::fflush(stdout);
 }
 
@@ -159,7 +165,11 @@ void TUI::grow_input(int needed) {
 }
 
 std::string TUI::build_prompt() const {
-    return "\001\033[38;5;241m\002>\001\033[0m\002 ";
+    // \001…\002 wraps mark LineEditor invisible-width bytes so the prompt
+    // color sequence doesn't count toward the visible width used for
+    // wrapping/cursor arithmetic.
+    const Theme& t = theme();
+    return "\001" + t.prompt_color + "\002>\001" + t.reset + "\002 ";
 }
 
 void TUI::render_scrollback(const ScrollBuffer& buf,
@@ -295,17 +305,19 @@ void TUI::draw_header_locked() {
         std::printf("\033[2m%s\033[0m", right_vis.c_str());
 
     // Row 2 — separator.  In a multi-pane layout the focused pane
-    // highlights its header bottom border in orange (the agent_color for
-    // "index") so the user can spot the active pane at a glance.  In
-    // single-pane mode focus_accent_ stays false and the separator
-    // renders in the usual dim grey.
+    // highlights its header bottom border in the theme accent so the
+    // user can spot the active pane at a glance.  In single-pane mode
+    // focus_accent_ stays false and the separator renders in the
+    // border-inactive tone.
     erase_pane_row(header_sep_row());
-    if (focus_accent_)
-        std::printf("\033[38;5;208m");   // orange accent — active pane
-    else
-        std::printf("\033[38;5;237m");   // dim grey — inactive / single pane
-    for (int i = 0; i < rect_.w; ++i) std::printf("─");
-    std::printf("\033[0m");
+    {
+        const Theme& t = theme();
+        std::printf("%s",
+                    focus_accent_ ? t.border_active.c_str()
+                                  : t.border_inactive.c_str());
+        for (int i = 0; i < rect_.w; ++i) std::printf("─");
+        std::printf("%s", t.reset.c_str());
+    }
 
     std::printf("\0338\033[?25h");
     std::fflush(stdout);
@@ -323,11 +335,21 @@ void TUI::draw_footer_hint() {
     std::printf("\0337\033[?25l");
 
     if (!footer_hint_visible_) {
-        // Multi-pane layout: blank both footer rows so the hint doesn't
-        // clutter every pane.  The rows are still reserved (input_row()
-        // and sep_row() references assume a two-row bottom pad), so the
-        // readline's absolute position stays identical between modes.
+        // Multi-pane layout.  No keybind hint, but the focused pane draws
+        // a dashed bottom border in the accent color so the active
+        // readline reads as a framed box (top sep_row accent + bottom
+        // hint_sep_row accent).  Unfocused panes leave hint_sep_row
+        // blank to keep them visually quiet.  pad_row is always blank.
+        // The rows are still reserved (input_row() and sep_row() refs
+        // assume a two-row bottom pad), so the readline's absolute
+        // position stays identical to single-pane mode.
         erase_pane_row(hint_sep_row());
+        if (focus_accent_) {
+            const Theme& t = theme();
+            std::printf("%s", t.border_active.c_str());
+            for (int i = 0; i < rect_.w; ++i) std::printf("─");
+            std::printf("%s", t.reset.c_str());
+        }
         erase_pane_row(pad_row());
         std::printf("\0338\033[?25h");
         std::fflush(stdout);
@@ -336,9 +358,12 @@ void TUI::draw_footer_hint() {
 
     // Hint separator row — full-width dashes.
     erase_pane_row(hint_sep_row());
-    std::printf("\033[38;5;237m");
-    for (int i = 0; i < rect_.w; ++i) std::printf("─");
-    std::printf("\033[0m");
+    {
+        const Theme& t = theme();
+        std::printf("%s", t.border_inactive.c_str());
+        for (int i = 0; i < rect_.w; ++i) std::printf("─");
+        std::printf("%s", t.reset.c_str());
+    }
 
     // Hint text row — drop kRight (then kLeft) as the pane shrinks so the
     // composed line strictly fits in rect_.w.  Without this guard, narrow
@@ -365,7 +390,13 @@ void TUI::set_footer_hint_visible(bool visible) {
 void TUI::set_focus_accent(bool active) {
     if (focus_accent_ == active) return;
     focus_accent_ = active;
-    draw_header();   // repaints both identity row and the bottom-of-header sep
+    // Repaint all three borders that change color with focus:
+    //   1. Header bottom sep  (draw_header → draw_header_locked)
+    //   2. Readline top    sep  (draw_sep on sep_row)
+    //   3. Readline bottom sep  (draw_footer_hint on hint_sep_row, multi-pane only)
+    draw_header();
+    draw_sep();
+    draw_footer_hint();
 }
 
 void TUI::clear_input_area() {
@@ -390,8 +421,12 @@ void TUI::paint_idle_input_prompt() {
     // dormant.  On re-focus begin_input overwrites the stub with the
     // live prompt; until then the stub stays put.
     erase_pane_row(input_top_row());
-    std::printf("\033[%d;%dH\033[38;5;237m> \033[0m",
-                input_top_row(), left_col());
+    {
+        const Theme& t = theme();
+        std::printf("\033[%d;%dH%s> %s",
+                    input_top_row(), left_col(),
+                    t.border_inactive.c_str(), t.reset.c_str());
+    }
     std::printf("\0338\033[?25h");
     std::fflush(stdout);
 }
@@ -668,13 +703,14 @@ std::string ToolCallIndicator::finalize() {
     // Dim summary line — ✓ green if clean, ✗ red if any call failed.  One
     // trailing newline so OutputQueue::end_message() gets the expected
     // separation before the agent's synthesis renders.
+    const Theme& t = theme();
     std::string out;
     if (f == 0) {
-        out += "\033[38;5;208m\u2713\033[0m "; // orange check
+        out += t.accent_success + "\u2713" + t.reset + " ";
     } else {
-        out += "\033[38;5;167m\u2717\033[0m "; // red x
+        out += t.accent_error   + "\u2717" + t.reset + " ";
     }
-    out += "\033[2m";
+    out += t.dim;
     out += std::to_string(n);
     out += " tool call";
     if (n != 1) out += "s";

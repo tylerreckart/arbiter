@@ -21,6 +21,7 @@
 #include "tui/stream_filter.h"
 #include "repl/pane.h"
 #include "repl/layout.h"
+#include "theme.h"
 #include "config.h"
 
 #include <iostream>
@@ -53,6 +54,7 @@ using index_ai::get_api_keys;
 using index_ai::write_memory;
 using index_ai::read_memory;
 using index_ai::fetch_url;
+using index_ai::theme;
 
 
 // ─── Terminal / TUI ──────────────────────────────────────────────────────────
@@ -298,7 +300,7 @@ static void cmd_interactive() {
         p->editor.set_cancel_handler([raw, &orch]() {
             orch.cancel();
             raw->multiline_accum.clear();
-            raw->output_queue.push_msg("\033[38;5;167m[interrupted]\033[0m");
+            raw->output_queue.push_msg(theme().accent_error + "[interrupted]" + theme().reset + "");
         });
         // Chord prefix: Ctrl-w.  Recognized follow-ups are w/s/v/c (+Ctrl-w
         // itself as a synonym for 'w'); anything else drops the chord
@@ -318,8 +320,8 @@ static void cmd_interactive() {
                                     const std::string& content) {
         Pane* p = g_active_pane;
         if (!p) return;
-        const char* dim = "\033[38;5;238m";
-        const char* rst = "\033[0m";
+        const std::string& dim = theme().text_dimmer;
+        const std::string& rst = theme().reset;
         std::string filtered;
         StreamFilter filter(cfg,
             [&filtered](const std::string& s) { filtered += s; });
@@ -467,10 +469,10 @@ static void cmd_interactive() {
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                         maybe_generate_title(msg, resp.content);
                     } else {
-                        output_queue.push_msg("\033[38;5;167mERR: " + resp.error + "\033[0m");
+                        output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
                     }
                 } catch (const std::exception& e) {
-                    output_queue.push_msg("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m");
+                    output_queue.push_msg(theme().accent_error + "ERR: " + std::string(e.what()) + theme().reset + "");
                 }
                 thinking.stop();
                 return;
@@ -522,10 +524,10 @@ static void cmd_interactive() {
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                         maybe_generate_title(query, resp.content);
                     } else {
-                        output_queue.push_msg("\033[38;5;167mERR: " + resp.error + "\033[0m");
+                        output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
                     }
                 } catch (const std::exception& e) {
-                    output_queue.push_msg("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m");
+                    output_queue.push_msg(theme().accent_error + "ERR: " + std::string(e.what()) + theme().reset + "");
                 }
                 thinking.stop();
                 return;
@@ -576,8 +578,8 @@ static void cmd_interactive() {
                         output_queue.push_msg("Nothing to compact: " + id + " has no history.");
                     } else {
                         output_queue.push_msg(
-                            "\033[2m[compacted — context window cleared, summary held in session]\033[0m\n"
-                            "\033[2m" + summary + "\033[0m");
+                            "\033[2m[compacted — context window cleared, summary held in session]" + theme().reset + "\n"
+                            "\033[2m" + summary + theme().reset + "");
                     }
                 } catch (const std::exception& e) {
                     thinking.stop();
@@ -674,7 +676,7 @@ static void cmd_interactive() {
                 output_queue.push(loops.log(lid, 0));
                 if (!loops.is_stopped(lid)) {
                     output_queue.push("\033[2m--- watching " + lid +
-                                      " — press Enter to detach ---\033[0m\n");
+                                      " — press Enter to detach ---" + theme().reset + "\n");
                     // Tail new entries — exec thread polls while main thread flushes
                     while (!loops.is_stopped(lid)) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -690,9 +692,9 @@ static void cmd_interactive() {
                         output_queue.push(loops.log_since(lid, seen));
                     }
                     if (loops.is_stopped(lid)) {
-                        output_queue.push_msg("\033[2m--- loop finished ---\033[0m");
+                        output_queue.push_msg("\033[2m--- loop finished ---" + theme().reset + "");
                     } else {
-                        output_queue.push_msg("\033[2m--- detached ---\033[0m");
+                        output_queue.push_msg("\033[2m--- detached ---" + theme().reset + "");
                     }
                 }
                 return;
@@ -708,7 +710,7 @@ static void cmd_interactive() {
                 std::string content = fetch_url(url);
                 thinking.stop();
                 if (content.substr(0, 4) == "ERR:") {
-                    output_queue.push_msg("\033[38;5;167m" + content + "\033[0m");
+                    output_queue.push_msg(theme().accent_error + content + theme().reset + "");
                     return;
                 }
                 static constexpr size_t kFetchLimit = 32768;
@@ -727,11 +729,11 @@ static void cmd_interactive() {
                         tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
                         tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                     } else {
-                        output_queue.push_msg("\033[38;5;167mERR: " + resp.error + "\033[0m");
+                        output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
                     }
                 } catch (const std::exception& ex) {
                     thinking.stop();
-                    output_queue.push_msg("\033[38;5;167mERR: " + std::string(ex.what()) + "\033[0m");
+                    output_queue.push_msg(theme().accent_error + "ERR: " + std::string(ex.what()) + theme().reset + "");
                 }
                 return;
             }
@@ -773,7 +775,7 @@ static void cmd_interactive() {
                     }
                     std::string result = write_memory(current_agent, text);
                     if (result.compare(0, 3, "ERR") == 0)
-                        output_queue.push_msg("\033[38;5;167m" + result + "\033[0m");
+                        output_queue.push_msg(theme().accent_error + result + theme().reset + "");
                     else
                         output_queue.push_msg("Memory written for " + current_agent);
                 } else if (subcmd == "read") {
@@ -846,16 +848,16 @@ static void cmd_interactive() {
                     output_queue.push_msg("Usage: /plan execute <path>");
                     return;
                 }
-                output_queue.push_msg("\033[2m[plan] executing: " + path + "]\033[0m");
+                output_queue.push_msg("\033[2m[plan] executing: " + path + "]" + theme().reset + "");
                 auto result = orch.execute_plan(path,
                     [&](const std::string& msg) {
-                        output_queue.push_msg("\033[2m" + msg + "\033[0m");
+                        output_queue.push_msg("\033[2m" + msg + theme().reset + "");
                     });
                 if (!result.ok) {
-                    output_queue.push_msg("\033[38;5;167m[plan] failed: " + result.error + "\033[0m");
+                    output_queue.push_msg(theme().accent_error + "[plan] failed: " + result.error + theme().reset + "");
                 } else {
                     output_queue.push_msg("\033[2m[plan] complete — " +
-                                      std::to_string(result.phases.size()) + " phase(s) executed]\033[0m");
+                                      std::to_string(result.phases.size()) + " phase(s) executed]" + theme().reset + "");
                     // Print final phase output (the deliverable)
                     if (!result.phases.empty()) {
                         auto& [num, name, out] = result.phases.back();
@@ -971,10 +973,10 @@ static void cmd_interactive() {
                 tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
                 maybe_generate_title(line, resp.content);
             } else {
-                output_queue.push_msg("\033[38;5;167mERR: " + resp.error + "\033[0m");
+                output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
             }
         } catch (const std::exception& e) {
-            output_queue.push_msg("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m");
+            output_queue.push_msg(theme().accent_error + "ERR: " + std::string(e.what()) + theme().reset + "");
             pane.last_response = std::string("ERR: ") + e.what();
         }
         thinking.stop();
@@ -1224,7 +1226,7 @@ static void cmd_interactive() {
 
         Pane& pane = layout.focused();
         std::string rendered =
-            "\n\033[38;5;214m" + conf_prompt + " [y/N] \033[0m";
+            "\n" + theme().accent_prompt + conf_prompt + " [y/N] " + theme().reset + "";
         pane.history.push(rendered);
         pane.tui.render_scrollback(pane.history, pane.scroll_offset,
                                     pane.new_while_scrolled);
@@ -1233,8 +1235,8 @@ static void cmd_interactive() {
         ssize_t n = ::read(STDIN_FILENO, &ch, 1);
         bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
         std::string answer = yes
-            ? std::string("\n\033[38;5;208m[user accepted input]\033[0m\n")
-            : std::string("\n\033[38;5;167m[user denied input]\033[0m\n");
+            ? std::string("\n" + theme().accent_success + "[user accepted input]" + theme().reset + "\n")
+            : std::string("\n" + theme().accent_error + "[user denied input]" + theme().reset + "\n");
         pane.history.push(answer);
         pane.tui.render_scrollback(pane.history, pane.scroll_offset,
                                     pane.new_while_scrolled);
@@ -1271,8 +1273,8 @@ static void cmd_interactive() {
             // Render the confirm prompt in the focused pane's scrollback.
             Pane& shown = layout.focused();
             std::string prompt =
-                "\n\033[38;5;214mpane '" + pc.agent_id +
-                "' finished — close it? [y/N] \033[0m";
+                "\n" + theme().accent_prompt + "pane '" + pc.agent_id +
+                "' finished — close it? [y/N] " + theme().reset + "";
             shown.history.push(prompt);
             shown.tui.render_scrollback(shown.history, shown.scroll_offset,
                                          shown.new_while_scrolled);
@@ -1282,8 +1284,8 @@ static void cmd_interactive() {
             bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
 
             std::string answer = yes
-                ? std::string("\n\033[38;5;208m[closing '" + pc.agent_id + "']\033[0m\n")
-                : std::string("\n\033[38;5;167m[keeping '" + pc.agent_id + "' open]\033[0m\n");
+                ? std::string("\n" + theme().accent_success + "[closing '" + pc.agent_id + "']" + theme().reset + "\n")
+                : std::string("\n" + theme().accent_error + "[keeping '" + pc.agent_id + "' open]" + theme().reset + "\n");
             shown.history.push(answer);
             shown.tui.render_scrollback(shown.history, shown.scroll_offset,
                                          shown.new_while_scrolled);
@@ -1370,7 +1372,7 @@ static void cmd_interactive() {
 
         std::string prompt = focused.multiline_accum.empty()
             ? focused.tui.build_prompt()
-            : "\001\033[38;5;241m\002…\001\033[0m\002 ";
+            : "\001" + theme().prompt_color + "\002…\001" + theme().reset + "\002 ";
 
         std::string line;
         if (!focused.editor.read_line(prompt, line)) {
@@ -1426,7 +1428,7 @@ static void cmd_interactive() {
         }
 
         focused.output_queue.push_msg(
-            "\033[38;5;244m> \033[38;5;250m" + line + "\033[0m");
+            theme().user_echo_arrow + "> " + theme().user_echo_text + line + theme().reset + "");
 
         bool was_busy = focused.cmd_queue.is_busy();
         focused.cmd_queue.push(line);

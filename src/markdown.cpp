@@ -1,12 +1,17 @@
 // index_ai/src/markdown.cpp — Markdown-to-ANSI terminal renderer
 
 #include "markdown.h"
+#include "theme.h"
 #include <cctype>
 #include <string>
 
 namespace index_ai {
 
 // ─── ANSI primitives ─────────────────────────────────────────────────────────
+// Attribute-only escapes stay hard-coded — they're theme-agnostic (dim /
+// bold / italic / underline / strikethrough are character attributes, not
+// colors).  All foreground colors are pulled from the global Theme so
+// swapping theme recolors markdown rendering with no edits here.
 
 static const char* RST  = "\033[0m";
 static const char* BOLD = "\033[1m";
@@ -15,11 +20,10 @@ static const char* ITAL = "\033[3m";
 static const char* UNDL = "\033[4m";
 static const char* STRK = "\033[9m";
 
-static std::string fg(int n) {
-    return "\033[38;5;" + std::to_string(n) + "m";
-}
-static std::string bold_fg(int n) {
-    return "\033[1;38;5;" + std::to_string(n) + "m";
+// Emit a bold-weight modifier in front of an already-painted foreground,
+// since terminals treat bold+SGR as independent attribute layers.
+static std::string bold_with(const std::string& fg_escape) {
+    return std::string(BOLD) + fg_escape;
 }
 
 // ─── Inline renderer ─────────────────────────────────────────────────────────
@@ -67,7 +71,7 @@ static std::string render_inline(const std::string& text) {
                 // Double backtick
                 size_t end = text.find("``", i + 2);
                 if (end != std::string::npos) {
-                    result += fg(214);
+                    result += theme().md_code;
                     result += text.substr(i + 2, end - i - 2);
                     result += RST;
                     i = end + 2;
@@ -76,7 +80,7 @@ static std::string render_inline(const std::string& text) {
             } else {
                 size_t end = text.find('`', i + 1);
                 if (end != std::string::npos) {
-                    result += fg(214);  // amber
+                    result += theme().md_code;
                     result += text.substr(i + 1, end - i - 1);
                     result += RST;
                     i = end + 1;
@@ -84,13 +88,15 @@ static std::string render_inline(const std::string& text) {
                 }
             }
         }
-        // Link: [text](url)
+        // Link: [text](url) — paint the visible text underlined in the
+        // theme's link color.  The (url) part is dropped from the output;
+        // terminals can't click on the bracket syntax anyway.
         if (text[i] == '[') {
             size_t cb = text.find(']', i + 1);
             if (cb != std::string::npos && cb + 1 < n && text[cb+1] == '(') {
                 size_t cp = text.find(')', cb + 2);
                 if (cp != std::string::npos) {
-                    result += std::string(UNDL) + fg(208);  // underline + bright orange
+                    result += std::string(UNDL) + theme().md_link;
                     result += text.substr(i + 1, cb - i - 1);
                     result += RST;
                     i = cp + 1;
@@ -137,38 +143,41 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
         in_code_block_ = !in_code_block_;
         return std::string(DIM) + line + RST;
     }
-    // Code block body: amber
+    // Code block body.
     if (in_code_block_) {
-        return fg(214) + line + RST;
+        return theme().md_code + line + RST;
     }
 
     // Empty line
     if (line.empty()) return line;
 
-    // Agent-issued command lines (/fetch, /exec, /agent, /write, /mem, /endwrite)
+    // Agent-issued command lines (/fetch, /exec, /agent, /write, /mem, /endwrite).
+    // Render dim + the cmd-line color so these stand out from prose but
+    // don't compete with headings.
     if (!line.empty() && line[0] == '/') {
         static const char* kCmdPrefixes[] = {
-            "/fetch ", "/exec ", "/agent ", "/write ", "/mem ", "/endwrite", nullptr
+            "/fetch ", "/exec ", "/agent ", "/pane ", "/write ", "/mem ", "/endwrite", nullptr
         };
         for (auto** p = kCmdPrefixes; *p; ++p) {
             size_t plen = strlen(*p);
             if (line.size() >= plen && line.compare(0, plen, *p) == 0) {
-                return fg(214) + std::string(DIM) + "> " + line + fg(252) + RST + "\n";
+                return theme().md_cmd_line + std::string(DIM) +
+                       "> " + line + theme().md_bullet + RST + "\n";
             }
         }
     }
 
-    // Headings: # ## ### ####
+    // Headings: # ## ### ####  —  paint with the theme's heading[lvl-1]
+    // color, bolded.  Levels 5/6 reuse the h4 slot rather than adding more.
     if (line[0] == '#') {
         size_t lvl = 0;
         while (lvl < line.size() && line[lvl] == '#') ++lvl;
         if (lvl < line.size() && line[lvl] == ' ') {
-            // 256-color palette: bright orange, amber, medium orange, burnt orange
-            static const int colors[] = {208, 214, 172, 166};
-            int color = colors[std::min(lvl - 1, size_t(3))];
+            const auto& pal = theme().md_heading;
+            const std::string& color = pal[std::min(lvl - 1, pal.size() - 1)];
             std::string hashes(lvl, '#');
             std::string content = render_inline(line.substr(lvl + 1));
-            return bold_fg(color) + hashes + " " + content + RST;
+            return bold_with(color) + hashes + " " + content + RST;
         }
     }
 
@@ -196,7 +205,7 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
                                : (indent <= 2)  ? "\xe2\x97\xa6"   // ◦
                                                 : "\xe2\x80\x93";  // –
             std::string content = render_inline(line.substr(indent + 2));
-            return pad + fg(252) + bullet + RST + " " + content;
+            return pad + theme().md_bullet + bullet + RST + " " + content;
         }
     }
 
@@ -204,7 +213,7 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
     if ((line.size() >= 4 && line.substr(0, 4) == "    ") ||
         (!line.empty() && line[0] == '\t')) {
         size_t skip = (line[0] == '\t') ? 1 : 4;
-        return std::string("    ") + fg(214) + line.substr(skip) + RST;
+        return std::string("    ") + theme().md_code + line.substr(skip) + RST;
     }
 
     // Numbered list: 1. 2. 10. etc.

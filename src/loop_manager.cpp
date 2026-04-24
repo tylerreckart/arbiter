@@ -2,6 +2,7 @@
 
 #include "loop_manager.h"
 #include "markdown.h"
+#include "theme.h"
 
 #include <algorithm>
 #include <sstream>
@@ -243,8 +244,10 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
         if (total_iters >= kMaxIters) {
             e->stop_reason = "max iterations reached (" + std::to_string(kMaxIters) + ")";
             if (e->oq) {
-                e->oq->push("\n\033[33m[" + e->loop_id + "/" + e->agent_id +
-                            " MAX ITERS]\033[0m " + e->stop_reason +
+                e->oq->push("\n" + theme().accent_warning + "[" +
+                            e->loop_id + "/" + e->agent_id +
+                            " MAX ITERS]" + theme().reset + " " +
+                            e->stop_reason +
                             "\n  Use /log " + e->loop_id + " to review.\n");
             }
             break;
@@ -311,8 +314,9 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
         if (!resp.ok) {
             { std::lock_guard<std::mutex> ek(e->mu); e->stop_reason = resp.error; }
             if (e->oq) {
-                e->oq->push("\n\033[1;31m[" + e->loop_id + "/" +
-                            e->agent_id + " FAILED]\033[0m " +
+                e->oq->push("\n" + theme().bold + theme().accent_error + "[" +
+                            e->loop_id + "/" + e->agent_id + " FAILED]" +
+                            theme().reset + " " +
                             resp.error +
                             "\n  Use /log " + e->loop_id +
                             " to see output, /kill " + e->loop_id +
@@ -328,8 +332,9 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
                                  std::to_string(consecutive_idle) + " turns)";
             }
             if (e->oq) {
-                e->oq->push("\n\033[1;32m[" + e->loop_id + "/" +
-                            e->agent_id + " DONE]\033[0m " +
+                e->oq->push("\n" + theme().bold + theme().accent_success + "[" +
+                            e->loop_id + "/" + e->agent_id + " DONE]" +
+                            theme().reset + " " +
                             e->stop_reason +
                             "\n  Use /log " + e->loop_id +
                             " to review, /kill " + e->loop_id + " to dismiss.\n");

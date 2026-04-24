@@ -3,6 +3,7 @@
 #include "cli_helpers.h"
 #include "commands.h"
 #include "starters.h"
+#include "theme.h"
 
 #include <algorithm>
 #include <cctype>
@@ -63,30 +64,10 @@ const char* BANNER =
     "\n";
 
 std::string agent_color(const std::string& agent_id) {
-    if (agent_id == "index") return "\033[38;5;208m";  // orange
-
-    static const int palette[] = {
-        214,  // amber
-        172,  // medium orange
-        166,  // burnt orange
-        220,  // gold
-        209,  // salmon
-        178,  // dark gold
-        216,  // light peach
-        130,  // dark amber
-        173,  // terracotta
-        215,  // soft peach
-        202,  // red-orange
-        180,  // warm tan
-    };
-    static const int palette_size = sizeof(palette) / sizeof(palette[0]);
-
+    const Theme& t = theme();
+    if (agent_id == "index") return t.agent_master;
     size_t h = std::hash<std::string>{}(agent_id);
-    int code = palette[h % palette_size];
-
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "\033[38;5;%dm", code);
-    return buf;
+    return t.agent_palette[h % t.agent_palette.size()];
 }
 
 std::string get_config_dir() {

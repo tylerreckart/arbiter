@@ -1,6 +1,7 @@
 // index/src/repl/layout.cpp — see repl/layout.h
 
 #include "repl/layout.h"
+#include "theme.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -147,21 +148,24 @@ void LayoutTree::resize(const Rect& bounds) {
 
 void LayoutTree::render_borders_(Node& n) {
     if (n.is_leaf()) return;
+    const Theme& t = theme();
     // Paint a separator between every adjacent pair of children.
     for (int i = 0; i + 1 < (int)n.children.size(); ++i) {
         const Rect& left = n.children[i]->bounds;
         if (n.orient == Orient::Vertical) {
             int sep_x = left.x + left.w;  // 0-indexed column of separator
             for (int y = n.bounds.y; y < n.bounds.y + n.bounds.h; ++y) {
-                std::printf("\033[%d;%dH\033[38;5;237m│\033[0m",
-                            y + 1, sep_x + 1);
+                std::printf("\033[%d;%dH%s│%s",
+                            y + 1, sep_x + 1,
+                            t.border_inactive.c_str(), t.reset.c_str());
             }
         } else {
             int sep_y = left.y + left.h;
-            std::printf("\033[%d;%dH\033[38;5;237m",
-                        sep_y + 1, n.bounds.x + 1);
+            std::printf("\033[%d;%dH%s",
+                        sep_y + 1, n.bounds.x + 1,
+                        t.border_inactive.c_str());
             for (int k = 0; k < n.bounds.w; ++k) std::printf("─");
-            std::printf("\033[0m");
+            std::printf("%s", t.reset.c_str());
         }
     }
     for (auto& child : n.children) render_borders_(*child);

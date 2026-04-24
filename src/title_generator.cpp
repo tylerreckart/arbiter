@@ -1,6 +1,7 @@
 // index_ai/src/title_generator.cpp — see title_generator.h
 
 #include "title_generator.h"
+#include "theme.h"
 
 #include <algorithm>
 #include <iostream>
@@ -13,8 +14,8 @@ void print_turn_rule(const std::string& label,
                      const std::string& color,
                      const std::string& right_label,
                      int cols) {
-    const char* dim = "\033[38;5;238m";
-    const char* rst = "\033[0m";
+    const std::string& dim = theme().text_dimmer;
+    const std::string& rst = theme().reset;
 
     int prefix = 4;  // "─── "
     int suffix = right_label.empty() ? 0 : (int)right_label.size() + 2;
@@ -31,7 +32,8 @@ void print_turn_rule(const std::string& label,
     line += dim;
     for (int i = 0; i < fill; ++i) line += "─";
     if (!right_label.empty()) {
-        line += "\033[38;5;241m ";
+        line += theme().prompt_color;
+        line += " ";
         line += right_label;
         line += dim;
         line += " ─";
