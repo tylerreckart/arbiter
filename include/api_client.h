@@ -1,8 +1,9 @@
 #pragma once
 // index/include/api_client.h — Multi-provider LLM API client over raw TLS / TCP.
-// Routes requests by model-string prefix: "claude-*" → Anthropic Messages API,
-// "ollama/<model>" → Ollama (OpenAI-compatible /v1/chat/completions).  Adding
-// a new provider is a prefix + one row in the provider table in api_client.cpp.
+// Routes requests by model-string prefix: bare "claude-*" → Anthropic Messages
+// API, "openai/<model>" → OpenAI Chat Completions, "ollama/<model>" → Ollama
+// (OpenAI-compatible /v1/chat/completions).  Adding a new provider is a prefix
+// + one row in the provider table in api_client.cpp.
 
 #include "json.h"
 #include <string>
@@ -74,11 +75,10 @@ bool is_priced(const std::string& model);
 
 // True when the model likely needs the "weak-executor" prompt profile — a
 // leaner, tool-vocabulary-first system prompt with few-shot examples of
-// tool emission.  Currently any non-Anthropic provider qualifies, since
-// small local models (qwen-7b, llama3-8b, etc.) don't reliably invoke
-// tools from abstract instructions the way Claude does.  If we ever add a
-// local model that's tool-fluent, the rule can be tightened without
-// changing callers.
+// tool emission.  Today that's local Ollama models; small local models
+// (qwen-7b, llama3-8b, etc.) don't reliably invoke tools from abstract
+// instructions the way frontier cloud models do.  Cloud providers
+// (Anthropic, OpenAI) are treated as tool-fluent.
 bool is_weak_executor(const std::string& model);
 
 // Strip any provider prefix from a model string (e.g. "ollama/llama3:8b"
@@ -87,7 +87,11 @@ std::string strip_model_prefix(const std::string& model);
 
 class ApiClient {
 public:
-    explicit ApiClient(const std::string& anthropic_key);
+    // Keys keyed by provider name ("anthropic", "openai", …).  Missing
+    // entries are fine — a request routed to a provider without a key
+    // fails with a clear per-request error rather than refusing to
+    // construct.  Values are zeroed on destruction.
+    explicit ApiClient(std::map<std::string, std::string> api_keys);
     ~ApiClient();
 
     ApiClient(const ApiClient&) = delete;
@@ -116,14 +120,20 @@ public:
     };
 
 private:
-    // API key is stored XOR-masked at rest so a passive memory scan / core
-    // dump doesn't surface the raw key.  The mask is a per-process random
-    // buffer generated in the constructor; callers obtain a short-lived
-    // plaintext copy via unmask_api_key() and are expected to cleanse that
-    // copy as soon as the wire representation is flushed.
-    std::vector<unsigned char> api_key_masked_;
-    std::vector<unsigned char> api_key_mask_;
-    std::string unmask_api_key() const;
+    // Each provider's API key is stored XOR-masked at rest so a passive
+    // memory scan / core dump / swap read doesn't surface the raw token.
+    // The mask is a same-length random buffer generated at construction;
+    // callers obtain a short-lived plaintext copy via unmask_api_key(name)
+    // and are expected to cleanse that copy as soon as the wire request
+    // has been flushed.  A missing provider entry means "no key for that
+    // provider" — the wire path rejects requests to it with a clear error
+    // rather than failing construction.
+    struct MaskedKey {
+        std::vector<unsigned char> masked;
+        std::vector<unsigned char> mask;
+    };
+    std::map<std::string, MaskedKey> api_keys_;
+    std::string unmask_api_key(const std::string& provider) const;
     SSL_CTX* ssl_ctx_ = nullptr;
 
     std::mutex conn_mutex_;
@@ -144,9 +154,13 @@ private:
     ApiResponse read_streaming_response(Conn& c, StreamCallback cb,
                                          Provider::Format fmt);
 
-    // Format-specific helpers.
+    // Format-specific helpers.  The openai builder needs the Provider to
+    // branch on name (OpenAI proper vs Ollama) — they share a wire format
+    // but differ on a handful of fields (max_completion_tokens,
+    // stream_options, reasoning-model temperature handling).
     static std::string build_body_anthropic(const ApiRequest& req, bool streaming);
-    static std::string build_body_openai   (const ApiRequest& req, bool streaming);
+    static std::string build_body_openai   (const Provider& prov,
+                                            const ApiRequest& req, bool streaming);
     static ApiResponse parse_body_anthropic(const std::string& body);
     static ApiResponse parse_body_openai   (const std::string& body);
 };

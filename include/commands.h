@@ -79,6 +79,16 @@ using ConfirmFn = std::function<bool(const std::string& prompt)>;
 // count of /cmd lines in the stream.
 using ToolStatusFn = std::function<void(const std::string& kind, bool ok)>;
 
+// Spawn a new UI pane running `agent_id` with `message` as its first queued
+// input.  Fire-and-forget from the caller's perspective: the spawning agent
+// gets a short "OK: ..." / "ERR: ..." back and continues its own turn while
+// the new pane runs in parallel on its own exec thread.  Unlike /agent
+// (which blocks for the sub-agent's reply and folds it into the caller's
+// context), /pane is best for truly independent work — the results stream
+// into the new pane's own view and do NOT return to the spawner.
+using PaneSpawner = std::function<std::string(const std::string& agent_id,
+                                                const std::string& message)>;
+
 // True if `cmd` matches a pattern we always want to confirm before exec'ing
 // (rm, rm -rf, redirects, sudo, mkfs, git force-push, find -delete, etc.).
 // Conservative — misses creative destruction, but catches the common footguns.
@@ -102,7 +112,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ConfirmFn    confirm       = nullptr,
                                    std::map<std::string, std::string>* dedup_cache = nullptr,
                                    AdvisorInvoker advisor_invoker = nullptr,
-                                   ToolStatusFn   tool_status     = nullptr);
+                                   ToolStatusFn   tool_status     = nullptr,
+                                   PaneSpawner    pane_spawner    = nullptr);
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

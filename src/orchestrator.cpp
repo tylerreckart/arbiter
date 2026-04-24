@@ -16,13 +16,49 @@ namespace fs = std::filesystem;
 
 namespace index_ai {
 
-Orchestrator::Orchestrator(const std::string& api_key)
-    : client_(api_key)
+namespace {
+
+// Master-agent model resolution order (first match wins):
+//   1. ~/.index/master_model  — explicit user choice (set by the setup wizard
+//      or hand-edited).  One line, trimmed.
+//   2. An available-provider default based on which API keys are configured
+//      — Anthropic wins, OpenAI is the fallback.
+//   3. The hardcoded default baked into master_constitution().
+// The master can still be retargeted at runtime via `/model index <id>`;
+// that change is session-scoped and does not touch the override file.
+std::string load_master_model_override() {
+    const char* home = std::getenv("HOME");
+    if (!home || !home[0]) return {};
+    std::ifstream f(std::string(home) + "/.index/master_model");
+    if (!f) return {};
+    std::string m;
+    std::getline(f, m);
+    while (!m.empty() &&
+           std::isspace(static_cast<unsigned char>(m.back()))) m.pop_back();
+    return m;
+}
+
+std::string pick_master_model_default(
+    const std::map<std::string, std::string>& keys) {
+    if (keys.count("anthropic")) return "claude-sonnet-4-6";
+    if (keys.count("openai"))    return "openai/gpt-4.1";
+    return {};
+}
+
+}  // namespace
+
+Orchestrator::Orchestrator(std::map<std::string, std::string> api_keys)
+    : client_(api_keys)  // copy — the map is tiny, we still need it below
 {
     // Default memory directory is cwd-scoped ($PWD/.index/memory)
     memory_dir_ = (fs::current_path() / ".index" / "memory").string();
-    // Create master Index agent
+
     auto master = master_constitution();
+    if (auto override_id = load_master_model_override(); !override_id.empty()) {
+        master.model = override_id;
+    } else if (auto fallback = pick_master_model_default(api_keys); !fallback.empty()) {
+        master.model = fallback;
+    }
     index_master_ = std::make_unique<Agent>("index", master, client_);
 }
 
@@ -252,7 +288,8 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         resp.had_tool_calls = true;
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
                                               invoker, confirm_cb_, shared_cache,
-                                              advisor_invoker, tool_status_cb_);
+                                              advisor_invoker, tool_status_cb_,
+                                              pane_spawner_cb_);
     }
 
     return resp;
@@ -342,7 +379,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         cb("\n");
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
                                               invoker, confirm_cb_, &shared_cache,
-                                              advisor_invoker, tool_status_cb_);
+                                              advisor_invoker, tool_status_cb_,
+                                              pane_spawner_cb_);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) return resp;
         cmds = parse_agent_commands(resp.content);

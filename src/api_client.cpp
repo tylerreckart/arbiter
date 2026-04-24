@@ -2,6 +2,7 @@
 // See api_client.h for the routing model.
 #include "api_client.h"
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -87,9 +88,23 @@ static Provider make_ollama_provider() {
     return p;
 }
 
+static Provider make_openai_provider() {
+    Provider p;
+    p.name = "openai";
+    p.prefix = "openai/";
+    p.host = "api.openai.com";
+    p.port = 443;
+    p.path = "/v1/chat/completions";
+    p.tls = true;
+    p.uses_api_key = true;
+    p.format = Provider::FORMAT_OPENAI_CHAT;
+    return p;
+}
+
 // NOTE: order matters — longest/most-specific prefix first, fallback last.
 static const std::vector<Provider>& registry() {
     static const std::vector<Provider> kProviders = {
+        make_openai_provider(),
         make_ollama_provider(),
         make_anthropic_provider(),
     };
@@ -113,11 +128,15 @@ const Provider& provider_for(const std::string& model) {
 }
 
 bool is_priced(const std::string& model) {
-    return provider_for(model).name == "anthropic";
+    const auto& name = provider_for(model).name;
+    return name == "anthropic" || name == "openai";
 }
 
 bool is_weak_executor(const std::string& model) {
-    return provider_for(model).name != "anthropic";
+    // Local small models need the tool-vocabulary-first prompt profile;
+    // frontier cloud models (Anthropic, OpenAI) follow abstract tool
+    // instructions reliably.
+    return provider_for(model).name == "ollama";
 }
 
 std::string strip_model_prefix(const std::string& model) {
@@ -129,7 +148,7 @@ std::string strip_model_prefix(const std::string& model) {
 
 // ─── ApiClient lifecycle ─────────────────────────────────────────────────────
 
-ApiClient::ApiClient(const std::string& api_key) {
+ApiClient::ApiClient(std::map<std::string, std::string> api_keys) {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_library_init();
     SSL_load_error_strings();
@@ -142,42 +161,48 @@ ApiClient::ApiClient(const std::string& api_key) {
     SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_PEER, nullptr);
     SSL_CTX_set_default_verify_paths(ssl_ctx_);
 
-    // Store the key XOR-masked at rest.  The mask is a same-length
-    // random buffer — trivially reversible by anything running in-process,
-    // but it keeps the plaintext key out of the obvious string-scan paths
-    // (core dumps, debugger strings, memory forensics tools that grep for
-    // "sk-ant-").  Plaintext is only reconstituted on demand in
-    // unmask_api_key(), and callers wipe their copy immediately after use.
-    if (!api_key.empty()) {
-        api_key_masked_.resize(api_key.size());
-        api_key_mask_.resize(api_key.size());
-        if (RAND_bytes(api_key_mask_.data(),
-                        static_cast<int>(api_key_mask_.size())) != 1) {
+    // Store each provider's key XOR-masked at rest.  The mask is a
+    // same-length random buffer — trivially reversible by anything
+    // running in-process, but it keeps the plaintext out of the obvious
+    // string-scan paths (core dumps, debugger strings, memory forensics
+    // tools that grep for "sk-ant-" / "sk-").  Plaintext is only
+    // reconstituted on demand in unmask_api_key(), and call sites wipe
+    // their copy immediately after the wire flush.
+    for (auto& [name, key] : api_keys) {
+        if (key.empty()) continue;
+        MaskedKey mk;
+        mk.masked.resize(key.size());
+        mk.mask.resize(key.size());
+        if (RAND_bytes(mk.mask.data(), static_cast<int>(mk.mask.size())) != 1) {
             throw std::runtime_error("CSPRNG failure masking API key");
         }
-        for (size_t i = 0; i < api_key.size(); ++i) {
-            api_key_masked_[i] =
-                static_cast<unsigned char>(api_key[i]) ^ api_key_mask_[i];
+        for (size_t i = 0; i < key.size(); ++i) {
+            mk.masked[i] = static_cast<unsigned char>(key[i]) ^ mk.mask[i];
         }
+        // Wipe the plaintext from the input map before dropping it.
+        OPENSSL_cleanse(key.data(), key.size());
+        api_keys_.emplace(name, std::move(mk));
     }
 }
 
 ApiClient::~ApiClient() {
-    if (!api_key_masked_.empty()) {
-        OPENSSL_cleanse(api_key_masked_.data(), api_key_masked_.size());
-        OPENSSL_cleanse(api_key_mask_.data(),   api_key_mask_.size());
-        api_key_masked_.clear();
-        api_key_mask_.clear();
+    for (auto& [_, mk] : api_keys_) {
+        if (!mk.masked.empty()) OPENSSL_cleanse(mk.masked.data(), mk.masked.size());
+        if (!mk.mask.empty())   OPENSSL_cleanse(mk.mask.data(),   mk.mask.size());
     }
+    api_keys_.clear();
     for (auto& [_, c] : conns_) close_connection(c);
     if (ssl_ctx_) SSL_CTX_free(ssl_ctx_);
 }
 
-std::string ApiClient::unmask_api_key() const {
+std::string ApiClient::unmask_api_key(const std::string& provider) const {
+    auto it = api_keys_.find(provider);
+    if (it == api_keys_.end()) return {};
+    const auto& mk = it->second;
     std::string out;
-    out.resize(api_key_masked_.size());
-    for (size_t i = 0; i < api_key_masked_.size(); ++i) {
-        out[i] = static_cast<char>(api_key_masked_[i] ^ api_key_mask_[i]);
+    out.resize(mk.masked.size());
+    for (size_t i = 0; i < mk.masked.size(); ++i) {
+        out[i] = static_cast<char>(mk.masked[i] ^ mk.mask[i]);
     }
     return out;
 }
@@ -372,16 +397,42 @@ std::string ApiClient::build_body_anthropic(const ApiRequest& req, bool streamin
     return json_serialize(*obj);
 }
 
-std::string ApiClient::build_body_openai(const ApiRequest& req, bool streaming) {
-    // OpenAI chat completions: single flat messages array with optional
-    // "system" role at index 0.  No prompt-caching metadata.  Model name
-    // has any provider prefix stripped.
+std::string ApiClient::build_body_openai(const Provider& prov,
+                                          const ApiRequest& req, bool streaming) {
+    // OpenAI chat completions shape: single flat messages array with optional
+    // "system" role at index 0.  Model name has any provider prefix stripped.
+    //
+    // Minor format divergences between OpenAI proper and Ollama are handled
+    // below.  OpenAI's Chat Completions has moved to `max_completion_tokens`
+    // (max_tokens is deprecated for newer models and rejected by the o-series
+    // reasoning models).  Ollama keeps the classic `max_tokens`.  Reasoning
+    // models also reject non-default `temperature`, so we drop it for them.
+    const bool is_openai = (prov.name == "openai");
+    const std::string stripped = strip_model_prefix(req.model);
+
+    // Reasoning-model detection: "o<digit>..." (o3, o4-mini, …).
+    auto is_reasoning_model = [](const std::string& m) {
+        return m.size() >= 2 && m[0] == 'o' && std::isdigit(static_cast<unsigned char>(m[1]));
+    };
+    const bool reasoning = is_openai && is_reasoning_model(stripped);
+
     auto obj = jobj();
     auto& m = obj->as_object_mut();
-    m["model"] = jstr(strip_model_prefix(req.model));
-    m["max_tokens"] = jnum(static_cast<double>(req.max_tokens));
-    if (req.include_temperature) m["temperature"] = jnum(req.temperature);
-    if (streaming) m["stream"] = jbool(true);
+    m["model"] = jstr(stripped);
+    if (is_openai) m["max_completion_tokens"] = jnum(static_cast<double>(req.max_tokens));
+    else           m["max_tokens"]            = jnum(static_cast<double>(req.max_tokens));
+    if (req.include_temperature && !reasoning) m["temperature"] = jnum(req.temperature);
+    if (streaming) {
+        m["stream"] = jbool(true);
+        // OpenAI only reports usage on the terminal stream chunk when you opt
+        // in.  Ollama emits usage without the flag and older builds reject
+        // unknown top-level fields, so keep this OpenAI-only.
+        if (is_openai) {
+            auto so = jobj();
+            so->as_object_mut()["include_usage"] = jbool(true);
+            m["stream_options"] = so;
+        }
+    }
 
     auto msgs = jarr();
     if (!req.system_prompt.empty()) {
@@ -415,18 +466,27 @@ void ApiClient::send_request(const Provider& p, Conn& c,
     }
     http << "\r\n";
     http << "Content-Type: application/json\r\n";
-    // Materialise the plaintext key into a local std::string only while
-    // building the request header, then wipe it before returning.  Limits
-    // the window during which the raw key is present in process memory.
+    // Materialise the plaintext key only while building the request header,
+    // then wipe it below before the call returns.  Limits the window during
+    // which the raw token is present in process memory.  Missing key for a
+    // provider that requires one → clean error via the caller's catch(...)
+    // in complete() / stream().
     std::string key_plain;
     if (p.uses_api_key) {
-        key_plain = unmask_api_key();
+        if (api_keys_.find(p.name) == api_keys_.end()) {
+            throw std::runtime_error(
+                "No API key configured for provider '" + p.name + "'");
+        }
+        key_plain = unmask_api_key(p.name);
+        if (key_plain.empty()) {
+            throw std::runtime_error(
+                "No API key configured for provider '" + p.name + "'");
+        }
         if (p.format == Provider::FORMAT_ANTHROPIC) {
             http << "x-api-key: " << key_plain << "\r\n";
             http << "anthropic-version: 2023-06-01\r\n";
             http << "anthropic-beta: prompt-caching-2024-07-31\r\n";
         } else {
-            // Generic bearer-auth path — useful when we later add openai-proper.
             http << "Authorization: Bearer " << key_plain << "\r\n";
         }
     }
@@ -640,10 +700,17 @@ ApiResponse ApiClient::parse_body_openai(const std::string& body) {
             }
         }
         // Usage is optional on openai-compat servers.  Ollama reports it.
+        // OpenAI nests cached-prompt tokens under prompt_tokens_details
+        // (implicit caching, no write cost), which we surface as
+        // cache_read_tokens so CostTracker discounts them.
         auto usage = root->get("usage");
         if (usage && usage->is_object()) {
             resp.input_tokens  = usage->get_int("prompt_tokens");
             resp.output_tokens = usage->get_int("completion_tokens");
+            auto details = usage->get("prompt_tokens_details");
+            if (details && details->is_object()) {
+                resp.cache_read_tokens = details->get_int("cached_tokens");
+            }
         }
         resp.ok = true;
     } catch (const std::exception& e) {
@@ -683,7 +750,7 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
                 }
                 std::string body = (prov.format == Provider::FORMAT_ANTHROPIC)
                                    ? build_body_anthropic(req, false)
-                                   : build_body_openai(req, false);
+                                   : build_body_openai(prov, req, false);
                 send_request(prov, c, body, false);
                 std::string raw = read_response(c);
                 resp = (prov.format == Provider::FORMAT_ANTHROPIC)
@@ -802,6 +869,10 @@ static void process_openai_event(const std::string& data,
         if (usage && usage->is_object()) {
             resp.input_tokens  = usage->get_int("prompt_tokens");
             resp.output_tokens = usage->get_int("completion_tokens");
+            auto details = usage->get("prompt_tokens_details");
+            if (details && details->is_object()) {
+                resp.cache_read_tokens = details->get_int("cached_tokens");
+            }
         }
     } catch (...) {
         // Ignore malformed chunk.
@@ -962,7 +1033,7 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
                 } else {
                     std::string body = (prov.format == Provider::FORMAT_ANTHROPIC)
                                        ? build_body_anthropic(req, true)
-                                       : build_body_openai(req, true);
+                                       : build_body_openai(prov, req, true);
                     send_request(prov, c, body, true);
                     resp = read_streaming_response(c, cb, prov.format);
                 }

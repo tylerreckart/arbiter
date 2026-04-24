@@ -21,6 +21,14 @@ bool CommandQueue::pop(std::string& out) {
     return true;
 }
 
+bool CommandQueue::try_pop(std::string& out) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (items_.empty()) return false;
+    out = std::move(items_.front());
+    items_.pop();
+    return true;
+}
+
 void CommandQueue::stop() {
     std::lock_guard<std::mutex> lk(mu_);
     stopped_ = true;

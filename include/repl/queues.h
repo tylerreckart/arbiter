@@ -29,6 +29,11 @@ public:
     // Returns false when stopped and empty.
     bool pop(std::string& out);
 
+    // Non-blocking — returns false if the queue is empty.  Used by a single
+    // exec thread multiplexing multiple panes' queues (it polls them all
+    // each tick instead of blocking on one).
+    bool try_pop(std::string& out);
+
     void stop();
 
     // Items waiting to execute (does NOT count the currently-executing item).

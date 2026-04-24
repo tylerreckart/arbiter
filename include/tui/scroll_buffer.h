@@ -49,16 +49,22 @@ public:
     // Number of logical lines stored.
     size_t size() const { return lines_.size(); }
 
-    // Render into the terminal region [top_row, bottom_row] (1-indexed, inclusive).
+    // Render into the rectangular region
+    //   columns [left_col, left_col + width - 1]     (1-indexed inclusive)
+    //   rows    [top_row,  bottom_row]               (1-indexed inclusive)
+    //
     // visual_offset is measured in visual rows above the tail; 0 = newest
     // content pinned to the bottom of the region.  Saves and restores the
     // cursor so readline's notion of position is not disturbed.
     //
-    // The region is cleared before rendering.  If the most-recently-shown
-    // logical line needs only part of its visual rows to fit, it is drawn in
-    // full and the terminal clips the overflow — the content is still anchored
-    // to the tail of the view.
-    void render(int top_row, int bottom_row, int visual_offset) const;
+    // The region is cleared before rendering.  Content is wrapped manually
+    // at `width` visible columns — we DO NOT rely on the terminal's implicit
+    // line-wrap, because in a multi-pane layout the auto-wrap would spill
+    // into whatever sibling owns the next physical column.
+    //
+    // ANSI SGR escapes pass through without counting toward the width.
+    void render(int left_col, int top_row, int width,
+                int bottom_row, int visual_offset) const;
 
 private:
     struct Line {

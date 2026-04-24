@@ -74,36 +74,84 @@ int ScrollBuffer::visible_rows(std::string_view s, int cols) {
     return (visible + cols - 1) / cols;
 }
 
-void ScrollBuffer::render(int top_row, int bottom_row, int visual_offset) const {
+namespace {
+// Emit one logical line into the target rect, wrapping at `width` visible
+// columns.  Returns the number of pane-rows consumed.  ANSI SGR escapes
+// pass through without counting; UTF-8 continuation bytes are emitted as
+// part of their lead byte without advancing the column counter.  Stops
+// when `max_rows` is reached (caller is responsible for clipping).
+int write_wrapped_line(std::string_view text,
+                        int left_col, int top_row,
+                        int width, int max_rows) {
+    if (max_rows <= 0 || width <= 0) return 0;
+    int cur_row = top_row;
+    int col_used = 0;
+    std::printf("\033[%d;%dH", cur_row, left_col);
+    size_t i = 0;
+    while (i < text.size()) {
+        unsigned char c = (unsigned char)text[i];
+        // Pass-through CSI escapes — don't count toward column budget.
+        if (c == 0x1B && i + 1 < text.size() && text[i + 1] == '[') {
+            size_t start = i;
+            i += 2;
+            while (i < text.size()) {
+                unsigned char x = (unsigned char)text[i++];
+                if (x >= 0x40 && x <= 0x7E) break;
+            }
+            std::fwrite(text.data() + start, 1, i - start, stdout);
+            continue;
+        }
+        // UTF-8 continuation byte — emit as part of prior code point.
+        if ((c & 0xC0) == 0x80) {
+            std::putc(static_cast<char>(c), stdout);
+            ++i;
+            continue;
+        }
+        // Start of a new visible column.
+        if (col_used >= width) {
+            if (cur_row - top_row + 1 >= max_rows) break;
+            ++cur_row;
+            col_used = 0;
+            std::printf("\033[%d;%dH", cur_row, left_col);
+        }
+        std::putc(static_cast<char>(c), stdout);
+        ++col_used;
+        ++i;
+    }
+    return cur_row - top_row + 1;
+}
+} // namespace
+
+void ScrollBuffer::render(int left_col, int top_row, int width,
+                          int bottom_row, int visual_offset) const {
     int H = bottom_row - top_row + 1;
-    if (H <= 0) return;
+    if (H <= 0 || width <= 0) return;
 
-    std::printf("\0337");   // save cursor
+    std::printf("\0337\033[?25l");   // save cursor
 
-    // Clear the region.
-    for (int r = top_row; r <= bottom_row; ++r)
-        std::printf("\033[%d;1H\033[2K", r);
+    // Clear the region, pane-aware: write exactly `width` spaces per row
+    // starting at left_col.  \033[2K would clear the whole physical line
+    // and wipe sibling panes.
+    std::string blank(width, ' ');
+    for (int r = top_row; r <= bottom_row; ++r) {
+        std::printf("\033[%d;%dH\033[0m", r, left_col);
+        std::fwrite(blank.data(), 1, blank.size(), stdout);
+    }
 
-    // Walk from the tail, accumulating visual rows until we have H rows
-    // worth of content that's above `visual_offset`.
-    //
-    // Window: [want_top_v, want_bot_v) in "visual rows from the tail"
-    //   want_bot_v = visual_offset          (exclusive bottom)
-    //   want_top_v = visual_offset + H      (exclusive top)
+    // Window selection — [want_top_v, want_bot_v) in "visual rows from tail".
     int want_bot_v = visual_offset;
     int want_top_v = visual_offset + H;
 
     int start_idx = 0;
     int end_idx   = 0;
-    int acc       = 0;   // visual rows accumulated walking back
+    int acc       = 0;
 
-    // Find end_idx (exclusive): first index_ai where acc ≥ want_bot_v.
     bool found_end = false;
     for (int i = (int)lines_.size() - 1; i >= 0; --i) {
         int vr = rows_of(lines_[i]);
         if (!found_end) {
             if (acc + vr > want_bot_v) {
-                end_idx = i + 1;   // include line i; it crosses the bottom
+                end_idx = i + 1;
                 found_end = true;
             }
         }
@@ -114,28 +162,24 @@ void ScrollBuffer::render(int top_row, int bottom_row, int visual_offset) const 
         }
     }
     if (!found_end) {
-        // Entire buffer is below visual_offset — nothing to show.
-        std::printf("\0338");
+        std::printf("\0338\033[?25h");
         std::fflush(stdout);
         return;
     }
-    if (acc < want_top_v) {
-        // Hit the start of the buffer first.
-        start_idx = 0;
-    }
+    if (acc < want_top_v) start_idx = 0;
 
     // Render [start_idx, end_idx) into the region, anchored at top_row.
-    // Between-line separator is CRLF, not bare LF.  Readline puts the terminal
-    // in raw output mode (OPOST cleared on some platforms) so a bare '\n'
-    // moves the cursor down without resetting the column — that's how stray
-    // characters used to leak from the scroll region into the input row.
-    std::printf("\033[%d;1H", top_row);
-    for (int i = start_idx; i < end_idx; ++i) {
-        if (i > start_idx) std::fputs("\r\n", stdout);
-        std::fwrite(lines_[i].text.data(), 1, lines_[i].text.size(), stdout);
+    // Each logical line wraps manually at `width` — bare \n or \r\n between
+    // them wouldn't work here because we need to reposition to left_col on
+    // every new row, not physical column 1.
+    int rows_written = 0;
+    for (int i = start_idx; i < end_idx && rows_written < H; ++i) {
+        rows_written += write_wrapped_line(lines_[i].text,
+                                            left_col, top_row + rows_written,
+                                            width, H - rows_written);
     }
 
-    std::printf("\0338");   // restore cursor
+    std::printf("\0338\033[?25h");   // restore cursor
     std::fflush(stdout);
 }
 

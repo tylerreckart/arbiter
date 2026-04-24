@@ -19,6 +19,8 @@
 #include "tui/tui.h"
 #include "tui/line_editor.h"
 #include "tui/stream_filter.h"
+#include "repl/pane.h"
+#include "repl/layout.h"
 #include "config.h"
 
 #include <iostream>
@@ -32,6 +34,7 @@
 #include <chrono>
 #include <future>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <ctime>
 #include <cstdio>
@@ -46,7 +49,7 @@ using index_ai::BANNER;
 using index_ai::agent_color;
 using index_ai::get_config_dir;
 using index_ai::get_memory_dir;
-using index_ai::get_api_key;
+using index_ai::get_api_keys;
 using index_ai::write_memory;
 using index_ai::read_memory;
 using index_ai::fetch_url;
@@ -65,54 +68,47 @@ using index_ai::StreamFilter;
 using index_ai::CommandQueue;
 using index_ai::OutputQueue;
 using index_ai::LoopManager;
+using index_ai::Pane;
+using index_ai::LayoutTree;
+using index_ai::Rect;
 
+// State the output-pump thread needs.  Points into cmd_interactive()'s stack
+// frame — lifetime is the REPL call.  Pane* is the only per-pane hook; the
+// pump reads pane.output_queue / pane.history / pane.tui through it.
 struct ReplGetcState {
-    OutputQueue*              output_queue       = nullptr;
-    TUI*                      tui                = nullptr;
-    index_ai::ScrollBuffer*   history            = nullptr;
-    int*                      scroll_offset      = nullptr;   // in VISUAL rows
-    int*                      new_while_scrolled = nullptr;   // in VISUAL rows
-    std::atomic<bool>*        quit_requested     = nullptr;
-    index_ai::Orchestrator*   orch               = nullptr;
-    std::string*              multiline_accum    = nullptr;
+    Pane*                     pane = nullptr;
 };
 
 static ReplGetcState g_getc_state;
 
-static void fwrite_crlf(const std::string& s) {
-    size_t start = 0;
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '\n') {
-            if (i > start) fwrite(s.data() + start, 1, i - start, stdout);
-            fputs("\r\n", stdout);
-            start = i + 1;
-        }
-    }
-    if (start < s.size()) fwrite(s.data() + start, 1, s.size() - start, stdout);
-}
+// Set by each pane's exec thread at startup and left untouched thereafter.
+// Orchestrator callbacks (progress/tool-status/agent-start/compact) run
+// synchronously from whichever exec thread invoked orch.send_streaming, so
+// reading this thread-local gets the owning pane with zero synchronization.
+// Threads other than pane-exec (main, pump) leave it nullptr.
+thread_local Pane* g_active_pane = nullptr;
 
 // Drain any pending exec output, record it in the scroll buffer, and render.
+// VT100 DECSTBM is gone now (it's a physical-terminal resource, unusable for
+// multi-pane), so we always re-render the scroll region from ScrollBuffer —
+// a full clear+repaint of ~40 rows per output tick is cheap and avoids the
+// auto-scroll shared-state problem.
 static void getc_flush_output() {
     auto& S = g_getc_state;
-    if (!S.output_queue || !S.history || !S.tui) return;
-    std::string pending = S.output_queue->drain();
+    if (!S.pane) return;
+    Pane& pane = *S.pane;
+    std::string pending = pane.output_queue.drain();
     if (pending.empty()) return;
 
-    int before = (*S.scroll_offset > 0) ? S.history->total_visual_rows() : 0;
-    S.history->push(pending);
+    int before = (pane.scroll_offset > 0) ? pane.history.total_visual_rows() : 0;
+    pane.history.push(pending);
 
-    std::lock_guard<std::recursive_mutex> lk(S.tui->tty_mutex());
-    if (*S.scroll_offset > 0) {
-        int after = S.history->total_visual_rows();
-        *S.new_while_scrolled += (after - before);
-        S.tui->render_scrollback(*S.history, *S.scroll_offset, *S.new_while_scrolled);
-    } else {
-        printf("\0337");
-        printf("\033[%d;1H", S.tui->last_scroll_row());
-        fwrite_crlf(pending);
-        printf("\0338");
-        fflush(stdout);
+    if (pane.scroll_offset > 0) {
+        int after = pane.history.total_visual_rows();
+        pane.new_while_scrolled += (after - before);
     }
+    pane.tui.render_scrollback(pane.history, pane.scroll_offset,
+                                pane.new_while_scrolled);
 }
 
 
@@ -120,96 +116,88 @@ static void getc_flush_output() {
 
 static void cmd_interactive() {
     std::string dir = get_config_dir();
-    std::string api_key = get_api_key();
+    auto api_keys = get_api_keys();
 
-    index_ai::Orchestrator orch(api_key);
+    index_ai::Orchestrator orch(std::move(api_keys));
     orch.set_memory_dir(get_memory_dir());
     orch.load_agents(dir + "/agents");
 
-    std::string current_agent = "index";
-    std::string current_model = orch.get_agent_model(current_agent);
+    // ── App-scope shared state ─────────────────────────────────────────────
+    // /verbose flips cfg.verbose and the StreamFilter wrapping each agent
+    // turn checks it on the fly — no need to rebuild the filter when the
+    // flag changes.  Not persisted across sessions by design.
+    index_ai::Config cfg;
+    LoopManager loops;
+    index_ai::CostTracker tracker;
 
-    // Init TUI before any output (clears screen, sets scroll region, draws header).
-    TUI tui;
-    tui.init(current_agent, current_model, agent_color(current_agent));
+    // Each pane's exec thread sets ::g_active_pane (file-scope thread_local)
+    // at startup; orch callbacks read that thread's value to route output to
+    // the right pane without any shared state.  Main and pump threads leave
+    // g_active_pane nullptr — they don't handle() commands.
+
+    // Serializes layout tree mutations (split/close/focus) against the pump
+    // thread's iteration.  Recursive because dispatch_chord internally does
+    // layout operations that call back into the tree.
+    std::recursive_mutex layout_mu;
+
+    struct ConfirmState {
+        std::mutex            mu;
+        std::string           prompt;
+        std::promise<bool>*   pending = nullptr;
+    } confirm_state;
+
+    std::atomic<bool> quit_requested{false};
+    std::atomic<bool> title_generated{false};   // generated once per session
+
+    // Set by any worker thread that mutated the layout (pane spawner, pump
+    // handling SIGWINCH) — signals the main thread to bounce out of its
+    // blocked read_line and re-enter begin_input so the focused pane's
+    // blank input row gets a fresh prompt painted over it.  Without this,
+    // the prompt only reappears after the user types something.
+    std::atomic<bool> refresh_focused_input{false};
+
+    // Pending-close queue for the delegation chain.  A pane's exec thread
+    // appends an entry after its spawn_message turn completes and it has
+    // flowed its output back to its parent.  The main thread services the
+    // queue between read_line iterations: prompts the user on the focused
+    // pane ("close X?"), and on yes stops+joins the pane's thread and
+    // removes it from the layout.  Non-blocking from the exec thread's
+    // perspective — the pane's thread is already done with its task.
+    struct PendingClose {
+        Pane*       pane;
+        std::string agent_id;  // for the prompt text
+    };
+    std::mutex                pending_closes_mu;
+    std::vector<PendingClose> pending_closes;
 
     // Session files are scoped to the working directory so that starting
     // index in different repos doesn't bleed history across contexts.
-    // We hash the cwd to produce a short, filesystem-safe filename.
     auto cwd_session_key = []() -> std::string {
         std::string cwd = fs::current_path().string();
-        // FNV-1a 32-bit hash
         uint32_t h = 2166136261u;
         for (unsigned char c : cwd) { h ^= c; h *= 16777619u; }
         char buf[16];
         snprintf(buf, sizeof(buf), "%08x", h);
         return buf;
     };
-    
     std::string sessions_dir = dir + "/sessions";
     fs::create_directories(sessions_dir);
     std::string session_path = sessions_dir + "/" + cwd_session_key() + ".json";
-    
     bool restored = orch.load_session(session_path);
+    (void)restored;
+
+    // Load shared input history once — each pane's LineEditor gets a copy.
+    std::vector<std::string> shared_history;
+    {
+        std::ifstream hf(get_config_dir() + "/history");
+        std::string line;
+        while (std::getline(hf, line))
+            if (!line.empty()) shared_history.push_back(std::move(line));
+    }
 
     std::cout.flush();
 
     signal(SIGWINCH, sigwinch_handler);
-
-    // Output queue: exec and loop threads push here; main thread flushes
-    // (with CRLF expansion) via getc_flush_output.  Message separation is
-    // handled by the queue itself — callers use output_queue.push_msg() for single-call
-    // messages or push() + end_message() for streamed messages; the queue
-    // materialises exactly one blank-line separator between adjacent
-    // messages so per-call strings never need trailing `\n\n`.
-    OutputQueue output_queue;
-
-    // Per-session runtime configuration.  /verbose flips cfg.verbose and the
-    // StreamFilter wrapping each agent turn checks it on the fly — no need to
-    // rebuild the filter when the flag changes.  Not persisted across
-    // sessions by design.
-    index_ai::Config cfg;
-
-    // sub-agent progress — we dim and indent the sub-agent's prose, but when
-    // stacking mode is active we also strip raw /cmd lines so the user only
-    // sees the narrative, not the mechanics.  Filter state is per-emission
-    // because progress_cb fires with one full response at a time; a local
-    // StreamFilter whose sink accumulates to the formatter is the cleanest
-    // shape.
-    orch.set_progress_callback([&output_queue, &cfg](const std::string& agent_id,
-                                                     const std::string& content) {
-        const char* dim = "\033[38;5;238m";
-        const char* rst = "\033[0m";
-        std::string filtered;
-        StreamFilter filter(cfg, [&filtered](const std::string& s) { filtered += s; });
-        filter.feed(content);
-        filter.flush();
-        if (filtered.empty()) return;  // entire response was /cmd lines
-        std::string buf;
-        std::istringstream ss(filtered);
-        std::string ln;
-        while (std::getline(ss, ln)) {
-            buf += dim;
-            buf += "  ";
-            buf += ln;
-            buf += rst;
-            buf += "\n";
-        }
-        output_queue.push_msg(buf);
-    });
-
-    ThinkingIndicator thinking(&tui);
-    ToolCallIndicator tool_indicator(&tui);
-    LoopManager loops;
-    index_ai::CostTracker tracker;
-
-    // Fires from the exec thread every time an agent's /cmd finishes.
-    // ToolCallIndicator is thread-safe (bump/render use atomics); the spinner
-    // thread it owns paints the status bar via the same tty_mutex the rest
-    // of the TUI uses.
-    orch.set_tool_status_callback([&tool_indicator](const std::string& kind, bool ok) {
-        tool_indicator.bump(kind, ok);
-    });
 
     // ── Raw stdin ──────────────────────────────────────────────────────────
     struct termios orig_stdin_tm;
@@ -223,37 +211,148 @@ static void cmd_interactive() {
         ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
     }
 
-    // ── Line editor ────────────────────────────────────────────────────────
-    index_ai::LineEditor editor(tui);
+    TUI::enter_alt_screen();
 
-    // Record sub-agent token costs that bypass the top-level REPL handler.
-    orch.set_cost_callback([&tracker](const std::string& agent_id,
-                                       const std::string& model,
-                                       const index_ai::ApiResponse& resp) {
+    // Forward declaration — layout_ptr lets lambdas registered before layout
+    // construction reach it safely (we set it once and never clear).
+    LayoutTree* layout_ptr = nullptr;
+
+    // Title-gen helper — fires once per session, paints into the pane that
+    // triggered the response.
+    auto maybe_generate_title = [&](const std::string& user_msg,
+                                     const std::string& response_snippet) {
+        if (title_generated.exchange(true)) return;
+        Pane* target = g_active_pane;
+        if (!target) return;
+        TUI* target_tui = &target->tui;
+        index_ai::generate_title_async(orch.client(), user_msg, response_snippet,
+            [target_tui](const std::string& t){ target_tui->set_title(t); });
+    };
+
+    // ── Pane factory ───────────────────────────────────────────────────────
+    // Layout calls this when splitting to materialise a new pane with every
+    // callback wired to app-scope state.  Defined before orch callbacks so
+    // their captures of active_pane/layout_ptr are consistent.
+    auto make_pane = [&]() -> std::unique_ptr<Pane> {
+        auto p = std::make_unique<Pane>();
+        p->current_agent = "index";
+        p->current_model = orch.get_agent_model(p->current_agent);
+        p->tui.init(p->current_agent, p->current_model,
+                    agent_color(p->current_agent));
+        p->history.set_cols(p->tui.cols());
+
+        p->editor.set_max_history(1000);
+        p->editor.set_history(shared_history);  // copy per-pane
+
+        p->editor.set_completion_provider(
+            [&orch, &loops](const std::string& buf, const std::string& tok)
+            -> std::vector<std::string> {
+                auto match = [&](const std::vector<std::string>& candidates) {
+                    std::vector<std::string> out;
+                    for (auto& c : candidates)
+                        if (c.substr(0, tok.size()) == tok) out.push_back(c);
+                    return out;
+                };
+                std::string cmd;
+                {
+                    std::istringstream iss(buf);
+                    iss >> cmd;
+                    if (!cmd.empty() && cmd[0] == '/') cmd = cmd.substr(1);
+                }
+                bool only_cmd = (buf.find(' ') == std::string::npos);
+                if (only_cmd || buf.empty()) {
+                    return match({"/send","/ask","/use","/agents","/status","/tokens",
+                                  "/create","/remove","/reset","/compact","/model",
+                                  "/pane",
+                                  "/loop","/loops","/log","/watch",
+                                  "/kill","/suspend","/resume","/inject",
+                                  "/fetch","/mem","/plan","/verbose","/quit","/help"});
+                }
+                if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
+                    cmd == "reset" || cmd == "compact" || cmd == "pane") {
+                    auto agents = orch.list_agents();
+                    agents.push_back("index");
+                    return match(agents);
+                }
+                if (cmd == "kill"    || cmd == "suspend" || cmd == "resume" ||
+                    cmd == "watch"   || cmd == "log"     || cmd == "inject") {
+                    return match(loops.list_ids());
+                }
+                if (cmd == "mem") return match({"write","read","show","clear"});
+                return {};
+            });
+
+        Pane* raw = p.get();
+        p->editor.set_scroll_handler([raw](int direction, int step) {
+            int max_off = raw->history.total_visual_rows();
+            if (direction < 0) {
+                raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
+            } else {
+                raw->scroll_offset = std::max(0, raw->scroll_offset - step);
+                raw->new_while_scrolled = 0;
+                if (raw->scroll_offset == 0) raw->tui.clear_status();
+            }
+            raw->tui.render_scrollback(raw->history, raw->scroll_offset,
+                                        raw->new_while_scrolled);
+        });
+        p->editor.set_cancel_handler([raw, &orch]() {
+            orch.cancel();
+            raw->multiline_accum.clear();
+            raw->output_queue.push_msg("\033[38;5;167m[interrupted]\033[0m");
+        });
+        // Chord prefix: Ctrl-w.  Recognized follow-ups are w/s/v/c (+Ctrl-w
+        // itself as a synonym for 'w'); anything else drops the chord
+        // silently.  Dispatch happens in the REPL main loop via take_chord.
+        p->editor.set_chord_handler([](char cmd) -> bool {
+            return cmd == 'w' || cmd == 's' || cmd == 'v' || cmd == 'c'
+                || cmd == 0x17;
+        });
+        return p;
+    };
+
+    // ── Orchestrator callbacks ─────────────────────────────────────────────
+    // All pane-facing callbacks route through g_active_pane (thread-local),
+    // which each pane's exec thread sets at startup.  Cost tracking is
+    // app-scope (the tracker is shared across panes).
+    orch.set_progress_callback([&](const std::string& /*agent_id*/,
+                                    const std::string& content) {
+        Pane* p = g_active_pane;
+        if (!p) return;
+        const char* dim = "\033[38;5;238m";
+        const char* rst = "\033[0m";
+        std::string filtered;
+        StreamFilter filter(cfg,
+            [&filtered](const std::string& s) { filtered += s; });
+        filter.feed(content);
+        filter.flush();
+        if (filtered.empty()) return;
+        std::string buf;
+        std::istringstream ss(filtered);
+        std::string ln;
+        while (std::getline(ss, ln)) {
+            buf += dim; buf += "  "; buf += ln; buf += rst; buf += "\n";
+        }
+        p->output_queue.push_msg(buf);
+    });
+    orch.set_tool_status_callback([&](const std::string& kind, bool ok) {
+        Pane* p = g_active_pane;
+        if (p) p->tool_indicator.bump(kind, ok);
+    });
+    orch.set_cost_callback([&](const std::string& agent_id,
+                                const std::string& model,
+                                const index_ai::ApiResponse& resp) {
         tracker.record(agent_id, model, resp);
     });
-
-    orch.set_agent_start_callback([&thinking](const std::string& agent_id) {
-        thinking.start(agent_id + ": thinking");
+    orch.set_agent_start_callback([&](const std::string& agent_id) {
+        Pane* p = g_active_pane;
+        if (p) p->thinking.start(agent_id + ": thinking");
     });
-
-    // Surface auto-compact events in the header instead of leaking to stderr.
-    orch.set_compact_callback([&tui](const std::string& agent_id, size_t n) {
-        tui.set_status(agent_id + ": compacting context (" +
-                       std::to_string(n) + " msgs)");
+    orch.set_compact_callback([&](const std::string& agent_id, size_t n) {
+        Pane* p = g_active_pane;
+        if (p) p->tui.set_status(agent_id + ": compacting context (" +
+                                 std::to_string(n) + " msgs)");
     });
-
-    // Duplicate tool calls are silently swallowed by execute_agent_commands'
-    // dedup gate — no [dup] banner, no DUPLICATE block fed back to the model.
-    // No callback registered here on purpose.
-
-    // ── Confirm dialog for destructive agent actions ──────────────────────
-    struct ConfirmState {
-        std::mutex            mu;
-        std::string           prompt;
-        std::promise<bool>*   pending = nullptr;
-    } confirm_state;
-    orch.set_confirm_callback([&confirm_state, &editor](const std::string& p) -> bool {
+    orch.set_confirm_callback([&](const std::string& p) -> bool {
         std::promise<bool> done;
         auto fut = done.get_future();
         {
@@ -261,86 +360,45 @@ static void cmd_interactive() {
             confirm_state.prompt  = p;
             confirm_state.pending = &done;
         }
-        editor.interrupt();
+        // Wake the focused pane's editor so the main loop can service the
+        // confirm.  In single-exec-thread mode the focused pane is almost
+        // always the active one; in edge cases (focus change mid-turn) the
+        // service_confirm runs on the new focused pane anyway.
+        if (layout_ptr) layout_ptr->focused().editor.interrupt();
         return fut.get();
     });
 
-    editor.set_max_history(1000);
-    {
-        std::ifstream hf(get_config_dir() + "/history");
-        std::vector<std::string> loaded;
-        std::string line;
-        while (std::getline(hf, line)) if (!line.empty()) loaded.push_back(std::move(line));
-        editor.set_history(std::move(loaded));
-    }
+    // ── Layout + initial pane ──────────────────────────────────────────────
+    Rect full_rect{0, 0, index_ai::term_cols(), index_ai::term_rows()};
+    LayoutTree layout(make_pane(), full_rect);
+    layout_ptr = &layout;
 
-    // Tab completion: slash commands, agent names, loop IDs
-    editor.set_completion_provider(
-        [&orch, &loops](const std::string& buf, const std::string& tok)
-        -> std::vector<std::string> {
-            auto match = [&](const std::vector<std::string>& candidates) {
-                std::vector<std::string> out;
-                for (auto& c : candidates)
-                    if (c.substr(0, tok.size()) == tok) out.push_back(c);
-                return out;
-            };
+    // Welcome card goes in the initial pane only.  Subsequent splits get a
+    // clean start (no welcome), since splitting is an explicit user action.
+    layout.focused().tui.draw_welcome(layout.focused().history);
 
-            // Extract first word from buffer (the command)
-            std::string cmd;
-            {
-                std::istringstream iss(buf);
-                iss >> cmd;
-                if (!cmd.empty() && cmd[0] == '/') cmd = cmd.substr(1);
-            }
-            bool only_cmd = (buf.find(' ') == std::string::npos);
+    // Pump thread reads through g_getc_state.pane, which tracks the focused
+    // pane for SIGWINCH repaints (output drain iterates all panes directly).
+    g_getc_state.pane = &layout.focused();
 
-            // Completing the slash command itself
-            if (only_cmd || buf.empty()) {
-                return match({"/send","/ask","/use","/agents","/status","/tokens",
-                              "/create","/remove","/reset","/compact","/model",
-                              "/loop","/loops","/log","/watch",
-                              "/kill","/suspend","/resume","/inject",
-                              "/fetch","/mem","/plan","/verbose","/quit","/help"});
-            }
+    // Shared pane spawner — both the REPL's /pane command (handle() below)
+    // and the orchestrator's pane_spawner callback (registered further
+    // down) route through this function.  Forward-declared here so handle
+    // can reference it; assigned after start_pane_thread exists, since
+    // spawning starts an exec thread on the new pane.
+    std::function<std::string(const std::string& agent, const std::string& message)>
+        spawn_pane_fn;
 
-            // Agent name completion
-            if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
-                cmd == "reset" || cmd == "compact") {
-                auto agents = orch.list_agents();
-                agents.push_back("index");
-                return match(agents);
-            }
-
-            // Loop ID completion
-            if (cmd == "kill"    || cmd == "suspend" || cmd == "resume" ||
-                cmd == "watch"   || cmd == "log"     || cmd == "inject") {
-                return match(loops.list_ids());
-            }
-
-            // /mem subcommands
-            if (cmd == "mem") {
-                return match({"write","read","show","clear"});
-            }
-
-            return {};
-        });
-
-    // ── Command queue + execution thread ────────────────────────────────────────
-    CommandQueue cmd_queue;
-    std::atomic<bool> quit_requested{false};
-    std::atomic<bool> title_generated{false};  // generate title only once per session
-
-    // Helper: fire title generation after the first successful response.
-    auto maybe_generate_title = [&](const std::string& user_msg,
-                                     const std::string& response_snippet) {
-        if (title_generated.exchange(true)) return;  // already done
-        index_ai::generate_title_async(orch.client(), user_msg, response_snippet,
-            [&tui](const std::string& t){ tui.set_title(t); });
-    };
-
-    // All command handling lives in this lambda, called from the exec thread.
-    // ALL output goes through output_queue.push() — never directly to stdout.
-    auto handle = [&](const std::string& line) {
+    // ── Command handler ────────────────────────────────────────────────────
+    // Takes the pane that owns the line; body references pane members via
+    // per-call aliases so the existing code shape is preserved.
+    auto handle = [&](Pane& pane, const std::string& line) {
+        auto& tui             = pane.tui;
+        auto& output_queue    = pane.output_queue;
+        auto& thinking        = pane.thinking;
+        auto& tool_indicator  = pane.tool_indicator;
+        auto& current_agent   = pane.current_agent;
+        auto& current_model   = pane.current_model;
 
         if (line[0] == '/') {
             // Parse command
@@ -415,6 +473,28 @@ static void cmd_interactive() {
                     output_queue.push_msg("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m");
                 }
                 thinking.stop();
+                return;
+            }
+            if (cmd == "pane") {
+                // Manual /pane <agent> <msg> from the REPL — delegates to
+                // the same helper the orchestrator uses when an agent emits
+                // /pane in its response.  Fire-and-queue: the new pane runs
+                // the message on its own exec thread, result flows back to
+                // the pane that issued /pane when the task completes.
+                std::string id;
+                iss >> id;
+                std::string msg;
+                std::getline(iss, msg);
+                if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
+                if (id.empty() || msg.empty()) {
+                    output_queue.push_msg(
+                        "Usage: /pane <agent-id> <message>");
+                    return;
+                }
+                std::string result = spawn_pane_fn
+                    ? spawn_pane_fn(id, msg)
+                    : std::string("ERR: pane spawner not initialized");
+                output_queue.push_msg(result);
                 return;
             }
             if (cmd == "ask") {
@@ -786,44 +866,60 @@ static void cmd_interactive() {
             }
             if (cmd == "help") {
                 output_queue.push_msg(
-                    "Commands:\n"
-                    "  /send <agent> <msg>              — send to specific agent\n"
-                    "  /ask <query>                     — ask index master\n"
-                    "  /use <agent>                     — switch current agent\n"
-                    "  /agents                          — list agents\n"
+                    "Conversation\n"
+                    "  <text>                           — send to the focused pane's agent\n"
+                    "  /send <agent> <msg>              — send to a specific agent\n"
+                    "  /ask <query>                     — ask the index master\n"
+                    "  /use <agent>                     — switch the focused pane's current agent\n"
+                    "\n"
+                    "Agents\n"
+                    "  /agents                          — list loaded agents\n"
                     "  /status                          — system status\n"
-                    "  /tokens                          — token usage\n"
-                    "  /create <id>                     — create agent (default config)\n"
+                    "  /tokens                          — full token + cost breakdown\n"
+                    "  /create <id>                     — create agent with default config\n"
                     "  /remove <id>                     — remove agent\n"
-                    "  /reset [id]                      — clear agent history\n"
+                    "  /reset [id]                      — clear an agent's history (default: focused)\n"
                     "  /compact [id]                    — summarize + clear history (session memory)\n"
                     "  /model <agent> <model-id>        — change agent model at runtime\n"
                     "\n"
-                    "  /loop <agent> <prompt>           — run agent in background loop\n"
-                    "  /loops                           — list running/suspended loops\n"
+                    "Panes  (each pane is an independent conversation view)\n"
+                    "  /pane <agent> <msg>              — spawn a parallel pane running the agent;\n"
+                    "                                     result flows back to the spawner when done\n"
+                    "  Ctrl-w v                         — split the focused pane vertically\n"
+                    "  Ctrl-w s                         — split the focused pane horizontally\n"
+                    "  Ctrl-w w                         — cycle focus to the next pane\n"
+                    "  Ctrl-w c                         — close the focused pane\n"
+                    "\n"
+                    "Background loops\n"
+                    "  /loop <agent> <prompt>           — run agent in a background loop\n"
+                    "  /loops                           — list running / suspended loops\n"
                     "  /log <loop-id> [last-N]          — show buffered loop output\n"
                     "  /watch <loop-id>                 — tail loop output live (Enter to detach)\n"
                     "  /kill <loop-id>                  — stop a loop\n"
                     "  /suspend <loop-id>               — pause a loop\n"
                     "  /resume <loop-id>                — resume a paused loop\n"
-                    "  /inject <loop-id> <msg>          — send message into a running loop\n"
+                    "  /inject <loop-id> <msg>          — inject a message into a running loop\n"
                     "\n"
-                    "  /fetch <url>                     — fetch URL and send HTML to current agent\n"
-                    "  /mem write <text>                — append note to agent memory\n"
-                    "  /mem read                        — load memory into agent context\n"
+                    "Fetch + memory\n"
+                    "  /fetch <url>                     — fetch URL, send readable text to agent\n"
+                    "  /mem write <text>                — append note to agent's persistent memory\n"
+                    "  /mem read                        — load agent memory into context\n"
                     "  /mem show                        — print raw memory file\n"
                     "  /mem clear                       — delete agent memory file\n"
                     "  /mem shared write <text>         — write to pipeline-shared scratchpad\n"
                     "  /mem shared read                 — read shared scratchpad\n"
                     "  /mem shared clear                — clear shared scratchpad\n"
                     "\n"
+                    "Plans\n"
                     "  /plan execute <path>             — execute a planner-produced plan file\n"
                     "\n"
+                    "Session\n"
                     "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
-                    "\n"
+                    "  /help                            — this list\n"
                     "  /quit                            — exit\n"
                     "\n"
-                    "Plain text sends to current agent.");
+                    "Scroll: PgUp / PgDn scroll the focused pane's history.  Esc cancels\n"
+                    "any in-flight agent turn.");
                 return;
             }
             if (cmd == "verbose") {
@@ -864,6 +960,12 @@ static void cmd_interactive() {
             // md.flush() guarantees the stream ended on `\n`; one more gives
             // exactly one blank line before the next message.
             output_queue.end_message();
+            // Stash the raw agent response (or error) so start_pane_thread's
+            // post-handle hook can flow it back to the parent when this is
+            // a delegated pane.  Written regardless of resp.ok so the
+            // parent sees the failure, not silence.
+            pane.last_response = resp.ok ? resp.content
+                                         : ("ERR: " + resp.error);
             if (resp.ok) {
                 tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
                 tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
@@ -873,110 +975,242 @@ static void cmd_interactive() {
             }
         } catch (const std::exception& e) {
             output_queue.push_msg("\033[38;5;167mERR: " + std::string(e.what()) + "\033[0m");
+            pane.last_response = std::string("ERR: ") + e.what();
         }
         thinking.stop();
     };  // end handle lambda
 
-    // Execution thread: drains the command queue serially.
-    std::thread exec_thread([&]() {
-        std::string line;
-        while (cmd_queue.pop(line)) {
-            cmd_queue.set_busy(true);
-            handle(line);
-            cmd_queue.set_busy(false);
-            // Clear the queue indicator now that this item is done.
-            // If more items are pending, begin_input will re-show it on the next loop.
-            tui.clear_queue_indicator();
-        }
-    });
+    // Starts a pane's exec thread.  The thread pins g_active_pane at entry
+    // (thread_local) so orch callbacks route to this pane, then drains the
+    // pane's cmd_queue until it's stopped.  Caller is responsible for:
+    //   (1) cmd_queue.stop() to unblock the blocking pop()
+    //   (2) thread.join() before destroying the Pane
+    auto start_pane_thread = [&](Pane& p_ref) {
+        Pane* pane_ptr = &p_ref;
+        pane_ptr->exec_thread = std::thread([&, pane_ptr]() {
+            Pane& p = *pane_ptr;
+            g_active_pane = &p;
+            std::string line;
+            while (p.cmd_queue.pop(line)) {
+                p.cmd_queue.set_busy(true);
+                handle(p, line);
+                p.cmd_queue.set_busy(false);
+                p.tui.clear_queue_indicator();
 
-    // ── Main readline loop ──────────────────────────────────────────────────
-    std::string multiline_accum;           // accumulated prefix from backslash continuation
+                // Delegation-chain flow-back: once per pane lifetime, after
+                // the pane's first queued command completes (which is the
+                // spawn_message for /pane-spawned children), push the
+                // framed result into parent_pane->cmd_queue so the
+                // delegating agent sees its sub-work's output as a fresh
+                // message.  Then post a pending-close request so the REPL
+                // can prompt the user before tearing this pane down.
+                if (p.parent_pane != nullptr &&
+                    !p.spawn_flowed.exchange(true)) {
 
-    // Scroll history back-buffer: bounded, visual-row-aware.  PgUp/PgDn
-    // adjust scroll_offset (in VISUAL rows); offset=0 is live.
-    index_ai::ScrollBuffer history;
-    history.set_cols(tui.cols());
-    int scroll_offset      = 0;   // visual rows above the tail (0 = live view)
-    int new_while_scrolled = 0;   // visual rows accumulated while scrolled back
+                    // Verify the parent is still in the layout before
+                    // touching its cmd_queue — a user Ctrl-w c or another
+                    // chain-close could have removed it while we worked.
+                    bool parent_alive = false;
+                    Pane* parent = p.parent_pane;
+                    {
+                        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                        layout.for_each_pane([&](Pane& other) {
+                            if (&other == parent) parent_alive = true;
+                        });
+                    }
 
-    // Welcome card — always shown at startup, whether or not a session was
-    // restored.  Rendered into history so it's part of scrollback, and
-    // painted live so it's visible before any prompt input.  Dismissed the
-    // moment the user sends their first message (see `welcome_visible` in
-    // the REPL loop) so it doesn't linger in scrollback alongside real work.
-    tui.draw_welcome(history);
-    bool welcome_visible = true;
+                    if (parent_alive) {
+                        std::string task_preview = p.spawn_message.size() > 80
+                            ? p.spawn_message.substr(0, 77) + "..."
+                            : p.spawn_message;
+                        std::string frame = "[PANE RESULT from '"
+                            + p.current_agent + "' (task: "
+                            + task_preview + ")]\n"
+                            + p.last_response
+                            + "\n[END PANE RESULT]";
+                        parent->cmd_queue.push(frame);
+                    }
 
-    // ── State exposed to getc_flush_output (called by the pump thread) ────
-    g_getc_state.output_queue       = &output_queue;
-    g_getc_state.tui                = &tui;
-    g_getc_state.history            = &history;
-    g_getc_state.scroll_offset      = &scroll_offset;
-    g_getc_state.new_while_scrolled = &new_while_scrolled;
-    g_getc_state.quit_requested     = &quit_requested;
-    g_getc_state.orch               = &orch;
-    g_getc_state.multiline_accum    = &multiline_accum;
-
-    // ── Scroll/cancel handlers for the line editor ─────────────────────────
-    // The editor reads stdin itself; when it sees a PgUp/PgDn event it
-    // defers the actual scrollback update to us via these callbacks.
-    auto apply_scroll = [&](int direction, int step) {
-        int max_off = history.total_visual_rows();
-        if (direction < 0) {
-            scroll_offset = std::min(scroll_offset + step, max_off);
-        } else {
-            scroll_offset = std::max(0, scroll_offset - step);
-            new_while_scrolled = 0;
-            if (scroll_offset == 0) tui.clear_status();
-        }
-        tui.render_scrollback(history, scroll_offset, new_while_scrolled);
+                    {
+                        std::lock_guard<std::mutex> lk(pending_closes_mu);
+                        pending_closes.push_back({&p, p.current_agent});
+                    }
+                    // Wake the main loop so it services the pending close
+                    // promptly instead of waiting on the next keypress.
+                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                }
+            }
+        });
     };
-    editor.set_scroll_handler(apply_scroll);
-    editor.set_cancel_handler([&]() {
-        orch.cancel();
-        multiline_accum.clear();
-        output_queue.push_msg("\033[38;5;167m[interrupted]\033[0m");
+
+    // Dismiss any pane's welcome card.  Once the user has two or more panes
+    // (user-split or agent-spawned), the greeting is noise — it clutters a
+    // pane that the user is now trying to use as a work surface.  Each pane
+    // still has its own scrollback; this just tears the card out of history
+    // so render_scrollback no longer paints it.
+    auto dismiss_welcome_everywhere = [&]() {
+        layout.for_each_pane([&](Pane& p) {
+            if (p.welcome_visible) {
+                p.welcome_visible = false;
+                p.history.clear();
+                p.scroll_offset = 0;
+                p.new_while_scrolled = 0;
+                p.tui.clear_scroll_region();
+            }
+        });
+    };
+
+    // Pane spawner — called from an agent's exec thread when it emits
+    // `/pane <agent> <msg>`.  Creates a new pane, starts its exec thread,
+    // queues the message as the first command.  Returns a short status
+    // string for the agent's tool-result block.  Fire-and-forget: the
+    // spawning agent's context does NOT accumulate the new pane's output.
+    //
+    // Safety:
+    //   - Takes layout_mu so the pump thread can't iterate mid-mutation.
+    //   - Caps panes at kMaxPanes so a runaway agent can't keep splitting.
+    //   - Refuses unknown agents and too-small focused panes.
+    static constexpr size_t kMaxPanes = 8;
+    spawn_pane_fn = [&](const std::string& req_agent,
+                         const std::string& message) -> std::string {
+        if (req_agent != "index" && !orch.has_agent(req_agent))
+            return "ERR: no agent '" + req_agent + "'";
+
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+
+        if (layout.pane_count() >= kMaxPanes) {
+            return "ERR: pane cap reached (" + std::to_string(kMaxPanes) +
+                   " open); close one before spawning more";
+        }
+
+        // The spawning pane is whichever pane's exec thread is currently
+        // running (g_active_pane is set by start_pane_thread on entry).
+        // Capture it so the new child can flow its result back here when
+        // its task finishes.
+        Pane* spawner_pane = g_active_pane;
+
+        // Build the new pane via make_pane, then override its current_agent
+        // to the requested sub-agent before the exec thread starts.  We
+        // explicitly opt out of the focus transfer that split_focused does
+        // by default — keeping focus on the spawner is important so the
+        // user-facing readline cursor stays put, close prompts still
+        // appear where they're reading, and multiple /pane spawns in the
+        // same turn don't whip focus around three times.
+        std::string captured_agent = req_agent;
+        Pane* new_pane_ptr = layout.split_focused(
+            LayoutTree::Orient::Vertical,
+            [&, captured_agent]() -> std::unique_ptr<Pane> {
+                auto p = make_pane();
+                if (!p) return p;
+                p->current_agent = captured_agent;
+                p->current_model = orch.get_agent_model(captured_agent);
+                p->tui.update(p->current_agent, p->current_model, "",
+                              agent_color(p->current_agent));
+                // No welcome card on agent-spawned panes — the first line
+                // is the queued message, which matters more than greetings.
+                p->welcome_visible = false;
+                p->history.clear();
+                return p;
+            },
+            /*focus_new=*/false);
+
+        if (!new_pane_ptr) {
+            return "ERR: focused pane too small to split";
+        }
+
+        Pane& new_pane = *new_pane_ptr;
+        // Record delegation lineage so the child pane's exec thread can
+        // flow its output back to the spawner when its task is done.
+        new_pane.parent_pane   = spawner_pane;
+        new_pane.spawn_message = message;
+        new_pane.spawn_flowed.store(false);
+        start_pane_thread(new_pane);
+        new_pane.cmd_queue.push(message);
+
+        // Tear the welcome card off any pane still showing it — if an
+        // agent is spawning parallel work, the user is done with greetings.
+        dismiss_welcome_everywhere();
+
+        // Repaint every pane's scrollback so the relayout is coherent.
+        layout.for_each_pane([&](Pane& p) {
+            p.history.set_cols(p.tui.cols());
+            p.tui.render_scrollback(p.history, p.scroll_offset,
+                                     p.new_while_scrolled);
+        });
+
+        // Kick the main thread so its blocked read_line returns and the
+        // REPL loop re-enters begin_input, which repaints the focused
+        // pane's prompt over the input row that set_rect just blanked.
+        refresh_focused_input.store(true);
+        layout.focused().editor.interrupt();
+
+        return "OK: spawned pane on agent '" + captured_agent +
+               "'; output streams in its own view";
+    };
+
+    // Register the orchestrator callback — thin wrapper around
+    // spawn_pane_fn so agent-emitted /pane lines and REPL-typed /pane
+    // commands go through the same path.
+    orch.set_pane_spawner([&](const std::string& agent, const std::string& msg) {
+        return spawn_pane_fn(agent, msg);
     });
+
+    // ── Per-pane exec threads ──────────────────────────────────────────────
+    // Start the initial pane's thread now that handle is defined.  Every
+    // pane created afterward (via dispatch_chord's split) starts its own
+    // thread immediately.  Threads run in parallel: concurrent sends to
+    // different agents execute simultaneously (same-provider sends still
+    // serialize at ApiClient's connection mutex, which is a network-layer
+    // constraint rather than an app-level one).
+    start_pane_thread(layout.focused());
 
     // ── Output pump ────────────────────────────────────────────────────────
-    // libedit's blocking readline() on macOS does NOT route through
-    // rl_getc_function — it reads el_infile directly via its internal
-    // read_char — so we cannot rely on filtered_getc running during idle to
-    // flush output_queue to the scroll region.  Instead, a dedicated pump
-    // thread ticks every 30 ms and drains the queue.  It shares tui.tty_mutex
-    // with the echo path and exec-thread TUI updates so concurrent writes to
-    // stdout don't tear each other's ANSI save/restore pairs.
+    // Drains every pane's output_queue every tick and repaints its scroll
+    // region.  Holds layout_mu for the whole iteration so a concurrent
+    // split/close/focus on the main thread can't mutate the tree mid-walk.
     std::atomic<bool> pump_stop{false};
     std::thread output_pump([&]() {
+        auto flush_pane = [&](Pane& p) {
+            std::string pending = p.output_queue.drain();
+            if (pending.empty()) return;
+            int before = (p.scroll_offset > 0) ? p.history.total_visual_rows() : 0;
+            p.history.push(pending);
+            if (p.scroll_offset > 0) {
+                int after = p.history.total_visual_rows();
+                p.new_while_scrolled += (after - before);
+            }
+            p.tui.render_scrollback(p.history, p.scroll_offset,
+                                     p.new_while_scrolled);
+        };
         while (!pump_stop.load()) {
-            // Handle SIGWINCH — our line editor runs on the main thread, so
-            // we only need to redraw the TUI chrome and reflow the scroll
-            // buffer's wrap cache here.  The editor picks up the new width
-            // on the next redraw through tui.cols().
+            std::unique_lock<std::recursive_mutex> lk(layout_mu);
             if (g_winch) {
                 g_winch = 0;
-                tui.resize();
-                history.set_cols(tui.cols());
-                // resize() cleared the screen and only redrew chrome — repaint
-                // the scroll region from history so the welcome card + any
-                // prior output survives terminal resizes (incl. the implicit
-                // SIGWINCH some emulators fire on initial attach).
-                tui.render_scrollback(history, scroll_offset, new_while_scrolled);
+                Rect r{0, 0, index_ai::term_cols(), index_ai::term_rows()};
+                layout.resize(r);
+                layout.for_each_pane([&](Pane& p) {
+                    p.history.set_cols(p.tui.cols());
+                    p.tui.render_scrollback(p.history, p.scroll_offset,
+                                             p.new_while_scrolled);
+                });
+                g_getc_state.pane = &layout.focused();
+                // resize() blanked every pane's input row; kick the main
+                // thread to repaint the focused pane's live prompt.
+                refresh_focused_input.store(true);
+                layout.focused().editor.interrupt();
             }
-            getc_flush_output();
+            layout.for_each_pane(flush_pane);
+            lk.unlock();
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
         }
-        getc_flush_output();   // final drain on shutdown
+        // Final drain — no need to lock here; exec threads have been joined
+        // by this point (shutdown ordering), so no other thread is mutating.
+        layout.for_each_pane(flush_pane);
     });
 
-    // Service a pending confirm request from the exec thread.  Returns true
-    // if one was handled (caller should loop back without treating read_line's
-    // return as EOF).  Called in TWO places: (a) before entering read_line,
-    // since editor.interrupt() can fire after the previous iteration returned
-    // but before we re-enter — read_line resets interrupt_flag_ on entry, so
-    // the interrupt would otherwise be lost; (b) after read_line returns
-    // false, for the case where the interrupt arrived DURING read_line.
+    // Service a pending confirm (destructive-action dialog from orch).  The
+    // confirm lands on whichever pane currently has focus — that's where
+    // the editor.interrupt() wakes the main loop.
     auto service_confirm = [&]() -> bool {
         std::promise<bool>* pending = nullptr;
         std::string         conf_prompt;
@@ -988,85 +1222,187 @@ static void cmd_interactive() {
         }
         if (!pending) return false;
 
+        Pane& pane = layout.focused();
         std::string rendered =
             "\n\033[38;5;214m" + conf_prompt + " [y/N] \033[0m";
-        history.push(rendered);
-        {
-            std::lock_guard<std::recursive_mutex> lk(tui.tty_mutex());
-            printf("\0337");
-            printf("\033[%d;1H", tui.last_scroll_row());
-            fwrite_crlf(rendered);
-            printf("\0338");
-            fflush(stdout);
-        }
+        pane.history.push(rendered);
+        pane.tui.render_scrollback(pane.history, pane.scroll_offset,
+                                    pane.new_while_scrolled);
+
         unsigned char ch = 0;
         ssize_t n = ::read(STDIN_FILENO, &ch, 1);
         bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
-        // Render the answer as a standalone status line, NOT the raw y/n.
-        // Leading \n is critical — the cursor move lands us on the row that
-        // already holds the prompt, and writing any glyph there overwrites
-        // its first character.  A leading newline scrolls the region up
-        // first so the status lands on a fresh row below the prompt.
-        // Orange for accept, red for deny — semantic, matches the rest of
-        // the TUI's color vocabulary (214 amber for the question itself).
         std::string answer = yes
             ? std::string("\n\033[38;5;208m[user accepted input]\033[0m\n")
             : std::string("\n\033[38;5;167m[user denied input]\033[0m\n");
-        history.push(answer);
-        {
-            std::lock_guard<std::recursive_mutex> lk(tui.tty_mutex());
-            printf("\0337");
-            printf("\033[%d;1H", tui.last_scroll_row());
-            fwrite_crlf(answer);
-            printf("\0338");
-            fflush(stdout);
-        }
+        pane.history.push(answer);
+        pane.tui.render_scrollback(pane.history, pane.scroll_offset,
+                                    pane.new_while_scrolled);
         pending->set_value(yes);
         return true;
     };
 
+    // Service any pending-close requests queued by pane exec threads that
+    // finished their delegated task.  Runs on the main thread; prompts the
+    // user on the focused pane ("close X? [y/N]") and — on yes — stops the
+    // target pane's cmd_queue, joins its thread, and removes it from the
+    // layout.  Returns true if at least one entry was handled so the REPL
+    // loop can re-enter read_line afterward.
+    auto service_pending_closes = [&]() -> bool {
+        std::vector<PendingClose> snapshot;
+        {
+            std::lock_guard<std::mutex> lk(pending_closes_mu);
+            snapshot.swap(pending_closes);
+        }
+        if (snapshot.empty()) return false;
+
+        for (auto& pc : snapshot) {
+            // Verify the pane is still in the layout (user could have
+            // Ctrl-w c'd it already).  If gone, skip silently.
+            bool still_alive = false;
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                layout.for_each_pane([&](Pane& p) {
+                    if (&p == pc.pane) still_alive = true;
+                });
+            }
+            if (!still_alive) continue;
+
+            // Render the confirm prompt in the focused pane's scrollback.
+            Pane& shown = layout.focused();
+            std::string prompt =
+                "\n\033[38;5;214mpane '" + pc.agent_id +
+                "' finished — close it? [y/N] \033[0m";
+            shown.history.push(prompt);
+            shown.tui.render_scrollback(shown.history, shown.scroll_offset,
+                                         shown.new_while_scrolled);
+
+            unsigned char ch = 0;
+            ssize_t n = ::read(STDIN_FILENO, &ch, 1);
+            bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
+
+            std::string answer = yes
+                ? std::string("\n\033[38;5;208m[closing '" + pc.agent_id + "']\033[0m\n")
+                : std::string("\n\033[38;5;167m[keeping '" + pc.agent_id + "' open]\033[0m\n");
+            shown.history.push(answer);
+            shown.tui.render_scrollback(shown.history, shown.scroll_offset,
+                                         shown.new_while_scrolled);
+
+            if (yes) {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                layout.close_pane(pc.pane, [&](Pane& p) {
+                    p.cmd_queue.stop();
+                    if (p.exec_thread.joinable()) p.exec_thread.join();
+                });
+                g_getc_state.pane = &layout.focused();
+                layout.for_each_pane([&](Pane& p) {
+                    p.history.set_cols(p.tui.cols());
+                    p.tui.render_scrollback(p.history, p.scroll_offset,
+                                             p.new_while_scrolled);
+                });
+            }
+        }
+        return true;
+    };
+
+    // Chord dispatcher — runs after the focused editor returned with a
+    // pending chord.  Takes layout_mu so the pump thread's iteration can't
+    // observe a partially-mutated tree.  On close, we stop the victim pane's
+    // cmd_queue and join its exec thread BEFORE the Pane is destroyed;
+    // join() can block for however long the in-flight handle() takes (the
+    // agent turn finishes or orch.cancel() aborts it).
+    auto dispatch_chord = [&](char cmd) {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        bool spawned = false;
+        switch (cmd) {
+            case 'w':
+            case 0x17:  // Ctrl-w Ctrl-w → next pane
+                layout.focus_next();
+                break;
+            case 's':
+                if (Pane* np = layout.split_focused(
+                        LayoutTree::Orient::Horizontal, make_pane)) {
+                    start_pane_thread(*np);
+                    spawned = true;
+                }
+                break;
+            case 'v':
+                if (Pane* np = layout.split_focused(
+                        LayoutTree::Orient::Vertical, make_pane)) {
+                    start_pane_thread(*np);
+                    spawned = true;
+                }
+                break;
+            case 'c':
+                if (layout.pane_count() > 1) {
+                    layout.close_focused([&](Pane& p) {
+                        // Stop queue so pop() returns, join the exec thread,
+                        // then let the Pane destructor run with a quiesced
+                        // thread.  Any pending output is dropped — a pane
+                        // being closed doesn't need one last render.
+                        p.cmd_queue.stop();
+                        if (p.exec_thread.joinable()) p.exec_thread.join();
+                    });
+                }
+                break;
+        }
+        // Manual split dismisses the welcome too — user has committed to
+        // multi-pane work, don't leave the greeting on the original pane.
+        if (spawned) dismiss_welcome_everywhere();
+        // resize() inside split/close already called render_borders and
+        // set_rect on each pane; we repaint scrollback for every pane so
+        // their content survives the relayout.
+        layout.for_each_pane([&](Pane& p) {
+            p.history.set_cols(p.tui.cols());
+            p.tui.render_scrollback(p.history, p.scroll_offset,
+                                     p.new_while_scrolled);
+        });
+        g_getc_state.pane = &layout.focused();
+    };
+
+    // ── Main readline loop ──────────────────────────────────────────────────
     while (!quit_requested) {
-        // Before entering read_line, check if the exec thread queued a
-        // confirm while we were away.  Handling it here closes the race
-        // where interrupt() fires between iterations and read_line's reset
-        // would swallow the flag.
         while (service_confirm()) {}
+        while (service_pending_closes()) {}
 
-        tui.begin_input([&cmd_queue]() { return cmd_queue.pending(); });
+        Pane& focused = layout.focused();
+        focused.tui.begin_input([&focused]() { return focused.cmd_queue.pending(); });
 
-        // Continuation prompt ("…") when accumulating a multi-line input.
-        std::string prompt = multiline_accum.empty()
-            ? tui.build_prompt()
+        std::string prompt = focused.multiline_accum.empty()
+            ? focused.tui.build_prompt()
             : "\001\033[38;5;241m\002…\001\033[0m\002 ";
 
-        // LineEditor owns stdin while reading.  Page-scroll events are
-        // dispatched to our scroll handler and don't return from here;
-        // Enter returns with the full line, Ctrl-D on an empty buffer
-        // returns false (treated as EOF below).
         std::string line;
-        if (!editor.read_line(prompt, line)) {
+        if (!focused.editor.read_line(prompt, line)) {
+            char chord;
+            if (focused.editor.take_chord(chord)) {
+                dispatch_chord(chord);
+                continue;
+            }
             if (service_confirm()) continue;
+            if (service_pending_closes()) continue;
+            // Layout mutation woke us up just to repaint the focused
+            // pane's prompt — loop back so begin_input paints a fresh
+            // one.  Without this, read_line returning false here would
+            // be treated as EOF and we'd exit.
+            if (refresh_focused_input.exchange(false)) continue;
             break;   // real EOF
         }
         if (quit_requested) break;
-        if (!line.empty()) editor.add_to_history(line);
+        if (!line.empty()) focused.editor.add_to_history(line);
 
-        // Return to live view whenever the user submits input.
-        scroll_offset      = 0;
-        new_while_scrolled = 0;
+        focused.scroll_offset      = 0;
+        focused.new_while_scrolled = 0;
 
-        // ── Backslash-continuation: "\" at end-of-line accumulates and
-        //    re-prompts with "…" until a line arrives without trailing "\".
         if (!line.empty() && line.back() == '\\') {
-            multiline_accum += line.substr(0, line.size() - 1) + "\n";
+            focused.multiline_accum += line.substr(0, line.size() - 1) + "\n";
             continue;
         }
-        line = multiline_accum + line;
-        multiline_accum.clear();
+        line = focused.multiline_accum + line;
+        focused.multiline_accum.clear();
 
         if (line.empty()) continue;
 
-        // Exit check
         {
             std::string lower = line;
             for (auto& c : lower) c = static_cast<char>(std::tolower((unsigned char)c));
@@ -1075,70 +1411,63 @@ static void cmd_interactive() {
             if (lower == "exit" || lower == "quit" || lower == "q" ||
                 lower == "bye"  || lower == ":q"   ||
                 lower == "/quit"|| lower == "/exit" || lower == "/q") {
-                // Always quit — cancel any in-flight work so the exec thread
-                // unblocks and join()s cleanly during shutdown.  ESC handles
-                // the "cancel without exiting" case; having exit ALSO require
-                // confirmation was redundant and trapped users behind a
-                // blocking agent call.
                 orch.cancel();
-                cmd_queue.drain();
+                layout.for_each_pane([&](Pane& p) { p.cmd_queue.drain(); });
                 break;
             }
         }
 
-        // First real message dismisses the welcome card — clear both the
-        // scroll buffer (so PgUp doesn't resurrect it) and the on-screen
-        // scroll region (so the user's echo starts on a blank canvas rather
-        // than appearing below the card).
-        if (welcome_visible) {
-            welcome_visible = false;
-            history.clear();
-            scroll_offset      = 0;
-            new_while_scrolled = 0;
-            tui.clear_scroll_region();
+        if (focused.welcome_visible) {
+            focused.welcome_visible = false;
+            focused.history.clear();
+            focused.scroll_offset      = 0;
+            focused.new_while_scrolled = 0;
+            focused.tui.clear_scroll_region();
         }
 
-        // Echo the user's prompt into the scroll region so it persists in the
-        // session view rather than disappearing when enter is pressed.
-        // Styled with a muted arrow prefix to distinguish it from model output.
-        // Route the user-input echo through the output_queue so the pump
-        // owns every scroll-region write.  The prior version did a lockless
-        // pre-drain and then a separate direct stdout write to paint the
-        // echo — if the pump thread was mid-write under tty_mutex at the
-        // same moment, those two printf sequences could interleave and leave
-        // fragments of the bottom separator inside the scroll region.
-        // Queue ordering is FIFO, so exec-thread output still appears after
-        // the user's echo, and the pump serialises all writes.
-        output_queue.push_msg(
+        focused.output_queue.push_msg(
             "\033[38;5;244m> \033[38;5;250m" + line + "\033[0m");
 
-        bool was_busy = cmd_queue.is_busy();
-        cmd_queue.push(line);
+        bool was_busy = focused.cmd_queue.is_busy();
+        focused.cmd_queue.push(line);
         if (was_busy) {
-            tui.set_status("queued (" + std::to_string(cmd_queue.pending()) + " waiting)");
+            focused.tui.set_status("queued (" +
+                std::to_string(focused.cmd_queue.pending()) + " waiting)");
         }
     }
 
-    cmd_queue.stop();
-    exec_thread.join();
+    // ── Shutdown ───────────────────────────────────────────────────────────
+    // Stop every pane's queue, then join its exec thread.  Do all stops
+    // BEFORE joins so panes unblock in parallel.  After that the pump is
+    // the only producer left and we can shut it down too.
+    {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        layout.for_each_pane([&](Pane& p) { p.cmd_queue.stop(); });
+        layout.for_each_pane([&](Pane& p) {
+            if (p.exec_thread.joinable()) p.exec_thread.join();
+        });
+    }
 
-    // Stop the output pump after the exec thread has drained — that way any
-    // final output it pushed still gets rendered before we restore the screen.
     pump_stop = true;
     output_pump.join();
 
-    // Restore stdin to its original termios.
     if (stdin_is_tty) ::tcsetattr(STDIN_FILENO, TCSANOW, &orig_stdin_tm);
 
-    // Persist history (the editor holds the authoritative list now).
+    // Merge every pane's editor history into a single disk file, dropping
+    // duplicates while preserving last-seen order.
     {
         std::ofstream hf(get_config_dir() + "/history");
-        for (auto& h : editor.history()) hf << h << '\n';
+        std::vector<std::string> merged;
+        std::set<std::string> seen;
+        layout.for_each_pane([&](Pane& p) {
+            for (auto& h : p.editor.history())
+                if (seen.insert(h).second) merged.push_back(h);
+        });
+        for (auto& h : merged) hf << h << '\n';
     }
     orch.save_session(session_path);
 
-    // Restore terminal and print session summary.
-    tui.shutdown();
+    TUI::leave_alt_screen();
     std::cout << "\n";
     if (tracker.session_cost() > 0.0) {
         std::cout << tracker.format_summary();
@@ -1195,9 +1524,12 @@ int main(int argc, char* argv[]) {
                 "  index --gen-token               Generate new auth token\n"
                 "  index --help                    This help\n\n"
                 "Environment:\n"
-                "  ANTHROPIC_API_KEY                  Claude API key\n\n"
+                "  ANTHROPIC_API_KEY                  Claude API key\n"
+                "  OPENAI_API_KEY                     OpenAI API key\n"
+                "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n\n"
                 "Config: ~/.index/\n"
-                "  api_key                            API key file\n"
+                "  api_key                            Anthropic key file\n"
+                "  openai_api_key                     OpenAI key file\n"
                 "  auth_tokens                        Hashed access tokens\n"
                 "  agents/*.json                      Agent constitutions\n";
             return 0;

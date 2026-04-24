@@ -31,6 +31,13 @@ void LineEditor::interrupt() {
     interrupt_flag_ = true;
 }
 
+bool LineEditor::take_chord(char& out) {
+    if (pending_chord_ == 0) return false;
+    out = pending_chord_;
+    pending_chord_ = 0;
+    return true;
+}
+
 // ─── low-level input ────────────────────────────────────────────────────────
 
 int LineEditor::read_byte() {
@@ -96,13 +103,12 @@ int LineEditor::visible_width(std::string_view s) const {
 void LineEditor::redraw() {
     std::lock_guard<std::recursive_mutex> lk(tui_.tty_mutex());
 
-    // Wrap-aware redraw.  The naive "\r\033[K" approach only clears the
-    // current row, so once the buffer wrapped to a second line, old wrapped
-    // text ghosted below the new prompt.  Instead: expand the input area to
-    // fit the wrapped content, clear every row in it, reprint from the top,
-    // then place the cursor using absolute row/col arithmetic.
+    // Wrap-aware redraw.  Writes land at the pane's left edge (left_col),
+    // not physical column 1 — required so multi-pane layouts don't have
+    // input bleed across the vertical separator.
     int cols = tui_.cols();
     if (cols <= 0) cols = 80;
+    const int left = tui_.left_col();
 
     int total_vis   = prompt_cols_ + visible_width(buffer_);
     // +1 row so the cursor has somewhere to sit when the buffer fills an
@@ -112,16 +118,18 @@ void LineEditor::redraw() {
 
     int top = tui_.input_top_row_pub();
     int bot = tui_.input_bottom_row_pub();
-    for (int r = top; r <= bot; ++r)
-        std::printf("\033[%d;1H\033[2K", r);
+    // Pane-aware clear: \033[2K wipes the whole physical row including
+    // sibling panes, so TUI exposes an erase helper that paints exactly
+    // rect_.w spaces at the pane's left column instead.
+    for (int r = top; r <= bot; ++r) tui_.erase_pane_row_pub(r);
 
-    std::printf("\033[%d;1H", top);
+    std::printf("\033[%d;%dH", top, left);
     std::fwrite(prompt_.data(), 1, prompt_.size(), stdout);
     std::fwrite(buffer_.data(), 1, buffer_.size(), stdout);
 
     int cursor_vis = prompt_cols_ + visible_width(std::string_view(buffer_).substr(0, cursor_));
     int cursor_row = top + (cursor_vis / cols);
-    int cursor_col = (cursor_vis % cols) + 1;
+    int cursor_col = (cursor_vis % cols) + left;
     std::printf("\033[%d;%dH", cursor_row, cursor_col);
 
     std::fflush(stdout);
@@ -132,10 +140,11 @@ void LineEditor::move_cursor_to_insertion() {
     std::lock_guard<std::recursive_mutex> lk(tui_.tty_mutex());
     int cols = tui_.cols();
     if (cols <= 0) cols = 80;
+    const int left = tui_.left_col();
     int top = tui_.input_top_row_pub();
     int cursor_vis = prompt_cols_ + visible_width(std::string_view(buffer_).substr(0, cursor_));
     int cursor_row = top + (cursor_vis / cols);
-    int cursor_col = (cursor_vis % cols) + 1;
+    int cursor_col = (cursor_vis % cols) + left;
     std::printf("\033[%d;%dH", cursor_row, cursor_col);
     std::fflush(stdout);
 }
@@ -347,7 +356,22 @@ bool LineEditor::read_line(const std::string& prompt, std::string& out) {
             case 0x06: cursor_right();     continue;  // ^F
             case 0x0B: kill_to_end();      continue;  // ^K
             case 0x15: kill_whole_line();  continue;  // ^U
-            case 0x17: kill_prev_word();   continue;  // ^W
+            case 0x17: {                              // ^W — pane chord or kill_prev_word
+                if (chord_handler_) {
+                    int b2;
+                    if (read_byte_timed(b2, 2000)) {
+                        if (chord_handler_(static_cast<char>(b2))) {
+                            pending_chord_ = static_cast<char>(b2);
+                            out.clear();
+                            return false;  // REPL checks take_chord(), loops
+                        }
+                    }
+                    // Timeout or handler declined the chord: no-op.
+                    continue;
+                }
+                kill_prev_word();
+                continue;
+            }
             case 0x09: tab_complete();     continue;  // Tab
 
             case 0x04:           // ^D  — EOF on empty line, else delete-forward

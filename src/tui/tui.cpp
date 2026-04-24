@@ -11,49 +11,68 @@ namespace index_ai {
 
 // ─── TUI ─────────────────────────────────────────────────────────────────────
 
-void TUI::init(const std::string& agent,
-               const std::string& /*model*/,
-               const std::string& color) {
+void TUI::enter_alt_screen() {
     ::setvbuf(stdout, nullptr, _IONBF, 0);
-
-    cols_ = term_cols();
-    rows_ = term_rows();
-    current_agent_ = agent;
-
     std::printf("\033[?1049h");   // enter alternate screen
     std::printf("\033[2J");       // clear
     // NOTE: X10 mouse reporting is intentionally NOT enabled.  Capturing
     // mouse events disables native text selection in the terminal, and being
     // able to copy output matters more than wheel-scrolling our scroll region.
     // PgUp / PgDn drive the scroll handler from the keyboard instead.
-    set_scroll_region();
     std::fflush(stdout);
-    draw_header();
-    draw_sep();
-    erase_chrome_row(input_row());
-    draw_footer_hint();
-    std::printf("\033[%d;1H", kHeaderRows + 1);
+}
+
+void TUI::leave_alt_screen() {
+    // Belt-and-suspenders: if a prior version (or a misbehaving terminal)
+    // left mouse reporting on, turn it back off before leaving alt-screen.
+    // Also force cursor visible — we hide/show it around paints so the
+    // focused input is the only place it lands, but on shutdown we hand
+    // the terminal back to the user and they expect a visible cursor.
+    std::printf("\033[?1000l");
+    std::printf("\033[?25h");
+    std::printf("\033[?1049l");
     std::fflush(stdout);
+}
+
+void TUI::init(const std::string& agent,
+               const std::string& /*model*/,
+               const std::string& color) {
+    // Default to a full-screen rect.  Multi-pane callers follow this up with
+    // set_rect(bounds) after layout computes their share.
+    rect_ = Rect{0, 0, term_cols(), term_rows()};
+    current_agent_ = agent;
+    paint_chrome();
+    std::printf("\033[%d;%dH", scroll_top_row(), left_col());
+    std::fflush(stdout);
+}
+
+void TUI::set_rect(const Rect& r) {
+    rect_ = r;
+    paint_chrome();
 }
 
 void TUI::resize() {
-    cols_ = term_cols();
-    rows_ = term_rows();
+    // Single-pane callers use this after SIGWINCH; multi-pane callers go
+    // through the layout tree (which calls clear-once then set_rect on each
+    // pane).  Full-clear before repaint so a shrink doesn't leave orphaned
+    // chrome rows past the new bottom.
+    rect_.w = term_cols();
+    rect_.h = term_rows();
     std::printf("\033[2J");
-    set_scroll_region();
+    paint_chrome();
+}
+
+void TUI::shutdown() {
+    // No-op today.  enter_alt_screen / leave_alt_screen are now static and
+    // owned by the app's entry path; this stays for source-compat with
+    // callers that already pair it with init.
+}
+
+void TUI::paint_chrome() {
     draw_header();
     draw_sep();
     erase_chrome_row(input_row());
     draw_footer_hint();
-    std::fflush(stdout);
-}
-
-void TUI::shutdown() {
-    // Belt-and-suspenders: if a prior version (or a misbehaving terminal)
-    // left mouse reporting on, turn it back off before leaving alt-screen.
-    std::printf("\033[?1000l");
-    std::printf("\033[?1049l");
-    std::fflush(stdout);
 }
 
 void TUI::update(const std::string& agent,
@@ -71,10 +90,11 @@ void TUI::draw_sep() {
     // chrome.  tty_mu_ is recursive, so nested calls from begin_input /
     // grow_input (which already hold the lock) are fine.
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    std::printf("\0337");
-    std::printf("\033[%d;1H\033[2K\033[38;5;237m", sep_row());
+    std::printf("\0337\033[?25l");
+    erase_pane_row(sep_row());
+    std::printf("\033[38;5;237m");
     if (current_pre_input_status_.empty()) {
-        for (int i = 0; i < cols_; ++i) std::printf("─");
+        for (int i = 0; i < rect_.w; ++i) std::printf("─");
     } else {
         auto cell_w = [](const std::string& s) {
             int w = 0;
@@ -87,10 +107,10 @@ void TUI::draw_sep() {
         // reads as a separator.
         std::printf("  %s  ", current_pre_input_status_.c_str());
         int used = 4 + cell_w(current_pre_input_status_);
-        for (int i = used; i < cols_; ++i) std::printf("─");
+        for (int i = used; i < rect_.w; ++i) std::printf("─");
     }
     std::printf("\033[0m");
-    std::printf("\0338");
+    std::printf("\0338\033[?25h");
     std::fflush(stdout);
 }
 
@@ -100,14 +120,11 @@ void TUI::begin_input(std::function<int()> pending_fn) {
     // Clear all rows the previous (possibly taller) input area might have
     // occupied, down to and including the last terminal row.
     int old_top = input_top_row();
-    for (int r = old_top; r <= input_row(); ++r)
-        std::printf("\033[%d;1H\033[2K", r);
+    for (int r = old_top; r <= input_row(); ++r) erase_pane_row(r);
 
     input_rows_ = 1;
-    set_scroll_region();
     draw_sep();
-    std::printf("\033[%d;1H\033[2K", input_top_row());
-    std::printf("\033[%d;1H",        input_top_row());
+    erase_pane_row(input_top_row());
     std::fflush(stdout);
 
     if (queued > 0) {
@@ -131,15 +148,13 @@ void TUI::grow_input(int needed) {
     // and the shrink case (rows we're releasing back to the scroll region
     // shouldn't carry stale input text into the scroll view).
     int old_top = input_top_row();
-    int new_top = rows_ - kBottomPadRows - needed + 1;
+    int new_top = rect_.y + rect_.h - kBottomPadRows - needed + 1;
     int clear_top = std::min(old_top, new_top);
-    for (int r = clear_top; r <= input_row(); ++r)
-        std::printf("\033[%d;1H\033[2K", r);
+    for (int r = clear_top; r <= input_row(); ++r) erase_pane_row(r);
 
     input_rows_ = needed;
-    set_scroll_region();
     draw_sep();
-    std::printf("\033[%d;1H", input_top_row());
+    std::printf("\033[%d;%dH", input_top_row(), left_col());
     std::fflush(stdout);
 }
 
@@ -150,7 +165,8 @@ std::string TUI::build_prompt() const {
 void TUI::render_scrollback(const ScrollBuffer& buf,
                             int visual_offset, int new_count) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    buf.render(kHeaderRows + 1, last_scroll_row(), visual_offset);
+    buf.render(left_col(), scroll_top_row(), rect_.w,
+               last_scroll_row(), visual_offset);
 
     if (visual_offset > 0) {
         char sbuf[96];
@@ -203,17 +219,22 @@ void TUI::set_title(const std::string& title) {
     draw_header_locked();
 }
 
-void TUI::set_scroll_region() {
-    int top = kHeaderRows + 1;
-    int bot = last_scroll_row();
-    std::printf("\033[%d;%dr", top, bot);
+void TUI::erase_chrome_row(int row) {
+    std::printf("\0337\033[?25l");
+    erase_pane_row(row);
+    std::printf("\0338\033[?25h");
+    std::fflush(stdout);
 }
 
-void TUI::erase_chrome_row(int row) {
-    std::printf("\0337");
-    std::printf("\033[%d;1H\033[2K\033[0m", row);
-    std::printf("\0338");
-    std::fflush(stdout);
+void TUI::erase_pane_row(int row) {
+    // Pane-aware replacement for \033[2K.  Writes exactly rect_.w spaces
+    // starting at the pane's left column, then leaves the cursor sitting at
+    // that same column of `row` so the next write lands correctly.  \033[0m
+    // resets attributes first so the spaces don't inherit background color
+    // from whatever preceded this call.
+    std::printf("\033[%d;%dH\033[0m", row, left_col());
+    for (int i = 0; i < rect_.w; ++i) std::putc(' ', stdout);
+    std::printf("\033[%d;%dH", row, left_col());
 }
 
 void TUI::draw_header() {
@@ -236,40 +257,57 @@ void TUI::draw_header_locked() {
         return w;
     };
 
-    int left_w = (int)current_agent_.size() + 2;
-    if (!session_title_.empty())
-        left_w += 1 + (int)session_title_.size();
+    // Truncate the agent name if it alone would overflow the pane.
+    std::string agent_vis = current_agent_;
+    if (cell_w(agent_vis) > rect_.w) {
+        agent_vis.resize(std::max(0, rect_.w));
+    }
+
+    int left_w = (int)agent_vis.size() + 2;
+
+    // Title only fits if there's room for it; drop it entirely in narrow panes.
+    std::string title_vis;
+    if (!session_title_.empty() && left_w + 1 + (int)session_title_.size() <= rect_.w) {
+        title_vis = session_title_;
+        left_w += 1 + (int)title_vis.size();
+    }
 
     const bool have_status = !current_status_.empty();
     const std::string& right_text = have_status ? current_status_ : current_stats_;
     std::string right_vis = right_text;
-    int avail = std::max(0, cols_ - left_w);
+    int avail = std::max(0, rect_.w - left_w);
     int right_cells = cell_w(right_vis);
     if (right_cells > avail) {
-        // Truncate to `avail` cells (byte-safe for ASCII; multi-byte status
-        // tails never exceed avail in practice, so a byte-resize is fine).
         right_vis.resize(avail);
         right_cells = cell_w(right_vis);
     }
     int pad = avail - right_cells;
 
-    std::printf("\0337");
+    std::printf("\0337\033[?25l");
     // Row 1 — identity on the left, status-or-stats on the right.
-    std::printf("\033[%d;1H\033[2K", kIdentityRow);
-    std::printf("%s", current_agent_.c_str());
-    if (!session_title_.empty())
-        std::printf(" \033[2m%s\033[0m", session_title_.c_str());
+    erase_pane_row(identity_row());
+    std::printf("%s", agent_vis.c_str());
+    if (!title_vis.empty())
+        std::printf(" \033[2m%s\033[0m", title_vis.c_str());
     std::printf("  ");
     std::printf("%*s", pad, "");
     if (!right_vis.empty())
         std::printf("\033[2m%s\033[0m", right_vis.c_str());
 
-    // Row 2 — separator
-    std::printf("\033[%d;1H\033[2K\033[38;5;237m", kHeaderSepRow);
-    for (int i = 0; i < cols_; ++i) std::printf("─");
+    // Row 2 — separator.  In a multi-pane layout the focused pane
+    // highlights its header bottom border in orange (the agent_color for
+    // "index") so the user can spot the active pane at a glance.  In
+    // single-pane mode focus_accent_ stays false and the separator
+    // renders in the usual dim grey.
+    erase_pane_row(header_sep_row());
+    if (focus_accent_)
+        std::printf("\033[38;5;208m");   // orange accent — active pane
+    else
+        std::printf("\033[38;5;237m");   // dim grey — inactive / single pane
+    for (int i = 0; i < rect_.w; ++i) std::printf("─");
     std::printf("\033[0m");
 
-    std::printf("\0338");
+    std::printf("\0338\033[?25h");
     std::fflush(stdout);
 }
 
@@ -277,18 +315,84 @@ void TUI::draw_footer_hint() {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     static constexpr const char* kLeft  = "esc \033[2minterrupt\033[0m  "
                                           "pgup/dn \033[2mscroll\033[0m";
-    static constexpr int         kLeftVis  = 4 + 9 + 2 + 8 + 6;
+    static constexpr int         kLeftVis  = 4 + 9 + 2 + 8 + 6;  // 29
     static constexpr const char* kRight = "/agents \033[2mlist agents\033[0m  "
                                           "/help \033[2mlist commands\033[0m";
-    static constexpr int         kRightVis = 8 + 11 + 2 + 6 + 13;
-    int pad = std::max(1, cols_ - kLeftVis - kRightVis);
-    std::printf("\0337");
-    std::printf("\033[%d;1H\033[2K\033[38;5;237m", hint_sep_row());
-    for (int i = 0; i < cols_; ++i) std::printf("─");
+    static constexpr int         kRightVis = 8 + 11 + 2 + 6 + 13; // 40
+
+    std::printf("\0337\033[?25l");
+
+    if (!footer_hint_visible_) {
+        // Multi-pane layout: blank both footer rows so the hint doesn't
+        // clutter every pane.  The rows are still reserved (input_row()
+        // and sep_row() references assume a two-row bottom pad), so the
+        // readline's absolute position stays identical between modes.
+        erase_pane_row(hint_sep_row());
+        erase_pane_row(pad_row());
+        std::printf("\0338\033[?25h");
+        std::fflush(stdout);
+        return;
+    }
+
+    // Hint separator row — full-width dashes.
+    erase_pane_row(hint_sep_row());
+    std::printf("\033[38;5;237m");
+    for (int i = 0; i < rect_.w; ++i) std::printf("─");
     std::printf("\033[0m");
-    std::printf("\033[%d;1H\033[2K", pad_row());
-    std::printf("%s%*s%s", kLeft, pad, "", kRight);
-    std::printf("\033[0m\0338");
+
+    // Hint text row — drop kRight (then kLeft) as the pane shrinks so the
+    // composed line strictly fits in rect_.w.  Without this guard, narrow
+    // panes wrap the hint text past their right edge into the sibling.
+    erase_pane_row(pad_row());
+    bool show_left  = rect_.w >= kLeftVis;
+    bool show_right = rect_.w >= kLeftVis + 1 + kRightVis;
+    int pad = rect_.w
+            - (show_left  ? kLeftVis  : 0)
+            - (show_right ? kRightVis : 0);
+    if (show_left)  std::fputs(kLeft, stdout);
+    if (pad > 0)    std::printf("%*s", pad, "");
+    if (show_right) std::fputs(kRight, stdout);
+    std::printf("\033[0m\0338\033[?25h");
+    std::fflush(stdout);
+}
+
+void TUI::set_footer_hint_visible(bool visible) {
+    if (footer_hint_visible_ == visible) return;
+    footer_hint_visible_ = visible;
+    draw_footer_hint();
+}
+
+void TUI::set_focus_accent(bool active) {
+    if (focus_accent_ == active) return;
+    focus_accent_ = active;
+    draw_header();   // repaints both identity row and the bottom-of-header sep
+}
+
+void TUI::clear_input_area() {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    std::printf("\0337\033[?25l");
+    // sep_row() is the dashed mid-separator just above the input;
+    // input_row() is the bottom row of the input area (row N-2 in the
+    // single-pane layout).  Clearing everything from sep_row through
+    // input_row leaves the pane's chrome intact — the sep is rewritten
+    // blank, and the next begin_input on re-focus will redraw the
+    // separator + prompt from scratch.
+    for (int r = sep_row(); r <= input_row(); ++r) erase_pane_row(r);
+    std::printf("\0338\033[?25h");
+    std::fflush(stdout);
+}
+
+void TUI::paint_idle_input_prompt() {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    std::printf("\0337\033[?25l");
+    // Clear any previous input contents first, then write a dim "> " so
+    // the pane visibly owns an input row even though its LineEditor is
+    // dormant.  On re-focus begin_input overwrites the stub with the
+    // live prompt; until then the stub stays put.
+    erase_pane_row(input_top_row());
+    std::printf("\033[%d;%dH\033[38;5;237m> \033[0m",
+                input_top_row(), left_col());
+    std::printf("\0338\033[?25h");
     std::fflush(stdout);
 }
 
@@ -296,11 +400,11 @@ void TUI::draw_footer_hint() {
 
 void TUI::clear_scroll_region() {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    std::printf("\0337");                                 // save cursor
-    for (int r = kHeaderRows + 1; r <= last_scroll_row(); ++r) {
-        std::printf("\033[%d;1H\033[2K", r);              // goto row, clear line
+    std::printf("\0337\033[?25l");                                 // save cursor
+    for (int r = scroll_top_row(); r <= last_scroll_row(); ++r) {
+        erase_pane_row(r);
     }
-    std::printf("\0338");                                 // restore cursor
+    std::printf("\0338\033[?25h");                                 // restore cursor
     std::fflush(stdout);
 }
 
@@ -338,8 +442,11 @@ void TUI::draw_welcome(ScrollBuffer& history) {
     int text_col_w = kDivGapR + text_w + kPadR;
     int inner      = art_col_w + 1 /*divider*/ + text_col_w;
     int box_w      = inner + 2;
-    int margin     = std::max(0, (cols_ - box_w) / 2);
-    std::string left_pad(margin, ' ');
+    int margin     = std::max(0, (rect_.w - box_w) / 2);
+    // Center the card horizontally within the pane's rect, not the raw
+    // terminal — for panes offset from the left edge, rect_.x shifts the
+    // whole card right to stay within bounds.
+    std::string left_pad(rect_.x + margin, ' ');
 
     const char* DIM = "\033[2m";
     const char* RST = "\033[0m";
@@ -427,16 +534,16 @@ void TUI::draw_welcome(ScrollBuffer& history) {
     // prepending newlines to the content, so the scroll buffer stays clean
     // and the card is cleared entirely on first user input.
     int card_h = 7;  // top border + blank + 3 content + blank + bottom border
-    int start_row = kHeaderRows + 1 +
+    int start_row = scroll_top_row() +
                     std::max(0, (scroll_region_rows() - card_h) / 2);
 
     history.push(card);
 
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    std::printf("\0337");
+    std::printf("\0337\033[?25l");
     std::printf("\033[%d;1H", start_row);
     std::fwrite(card.data(), 1, card.size(), stdout);
-    std::printf("\0338");
+    std::printf("\0338\033[?25h");
     std::fflush(stdout);
 }
 

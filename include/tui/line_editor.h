@@ -54,6 +54,19 @@ public:
     using CancelHandler = std::function<void()>;
     void set_cancel_handler(CancelHandler fn) { cancel_handler_ = std::move(fn); }
 
+    // Pane-management chord (tmux/vim-style): on Ctrl-w, the editor reads
+    // one more byte with a 2-second timeout and passes it to this handler.
+    // The handler returns true if it consumed the chord; the editor then
+    // returns false from read_line with a pending chord (callable via
+    // take_chord) so the REPL can dispatch the action outside the editor.
+    // Setting this UNBINDS the default Ctrl-w = kill_prev_word action.
+    using ChordHandler = std::function<bool(char cmd)>;
+    void set_chord_handler(ChordHandler fn) { chord_handler_ = std::move(fn); }
+
+    // Consume a chord command set during the last read_line.  Returns true
+    // if there was one (and writes it into `out`).
+    bool take_chord(char& out);
+
     // Blocks on stdin until the user submits the line (Enter) or EOF is
     // reached (Ctrl-D on empty line).  Returns false on EOF/interrupt —
     // `out` will be empty.
@@ -96,6 +109,8 @@ private:
     CompletionFn    completer_;
     ScrollHandler   scroll_handler_;
     CancelHandler   cancel_handler_;
+    ChordHandler    chord_handler_;
+    char            pending_chord_ = 0;   // set when Ctrl-w chord interrupted read_line
     std::vector<std::string> history_;
     int             max_history_ = 1000;
 

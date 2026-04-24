@@ -65,6 +65,12 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = line.substr(7);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
+        } else if (line.size() > 6 && line.substr(0, 6) == "/pane ") {
+            AgentCommand cmd;
+            cmd.name = "pane";
+            cmd.args = line.substr(6);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+
         } else if (line.size() > 8 && line.substr(0, 8) == "/advise ") {
             AgentCommand cmd;
             cmd.name = "advise";
@@ -772,7 +778,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ConfirmFn    confirm,
                                    std::map<std::string, std::string>* dedup_cache,
                                    AdvisorInvoker advisor_invoker,
-                                   ToolStatusFn   tool_status) {
+                                   ToolStatusFn   tool_status,
+                                   PaneSpawner    pane_spawner) {
     std::ostringstream out;
     out << "\n";
 
@@ -927,6 +934,39 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 }
             }
             block << "[END ADVISE]\n\n";
+
+        } else if (cmd.name == "pane") {
+            // /pane <agent_id> <message> — fire-and-forget: spawn a new UI
+            // pane running the agent on the given message.  The spawning
+            // agent's turn continues with only a short status block folded
+            // in; the new pane's output streams into its own view, not
+            // back into this agent's context.  Use for work that's truly
+            // parallel-independent — /agent is still the right choice when
+            // the caller needs to fold the sub-agent's result into its own
+            // synthesis.
+            std::istringstream iss(cmd.args);
+            std::string sub_id;
+            iss >> sub_id;
+            std::string sub_msg;
+            std::getline(iss, sub_msg);
+            if (!sub_msg.empty() && sub_msg[0] == ' ') sub_msg.erase(0, 1);
+
+            block << "[/pane " << sub_id << "]\n";
+            if (!pane_spawner) {
+                block << "ERR: pane spawning unavailable in this context "
+                         "(no interactive REPL)\n";
+                cache_result = false;
+            } else if (sub_id.empty() || sub_msg.empty()) {
+                block << "ERR: usage: /pane <agent-id> <message>\n";
+                cache_result = false;
+            } else {
+                std::string status = pane_spawner(sub_id, sub_msg);
+                block << status;
+                if (status.empty() || status.back() != '\n') block << "\n";
+                if (status.size() >= 4 && status.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
+            }
+            block << "[END PANE]\n\n";
 
         } else if (cmd.name == "agent") {
             // /agent <sub_agent_id> <message>

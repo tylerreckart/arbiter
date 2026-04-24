@@ -4,6 +4,7 @@
 #include "agent.h"
 #include "api_client.h"
 #include "commands.h"
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <memory>
@@ -14,7 +15,7 @@ namespace index_ai {
 
 class Orchestrator {
 public:
-    explicit Orchestrator(const std::string& api_key);
+    explicit Orchestrator(std::map<std::string, std::string> api_keys);
 
     // Set directory used for agent memory files.  The REPL passes the
     // cwd-scoped path from get_memory_dir(); the default below is a harmless
@@ -57,6 +58,12 @@ public:
     // post-exec status.  Fires for every tool call at any delegation depth —
     // main agent, sub-agent, sub-sub — so the turn's tally is unified.
     void set_tool_status_callback(ToolStatusFn cb) { tool_status_cb_ = std::move(cb); }
+
+    // Spawn a new UI pane running `agent_id` with `message` queued as its
+    // first command.  The REPL provides this; without it (e.g. --send /
+    // --serve callers) /pane commands from agents get an "ERR: pane
+    // spawning unavailable" tool result and the agent is told not to retry.
+    void set_pane_spawner(PaneSpawner cb) { pane_spawner_cb_ = std::move(cb); }
 
     // Agent management
     Agent& create_agent(const std::string& id, Constitution config);
@@ -150,6 +157,7 @@ private:
     CompactCallback    compact_cb_;
     ConfirmFn          confirm_cb_;
     ToolStatusFn       tool_status_cb_;
+    PaneSpawner        pane_spawner_cb_;
 
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;

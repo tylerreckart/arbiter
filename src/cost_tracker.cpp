@@ -7,15 +7,43 @@
 namespace index_ai {
 
 // ─── Pricing table ───────────────────────────────────────────────────────────
-// https://platform.claude.com/docs/en/about-claude/pricing
+// Anthropic:  https://platform.claude.com/docs/en/about-claude/pricing
+// OpenAI:     https://openai.com/api/pricing/
+//
+// Columns: { input $/MTok, output $/MTok, cache_read $/MTok, cache_write $/MTok }.
+// Lookup is a substring search against the model string (see pricing_for),
+// so longer/more-specific prefixes must come first — otherwise "gpt-4o-mini"
+// would match the "gpt-4o" row.
+//
+// OpenAI's prompt caching is implicit (no explicit breakpoints, no write
+// cost) so cache_write is 0 for openai rows; cached input is reported as
+// resp.cache_read_tokens via prompt_tokens_details.cached_tokens.
 
 static const struct {
     const char* prefix;
     ModelPricing pricing;
 } kPricingEntries[] = {
-    { "claude-haiku",  { 0.80,  4.00,  0.08,  1.00  } },
-    { "claude-opus",   { 15.00, 75.00, 1.50,  18.75 } },
-    { "claude-sonnet", { 3.00,  15.00, 0.30,  3.75  } },
+    // Anthropic.
+    { "claude-haiku",    { 0.80,  4.00,  0.08,  1.00  } },
+    { "claude-opus",     { 15.00, 75.00, 1.50,  18.75 } },
+    { "claude-sonnet",   { 3.00,  15.00, 0.30,  3.75  } },
+
+    // OpenAI — most-specific first.  cache_write=0 (implicit, free).
+    // Prices as of planning.  Recheck openai.com/api/pricing periodically.
+    { "gpt-5.4-nano",    { 0.20,  1.25,  0.02,  0.0 } },
+    { "gpt-5.4-mini",    { 0.75,  4.50,  0.075, 0.0 } },
+    { "gpt-5.4",         { 2.50,  15.00, 0.25,  0.0 } },
+    { "gpt-5-nano",      { 0.05,  0.40,  0.005, 0.0 } },
+    { "gpt-5-mini",      { 0.25,  2.00,  0.025, 0.0 } },
+    { "gpt-5",           { 1.25,  10.00, 0.125, 0.0 } },
+    { "gpt-4.1-nano",    { 0.10,  0.40,  0.025, 0.0 } },
+    { "gpt-4.1-mini",    { 0.40,  1.60,  0.10,  0.0 } },
+    { "gpt-4.1",         { 2.00,  8.00,  0.50,  0.0 } },
+    { "gpt-4o-mini",     { 0.15,  0.60,  0.075, 0.0 } },
+    { "gpt-4o",          { 2.50,  10.00, 1.25,  0.0 } },
+    { "o4-mini",         { 1.10,  4.40,  0.275, 0.0 } },
+    { "o3-mini",         { 1.10,  4.40,  0.55,  0.0 } },
+    { "o3",              { 2.00,  8.00,  0.50,  0.0 } },
 };
 
 static const ModelPricing kDefaultPricing = { 3.00, 15.00, 0.30, 3.75 };

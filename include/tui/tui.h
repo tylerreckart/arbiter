@@ -1,18 +1,25 @@
 #pragma once
 // index/include/tui/tui.h
 //
-// Terminal UI — owns the alternate-screen layout for the interactive REPL.
+// Terminal UI — owns a rectangular region (a "pane") of the alternate-screen
+// buffer.  Today the REPL uses one TUI instance whose rect spans the full
+// terminal; the multi-pane refactor adds a layout tree where each TUI draws
+// into its own rect and the same code paths work unchanged.
 //
-// Row layout (top → bottom):
-//   row 1            identity + status
-//                    left:  agent (bold, colored) · title (dim)
-//                    right: status (when active) — else stats (dim)
-//   row 2            dim separator
-//   rows 3..N-3      scroll region (streamed model output lives here)
-//   row  N-2         mid separator above input (doubles as pre-input status)
-//   rows N-2..N-k-1  readline input area (1..kMaxInputRows, grows on wrap)
-//   row  N-1         dim separator above hint row
-//   row  N           hint row (key / command hints)
+// Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
+//   row 1              identity + status
+//                      left:  agent (bold, colored) · title (dim)
+//                      right: status (when active) — else stats (dim)
+//   row 2              dim separator
+//   rows 3..h-3        scroll region (streamed model output lives here)
+//   row  h-2           mid separator above input (doubles as pre-input status)
+//   rows h-2..h-k-1    readline input area (1..kMaxInputRows, grows on wrap)
+//   row  h-1           dim separator above hint row
+//   row  h             hint row (key / command hints)
+//
+// All `*_row()` accessors return absolute 1-indexed terminal rows — they fold
+// in rect_.y so call sites can pass the result straight to ANSI cursor
+// positioning escapes without further arithmetic.
 //
 // Status is on the same row as identity; when active it preempts stats on the
 // right side (stats are already dim and unimportant vs a live "thinking..."
@@ -44,26 +51,61 @@
 
 namespace index_ai {
 
+// A rectangular region of the terminal owned by one TUI instance.  Coordinates
+// are 0-indexed: (x, y) is the top-left corner, w / h the interior size.  In
+// single-pane mode (today) the rect spans the full terminal: {0, 0, cols, rows}.
+// A future multi-pane layout simply gives each pane its own rect — the TUI's
+// row/col math below is already written in terms of `rect_`, so the same code
+// paints into whichever rect it owns.
+struct Rect {
+    int x = 0;
+    int y = 0;
+    int w = 80;
+    int h = 24;
+};
+
 class TUI {
 public:
-    // Layout constants — tuning these shifts the scroll region accordingly.
-    // Header is 2 rows: row 1 identity+status, row 2 separator.
-    static constexpr int kIdentityRow  = 1;
-    static constexpr int kHeaderSepRow = 2;
-    static constexpr int kHeaderRows   = 2;
-    static constexpr int kSepRows      = 1;   // mid separator above input area
-    static constexpr int kMaxInputRows = 5;
-    static constexpr int kBottomPadRows = 2;  // hint separator + hint row
+    // Chrome layout offsets WITHIN a pane (not absolute terminal rows).
+    // Header is 2 rows: identity+status, then separator.
+    static constexpr int kHeaderRows    = 2;
+    static constexpr int kSepRows       = 1;   // mid separator above input area
+    static constexpr int kMaxInputRows  = 5;
+    static constexpr int kBottomPadRows = 2;   // hint separator + hint row
 
-    // Enter alternate screen, set scroll region, draw chrome.
+    // App-level setup: enter alt-screen and clear it.  Must be called exactly
+    // once per process before any TUI::init (or set_rect on a freshly-built
+    // TUI).  Not a TUI method because alt-screen is a physical-terminal
+    // resource shared by every pane.
+    static void enter_alt_screen();
+
+    // Exit alt-screen and restore the user's terminal.  Also static — matches
+    // enter_alt_screen and can be called independent of any specific TUI.
+    static void leave_alt_screen();
+
+    // Per-pane chrome paint.  Defaults the rect to a full-screen cover for
+    // single-pane callers; multi-pane callers set_rect to their pane's
+    // bounds afterward (or before) without re-entering alt-screen.
     void init(const std::string& agent,
               const std::string& model,
               const std::string& color = "");
 
-    // Re-read terminal dimensions and redraw chrome (called from SIGWINCH path).
+    // Resize this pane's owned rect to a new area and repaint chrome.  Does
+    // not touch alt-screen or clear the whole terminal — that's a layout-
+    // level concern (the app clears the screen once before asking every
+    // pane to set_rect/redraw).
+    void set_rect(const Rect& r);
+
+    // Re-read terminal dimensions and redraw chrome (called from SIGWINCH
+    // path).  In single-pane mode the rect becomes {0,0,cols,rows}; in
+    // multi-pane mode the layout recomputes each pane's rect and calls
+    // set_rect instead — this method is a convenience for the single-pane
+    // case where no layout tree exists.
     void resize();
 
-    // Exit alternate screen and restore the user's terminal.
+    // No-op for backward compat.  In Stage A this entered alt-screen; that
+    // moved to enter_alt_screen().  Kept for callers that still expect a
+    // shutdown hook, paired with leave_alt_screen at program exit.
     void shutdown();
 
     // Redraw the header with updated agent / stats / color.
@@ -90,11 +132,16 @@ public:
 
     // Last usable row of the scroll region (where streamed output lands).
     int last_scroll_row() const {
-        return rows_ - kBottomPadRows - input_rows_ - kSepRows;
+        return rect_.y + rect_.h - kBottomPadRows - input_rows_ - kSepRows;
     }
 
+    // First row of the scroll region (just below the header separator).
+    int scroll_top_row() const { return rect_.y + kHeaderRows + 1; }
+
     // Number of visible rows in the scroll region.
-    int scroll_region_rows() const { return last_scroll_row() - kHeaderRows; }
+    int scroll_region_rows() const {
+        return last_scroll_row() - scroll_top_row() + 1;
+    }
 
     // Full repaint of the scroll region from a ScrollBuffer.
     //   visual_offset — visual rows above the tail (0 = live view)
@@ -118,6 +165,34 @@ public:
     // Clear only the "N queued" indicator without disturbing an active spinner.
     void clear_queue_indicator();
 
+    // Show / hide the two-row footer hint at the bottom of the pane.  In
+    // single-pane mode the hint ("esc interrupt, pgup/dn scroll, /agents,
+    // /help") is useful; in multi-pane layouts it becomes clutter on every
+    // pane.  LayoutTree::resize toggles this for every leaf whenever the
+    // pane count crosses the 1/>1 boundary.  The rows are still reserved
+    // (blanked) when hidden so the input row's absolute position doesn't
+    // shift between modes.
+    void set_footer_hint_visible(bool visible);
+
+    // Accent the header bottom border when this pane is the focused one in
+    // a multi-pane layout.  LayoutTree flips this on the focused leaf and
+    // off on all others after every focus or structural change.  In single
+    // pane mode the accent is not used.
+    void set_focus_accent(bool active);
+
+    // Blank the input rows of the pane (separator above input through
+    // input bottom) without touching the rest of the chrome.  Called by
+    // LayoutTree when the pane loses focus so its stale prompt text
+    // doesn't linger while the active pane elsewhere handles input.
+    void clear_input_area();
+
+    // Paint a dim placeholder prompt on the pane's input row.  Used for
+    // non-focused panes so their bottom edge reads as "input surface,
+    // currently idle" instead of looking half-drawn.  The focused pane's
+    // LineEditor overwrites this stub with the live prompt + buffer on
+    // its next redraw.
+    void paint_idle_input_prompt();
+
     // One-shot welcome card painted into the middle of the scroll region on
     // cold starts (no session to restore).  Box + hello text on the left,
     // 3-line ASCII sigil on the right.  Pushes the rendered card into the
@@ -131,7 +206,8 @@ public:
     // next PgUp.  Doesn't touch chrome (header/footer/input).
     void clear_scroll_region();
 
-    int cols() const { return cols_; }
+    int cols() const { return rect_.w; }
+    int left_col() const { return rect_.x + 1; }  // 1-indexed leftmost col
     int input_top_row_pub() const { return input_top_row(); }
     int input_bottom_row_pub() const { return input_row(); }
     int input_rows() const { return input_rows_; }
@@ -151,9 +227,11 @@ public:
     std::recursive_mutex& tty_mutex() { return tty_mu_; }
 
 private:
-    int  cols_ = 80, rows_ = 24;
+    Rect rect_{0, 0, 80, 24};          // area of the terminal this TUI owns
     int  input_rows_ = 1;
     bool status_active_ = false;
+    bool footer_hint_visible_ = true;  // flipped off in multi-pane layouts
+    bool focus_accent_ = false;        // accent header bottom border when focused
     std::atomic<bool> queue_indicator_shown_{false};
     std::string current_agent_ = "index";
     std::string current_stats_;
@@ -163,14 +241,30 @@ private:
     mutable std::mutex header_mu_;
     std::recursive_mutex tty_mu_;      // serializes concurrent stdout writes
 
-    int sep_row()       const { return rows_ - kBottomPadRows - input_rows_; }
-    int input_top_row() const { return rows_ - kBottomPadRows - input_rows_ + 1; }
-    int input_row()     const { return rows_ - kBottomPadRows; }
-    int hint_sep_row()  const { return rows_ - 1; }
-    int pad_row()       const { return rows_; }
+    // Absolute 1-indexed terminal rows for each chrome slot within rect_.
+    int identity_row()   const { return rect_.y + 1; }
+    int header_sep_row() const { return rect_.y + 2; }
+    int sep_row()        const { return rect_.y + rect_.h - kBottomPadRows - input_rows_; }
+    int input_top_row()  const { return sep_row() + 1; }
+    int input_row()      const { return rect_.y + rect_.h - kBottomPadRows; }
+    int hint_sep_row()   const { return rect_.y + rect_.h - 1; }
+    int pad_row()        const { return rect_.y + rect_.h; }
 
-    void set_scroll_region();
+    void paint_chrome();          // header + separators + input row + hint
     void erase_chrome_row(int row);
+
+    // Pane-aware line clear — writes rect_.w spaces at left_col() of `row`
+    // and repositions the cursor at that left edge, ready for the caller
+    // to paint content.  Replaces \033[2K everywhere; that escape clears
+    // the entire physical row, which in multi-pane mode wipes whatever
+    // siblings painted at the same row.
+    void erase_pane_row(int row);
+
+public:
+    // Exposed for LineEditor, which paints its input row at the pane's
+    // left edge with the same anti-\033[2K constraint.
+    void erase_pane_row_pub(int row) { erase_pane_row(row); }
+private:
     void draw_header();
     void draw_header_locked();
     void draw_footer_hint();

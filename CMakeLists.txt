@@ -60,9 +60,11 @@ set(INDEX_AI_SOURCES
     src/main.cpp
     src/cli_helpers.cpp
     src/repl/queues.cpp
+    src/repl/layout.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
     src/cli.cpp
+    src/starters.cpp
     src/tui/tui.cpp
     src/tui/scroll_buffer.cpp
     src/tui/line_editor.cpp

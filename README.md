@@ -40,7 +40,8 @@ Requires: OpenSSL, C++20 compiler, libedit or GNU readline (optional but recomme
 ### Setup
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
+export ANTHROPIC_API_KEY="sk-ant-..."   # Claude models
+export OPENAI_API_KEY="sk-..."          # OpenAI models (optional)
 
 # Initialize config directory, generate auth token, create example agents
 index --init
@@ -48,6 +49,10 @@ index --init
 # Launch interactive TUI
 index
 ```
+
+Set whichever keys you plan to use — only one is required. Keys can also be
+written to `~/.index/api_key` (Anthropic) or `~/.index/openai_api_key` (OpenAI)
+if you prefer file storage.
 
 ## Commands
 
@@ -189,12 +194,26 @@ It emits this command in its response just like `/fetch` or `/agent`. The orches
 
 Each agent's `model` field is routed by prefix:
 
-| Prefix | Provider | Endpoint |
-|---|---|---|
-| `claude-*` (or any bare model id) | Anthropic | `api.anthropic.com` (TLS) |
-| `ollama/<model>` | Ollama (OpenAI-compat) | `$OLLAMA_HOST`, default `http://localhost:11434` |
+| Prefix | Provider | Endpoint | Key source |
+|---|---|---|---|
+| `claude-*` (or any bare model id) | Anthropic | `api.anthropic.com` (TLS) | `ANTHROPIC_API_KEY` / `~/.index/api_key` |
+| `openai/<model>` | OpenAI | `api.openai.com` (TLS) | `OPENAI_API_KEY` / `~/.index/openai_api_key` |
+| `ollama/<model>` | Ollama (OpenAI-compat) | `$OLLAMA_HOST`, default `http://localhost:11434` | none |
 
 Adding a new provider is a single entry in the registry table in `src/api_client.cpp` plus a body-builder / parser if the wire format differs; the rest of the orchestrator is format-agnostic.
+
+### OpenAI
+
+Prefix the model id with `openai/`:
+
+```json
+{
+  "name": "reviewer",
+  "model": "openai/gpt-4o-mini"
+}
+```
+
+Supported families include `openai/gpt-5.4`, `openai/gpt-5`, `openai/gpt-4.1`, `openai/gpt-4o`, and the o-series reasoning models `openai/o3`, `openai/o4-mini`. Reasoning models automatically use `max_completion_tokens` and omit `temperature` (which they reject). OpenAI's implicit prompt caching is tracked in the cost footer as cache reads when the API reports `cached_tokens`.
 
 ### Ollama
 

@@ -10,6 +10,7 @@
 //     doesn't have to thread memory_dir through every call site
 //   • term_cols / term_rows — terminal dimensions via TIOCGWINSZ
 
+#include <map>
 #include <string>
 
 namespace index_ai {
@@ -27,9 +28,16 @@ std::string get_config_dir();
 // Not auto-created on resolve; writers create lazily when notes are first saved.
 std::string get_memory_dir();
 
-// ANTHROPIC_API_KEY env var, else ~/.index/api_key.
-// Prints to stderr and exits(1) if neither is set.
-std::string get_api_key();
+// Collects all available provider API keys.  Per-provider precedence:
+//   env var -> ~/.index/<file>.  Providers with no key found are simply
+//   absent from the map — ApiClient fails per-request if a provider that
+//   actually gets used has no key.  Exits(1) only if NO keys at all are
+//   found, printing setup instructions for every supported provider.
+//
+// Currently:
+//   anthropic → ANTHROPIC_API_KEY | ~/.index/api_key
+//   openai    → OPENAI_API_KEY    | ~/.index/openai_api_key
+std::map<std::string, std::string> get_api_keys();
 
 // Thin wrappers: commands.cpp's cmd_mem_*/cmd_fetch but with memory_dir
 // supplied automatically.
