@@ -78,7 +78,7 @@ std::string get_config_dir() {
     }
     if (!home || home[0] == '\0')
         throw std::runtime_error("Cannot determine home directory: $HOME unset and getpwuid failed");
-    std::string dir = std::string(home) + "/.index";
+    std::string dir = std::string(home) + "/.arbiter";
     fs::create_directories(dir);
     return dir;
 }
@@ -86,9 +86,9 @@ std::string get_config_dir() {
 std::string get_memory_dir() {
     // Memory is cwd-scoped: agents never see notes from other projects.
     // The directory is created lazily by the writers (cmd_mem_write etc.) —
-    // don't auto-create on every resolve or we'd scatter empty .index/memory
+    // don't auto-create on every resolve or we'd scatter empty .arbiter/memory
     // folders into every cwd that happens to launch the binary.
-    return (fs::current_path() / ".index" / "memory").string();
+    return (fs::current_path() / ".arbiter" / "memory").string();
 }
 
 std::string write_memory(const std::string& agent_id, const std::string& text) {
@@ -214,7 +214,7 @@ std::string read_secret_line() {
     return line;
 }
 
-// Write the key to ~/.index/<filename> with mode 0600.  Opens with the
+// Write the key to ~/.arbiter/<filename> with mode 0600.  Opens with the
 // restrictive mode upfront so the file is never world-readable in between.
 bool write_key_file(const std::string& filename, const std::string& key) {
     const std::string path = get_config_dir() + "/" + filename;
@@ -249,7 +249,7 @@ std::string read_line_or_exit() {
     return line.substr(lead);
 }
 
-// Write the chosen master-model id to ~/.index/master_model.  Orchestrator
+// Write the chosen master-model id to ~/.arbiter/master_model.  Orchestrator
 // reads this file (see load_master_model_override() in orchestrator.cpp) and
 // applies it to the index master agent at startup.
 bool write_master_model(const std::string& model_id) {
@@ -265,7 +265,7 @@ bool write_master_model(const std::string& model_id) {
 void wizard_step_keys(std::map<std::string, std::string>& keys) {
     std::cout << "[1/3] Provider API keys\n"
               << "───────────────────────\n"
-              << "Set up at least one provider.  Keys are saved to ~/.index/\n"
+              << "Set up at least one provider.  Keys are saved to ~/.arbiter/\n"
               << "with mode 0600; environment variables override the files.\n\n";
 
     while (true) {
@@ -300,7 +300,7 @@ void wizard_step_keys(std::map<std::string, std::string>& keys) {
 
         std::cout << "\n" << ps.display << "\n"
                   << "  Get a key: " << ps.console_url << "\n"
-                  << "  Saves to ~/.index/" << ps.key_file << " (mode 0600).\n"
+                  << "  Saves to ~/.arbiter/" << ps.key_file << " (mode 0600).\n"
                   << "  " << ps.env_var << " overrides the file if set later.\n"
                   << "  Paste key (" << ps.hint
                   << ", or blank to cancel): " << std::flush;
@@ -323,7 +323,7 @@ void wizard_step_keys(std::map<std::string, std::string>& keys) {
 // Step 2: pick the default model for the master "index" agent.  Shown even
 // when only one model is available so the user knows what they're getting.
 // Enter accepts the first (recommended) option.  The choice is persisted to
-// ~/.index/master_model; the orchestrator applies it at startup.
+// ~/.arbiter/master_model; the orchestrator applies it at startup.
 // Returns the chosen model id so Step 3 can use it as a fallback when a
 // starter's default model refers to a provider the user didn't configure.
 std::string wizard_step_default_model(
@@ -359,7 +359,7 @@ std::string wizard_step_default_model(
     if (!write_master_model(chosen->id)) {
         // Non-fatal: orchestrator still falls back to a sensible default
         // based on which keys are configured.
-        std::cerr << "WARN: could not write ~/.index/master_model — "
+        std::cerr << "WARN: could not write ~/.arbiter/master_model — "
                      "will use default each session.\n";
     }
     std::cout << "Default model set to " << chosen->id << ".\n\n";
@@ -380,7 +380,7 @@ bool model_usable(const std::string& model,
 }
 
 // Step 3: multi-select starter agents; let the user customize each one's
-// model and advisor before saving to ~/.index/agents/<id>.json.
+// model and advisor before saving to ~/.arbiter/agents/<id>.json.
 void wizard_step_starter_agents(
     const std::map<std::string, std::string>& keys,
     const std::string& master_model) {
@@ -405,8 +405,8 @@ void wizard_step_starter_agents(
 
     std::string choice = read_line_or_exit();
     if (choice.empty()) {
-        std::cout << "Skipped starter agents.  Run `index --init` later to\n"
-                  << "create them, or make your own in ~/.index/agents/.\n\n";
+        std::cout << "Skipped starter agents.  Run `arbiter --init` later to\n"
+                  << "create them, or make your own in ~/.arbiter/agents/.\n\n";
         return;
     }
 
@@ -516,8 +516,8 @@ std::map<std::string, std::string> get_api_keys() {
             out = run_key_setup_wizard();
         } else {
             std::cerr << "ERR: No provider API keys configured. Set one of:\n"
-                      << "  ANTHROPIC_API_KEY  (or write to ~/.index/api_key)\n"
-                      << "  OPENAI_API_KEY     (or write to ~/.index/openai_api_key)\n";
+                      << "  ANTHROPIC_API_KEY  (or write to ~/.arbiter/api_key)\n"
+                      << "  OPENAI_API_KEY     (or write to ~/.arbiter/openai_api_key)\n";
             std::exit(1);
         }
     }

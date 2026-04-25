@@ -1,7 +1,7 @@
 #pragma once
 // index/include/starters.h
 //
-// Registry of starter example agents shared between `index --init` and the
+// Registry of starter example agents shared between `arbiter --init` and the
 // first-run wizard.  Each entry carries a default Constitution plus a short
 // blurb suitable for menu display.
 //
@@ -23,7 +23,7 @@ struct StarterAgent {
 };
 
 // Returns a fresh copy of every starter's default config.  Caller is free
-// to mutate the Constitutions and save them to ~/.index/agents/<id>.json.
+// to mutate the Constitutions and save them to ~/.arbiter/agents/<id>.json.
 std::vector<StarterAgent> starter_agents();
 
 } // namespace index_ai

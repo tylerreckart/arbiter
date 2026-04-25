@@ -55,6 +55,15 @@ std::string cmd_mem_shared_clear(const std::string& memory_dir);
 // returns the sub-agent's response text or an "ERR: ..." string.
 using AgentInvoker = std::function<std::string(const std::string&, const std::string&)>;
 
+// Callback for fan-out: given N (sub_agent_id, message) pairs, runs them
+// concurrently on separate threads, each with its own dedup cache (a
+// shared cache would be a std::map data race), and returns their results
+// in input order.  The orchestrator owns the threading + history-conflict
+// checks; commands.cpp just hands it the child list.  Empty vector ⇒ the
+// orchestrator rejected the batch (e.g., duplicate agent_ids).
+using ParallelInvoker = std::function<std::vector<std::string>(
+    const std::vector<std::pair<std::string, std::string>>& children)>;
+
 // Callback for advisor consultation: given a question string, fires a
 // one-shot, history-less API call against the calling agent's configured
 // advisor_model and returns the advisor's reply (or an "ERR: ..." string).
@@ -89,6 +98,15 @@ using ToolStatusFn = std::function<void(const std::string& kind, bool ok)>;
 using PaneSpawner = std::function<std::string(const std::string& agent_id,
                                                 const std::string& message)>;
 
+// Intercept /write — when set, the write path routes the file content
+// through this callback instead of touching the server filesystem.  The
+// callback returns the tool-result text that the calling agent will see
+// (typically "OK: captured N bytes for 'path' …" or an "ERR: …").  Used
+// by the HTTP API to emit the file contents as an SSE event so the
+// client receives the artifact without the server needing to persist it.
+using WriteInterceptor = std::function<std::string(const std::string& path,
+                                                    const std::string& content)>;
+
 // True if `cmd` matches a pattern we always want to confirm before exec'ing
 // (rm, rm -rf, redirects, sudo, mkfs, git force-push, find -delete, etc.).
 // Conservative — misses creative destruction, but catches the common footguns.
@@ -113,7 +131,10 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    std::map<std::string, std::string>* dedup_cache = nullptr,
                                    AdvisorInvoker advisor_invoker = nullptr,
                                    ToolStatusFn   tool_status     = nullptr,
-                                   PaneSpawner    pane_spawner    = nullptr);
+                                   PaneSpawner    pane_spawner    = nullptr,
+                                   WriteInterceptor write_interceptor = nullptr,
+                                   bool           exec_disabled   = false,
+                                   ParallelInvoker parallel_invoker = nullptr);
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

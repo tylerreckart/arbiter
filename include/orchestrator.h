@@ -4,6 +4,7 @@
 #include "agent.h"
 #include "api_client.h"
 #include "commands.h"
+#include <atomic>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -65,6 +66,53 @@ public:
     // spawning unavailable" tool result and the agent is told not to retry.
     void set_pane_spawner(PaneSpawner cb) { pane_spawner_cb_ = std::move(cb); }
 
+    // Intercept /write — when set, every /write in any turn (this agent or
+    // a delegated one) routes through `cb` instead of touching the local
+    // filesystem.  Used by the HTTP API to stream generated files to the
+    // client as SSE events without persisting server-side.
+    void set_write_interceptor(WriteInterceptor cb) { write_interceptor_cb_ = std::move(cb); }
+
+    // Flip /exec off for this orchestrator.  Agents that emit /exec get a
+    // tool result explaining the ban; they're expected to adapt their plan.
+    // Used by the HTTP API so SaaS callers can't invoke arbitrary shell
+    // commands on the server.
+    void set_exec_disabled(bool v) { exec_disabled_ = v; }
+
+    // ── Fleet-streaming callbacks ──────────────────────────────────────────
+    //
+    // An agent "turn" is one invocation of Agent::chat/stream; the master
+    // call and every delegated /agent or /parallel child count as separate
+    // turns.  Each turn is assigned a monotonically-increasing `stream_id`
+    // (0 first, then 1, 2, ...) so a consumer can route text + tool + cost
+    // events into the right UI slot even when parallel turns interleave on
+    // the wire.  Callbacks here fire at every depth.
+    //
+    // `stream_start`: one shot before the turn's first API call.
+    // `agent_stream`: every clean text delta produced during the turn
+    //                 (after StreamFilter strips /cmd lines).
+    // `stream_end`:   one shot after the turn finishes (ok=false on error).
+    using StreamStartCallback = std::function<void(const std::string& agent_id,
+                                                    int stream_id,
+                                                    int depth)>;
+    using AgentStreamCallback = std::function<void(const std::string& agent_id,
+                                                    int stream_id,
+                                                    const std::string& delta)>;
+    using StreamEndCallback   = std::function<void(const std::string& agent_id,
+                                                    int stream_id,
+                                                    bool ok)>;
+    void set_stream_start_callback(StreamStartCallback cb) { stream_start_cb_ = std::move(cb); }
+    void set_agent_stream_callback(AgentStreamCallback  cb) { agent_stream_cb_ = std::move(cb); }
+    void set_stream_end_callback  (StreamEndCallback    cb) { stream_end_cb_   = std::move(cb); }
+
+    // Read the current thread's streaming context.  Callbacks (tool_status,
+    // cost, progress, etc.) invoke these at emit time so every event carries
+    // the `stream_id` and `agent` of whichever turn produced it — even when
+    // /parallel has several turns running concurrently on different threads.
+    // All three return defaults (0 / "" / 0) when called outside a turn.
+    int                current_stream_id()    const;
+    const std::string& current_stream_agent() const;
+    int                current_stream_depth() const;
+
     // Agent management
     Agent& create_agent(const std::string& id, Constitution config);
     Agent& get_agent(const std::string& id);
@@ -92,6 +140,16 @@ public:
 
     // Return the model string for a given agent (or master if id == "index")
     std::string get_agent_model(const std::string& id) const;
+
+    // Fetch the Constitution for any loaded agent or the master "index".
+    // Throws std::out_of_range if the id doesn't match.  Used by the HTTP
+    // API's /v1/agents endpoints to surface agent metadata (role, goal,
+    // advisor, capabilities) to clients.
+    const Constitution& get_constitution(const std::string& id) const;
+
+    // list_agents() but including the master "index" at the front.  Order
+    // is master first, then children in insertion order.
+    std::vector<std::string> list_agents_all() const;
 
     // Global stats
     std::string global_status() const;
@@ -158,6 +216,14 @@ private:
     ConfirmFn          confirm_cb_;
     ToolStatusFn       tool_status_cb_;
     PaneSpawner        pane_spawner_cb_;
+    WriteInterceptor   write_interceptor_cb_;
+    bool               exec_disabled_ = false;
+
+    StreamStartCallback stream_start_cb_;
+    AgentStreamCallback agent_stream_cb_;
+    StreamEndCallback   stream_end_cb_;
+    std::atomic<int>    stream_counter_{-1};   // next_stream_id returns 0 first
+    int                 next_stream_id();
 
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;
@@ -178,6 +244,15 @@ private:
     AgentInvoker make_invoker(const std::string& caller_id, int depth,
                               std::map<std::string, std::string>* shared_cache,
                               const std::string& original_query);
+
+    // Build a ParallelInvoker for /parallel fan-out.  Each child runs on its
+    // own std::thread at depth+1 with a fresh dedup cache (shared caches
+    // would be a data race on the std::map).  Rejects batches that would
+    // race an Agent's history against itself (duplicate agent_ids).  All
+    // threads join before the returned vector is filled — /parallel blocks
+    // the calling turn until every child completes.
+    ParallelInvoker make_parallel_invoker(const std::string& caller_id, int depth,
+                                          const std::string& original_query);
 
     // Build an AdvisorInvoker bound to a specific caller.  Returns a lambda
     // that makes a one-shot, history-less call against the caller's

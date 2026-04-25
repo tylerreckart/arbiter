@@ -7,7 +7,7 @@
 // Output is byte-accumulated; tests assert against the byte stream rather
 // than a parsed screen — most TUI regressions are visible at the byte level.
 //
-// Isolation: every session gets a private temp HOME so the real ~/.index
+// Isolation: every session gets a private temp HOME so the real ~/.arbiter
 // isn't touched, and ANTHROPIC_API_KEY=dummy so index refuses to make live
 // API calls.  Session files land in the temp HOME and get blown away on
 // destruct.
@@ -63,7 +63,7 @@ public:
     void terminate();
 
     // Path to the isolated HOME directory so tests can inspect/write to it
-    // (e.g. pre-populate ~/.index/agents before spawn).
+    // (e.g. pre-populate ~/.arbiter/agents before spawn).
     const std::string& home() const { return home_dir_; }
 
     // Return the accumulated output with ANSI CSI sequences (\033[…final)

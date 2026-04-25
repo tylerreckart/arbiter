@@ -1,0 +1,175 @@
+name: Build and publish release
+
+# Build arbiter on tag push, stage each platform's binary into a tarball,
+# and publish the whole set as a GitHub Release on the PUBLIC companion
+# repo (hapticsoftware/arbiter-releases) so that install.sh can fetch them
+# without auth.  The source repo (this one) stays private.
+#
+# Setup prereqs (one-time):
+#   1. Create a public companion repo:
+#        https://github.com/hapticsoftware/arbiter-releases
+#      (description: "prebuilt binaries for arbiter"; enable Releases;
+#      no source files needed — this workflow will populate it)
+#   2. Generate a fine-grained PAT with 'Contents: Read and write' scoped
+#      to that companion repo only.
+#   3. In THIS repo: Settings → Secrets and variables → Actions → New
+#      repository secret, name RELEASES_REPO_TOKEN, paste the PAT.
+#   4. Push a tag (e.g., git tag v0.3.6 && git push origin v0.3.6) and
+#      this workflow runs.  Or trigger it manually via Actions → Build
+#      and publish release → Run workflow → pick a tag.
+#
+# Asset naming (kept version-free so `releases/latest/download/...` works
+# as a stable URL in install.sh):
+#   arbiter-macos-arm64.tar.gz    (+ .sha256 sibling)
+#   arbiter-macos-x86_64.tar.gz   (+ .sha256)
+#   arbiter-linux-x86_64.tar.gz   (+ .sha256)
+# Each tarball is flat: `arbiter` binary + LICENSE + README.md at the root.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g., v0.3.6)"
+        required: true
+
+# Default perms are read-only; the publish job mints its own write token
+# via the RELEASES_REPO_TOKEN secret.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.os_slug }}-${{ matrix.arch_slug }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs_on:   macos-14         # Apple Silicon
+            os_slug:   macos
+            arch_slug: arm64
+          - runs_on:   macos-13         # Intel Macs
+            os_slug:   macos
+            arch_slug: x86_64
+          - runs_on:   ubuntu-22.04     # glibc 2.35 — broad Linux compat
+            os_slug:   linux
+            arch_slug: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update --quiet
+          brew install cmake openssl@3 libedit || true
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libssl-dev libcurl4-openssl-dev libedit-dev
+
+      - name: Configure
+        run: |
+          EXTRA=""
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            EXTRA="-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)"
+          fi
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DINDEX_BUILD_TESTS=OFF \
+            $EXTRA
+
+      - name: Build
+        run: cmake --build build --config Release -j
+
+      - name: Strip symbols
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            strip -S build/arbiter
+          else
+            strip --strip-unneeded build/arbiter
+          fi
+
+      - name: Stage + tarball
+        id: pkg
+        run: |
+          NAME="arbiter-${{ matrix.os_slug }}-${{ matrix.arch_slug }}"
+          STAGE="stage-${NAME}"
+          mkdir -p "$STAGE"
+          install -m 755 build/arbiter "$STAGE/arbiter"
+          [ -f LICENSE ]   && cp LICENSE   "$STAGE/"
+          [ -f README.md ] && cp README.md "$STAGE/"
+          tar -C "$STAGE" -czf "${NAME}.tar.gz" .
+          # SHA-256 sibling file — prefix is the hash, then two spaces and
+          # the filename so `shasum -c` / `sha256sum -c` verifies it.
+          if command -v sha256sum >/dev/null; then
+            sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+          else
+            shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+          fi
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test (extract + run --help)
+        run: |
+          mkdir -p smoke
+          tar -xzf "${{ steps.pkg.outputs.name }}.tar.gz" -C smoke
+          ./smoke/arbiter --help > /dev/null
+          echo "smoke: --help exit 0"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: |
+            ${{ steps.pkg.outputs.name }}.tar.gz
+            ${{ steps.pkg.outputs.name }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to public releases repo
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List staged assets
+        run: ls -la artifacts/
+
+      - name: Create release and upload
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        run: |
+          set -eu
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          RELEASES_REPO="hapticsoftware/arbiter-releases"
+          SOURCE_REPO="${{ github.repository }}"
+
+          # Create the release if it doesn't already exist.  --clobber on
+          # upload makes re-running the workflow for the same tag idempotent
+          # (assets replaced rather than duplicated).
+          if ! gh release view "$TAG" --repo "$RELEASES_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$RELEASES_REPO" \
+              --title "arbiter $TAG" \
+              --notes "Prebuilt binaries for arbiter $TAG."$'\n\nSource: private repo on GitHub.'
+          fi
+
+          gh release upload "$TAG" \
+            --repo "$RELEASES_REPO" \
+            --clobber \
+            artifacts/arbiter-*.tar.gz \
+            artifacts/arbiter-*.tar.gz.sha256

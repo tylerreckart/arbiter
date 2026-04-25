@@ -65,6 +65,26 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = line.substr(7);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
+        } else if (line == "/parallel") {
+            // Fan-out block: /parallel\n/agent a msg\n/agent b msg\n/endparallel
+            // Body is the literal /agent lines; execute_agent_commands re-parses
+            // it and runs each child on its own thread.  We intentionally accept
+            // ONLY /agent lines inside the block (ignoring everything else) so
+            // the grammar is predictable and safe — no nested /exec or /write
+            // fan-out today.
+            AgentCommand cmd;
+            cmd.name = "parallel";
+            std::ostringstream body;
+            bool closed = false;
+            while (std::getline(ss, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line == "/endparallel") { closed = true; break; }
+                body << line << "\n";
+            }
+            cmd.content   = body.str();
+            cmd.truncated = !closed;
+            result.push_back(std::move(cmd));
+
         } else if (line.size() > 6 && line.substr(0, 6) == "/pane ") {
             AgentCommand cmd;
             cmd.name = "pane";
@@ -511,7 +531,7 @@ namespace {
 
 // Resolve memory_dir through any symlinks and ensure the result is a real
 // directory we own.  Protects against symlink traversal: a malicious
-// `.index/memory` pointing at `/etc` would otherwise let /mem write happily
+// `.arbiter/memory` pointing at `/etc` would otherwise let /mem write happily
 // clobber arbitrary files.  Creates the directory if missing, then
 // canonicalises, then verifies ownership.  Returns the canonical path or an
 // "ERR: ..." string on any failure.
@@ -779,7 +799,10 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    std::map<std::string, std::string>* dedup_cache,
                                    AdvisorInvoker advisor_invoker,
                                    ToolStatusFn   tool_status,
-                                   PaneSpawner    pane_spawner) {
+                                   PaneSpawner    pane_spawner,
+                                   WriteInterceptor write_interceptor,
+                                   bool           exec_disabled,
+                                   ParallelInvoker parallel_invoker) {
     std::ostringstream out;
     out << "\n";
 
@@ -898,8 +921,19 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
 
         } else if (cmd.name == "exec") {
             block << "[/exec " << cmd.args << "]\n";
-            if (confirm && is_destructive_exec(cmd.args) &&
-                !confirm("exec '" + cmd.args + "'?")) {
+            if (exec_disabled) {
+                // API / sandboxed contexts run with exec turned off so
+                // agents can't invoke arbitrary shell commands.  Tell the
+                // calling agent explicitly so it adapts its plan instead
+                // of retrying the same /exec.
+                block << "ERR: /exec is disabled in this execution context — "
+                         "shell commands are not permitted.  Adapt: drop the "
+                         "/exec step, use /fetch for URL reads, /write for "
+                         "files, or /agent to delegate analysis that doesn't "
+                         "require the shell.\n";
+                cache_result = false;
+            } else if (confirm && is_destructive_exec(cmd.args) &&
+                       !confirm("exec '" + cmd.args + "'?")) {
                 block << "ERR: user declined\n";
                 cache_result = false;  // user may want to approve a retry
             } else {
@@ -968,6 +1002,67 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             }
             block << "[END PANE]\n\n";
 
+        } else if (cmd.name == "parallel") {
+            // Fan-out block.  Re-parse the body as a list of /agent lines,
+            // hand them to the orchestrator's ParallelInvoker, and aggregate
+            // results in input order.  The orchestrator spawns one thread
+            // per child with its own stream_id and dedup cache.
+            std::vector<std::pair<std::string, std::string>> children;
+            {
+                std::istringstream pss(cmd.content);
+                std::string pline;
+                while (std::getline(pss, pline)) {
+                    if (!pline.empty() && pline.back() == '\r') pline.pop_back();
+                    if (pline.size() > 7 && pline.substr(0, 7) == "/agent ") {
+                        std::istringstream iss(pline.substr(7));
+                        std::string sub_id;
+                        iss >> sub_id;
+                        std::string sub_msg;
+                        std::getline(iss, sub_msg);
+                        if (!sub_msg.empty() && sub_msg[0] == ' ') sub_msg.erase(0, 1);
+                        if (!sub_id.empty())
+                            children.emplace_back(sub_id, sub_msg);
+                    }
+                }
+            }
+
+            block << "[/parallel " << children.size() << " children]\n";
+            if (cmd.truncated) {
+                block << "ERR: /parallel block was cut off (missing "
+                         "/endparallel).  Re-emit the block from scratch.\n";
+                cache_result = false;
+            } else if (children.empty()) {
+                block << "ERR: /parallel block had no /agent lines — only "
+                         "/agent <id> <msg> is permitted inside "
+                         "/parallel.../endparallel\n";
+                cache_result = false;
+            } else if (!parallel_invoker) {
+                block << "ERR: /parallel unavailable in this context\n";
+                cache_result = false;
+            } else {
+                auto results = parallel_invoker(children);
+                if (results.size() != children.size()) {
+                    block << "ERR: /parallel rejected the batch "
+                             "(orchestrator returned " << results.size()
+                          << " results for " << children.size()
+                          << " children)\n";
+                    if (!results.empty()) block << results.front() << "\n";
+                    cache_result = false;
+                } else {
+                    for (size_t i = 0; i < results.size(); ++i) {
+                        block << "[child " << (i + 1) << "/" << results.size()
+                              << " — /agent " << children[i].first << "]\n"
+                              << results[i] << "\n"
+                              << "[END CHILD " << (i + 1) << "]\n";
+                        if (results[i].size() >= 4 &&
+                            results[i].compare(0, 4, "ERR:") == 0) {
+                            cache_result = false;
+                        }
+                    }
+                }
+            }
+            block << "[END PARALLEL]\n\n";
+
         } else if (cmd.name == "agent") {
             // /agent <sub_agent_id> <message>
             std::istringstream iss(cmd.args);
@@ -1019,7 +1114,10 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 if (tool_status) tool_status(cmd.name, false);
                 continue;
             }
-            if (confirm) {
+            if (!write_interceptor && confirm) {
+                // Only prompt when the write will actually touch disk.
+                // Intercepted writes go to an in-memory sink that can't
+                // clobber the user's filesystem, so no confirm is needed.
                 size_t lines = std::count(cmd.content.begin(), cmd.content.end(), '\n');
                 if (!cmd.content.empty() && cmd.content.back() != '\n') ++lines;
                 std::string p = "write " + cmd.args + " (" +
@@ -1028,13 +1126,19 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 if (!confirm(p)) {
                     block << "ERR: user declined\n";
                     block << "[END WRITE]\n\n";
-                    cache_result = false;  // user may want to approve a retry
+                    cache_result = false;
                     out << block.str();
                     if (tool_status) tool_status(cmd.name, false);
                     continue;
                 }
             }
-            block << cmd_write(cmd.args, cmd.content) << "\n";
+            // API / sandboxed callers route the write through their own
+            // sink (e.g. an SSE `file` event) instead of touching disk.
+            if (write_interceptor) {
+                block << write_interceptor(cmd.args, cmd.content) << "\n";
+            } else {
+                block << cmd_write(cmd.args, cmd.content) << "\n";
+            }
             block << "[END WRITE]\n\n";
         }
 

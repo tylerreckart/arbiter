@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(index_ai VERSION 0.3.6 LANGUAGES CXX)
+project(arbiter VERSION 0.3.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,6 +55,10 @@ find_package(OpenSSL 1.1 REQUIRED)
 # libcurl for safe HTTP fetching (no shell injection via popen)
 find_package(CURL REQUIRED)
 
+# SQLite3 for the tenant + usage-accounting store backing `arbiter --api`.
+# Ships in the macOS SDK; on Linux the `libsqlite3-dev` package provides it.
+find_package(SQLite3 REQUIRED)
+
 # --- Source files ---
 set(INDEX_AI_SOURCES
     src/main.cpp
@@ -75,7 +79,9 @@ set(INDEX_AI_SOURCES
     src/constitution.cpp
     src/orchestrator.cpp
     src/server.cpp
+    src/api_server.cpp
     src/auth.cpp
+    src/tenant_store.cpp
     src/json.cpp
     src/commands.cpp
     src/readline_wrapper.cpp
@@ -83,12 +89,12 @@ set(INDEX_AI_SOURCES
     src/markdown.cpp
 )
 
-add_executable(index ${INDEX_AI_SOURCES})
+add_executable(arbiter ${INDEX_AI_SOURCES})
 
 # Surface the project version to C++ so the welcome card can render it on
 # the bottom border.  Keep CMakeLists.txt's `project(... VERSION x.y.z)` in
 # sync with your brew formula / release tags.
-target_compile_definitions(index PRIVATE INDEX_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(arbiter PRIVATE INDEX_VERSION="${PROJECT_VERSION}")
 
 # Enable IPO/LTO on Release-ish configs when the toolchain supports it and
 # no sanitizer is active.  Guarded here (not globally) so tests and dev
@@ -97,20 +103,21 @@ if(HAVE_IPO AND NOT INDEX_AI_ASAN AND NOT INDEX_AI_TSAN)
     if(CMAKE_BUILD_TYPE STREQUAL "Release" OR
        CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR
        CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
-        set_target_properties(index PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+        set_target_properties(arbiter PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
 endif()
 
-target_include_directories(index PRIVATE
+target_include_directories(arbiter PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${OPENSSL_INCLUDE_DIR}
 )
 
-target_link_libraries(index PRIVATE
+target_link_libraries(arbiter PRIVATE
     Threads::Threads
     OpenSSL::SSL
     OpenSSL::Crypto
     CURL::libcurl
+    SQLite3::SQLite3
 )
 
 # --- Readline / libedit for interactive line editing ---
@@ -128,19 +135,19 @@ endif()
 
 if(EDITLINE_LIB AND EDITLINE_INCLUDE)
     message(STATUS "Found readline/libedit: ${EDITLINE_LIB}")
-    target_compile_definitions(index PRIVATE INDEX_AI_HAS_READLINE)
+    target_compile_definitions(arbiter PRIVATE INDEX_AI_HAS_READLINE)
     if(NOT READLINE_GNU)
-        target_compile_definitions(index PRIVATE INDEX_AI_USE_EDITLINE)
+        target_compile_definitions(arbiter PRIVATE INDEX_AI_USE_EDITLINE)
     endif()
-    target_include_directories(index PRIVATE ${EDITLINE_INCLUDE})
-    target_link_libraries(index PRIVATE ${EDITLINE_LIB})
+    target_include_directories(arbiter PRIVATE ${EDITLINE_INCLUDE})
+    target_link_libraries(arbiter PRIVATE ${EDITLINE_LIB})
 else()
     message(WARNING "readline/libedit not found; falling back to raw getline (no line editing)")
 endif()
 
 # --- Install ---
-install(TARGETS index RUNTIME DESTINATION bin)
-install(DIRECTORY agents/ DESTINATION share/index/agents
+install(TARGETS arbiter RUNTIME DESTINATION bin)
+install(DIRECTORY agents/ DESTINATION share/arbiter/agents
         FILES_MATCHING PATTERN "*.json")
 
 # --- Tests ---
@@ -162,7 +169,7 @@ if(INDEX_BUILD_TESTS)
     )
     # Absolute path so tests find the binary regardless of CWD when ctest runs.
     target_compile_definitions(index_tests PRIVATE
-        INDEX_TEST_BINARY="$<TARGET_FILE:index>"
+        INDEX_TEST_BINARY="$<TARGET_FILE:arbiter>"
     )
     # forkpty() lives in libutil on Linux; Darwin has it in libSystem so no
     # link flag needed, but target_link_libraries for libutil is a no-op
@@ -173,7 +180,7 @@ if(INDEX_BUILD_TESTS)
 
     add_test(NAME tui_integration COMMAND index_tests)
     # The tests spawn index; they'll fail fast if the binary isn't built yet.
-    add_dependencies(index_tests index)
+    add_dependencies(index_tests arbiter)
 
     # --- Unit tests for security-critical command functions ---
     add_executable(unit_commands

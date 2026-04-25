@@ -1,9 +1,9 @@
 // Usage:
-//   index                          — interactive REPL
-//   index --serve [--port 9077]    — start TCP server
-//   index --send <agent> <msg>     — one-shot message
-//   index --init                   — generate token + example agents
-//   index --gen-token              — generate new auth token
+//   arbiter                          — interactive REPL
+//   arbiter --serve [--port 9077]    — start TCP server
+//   arbiter --send <agent> <msg>     — one-shot message
+//   arbiter --init                   — generate token + example agents
+//   arbiter --gen-token              — generate new auth token
 
 #include "orchestrator.h"
 #include "commands.h"
@@ -173,7 +173,7 @@ static void cmd_interactive() {
     std::vector<PendingClose> pending_closes;
 
     // Session files are scoped to the working directory so that starting
-    // index in different repos doesn't bleed history across contexts.
+    // arbiter in different repos doesn't bleed history across contexts.
     auto cwd_session_key = []() -> std::string {
         std::string cwd = fs::current_path().string();
         uint32_t h = 2166136261u;
@@ -540,7 +540,7 @@ static void cmd_interactive() {
                     config.name = id;
                     orch.create_agent(id, std::move(config));
                     output_queue.push_msg("Created: " + id + " (default config)\n"
-                                      "Edit ~/.index/agents/" + id + ".json to customize");
+                                      "Edit ~/.arbiter/agents/" + id + ".json to customize");
                 } catch (const std::exception& e) {
                     output_queue.push_msg("ERR: " + std::string(e.what()));
                 }
@@ -1501,9 +1501,26 @@ int main(int argc, char* argv[]) {
             index_ai::cmd_serve(port);
             return 0;
         }
+        if (arg1 == "--api" || arg1 == "api") {
+            // arbiter --api [--port N] [--bind ADDR]
+            int port = 8080;
+            std::string bind = "127.0.0.1";
+            for (int i = 2; i + 1 < argc; i += 2) {
+                std::string k = argv[i];
+                std::string v = argv[i + 1];
+                if      (k == "--port") port = std::atoi(v.c_str());
+                else if (k == "--bind") bind = v;
+                else {
+                    std::cerr << "Unknown --api flag: " << k << "\n";
+                    return 1;
+                }
+            }
+            index_ai::cmd_api(port, bind);
+            return 0;
+        }
         if (arg1 == "--send" || arg1 == "send") {
             if (argc < 4) {
-                std::cerr << "Usage: index --send <agent_id> <message>\n";
+                std::cerr << "Usage: arbiter --send <agent_id> <message>\n";
                 return 1;
             }
             std::string agent = argv[2];
@@ -1515,24 +1532,78 @@ int main(int argc, char* argv[]) {
             index_ai::cmd_oneshot(agent, msg);
             return 0;
         }
+        // Tenant / billing admin — `arbiter --api` uses the resulting
+        // tenants.db for bearer-token auth and per-request billing.
+        if (arg1 == "--add-tenant") {
+            if (argc < 3) {
+                std::cerr << "Usage: arbiter --add-tenant <name> [--cap <usd>]\n";
+                return 1;
+            }
+            std::string name = argv[2];
+            double cap = 0.0;                 // 0 = unlimited
+            for (int i = 3; i + 1 < argc; i += 2) {
+                if (std::string(argv[i]) == "--cap") {
+                    cap = std::atof(argv[i + 1]);
+                } else {
+                    std::cerr << "Unknown --add-tenant flag: " << argv[i] << "\n";
+                    return 1;
+                }
+            }
+            index_ai::cmd_add_tenant(name, cap);
+            return 0;
+        }
+        if (arg1 == "--list-tenants") {
+            index_ai::cmd_list_tenants();
+            return 0;
+        }
+        if (arg1 == "--disable-tenant") {
+            if (argc < 3) {
+                std::cerr << "Usage: arbiter --disable-tenant <id|name>\n";
+                return 1;
+            }
+            index_ai::cmd_disable_tenant(argv[2]);
+            return 0;
+        }
+        if (arg1 == "--enable-tenant") {
+            if (argc < 3) {
+                std::cerr << "Usage: arbiter --enable-tenant <id|name>\n";
+                return 1;
+            }
+            index_ai::cmd_enable_tenant(argv[2]);
+            return 0;
+        }
+        if (arg1 == "--tenant-usage") {
+            index_ai::cmd_tenant_usage(argc >= 3 ? argv[2] : std::string());
+            return 0;
+        }
         if (arg1 == "--help" || arg1 == "-h" || arg1 == "help") {
             std::cout << BANNER;
             std::cout <<
                 "Usage:\n"
-                "  index                          Interactive REPL\n"
-                "  index --serve [--port N]        Start TCP server (default 9077)\n"
-                "  index --send <agent> <msg>      One-shot message\n"
-                "  index --init                    Initialize config + tokens\n"
-                "  index --gen-token               Generate new auth token\n"
-                "  index --help                    This help\n\n"
+                "  arbiter                            Interactive REPL\n"
+                "  arbiter --api [--port N] [--bind ADDR]\n"
+                "                                     HTTP+SSE orchestration API (default 127.0.0.1:8080)\n"
+                "  arbiter --serve [--port N]         Line-protocol TCP server (default 9077)\n"
+                "  arbiter --send <agent> <msg>       One-shot message\n"
+                "  arbiter --init                     Initialize config + tokens\n"
+                "  arbiter --gen-token                Generate new auth token\n"
+                "  arbiter --help                     This help\n\n"
+                "Tenant / billing (for --api):\n"
+                "  arbiter --add-tenant <name> [--cap <usd>]\n"
+                "                                     Provision a tenant + API key\n"
+                "  arbiter --list-tenants             List tenants and MTD usage\n"
+                "  arbiter --disable-tenant <id|name> Revoke a tenant's access\n"
+                "  arbiter --enable-tenant  <id|name> Restore a tenant's access\n"
+                "  arbiter --tenant-usage [<id|name>] Detail usage for one/all tenants\n\n"
                 "Environment:\n"
                 "  ANTHROPIC_API_KEY                  Claude API key\n"
                 "  OPENAI_API_KEY                     OpenAI API key\n"
                 "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n\n"
-                "Config: ~/.index/\n"
+                "Config: ~/.arbiter/\n"
                 "  api_key                            Anthropic key file\n"
                 "  openai_api_key                     OpenAI key file\n"
-                "  auth_tokens                        Hashed access tokens\n"
+                "  auth_tokens                        Hashed access tokens (--serve)\n"
+                "  tenants.db                         Tenant + usage store (--api)\n"
                 "  agents/*.json                      Agent constitutions\n";
             return 0;
         }

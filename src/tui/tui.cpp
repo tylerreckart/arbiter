@@ -454,7 +454,7 @@ void TUI::draw_welcome(ScrollBuffer& history) {
     static constexpr int kArtCells = 8;
 
     static const char* kText[3] = {
-        "hello, i am index.",
+        "hello, i am index-arbiter's system orchestrator.",
         "",
         "what would you like to accomplish today?",
     };

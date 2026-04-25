@@ -1,7 +1,7 @@
 <p align="center">
   <img src="./content/index.png" width="64">
 </p>
-<h1 align="center">Index</h1>
+<h1 align="center">Arbiter</h1>
 
 <p align="center">
   <strong>A lean agent orchestration runtime and TUI.</strong>
@@ -9,14 +9,14 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg" alt="License"></a>
-  <img src="https://img.shields.io/github/tag/tylerreckart/index" alt="Current tag">
+  <img src="https://img.shields.io/github/tag/tylerreckart/arbiter" alt="Current tag">
 </p>
 
-Index is a terminal-native multi-agent system built around token efficiency. Match the model to the task and pair cheap executors with smarter advisor models. It runs a full-screen TUI with a persistent header, a command queue so you can type while agents are working, and a depth-limited delegation chain that lets the master agent dispatch tasks to specialists.
+Arbiter is a terminal-native multi-agent system built around token efficiency.  The orchestration layer — an agent named `index` — matches the model to the task and pairs cheap executors with smarter advisor models.  It runs a full-screen TUI with a persistent header, a command queue so you can type while agents are working, and a depth-limited delegation chain that lets the master agent dispatch tasks to specialists.
 
-![Screenshot of the Index TUI](./content/index_tui.png)
+![Screenshot of the Arbiter TUI](./content/index_tui.png)
 
-> **Note:** Index is an experimental project. Changes to the architecture may break the experience. Agent constitutions and orchestration methods are currently subject to change. Index's `/exec` commands are currently un-sandboxed. Use at your own risk.
+> **Note:** Arbiter is an experimental project. Changes to the architecture may break the experience. Agent constitutions and orchestration methods are currently subject to change. Arbiter's `/exec` commands are currently un-sandboxed. Use at your own risk.
 
 ## Install
 
@@ -24,7 +24,7 @@ Index is a terminal-native multi-agent system built around token efficiency. Mat
 
 ```bash
 brew tap tylerreckart/tap
-brew install index
+brew install arbiter
 ```
 
 ### Build from source
@@ -44,14 +44,14 @@ export ANTHROPIC_API_KEY="sk-ant-..."   # Claude models
 export OPENAI_API_KEY="sk-..."          # OpenAI models (optional)
 
 # Initialize config directory, generate auth token, create example agents
-index --init
+arbiter --init
 
 # Launch interactive TUI
-index
+arbiter
 ```
 
 Set whichever keys you plan to use — only one is required. Keys can also be
-written to `~/.index/api_key` (Anthropic) or `~/.index/openai_api_key` (OpenAI)
+written to `~/.arbiter/api_key` (Anthropic) or `~/.arbiter/openai_api_key` (OpenAI)
 if you prefer file storage.
 
 ## Commands
@@ -108,11 +108,11 @@ Agents issue these commands in their responses. The orchestrator executes them a
 | `/mem show` | Print raw memory file |
 | `/mem clear` | Delete agent memory |
 
-Memory is stored per-agent at `~/.index/memory/<agent-id>.md`.
+Memory is stored per-agent at `~/.arbiter/memory/<agent-id>.md`.
 
 ## Agents
 
-`index --init` creates five example agents in `~/.index/agents/`:
+`arbiter --init` creates five example agents in `~/.arbiter/agents/`:
 
 | Agent | Role | Notes |
 |-------|------|-------|
@@ -125,7 +125,7 @@ Memory is stored per-agent at `~/.index/memory/<agent-id>.md`.
 
 ### Constitution format
 
-Each agent is defined by a JSON file in `~/.index/agents/`:
+Each agent is defined by a JSON file in `~/.arbiter/agents/`:
 
 ```json
 {
@@ -196,8 +196,8 @@ Each agent's `model` field is routed by prefix:
 
 | Prefix | Provider | Endpoint | Key source |
 |---|---|---|---|
-| `claude-*` (or any bare model id) | Anthropic | `api.anthropic.com` (TLS) | `ANTHROPIC_API_KEY` / `~/.index/api_key` |
-| `openai/<model>` | OpenAI | `api.openai.com` (TLS) | `OPENAI_API_KEY` / `~/.index/openai_api_key` |
+| `claude-*` (or any bare model id) | Anthropic | `api.anthropic.com` (TLS) | `ANTHROPIC_API_KEY` / `~/.arbiter/api_key` |
+| `openai/<model>` | OpenAI | `api.openai.com` (TLS) | `OPENAI_API_KEY` / `~/.arbiter/openai_api_key` |
 | `ollama/<model>` | Ollama (OpenAI-compat) | `$OLLAMA_HOST`, default `http://localhost:11434` | none |
 
 Adding a new provider is a single entry in the registry table in `src/api_client.cpp` plus a body-builder / parser if the wire format differs; the rest of the orchestrator is format-agnostic.
@@ -234,7 +234,7 @@ The executor turns run entirely on your Ollama server (zero API cost); only `/ad
 **Setup:**
 
 ```bash
-**`OLLAMA_HOST` override** — set this before launching `index` to point at a non-default Ollama server. Accepted forms:
+**`OLLAMA_HOST` override** — set this before launching `arbiter` to point at a non-default Ollama server. Accepted forms:
 
 - `http://host:port` — full URL (use `https://...` for TLS)
 - `host:port` — assumes `http://`
@@ -243,7 +243,7 @@ The executor turns run entirely on your Ollama server (zero API cost); only `/ad
 
 ```bash
 export OLLAMA_HOST=http://gpu-box.local:11434
-index
+arbiter
 ```
 
 **Caveats**
@@ -255,15 +255,15 @@ index
 ## Server mode
 
 ```bash
-index --serve --port 9077
+arbiter --serve --port 9077
 ```
 
-Accepts TCP connections. Clients authenticate with a SHA-256 hashed token generated by `index --init` or `index --gen-token`.
+Accepts TCP connections. Clients authenticate with a SHA-256 hashed token generated by `arbiter --init` or `arbiter --gen-token`.
 
 ## One-shot mode
 
 ```bash
-index --send reviewer "review: if (arr.length = 0) return;"
+arbiter --send reviewer "review: if (arr.length = 0) return;"
 ```
 
 ## License

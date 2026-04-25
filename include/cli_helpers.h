@@ -4,7 +4,7 @@
 // Covers:
 //   • BANNER — ASCII startup banner
 //   • agent_color — stable per-agent ANSI color
-//   • Config path helpers (~/.index for config, $PWD/.index/memory for memory,
+//   • Config path helpers (~/.arbiter for config, $PWD/.arbiter/memory for memory,
 //     API key resolution)
 //   • Thin wrappers around index_ai::cmd_mem_* and cmd_fetch so the REPL
 //     doesn't have to thread memory_dir through every call site
@@ -21,22 +21,22 @@ extern const char* BANNER;
 // "index" always maps to orange.
 std::string agent_color(const std::string& agent_id);
 
-// ~/.index (created if missing).
+// ~/.arbiter (created if missing).
 std::string get_config_dir();
 
-// $PWD/.index/memory — cwd-scoped so context never bleeds between projects.
+// $PWD/.arbiter/memory — cwd-scoped so context never bleeds between projects.
 // Not auto-created on resolve; writers create lazily when notes are first saved.
 std::string get_memory_dir();
 
 // Collects all available provider API keys.  Per-provider precedence:
-//   env var -> ~/.index/<file>.  Providers with no key found are simply
+//   env var -> ~/.arbiter/<file>.  Providers with no key found are simply
 //   absent from the map — ApiClient fails per-request if a provider that
 //   actually gets used has no key.  Exits(1) only if NO keys at all are
 //   found, printing setup instructions for every supported provider.
 //
 // Currently:
-//   anthropic → ANTHROPIC_API_KEY | ~/.index/api_key
-//   openai    → OPENAI_API_KEY    | ~/.index/openai_api_key
+//   anthropic → ANTHROPIC_API_KEY | ~/.arbiter/api_key
+//   openai    → OPENAI_API_KEY    | ~/.arbiter/openai_api_key
 std::map<std::string, std::string> get_api_keys();
 
 // Thin wrappers: commands.cpp's cmd_mem_*/cmd_fetch but with memory_dir

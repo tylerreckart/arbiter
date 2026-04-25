@@ -47,6 +47,24 @@ public:
     // e.g. "in:12,681 out:2,085 | $0.02 | session:$0.04"
     std::string format_session_stats() const;
 
+    // USD cost of a single turn at list pricing — stateless.  Exposed
+    // publicly so the API server's billing path can compute provider_uc
+    // per turn without needing a CostTracker instance.
+    static double compute_cost(const std::string& model, const ApiResponse& resp);
+
+    // Per-token-type cost breakdown in USD.  Sum equals compute_cost.
+    // Local providers (ollama/...) return all-zero.  Used by the API
+    // server to record each component into usage_log so analytics can
+    // chart input vs output vs cache spend over time.
+    struct CostBreakdown {
+        double input        = 0.0;
+        double output       = 0.0;
+        double cache_read   = 0.0;
+        double cache_create = 0.0;
+    };
+    static CostBreakdown compute_cost_breakdown(const std::string& model,
+                                                 const ApiResponse& resp);
+
 private:
     mutable std::mutex mu_;
     std::unordered_map<std::string, AgentCostRecord> agents_;
@@ -54,7 +72,6 @@ private:
     int    session_input_  = 0;
     int    session_output_ = 0;
 
-    static double compute_cost(const std::string& model, const ApiResponse& resp);
     static const ModelPricing& pricing_for(const std::string& model);
     static std::string fmt_int(int n);
     static std::string fmt_dollars(double d);

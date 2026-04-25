@@ -1,16 +1,22 @@
 // index/src/orchestrator.cpp
 #include "orchestrator.h"
 #include "commands.h"
+#include "config.h"
+#include "tui/stream_filter.h"
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
+#include <memory>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <utility>
 
 namespace fs = std::filesystem;
 
@@ -18,8 +24,46 @@ namespace index_ai {
 
 namespace {
 
+// ─── Thread-local streaming context ─────────────────────────────────────────
+//
+// Each in-flight agent turn carries (stream_id, agent_id, depth).  A turn
+// runs on exactly one thread — sequential delegation reuses the request
+// thread; /parallel spawns fresh threads, one per child.  Thread-local
+// storage lets any callback invoked DURING the turn (text stream,
+// tool_status, cost, etc.) read the current context with zero coordination
+// — no mutex, no parameter threading.
+//
+// The parent's context is stashed on the RAII guard's stack frame so
+// sequential calls naturally restore the parent's id on return.  Parallel
+// children start in a fresh thread where the thread-local defaults to zero,
+// and the child's StreamScope sets it before any callback fires.
+thread_local int         tl_stream_id    = 0;
+thread_local std::string tl_stream_agent;
+thread_local int         tl_stream_depth = 0;
+
+struct StreamScope {
+    int         prev_id;
+    std::string prev_agent;
+    int         prev_depth;
+    StreamScope(int id, const std::string& agent, int depth)
+        : prev_id(tl_stream_id),
+          prev_agent(tl_stream_agent),
+          prev_depth(tl_stream_depth) {
+        tl_stream_id    = id;
+        tl_stream_agent = agent;
+        tl_stream_depth = depth;
+    }
+    ~StreamScope() {
+        tl_stream_id    = prev_id;
+        tl_stream_agent = std::move(prev_agent);
+        tl_stream_depth = prev_depth;
+    }
+    StreamScope(const StreamScope&) = delete;
+    StreamScope& operator=(const StreamScope&) = delete;
+};
+
 // Master-agent model resolution order (first match wins):
-//   1. ~/.index/master_model  — explicit user choice (set by the setup wizard
+//   1. ~/.arbiter/master_model  — explicit user choice (set by the setup wizard
 //      or hand-edited).  One line, trimmed.
 //   2. An available-provider default based on which API keys are configured
 //      — Anthropic wins, OpenAI is the fallback.
@@ -29,7 +73,7 @@ namespace {
 std::string load_master_model_override() {
     const char* home = std::getenv("HOME");
     if (!home || !home[0]) return {};
-    std::ifstream f(std::string(home) + "/.index/master_model");
+    std::ifstream f(std::string(home) + "/.arbiter/master_model");
     if (!f) return {};
     std::string m;
     std::getline(f, m);
@@ -50,8 +94,8 @@ std::string pick_master_model_default(
 Orchestrator::Orchestrator(std::map<std::string, std::string> api_keys)
     : client_(api_keys)  // copy — the map is tiny, we still need it below
 {
-    // Default memory directory is cwd-scoped ($PWD/.index/memory)
-    memory_dir_ = (fs::current_path() / ".index" / "memory").string();
+    // Default memory directory is cwd-scoped ($PWD/.arbiter/memory)
+    memory_dir_ = (fs::current_path() / ".arbiter" / "memory").string();
 
     auto master = master_constitution();
     if (auto override_id = load_master_model_override(); !override_id.empty()) {
@@ -170,6 +214,95 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
     };
 }
 
+ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id,
+                                                     int depth,
+                                                     const std::string& original_query) {
+    if (depth >= 2) {
+        return [](const std::vector<std::pair<std::string, std::string>>& kids) {
+            return std::vector<std::string>(
+                kids.size(), "ERR: /parallel cannot delegate past depth 2");
+        };
+    }
+
+    return [this, caller_id, depth, original_query](
+               const std::vector<std::pair<std::string, std::string>>& kids)
+               -> std::vector<std::string> {
+        // Agents carry per-instance history; two threads entering the same
+        // Agent's chat at once would corrupt the vector.  Reject the whole
+        // batch so the model retries with distinct agents or splits serially.
+        std::set<std::string> seen;
+        for (auto& [sid, _] : kids) {
+            if (!seen.insert(sid).second) {
+                return std::vector<std::string>(
+                    kids.size(),
+                    "ERR: /parallel cannot invoke the same agent_id twice in "
+                    "one block (would race its history).  Use distinct agents, "
+                    "or sequence the calls with separate /agent lines outside "
+                    "/parallel.");
+            }
+        }
+
+        std::vector<std::thread> threads;
+        std::vector<std::string> results(kids.size());
+        threads.reserve(kids.size());
+
+        for (size_t i = 0; i < kids.size(); ++i) {
+            const std::string sub_id  = kids[i].first;
+            const std::string sub_msg = kids[i].second;
+            threads.emplace_back([this, i, sub_id, sub_msg, caller_id, depth,
+                                   original_query, &results]() {
+                // Basic validations — mirror make_invoker's gates.
+                if (sub_id == caller_id) {
+                    results[i] = "ERR: agent cannot invoke itself";
+                    return;
+                }
+                if (sub_id == "index") {
+                    results[i] = "ERR: index cannot be delegated to";
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lk(agents_mutex_);
+                    if (!agents_.count(sub_id)) {
+                        results[i] = "ERR: no agent '" + sub_id + "'";
+                        return;
+                    }
+                }
+
+                // Match make_invoker's delegation-context prelude so the
+                // sub-agent has the same framing whether it was called
+                // sequentially or via /parallel.
+                std::string enriched_msg;
+                if (!original_query.empty()) {
+                    std::string truncated_query = original_query.substr(
+                        0, std::min<size_t>(200, original_query.size()));
+                    enriched_msg =
+                        "[DELEGATION CONTEXT]\n"
+                        "Original request: " + truncated_query + "\n"
+                        "Delegated by: " + caller_id + " (/parallel)\n"
+                        "Pipeline depth: " + std::to_string(depth + 1) + "/2\n"
+                        "[END DELEGATION CONTEXT]\n\n" + sub_msg;
+                } else {
+                    enriched_msg = sub_msg;
+                }
+
+                // Fresh dedup cache per child (nullptr → send_internal makes
+                // a local one).  Siblings fetching the same URL will both
+                // fetch — fine, the alternative is a data race on the map.
+                try {
+                    auto resp = send_internal(sub_id, enriched_msg, depth + 1,
+                                              nullptr, original_query);
+                    results[i] = resp.ok ? resp.content : "ERR: " + resp.error;
+                } catch (const std::exception& e) {
+                    results[i] = std::string("ERR: ") + e.what();
+                }
+            });
+        }
+
+        for (auto& t : threads) t.join();
+        return results;
+    };
+}
+
 AdvisorInvoker Orchestrator::make_advisor_invoker(const std::string& caller_id) {
     return [this, caller_id](const std::string& question) -> std::string {
         // Resolve the advisor model from the caller's constitution.
@@ -240,6 +373,16 @@ void Orchestrator::set_compact_callback(CompactCallback cb) {
     for (auto& [_, a] : agents_) a->set_compact_callback(compact_cb_);
 }
 
+int Orchestrator::next_stream_id() {
+    // Atomic so /parallel threads can grab fresh ids concurrently.  Starts
+    // at -1 so the first fetch_add + 1 returns 0 for the top-level turn.
+    return stream_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+int                Orchestrator::current_stream_id()    const { return tl_stream_id; }
+const std::string& Orchestrator::current_stream_agent() const { return tl_stream_agent; }
+int                Orchestrator::current_stream_depth() const { return tl_stream_depth; }
+
 // Core agentic dispatch loop
 ApiResponse Orchestrator::send_internal(const std::string& agent_id,
                                         const std::string& message,
@@ -262,8 +405,33 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         current_msg = message;
     }
 
-    auto invoker         = make_invoker(agent_id, depth, shared_cache, orig_q);
-    auto advisor_invoker = make_advisor_invoker(agent_id);
+    auto invoker          = make_invoker(agent_id, depth, shared_cache, orig_q);
+    auto advisor_invoker  = make_advisor_invoker(agent_id);
+    auto parallel_invoker = make_parallel_invoker(agent_id, depth, orig_q);
+
+    // One stream_id per turn-sequence for this agent.  Every callback that
+    // fires before this scope unwinds sees (stream_id, agent_id, depth)
+    // via current_stream_*.
+    const int sid = next_stream_id();
+    StreamScope scope(sid, agent_id, depth);
+    if (stream_start_cb_) stream_start_cb_(agent_id, sid, depth);
+
+    // When a fleet-text callback is registered and this is a delegated
+    // turn, route provider-token deltas through a per-turn StreamFilter
+    // so the consumer sees clean narrative text tagged with this sub-
+    // agent's (agent, sid).  Master-depth streaming still goes through
+    // send_streaming's `cb` parameter; routing it here too would emit
+    // every delta twice.
+    const bool want_stream = (depth > 0) && static_cast<bool>(agent_stream_cb_);
+    Config cfg;
+    auto emit_cb = agent_stream_cb_;
+    auto make_filter = [&]() -> std::unique_ptr<StreamFilter> {
+        if (!want_stream) return nullptr;
+        return std::make_unique<StreamFilter>(cfg,
+            [emit_cb, agent_id, sid](const std::string& clean) {
+                emit_cb(agent_id, sid, clean);
+            });
+    };
 
     ApiResponse resp;
     static constexpr int kMaxTurns = 6;
@@ -271,8 +439,21 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         // Notify UI that a sub-agent is about to make an API call.
         if (depth > 0 && start_cb_) start_cb_(agent_id);
 
-        resp = agent_ptr->send(current_msg);
-        if (!resp.ok) return resp;
+        if (want_stream) {
+            // Fresh filter per turn — its internal line buffer + /write-
+            // block state must not carry state across unrelated turns.
+            auto filter = make_filter();
+            auto* f = filter.get();
+            resp = agent_ptr->stream(current_msg,
+                [f](const std::string& chunk) { f->feed(chunk); });
+            filter->flush();
+        } else {
+            resp = agent_ptr->send(current_msg);
+        }
+        if (!resp.ok) {
+            if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            return resp;
+        }
 
         if (depth > 0 && resp.ok) {
             // Notify the UI (progress) and record cost for sub-agent turns.
@@ -289,9 +470,13 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
                                               invoker, confirm_cb_, shared_cache,
                                               advisor_invoker, tool_status_cb_,
-                                              pane_spawner_cb_);
+                                              pane_spawner_cb_,
+                                              write_interceptor_cb_,
+                                              exec_disabled_,
+                                              parallel_invoker);
     }
 
+    if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
     return resp;
 }
 
@@ -360,17 +545,36 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         current_msg = message;
     }
 
+    // Top-level turn gets stream_id 0 (or the next available, if the caller
+    // has already minted some via a prior call).  Fleet consumers watch
+    // stream_start/end to open and close UI slots.
+    const int sid = next_stream_id();
+    StreamScope scope(sid, agent_id, 0);
+    if (stream_start_cb_) stream_start_cb_(agent_id, sid, 0);
+
     // First turn: stream to caller
     ApiResponse resp = agent_ptr->stream(current_msg, cb);
-    if (!resp.ok) return resp;
+    if (!resp.ok) {
+        if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+        return resp;
+    }
+    // Bill the master's turn the same way send_internal bills delegated
+    // turns.  Without this the API tenant is undercharged by the master's
+    // share of provider cost; the REPL had its own post-call accounting
+    // but SSE clients rely on cost_cb_ firing for every turn at every depth.
+    if (cost_cb_) cost_cb_(agent_id, agent_ptr->config().model, resp);
 
     auto cmds = parse_agent_commands(resp.content);
     recover_truncated_writes(agent_ptr, resp, cmds, cb);
-    if (cmds.empty()) return resp;
+    if (cmds.empty()) {
+        if (stream_end_cb_) stream_end_cb_(agent_id, sid, true);
+        return resp;
+    }
 
     std::map<std::string, std::string> shared_cache;
-    auto invoker         = make_invoker(agent_id, 0, &shared_cache, message);
-    auto advisor_invoker = make_advisor_invoker(agent_id);
+    auto invoker          = make_invoker(agent_id, 0, &shared_cache, message);
+    auto advisor_invoker  = make_advisor_invoker(agent_id);
+    auto parallel_invoker = make_parallel_invoker(agent_id, 0, message);
 
     // Tool-call re-entry turns: stream each so the user can follow progress
     resp.had_tool_calls = true;
@@ -380,15 +584,23 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
                                               invoker, confirm_cb_, &shared_cache,
                                               advisor_invoker, tool_status_cb_,
-                                              pane_spawner_cb_);
+                                              pane_spawner_cb_,
+                                              write_interceptor_cb_,
+                                              exec_disabled_,
+                                              parallel_invoker);
         resp = agent_ptr->stream(current_msg, cb);
-        if (!resp.ok) return resp;
+        if (!resp.ok) {
+            if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            return resp;
+        }
+        if (cost_cb_) cost_cb_(agent_id, agent_ptr->config().model, resp);
         cmds = parse_agent_commands(resp.content);
         recover_truncated_writes(agent_ptr, resp, cmds, cb);
         if (cmds.empty()) break;
         resp.had_tool_calls = true;
     }
 
+    if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
     return resp;
 }
 
@@ -399,6 +611,24 @@ std::string Orchestrator::get_agent_model(const std::string& id) const {
     auto it = agents_.find(id);
     if (it == agents_.end()) return "";
     return it->second->config().model;
+}
+
+const Constitution& Orchestrator::get_constitution(const std::string& id) const {
+    if (id == "index") return index_master_->config();
+    std::lock_guard<std::mutex> lock(agents_mutex_);
+    auto it = agents_.find(id);
+    if (it == agents_.end())
+        throw std::out_of_range("unknown agent: " + id);
+    return it->second->config();
+}
+
+std::vector<std::string> Orchestrator::list_agents_all() const {
+    std::vector<std::string> out;
+    out.push_back("index");
+    std::lock_guard<std::mutex> lock(agents_mutex_);
+    out.reserve(agents_.size() + 1);
+    for (auto& [id, _] : agents_) out.push_back(id);
+    return out;
 }
 
 static std::string short_model(const std::string& model) {
