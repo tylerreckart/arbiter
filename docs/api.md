@@ -12,12 +12,32 @@ Start with `arbiter --api --port 8080`. The default bind is `127.0.0.1`; product
 - [Authentication](#authentication)
 - [Endpoints](#endpoints)
   - [`GET /v1/health`](#get-v1health)
+  - [`GET /v1/models`](#get-v1models)
   - [`POST /v1/orchestrate`](#post-v1orchestrate)
+  - [`POST /v1/requests/:id/cancel`](#post-v1requestsidcancel)
   - [`GET /v1/agents`](#get-v1agents)
   - [`GET /v1/agents/:id`](#get-v1agentsid)
   - [`POST /v1/agents/:id/chat`](#post-v1agentsidchat)
+  - [`POST /v1/conversations`](#post-v1conversations)
+  - [`GET /v1/conversations`](#get-v1conversations)
+  - [`GET /v1/conversations/:id`](#get-v1conversationsid)
+  - [`PATCH /v1/conversations/:id`](#patch-v1conversationsid)
+  - [`DELETE /v1/conversations/:id`](#delete-v1conversationsid)
+  - [`GET /v1/conversations/:id/messages`](#get-v1conversationsidmessages)
+  - [`POST /v1/conversations/:id/messages`](#post-v1conversationsidmessages)
   - [`GET /v1/memory`](#get-v1memory)
   - [`GET /v1/memory/:agent_id`](#get-v1memoryagent_id)
+  - [Structured memory](#structured-memory)
+    - [`POST /v1/memory/entries`](#post-v1memoryentries)
+    - [`GET /v1/memory/entries`](#get-v1memoryentries)
+    - [`GET /v1/memory/entries/:id`](#get-v1memoryentriesid)
+    - [`PATCH /v1/memory/entries/:id`](#patch-v1memoryentriesid)
+    - [`DELETE /v1/memory/entries/:id`](#delete-v1memoryentriesid)
+    - [`POST /v1/memory/relations`](#post-v1memoryrelations)
+    - [`GET /v1/memory/relations`](#get-v1memoryrelations)
+    - [`DELETE /v1/memory/relations/:id`](#delete-v1memoryrelationsid)
+    - [`GET /v1/memory/graph`](#get-v1memorygraph)
+    - [Agent access](#agent-access-to-structured-memory)
   - [`GET /v1/admin/tenants`](#get-v1admintenants)
   - [`POST /v1/admin/tenants`](#post-v1admintenants)
   - [`GET /v1/admin/tenants/:id`](#get-v1admintenantsid)
@@ -105,6 +125,33 @@ Liveness probe. No auth. Returns `200 OK` with body `ok\n`.
 ```bash
 curl http://arbiter.example.com/v1/health
 ```
+
+---
+
+### `GET /v1/models`
+
+List the models arbiter knows how to price + route. Tenant auth. Powers the frontend's model picker.
+
+**Response 200:**
+
+```json
+{
+  "count": 41,
+  "models": [
+    {
+      "id": "claude-opus-4-7",
+      "provider": "anthropic",
+      "input_per_mtok_usd": 5.0,
+      "output_per_mtok_usd": 25.0,
+      "cache_read_per_mtok_usd": 0.5,
+      "cache_create_per_mtok_usd": 6.25,
+      "supports_caching": true
+    }
+  ]
+}
+```
+
+`id` matches what you pass in `agent_def.model` (or as the model on a preloaded agent). `provider` is inferred from the id (`anthropic`, `openai`, `ollama`). `*_per_mtok_usd` are list-price rates per 1M tokens before arbiter's 20% markup. `supports_caching` reflects whether the family bills cache reads/writes separately.
 
 ---
 
@@ -200,6 +247,26 @@ Send a complete agent configuration in the request body to run it for one call w
 
 ---
 
+### `POST /v1/requests/:id/cancel`
+
+Cancel an in-flight orchestration. Tenant auth. The `:id` is the `request_id` from the SSE `request_received` event of the call you want to stop. Wires to a Stop button in the UI.
+
+**Response 200** if the request was found and cancellation was issued:
+
+```json
+{ "request_id": "a889e53a7211eefa", "cancelled": true }
+```
+
+**Response 404** if no in-flight request matches (already finished, never existed, or belongs to a different tenant — the response is deliberately the same in all three cases so an attacker can't enumerate other tenants' request ids):
+
+```json
+{ "request_id": "a889e53a7211eefa", "cancelled": false, "reason": "no in-flight request with that id" }
+```
+
+Cancellation is best-effort — a turn that's already returned from the LLM but hasn't been billed yet may complete; the next turn won't start. The cancelled stream still emits a final `done` event (with `ok: false` typically) so consumers see a clean close.
+
+---
+
 ### `GET /v1/agents`
 
 List all agents visible to this tenant (master + preloaded children from the server's `agents/` dir). Tenant auth.
@@ -285,6 +352,159 @@ curl -N \
 
 ---
 
+## Conversations
+
+A conversation is a stored thread of messages between a tenant's user and one agent. The frontend uses these for the left-rail "previous chats" list, history reload, and persistent context across page navigations. Behind the scenes:
+
+- **Server owns the history.** When the user sends a message, arbiter loads prior messages from the DB into the agent's context, runs one turn (with full streaming and billing as described in [`/v1/orchestrate`](#post-v1orchestrate)), and persists both the user's message and the assistant's response.
+- **Tenant-scoped.** Every endpoint enforces `tenant_id` match — id leaks across tenants surface as 404, never as data exposure.
+- **Cascading delete.** `DELETE /v1/conversations/:id` drops all messages too (FK with `ON DELETE CASCADE`).
+- **Inline agent snapshots.** If you create a conversation with an `agent_def`, the full definition JSON is stored on the conversation row. The thread keeps working even if your sibling service later drops or changes the agent definition.
+
+### `POST /v1/conversations`
+
+Create a new conversation. Tenant auth.
+
+**Request body:**
+
+| Field        | Type    | Required | Default   | Description                                                              |
+|--------------|---------|----------|-----------|--------------------------------------------------------------------------|
+| `title`      | string  | no       | `""`      | Display title. Empty until you set one (or auto-titling is added later). |
+| `agent_id`   | string  | no       | `"index"` | Which agent this conversation talks to.                                  |
+| `agent_def`  | object  | no       | —         | Inline agent definition (same shape as in chat requests). Snapshotted onto the conversation so the thread is self-contained. |
+
+**Response 201:** the new `Conversation` object — `id`, `title`, `agent_id`, `created_at`, `updated_at`, `message_count: 0`, `archived: false`, and `agent_def` if provided.
+
+```bash
+curl -H "Authorization: Bearer atr_…" -H "Content-Type: application/json" \
+  -d '{"title":"Q3 planning","agent_id":"index"}' \
+  http://arbiter.example.com/v1/conversations
+```
+
+---
+
+### `GET /v1/conversations`
+
+List the tenant's conversations, newest-updated first. Tenant auth.
+
+**Query parameters:**
+
+| Name                | Type    | Description                                                                |
+|---------------------|---------|----------------------------------------------------------------------------|
+| `before_updated_at` | integer | Epoch seconds. Returns conversations updated strictly before this. Use the previous page's last `updated_at` to paginate backward. |
+| `limit`             | integer | Page size. Default 50, max 200.                                            |
+
+**Response 200:** `{ "count": N, "conversations": [...] }`.
+
+---
+
+### `GET /v1/conversations/:id`
+
+Fetch one conversation's metadata. Tenant auth. `404` if the id doesn't exist or belongs to another tenant.
+
+---
+
+### `PATCH /v1/conversations/:id`
+
+Update a conversation. Tenant auth. Both fields optional.
+
+| Field      | Type    | Description                                |
+|------------|---------|--------------------------------------------|
+| `title`    | string  | New display title.                          |
+| `archived` | boolean | Hide from default list views without deletion (the list endpoint still returns archived rows; clients filter). |
+
+**Response 200:** the updated `Conversation` object. `404` if not found.
+
+---
+
+### `DELETE /v1/conversations/:id`
+
+Permanently delete a conversation and all its messages. Tenant auth.
+
+**Response 200:** `{ "deleted": true }`. `404` if not found.
+
+---
+
+### `GET /v1/conversations/:id/messages`
+
+List messages in a conversation, oldest first (chat order, ready to render). Tenant auth.
+
+**Query parameters:**
+
+| Name       | Type    | Description                                                          |
+|------------|---------|----------------------------------------------------------------------|
+| `after_id` | integer | Return messages with `id > after_id`. Useful for incremental polling. |
+| `limit`    | integer | Page size. Default 200, max 500.                                      |
+
+**Response 200:**
+
+```json
+{
+  "conversation_id": 1,
+  "count": 4,
+  "messages": [
+    {
+      "id": 1,
+      "conversation_id": 1,
+      "role": "user",
+      "content": "what's a fanout in DSLs?",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "billed_micro_cents": 0,
+      "created_at": 1777088746,
+      "request_id": "a889e53a7211eefa"
+    },
+    {
+      "id": 2,
+      "conversation_id": 1,
+      "role": "assistant",
+      "content": "A fanout is …",
+      "input_tokens": 1234,
+      "output_tokens": 567,
+      "billed_micro_cents": 4823,
+      "created_at": 1777088752,
+      "request_id": "a889e53a7211eefa"
+    }
+  ]
+}
+```
+
+User messages have zero tokens/billing (they're the input, not the cost). Assistant messages carry the full request totals. `request_id` correlates with the `usage_log` row created during that turn.
+
+---
+
+### `POST /v1/conversations/:id/messages`
+
+Send a user message and stream the assistant's reply. Tenant auth + billing. Same SSE response shape as `/v1/orchestrate` plus a `conversation_id` field on the `done` event.
+
+**Request body:**
+
+| Field        | Type     | Required | Description                                                |
+|--------------|----------|----------|------------------------------------------------------------|
+| `message`    | string   | yes      | The new user turn.                                         |
+| `agent_def`  | object   | no       | Override the conversation's agent for this one turn (rare). |
+
+**What happens server-side:**
+
+1. Conversation lookup — `404` if missing or wrong tenant. Validation surfaces as a clean JSON error before the SSE stream opens.
+2. Prior messages loaded from the DB and replayed into the agent's history (capped at the most recent 100 turns to keep request payload bounded).
+3. The user's `message` is persisted with the `request_id` issued for this stream.
+4. The orchestrator runs and streams events exactly as `/v1/orchestrate` would.
+5. On a successful `done`, the assistant's full response is persisted alongside the request's billing totals (`input_tokens`, `output_tokens`, `billed_micro_cents`).
+6. On failure (`done.ok = false`), the assistant message is not persisted — only the user message remains. Retry is safe.
+
+```bash
+curl -N \
+  -H "Authorization: Bearer atr_…" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"and what about cache writes?"}' \
+  http://arbiter.example.com/v1/conversations/1/messages
+```
+
+The `request_id` from this call's `request_received` event is the handle to pass to [`POST /v1/requests/:id/cancel`](#post-v1requestsidcancel) if the user clicks Stop.
+
+---
+
 ### `GET /v1/memory`
 
 List memory files for the authenticated tenant. Tenant auth.
@@ -337,6 +557,203 @@ If the agent has never written memory, `exists: false` and `content: ""` — **n
 Invalid agent ids (`..`, `/`, anything outside `[a-zA-Z0-9_-]`, empty, or >64 chars) return `400 {"error":"invalid agent id"}`. Memory not configured on the server at all returns `503`.
 
 The content is the raw markdown file — it's whatever the agent wrote via `/mem write`, including the timestamp headers arbiter's `cmd_mem_write` injects.
+
+---
+
+## Structured memory
+
+Two memory surfaces ship side-by-side under `/v1/memory`:
+
+- **File scratchpads** (`GET /v1/memory`, `GET /v1/memory/:agent_id`) — the legacy per-agent markdown documented above. **Read-only** over HTTP; agents write via `/mem write` during a turn.
+- **Structured memory** (`/v1/memory/entries`, `/v1/memory/relations`, `/v1/memory/graph`) — typed nodes and directed labeled edges in SQLite, with full CRUD over HTTP. Backs the frontend graph UI.
+
+The two sub-systems do **not** share storage. An entry is not a parsed agent scratchpad; an agent's `/mem write` does not create entries. Conversely, agents *can* read structured memory in real time during a turn (see [Agent access](#agent-access-to-structured-memory) below) but cannot write it — writes happen only over HTTP.
+
+### Closed enums
+
+These are validated server-side and rejected with `400 {"error":"..."}` if violated. Adding values is a coordinated frontend+API change.
+
+| Field             | Allowed values                                                                          |
+|-------------------|-----------------------------------------------------------------------------------------|
+| `entry.type`      | `user`, `feedback`, `project`, `reference`, `learning`, `context`                       |
+| `relation`        | `relates_to`, `refines`, `contradicts`, `supersedes`, `supports`                        |
+
+### Per-entry constraints
+
+| Field     | Constraint                                                              |
+|-----------|-------------------------------------------------------------------------|
+| `title`   | Non-empty, ≤ 200 chars                                                  |
+| `content` | ≤ 64 KiB                                                                |
+| `source`  | ≤ 200 chars                                                             |
+| `tags`    | JSON array of strings; each tag 1–64 chars; up to 32 tags. Always present in responses; pass `[]` (or omit) for none. |
+
+### Per-relation constraints
+
+- `source_id != target_id` — self-loops return 400 `"self-loops not allowed"`.
+- Both endpoints must belong to the calling tenant — otherwise 400 `"entries belong to different tenants"`. (We don't return 404-per-side because that would either leak whether the other tenant's id exists, or be uselessly ambiguous about which side is missing.)
+- Relations are **directed and per-type**. The same pair can have multiple relations of different kinds; the same `(source, target, relation)` triple cannot exist twice — a duplicate returns 409 `{"error":"...", "existing_id": N}`. Symmetric relations like `contradicts` are still stored directed; clients should dedupe for display.
+
+### `POST /v1/memory/entries`
+
+Create an entry. Tenant auth.
+
+**Request body:**
+
+| Field     | Type            | Required | Description                              |
+|-----------|-----------------|----------|------------------------------------------|
+| `type`    | string (enum)   | yes      | One of the six entry types.              |
+| `title`   | string          | yes      | 1–200 chars.                             |
+| `content` | string          | no       | ≤ 64 KiB. Defaults to `""`.              |
+| `source`  | string          | no       | Free-form provenance. ≤ 200 chars.       |
+| `tags`    | array<string>   | no       | Defaults to `[]`.                        |
+
+**Response 201:** the new `Entry`.
+
+```json
+{
+  "id": 42,
+  "tenant_id": 1,
+  "type": "project",
+  "title": "Frontend graph",
+  "content": "Force-directed view of memory.",
+  "source": "planning",
+  "tags": ["scope", "hub"],
+  "created_at": 1777058449,
+  "updated_at": 1777058449
+}
+```
+
+---
+
+### `GET /v1/memory/entries`
+
+List entries for the authenticated tenant, newest `updated_at` first. Tenant auth.
+
+**Query parameters** (all optional):
+
+| Name                | Type        | Description                                                       |
+|---------------------|-------------|-------------------------------------------------------------------|
+| `type`              | csv string  | `?type=project,reference` — OR-filter on the enum. Unknown values reject 400. |
+| `tag`               | string      | Single-tag substring match against the serialized JSON.           |
+| `q`                 | string      | LIKE-match on `title` + `content`. Case follows SQLite's default. |
+| `since`             | epoch s     | `created_at >= since`.                                            |
+| `before_updated_at` | epoch s     | `updated_at < before_updated_at`. Use for cursor pagination.      |
+| `limit`             | int         | Default 50, hard max 200.                                         |
+
+**Response 200:** `{ "entries": [...], "count": N }`.
+
+---
+
+### `GET /v1/memory/entries/:id`
+
+Read one entry. Tenant auth. `404` if the id doesn't exist or belongs to another tenant.
+
+---
+
+### `PATCH /v1/memory/entries/:id`
+
+Update any subset of `{title, content, source, tags, type}`. Tenant auth. `created_at` is immutable; `updated_at` is bumped on a successful change. `404` if not found.
+
+**Response 200:** the updated `Entry`.
+
+---
+
+### `DELETE /v1/memory/entries/:id`
+
+Permanently delete an entry. **Cascades to relations** with this entry as either endpoint. Tenant auth.
+
+**Response 200:** `{ "deleted": true }`.
+
+---
+
+### `POST /v1/memory/relations`
+
+Create a directed labeled edge. Tenant auth.
+
+**Request body:**
+
+| Field        | Type          | Required | Description                          |
+|--------------|---------------|----------|--------------------------------------|
+| `source_id`  | int           | yes      | Entry id this edge points *from*.    |
+| `target_id`  | int           | yes      | Entry id this edge points *to*.      |
+| `relation`   | string (enum) | yes      | One of the five relations.           |
+
+**Response 201:** the new `Relation`.
+
+```json
+{
+  "id": 7,
+  "tenant_id": 1,
+  "source_id": 42,
+  "target_id": 43,
+  "relation": "supports",
+  "created_at": 1777058500
+}
+```
+
+**409** with `{"error": "relation already exists", "existing_id": N}` on a duplicate `(source, target, relation)` triple.
+
+---
+
+### `GET /v1/memory/relations`
+
+List relations for the authenticated tenant. Tenant auth.
+
+**Query parameters** (all optional):
+
+| Name        | Type   | Description                       |
+|-------------|--------|-----------------------------------|
+| `source_id` | int    | Filter to edges from this entry.  |
+| `target_id` | int    | Filter to edges to this entry.    |
+| `relation`  | string | Filter to one relation kind.      |
+| `limit`     | int    | Default 200, hard max 1000.       |
+
+**Response 200:** `{ "relations": [...], "count": N }`.
+
+---
+
+### `DELETE /v1/memory/relations/:id`
+
+Delete one edge. Tenant auth. **Response 200:** `{ "deleted": true }`. `404` if not found.
+
+---
+
+### `GET /v1/memory/graph`
+
+Single bulk fetch — the frontend calls this on mount to hydrate the force graph in one round trip. Tenant auth.
+
+**Query parameters:**
+
+| Name   | Type       | Description                                                    |
+|--------|------------|----------------------------------------------------------------|
+| `type` | csv string | Filter entries to these types; relations are pruned to those whose endpoints both survive the filter, so the snapshot stays self-consistent. |
+
+**Response 200:**
+
+```json
+{
+  "tenant_id": 1,
+  "entries":   [ ... ],
+  "relations": [ ... ]
+}
+```
+
+No pagination in v1 — the unfiltered set is expected to fit in one response. We can revisit when a tenant grows past the per-page entry limit; until then the entry sweep caps the snapshot at the page count's ceiling.
+
+---
+
+### Agent access to structured memory
+
+Agents running inside `/v1/orchestrate` (or `/v1/conversations/:id/messages`) can read structured memory in real time during a turn via three slash sub-commands. Reads only — there is no slash path for write/update/delete; structured memory is HTTP-write-only.
+
+| Command                                    | Effect                                                         |
+|--------------------------------------------|----------------------------------------------------------------|
+| `/mem entries`                             | List the tenant's entries (up to 100), newest first.           |
+| `/mem entries project,reference`           | Same, filtered to one or more types.                           |
+| `/mem entry 42`                            | Full content of one entry plus its incoming and outgoing edges.|
+| `/mem search <query>`                      | Substring match on title + content (up to 50 hits).            |
+
+Output lands in a `[/mem entries]` (or `[/mem entry]` / `[/mem search]`) tool-result block in the agent's next turn, framed by `[END MEMORY]`. The reader is bound to the request's authenticated tenant — sub-agents invoked via `/agent` and parallel children spawned via `/parallel` inherit the same tenant scope. CLI/REPL contexts (`arbiter --send`, the interactive REPL) don't have a tenant and the slash commands return ERR there; this is API-only.
 
 ---
 
@@ -643,6 +1060,34 @@ done              ok=true billed_micro_cents=16043
 | `billed_micro_cents`           | integer | `provider_micro_cents + markup_micro_cents`.                       |
 | `request_id`                   | string? | Opaque correlation id; empty if unset.                             |
 
+### Conversation
+
+| Field            | Type    | Notes                                                                          |
+|------------------|---------|--------------------------------------------------------------------------------|
+| `id`             | integer | Stable per tenant.                                                             |
+| `tenant_id`      | integer | FK into `tenants`. Always equals the caller's tenant.                          |
+| `title`          | string  | Display title. May be empty.                                                   |
+| `agent_id`       | string  | Which agent this thread talks to.                                              |
+| `agent_def`      | object? | Snapshot of the inline agent definition (if the conversation was created with one). Absent for preloaded agents. |
+| `created_at`     | integer | Epoch seconds.                                                                 |
+| `updated_at`     | integer | Epoch seconds. Bumped on every message append.                                 |
+| `message_count`  | integer | Total messages in the thread.                                                  |
+| `archived`       | boolean | Hidden from default UI views; not deleted.                                     |
+
+### ConversationMessage
+
+| Field                | Type    | Notes                                                                |
+|----------------------|---------|----------------------------------------------------------------------|
+| `id`                 | integer | Append-only, ordered.                                                |
+| `conversation_id`    | integer | FK into `conversations`.                                             |
+| `role`               | string  | `"user"` or `"assistant"`.                                           |
+| `content`            | string  | Full message text.                                                   |
+| `input_tokens`       | integer | 0 for user messages; full request total for assistant messages.      |
+| `output_tokens`      | integer | Same.                                                                |
+| `billed_micro_cents` | integer | What the tenant was billed for the turn this message belongs to.     |
+| `created_at`         | integer | Epoch seconds.                                                       |
+| `request_id`         | string? | Correlates to the SSE stream + `usage_log` row that produced it.     |
+
 ---
 
 ## Operational notes
@@ -660,6 +1105,12 @@ Everything arbiter persists lives under `~/.arbiter/`:
 | `agents/*.json`          | Preloaded agent constitutions (shared across all tenants).                      |
 | `memory/t<tenant_id>/*.md` | Per-tenant agent memory. `<agent_id>.md` per agent; `shared.md` scratchpad. Created on first write. Isolated per tenant. |
 | `master_model`           | Override for the master agent's model.                                          |
+
+### CORS
+
+Every response includes permissive CORS headers (`Access-Control-Allow-Origin: *`, methods `GET, POST, PATCH, DELETE, OPTIONS`, headers `Authorization, Content-Type, Accept`). `OPTIONS` preflights short-circuit before auth and return `204` so a SPA on a different origin can hit the API in dev with no proxy.
+
+Bearer auth carries in the `Authorization` header — no cookies — so credentials are never sent. To restrict origins in production, terminate at a reverse proxy and override `Access-Control-Allow-Origin` there, or extend `kCorsHeaders` in `src/api_server.cpp` to read an allowlist from `ARBITER_CORS_ORIGINS`.
 
 ### Deployment
 

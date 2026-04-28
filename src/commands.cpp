@@ -802,7 +802,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    PaneSpawner    pane_spawner,
                                    WriteInterceptor write_interceptor,
                                    bool           exec_disabled,
-                                   ParallelInvoker parallel_invoker) {
+                                   ParallelInvoker parallel_invoker,
+                                   StructuredMemoryReader structured_memory_reader) {
     std::ostringstream out;
     out << "\n";
 
@@ -917,6 +918,39 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             } else if (subcmd == "clear") {
                 cmd_mem_clear(agent_id, memory_dir);
                 block << "[/mem clear] OK: memory cleared\n\n";
+
+            } else if (subcmd == "entries" || subcmd == "entry" ||
+                       subcmd == "search") {
+                // Structured-memory read window.  Distinct from the markdown
+                // scratchpad above — these surface tenant-scoped graph
+                // entries created via the HTTP API.  Available only when the
+                // calling context wired a reader (today: api_server when a
+                // tenant token is present).  Without one, return ERR so the
+                // agent stops trying.
+                std::string args;
+                std::getline(iss, args);
+                if (!args.empty() && args[0] == ' ') args.erase(0, 1);
+                block << "[/mem " << subcmd << (args.empty() ? "" : " " + args) << "]\n";
+                if (!structured_memory_reader) {
+                    block << "ERR: structured memory unavailable in this context — "
+                             "this surface is only available when running under "
+                             "the HTTP API with a tenant token.  Adapt: drop "
+                             "the /mem " << subcmd << " step.\n";
+                    cache_result = false;
+                } else {
+                    std::string body = structured_memory_reader(subcmd, args);
+                    block << body;
+                    if (body.empty() || body.back() != '\n') block << "\n";
+                    if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                        cache_result = false;
+                }
+                block << "[END MEMORY]\n\n";
+
+            } else {
+                block << "[/mem] ERR: unknown subcommand '" << subcmd
+                      << "' — use read, write, show, clear, shared, "
+                         "entries, entry, or search\n\n";
+                cache_result = false;
             }
 
         } else if (cmd.name == "exec") {

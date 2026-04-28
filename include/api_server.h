@@ -46,12 +46,32 @@
 
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 namespace index_ai {
 
+class Orchestrator;
 class TenantStore;
+
+// Tracks in-flight orchestrations so a cancel request on thread Y can
+// reach into the Orchestrator created on thread X and hit cancel().  Keyed
+// by a short hex request_id assigned at stream-receive time.
+//
+// Entries are added by an RAII guard inside the request handler and
+// removed when the guard falls out of scope, so a racing cancel on an
+// already-finished request is a no-op (map lookup misses) rather than a
+// dangling pointer.
+struct InFlightRegistry {
+    struct Entry {
+        Orchestrator* orch     = nullptr;
+        int64_t       tenant_id = 0;
+    };
+    std::mutex                           mu;
+    std::unordered_map<std::string, Entry> by_id;
+};
 
 struct ApiServerOptions {
     int         port         = 8080;
@@ -72,6 +92,14 @@ struct ApiServerOptions {
     // return 503 (disabled).  `cmd_api` loads/generates this before
     // constructing the server.
     std::string admin_token;
+
+    // Mirror SSE events to stderr as they're emitted, with timestamps and
+    // per-stream labels.  request_received / done / error always log; the
+    // chatty per-delta events (text, thinking, tool_call, stream_start/end,
+    // token_usage, sub_agent_response) only log when verbose is on.  Off by
+    // default; flipped on by `arbiter --api --verbose` or env
+    // `ARBITER_API_VERBOSE=1`.
+    bool log_verbose = false;
 };
 
 class ApiServer {
@@ -98,6 +126,7 @@ private:
 
     ApiServerOptions  opts_;
     TenantStore&      tenants_;
+    InFlightRegistry  in_flight_;
     int               listen_fd_  = -1;
     int               bound_port_ = 0;
     std::atomic<bool> running_{false};

@@ -215,6 +215,106 @@ void TenantStore::open(const std::string& path) {
         CREATE INDEX IF NOT EXISTS usage_log_tenant_ts
             ON usage_log(tenant_id, timestamp);
     )SQL");
+
+    // ── Conversations + messages ────────────────────────────────────────
+    // Added in v3.  Conversation threads are tenant-scoped; messages are
+    // append-only and FK-linked back to their conversation.  ON DELETE
+    // CASCADE so DELETE /v1/conversations/:id cleans up messages without
+    // an explicit transaction in the caller.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS conversations (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id       INTEGER NOT NULL,
+            title           TEXT    NOT NULL DEFAULT '',
+            agent_id        TEXT    NOT NULL,
+            agent_def_json  TEXT    NOT NULL DEFAULT '',
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            message_count   INTEGER NOT NULL DEFAULT 0,
+            archived        INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS conversations_tenant_updated
+            ON conversations(tenant_id, updated_at DESC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS messages (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            role            TEXT    NOT NULL,
+            content         TEXT    NOT NULL,
+            input_tokens    INTEGER NOT NULL DEFAULT 0,
+            output_tokens   INTEGER NOT NULL DEFAULT 0,
+            billed_uc       INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL,
+            request_id      TEXT,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS messages_conversation_id
+            ON messages(conversation_id, id);
+    )SQL");
+
+    // ── Structured memory: entries + relations ─────────────────────────
+    // Added in v4.  Backs the frontend graph UI — typed nodes with
+    // free-form content, plus directed labeled edges between them.
+    // Distinct storage from the legacy file scratchpads under
+    // ~/.arbiter/memory/t<id>/<agent_id>.md; the two surfaces don't share
+    // data and writes here don't go through agents.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS memory_entries (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id   INTEGER NOT NULL,
+            type        TEXT    NOT NULL,
+            title       TEXT    NOT NULL,
+            content     TEXT    NOT NULL DEFAULT '',
+            source      TEXT    NOT NULL DEFAULT '',
+            tags        TEXT    NOT NULL DEFAULT '[]',
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS memory_entries_tenant_type
+            ON memory_entries(tenant_id, type);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS memory_entries_tenant_updated
+            ON memory_entries(tenant_id, updated_at DESC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS memory_relations (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id   INTEGER NOT NULL,
+            source_id   INTEGER NOT NULL,
+            target_id   INTEGER NOT NULL,
+            relation    TEXT    NOT NULL,
+            created_at  INTEGER NOT NULL,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+            FOREIGN KEY (source_id) REFERENCES memory_entries(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_id) REFERENCES memory_entries(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS memory_relations_tenant
+            ON memory_relations(tenant_id);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS memory_relations_source
+            ON memory_relations(source_id);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS memory_relations_target
+            ON memory_relations(target_id);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE UNIQUE INDEX IF NOT EXISTS memory_relations_unique
+            ON memory_relations(tenant_id, source_id, target_id, relation);
+    )SQL");
 }
 
 TenantStore::CreatedTenant
@@ -526,11 +626,521 @@ TenantStore::usage_summary(int64_t tenant_id, int64_t since_ts, int64_t until_ts
     return out;
 }
 
+// ─── Conversations ──────────────────────────────────────────────────────────
+
+namespace {
+
+constexpr const char* kConvCols =
+    "id, tenant_id, title, agent_id, agent_def_json, "
+    "created_at, updated_at, message_count, archived";
+
+Conversation row_to_conversation(Stmt& q) {
+    Conversation c;
+    c.id              = q.column_int64(0);
+    c.tenant_id       = q.column_int64(1);
+    c.title           = q.column_text(2);
+    c.agent_id        = q.column_text(3);
+    c.agent_def_json  = q.column_text(4);
+    c.created_at      = q.column_int64(5);
+    c.updated_at      = q.column_int64(6);
+    c.message_count   = q.column_int64(7);
+    c.archived        = q.column_int64(8) != 0;
+    return c;
+}
+
+constexpr const char* kMsgCols =
+    "id, conversation_id, role, content, "
+    "input_tokens, output_tokens, billed_uc, created_at, request_id";
+
+ConversationMessage row_to_message(Stmt& q) {
+    ConversationMessage m;
+    m.id              = q.column_int64(0);
+    m.conversation_id = q.column_int64(1);
+    m.role            = q.column_text(2);
+    m.content         = q.column_text(3);
+    m.input_tokens    = q.column_int64(4);
+    m.output_tokens   = q.column_int64(5);
+    m.billed_uc       = q.column_int64(6);
+    m.created_at      = q.column_int64(7);
+    m.request_id      = q.column_text(8);
+    return m;
+}
+
+} // namespace
+
+Conversation TenantStore::create_conversation(int64_t tenant_id,
+                                               const std::string& title,
+                                               const std::string& agent_id,
+                                               const std::string& agent_def_json) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+
+    const int64_t now = now_epoch();
+    Stmt q(db_,
+        "INSERT INTO conversations "
+        "(tenant_id, title, agent_id, agent_def_json, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, title);
+    q.bind(3, agent_id);
+    q.bind(4, agent_def_json);
+    q.bind(5, now);
+    q.bind(6, now);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert conversation");
+
+    Conversation c;
+    c.id              = sqlite3_last_insert_rowid(db_);
+    c.tenant_id       = tenant_id;
+    c.title           = title;
+    c.agent_id        = agent_id;
+    c.agent_def_json  = agent_def_json;
+    c.created_at      = now;
+    c.updated_at      = now;
+    c.message_count   = 0;
+    c.archived        = false;
+    return c;
+}
+
+std::vector<Conversation>
+TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
+                                 int limit) const {
+    std::vector<Conversation> out;
+    if (!db_) return out;
+
+    const int cap = (limit > 0 && limit <= 200) ? limit : 50;
+
+    std::string sql = std::string("SELECT ") + kConvCols +
+                       " FROM conversations WHERE tenant_id = ?";
+    if (before_updated_at > 0) sql += " AND updated_at < ?";
+    sql += " ORDER BY updated_at DESC LIMIT ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    if (before_updated_at > 0) q.bind(idx++, before_updated_at);
+    q.bind(idx, static_cast<int64_t>(cap));
+
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_conversation(q));
+    return out;
+}
+
+std::optional<Conversation>
+TenantStore::get_conversation(int64_t tenant_id, int64_t id) const {
+    if (!db_) return std::nullopt;
+    Stmt q(db_, (std::string("SELECT ") + kConvCols +
+                 " FROM conversations WHERE tenant_id = ? AND id = ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_conversation(q);
+}
+
+bool TenantStore::update_conversation(int64_t tenant_id, int64_t id,
+                                       const std::string& new_title,
+                                       int set_archived) {
+    if (!db_) return false;
+
+    // Build dynamic UPDATE so we only touch fields the caller actually
+    // wanted to change.  No-op (both args sentinel) returns true if the
+    // conversation exists, false otherwise — same as a normal PATCH.
+    std::vector<std::string> sets;
+    if (!new_title.empty()) sets.push_back("title = ?");
+    if (set_archived >= 0)  sets.push_back("archived = ?");
+    if (sets.empty()) {
+        return get_conversation(tenant_id, id).has_value();
+    }
+    sets.push_back("updated_at = ?");
+
+    std::string sql = "UPDATE conversations SET ";
+    for (size_t i = 0; i < sets.size(); ++i) {
+        if (i) sql += ", ";
+        sql += sets[i];
+    }
+    sql += " WHERE tenant_id = ? AND id = ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    if (!new_title.empty()) q.bind(idx++, new_title);
+    if (set_archived >= 0)  q.bind(idx++, static_cast<int64_t>(set_archived));
+    q.bind(idx++, now_epoch());
+    q.bind(idx++, tenant_id);
+    q.bind(idx, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::delete_conversation(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    Stmt q(db_, "DELETE FROM conversations WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    q.step();
+    // ON DELETE CASCADE on messages.conversation_id handles the message rows.
+    return sqlite3_changes(db_) > 0;
+}
+
+ConversationMessage TenantStore::append_message(int64_t tenant_id,
+                                                 int64_t conversation_id,
+                                                 const std::string& role,
+                                                 const std::string& content,
+                                                 int64_t input_tokens,
+                                                 int64_t output_tokens,
+                                                 int64_t billed_uc,
+                                                 const std::string& request_id) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+
+    // Verify the conversation belongs to this tenant before inserting.
+    // Without this a leaked conversation_id would let any tenant write
+    // into someone else's thread.
+    auto conv = get_conversation(tenant_id, conversation_id);
+    if (!conv)
+        throw std::runtime_error("conversation not found for tenant");
+
+    const int64_t now = now_epoch();
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    try {
+        {
+            Stmt ins(db_,
+                std::string("INSERT INTO messages (").append(kMsgCols)
+                    .append(") VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?);").c_str());
+            ins.bind(1, conversation_id);
+            ins.bind(2, role);
+            ins.bind(3, content);
+            ins.bind(4, input_tokens);
+            ins.bind(5, output_tokens);
+            ins.bind(6, billed_uc);
+            ins.bind(7, now);
+            if (request_id.empty()) ins.bind(8, nullptr);
+            else                    ins.bind(8, request_id);
+            ins.step();
+        }
+        const int64_t mid = sqlite3_last_insert_rowid(db_);
+        {
+            Stmt bump(db_,
+                "UPDATE conversations "
+                "   SET updated_at    = ?, "
+                "       message_count = message_count + 1 "
+                " WHERE id = ?;");
+            bump.bind(1, now);
+            bump.bind(2, conversation_id);
+            bump.step();
+        }
+        exec_sql(db_, "COMMIT;");
+
+        ConversationMessage m;
+        m.id              = mid;
+        m.conversation_id = conversation_id;
+        m.role            = role;
+        m.content         = content;
+        m.input_tokens    = input_tokens;
+        m.output_tokens   = output_tokens;
+        m.billed_uc       = billed_uc;
+        m.created_at      = now;
+        m.request_id      = request_id;
+        return m;
+    } catch (...) {
+        exec_sql(db_, "ROLLBACK;");
+        throw;
+    }
+}
+
+std::vector<ConversationMessage>
+TenantStore::list_messages(int64_t tenant_id, int64_t conversation_id,
+                            int64_t after_id, int limit) const {
+    std::vector<ConversationMessage> out;
+    if (!db_) return out;
+
+    // Same tenant-scoping check as append_message.
+    if (!get_conversation(tenant_id, conversation_id)) return out;
+
+    const int cap = (limit > 0 && limit <= 500) ? limit : 200;
+    std::string sql = std::string("SELECT ") + kMsgCols +
+                       " FROM messages WHERE conversation_id = ?";
+    if (after_id > 0) sql += " AND id > ?";
+    sql += " ORDER BY id ASC LIMIT ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, conversation_id);
+    if (after_id > 0) q.bind(idx++, after_id);
+    q.bind(idx, static_cast<int64_t>(cap));
+
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_message(q));
+    return out;
+}
+
 bool TenantStore::reload_tenant(int64_t id, Tenant& t) const {
     auto r = get_tenant(id);
     if (!r) return false;
     t = *r;
     return true;
+}
+
+// ─── Memory entries + relations ────────────────────────────────────────────
+
+namespace {
+
+constexpr const char* kEntryCols =
+    "id, tenant_id, type, title, content, source, tags, created_at, updated_at";
+
+MemoryEntry row_to_entry(Stmt& q) {
+    MemoryEntry e;
+    e.id         = q.column_int64(0);
+    e.tenant_id  = q.column_int64(1);
+    e.type       = q.column_text(2);
+    e.title      = q.column_text(3);
+    e.content    = q.column_text(4);
+    e.source     = q.column_text(5);
+    e.tags_json  = q.column_text(6);
+    e.created_at = q.column_int64(7);
+    e.updated_at = q.column_int64(8);
+    return e;
+}
+
+constexpr const char* kRelationCols =
+    "id, tenant_id, source_id, target_id, relation, created_at";
+
+MemoryRelation row_to_relation(Stmt& q) {
+    MemoryRelation r;
+    r.id         = q.column_int64(0);
+    r.tenant_id  = q.column_int64(1);
+    r.source_id  = q.column_int64(2);
+    r.target_id  = q.column_int64(3);
+    r.relation   = q.column_text(4);
+    r.created_at = q.column_int64(5);
+    return r;
+}
+
+} // namespace
+
+MemoryEntry TenantStore::create_entry(int64_t tenant_id,
+                                       const std::string& type,
+                                       const std::string& title,
+                                       const std::string& content,
+                                       const std::string& source,
+                                       const std::string& tags_json) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+
+    const int64_t now = now_epoch();
+    Stmt q(db_,
+        "INSERT INTO memory_entries "
+        "(tenant_id, type, title, content, source, tags, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, type);
+    q.bind(3, title);
+    q.bind(4, content);
+    q.bind(5, source);
+    q.bind(6, tags_json.empty() ? std::string("[]") : tags_json);
+    q.bind(7, now);
+    q.bind(8, now);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert memory_entry");
+
+    MemoryEntry e;
+    e.id         = sqlite3_last_insert_rowid(db_);
+    e.tenant_id  = tenant_id;
+    e.type       = type;
+    e.title      = title;
+    e.content    = content;
+    e.source     = source;
+    e.tags_json  = tags_json.empty() ? "[]" : tags_json;
+    e.created_at = now;
+    e.updated_at = now;
+    return e;
+}
+
+std::optional<MemoryEntry>
+TenantStore::get_entry(int64_t tenant_id, int64_t id) const {
+    if (!db_) return std::nullopt;
+    Stmt q(db_, (std::string("SELECT ") + kEntryCols +
+                 " FROM memory_entries WHERE tenant_id = ? AND id = ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_entry(q);
+}
+
+std::vector<MemoryEntry>
+TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
+    std::vector<MemoryEntry> out;
+    if (!db_) return out;
+
+    // Build WHERE incrementally so each filter is optional.  Placeholders
+    // are appended in the same order as the binds below, so the index walk
+    // is mechanical.
+    std::string sql = std::string("SELECT ") + kEntryCols +
+                       " FROM memory_entries WHERE tenant_id = ?";
+    if (!f.types.empty()) {
+        sql += " AND type IN (";
+        for (size_t i = 0; i < f.types.size(); ++i) {
+            if (i) sql += ",";
+            sql += "?";
+        }
+        sql += ")";
+    }
+    if (!f.tag.empty())          sql += " AND tags LIKE ?";
+    if (!f.q.empty())            sql += " AND (title LIKE ? OR content LIKE ?)";
+    if (f.since > 0)             sql += " AND created_at >= ?";
+    if (f.before_updated_at > 0) sql += " AND updated_at < ?";
+
+    const int cap = (f.limit > 0 && f.limit <= 200) ? f.limit : 50;
+    sql += " ORDER BY updated_at DESC LIMIT ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    for (auto& t : f.types) q.bind(idx++, t);
+    if (!f.tag.empty()) q.bind(idx++, std::string("%\"" + f.tag + "\"%"));
+    if (!f.q.empty()) {
+        // Bind a fresh string at each idx — sqlite3_bind_text with
+        // SQLITE_TRANSIENT will copy, but the underlying std::string must
+        // outlive the bind call until step().  Using two locals here.
+        const std::string pat = "%" + f.q + "%";
+        q.bind(idx++, pat);
+        q.bind(idx++, pat);
+    }
+    if (f.since > 0)             q.bind(idx++, f.since);
+    if (f.before_updated_at > 0) q.bind(idx++, f.before_updated_at);
+    q.bind(idx, static_cast<int64_t>(cap));
+
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_entry(q));
+    return out;
+}
+
+bool TenantStore::update_entry(int64_t tenant_id, int64_t id,
+                                const std::optional<std::string>& title,
+                                const std::optional<std::string>& content,
+                                const std::optional<std::string>& source,
+                                const std::optional<std::string>& tags_json,
+                                const std::optional<std::string>& type) {
+    if (!db_) return false;
+
+    std::vector<std::string> sets;
+    if (title)     sets.push_back("title = ?");
+    if (content)   sets.push_back("content = ?");
+    if (source)    sets.push_back("source = ?");
+    if (tags_json) sets.push_back("tags = ?");
+    if (type)      sets.push_back("type = ?");
+    if (sets.empty()) {
+        // Nothing to change — match update_conversation's PATCH shape and
+        // return true if the row exists.
+        return get_entry(tenant_id, id).has_value();
+    }
+    sets.push_back("updated_at = ?");
+
+    std::string sql = "UPDATE memory_entries SET ";
+    for (size_t i = 0; i < sets.size(); ++i) {
+        if (i) sql += ", ";
+        sql += sets[i];
+    }
+    sql += " WHERE tenant_id = ? AND id = ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    if (title)     q.bind(idx++, *title);
+    if (content)   q.bind(idx++, *content);
+    if (source)    q.bind(idx++, *source);
+    if (tags_json) q.bind(idx++, *tags_json);
+    if (type)      q.bind(idx++, *type);
+    q.bind(idx++, now_epoch());
+    q.bind(idx++, tenant_id);
+    q.bind(idx, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::delete_entry(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    // ON DELETE CASCADE on memory_relations.{source_id, target_id} drops
+    // any dangling edges automatically.
+    Stmt q(db_, "DELETE FROM memory_entries WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+std::optional<MemoryRelation>
+TenantStore::create_relation(int64_t tenant_id,
+                              int64_t source_id, int64_t target_id,
+                              const std::string& relation) {
+    if (!db_) return std::nullopt;
+    const int64_t now = now_epoch();
+    Stmt q(db_,
+        "INSERT INTO memory_relations "
+        "(tenant_id, source_id, target_id, relation, created_at) "
+        "VALUES (?, ?, ?, ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, source_id);
+    q.bind(3, target_id);
+    q.bind(4, relation);
+    q.bind(5, now);
+    int rc = q.step();
+    if (rc == SQLITE_CONSTRAINT) return std::nullopt;
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert memory_relation");
+
+    MemoryRelation r;
+    r.id         = sqlite3_last_insert_rowid(db_);
+    r.tenant_id  = tenant_id;
+    r.source_id  = source_id;
+    r.target_id  = target_id;
+    r.relation   = relation;
+    r.created_at = now;
+    return r;
+}
+
+std::optional<MemoryRelation>
+TenantStore::find_relation(int64_t tenant_id,
+                            int64_t source_id, int64_t target_id,
+                            const std::string& relation) const {
+    if (!db_) return std::nullopt;
+    Stmt q(db_, (std::string("SELECT ") + kRelationCols +
+                 " FROM memory_relations WHERE tenant_id = ? "
+                 "  AND source_id = ? AND target_id = ? AND relation = ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, source_id);
+    q.bind(3, target_id);
+    q.bind(4, relation);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_relation(q);
+}
+
+std::vector<MemoryRelation>
+TenantStore::list_relations(int64_t tenant_id,
+                             int64_t source_id, int64_t target_id,
+                             const std::string& relation,
+                             int limit) const {
+    std::vector<MemoryRelation> out;
+    if (!db_) return out;
+
+    std::string sql = std::string("SELECT ") + kRelationCols +
+                       " FROM memory_relations WHERE tenant_id = ?";
+    if (source_id > 0)     sql += " AND source_id = ?";
+    if (target_id > 0)     sql += " AND target_id = ?";
+    if (!relation.empty()) sql += " AND relation = ?";
+    const int cap = (limit > 0 && limit <= 1000) ? limit : 200;
+    sql += " ORDER BY id DESC LIMIT ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    if (source_id > 0)     q.bind(idx++, source_id);
+    if (target_id > 0)     q.bind(idx++, target_id);
+    if (!relation.empty()) q.bind(idx++, relation);
+    q.bind(idx, static_cast<int64_t>(cap));
+
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_relation(q));
+    return out;
+}
+
+bool TenantStore::delete_relation(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    Stmt q(db_, "DELETE FROM memory_relations WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
 }
 
 } // namespace index_ai

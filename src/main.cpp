@@ -1502,11 +1502,21 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (arg1 == "--api" || arg1 == "api") {
-            // arbiter --api [--port N] [--bind ADDR]
+            // arbiter --api [--port N] [--bind ADDR] [--verbose]
             int port = 8080;
             std::string bind = "127.0.0.1";
-            for (int i = 2; i + 1 < argc; i += 2) {
+            bool verbose = false;
+            for (int i = 2; i < argc; ) {
                 std::string k = argv[i];
+                if (k == "--verbose" || k == "-v") {
+                    verbose = true;
+                    ++i;
+                    continue;
+                }
+                if (i + 1 >= argc) {
+                    std::cerr << "--api flag '" << k << "' requires a value\n";
+                    return 1;
+                }
                 std::string v = argv[i + 1];
                 if      (k == "--port") port = std::atoi(v.c_str());
                 else if (k == "--bind") bind = v;
@@ -1514,8 +1524,9 @@ int main(int argc, char* argv[]) {
                     std::cerr << "Unknown --api flag: " << k << "\n";
                     return 1;
                 }
+                i += 2;
             }
-            index_ai::cmd_api(port, bind);
+            index_ai::cmd_api(port, bind, verbose);
             return 0;
         }
         if (arg1 == "--send" || arg1 == "send") {
@@ -1581,8 +1592,10 @@ int main(int argc, char* argv[]) {
             std::cout <<
                 "Usage:\n"
                 "  arbiter                            Interactive REPL\n"
-                "  arbiter --api [--port N] [--bind ADDR]\n"
-                "                                     HTTP+SSE orchestration API (default 127.0.0.1:8080)\n"
+                "  arbiter --api [--port N] [--bind ADDR] [--verbose]\n"
+                "                                     HTTP+SSE orchestration API (default 127.0.0.1:8080).\n"
+                "                                     --verbose mirrors every SSE event (text deltas, tool calls,\n"
+                "                                     thinking, etc.) to stderr.  Env: ARBITER_API_VERBOSE=1.\n"
                 "  arbiter --serve [--port N]         Line-protocol TCP server (default 9077)\n"
                 "  arbiter --send <agent> <msg>       One-shot message\n"
                 "  arbiter --init                     Initialize config + tokens\n"

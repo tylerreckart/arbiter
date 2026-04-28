@@ -72,6 +72,15 @@ public:
     // client as SSE events without persisting server-side.
     void set_write_interceptor(WriteInterceptor cb) { write_interceptor_cb_ = std::move(cb); }
 
+    // Real-time read window into the tenant's structured memory.  When set,
+    // /mem entries|entry|search resolve through this callback at every
+    // turn and depth.  Without it, those subcommands return ERR.  The HTTP
+    // API wires this against the request's authenticated tenant; CLI/REPL
+    // contexts leave it null.
+    void set_structured_memory_reader(StructuredMemoryReader cb) {
+        structured_memory_reader_cb_ = std::move(cb);
+    }
+
     // Flip /exec off for this orchestrator.  Agents that emit /exec get a
     // tool result explaining the ban; they're expected to adapt their plan.
     // Used by the HTTP API so SaaS callers can't invoke arbitrary shell
@@ -151,6 +160,12 @@ public:
     // is master first, then children in insertion order.
     std::vector<std::string> list_agents_all() const;
 
+    // Replace the agent's conversation history.  Used by the HTTP API's
+    // /v1/conversations/:id/messages endpoint to resume a stored thread
+    // before the next turn.  Works for "index" (master) and any loaded
+    // sub-agent.  Throws std::out_of_range for unknown ids.
+    void set_agent_history(const std::string& id, std::vector<Message> history);
+
     // Global stats
     std::string global_status() const;
 
@@ -217,6 +232,7 @@ private:
     ToolStatusFn       tool_status_cb_;
     PaneSpawner        pane_spawner_cb_;
     WriteInterceptor   write_interceptor_cb_;
+    StructuredMemoryReader structured_memory_reader_cb_;
     bool               exec_disabled_ = false;
 
     StreamStartCallback stream_start_cb_;

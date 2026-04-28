@@ -5,6 +5,7 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
+#include <vector>
 
 namespace index_ai {
 
@@ -51,6 +52,15 @@ public:
     // publicly so the API server's billing path can compute provider_uc
     // per turn without needing a CostTracker instance.
     static double compute_cost(const std::string& model, const ApiResponse& resp);
+
+    // One entry from the static pricing table.  The HTTP API exposes
+    // this as GET /v1/models so clients can render a model picker without
+    // shipping their own pricing data.
+    struct ModelEntry {
+        std::string  id;                      // the family prefix — matches what the router expects
+        ModelPricing pricing;
+    };
+    static std::vector<ModelEntry> all_models();
 
     // Per-token-type cost breakdown in USD.  Sum equals compute_cost.
     // Local providers (ollama/...) return all-zero.  Used by the API

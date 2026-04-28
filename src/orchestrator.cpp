@@ -473,7 +473,8 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
                                               pane_spawner_cb_,
                                               write_interceptor_cb_,
                                               exec_disabled_,
-                                              parallel_invoker);
+                                              parallel_invoker,
+                                              structured_memory_reader_cb_);
     }
 
     if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
@@ -587,7 +588,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                               pane_spawner_cb_,
                                               write_interceptor_cb_,
                                               exec_disabled_,
-                                              parallel_invoker);
+                                              parallel_invoker,
+                                              structured_memory_reader_cb_);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) {
             if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
@@ -629,6 +631,19 @@ std::vector<std::string> Orchestrator::list_agents_all() const {
     out.reserve(agents_.size() + 1);
     for (auto& [id, _] : agents_) out.push_back(id);
     return out;
+}
+
+void Orchestrator::set_agent_history(const std::string& id,
+                                      std::vector<Message> history) {
+    if (id == "index") {
+        index_master_->set_history(std::move(history));
+        return;
+    }
+    std::lock_guard<std::mutex> lock(agents_mutex_);
+    auto it = agents_.find(id);
+    if (it == agents_.end())
+        throw std::out_of_range("unknown agent: " + id);
+    it->second->set_history(std::move(history));
 }
 
 static std::string short_model(const std::string& model) {

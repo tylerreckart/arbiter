@@ -27,7 +27,7 @@ namespace index_ai {
 void cmd_init();
 void cmd_gen_token();
 void cmd_serve(int port);
-void cmd_api(int port, const std::string& bind);
+void cmd_api(int port, const std::string& bind, bool verbose);
 void cmd_oneshot(const std::string& agent_id, const std::string& msg);
 
 // Tenant admin.  Each opens ~/.arbiter/tenants.db, runs one operation, and

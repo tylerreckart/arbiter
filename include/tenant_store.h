@@ -41,6 +41,71 @@ struct Tenant {
     int64_t     last_used_at       = 0;  // epoch seconds (0 if never)
 };
 
+// One row from the conversations table.  Each conversation is a thread of
+// messages between a tenant's user and one agent (master or sub-agent).
+// Per-message billing is the existing usage_log; this table just owns the
+// thread-level metadata so the frontend can show a sidebar.
+struct Conversation {
+    int64_t     id              = 0;
+    int64_t     tenant_id       = 0;
+    std::string title;                  // human-set or auto-generated; "" until first turn
+    std::string agent_id;               // which agent this conversation talks to
+    std::string agent_def_json;         // empty for preloaded agents; the full agent_def
+                                        // JSON for inline-defined agents (so the
+                                        // conversation continues working even if the
+                                        // caller's DB-side definition is offline)
+    int64_t     created_at      = 0;
+    int64_t     updated_at      = 0;    // bumped on every message append
+    int64_t     message_count   = 0;
+    bool        archived        = false;
+};
+
+// One row from the messages table.  Append-only; rows are never edited.
+struct ConversationMessage {
+    int64_t     id              = 0;
+    int64_t     conversation_id = 0;
+    std::string role;                   // "user" | "assistant"
+    std::string content;
+    int64_t     input_tokens    = 0;
+    int64_t     output_tokens   = 0;
+    int64_t     billed_uc       = 0;
+    int64_t     created_at      = 0;
+    std::string request_id;             // correlates with usage_log + cancel
+};
+
+// One row from the memory_entries table.  These are the structured-memory
+// nodes the frontend graph UI renders — each entry is a typed note with
+// free-form content, an optional list of tags, and a free-form provenance
+// string.  Distinct from the legacy file-scratchpad memory at
+// `~/.arbiter/memory/t<id>/<agent_id>.md`: those endpoints stay read-only
+// and store unstructured per-agent markdown.  An entry is *not* a parsed
+// agent scratchpad and an agent's `/mem write` does not create entries.
+struct MemoryEntry {
+    int64_t     id          = 0;
+    int64_t     tenant_id   = 0;
+    std::string type;                   // closed enum, validated server-side
+    std::string title;
+    std::string content;
+    std::string source;                 // free-form provenance string
+    std::string tags_json;              // raw JSON array of strings; serialize on output
+    int64_t     created_at  = 0;
+    int64_t     updated_at  = 0;
+};
+
+// One row from the memory_relations table.  Relations are directed and
+// per-type — the unique index on (tenant_id, source_id, target_id, relation)
+// allows both `A→B refines` and `B→A refines` to coexist.  Symmetric
+// relations like `contradicts` are still stored directed; clients dedupe
+// for display.
+struct MemoryRelation {
+    int64_t     id          = 0;
+    int64_t     tenant_id   = 0;
+    int64_t     source_id   = 0;
+    int64_t     target_id   = 0;
+    std::string relation;               // closed enum, validated server-side
+    int64_t     created_at  = 0;
+};
+
 // One row from the append-only usage_log table.  All monetary fields
 // in micro-cents.  Returned by TenantStore::list_usage for the admin
 // API's billing-ledger read path.
@@ -169,6 +234,116 @@ public:
                                             int64_t since_ts,
                                             int64_t until_ts,
                                             const std::string& group_by) const;
+
+    // ── Conversations ─────────────────────────────────────────────────────
+    //
+    // Conversations are tenant-scoped threads of messages.  Every method
+    // here takes the tenant_id so an integer id leak from one tenant to
+    // another can't surface someone else's conversation.  All times are
+    // epoch seconds.
+
+    Conversation create_conversation(int64_t tenant_id,
+                                      const std::string& title,
+                                      const std::string& agent_id,
+                                      const std::string& agent_def_json = "");
+
+    // List newest first.  `before_updated_at == 0` means "from the latest";
+    // pass the previous page's last `updated_at` to paginate backward.
+    // `limit` is hard-capped at 200.
+    std::vector<Conversation> list_conversations(int64_t tenant_id,
+                                                  int64_t before_updated_at,
+                                                  int     limit) const;
+
+    std::optional<Conversation> get_conversation(int64_t tenant_id, int64_t id) const;
+
+    // PATCH-style: any non-empty field replaces.  `archived` flag uses the
+    // tri-state encoding (-1 = no change, 0 = false, 1 = true) since bool
+    // can't represent absence.
+    bool update_conversation(int64_t tenant_id, int64_t id,
+                              const std::string& new_title,    // "" = no change
+                              int                set_archived);// -1 = no change
+
+    bool delete_conversation(int64_t tenant_id, int64_t id);
+
+    // Append a message; bumps the parent conversation's updated_at + count.
+    // Caller computes billing fields elsewhere (or passes 0s).
+    ConversationMessage append_message(int64_t tenant_id, int64_t conversation_id,
+                                        const std::string& role,
+                                        const std::string& content,
+                                        int64_t input_tokens,
+                                        int64_t output_tokens,
+                                        int64_t billed_uc,
+                                        const std::string& request_id);
+
+    // List messages in a conversation, oldest first (chat order).  Caller
+    // can pass `after_id` for forward pagination; 0 = from the start.
+    std::vector<ConversationMessage>
+    list_messages(int64_t tenant_id, int64_t conversation_id,
+                  int64_t after_id, int limit) const;
+
+    // ── Structured memory entries + relations ───────────────────────────
+    //
+    // Tenant-scoped graph storage backing the frontend's force-graph view.
+    // Every method takes `tenant_id` and includes it in WHERE clauses so a
+    // leaked integer id from one tenant never surfaces another tenant's
+    // entry — cross-tenant lookups return as 404 (not 403), matching the
+    // Conversation pattern above.  All times are epoch seconds.
+
+    // `tags_json` is the raw JSON array of strings — caller validates the
+    // shape (this layer trusts it).  `source` is a free-form provenance
+    // string ("planning", "ingest", a URL, etc.).
+    MemoryEntry create_entry(int64_t tenant_id,
+                              const std::string& type,
+                              const std::string& title,
+                              const std::string& content,
+                              const std::string& source,
+                              const std::string& tags_json);
+
+    std::optional<MemoryEntry> get_entry(int64_t tenant_id, int64_t id) const;
+
+    struct EntryFilter {
+        std::vector<std::string> types;             // OR-filter; empty = all
+        std::string              tag;               // single-tag substring match
+        std::string              q;                 // LIKE on title + content
+        int64_t                  since                 = 0;  // created_at >= since
+        int64_t                  before_updated_at     = 0;  // cursor; 0 = latest
+        int                      limit                 = 50;
+    };
+    std::vector<MemoryEntry> list_entries(int64_t tenant_id,
+                                           const EntryFilter& f) const;
+
+    // PATCH-style: any std::nullopt argument leaves the field untouched.
+    // Bumps updated_at on a successful change.  Returns false if the entry
+    // doesn't belong to this tenant.
+    bool update_entry(int64_t tenant_id, int64_t id,
+                      const std::optional<std::string>& title,
+                      const std::optional<std::string>& content,
+                      const std::optional<std::string>& source,
+                      const std::optional<std::string>& tags_json,
+                      const std::optional<std::string>& type);
+
+    bool delete_entry(int64_t tenant_id, int64_t id);
+
+    // Returns nullopt on unique-index conflict — caller pairs that with
+    // find_relation() to surface the existing row in a 409 response.
+    std::optional<MemoryRelation> create_relation(int64_t tenant_id,
+                                                   int64_t source_id,
+                                                   int64_t target_id,
+                                                   const std::string& relation);
+
+    std::optional<MemoryRelation> find_relation(int64_t tenant_id,
+                                                 int64_t source_id,
+                                                 int64_t target_id,
+                                                 const std::string& relation) const;
+
+    // Filter args: 0/empty = no filter on that dimension.  Hard-capped at 1000.
+    std::vector<MemoryRelation> list_relations(int64_t tenant_id,
+                                                int64_t source_id,
+                                                int64_t target_id,
+                                                const std::string& relation,
+                                                int limit) const;
+
+    bool delete_relation(int64_t tenant_id, int64_t id);
 
 private:
     sqlite3* db_ = nullptr;

@@ -107,6 +107,20 @@ using PaneSpawner = std::function<std::string(const std::string& agent_id,
 using WriteInterceptor = std::function<std::string(const std::string& path,
                                                     const std::string& content)>;
 
+// Read-only window into the tenant's structured-memory store from inside a
+// turn.  When set, the slash-command dispatcher exposes:
+//   /mem entries [type[,type...]]   — list entries (optional comma-sep type filter)
+//   /mem entry <id>                 — one entry's full content + its edges
+//   /mem search <query>             — substring match on title + content
+// The callback receives the subcommand kind ("entries" | "entry" | "search")
+// and the rest of the line, and returns the pre-formatted body that goes
+// into the [/mem ...] tool-result block (without the [/mem ...] header).
+// Reads only — there is no slash-command path for creating, updating, or
+// deleting entries; structured memory is HTTP-write-only.  Without this
+// callback wired, the dispatcher returns ERR so the agent adapts.
+using StructuredMemoryReader = std::function<std::string(const std::string& kind,
+                                                          const std::string& args)>;
+
 // True if `cmd` matches a pattern we always want to confirm before exec'ing
 // (rm, rm -rf, redirects, sudo, mkfs, git force-push, find -delete, etc.).
 // Conservative — misses creative destruction, but catches the common footguns.
@@ -134,7 +148,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    PaneSpawner    pane_spawner    = nullptr,
                                    WriteInterceptor write_interceptor = nullptr,
                                    bool           exec_disabled   = false,
-                                   ParallelInvoker parallel_invoker = nullptr);
+                                   ParallelInvoker parallel_invoker = nullptr,
+                                   StructuredMemoryReader structured_memory_reader = nullptr);
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

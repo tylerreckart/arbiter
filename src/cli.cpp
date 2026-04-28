@@ -198,7 +198,7 @@ void cmd_serve(int port) {
     std::cout << "Final stats: " << orch.global_status() << "\n";
 }
 
-void cmd_api(int port, const std::string& bind) {
+void cmd_api(int port, const std::string& bind, bool verbose) {
     // HTTP+SSE orchestration endpoint.  Unlike --serve (which multiplexes
     // a line-protocol TCP connection and delegates through one shared
     // orchestrator), this spins up a fresh Orchestrator per request with
@@ -225,6 +225,15 @@ void cmd_api(int port, const std::string& bind) {
     bool fresh_admin = false;
     std::string admin_token = resolve_admin_token(dir, fresh_admin);
 
+    // Verbose logging: explicit --verbose flag wins; otherwise honour
+    // ARBITER_API_VERBOSE=1 so an operator running under systemd can flip
+    // logging on without restarting with new args.
+    bool log_verbose = verbose;
+    if (!log_verbose) {
+        if (const char* e = std::getenv("ARBITER_API_VERBOSE"))
+            log_verbose = (e[0] != '\0' && e[0] != '0');
+    }
+
     ApiServerOptions opts;
     opts.port          = port;
     opts.bind          = bind;
@@ -233,6 +242,7 @@ void cmd_api(int port, const std::string& bind) {
     opts.api_keys      = std::move(api_keys);
     opts.exec_disabled = true;               // SaaS default: no shell
     opts.admin_token   = admin_token;
+    opts.log_verbose   = log_verbose;
 
     ApiServer server(std::move(opts), tenants);
 
@@ -254,6 +264,10 @@ void cmd_api(int port, const std::string& bind) {
     std::cout << "  GET   /v1/admin/usage          (Bearer <admin-token>)\n";
     std::cout << "Tenants: " << all.size() << " configured"
               << "  (markup 20% over provider cost)\n";
+    std::cout << "Logging: " << (log_verbose ? "verbose (per-event mirror to stderr)"
+                                              : "request-level only "
+                                                "(use --verbose for streamed deltas)")
+              << "\n";
 
     if (fresh_admin) {
         std::cout << "\n  Admin token (save this — not shown again):\n"

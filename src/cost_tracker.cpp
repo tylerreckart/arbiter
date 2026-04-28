@@ -89,6 +89,15 @@ const ModelPricing& CostTracker::pricing_for(const std::string& model) {
     return kDefaultPricing;
 }
 
+std::vector<CostTracker::ModelEntry> CostTracker::all_models() {
+    std::vector<ModelEntry> out;
+    out.reserve(sizeof(kPricingEntries) / sizeof(kPricingEntries[0]));
+    for (auto& e : kPricingEntries) {
+        out.push_back({e.prefix, e.pricing});
+    }
+    return out;
+}
+
 CostTracker::CostBreakdown
 CostTracker::compute_cost_breakdown(const std::string& model,
                                      const ApiResponse& resp) {

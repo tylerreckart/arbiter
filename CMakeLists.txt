@@ -215,4 +215,23 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_stream_filter COMMAND unit_stream_filter)
+
+    # --- Unit tests for the structured-memory store ---
+    # Pins the tenant_store CRUD contract that backs both /v1/memory/entries
+    # and the agent-side /mem entries|entry|search reader.
+    add_executable(unit_memory_entries
+        tests/test_memory_entries.cpp
+        src/tenant_store.cpp
+    )
+    target_include_directories(unit_memory_entries PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_memory_entries PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_memory_entries COMMAND unit_memory_entries)
 endif()
