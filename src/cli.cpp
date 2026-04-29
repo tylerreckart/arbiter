@@ -243,6 +243,10 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     opts.exec_disabled = true;               // SaaS default: no shell
     opts.admin_token   = admin_token;
     opts.log_verbose   = log_verbose;
+    // MCP registry — file is optional.  If present, every /v1/orchestrate
+    // request gets a per-request MCP manager loaded from this file.  See
+    // docs/api.md → MCP servers for the schema.
+    opts.mcp_servers_path = dir + "/mcp_servers.json";
 
     ApiServer server(std::move(opts), tenants);
 

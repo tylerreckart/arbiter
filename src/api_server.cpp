@@ -13,6 +13,7 @@
 #include "constitution.h"
 #include "cost_tracker.h"
 #include "json.h"
+#include "mcp/manager.h"
 #include "orchestrator.h"
 #include "tenant_store.h"
 #include "tui/stream_filter.h"
@@ -931,33 +932,78 @@ std::shared_ptr<JsonValue> constitution_to_json(const std::string& id,
     return o;
 }
 
-// Fire up a disposable orchestrator just to enumerate / load agents.  No
-// API calls get made; we only need the Agent map populated for reflection.
-// Cheap — the constructor parses a handful of JSON files.
+// Fire up a disposable orchestrator with no agents loaded.  Used for
+// reflection of the master `index` agent only — the API does not read
+// .json definitions from disk.  Inline agents live for the duration of
+// one request; the catalog endpoints below don't see them.
 std::unique_ptr<Orchestrator> make_reflect_orchestrator(const ApiServerOptions& opts) {
-    auto orch = std::make_unique<Orchestrator>(opts.api_keys);
-    if (!opts.agents_dir.empty()) orch->load_agents(opts.agents_dir);
-    return orch;
+    return std::make_unique<Orchestrator>(opts.api_keys);
 }
 
-void handle_agents_list(int fd, const ApiServerOptions& opts) {
+// Forward decl — defined further down (shared with the memory file
+// scratchpad path-safety check).
+bool agent_id_is_safe(const std::string& id);
+
+// Render a stored AgentRecord as the same JSON shape as the built-in
+// `index` master, plus `created_at`/`updated_at` so the front-end can
+// show a "last edited" hint.  We re-parse `agent_def_json` through
+// Constitution::from_json so the response always reflects the canonical
+// blob — and so a stored row whose blob has somehow diverged from its
+// denormalised columns can't lie to the caller.
+std::shared_ptr<JsonValue> agent_record_to_json(const AgentRecord& a) {
+    Constitution c;
+    try {
+        c = Constitution::from_json(a.agent_def_json);
+    } catch (...) {
+        // Defensive: the only way to land here is a blob that passed
+        // validation at write time but fails today (schema drift after
+        // an upgrade, manual DB poke).  Surface the row metadata so the
+        // caller can still find and replace it.
+        auto o = jobj();
+        auto& m = o->as_object_mut();
+        m["id"]              = jstr(a.agent_id);
+        m["name"]            = jstr(a.name);
+        m["role"]            = jstr(a.role);
+        m["model"]           = jstr(a.model);
+        m["created_at"]      = jnum(static_cast<double>(a.created_at));
+        m["updated_at"]      = jnum(static_cast<double>(a.updated_at));
+        m["agent_def_raw"]   = jstr(a.agent_def_json);
+        m["error"]           = jstr("stored agent_def fails validation — "
+                                     "PATCH a fresh blob to repair");
+        return o;
+    }
+    auto o = constitution_to_json(a.agent_id, c);
+    auto& m = o->as_object_mut();
+    m["created_at"] = jnum(static_cast<double>(a.created_at));
+    m["updated_at"] = jnum(static_cast<double>(a.updated_at));
+    return o;
+}
+
+void handle_agents_list(int fd, const ApiServerOptions& opts,
+                         TenantStore& tenants, const Tenant& tenant) {
+    // List the tenant's stored agents + the built-in `index` master.
+    // `index` is always first so callers never have to special-case
+    // its absence in their UI.
     std::unique_ptr<Orchestrator> orch;
     try { orch = make_reflect_orchestrator(opts); }
     catch (const std::exception& e) {
         auto err = jobj();
         err->as_object_mut()["error"] =
-            jstr(std::string("could not load agents: ") + e.what());
+            jstr(std::string("orchestrator init failed: ") + e.what());
         write_json_response(fd, 500, err);
         return;
     }
 
     auto arr = jarr();
     auto& a = arr->as_array_mut();
-    for (auto& id : orch->list_agents_all()) {
-        try {
-            a.push_back(constitution_to_json(id, orch->get_constitution(id)));
-        } catch (...) { /* skip unreadable */ }
+    try {
+        a.push_back(constitution_to_json("index", orch->get_constitution("index")));
+    } catch (...) { /* index master always exists; defensive */ }
+
+    for (auto& rec : tenants.list_agent_records(tenant.id, /*limit=*/200)) {
+        a.push_back(agent_record_to_json(rec));
     }
+
     auto body = jobj();
     auto& m = body->as_object_mut();
     m["agents"] = arr;
@@ -966,25 +1012,200 @@ void handle_agents_list(int fd, const ApiServerOptions& opts) {
 }
 
 void handle_agent_get(int fd, const std::string& agent_id,
-                       const ApiServerOptions& opts) {
-    std::unique_ptr<Orchestrator> orch;
-    try { orch = make_reflect_orchestrator(opts); }
-    catch (const std::exception& e) {
+                       const ApiServerOptions& opts,
+                       TenantStore& tenants, const Tenant& tenant) {
+    // The built-in master short-circuits — every tenant sees the same
+    // `index` constitution, so we don't store it per-tenant.
+    if (agent_id == "index") {
+        std::unique_ptr<Orchestrator> orch;
+        try { orch = make_reflect_orchestrator(opts); }
+        catch (const std::exception& e) {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr(std::string("orchestrator init failed: ") + e.what());
+            write_json_response(fd, 500, err);
+            return;
+        }
+        try {
+            auto& c = orch->get_constitution("index");
+            write_json_response(fd, 200, constitution_to_json("index", c));
+            return;
+        } catch (const std::out_of_range&) {
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr("index master missing");
+            write_json_response(fd, 500, err);
+            return;
+        }
+    }
+
+    auto rec = tenants.get_agent_record(tenant.id, agent_id);
+    if (!rec) {
         auto err = jobj();
         err->as_object_mut()["error"] =
-            jstr(std::string("could not load agents: ") + e.what());
-        write_json_response(fd, 500, err);
+            jstr("no agent '" + agent_id + "' for this tenant");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    write_json_response(fd, 200, agent_record_to_json(*rec));
+}
+
+// Validate an inbound agent_def body and pull out the (id, name, role,
+// model, canonical JSON) tuple we persist.  Wraps Constitution::from_json
+// so callers get a clean 400 on shape errors; returns std::nullopt on
+// failure with `err_msg` populated.  `enforce_id` is the path :id when
+// the route mandates one (PATCH); empty for POST where the body owns
+// the id.
+struct ParsedAgentDef {
+    std::string agent_id;
+    std::string name;
+    std::string role;
+    std::string model;
+    std::string canonical_json;
+};
+std::optional<ParsedAgentDef>
+parse_agent_def_body(const HttpRequest& req,
+                      const std::string& enforce_id,
+                      std::string& err_msg) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        err_msg = std::string("invalid JSON: ") + e.what();
+        return std::nullopt;
+    }
+    if (!body || !body->is_object()) {
+        err_msg = "body must be a JSON object containing an agent_def";
+        return std::nullopt;
+    }
+    // Accept either `{ ...constitution... }` directly or `{ "agent_def": {...} }`
+    // for symmetry with the /v1/orchestrate request shape.
+    std::shared_ptr<JsonValue> def = body;
+    if (auto v = body->get("agent_def"); v && v->is_object()) def = v;
+
+    const std::string body_id = def->get_string("id", "");
+    if (!enforce_id.empty()) {
+        if (!body_id.empty() && body_id != enforce_id) {
+            err_msg = "agent_def.id (\"" + body_id + "\") does not match path :id (\""
+                      + enforce_id + "\")";
+            return std::nullopt;
+        }
+    } else if (body_id.empty()) {
+        err_msg = "agent_def.id is required (caller-chosen identifier; reused on every reference)";
+        return std::nullopt;
+    }
+    const std::string agent_id = enforce_id.empty() ? body_id : enforce_id;
+    if (agent_id == "index") {
+        err_msg = "'index' is reserved for the built-in master and cannot be stored per-tenant";
+        return std::nullopt;
+    }
+    // Same id sanity bounds as the memory file path — keeps stored ids
+    // routable through every existing slash-command and URL surface
+    // without an extra escaping layer.
+    if (!agent_id_is_safe(agent_id)) {
+        err_msg = "agent_def.id must be 1..64 chars, [A-Za-z0-9_-], not starting with '.' or '/'";
+        return std::nullopt;
+    }
+
+    ParsedAgentDef p;
+    p.agent_id       = agent_id;
+    p.canonical_json = json_serialize(*def);
+
+    try {
+        Constitution c = Constitution::from_json(p.canonical_json);
+        p.name  = c.name;
+        p.role  = c.role;
+        p.model = c.model;
+    } catch (const std::exception& e) {
+        err_msg = std::string("invalid agent_def: ") + e.what();
+        return std::nullopt;
+    }
+    return p;
+}
+
+void handle_agent_create(int fd, const HttpRequest& req,
+                          TenantStore& tenants, const Tenant& tenant) {
+    std::string err;
+    auto p = parse_agent_def_body(req, /*enforce_id=*/"", err);
+    if (!p) {
+        auto e = jobj();
+        e->as_object_mut()["error"] = jstr(err);
+        write_json_response(fd, 400, e);
         return;
     }
 
-    try {
-        auto& c = orch->get_constitution(agent_id);
-        write_json_response(fd, 200, constitution_to_json(agent_id, c));
-    } catch (const std::out_of_range&) {
-        auto err = jobj();
-        err->as_object_mut()["error"] = jstr("no agent '" + agent_id + "'");
-        write_json_response(fd, 404, err);
+    auto created = tenants.create_agent_record(tenant.id, p->agent_id,
+                                                p->name, p->role, p->model,
+                                                p->canonical_json);
+    if (!created) {
+        // Conflict — surface the existing row so the caller can decide
+        // whether to PATCH or pick a different id.
+        auto existing = tenants.get_agent_record(tenant.id, p->agent_id);
+        auto e = jobj();
+        auto& m = e->as_object_mut();
+        m["error"] = jstr("agent '" + p->agent_id + "' already exists for this tenant");
+        if (existing) m["existing"] = agent_record_to_json(*existing);
+        write_json_response(fd, 409, e);
+        return;
     }
+    write_json_response(fd, 201, agent_record_to_json(*created));
+}
+
+void handle_agent_patch(int fd, const std::string& agent_id,
+                         const HttpRequest& req,
+                         TenantStore& tenants, const Tenant& tenant) {
+    if (agent_id == "index") {
+        auto e = jobj();
+        e->as_object_mut()["error"] =
+            jstr("'index' is the built-in master and cannot be modified");
+        write_json_response(fd, 400, e);
+        return;
+    }
+    if (!tenants.get_agent_record(tenant.id, agent_id)) {
+        auto e = jobj();
+        e->as_object_mut()["error"] =
+            jstr("no agent '" + agent_id + "' for this tenant");
+        write_json_response(fd, 404, e);
+        return;
+    }
+    std::string err;
+    auto p = parse_agent_def_body(req, /*enforce_id=*/agent_id, err);
+    if (!p) {
+        auto e = jobj();
+        e->as_object_mut()["error"] = jstr(err);
+        write_json_response(fd, 400, e);
+        return;
+    }
+    if (!tenants.update_agent_record(tenant.id, agent_id, p->name, p->role,
+                                      p->model, p->canonical_json)) {
+        // Race: row vanished between existence check and update.  Treat
+        // as 404 — caller can re-POST to recreate.
+        auto e = jobj();
+        e->as_object_mut()["error"] = jstr("agent disappeared mid-request; re-create");
+        write_json_response(fd, 404, e);
+        return;
+    }
+    auto fresh = tenants.get_agent_record(tenant.id, agent_id);
+    write_json_response(fd, 200, agent_record_to_json(*fresh));
+}
+
+void handle_agent_delete(int fd, const std::string& agent_id,
+                          TenantStore& tenants, const Tenant& tenant) {
+    if (agent_id == "index") {
+        auto e = jobj();
+        e->as_object_mut()["error"] =
+            jstr("'index' is the built-in master and cannot be deleted");
+        write_json_response(fd, 400, e);
+        return;
+    }
+    if (!tenants.delete_agent_record(tenant.id, agent_id)) {
+        auto e = jobj();
+        e->as_object_mut()["error"] =
+            jstr("no agent '" + agent_id + "' for this tenant");
+        write_json_response(fd, 404, e);
+        return;
+    }
+    auto body = jobj();
+    body->as_object_mut()["deleted"] = jbool(true);
+    write_json_response(fd, 200, body);
 }
 
 // Memory file path for an agent within a tenant's memory directory.  Agent
@@ -1397,6 +1618,7 @@ std::shared_ptr<JsonValue> memory_entry_to_json(const MemoryEntry& e) {
     } catch (...) {
         m["tags"] = jarr();
     }
+    m["status"]     = jstr(e.status);
     m["created_at"] = jnum(static_cast<double>(e.created_at));
     m["updated_at"] = jnum(static_cast<double>(e.updated_at));
     return o;
@@ -1410,6 +1632,7 @@ std::shared_ptr<JsonValue> memory_relation_to_json(const MemoryRelation& r) {
     m["source_id"]  = jnum(static_cast<double>(r.source_id));
     m["target_id"]  = jnum(static_cast<double>(r.target_id));
     m["relation"]   = jstr(r.relation);
+    m["status"]     = jstr(r.status);
     m["created_at"] = jnum(static_cast<double>(r.created_at));
     return o;
 }
@@ -1490,6 +1713,8 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     f.since             = get_int("since");
     f.before_updated_at = get_int("before_updated_at");
     f.limit             = static_cast<int>(get_int("limit"));
+    // Curated graph only — proposals live behind GET /v1/memory/proposals.
+    f.status            = "accepted";
 
     auto entries = tenants.list_entries(tenant.id, f);
     auto arr = jarr();
@@ -1505,7 +1730,11 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
 void handle_memory_entry_get(int fd, int64_t id,
                               TenantStore& tenants, const Tenant& tenant) {
     auto e = tenants.get_entry(tenant.id, id);
-    if (!e) return write_memory_error(fd, 404, "entry not found");
+    // Proposed entries are not addressable through the curated read path —
+    // 404, same as a non-existent id.  Reviewers see them via
+    // GET /v1/memory/proposals.
+    if (!e || e->status != "accepted")
+        return write_memory_error(fd, 404, "entry not found");
     write_json_response(fd, 200, memory_entry_to_json(*e));
 }
 
@@ -1521,10 +1750,12 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
 
     // Confirm the entry exists and belongs to this tenant before doing
     // input validation work — reduces 404 vs 400 ambiguity for callers.
-    if (!tenants.get_entry(tenant.id, id))
+    auto existing = tenants.get_entry(tenant.id, id);
+    if (!existing)
         return write_memory_error(fd, 404, "entry not found");
 
     std::optional<std::string> title, content, source, tags_json, type;
+    bool promote_to_accepted = false;
 
     if (auto v = body->get("title"); v && v->is_string()) {
         if (v->as_string().empty() || v->as_string().size() > 200)
@@ -1552,9 +1783,33 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
             return write_memory_error(fd, 400, "invalid type");
         type = v->as_string();
     }
+    // status is the proposal-queue acceptance lever.  Only "accepted" is
+    // a valid PATCH value; demoting an accepted entry back to proposed
+    // would be confusing and has no use case.  Reject hits 400; trying
+    // to accept an already-accepted entry is a no-op below (returns false
+    // from accept_entry, surfaces as 409).
+    if (auto v = body->get("status"); v && v->is_string()) {
+        if (v->as_string() != "accepted")
+            return write_memory_error(fd, 400,
+                "invalid status — only 'accepted' is a valid PATCH value "
+                "(reject by DELETE).");
+        promote_to_accepted = true;
+    }
 
     if (!tenants.update_entry(tenant.id, id, title, content, source, tags_json, type))
         return write_memory_error(fd, 404, "entry not found");
+    if (promote_to_accepted) {
+        if (!tenants.accept_entry(tenant.id, id)) {
+            // Was already accepted (no-op error), or status changed under
+            // us between the existence check and the update.  409 either
+            // way — caller can re-fetch to see the live state.
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("entry is not in 'proposed' status — nothing to accept.");
+            write_json_response(fd, 409, err);
+            return;
+        }
+    }
 
     auto e = tenants.get_entry(tenant.id, id);
     write_json_response(fd, 200, memory_entry_to_json(*e));
@@ -1633,7 +1888,9 @@ void handle_memory_relation_list(int fd, const HttpRequest& req,
     if (!relation.empty() && !memory_relation_is_valid(relation))
         return write_memory_error(fd, 400, "invalid relation filter");
 
-    auto rels = tenants.list_relations(tenant.id, source_id, target_id, relation, limit);
+    // Curated graph only.  Proposed relations live in /v1/memory/proposals.
+    auto rels = tenants.list_relations(tenant.id, source_id, target_id, relation,
+                                        limit, /*status=*/"accepted");
     auto arr = jarr();
     auto& a = arr->as_array_mut();
     for (auto& r : rels) a.push_back(memory_relation_to_json(r));
@@ -1653,6 +1910,120 @@ void handle_memory_relation_delete(int fd, int64_t id,
     write_json_response(fd, 200, body);
 }
 
+// PATCH /v1/memory/relations/:id  body: { "status": "accepted" }
+//
+// Relations are otherwise immutable (no title/content/etc to update); this
+// endpoint exists solely to promote a proposed relation into the curated
+// graph.  accept_relation enforces the both-endpoints-accepted invariant —
+// accepting a relation that points at a still-proposed entry returns 409
+// so the reviewer accepts the entry endpoints first.
+void handle_memory_relation_patch(int fd, int64_t id, const HttpRequest& req,
+                                   TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        return write_memory_error(fd, 400, std::string("invalid JSON: ") + e.what());
+    }
+    if (!body || !body->is_object())
+        return write_memory_error(fd, 400, "body must be a JSON object");
+
+    auto v = body->get("status");
+    if (!v || !v->is_string() || v->as_string() != "accepted")
+        return write_memory_error(fd, 400,
+            "the only supported PATCH on a relation is "
+            "{\"status\": \"accepted\"} — reject by DELETE.");
+
+    // Existence check first so we can disambiguate 404 from 409.  list_relations
+    // by id isn't a thing, so use an internal find via list with id=0 won't
+    // work either — easiest is two list calls scoped narrowly, but we already
+    // have accept_relation's preflight read.  For a clean error, look it up
+    // with a list_relations narrowed to this tenant and walk for the id:
+    bool exists = false;
+    {
+        auto rows = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000,
+                                           /*status=*/std::string{});
+        for (auto& r : rows) if (r.id == id) { exists = true; break; }
+    }
+    if (!exists) return write_memory_error(fd, 404, "relation not found");
+
+    if (!tenants.accept_relation(tenant.id, id)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("cannot accept relation — it must be in 'proposed' status "
+                 "and both endpoint entries must already be accepted.  "
+                 "Accept the entry endpoints first, then retry.");
+        write_json_response(fd, 409, err);
+        return;
+    }
+
+    // Re-fetch the canonical row for the response.  list_relations again,
+    // narrowed by source_id then walk — same pattern as the existence check.
+    auto rows = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000,
+                                       /*status=*/std::string{});
+    for (auto& r : rows) {
+        if (r.id == id) { write_json_response(fd, 200, memory_relation_to_json(r)); return; }
+    }
+    // Race: row vanished between accept and re-fetch.  Treat as success.
+    auto ok = jobj();
+    ok->as_object_mut()["accepted"] = jbool(true);
+    write_json_response(fd, 200, ok);
+}
+
+// GET /v1/memory/proposals
+//
+// List the proposal queue: every entry and relation currently in 'proposed'
+// status for this tenant.  Newest first.  Optional `?kind=entries|relations`
+// to scope; default returns both.  Reviewers use this to drive the
+// accept/reject UI.
+void handle_memory_proposals_list(int fd, const HttpRequest& req,
+                                   TenantStore& tenants, const Tenant& tenant) {
+    const auto qp = parse_query(req.path);
+    auto get_str = [&](const std::string& k) -> std::string {
+        auto it = qp.find(k);
+        return it == qp.end() ? std::string{} : it->second;
+    };
+    auto get_int = [&](const std::string& k) -> int64_t {
+        auto it = qp.find(k);
+        if (it == qp.end()) return 0;
+        try { return std::stoll(it->second); } catch (...) { return 0; }
+    };
+
+    const std::string kind = get_str("kind");
+    if (!kind.empty() && kind != "entries" && kind != "relations")
+        return write_memory_error(fd, 400, "kind must be 'entries' or 'relations'");
+
+    const int limit = static_cast<int>(get_int("limit"));
+
+    auto body = jobj();
+    auto& m = body->as_object_mut();
+    m["tenant_id"] = jnum(static_cast<double>(tenant.id));
+
+    if (kind != "relations") {
+        TenantStore::EntryFilter f;
+        f.status = "proposed";
+        f.limit  = limit > 0 ? limit : 100;
+        auto entries = tenants.list_entries(tenant.id, f);
+        auto arr = jarr();
+        auto& a = arr->as_array_mut();
+        for (auto& e : entries) a.push_back(memory_entry_to_json(e));
+        m["entries"]       = arr;
+        m["entries_count"] = jnum(static_cast<double>(entries.size()));
+    }
+
+    if (kind != "entries") {
+        auto rels = tenants.list_relations(tenant.id, 0, 0, std::string{},
+                                            limit > 0 ? limit : 200,
+                                            /*status=*/"proposed");
+        auto arr = jarr();
+        auto& a = arr->as_array_mut();
+        for (auto& r : rels) a.push_back(memory_relation_to_json(r));
+        m["relations"]       = arr;
+        m["relations_count"] = jnum(static_cast<double>(rels.size()));
+    }
+
+    write_json_response(fd, 200, body);
+}
+
 void handle_memory_graph(int fd, const HttpRequest& req,
                           TenantStore& tenants, const Tenant& tenant) {
     // Optional `?type=` filter scopes the entry set; relations are then
@@ -1667,7 +2038,8 @@ void handle_memory_graph(int fd, const HttpRequest& req,
     };
 
     TenantStore::EntryFilter f;
-    f.limit = 200;  // hit the per-call ceiling
+    f.limit  = 200;  // hit the per-call ceiling
+    f.status = "accepted";   // curated graph only
     const std::string types_csv = get_str("type");
     if (!types_csv.empty()) {
         size_t start = 0;
@@ -1710,9 +2082,11 @@ void handle_memory_graph(int fd, const HttpRequest& req,
     entry_set.reserve(entries.size() * 2);
     for (auto& e : entries) entry_set[e.id] = true;
 
-    // All relations for this tenant; filter by the entry set in memory
-    // (cheap relative to a join, and keeps the relation query trivial).
-    auto rels = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000);
+    // All accepted relations for this tenant; filter by the entry set in
+    // memory (cheap relative to a join, and keeps the relation query
+    // trivial).  Proposed relations stay in the proposals queue.
+    auto rels = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000,
+                                        /*status=*/"accepted");
 
     auto entries_arr = jarr();
     auto& ea = entries_arr->as_array_mut();
@@ -1825,7 +2199,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         InFlightRegistry& in_flight,
                         const Tenant& tenant_in,
                         const std::string& agent_override = "",
-                        int64_t conversation_id = 0) {
+                        int64_t conversation_id = 0,
+                        // Snapshotted agent_def from the conversation row.  When
+                        // this is non-empty and the request body doesn't supply
+                        // its own `agent_def`, we install the snapshot so
+                        // follow-up messages don't have to re-send it on every
+                        // turn.  Body-supplied agent_def still wins if both
+                        // are present (lets callers update an agent mid-thread).
+                        const std::string& conversation_agent_def_json = "") {
     Tenant tenant = tenant_in;   // mutable snapshot — MTD refreshes mid-request
     // Parse the JSON body.
     std::shared_ptr<JsonValue> body;
@@ -1872,6 +2253,29 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // with 400 so the caller doesn't silently write memory to the wrong key.
     std::shared_ptr<JsonValue> agent_def;
     if (auto v = body->get("agent_def"); v && v->is_object()) agent_def = v;
+
+    // Fall back to the conversation's snapshotted agent_def when the request
+    // body didn't supply its own.  The snapshot is the source of truth for
+    // resumed threads — without this, a follow-up turn that omits agent_def
+    // would have no way to find the agent (the API does not read disk-side
+    // .json definitions).
+    if (!agent_def && !conversation_agent_def_json.empty()) {
+        try {
+            auto parsed = json_parse(conversation_agent_def_json);
+            if (parsed && parsed->is_object()) agent_def = parsed;
+        } catch (...) {
+            // A corrupted snapshot shouldn't 500 the call — surface a clear
+            // 400 instead so the caller knows to re-send agent_def or
+            // recreate the conversation.
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("conversation has a corrupted agent_def snapshot — "
+                     "send a fresh agent_def in the request body, or "
+                     "recreate the conversation.");
+            write_json_response(fd, 400, err);
+            return;
+        }
+    }
 
     const std::string path_id         = agent_override;
     const std::string body_agent      = body->get_string("agent", "");
@@ -1969,8 +2373,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
     // Per-request Orchestrator.  Concurrent API calls don't share agent
     // history or callback state — each request is a fresh universe.  The
-    // only cost is reloading agent JSON files from disk, which is cheap
-    // relative to LLM call latency.
+    // The API path does NOT load agent .json definitions from disk.  It
+    // does install the tenant's stored agent catalog (`POST /v1/agents`)
+    // onto every per-request orchestrator so /agent and /parallel can
+    // reference siblings by id without re-sending their constitutions.
+    // Inline `agent_def` from the request body still wins on a colliding
+    // id — useful for one-off ephemeral agents and mid-thread overrides.
     std::unique_ptr<Orchestrator> orch;
     try {
         orch = std::make_unique<Orchestrator>(opts.api_keys);
@@ -1984,14 +2392,42 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         orch->set_memory_dir(opts.memory_root + "/t" +
                               std::to_string(tenant.id));
     }
-    if (!opts.agents_dir.empty()) orch->load_agents(opts.agents_dir);
+
+    // Install the tenant's stored catalog first so /agent and /parallel
+    // can resolve sibling ids during this turn.  A blob whose JSON has
+    // gone bad (schema drift after an upgrade, manual DB poke) gets
+    // skipped with a log line — the rest of the catalog still loads.
+    {
+        const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+        for (const auto& rec : records) {
+            try {
+                auto cfg = Constitution::from_json(rec.agent_def_json);
+                if (orch->has_agent(rec.agent_id)) orch->remove_agent(rec.agent_id);
+                orch->create_agent(rec.agent_id, std::move(cfg));
+            } catch (const std::exception& e) {
+                log_error("skipping stored agent '" + rec.agent_id + "' for tenant "
+                           + std::to_string(tenant.id) + ": " + e.what());
+            }
+        }
+    }
 
     // Install the inline agent definition (pre-validated above, so this
     // can't throw the user-visible errors — any failure now is internal
-    // and surfaces as an SSE `error` event).
+    // and surfaces as an SSE `error` event).  Inline wins over the stored
+    // catalog when ids collide.
     if (parsed_cfg) {
         if (orch->has_agent(agent_id)) orch->remove_agent(agent_id);
         orch->create_agent(agent_id, std::move(*parsed_cfg));
+    } else if (agent_id != "index" && !orch->has_agent(agent_id)) {
+        // No inline agent_def, no snapshot, no stored catalog row, and
+        // the caller didn't ask for the master.  Surface a clean SSE
+        // error so the caller knows what to send next time.
+        log_error("agent_def required for agent '" + agent_id + "' — no "
+                  "stored agent with this id for the tenant.  Send `agent_def` "
+                  "in the request body, POST it once to /v1/agents, or address "
+                  "'index' (the master orchestrator) instead.");
+        sse.close();
+        return;
     }
 
     auto* orch_ptr = orch.get();
@@ -2122,7 +2558,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
             if (kind == "entries") {
                 TenantStore::EntryFilter f;
-                f.limit = 100;
+                f.limit  = 100;
+                f.status = "accepted";   // agents see curated graph only
                 // Optional comma-sep type filter.
                 if (!args.empty()) {
                     size_t start = 0;
@@ -2152,15 +2589,21 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 try { id = std::stoll(args); } catch (...) { id = 0; }
                 if (id <= 0) return "ERR: usage: /mem entry <id>";
                 auto e = tenants.get_entry(reader_tenant_id, id);
-                if (!e) return "ERR: entry " + std::to_string(id) + " not found";
+                // Proposed entries are invisible to agent reads — return
+                // the same "not found" path so an agent can't introspect
+                // another agent's pending proposals.
+                if (!e || e->status != "accepted")
+                    return "ERR: entry " + std::to_string(id) + " not found";
                 std::ostringstream out;
                 out << fmt_entry_line(*e) << "\n";
                 if (!e->content.empty()) out << "\n" << e->content << "\n";
-                // Edges: relations where this entry is source OR target.
+                // Edges: accepted relations where this entry is source OR target.
                 auto out_edges = tenants.list_relations(reader_tenant_id, id, 0,
-                                                        std::string{}, 200);
+                                                        std::string{}, 200,
+                                                        /*status=*/"accepted");
                 auto in_edges  = tenants.list_relations(reader_tenant_id, 0, id,
-                                                        std::string{}, 200);
+                                                        std::string{}, 200,
+                                                        /*status=*/"accepted");
                 if (!out_edges.empty()) {
                     out << "\noutgoing:\n";
                     for (auto& r : out_edges)
@@ -2180,8 +2623,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 while (!q.empty() && q.back()  == ' ') q.pop_back();
                 if (q.empty()) return "ERR: usage: /mem search <query>";
                 TenantStore::EntryFilter f;
-                f.q     = q;
-                f.limit = 50;
+                f.q      = q;
+                f.limit  = 50;
+                f.status = "accepted";
                 auto entries = tenants.list_entries(reader_tenant_id, f);
                 if (entries.empty()) return "(no entries match '" + q + "')";
                 std::ostringstream out;
@@ -2192,6 +2636,246 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             }
 
             return "ERR: unknown structured-memory subcommand";
+        });
+
+    // Proposal-queue writer.  Mirror the reader's tenant scoping — agents
+    // can only propose into their own tenant's queue, and the rows land in
+    // 'proposed' status so they don't pollute the curated graph until a
+    // human accepts them.
+    orch->set_structured_memory_writer(
+        [&tenants, reader_tenant_id](const std::string& kind,
+                                      const std::string& args) -> std::string {
+            // Trim leading/trailing whitespace from a token.
+            auto trim = [](std::string s) {
+                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+                return s;
+            };
+
+            if (kind == "propose-entry") {
+                // /mem propose entry <type> <title>
+                std::istringstream iss(args);
+                std::string type;
+                iss >> type;
+                std::string title;
+                std::getline(iss, title);
+                title = trim(title);
+                if (type.empty() || title.empty()) {
+                    return "ERR: usage: /mem propose entry <type> <title>";
+                }
+                if (!memory_entry_type_is_valid(type)) {
+                    return "ERR: invalid type '" + type + "' — must be one of: "
+                           "user, feedback, project, reference, learning, context";
+                }
+                if (title.size() > 200) {
+                    return "ERR: title length must be 1..200 chars (got " +
+                           std::to_string(title.size()) + ")";
+                }
+                auto e = tenants.create_entry(reader_tenant_id, type, title,
+                                               /*content=*/"", /*source=*/"agent",
+                                               /*tags_json=*/"[]",
+                                               /*status=*/"proposed");
+                std::ostringstream out;
+                out << "OK: proposed entry #" << e.id << " [" << e.type << "] "
+                    << e.title
+                    << " (status=proposed; awaiting human review).  Use this "
+                       "id in subsequent /mem propose link calls to reference "
+                       "it.\n";
+                return out.str();
+            }
+
+            if (kind == "propose-link") {
+                // /mem propose link <src_id> <relation> <dst_id>
+                std::istringstream iss(args);
+                int64_t src = 0, dst = 0;
+                std::string relation;
+                iss >> src >> relation >> dst;
+                if (src <= 0 || dst <= 0 || relation.empty()) {
+                    return "ERR: usage: /mem propose link <src_id> <relation> <dst_id>";
+                }
+                if (src == dst) {
+                    return "ERR: self-loops not allowed";
+                }
+                if (!memory_relation_is_valid(relation)) {
+                    return "ERR: invalid relation '" + relation + "' — must be "
+                           "one of: relates_to, refines, contradicts, "
+                           "supersedes, supports";
+                }
+                // Both endpoints must already exist for this tenant — but
+                // can be either accepted or proposed.  An agent might have
+                // just proposed both endpoints in the same turn.
+                auto src_entry = tenants.get_entry(reader_tenant_id, src);
+                auto dst_entry = tenants.get_entry(reader_tenant_id, dst);
+                if (!src_entry || !dst_entry) {
+                    return "ERR: one or both endpoint ids do not exist for "
+                           "this tenant";
+                }
+                auto created = tenants.create_relation(reader_tenant_id,
+                                                        src, dst, relation,
+                                                        /*status=*/"proposed");
+                if (!created) {
+                    auto existing = tenants.find_relation(reader_tenant_id,
+                                                           src, dst, relation);
+                    std::ostringstream out;
+                    out << "ERR: a " << relation << " relation from #" << src
+                        << " to #" << dst << " already exists";
+                    if (existing) out << " (id=" << existing->id
+                                       << ", status=" << existing->status << ")";
+                    out << "\n";
+                    return out.str();
+                }
+                std::ostringstream out;
+                out << "OK: proposed relation #" << created->id << ": #" << src
+                    << " --[" << relation << "]--> #" << dst
+                    << " (status=proposed; awaiting human review).\n";
+                return out.str();
+            }
+
+            return "ERR: unknown structured-memory write subcommand";
+        });
+
+    // ── MCP session manager ───────────────────────────────────────────
+    // One Manager per request; subprocesses spawn lazily on first /mcp
+    // reference and die when the orchestrator's `mcp_mgr` shared_ptr
+    // falls out of scope (which happens at the end of this function or
+    // when the InFlightScope unwinds on cancel).  The manager lives
+    // beyond the orchestrator only via the invoker capture below — when
+    // the lambda is destroyed, so is the manager.
+    //
+    // Registry-load failures are non-fatal at request time: we log and
+    // proceed with an empty manager so /mcp returns a clean ERR rather
+    // than failing the whole request.  Operators see the parse error in
+    // the API server log.
+    std::shared_ptr<mcp::Manager> mcp_mgr;
+    if (!opts.mcp_servers_path.empty()) {
+        try {
+            auto specs = mcp::load_server_registry(opts.mcp_servers_path);
+            mcp_mgr = std::make_shared<mcp::Manager>(std::move(specs));
+        } catch (const std::exception& e) {
+            log_error(std::string("MCP registry load failed: ") + e.what());
+        }
+    }
+    if (!mcp_mgr) mcp_mgr = std::make_shared<mcp::Manager>(std::vector<mcp::ServerSpec>{});
+
+    orch->set_mcp_invoker(
+        [mcp_mgr](const std::string& kind, const std::string& args) -> std::string {
+            // /mcp tools  [server]
+            // /mcp call   <server> <tool> [json_args]
+            //
+            // The /mcp slash dispatcher in commands.cpp normalises `kind`
+            // to "tools" or "call" and hands us the rest of the line as
+            // `args`.  We're responsible for parsing args and rendering
+            // the response body.
+            auto trim = [](std::string s) {
+                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+                return s;
+            };
+
+            if (kind == "tools") {
+                std::string server = trim(args);
+                auto names = mcp_mgr->server_names();
+                if (names.empty()) {
+                    return "(no MCP servers configured for this deployment — "
+                           "set mcp_servers_path in ApiServerOptions and add an entry "
+                           "in the registry JSON.  See docs/api.md#mcp-servers.)\n";
+                }
+                std::ostringstream out;
+                std::vector<std::string> targets;
+                if (server.empty()) {
+                    targets = names;
+                } else if (mcp_mgr->has(server)) {
+                    targets.push_back(server);
+                } else {
+                    out << "ERR: no MCP server '" << server << "' configured. "
+                        << "Available: ";
+                    for (size_t i = 0; i < names.size(); ++i) {
+                        if (i) out << ", ";
+                        out << names[i];
+                    }
+                    out << "\n";
+                    return out.str();
+                }
+                for (auto& s : targets) {
+                    out << "[" << s << "]\n";
+                    try {
+                        auto& cli = mcp_mgr->client(s);
+                        auto& tools = cli.tools();
+                        if (tools.empty()) {
+                            out << "  (server returned no tools)\n";
+                        }
+                        for (auto& t : tools) {
+                            out << "  " << t.name;
+                            if (!t.description.empty()) {
+                                // First line of description only — the full
+                                // schema is verbose enough that an agent
+                                // querying tools should follow up with a
+                                // narrower /mcp tools <server> if it
+                                // already knows the namespace.
+                                std::string d = t.description;
+                                auto nl = d.find('\n');
+                                if (nl != std::string::npos) d.resize(nl);
+                                if (d.size() > 120) { d.resize(117); d += "..."; }
+                                out << " — " << d;
+                            }
+                            out << "\n";
+                        }
+                    } catch (const std::exception& e) {
+                        out << "  ERR: " << e.what() << "\n";
+                    }
+                }
+                return out.str();
+            }
+
+            if (kind == "call") {
+                // Parse: <server> <tool> [json_args]
+                std::istringstream iss(args);
+                std::string server, tool;
+                iss >> server >> tool;
+                std::string json_args;
+                std::getline(iss, json_args);
+                json_args = trim(json_args);
+
+                if (server.empty() || tool.empty()) {
+                    return "ERR: usage: /mcp call <server> <tool> [json_args]\n";
+                }
+                if (!mcp_mgr->has(server)) {
+                    auto names = mcp_mgr->server_names();
+                    std::ostringstream out;
+                    out << "ERR: no MCP server '" << server << "' configured.";
+                    if (!names.empty()) {
+                        out << " Available: ";
+                        for (size_t i = 0; i < names.size(); ++i) {
+                            if (i) out << ", ";
+                            out << names[i];
+                        }
+                    }
+                    out << "\n";
+                    return out.str();
+                }
+
+                std::shared_ptr<JsonValue> arg_obj;
+                if (!json_args.empty()) {
+                    try { arg_obj = json_parse(json_args); }
+                    catch (const std::exception& e) {
+                        return std::string("ERR: invalid JSON args: ") + e.what() + "\n";
+                    }
+                    if (!arg_obj || !arg_obj->is_object()) {
+                        return "ERR: tool args must be a JSON object (e.g. "
+                               "{\"url\":\"https://example.com\"})\n";
+                    }
+                }
+
+                try {
+                    auto& cli = mcp_mgr->client(server);
+                    auto result = cli.call_tool(tool, arg_obj);
+                    return mcp::render_tool_result(result);
+                } catch (const std::exception& e) {
+                    return std::string("ERR: ") + e.what() + "\n";
+                }
+            }
+
+            return "ERR: unknown /mcp subcommand";
         });
 
     // ── Fleet lifecycle ────────────────────────────────────────────────
@@ -2696,7 +3380,8 @@ void ApiServer::handle_connection(int fd) {
                     handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
                                         *tenant,
                                         /*agent_override=*/conv->agent_id,
-                                        /*conversation_id=*/id);
+                                        /*conversation_id=*/id,
+                                        /*conversation_agent_def_json=*/conv->agent_def_json);
                     return;
                 }
                 write_plain_response(fd, 405, "Method Not Allowed",
@@ -2709,19 +3394,34 @@ void ApiServer::handle_connection(int fd) {
         }
     }
 
-    // ── Agent discovery + direct chat ────────────────────────────────────
-    // GET /v1/agents               — list all loadable agents (master + children)
-    // GET /v1/agents/:id           — one agent's constitution
-    // POST /v1/agents/:id/chat     — orchestrate, but agent_id comes from path
+    // ── Agent catalog + direct chat ──────────────────────────────────────
+    // GET    /v1/agents              — list this tenant's stored agents + index
+    // POST   /v1/agents              — create a stored agent for this tenant
+    // GET    /v1/agents/:id          — fetch one (index or stored)
+    // PATCH  /v1/agents/:id          — replace a stored agent's blob
+    // DELETE /v1/agents/:id          — remove a stored agent
+    // POST   /v1/agents/:id/chat     — orchestrate against a stored agent (or index)
     {
         const auto segs = split_path(req.path);
         if (segs.size() >= 2 && segs[0] == "v1" && segs[1] == "agents") {
-            if (req.method == "GET" && segs.size() == 2) {
-                handle_agents_list(fd, opts_);
+            if (segs.size() == 2) {
+                if (req.method == "GET")
+                    return handle_agents_list(fd, opts_, tenants_, *tenant);
+                if (req.method == "POST")
+                    return handle_agent_create(fd, req, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
                 return;
             }
-            if (req.method == "GET" && segs.size() == 3) {
-                handle_agent_get(fd, segs[2], opts_);
+            if (segs.size() == 3) {
+                if (req.method == "GET")
+                    return handle_agent_get(fd, segs[2], opts_, tenants_, *tenant);
+                if (req.method == "PATCH")
+                    return handle_agent_patch(fd, segs[2], req, tenants_, *tenant);
+                if (req.method == "DELETE")
+                    return handle_agent_delete(fd, segs[2], tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
                 return;
             }
             if (req.method == "POST" && segs.size() == 4 && segs[3] == "chat") {
@@ -2799,6 +3499,8 @@ void ApiServer::handle_connection(int fd) {
                         write_plain_response(fd, 400, "Bad Request", "bad relation id\n");
                         return;
                     }
+                    if (req.method == "PATCH")
+                        return handle_memory_relation_patch(fd, id, req, tenants_, *tenant);
                     if (req.method == "DELETE")
                         return handle_memory_relation_delete(fd, id, tenants_, *tenant);
                     write_plain_response(fd, 405, "Method Not Allowed",
@@ -2806,6 +3508,16 @@ void ApiServer::handle_connection(int fd) {
                     return;
                 }
                 write_plain_response(fd, 404, "Not Found", "memory route not found\n");
+                return;
+            }
+            // ── /v1/memory/proposals ───────────────────────────────────
+            if (segs.size() == 3 && segs[2] == "proposals") {
+                if (req.method != "GET") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                handle_memory_proposals_list(fd, req, tenants_, *tenant);
                 return;
             }
             // ── /v1/memory/graph ───────────────────────────────────────

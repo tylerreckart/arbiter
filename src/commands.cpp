@@ -53,6 +53,12 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = line.substr(7);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
+        } else if (line.size() > 5 && line.substr(0, 5) == "/mcp ") {
+            AgentCommand cmd;
+            cmd.name = "mcp";
+            cmd.args = line.substr(5);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+
         } else if (line.size() > 5 && line.substr(0, 5) == "/mem ") {
             AgentCommand cmd;
             cmd.name = "mem";
@@ -803,7 +809,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    WriteInterceptor write_interceptor,
                                    bool           exec_disabled,
                                    ParallelInvoker parallel_invoker,
-                                   StructuredMemoryReader structured_memory_reader) {
+                                   StructuredMemoryReader structured_memory_reader,
+                                   StructuredMemoryWriter structured_memory_writer,
+                                   MCPInvoker     mcp_invoker) {
     std::ostringstream out;
     out << "\n";
 
@@ -866,6 +874,53 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << fetched << "\n";
                 block << "[END FETCH]\n\n";
             }
+
+        } else if (cmd.name == "mcp") {
+            // /mcp tools [server]                 — list configured tools
+            // /mcp call  <server> <tool> [json]   — invoke a tool, stateful
+            //                                       within this orchestrator's
+            //                                       lifetime (subprocess dies
+            //                                       at request end).
+            //
+            // Capped: same per-turn budget as /fetch since MCP responses can
+            // be far chunkier (playwright accessibility snapshots routinely
+            // hit tens of KB).  Body cap mirrors kPerFetchLimit so a single
+            // /mcp call can't exhaust the turn's tool-result budget.
+            std::istringstream iss(cmd.args);
+            std::string subcmd;
+            iss >> subcmd;
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+
+            std::string callback_kind;
+            if      (subcmd == "tools") callback_kind = "tools";
+            else if (subcmd == "call")  callback_kind = "call";
+
+            block << "[/mcp " << subcmd
+                  << (rest.empty() ? "" : " " + rest) << "]\n";
+            if (callback_kind.empty()) {
+                block << "ERR: usage: /mcp tools [server]  OR  "
+                         "/mcp call <server> <tool> [json_args]\n";
+                cache_result = false;
+            } else if (!mcp_invoker) {
+                block << "ERR: MCP unavailable in this context — only the "
+                         "HTTP API spawns the per-request MCP manager.  "
+                         "Adapt: drop the /mcp step or run under "
+                         "/v1/orchestrate.\n";
+                cache_result = false;
+            } else {
+                std::string body = mcp_invoker(callback_kind, rest);
+                if (body.size() > kPerFetchLimit) {
+                    body.resize(kPerFetchLimit);
+                    body += "\n... [truncated]";
+                }
+                block << body;
+                if (body.empty() || body.back() != '\n') block << "\n";
+                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
+            }
+            block << "[END MCP]\n\n";
 
         } else if (cmd.name == "mem") {
             std::istringstream iss(cmd.args);
@@ -946,10 +1001,50 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 }
                 block << "[END MEMORY]\n\n";
 
+            } else if (subcmd == "propose") {
+                // Agent-contributed proposal queue.  Two shapes:
+                //   /mem propose entry <type> <title>
+                //   /mem propose link  <src_id> <relation> <dst_id>
+                // Both land in 'proposed' status and stay invisible to
+                // every read path (HTTP and agent) until a human accepts
+                // them via PATCH {"status":"accepted"}.  Reject = DELETE.
+                // Reading the second token consumes it; the rest of the
+                // line is handed to the writer callback as `args`.
+                std::string kind;
+                iss >> kind;
+                std::string args;
+                std::getline(iss, args);
+                if (!args.empty() && args[0] == ' ') args.erase(0, 1);
+
+                std::string callback_kind;
+                if      (kind == "entry") callback_kind = "propose-entry";
+                else if (kind == "link")  callback_kind = "propose-link";
+
+                block << "[/mem propose " << kind
+                      << (args.empty() ? "" : " " + args) << "]\n";
+                if (callback_kind.empty()) {
+                    block << "ERR: usage: /mem propose entry <type> <title> "
+                             "OR /mem propose link <src_id> <relation> <dst_id>\n";
+                    cache_result = false;
+                } else if (!structured_memory_writer) {
+                    block << "ERR: structured memory unavailable in this context — "
+                             "this surface is only available when running under "
+                             "the HTTP API with a tenant token.  Adapt: drop "
+                             "the /mem propose step.\n";
+                    cache_result = false;
+                } else {
+                    std::string body = structured_memory_writer(callback_kind, args);
+                    block << body;
+                    if (body.empty() || body.back() != '\n') block << "\n";
+                    if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                        cache_result = false;
+                }
+                block << "[END MEMORY]\n\n";
+
             } else {
                 block << "[/mem] ERR: unknown subcommand '" << subcmd
                       << "' — use read, write, show, clear, shared, "
-                         "entries, entry, or search\n\n";
+                         "entries, entry, search, or propose\n\n";
                 cache_result = false;
             }
 

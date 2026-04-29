@@ -73,6 +73,33 @@ struct ConversationMessage {
     std::string request_id;             // correlates with usage_log + cancel
 };
 
+// One row from the tenant_agents table.  Persists per-tenant agent
+// definitions sent from the front-end so callers can reference them
+// across requests by `agent_id` instead of re-sending the full
+// `agent_def` JSON on every turn.  The HTTP API is authoritative for
+// the catalog: the front-end is the source of truth and the server
+// stores whatever it sends, replacing the blob wholesale on PATCH.
+//
+// `agent_id` is caller-chosen (typically a UUID owned by the sibling
+// service) and is what `/agent`, `/parallel`, and the orchestrate
+// request body all reference.  Unique per-tenant — two tenants can
+// independently use the id "researcher" without collision.
+//
+// `name`, `role`, `model` are denormalised from the canonical
+// `agent_def_json` blob solely for cheap list-display rendering;
+// reads that need anything else parse the blob.
+struct AgentRecord {
+    int64_t     id              = 0;
+    int64_t     tenant_id       = 0;
+    std::string agent_id;               // caller-chosen identifier
+    std::string name;
+    std::string role;
+    std::string model;
+    std::string agent_def_json;         // raw canonical JSON blob
+    int64_t     created_at      = 0;
+    int64_t     updated_at      = 0;
+};
+
 // One row from the memory_entries table.  These are the structured-memory
 // nodes the frontend graph UI renders — each entry is a typed note with
 // free-form content, an optional list of tags, and a free-form provenance
@@ -88,6 +115,12 @@ struct MemoryEntry {
     std::string content;
     std::string source;                 // free-form provenance string
     std::string tags_json;              // raw JSON array of strings; serialize on output
+    // "accepted" → live in the curated graph (default everywhere).
+    // "proposed" → agent-contributed, awaiting human review.  Hidden from
+    //              the normal list/get/graph reads (and from agent reads
+    //              via /mem entries|entry|search) — only surfaces through
+    //              GET /v1/memory/proposals.
+    std::string status;
     int64_t     created_at  = 0;
     int64_t     updated_at  = 0;
 };
@@ -103,6 +136,7 @@ struct MemoryRelation {
     int64_t     source_id   = 0;
     int64_t     target_id   = 0;
     std::string relation;               // closed enum, validated server-side
+    std::string status;                 // "accepted" | "proposed"; see MemoryEntry::status
     int64_t     created_at  = 0;
 };
 
@@ -281,6 +315,46 @@ public:
     list_messages(int64_t tenant_id, int64_t conversation_id,
                   int64_t after_id, int limit) const;
 
+    // ── Tenant-stored agent definitions ────────────────────────────────
+    //
+    // Per-tenant catalog of agent constitutions sent from the front-end.
+    // Lets callers POST an agent once and reference it by `agent_id` on
+    // every subsequent /v1/orchestrate, /agent, or /parallel call instead
+    // of re-sending the full blob.  All methods are tenant-scoped — a
+    // leaked id never surfaces another tenant's row.
+    //
+    // `agent_def_json` is the canonical blob; `name`/`role`/`model` are
+    // denormalised for list-display ergonomics.  PATCH replaces the blob
+    // wholesale (no field-level merge) since the front-end owns the
+    // canonical representation.
+
+    // Returns nullopt on unique-index conflict on (tenant_id, agent_id) —
+    // caller surfaces 409 with the existing row.
+    std::optional<AgentRecord> create_agent_record(int64_t tenant_id,
+                                                    const std::string& agent_id,
+                                                    const std::string& name,
+                                                    const std::string& role,
+                                                    const std::string& model,
+                                                    const std::string& agent_def_json);
+
+    std::optional<AgentRecord> get_agent_record(int64_t tenant_id,
+                                                 const std::string& agent_id) const;
+
+    // Newest `updated_at` first.  Hard-capped at 200 per page.
+    std::vector<AgentRecord> list_agent_records(int64_t tenant_id,
+                                                 int limit) const;
+
+    // Wholesale replace.  Bumps updated_at.  Returns false if the row
+    // doesn't exist for this tenant.
+    bool update_agent_record(int64_t tenant_id,
+                              const std::string& agent_id,
+                              const std::string& name,
+                              const std::string& role,
+                              const std::string& model,
+                              const std::string& agent_def_json);
+
+    bool delete_agent_record(int64_t tenant_id, const std::string& agent_id);
+
     // ── Structured memory entries + relations ───────────────────────────
     //
     // Tenant-scoped graph storage backing the frontend's force-graph view.
@@ -291,13 +365,16 @@ public:
 
     // `tags_json` is the raw JSON array of strings — caller validates the
     // shape (this layer trusts it).  `source` is a free-form provenance
-    // string ("planning", "ingest", a URL, etc.).
+    // string ("planning", "ingest", a URL, etc.).  `status` defaults to
+    // "accepted" for the HTTP create path; agent-contributed proposals
+    // pass "proposed".
     MemoryEntry create_entry(int64_t tenant_id,
                               const std::string& type,
                               const std::string& title,
                               const std::string& content,
                               const std::string& source,
-                              const std::string& tags_json);
+                              const std::string& tags_json,
+                              const std::string& status = "accepted");
 
     std::optional<MemoryEntry> get_entry(int64_t tenant_id, int64_t id) const;
 
@@ -308,6 +385,11 @@ public:
         int64_t                  since                 = 0;  // created_at >= since
         int64_t                  before_updated_at     = 0;  // cursor; 0 = latest
         int                      limit                 = 50;
+        // "" = no filter (all statuses); "accepted" = curated only;
+        // "proposed" = the review queue.  Empty default keeps the type
+        // ergonomic for existing callers; HTTP/agent paths pass "accepted"
+        // explicitly so proposals never leak into normal reads.
+        std::string              status;
     };
     std::vector<MemoryEntry> list_entries(int64_t tenant_id,
                                            const EntryFilter& f) const;
@@ -326,24 +408,42 @@ public:
 
     // Returns nullopt on unique-index conflict — caller pairs that with
     // find_relation() to surface the existing row in a 409 response.
+    // `status` defaults to "accepted"; agent-contributed proposals pass
+    // "proposed".
     std::optional<MemoryRelation> create_relation(int64_t tenant_id,
                                                    int64_t source_id,
                                                    int64_t target_id,
-                                                   const std::string& relation);
+                                                   const std::string& relation,
+                                                   const std::string& status = "accepted");
 
     std::optional<MemoryRelation> find_relation(int64_t tenant_id,
                                                  int64_t source_id,
                                                  int64_t target_id,
                                                  const std::string& relation) const;
 
-    // Filter args: 0/empty = no filter on that dimension.  Hard-capped at 1000.
+    // Filter args: 0/empty = no filter on that dimension.  `status` follows
+    // EntryFilter::status semantics — "" for any, "accepted" for curated,
+    // "proposed" for the review queue.  Hard-capped at 1000.
     std::vector<MemoryRelation> list_relations(int64_t tenant_id,
                                                 int64_t source_id,
                                                 int64_t target_id,
                                                 const std::string& relation,
-                                                int limit) const;
+                                                int limit,
+                                                const std::string& status = "accepted") const;
 
     bool delete_relation(int64_t tenant_id, int64_t id);
+
+    // Promote a 'proposed' entry to 'accepted'.  Returns false if the
+    // entry doesn't exist for this tenant or isn't currently 'proposed'
+    // (caller surfaces 404 / 409 accordingly).  Bumps updated_at.
+    bool accept_entry(int64_t tenant_id, int64_t id);
+
+    // Promote a 'proposed' relation to 'accepted'.  Returns false if the
+    // relation doesn't exist for this tenant, isn't currently 'proposed',
+    // or either endpoint entry is not in 'accepted' status — the human
+    // reviewer must accept the entry endpoints first.  Caller can use
+    // get_entry() on each endpoint to surface a precise 409 reason.
+    bool accept_relation(int64_t tenant_id, int64_t id);
 
 private:
     sqlite3* db_ = nullptr;

@@ -84,6 +84,10 @@ set(INDEX_AI_SOURCES
     src/tenant_store.cpp
     src/json.cpp
     src/commands.cpp
+    src/mcp/types.cpp
+    src/mcp/subprocess.cpp
+    src/mcp/client.cpp
+    src/mcp/manager.cpp
     src/readline_wrapper.cpp
     src/cost_tracker.cpp
     src/markdown.cpp
@@ -234,4 +238,38 @@ if(INDEX_BUILD_TESTS)
         SQLite3::SQLite3
     )
     add_test(NAME unit_memory_entries COMMAND unit_memory_entries)
+
+    # Per-tenant agent catalog (POST/GET/PATCH/DELETE /v1/agents storage).
+    add_executable(unit_tenant_agents
+        tests/test_tenant_agents.cpp
+        src/tenant_store.cpp
+    )
+    target_include_directories(unit_tenant_agents PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_tenant_agents PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_tenant_agents COMMAND unit_tenant_agents)
+
+    # MCP layer (JSON-RPC framing, subprocess wrapper, /mcp dispatch).
+    # Live-server tests are intentionally not wired here — manual smoke
+    # via `arbiter --api` covers the playwright path.
+    add_executable(unit_mcp
+        tests/test_mcp.cpp
+        src/mcp/types.cpp
+        src/mcp/subprocess.cpp
+        src/commands.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_mcp PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_mcp PRIVATE CURL::libcurl)
+    add_test(NAME unit_mcp COMMAND unit_mcp)
 endif()

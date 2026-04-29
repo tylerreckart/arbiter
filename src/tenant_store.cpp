@@ -315,6 +315,82 @@ void TenantStore::open(const std::string& path) {
         CREATE UNIQUE INDEX IF NOT EXISTS memory_relations_unique
             ON memory_relations(tenant_id, source_id, target_id, relation);
     )SQL");
+
+    // Proposal-queue status column (added in v5).  'accepted' rows are
+    // the curated graph; 'proposed' rows are agent-contributed entries
+    // awaiting human review and are hidden from the normal list/get/graph
+    // reads.  ALTER TABLE ADD COLUMN is idempotent only when the column
+    // doesn't already exist — reuse the column_exists/add_column helpers
+    // pattern from usage_log above.
+    auto entries_col_exists = [this](const char* col) -> bool {
+        Stmt q(db_, "PRAGMA table_info(memory_entries);");
+        while (q.step() == SQLITE_ROW) {
+            if (q.column_text(1) == col) return true;
+        }
+        return false;
+    };
+    auto add_entries_col = [this, &entries_col_exists](const char* col, const char* defn) {
+        if (entries_col_exists(col)) return;
+        std::string sql = std::string("ALTER TABLE memory_entries ADD COLUMN ") +
+                          col + " " + defn + ";";
+        exec_sql(db_, sql.c_str());
+    };
+    add_entries_col("status", "TEXT NOT NULL DEFAULT 'accepted'");
+
+    auto relations_col_exists = [this](const char* col) -> bool {
+        Stmt q(db_, "PRAGMA table_info(memory_relations);");
+        while (q.step() == SQLITE_ROW) {
+            if (q.column_text(1) == col) return true;
+        }
+        return false;
+    };
+    auto add_relations_col = [this, &relations_col_exists](const char* col, const char* defn) {
+        if (relations_col_exists(col)) return;
+        std::string sql = std::string("ALTER TABLE memory_relations ADD COLUMN ") +
+                          col + " " + defn + ";";
+        exec_sql(db_, sql.c_str());
+    };
+    add_relations_col("status", "TEXT NOT NULL DEFAULT 'accepted'");
+
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS memory_entries_tenant_status
+            ON memory_entries(tenant_id, status);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS memory_relations_tenant_status
+            ON memory_relations(tenant_id, status);
+    )SQL");
+
+    // ── Per-tenant agent catalog (added in v6) ─────────────────────────
+    // Stores agent_def blobs sent from the front-end so callers can
+    // reference agents by `agent_id` across requests instead of re-
+    // sending the full constitution every turn.  `agent_id` is caller-
+    // chosen; the unique index keeps a tenant from registering the same
+    // id twice but lets two tenants independently use overlapping ids.
+    // The denormalised name/role/model columns exist only to keep list
+    // responses cheap — `agent_def_json` is the canonical source.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS tenant_agents (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id       INTEGER NOT NULL,
+            agent_id        TEXT    NOT NULL,
+            name            TEXT    NOT NULL DEFAULT '',
+            role            TEXT    NOT NULL DEFAULT '',
+            model           TEXT    NOT NULL DEFAULT '',
+            agent_def_json  TEXT    NOT NULL,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE UNIQUE INDEX IF NOT EXISTS tenant_agents_tenant_agent_id
+            ON tenant_agents(tenant_id, agent_id);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS tenant_agents_tenant_updated
+            ON tenant_agents(tenant_id, updated_at DESC);
+    )SQL");
 }
 
 TenantStore::CreatedTenant
@@ -881,7 +957,7 @@ bool TenantStore::reload_tenant(int64_t id, Tenant& t) const {
 namespace {
 
 constexpr const char* kEntryCols =
-    "id, tenant_id, type, title, content, source, tags, created_at, updated_at";
+    "id, tenant_id, type, title, content, source, tags, status, created_at, updated_at";
 
 MemoryEntry row_to_entry(Stmt& q) {
     MemoryEntry e;
@@ -892,13 +968,14 @@ MemoryEntry row_to_entry(Stmt& q) {
     e.content    = q.column_text(4);
     e.source     = q.column_text(5);
     e.tags_json  = q.column_text(6);
-    e.created_at = q.column_int64(7);
-    e.updated_at = q.column_int64(8);
+    e.status     = q.column_text(7);
+    e.created_at = q.column_int64(8);
+    e.updated_at = q.column_int64(9);
     return e;
 }
 
 constexpr const char* kRelationCols =
-    "id, tenant_id, source_id, target_id, relation, created_at";
+    "id, tenant_id, source_id, target_id, relation, status, created_at";
 
 MemoryRelation row_to_relation(Stmt& q) {
     MemoryRelation r;
@@ -907,7 +984,8 @@ MemoryRelation row_to_relation(Stmt& q) {
     r.source_id  = q.column_int64(2);
     r.target_id  = q.column_int64(3);
     r.relation   = q.column_text(4);
-    r.created_at = q.column_int64(5);
+    r.status     = q.column_text(5);
+    r.created_at = q.column_int64(6);
     return r;
 }
 
@@ -918,22 +996,24 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
                                        const std::string& title,
                                        const std::string& content,
                                        const std::string& source,
-                                       const std::string& tags_json) {
+                                       const std::string& tags_json,
+                                       const std::string& status) {
     if (!db_) throw std::runtime_error("TenantStore not opened");
 
     const int64_t now = now_epoch();
     Stmt q(db_,
         "INSERT INTO memory_entries "
-        "(tenant_id, type, title, content, source, tags, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?);");
+        "(tenant_id, type, title, content, source, tags, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);");
     q.bind(1, tenant_id);
     q.bind(2, type);
     q.bind(3, title);
     q.bind(4, content);
     q.bind(5, source);
     q.bind(6, tags_json.empty() ? std::string("[]") : tags_json);
-    q.bind(7, now);
+    q.bind(7, status.empty() ? std::string("accepted") : status);
     q.bind(8, now);
+    q.bind(9, now);
     int rc = q.step();
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert memory_entry");
 
@@ -945,6 +1025,7 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
     e.content    = content;
     e.source     = source;
     e.tags_json  = tags_json.empty() ? "[]" : tags_json;
+    e.status     = status.empty() ? "accepted" : status;
     e.created_at = now;
     e.updated_at = now;
     return e;
@@ -983,6 +1064,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
     if (!f.q.empty())            sql += " AND (title LIKE ? OR content LIKE ?)";
     if (f.since > 0)             sql += " AND created_at >= ?";
     if (f.before_updated_at > 0) sql += " AND updated_at < ?";
+    if (!f.status.empty())       sql += " AND status = ?";
 
     const int cap = (f.limit > 0 && f.limit <= 200) ? f.limit : 50;
     sql += " ORDER BY updated_at DESC LIMIT ?;";
@@ -1002,6 +1084,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
     }
     if (f.since > 0)             q.bind(idx++, f.since);
     if (f.before_updated_at > 0) q.bind(idx++, f.before_updated_at);
+    if (!f.status.empty())       q.bind(idx++, f.status);
     q.bind(idx, static_cast<int64_t>(cap));
 
     while (q.step() == SQLITE_ROW) out.push_back(row_to_entry(q));
@@ -1064,18 +1147,21 @@ bool TenantStore::delete_entry(int64_t tenant_id, int64_t id) {
 std::optional<MemoryRelation>
 TenantStore::create_relation(int64_t tenant_id,
                               int64_t source_id, int64_t target_id,
-                              const std::string& relation) {
+                              const std::string& relation,
+                              const std::string& status) {
     if (!db_) return std::nullopt;
     const int64_t now = now_epoch();
+    const std::string s = status.empty() ? std::string("accepted") : status;
     Stmt q(db_,
         "INSERT INTO memory_relations "
-        "(tenant_id, source_id, target_id, relation, created_at) "
-        "VALUES (?, ?, ?, ?, ?);");
+        "(tenant_id, source_id, target_id, relation, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?);");
     q.bind(1, tenant_id);
     q.bind(2, source_id);
     q.bind(3, target_id);
     q.bind(4, relation);
-    q.bind(5, now);
+    q.bind(5, s);
+    q.bind(6, now);
     int rc = q.step();
     if (rc == SQLITE_CONSTRAINT) return std::nullopt;
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert memory_relation");
@@ -1086,6 +1172,7 @@ TenantStore::create_relation(int64_t tenant_id,
     r.source_id  = source_id;
     r.target_id  = target_id;
     r.relation   = relation;
+    r.status     = s;
     r.created_at = now;
     return r;
 }
@@ -1110,7 +1197,8 @@ std::vector<MemoryRelation>
 TenantStore::list_relations(int64_t tenant_id,
                              int64_t source_id, int64_t target_id,
                              const std::string& relation,
-                             int limit) const {
+                             int limit,
+                             const std::string& status) const {
     std::vector<MemoryRelation> out;
     if (!db_) return out;
 
@@ -1119,6 +1207,7 @@ TenantStore::list_relations(int64_t tenant_id,
     if (source_id > 0)     sql += " AND source_id = ?";
     if (target_id > 0)     sql += " AND target_id = ?";
     if (!relation.empty()) sql += " AND relation = ?";
+    if (!status.empty())   sql += " AND status = ?";
     const int cap = (limit > 0 && limit <= 1000) ? limit : 200;
     sql += " ORDER BY id DESC LIMIT ?;";
 
@@ -1128,6 +1217,7 @@ TenantStore::list_relations(int64_t tenant_id,
     if (source_id > 0)     q.bind(idx++, source_id);
     if (target_id > 0)     q.bind(idx++, target_id);
     if (!relation.empty()) q.bind(idx++, relation);
+    if (!status.empty())   q.bind(idx++, status);
     q.bind(idx, static_cast<int64_t>(cap));
 
     while (q.step() == SQLITE_ROW) out.push_back(row_to_relation(q));
@@ -1139,6 +1229,172 @@ bool TenantStore::delete_relation(int64_t tenant_id, int64_t id) {
     Stmt q(db_, "DELETE FROM memory_relations WHERE tenant_id = ? AND id = ?;");
     q.bind(1, tenant_id);
     q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::accept_entry(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    // Conditional update — only succeeds if the row is currently 'proposed'.
+    // Rows that don't exist or are already accepted leave sqlite3_changes() at 0.
+    Stmt q(db_,
+        "UPDATE memory_entries "
+        "   SET status = 'accepted', updated_at = ? "
+        " WHERE tenant_id = ? AND id = ? AND status = 'proposed';");
+    q.bind(1, now_epoch());
+    q.bind(2, tenant_id);
+    q.bind(3, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::accept_relation(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    // Read the row first so we can validate the both-endpoints-accepted
+    // invariant before flipping status.  A relation pointing at a still-
+    // proposed entry would surface as a dangling edge in the curated graph.
+    Stmt s(db_, (std::string("SELECT ") + kRelationCols +
+                 " FROM memory_relations WHERE tenant_id = ? AND id = ?;").c_str());
+    s.bind(1, tenant_id);
+    s.bind(2, id);
+    if (s.step() != SQLITE_ROW) return false;
+    MemoryRelation rel = row_to_relation(s);
+    if (rel.status != "proposed") return false;
+
+    // Both endpoint entries must already be in the curated graph.
+    auto src = get_entry(tenant_id, rel.source_id);
+    auto dst = get_entry(tenant_id, rel.target_id);
+    if (!src || !dst) return false;
+    if (src->status != "accepted" || dst->status != "accepted") return false;
+
+    Stmt q(db_,
+        "UPDATE memory_relations "
+        "   SET status = 'accepted' "
+        " WHERE tenant_id = ? AND id = ? AND status = 'proposed';");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+// ── Tenant agent catalog ───────────────────────────────────────────────
+
+namespace {
+
+constexpr const char* kAgentCols =
+    "id, tenant_id, agent_id, name, role, model, agent_def_json, "
+    "created_at, updated_at";
+
+AgentRecord row_to_agent(Stmt& q) {
+    AgentRecord a;
+    a.id              = q.column_int64(0);
+    a.tenant_id       = q.column_int64(1);
+    a.agent_id        = q.column_text(2);
+    a.name            = q.column_text(3);
+    a.role            = q.column_text(4);
+    a.model           = q.column_text(5);
+    a.agent_def_json  = q.column_text(6);
+    a.created_at      = q.column_int64(7);
+    a.updated_at      = q.column_int64(8);
+    return a;
+}
+
+} // namespace
+
+std::optional<AgentRecord>
+TenantStore::create_agent_record(int64_t tenant_id,
+                                  const std::string& agent_id,
+                                  const std::string& name,
+                                  const std::string& role,
+                                  const std::string& model,
+                                  const std::string& agent_def_json) {
+    if (!db_ || tenant_id <= 0 || agent_id.empty()) return std::nullopt;
+    const int64_t now = now_epoch();
+    Stmt q(db_,
+        "INSERT INTO tenant_agents "
+        "(tenant_id, agent_id, name, role, model, agent_def_json, "
+        " created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, agent_id);
+    q.bind(3, name);
+    q.bind(4, role);
+    q.bind(5, model);
+    q.bind(6, agent_def_json);
+    q.bind(7, now);
+    q.bind(8, now);
+    int rc = q.step();
+    if (rc == SQLITE_CONSTRAINT) return std::nullopt;
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert tenant_agent");
+
+    AgentRecord a;
+    a.id              = sqlite3_last_insert_rowid(db_);
+    a.tenant_id       = tenant_id;
+    a.agent_id        = agent_id;
+    a.name            = name;
+    a.role            = role;
+    a.model           = model;
+    a.agent_def_json  = agent_def_json;
+    a.created_at      = now;
+    a.updated_at      = now;
+    return a;
+}
+
+std::optional<AgentRecord>
+TenantStore::get_agent_record(int64_t tenant_id,
+                               const std::string& agent_id) const {
+    if (!db_) return std::nullopt;
+    Stmt q(db_, (std::string("SELECT ") + kAgentCols +
+                 " FROM tenant_agents WHERE tenant_id = ? AND agent_id = ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, agent_id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_agent(q);
+}
+
+std::vector<AgentRecord>
+TenantStore::list_agent_records(int64_t tenant_id, int limit) const {
+    std::vector<AgentRecord> out;
+    if (!db_) return out;
+    const int cap = (limit > 0 && limit <= 200) ? limit : 50;
+    Stmt q(db_, (std::string("SELECT ") + kAgentCols +
+                 " FROM tenant_agents WHERE tenant_id = ? "
+                 " ORDER BY updated_at DESC LIMIT ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, static_cast<int64_t>(cap));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_agent(q));
+    return out;
+}
+
+bool TenantStore::update_agent_record(int64_t tenant_id,
+                                       const std::string& agent_id,
+                                       const std::string& name,
+                                       const std::string& role,
+                                       const std::string& model,
+                                       const std::string& agent_def_json) {
+    if (!db_) return false;
+    Stmt q(db_,
+        "UPDATE tenant_agents "
+        "   SET name = ?, role = ?, model = ?, agent_def_json = ?, "
+        "       updated_at = ? "
+        " WHERE tenant_id = ? AND agent_id = ?;");
+    q.bind(1, name);
+    q.bind(2, role);
+    q.bind(3, model);
+    q.bind(4, agent_def_json);
+    q.bind(5, now_epoch());
+    q.bind(6, tenant_id);
+    q.bind(7, agent_id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::delete_agent_record(int64_t tenant_id,
+                                       const std::string& agent_id) {
+    if (!db_) return false;
+    Stmt q(db_, "DELETE FROM tenant_agents WHERE tenant_id = ? AND agent_id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, agent_id);
     q.step();
     return sqlite3_changes(db_) > 0;
 }

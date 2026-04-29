@@ -474,7 +474,9 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
                                               write_interceptor_cb_,
                                               exec_disabled_,
                                               parallel_invoker,
-                                              structured_memory_reader_cb_);
+                                              structured_memory_reader_cb_,
+                                              structured_memory_writer_cb_,
+                                              mcp_invoker_cb_);
     }
 
     if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
@@ -589,7 +591,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                               write_interceptor_cb_,
                                               exec_disabled_,
                                               parallel_invoker,
-                                              structured_memory_reader_cb_);
+                                              structured_memory_reader_cb_,
+                                              structured_memory_writer_cb_,
+                                              mcp_invoker_cb_);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) {
             if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);

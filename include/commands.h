@@ -115,11 +115,38 @@ using WriteInterceptor = std::function<std::string(const std::string& path,
 // The callback receives the subcommand kind ("entries" | "entry" | "search")
 // and the rest of the line, and returns the pre-formatted body that goes
 // into the [/mem ...] tool-result block (without the [/mem ...] header).
-// Reads only — there is no slash-command path for creating, updating, or
-// deleting entries; structured memory is HTTP-write-only.  Without this
+// Reads only — see StructuredMemoryWriter for the write half.  Without this
 // callback wired, the dispatcher returns ERR so the agent adapts.
 using StructuredMemoryReader = std::function<std::string(const std::string& kind,
                                                           const std::string& args)>;
+
+// Write window for agent-contributed entries and links.  When set, the
+// dispatcher exposes:
+//   /mem propose entry <type> <title>           — propose a new typed node
+//   /mem propose link <src_id> <relation> <dst_id> — propose a directed edge
+// All writes land in the proposal queue with status='proposed' — they do
+// NOT show up in the curated graph reads (or in the agent's own reads via
+// /mem entries|entry|search) until a human accepts them through the HTTP
+// surface.  The callback receives the subcommand kind ("propose-entry" |
+// "propose-link") and the rest of the line, and returns the formatted body
+// for the [/mem propose ...] tool-result block.  Without this callback
+// wired, the dispatcher returns ERR.
+using StructuredMemoryWriter = std::function<std::string(const std::string& kind,
+                                                          const std::string& args)>;
+
+// Bridge to the per-request MCP session manager.  Drives the agent-
+// facing /mcp slash surface:
+//   /mcp tools                       — list every configured server's tools
+//   /mcp tools <server>              — list one server's tools
+//   /mcp call  <server> <tool> [json] — invoke a tool with optional JSON args
+// The callback receives the subcommand kind ("tools" | "call") and the
+// rest of the line, and returns the body for the [/mcp ...] tool-result
+// block.  Spawning + lifecycle is the callback's concern (the
+// orchestrator owns an MCP Manager whose clients die when the request
+// ends).  Without this callback, the dispatcher returns ERR — same
+// pattern as the structured-memory readers/writers.
+using MCPInvoker = std::function<std::string(const std::string& kind,
+                                              const std::string& args)>;
 
 // True if `cmd` matches a pattern we always want to confirm before exec'ing
 // (rm, rm -rf, redirects, sudo, mkfs, git force-push, find -delete, etc.).
@@ -149,7 +176,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    WriteInterceptor write_interceptor = nullptr,
                                    bool           exec_disabled   = false,
                                    ParallelInvoker parallel_invoker = nullptr,
-                                   StructuredMemoryReader structured_memory_reader = nullptr);
+                                   StructuredMemoryReader structured_memory_reader = nullptr,
+                                   StructuredMemoryWriter structured_memory_writer = nullptr,
+                                   MCPInvoker     mcp_invoker     = nullptr);
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

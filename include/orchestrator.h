@@ -81,6 +81,21 @@ public:
         structured_memory_reader_cb_ = std::move(cb);
     }
 
+    // Write window for agent-contributed proposals.  /mem propose entry|link
+    // routes through this callback and lands rows in the 'proposed' status —
+    // they don't surface to readers (HTTP or agent) until a human accepts
+    // them.  Wired by the API per-tenant; CLI/REPL contexts leave it null.
+    void set_structured_memory_writer(StructuredMemoryWriter cb) {
+        structured_memory_writer_cb_ = std::move(cb);
+    }
+
+    // Bridge to the per-request MCP session manager.  /mcp tools|call
+    // routes through this callback; the API server owns the
+    // mcp::Manager that backs it (subprocesses die when the request's
+    // orchestrator does).  Without this set, /mcp returns ERR — CLI/REPL
+    // contexts don't spawn MCP servers.
+    void set_mcp_invoker(MCPInvoker cb) { mcp_invoker_cb_ = std::move(cb); }
+
     // Flip /exec off for this orchestrator.  Agents that emit /exec get a
     // tool result explaining the ban; they're expected to adapt their plan.
     // Used by the HTTP API so SaaS callers can't invoke arbitrary shell
@@ -233,6 +248,8 @@ private:
     PaneSpawner        pane_spawner_cb_;
     WriteInterceptor   write_interceptor_cb_;
     StructuredMemoryReader structured_memory_reader_cb_;
+    StructuredMemoryWriter structured_memory_writer_cb_;
+    MCPInvoker         mcp_invoker_cb_;
     bool               exec_disabled_ = false;
 
     StreamStartCallback stream_start_cb_;

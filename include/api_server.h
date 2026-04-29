@@ -100,6 +100,11 @@ struct ApiServerOptions {
     // default; flipped on by `arbiter --api --verbose` or env
     // `ARBITER_API_VERBOSE=1`.
     bool log_verbose = false;
+
+    // Path to the MCP server registry JSON.  Empty ⇒ no MCP servers
+    // configured (the /mcp slash command returns ERR with a clear
+    // message).  See docs/api.md → "MCP servers" for the schema.
+    std::string mcp_servers_path;
 };
 
 class ApiServer {

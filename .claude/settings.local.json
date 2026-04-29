@@ -9,7 +9,9 @@
       "Bash(ctest --test-dir /Users/tyler/dev/index/build -E tui_integration --output-on-failure)",
       "WebFetch(domain:platform.openai.com)",
       "WebSearch",
-      "WebFetch(domain:developers.openai.com)"
+      "WebFetch(domain:developers.openai.com)",
+      "Bash(git stash *)",
+      "Bash(/Users/tyler/arbiter/arbiter/build/index_tests --test-case=\"*card*\")"
     ]
   }
 }
