@@ -103,7 +103,7 @@ struct ApiServerOptions {
 
     // Path to the MCP server registry JSON.  Empty ⇒ no MCP servers
     // configured (the /mcp slash command returns ERR with a clear
-    // message).  See docs/api.md → "MCP servers" for the schema.
+    // message).  See docs/api/concepts/mcp.md for the schema.
     std::string mcp_servers_path;
 
     // Web-search provider config.  When `search_api_key` is non-empty

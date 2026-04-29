@@ -1182,8 +1182,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 std::string cr = scratch_clear("clear", agent_id);
                 block << "[/mem clear] " << cr << "\n\n";
 
-            } else if (subcmd == "entries" || subcmd == "entry" ||
-                       subcmd == "search") {
+            } else if (subcmd == "entries" || subcmd == "entry"  ||
+                       subcmd == "search"  || subcmd == "expand" ||
+                       subcmd == "density") {
                 // Structured-memory read window.  Distinct from the markdown
                 // scratchpad above — these surface tenant-scoped graph
                 // entries created via the HTTP API.  Available only when the
@@ -1519,14 +1520,67 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             block << "[END WRITE]\n\n";
 
         } else if (cmd.name == "read") {
-            std::string path = cmd.args;
-            while (!path.empty() && (path.back() == ' ' || path.back() == '\t'))
-                path.pop_back();
-            while (!path.empty() && (path.front() == ' ' || path.front() == '\t'))
-                path.erase(0, 1);
-            block << "[/read " << path << "]\n";
-            if (path.empty()) {
-                block << "ERR: usage: /read <path>\n";
+            // Three call shapes:
+            //   /read <path>                       — same-conversation, by path
+            //   /read #<aid>                       — same-conversation, by id
+            //   /read #<aid> via=mem:<mid>         — cross-conversation, with
+            //                                         memory citation as the
+            //                                         capability that grants
+            //                                         access.
+            // The dispatcher disambiguates here so the reader callback gets
+            // pre-parsed values and the policy check stays in one place
+            // (api_server's lambda).
+            std::string args = cmd.args;
+            while (!args.empty() && (args.back() == ' ' || args.back() == '\t'))
+                args.pop_back();
+            while (!args.empty() && (args.front() == ' ' || args.front() == '\t'))
+                args.erase(0, 1);
+
+            std::string path;
+            int64_t artifact_id   = 0;
+            int64_t via_memory_id = 0;
+            std::string parse_err;
+
+            if (!args.empty() && args.front() == '#') {
+                std::string rest = args.substr(1);
+                const size_t sp = rest.find_first_of(" \t");
+                const std::string aid_token =
+                    (sp == std::string::npos) ? rest : rest.substr(0, sp);
+                std::string tail = (sp == std::string::npos) ? std::string{}
+                                                              : rest.substr(sp);
+                while (!tail.empty() && (tail.front() == ' ' || tail.front() == '\t'))
+                    tail.erase(0, 1);
+                while (!tail.empty() && (tail.back()  == ' ' || tail.back()  == '\t'))
+                    tail.pop_back();
+
+                try { artifact_id = std::stoll(aid_token); }
+                catch (...) { artifact_id = 0; }
+                if (artifact_id <= 0) {
+                    parse_err = "artifact id after '#' must be a positive integer";
+                } else if (!tail.empty()) {
+                    const std::string prefix = "via=mem:";
+                    if (tail.compare(0, prefix.size(), prefix) != 0) {
+                        parse_err = "trailing token '" + tail +
+                                     "' — expected 'via=mem:<entry_id>'";
+                    } else {
+                        try { via_memory_id = std::stoll(tail.substr(prefix.size())); }
+                        catch (...) { via_memory_id = 0; }
+                        if (via_memory_id <= 0) {
+                            parse_err = "via=mem:<id> requires a positive entry id";
+                        }
+                    }
+                }
+            } else {
+                path = args;
+            }
+
+            block << "[/read " << args << "]\n";
+            if (path.empty() && artifact_id == 0 && parse_err.empty()) {
+                parse_err = "usage: /read <path>  OR  "
+                            "/read #<artifact_id> [via=mem:<entry_id>]";
+            }
+            if (!parse_err.empty()) {
+                block << "ERR: " << parse_err << "\n";
                 cache_result = false;
             } else if (!artifact_reader) {
                 block << "ERR: artifact store unavailable in this context — "
@@ -1534,7 +1588,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                          "Adapt: drop the /read step.\n";
                 cache_result = false;
             } else {
-                std::string body = artifact_reader(path);
+                std::string body = artifact_reader(path, artifact_id, via_memory_id);
                 if (body.size() > kPerFetchLimit) {
                     body.resize(kPerFetchLimit);
                     body += "\n... [truncated]";

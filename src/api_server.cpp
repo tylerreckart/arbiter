@@ -34,6 +34,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -3111,9 +3112,15 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // the reader through Orchestrator's member, so depth-2 calls are scoped
     // identically without an extra plumb-through.
     const int64_t reader_tenant_id = tenant.id;
+    // Captured by value so /mem entry can compute whether a linked
+    // artifact lives in the active conversation (no via= needed) or
+    // elsewhere (suggest the via=mem:<mid> form).  0 ⇒ no active
+    // conversation (raw /v1/orchestrate); any artifact link is
+    // therefore cross-conversation by definition.
+    const int64_t reader_conversation_id = conversation_id;
     orch->set_structured_memory_reader(
-        [&tenants, reader_tenant_id](const std::string& kind,
-                                      const std::string& args) -> std::string {
+        [&tenants, reader_tenant_id, reader_conversation_id]
+        (const std::string& kind, const std::string& args) -> std::string {
             // Helper formatters reused across kinds.
             auto fmt_tags = [](const std::string& tags_json) -> std::string {
                 try {
@@ -3139,19 +3146,66 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 return l.str();
             };
 
+            // Helper: case-insensitive substring count for ranking.
+            auto ci_count = [](const std::string& hay, const std::string& needle) -> int {
+                if (needle.empty() || hay.empty() || needle.size() > hay.size()) return 0;
+                int n = 0;
+                for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+                    bool match = true;
+                    for (size_t j = 0; j < needle.size(); ++j) {
+                        char a = hay[i + j], b = needle[j];
+                        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+                        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+                        if (a != b) { match = false; break; }
+                    }
+                    if (match) ++n;
+                }
+                return n;
+            };
+            // Helper: split a query into whitespace-separated terms; used by
+            // /mem search so multi-word queries score by the sum of per-term
+            // hits, giving "more terms matched" a higher rank than a single
+            // long substring match.
+            auto split_terms = [](const std::string& q) -> std::vector<std::string> {
+                std::vector<std::string> out;
+                size_t i = 0;
+                while (i < q.size()) {
+                    while (i < q.size() && (q[i] == ' ' || q[i] == '\t')) ++i;
+                    size_t j = i;
+                    while (j < q.size() && q[j] != ' ' && q[j] != '\t') ++j;
+                    if (j > i) out.push_back(q.substr(i, j - i));
+                    i = j;
+                }
+                return out;
+            };
+
             if (kind == "entries") {
+                // /mem entries [<type>[,<type>...]]
+                // /mem entries tag=<tagname>
+                // The bare-arg comma list is preserved for backward compat;
+                // the `tag=` form lets agents pull a curated subset by the
+                // facet they're most likely to organise around.
                 TenantStore::EntryFilter f;
                 f.limit  = 100;
                 f.status = "accepted";   // agents see curated graph only
-                // Optional comma-sep type filter.
-                if (!args.empty()) {
+
+                std::string a = args;
+                while (!a.empty() && a.front() == ' ') a.erase(0, 1);
+                while (!a.empty() && a.back()  == ' ') a.pop_back();
+
+                if (a.size() > 4 && a.compare(0, 4, "tag=") == 0) {
+                    f.tag = a.substr(4);
+                    while (!f.tag.empty() && f.tag.front() == ' ') f.tag.erase(0, 1);
+                    while (!f.tag.empty() && f.tag.back()  == ' ') f.tag.pop_back();
+                    if (f.tag.empty()) return "ERR: usage: /mem entries tag=<tagname>";
+                } else if (!a.empty()) {
+                    // Comma-sep type filter.
                     size_t start = 0;
-                    while (start <= args.size()) {
-                        size_t comma = args.find(',', start);
-                        std::string tok = args.substr(
+                    while (start <= a.size()) {
+                        size_t comma = a.find(',', start);
+                        std::string tok = a.substr(
                             start, comma == std::string::npos ? std::string::npos
                                                               : comma - start);
-                        // Trim spaces.
                         while (!tok.empty() && tok.front() == ' ') tok.erase(0, 1);
                         while (!tok.empty() && tok.back()  == ' ') tok.pop_back();
                         if (!tok.empty()) f.types.push_back(tok);
@@ -3160,7 +3214,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                     }
                 }
                 auto entries = tenants.list_entries(reader_tenant_id, f);
-                if (entries.empty()) return "(no entries)";
+                if (entries.empty()) {
+                    if (!f.tag.empty())
+                        return "(no entries tagged '" + f.tag + "')";
+                    return "(no entries)";
+                }
                 std::ostringstream out;
                 out << entries.size() << " entries (newest first):\n";
                 for (auto& e : entries) out << fmt_entry_line(e) << "\n";
@@ -3180,41 +3238,376 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 std::ostringstream out;
                 out << fmt_entry_line(*e) << "\n";
                 if (!e->content.empty()) out << "\n" << e->content << "\n";
-                // Edges: accepted relations where this entry is source OR target.
+                // Linked artifact: surface metadata and the literal
+                // /read command that grants access.  Same-conversation
+                // artifacts can be read by path or by id without a via=
+                // clause; cross-conversation artifacts require the
+                // memory citation, and the suggested command bakes it
+                // in so the agent can copy verbatim.
+                if (e->artifact_id > 0) {
+                    auto art = tenants.get_artifact_meta(reader_tenant_id,
+                                                          e->artifact_id);
+                    if (art) {
+                        out << "\nlinked artifact:\n";
+                        out << "  #" << art->id << "  " << art->path
+                            << "  (" << art->size << " bytes, mime="
+                            << art->mime_type << ")\n";
+                        if (art->conversation_id == reader_conversation_id) {
+                            out << "  fetch with: /read " << art->path
+                                << "   (or /read #" << art->id << ")\n";
+                        } else {
+                            out << "  cross-conversation — fetch with: "
+                                << "/read #" << art->id
+                                << " via=mem:" << e->id << "\n";
+                        }
+                    } else {
+                        out << "\nlinked artifact:\n"
+                            << "  (link expired — artifact #"
+                            << e->artifact_id << " no longer exists)\n";
+                    }
+                }
+                // Edges: accepted relations where this entry is source OR
+                // target.  We resolve neighbour titles in a small ad-hoc
+                // cache so an entry with N edges to the same neighbour
+                // doesn't N-times-fetch the same row.
                 auto out_edges = tenants.list_relations(reader_tenant_id, id, 0,
                                                         std::string{}, 200,
                                                         /*status=*/"accepted");
                 auto in_edges  = tenants.list_relations(reader_tenant_id, 0, id,
                                                         std::string{}, 200,
                                                         /*status=*/"accepted");
+                std::map<int64_t, std::pair<std::string, std::string>> title_cache;
+                auto resolve = [&](int64_t nid) -> std::pair<std::string, std::string> {
+                    auto it = title_cache.find(nid);
+                    if (it != title_cache.end()) return it->second;
+                    auto neighbour = tenants.get_entry(reader_tenant_id, nid);
+                    if (!neighbour || neighbour->status != "accepted") {
+                        title_cache[nid] = {"(unavailable)", ""};
+                    } else {
+                        title_cache[nid] = {neighbour->title, neighbour->type};
+                    }
+                    return title_cache[nid];
+                };
                 if (!out_edges.empty()) {
                     out << "\noutgoing:\n";
-                    for (auto& r : out_edges)
-                        out << "  --[" << r.relation << "]--> #" << r.target_id << "\n";
+                    for (auto& r : out_edges) {
+                        auto [title, type] = resolve(r.target_id);
+                        out << "  --[" << r.relation << "]--> #" << r.target_id
+                            << "  " << title;
+                        if (!type.empty()) out << " (" << type << ")";
+                        out << "\n";
+                    }
                 }
                 if (!in_edges.empty()) {
                     out << "\nincoming:\n";
-                    for (auto& r : in_edges)
-                        out << "  #" << r.source_id << " --[" << r.relation << "]-->\n";
+                    for (auto& r : in_edges) {
+                        auto [title, type] = resolve(r.source_id);
+                        out << "  #" << r.source_id << "  " << title;
+                        if (!type.empty()) out << " (" << type << ")";
+                        out << "  --[" << r.relation << "]-->\n";
+                    }
                 }
                 return out.str();
             }
 
             if (kind == "search") {
+                // Multi-field substring search with rough relevance
+                // ranking.  Title hits weight heaviest, then tags, content,
+                // source.  Multi-word queries score by sum-of-per-term
+                // hits so "more terms matched" outranks "one long
+                // substring matches".  The top 3 by score get their
+                // content excerpted inline so a single /mem search call
+                // resolves into something the agent can actually read.
                 std::string q = args;
                 while (!q.empty() && q.front() == ' ') q.erase(0, 1);
                 while (!q.empty() && q.back()  == ' ') q.pop_back();
                 if (q.empty()) return "ERR: usage: /mem search <query>";
+
+                auto terms = split_terms(q);
+                if (terms.empty()) terms.push_back(q);
+
+                // Pull the full accepted-entries window (capped at 200 by
+                // EntryFilter; tenants past that should add pagination
+                // here, but for v1 the rank-in-memory approach is plenty).
                 TenantStore::EntryFilter f;
-                f.q      = q;
-                f.limit  = 50;
+                f.limit  = 200;
                 f.status = "accepted";
                 auto entries = tenants.list_entries(reader_tenant_id, f);
-                if (entries.empty()) return "(no entries match '" + q + "')";
+
+                struct Scored {
+                    MemoryEntry entry;
+                    int score;
+                    int title_hits;
+                    int tag_hits;
+                    int content_hits;
+                    int source_hits;
+                };
+                std::vector<Scored> scored;
+                for (auto& e : entries) {
+                    int title_hits = 0, tag_hits = 0;
+                    int content_hits = 0, source_hits = 0;
+                    for (auto& t : terms) {
+                        title_hits   += ci_count(e.title,     t);
+                        tag_hits     += ci_count(e.tags_json, t);
+                        content_hits += ci_count(e.content,   t);
+                        source_hits  += ci_count(e.source,    t);
+                    }
+                    if (title_hits + tag_hits + content_hits + source_hits == 0) continue;
+                    int score = title_hits   * 100
+                              + tag_hits     *  60
+                              + content_hits *  20
+                              + source_hits  *  10;
+                    scored.push_back({e, score, title_hits, tag_hits,
+                                       content_hits, source_hits});
+                }
+                if (scored.empty()) return "(no entries match '" + q + "')";
+
+                // Sort by score DESC, then updated_at DESC as tie-break.
+                std::sort(scored.begin(), scored.end(),
+                          [](const Scored& a, const Scored& b) {
+                              if (a.score != b.score) return a.score > b.score;
+                              return a.entry.updated_at > b.entry.updated_at;
+                          });
+
                 std::ostringstream out;
-                out << entries.size() << " match" << (entries.size() == 1 ? "" : "es")
-                    << " for '" << q << "':\n";
-                for (auto& e : entries) out << fmt_entry_line(e) << "\n";
+                out << scored.size() << " match" << (scored.size() == 1 ? "" : "es")
+                    << " for '" << q << "' (top by relevance):\n";
+
+                // Top 3 get inline content excerpts so the agent can read
+                // them without a follow-up /mem entry call.
+                static constexpr int kInlineTopN = 3;
+                static constexpr size_t kExcerptBytes = 480;
+                const size_t shown = std::min<size_t>(scored.size(), 50);
+                for (size_t i = 0; i < shown; ++i) {
+                    const auto& s = scored[i];
+                    out << fmt_entry_line(s.entry);
+                    out << "  [score=" << s.score
+                        << " title=" << s.title_hits
+                        << " tag="   << s.tag_hits
+                        << " content=" << s.content_hits;
+                    if (s.source_hits) out << " source=" << s.source_hits;
+                    out << "]\n";
+                    if (i < kInlineTopN && !s.entry.content.empty()) {
+                        std::string excerpt = s.entry.content;
+                        if (excerpt.size() > kExcerptBytes) {
+                            excerpt.resize(kExcerptBytes);
+                            excerpt += " ...";
+                        }
+                        // Indent each line so the excerpt visually nests
+                        // under the bullet.
+                        std::ostringstream indented;
+                        size_t start = 0;
+                        while (start < excerpt.size()) {
+                            size_t nl = excerpt.find('\n', start);
+                            indented << "    | "
+                                     << excerpt.substr(start,
+                                          nl == std::string::npos ? std::string::npos
+                                                                   : nl - start)
+                                     << "\n";
+                            if (nl == std::string::npos) break;
+                            start = nl + 1;
+                        }
+                        out << indented.str();
+                    }
+                }
+                if (scored.size() > shown) {
+                    out << "(... " << (scored.size() - shown) << " more lower-ranked)\n";
+                }
+                return out.str();
+            }
+
+            if (kind == "expand") {
+                // /mem expand <id> [depth=N]
+                // BFS the subgraph around <id> up to depth N (max 2,
+                // default 1), capped at 50 nodes total.  One round trip
+                // for what would otherwise be N+1 sequential /mem entry
+                // calls.  Renders a tree-ish structure: seed → 1-hop →
+                // 2-hop, with the relation labels on each edge.
+                std::string a = args;
+                while (!a.empty() && a.front() == ' ') a.erase(0, 1);
+                while (!a.empty() && a.back()  == ' ') a.pop_back();
+                if (a.empty()) {
+                    return "ERR: usage: /mem expand <id> [depth=N]";
+                }
+                int64_t seed_id = 0;
+                int depth = 1;
+                {
+                    std::istringstream iss(a);
+                    iss >> seed_id;
+                    std::string flag;
+                    if (iss >> flag) {
+                        const std::string p = "depth=";
+                        if (flag.compare(0, p.size(), p) == 0) {
+                            try { depth = std::stoi(flag.substr(p.size())); }
+                            catch (...) { depth = 1; }
+                        }
+                    }
+                }
+                if (seed_id <= 0) return "ERR: bad seed id";
+                if (depth < 1) depth = 1;
+                if (depth > 2) depth = 2;
+
+                auto seed = tenants.get_entry(reader_tenant_id, seed_id);
+                if (!seed || seed->status != "accepted")
+                    return "ERR: entry " + std::to_string(seed_id) + " not found";
+
+                // BFS with a 50-node cap; node order tracks discovery so
+                // deduped neighbours render under the closer hop.
+                static constexpr size_t kMaxNodes = 50;
+                std::map<int64_t, MemoryEntry> nodes;       // id → entry
+                std::map<int64_t, int> hop_of;              // id → 0/1/2
+                std::vector<MemoryRelation> all_edges;
+                std::vector<int64_t> frontier{seed_id};
+                nodes[seed_id] = *seed;
+                hop_of[seed_id] = 0;
+
+                for (int d = 0; d < depth && nodes.size() < kMaxNodes; ++d) {
+                    std::vector<int64_t> next_frontier;
+                    for (int64_t nid : frontier) {
+                        if (nodes.size() >= kMaxNodes) break;
+                        auto outs = tenants.list_relations(reader_tenant_id,
+                                                           nid, 0, std::string{},
+                                                           50, "accepted");
+                        auto ins  = tenants.list_relations(reader_tenant_id,
+                                                           0, nid, std::string{},
+                                                           50, "accepted");
+                        auto add_edge_target = [&](int64_t target) {
+                            if (nodes.size() >= kMaxNodes) return;
+                            if (nodes.count(target)) return;
+                            auto neighbour = tenants.get_entry(reader_tenant_id, target);
+                            if (!neighbour || neighbour->status != "accepted") return;
+                            nodes[target] = *neighbour;
+                            hop_of[target] = d + 1;
+                            next_frontier.push_back(target);
+                        };
+                        for (auto& r : outs) {
+                            add_edge_target(r.target_id);
+                            all_edges.push_back(r);
+                        }
+                        for (auto& r : ins) {
+                            add_edge_target(r.source_id);
+                            all_edges.push_back(r);
+                        }
+                    }
+                    frontier = std::move(next_frontier);
+                }
+
+                // Render: by hop, with nodes and edges grouped per hop.
+                // Each edge appears once even if both endpoints are in
+                // the subgraph; we pick the lower-hop endpoint as the
+                // anchor for display.
+                std::ostringstream out;
+                out << "Subgraph around #" << seed_id << " (depth=" << depth
+                    << ", " << nodes.size() << " nodes):\n";
+                out << "  hop 0: " << fmt_entry_line(*seed).substr(2) << "\n";
+
+                for (int d = 1; d <= depth; ++d) {
+                    bool first = true;
+                    for (auto& [id, e] : nodes) {
+                        if (hop_of[id] != d) continue;
+                        if (first) {
+                            out << "\n  hop " << d << ":\n";
+                            first = false;
+                        }
+                        out << "    " << fmt_entry_line(e).substr(2) << "\n";
+                    }
+                }
+                if (!all_edges.empty()) {
+                    out << "\n  edges:\n";
+                    // Dedupe by id (list_relations may return overlaps when
+                    // a node is queried as both source and target on
+                    // different hops).
+                    std::set<int64_t> seen_edges;
+                    for (auto& r : all_edges) {
+                        if (!seen_edges.insert(r.id).second) continue;
+                        if (!nodes.count(r.source_id) || !nodes.count(r.target_id)) continue;
+                        out << "    #" << r.source_id << " --["
+                            << r.relation << "]--> #" << r.target_id << "\n";
+                    }
+                }
+                if (nodes.size() >= kMaxNodes) {
+                    out << "\n  (subgraph capped at " << kMaxNodes
+                        << " nodes — narrow with /mem entry <id> to dig further)\n";
+                }
+                return out.str();
+            }
+
+            if (kind == "density") {
+                // /mem density <id>
+                // Quick "is this part of the graph dense or sparse?"
+                // probe — out-degree, in-degree, distinct relation kinds,
+                // and 2-hop reach.  Cheap follow-up before doing redundant
+                // research on a topic the graph already covers.
+                std::string a = args;
+                while (!a.empty() && a.front() == ' ') a.erase(0, 1);
+                while (!a.empty() && a.back()  == ' ') a.pop_back();
+                int64_t id = 0;
+                try { id = std::stoll(a); } catch (...) { id = 0; }
+                if (id <= 0) return "ERR: usage: /mem density <id>";
+                auto e = tenants.get_entry(reader_tenant_id, id);
+                if (!e || e->status != "accepted")
+                    return "ERR: entry " + std::to_string(id) + " not found";
+
+                auto outs = tenants.list_relations(reader_tenant_id, id, 0,
+                                                    std::string{}, 200, "accepted");
+                auto ins  = tenants.list_relations(reader_tenant_id, 0, id,
+                                                    std::string{}, 200, "accepted");
+
+                std::set<std::string> relation_kinds;
+                std::set<int64_t> hop1_nodes;
+                for (auto& r : outs) {
+                    relation_kinds.insert(r.relation);
+                    hop1_nodes.insert(r.target_id);
+                }
+                for (auto& r : ins) {
+                    relation_kinds.insert(r.relation);
+                    hop1_nodes.insert(r.source_id);
+                }
+
+                // 2-hop reach: count unique nodes (not equal to seed) that
+                // any 1-hop neighbour edges touch.  Caps walk at 50
+                // 1-hop nodes to keep the probe cheap.
+                std::set<int64_t> hop2_nodes;
+                int probed = 0;
+                for (int64_t n : hop1_nodes) {
+                    if (++probed > 50) break;
+                    auto o = tenants.list_relations(reader_tenant_id, n, 0,
+                                                     std::string{}, 50, "accepted");
+                    auto i = tenants.list_relations(reader_tenant_id, 0, n,
+                                                     std::string{}, 50, "accepted");
+                    for (auto& r : o) if (r.target_id != id) hop2_nodes.insert(r.target_id);
+                    for (auto& r : i) if (r.source_id != id) hop2_nodes.insert(r.source_id);
+                }
+                // Don't double-count 1-hop nodes in the 2-hop set.
+                for (int64_t n : hop1_nodes) hop2_nodes.erase(n);
+
+                std::ostringstream out;
+                out << fmt_entry_line(*e) << "\n";
+                out << "  out-edges:    " << outs.size() << "\n";
+                out << "  in-edges:     " << ins.size()  << "\n";
+                out << "  distinct relations: ";
+                {
+                    bool first = true;
+                    for (auto& r : relation_kinds) {
+                        if (!first) out << ", ";
+                        out << r;
+                        first = false;
+                    }
+                    if (relation_kinds.empty()) out << "(none)";
+                }
+                out << "\n";
+                out << "  1-hop nodes:  " << hop1_nodes.size() << "\n";
+                out << "  2-hop reach:  " << hop2_nodes.size()
+                    << " new nodes (beyond direct neighbours)\n";
+                if (outs.empty() && ins.empty()) {
+                    out << "  → isolated node — no relations yet.  "
+                           "Consider /mem propose link to connect it.\n";
+                } else if (hop1_nodes.size() + hop2_nodes.size() < 4) {
+                    out << "  → sparse neighbourhood.  Likely worth research / linking.\n";
+                } else {
+                    out << "  → dense neighbourhood.  Existing graph "
+                           "structure may already cover the topic.\n";
+                }
                 return out.str();
             }
 
@@ -3236,7 +3629,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             };
 
             if (kind == "propose-entry") {
-                // /mem propose entry <type> <title>
+                // /mem propose entry <type> <title> [--artifact #<id>]
+                // The trailing --artifact flag lets an agent that just
+                // /write --persist'd a file file it directly into the
+                // memory proposal in one turn.
                 std::istringstream iss(args);
                 std::string type;
                 iss >> type;
@@ -3244,24 +3640,68 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 std::getline(iss, title);
                 title = trim(title);
                 if (type.empty() || title.empty()) {
-                    return "ERR: usage: /mem propose entry <type> <title>";
+                    return "ERR: usage: /mem propose entry <type> <title> "
+                           "[--artifact #<id>]";
                 }
+
+                int64_t artifact_id = 0;
+                {
+                    // Strip trailing `--artifact #<id>` off the title
+                    // before we length-check it.
+                    const std::string flag = "--artifact";
+                    auto pos = title.rfind(flag);
+                    if (pos != std::string::npos &&
+                        (pos == 0 || title[pos - 1] == ' ' || title[pos - 1] == '\t')) {
+                        std::string tail = title.substr(pos + flag.size());
+                        // Trim leading spaces and the '#' marker.
+                        while (!tail.empty() && (tail.front() == ' ' || tail.front() == '\t'))
+                            tail.erase(0, 1);
+                        if (!tail.empty() && tail.front() == '#') tail.erase(0, 1);
+                        try { artifact_id = std::stoll(tail); }
+                        catch (...) { artifact_id = 0; }
+                        if (artifact_id <= 0) {
+                            return "ERR: --artifact requires a positive id, "
+                                   "e.g. --artifact #42";
+                        }
+                        // Strip the flag (and its preceding space) from
+                        // the title so it doesn't bleed into the stored
+                        // title field.
+                        if (pos > 0 && (title[pos - 1] == ' ' || title[pos - 1] == '\t'))
+                            --pos;
+                        title.resize(pos);
+                        title = trim(title);
+                    }
+                }
+
                 if (!memory_entry_type_is_valid(type)) {
                     return "ERR: invalid type '" + type + "' — must be one of: "
                            "user, feedback, project, reference, learning, context";
+                }
+                if (title.empty()) {
+                    return "ERR: title is required (got only the --artifact flag)";
                 }
                 if (title.size() > 200) {
                     return "ERR: title length must be 1..200 chars (got " +
                            std::to_string(title.size()) + ")";
                 }
+                if (artifact_id > 0 &&
+                    !tenants.get_artifact_meta(reader_tenant_id, artifact_id)) {
+                    return "ERR: artifact #" + std::to_string(artifact_id) +
+                           " does not exist for this tenant";
+                }
+
                 auto e = tenants.create_entry(reader_tenant_id, type, title,
                                                /*content=*/"", /*source=*/"agent",
                                                /*tags_json=*/"[]",
-                                               /*status=*/"proposed");
+                                               /*status=*/"proposed",
+                                               artifact_id);
                 std::ostringstream out;
                 out << "OK: proposed entry #" << e.id << " [" << e.type << "] "
-                    << e.title
-                    << " (status=proposed; awaiting human review).  Use this "
+                    << e.title;
+                if (artifact_id > 0) {
+                    out << " (linked to artifact #" << artifact_id << ")";
+                }
+                out << " (status=proposed; awaiting human review).  Use this "
                        "id in subsequent /mem propose link calls to reference "
                        "it.\n";
                 return out.str();
@@ -3361,7 +3801,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 if (names.empty()) {
                     return "(no MCP servers configured for this deployment — "
                            "set mcp_servers_path in ApiServerOptions and add an entry "
-                           "in the registry JSON.  See docs/api.md#mcp-servers.)\n";
+                           "in the registry JSON.  See docs/api/concepts/mcp.md.)\n";
                 }
                 std::ostringstream out;
                 std::vector<std::string> targets;
@@ -3539,20 +3979,76 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             });
 
         orch->set_artifact_reader(
-            [tid, cid, store](const std::string& raw_path) -> std::string {
-                std::string err;
-                auto canonical = sanitize_artifact_path(raw_path, err);
-                if (!canonical) return std::string("ERR: invalid path: ") + err;
+            [tid, cid, store](const std::string& raw_path,
+                                int64_t artifact_id,
+                                int64_t via_memory_id) -> std::string {
+                // Path-form: same-conversation lookup.  Sanitiser gates
+                // bad paths before we touch the DB.
+                if (artifact_id == 0) {
+                    std::string err;
+                    auto canonical = sanitize_artifact_path(raw_path, err);
+                    if (!canonical) return std::string("ERR: invalid path: ") + err;
 
-                auto meta = store->get_artifact_meta_by_path(tid, cid, *canonical);
-                if (!meta) {
-                    return std::string("ERR: '") + *canonical +
-                           "' not found in this conversation's artifacts";
+                    auto meta = store->get_artifact_meta_by_path(tid, cid, *canonical);
+                    if (!meta) {
+                        return std::string("ERR: '") + *canonical +
+                               "' not found in this conversation's artifacts";
+                    }
+                    auto blob = store->get_artifact_content(tid, meta->id);
+                    if (!blob) {
+                        return std::string("ERR: artifact #") +
+                               std::to_string(meta->id) + " content missing";
+                    }
+                    return *blob;
                 }
-                auto blob = store->get_artifact_content(tid, meta->id);
+
+                // Id-form: tenant-scoped lookup.  Cross-conversation
+                // reads require a `via=mem:<id>` capability that points
+                // at this artifact_id from a memory entry the tenant
+                // owns.  Same-conversation reads are allowed without
+                // citation — same trust boundary as path-form.
+                auto art = store->get_artifact_meta(tid, artifact_id);
+                if (!art) {
+                    return std::string("ERR: artifact #") +
+                           std::to_string(artifact_id) +
+                           " not found for this tenant";
+                }
+                if (art->conversation_id != cid) {
+                    if (via_memory_id == 0) {
+                        return std::string("ERR: artifact #") +
+                               std::to_string(artifact_id) +
+                               " is in a different conversation; cite the "
+                               "memory entry that links it: "
+                               "/read #" + std::to_string(artifact_id) +
+                               " via=mem:<entry_id>";
+                    }
+                    auto mem = store->get_entry(tid, via_memory_id);
+                    if (!mem) {
+                        return std::string("ERR: via=mem:") +
+                               std::to_string(via_memory_id) +
+                               " — memory entry not found for this tenant";
+                    }
+                    if (mem->artifact_id != artifact_id) {
+                        return std::string("ERR: memory entry #") +
+                               std::to_string(via_memory_id) +
+                               " does not reference artifact #" +
+                               std::to_string(artifact_id) +
+                               " (its artifact_id=" +
+                               std::to_string(mem->artifact_id) + ")";
+                    }
+                    if (mem->status != "accepted") {
+                        return std::string("ERR: memory entry #") +
+                               std::to_string(via_memory_id) +
+                               " is not in 'accepted' status; only curated "
+                               "memory entries can authorise cross-"
+                               "conversation artifact reads";
+                    }
+                }
+                auto blob = store->get_artifact_content(tid, artifact_id);
                 if (!blob) {
                     return std::string("ERR: artifact #") +
-                           std::to_string(meta->id) + " content missing";
+                           std::to_string(artifact_id) +
+                           " content missing";
                 }
                 return *blob;
             });

@@ -441,6 +441,22 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     auto advisor_invoker  = make_advisor_invoker(agent_id);
     auto parallel_invoker = make_parallel_invoker(agent_id, depth, orig_q);
 
+    // One-line diagnostic: which callback bridges this dispatch sees.
+    // Fires at every depth + sub-agent so a missing wiring upstream
+    // surfaces immediately in `arbiter --api --verbose` logs as a
+    // mismatch between the master's set and the child's see.
+    std::fprintf(stderr,
+        "[orch] dispatch agent=%s depth=%d  "
+        "search=%s mcp=%s mem_r=%s mem_w=%s art_w=%s art_r=%s art_l=%s\n",
+        agent_id.c_str(), depth,
+        search_invoker_cb_           ? "✓" : "✗",
+        mcp_invoker_cb_              ? "✓" : "✗",
+        structured_memory_reader_cb_ ? "✓" : "✗",
+        structured_memory_writer_cb_ ? "✓" : "✗",
+        artifact_writer_cb_          ? "✓" : "✗",
+        artifact_reader_cb_          ? "✓" : "✗",
+        artifact_lister_cb_          ? "✓" : "✗");
+
     // One stream_id per turn-sequence for this agent.  Every callback that
     // fires before this scope unwinds sees (stream_id, agent_id, depth)
     // via current_stream_*.
@@ -616,9 +632,90 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     StreamScope scope(sid, agent_id, 0);
     if (stream_start_cb_) stream_start_cb_(agent_id, sid, 0);
 
-    // First turn: stream to caller
-    ApiResponse resp = agent_ptr->stream(current_msg, cb);
+    // ── Master text gating ────────────────────────────────────────────
+    // The orchestrator's freeform prose during an iteration that ALSO
+    // emits delegation calls is "premature synthesis" — the model
+    // narrates a plan and partial answer before sub-agents have produced
+    // anything.  Buffer per-iteration text and decide what to do with
+    // it after we've parsed the iteration's commands:
+    //
+    //   • iteration includes /agent or /parallel ⇒ replace buffered
+    //     prose with a one-line "→ delegating: ..." status update.
+    //   • iteration has no delegations ⇒ flush the buffer as the
+    //     master's contribution (final synthesis or post-tool-result
+    //     framing).
+    //
+    // Sub-agents are unaffected — their text streams live through
+    // agent_stream_cb_ in send_internal.  This gate only sits between
+    // the top-level master and the user-facing cb.
+    std::string iter_buffer;
+    auto gated_cb = [&iter_buffer](const std::string& chunk) {
+        iter_buffer += chunk;
+    };
+
+    auto summarise_delegations =
+        [](const std::vector<AgentCommand>& cmds) -> std::string {
+        std::vector<std::string> lines;
+        for (auto& c : cmds) {
+            if (c.name == "agent") {
+                std::string preview = c.args;
+                if (preview.size() > 100) {
+                    preview.resize(97);
+                    preview += "...";
+                }
+                lines.push_back("/agent " + preview);
+            } else if (c.name == "parallel") {
+                int children = 0;
+                for (size_t i = 0; i + 7 <= c.content.size(); ) {
+                    if (c.content.compare(i, 7, "/agent ") == 0) {
+                        ++children;
+                        i = c.content.find('\n', i);
+                        if (i == std::string::npos) break;
+                        ++i;
+                    } else {
+                        i = c.content.find('\n', i);
+                        if (i == std::string::npos) break;
+                        ++i;
+                    }
+                }
+                lines.push_back("/parallel (" + std::to_string(children) + " children)");
+            }
+        }
+        if (lines.empty()) return std::string{};
+        std::ostringstream out;
+        out << "→ delegating: ";
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (i) out << "; ";
+            out << lines[i];
+        }
+        out << "\n";
+        return out.str();
+    };
+
+    auto end_iteration = [&](const std::vector<AgentCommand>& cmds) {
+        std::string status = summarise_delegations(cmds);
+        if (!status.empty()) {
+            // Delegation iteration — discard prose, emit status line.
+            iter_buffer.clear();
+            if (cb) cb(status);
+        } else {
+            // No delegation — flush buffered prose to the user.  Called
+            // exactly once per turn for the final iteration; intermediate
+            // tool-result-only iterations are rare but handled the same
+            // way (their prose is the model's continuation framing).
+            if (!iter_buffer.empty() && cb) cb(iter_buffer);
+            iter_buffer.clear();
+        }
+    };
+
+    // First turn: stream into the gate (not directly to cb).
+    ApiResponse resp = agent_ptr->stream(current_msg, gated_cb);
     if (!resp.ok) {
+        // On failure, flush whatever the model produced so the user sees
+        // the partial — the gate's contract is to never silently swallow
+        // an error response.
+        if (!iter_buffer.empty() && cb) cb(iter_buffer);
+        iter_buffer.clear();
         if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
         return resp;
     }
@@ -641,7 +738,11 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     int         total_output_tok = resp.output_tokens;
 
     auto cmds = parse_agent_commands(resp.content);
-    recover_truncated_writes(agent_ptr, resp, cmds, cb);
+    recover_truncated_writes(agent_ptr, resp, cmds, gated_cb);
+
+    // Apply the gate decision for iteration 0.
+    end_iteration(cmds);
+
     if (cmds.empty()) {
         if (stream_end_cb_) stream_end_cb_(agent_id, sid, true);
         return resp;
@@ -652,11 +753,13 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     auto advisor_invoker  = make_advisor_invoker(agent_id);
     auto parallel_invoker = make_parallel_invoker(agent_id, 0, message);
 
-    // Tool-call re-entry turns: stream each so the user can follow progress
+    // Tool-call re-entry turns: each iteration's prose goes through the
+    // same gate.  When commands fire, the user sees a status line; when
+    // the iteration is the final synthesis, the buffered prose is flushed.
     resp.had_tool_calls = true;
     static constexpr int kMaxReentryTurns = 5;
     for (int i = 0; i < kMaxReentryTurns; ++i) {
-        cb("\n");
+        if (cb) cb("\n");
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
                                               invoker, confirm_cb_, &shared_cache,
                                               advisor_invoker, tool_status_cb_,
@@ -672,8 +775,10 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                               artifact_writer_cb_,
                                               artifact_reader_cb_,
                                               artifact_lister_cb_);
-        resp = agent_ptr->stream(current_msg, cb);
+        resp = agent_ptr->stream(current_msg, gated_cb);
         if (!resp.ok) {
+            if (!iter_buffer.empty() && cb) cb(iter_buffer);
+            iter_buffer.clear();
             if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
             // Return what we accumulated so far + the failed iteration so
             // the caller can see how far we got before erroring.
@@ -688,7 +793,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         total_input_tok += resp.input_tokens;
         total_output_tok += resp.output_tokens;
         cmds = parse_agent_commands(resp.content);
-        recover_truncated_writes(agent_ptr, resp, cmds, cb);
+        recover_truncated_writes(agent_ptr, resp, cmds, gated_cb);
+        end_iteration(cmds);
         if (cmds.empty()) break;
         resp.had_tool_calls = true;
     }

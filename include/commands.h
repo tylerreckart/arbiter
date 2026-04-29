@@ -167,12 +167,19 @@ using MemoryScratchpadInvoker = std::function<std::string(
 using ArtifactWriter = std::function<std::string(const std::string& path,
                                                   const std::string& content)>;
 
-// Persistent artifact read.  When set, /read <path> resolves the
-// agent's request against the conversation's artifact namespace and
-// returns the body for the [/read <path>] block — file content on hit,
-// "ERR: ..." on miss / path-rejection.  Without this the dispatcher
-// returns ERR; CLI/REPL contexts leave it null.
-using ArtifactReader = std::function<std::string(const std::string& path)>;
+// Persistent artifact read.  Three call shapes the dispatcher resolves
+// before invoking, surfaced as parameters here:
+//   /read <path>                    → path set, artifact_id = 0, via = 0
+//   /read #<aid>                    → path="",  artifact_id = aid,  via = 0
+//   /read #<aid> via=mem:<mid>      → path="",  artifact_id = aid,  via = mid
+// The reader is responsible for the cross-conversation capability rule:
+// same-conversation reads (by path or by id) are allowed unconditionally;
+// cross-conversation reads require a valid via= memory citation that
+// references the artifact_id.  Without this callback wired the
+// dispatcher returns ERR; CLI/REPL contexts leave it null.
+using ArtifactReader = std::function<std::string(const std::string& path,
+                                                   int64_t artifact_id,
+                                                   int64_t via_memory_id)>;
 
 // Persistent artifact listing.  When set, /list returns one path per
 // line with size + updated_at metadata so the agent can plan
