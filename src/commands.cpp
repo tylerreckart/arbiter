@@ -811,7 +811,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ParallelInvoker parallel_invoker,
                                    StructuredMemoryReader structured_memory_reader,
                                    StructuredMemoryWriter structured_memory_writer,
-                                   MCPInvoker     mcp_invoker) {
+                                   MCPInvoker     mcp_invoker,
+                                   MemoryScratchpadInvoker memory_scratchpad) {
     std::ostringstream out;
     out << "\n";
 
@@ -927,6 +928,31 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             std::string subcmd;
             iss >> subcmd;
 
+            // Helper: read/write/clear scratchpad — DB callback when set,
+            // filesystem fallback otherwise.  All variants here consume
+            // the same callback so a misconfigured deployment can't end
+            // up with reads from one source and writes to another.
+            auto scratch_read = [&](const std::string& kind /*"read"|"shared-read"*/,
+                                     const std::string& aid) -> std::string {
+                if (memory_scratchpad) return memory_scratchpad(kind, aid, "");
+                if (kind == "shared-read") return cmd_mem_shared_read(memory_dir);
+                return cmd_mem_read(aid, memory_dir);
+            };
+            auto scratch_write = [&](const std::string& kind /*"write"|"shared-write"*/,
+                                      const std::string& aid,
+                                      const std::string& text) -> std::string {
+                if (memory_scratchpad) return memory_scratchpad(kind, aid, text);
+                if (kind == "shared-write") return cmd_mem_shared_write(text, memory_dir);
+                return cmd_mem_write(aid, text, memory_dir);
+            };
+            auto scratch_clear = [&](const std::string& kind /*"clear"|"shared-clear"*/,
+                                      const std::string& aid) -> std::string {
+                if (memory_scratchpad) return memory_scratchpad(kind, aid, "");
+                if (kind == "shared-clear") return cmd_mem_shared_clear(memory_dir);
+                cmd_mem_clear(aid, memory_dir);
+                return "OK: memory cleared";
+            };
+
             if (subcmd == "shared") {
                 // /mem shared write <text> | /mem shared read | /mem shared clear
                 std::string action;
@@ -935,15 +961,15 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     std::string text;
                     std::getline(iss, text);
                     if (!text.empty() && text[0] == ' ') text.erase(0, 1);
-                    std::string wr = cmd_mem_shared_write(text, memory_dir);
+                    std::string wr = scratch_write("shared-write", agent_id, text);
                     block << "[/mem shared write] " << wr << "\n\n";
                 } else if (action == "read" || action == "show") {
-                    std::string mem = cmd_mem_shared_read(memory_dir);
+                    std::string mem = scratch_read("shared-read", agent_id);
                     block << "[/mem shared read]\n"
                           << (mem.empty() ? "(shared scratchpad empty)" : mem)
                           << "\n[END SHARED MEMORY]\n\n";
                 } else if (action == "clear") {
-                    std::string cr = cmd_mem_shared_clear(memory_dir);
+                    std::string cr = scratch_clear("shared-clear", agent_id);
                     block << "[/mem shared clear] " << cr << "\n\n";
                 } else {
                     block << "[/mem shared] ERR: unknown action '" << action
@@ -955,24 +981,24 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 std::string text;
                 std::getline(iss, text);
                 if (!text.empty() && text[0] == ' ') text.erase(0, 1);
-                std::string result = cmd_mem_write(agent_id, text, memory_dir);
+                std::string result = scratch_write("write", agent_id, text);
                 block << "[/mem write] " << result << "\n\n";
 
             } else if (subcmd == "read") {
-                std::string mem = cmd_mem_read(agent_id, memory_dir);
+                std::string mem = scratch_read("read", agent_id);
                 block << "[/mem read]\n"
                       << (mem.empty() ? "(no memory)" : mem)
                       << "\n[END MEMORY]\n\n";
 
             } else if (subcmd == "show") {
-                std::string mem = cmd_mem_read(agent_id, memory_dir);
+                std::string mem = scratch_read("read", agent_id);
                 block << "[/mem show]\n"
                       << (mem.empty() ? "(no memory)" : mem)
                       << "\n[END MEMORY]\n\n";
 
             } else if (subcmd == "clear") {
-                cmd_mem_clear(agent_id, memory_dir);
-                block << "[/mem clear] OK: memory cleared\n\n";
+                std::string cr = scratch_clear("clear", agent_id);
+                block << "[/mem clear] " << cr << "\n\n";
 
             } else if (subcmd == "entries" || subcmd == "entry" ||
                        subcmd == "search") {

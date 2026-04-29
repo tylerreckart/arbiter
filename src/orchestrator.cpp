@@ -227,21 +227,25 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
     return [this, caller_id, depth, original_query](
                const std::vector<std::pair<std::string, std::string>>& kids)
                -> std::vector<std::string> {
-        // Agents carry per-instance history; two threads entering the same
-        // Agent's chat at once would corrupt the vector.  Reject the whole
-        // batch so the model retries with distinct agents or splits serially.
-        std::set<std::string> seen;
-        for (auto& [sid, _] : kids) {
-            if (!seen.insert(sid).second) {
-                return std::vector<std::string>(
-                    kids.size(),
-                    "ERR: /parallel cannot invoke the same agent_id twice in "
-                    "one block (would race its history).  Use distinct agents, "
-                    "or sequence the calls with separate /agent lines outside "
-                    "/parallel.");
-            }
-        }
-
+        // Each child runs on an *ephemeral* Agent — a fresh instance built
+        // from the registered agent's Constitution.  Two children with the
+        // same agent_id therefore can't race each other's history_ (each
+        // has its own).  Cost callbacks, delegation framing, and tool-
+        // result wrapping all see the public id, so the model is unaware
+        // that there are multiple underlying instances — `/parallel` over
+        // the same scout looks identical to two sequential calls but runs
+        // concurrently.
+        //
+        // Trade-offs of this approach:
+        //   • No history sharing across siblings or with the canonical
+        //     agent.  Each child starts with the delegation-context
+        //     prelude only; useful for independent research fan-out (the
+        //     common case) but means a follow-up sequential `/agent X`
+        //     after a `/parallel X X` block won't see the parallel turns
+        //     in X's history.  Acceptable since /parallel is conceptually
+        //     a fan-out, not a chained continuation.
+        //   • The shared dedup cache is intentionally not propagated
+        //     between siblings — see make_invoker's note.
         std::vector<std::thread> threads;
         std::vector<std::string> results(kids.size());
         threads.reserve(kids.size());
@@ -260,12 +264,18 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                     results[i] = "ERR: index cannot be delegated to";
                     return;
                 }
+                Constitution cfg_copy;
                 {
                     std::lock_guard<std::mutex> lk(agents_mutex_);
-                    if (!agents_.count(sub_id)) {
+                    auto it = agents_.find(sub_id);
+                    if (it == agents_.end()) {
                         results[i] = "ERR: no agent '" + sub_id + "'";
                         return;
                     }
+                    // Copy the Constitution under the lock so we don't read
+                    // while another thread is mutating the registry.  The
+                    // returned cfg_copy is owned solely by this thread.
+                    cfg_copy = it->second->config();
                 }
 
                 // Match make_invoker's delegation-context prelude so the
@@ -285,12 +295,17 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                     enriched_msg = sub_msg;
                 }
 
-                // Fresh dedup cache per child (nullptr → send_internal makes
-                // a local one).  Siblings fetching the same URL will both
-                // fetch — fine, the alternative is a data race on the map.
+                // Fresh ephemeral Agent for this child — independent
+                // history_, independent stats_, no race with siblings or
+                // the canonical agent registered in agents_.
+                Agent ephemeral(sub_id, std::move(cfg_copy), client_);
+                if (compact_cb_) ephemeral.set_compact_callback(compact_cb_);
+
+                std::map<std::string, std::string> local_cache;
+                std::string orig_q = original_query.empty() ? sub_msg : original_query;
                 try {
-                    auto resp = send_internal(sub_id, enriched_msg, depth + 1,
-                                              nullptr, original_query);
+                    auto resp = run_dispatch(ephemeral, sub_id, enriched_msg,
+                                              depth + 1, &local_cache, orig_q);
                     results[i] = resp.ok ? resp.content : "ERR: " + resp.error;
                 } catch (const std::exception& e) {
                     results[i] = std::string("ERR: ") + e.what();
@@ -389,10 +404,11 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
                                         int depth,
                                         std::map<std::string, std::string>* shared_cache,
                                         const std::string& original_query) {
+    // Resolve the registered Agent for this id, then hand off to
+    // run_dispatch.  /parallel children with duplicate ids skip this
+    // resolver path and call run_dispatch directly with ephemeral Agents.
     Agent* agent_ptr;
     std::string current_msg;
-
-    // At depth 0, create the shared cache and extract the original query.
     std::map<std::string, std::string> local_cache;
     if (!shared_cache) shared_cache = &local_cache;
     std::string orig_q = original_query.empty() ? message : original_query;
@@ -404,6 +420,22 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         agent_ptr   = &get_agent(agent_id);
         current_msg = message;
     }
+    return run_dispatch(*agent_ptr, agent_id, current_msg, depth, shared_cache, orig_q);
+}
+
+// Parameterised dispatch loop — the body of send_internal extracted so
+// the parallel invoker can pass an ephemeral cloned Agent.  agent_id is
+// the public id used for callbacks and routing checks; `agent` is the
+// concrete instance whose history_ this dispatch mutates.
+ApiResponse Orchestrator::run_dispatch(Agent& agent,
+                                        const std::string& agent_id,
+                                        const std::string& current_msg_in,
+                                        int depth,
+                                        std::map<std::string, std::string>* shared_cache,
+                                        const std::string& original_query) {
+    Agent* agent_ptr   = &agent;
+    std::string current_msg = current_msg_in;
+    std::string orig_q       = original_query;
 
     auto invoker          = make_invoker(agent_id, depth, shared_cache, orig_q);
     auto advisor_invoker  = make_advisor_invoker(agent_id);
@@ -434,6 +466,15 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
     };
 
     ApiResponse resp;
+    // Cumulative content + token counts across the tool-call loop.  The
+    // sub-agent's caller (the master via /agent, or a parallel sibling
+    // via /parallel) needs to see the full response, not just whatever
+    // closing remark the last iteration produced.  Persisting this also
+    // matters for resumed conversations — see send_streaming for the
+    // longer rationale.
+    std::string total_content;
+    int         total_input_tok  = 0;
+    int         total_output_tok = 0;
     static constexpr int kMaxTurns = 6;
     for (int i = 0; i < kMaxTurns; ++i) {
         // Notify UI that a sub-agent is about to make an API call.
@@ -452,6 +493,11 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
         }
         if (!resp.ok) {
             if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            // Surface what we got so far so a downstream caller can show
+            // partial progress + the error.
+            resp.content       = std::move(total_content) + resp.content;
+            resp.input_tokens  = total_input_tok  + resp.input_tokens;
+            resp.output_tokens = total_output_tok + resp.output_tokens;
             return resp;
         }
 
@@ -461,6 +507,11 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
             if (progress_cb_) progress_cb_(agent_id, resp.content);
             if (cost_cb_)     cost_cb_(agent_id, agent_ptr->config().model, resp);
         }
+
+        if (!total_content.empty() && total_content.back() != '\n') total_content += "\n";
+        total_content    += resp.content;
+        total_input_tok  += resp.input_tokens;
+        total_output_tok += resp.output_tokens;
 
         auto cmds = parse_agent_commands(resp.content);
         recover_truncated_writes(agent_ptr, resp, cmds, nullptr);
@@ -476,9 +527,15 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
                                               parallel_invoker,
                                               structured_memory_reader_cb_,
                                               structured_memory_writer_cb_,
-                                              mcp_invoker_cb_);
+                                              mcp_invoker_cb_,
+                                              memory_scratchpad_cb_);
     }
 
+    // Cumulative content/tokens replace the last iteration's values so the
+    // returned ApiResponse represents the full sub-agent turn.
+    resp.content       = std::move(total_content);
+    resp.input_tokens  = total_input_tok;
+    resp.output_tokens = total_output_tok;
     if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
     return resp;
 }
@@ -567,6 +624,18 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     // but SSE clients rely on cost_cb_ firing for every turn at every depth.
     if (cost_cb_) cost_cb_(agent_id, agent_ptr->config().model, resp);
 
+    // Carry the cumulative response across tool-call re-entry iterations.
+    // Each `agent_ptr->stream()` call returns just that iteration's text,
+    // but callers (notably the API server's conversation persistence)
+    // need the full assistant turn — otherwise multi-iteration turns get
+    // truncated to the closing remark on save, and the next message loses
+    // the prior research entirely.  Tokens get accumulated for the same
+    // reason: per-iteration `resp.input_tokens`/`output_tokens` would
+    // otherwise undercount the persisted turn relative to its real cost.
+    std::string total_content   = resp.content;
+    int         total_input_tok = resp.input_tokens;
+    int         total_output_tok = resp.output_tokens;
+
     auto cmds = parse_agent_commands(resp.content);
     recover_truncated_writes(agent_ptr, resp, cmds, cb);
     if (cmds.empty()) {
@@ -593,19 +662,35 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                               parallel_invoker,
                                               structured_memory_reader_cb_,
                                               structured_memory_writer_cb_,
-                                              mcp_invoker_cb_);
+                                              mcp_invoker_cb_,
+                                              memory_scratchpad_cb_);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) {
             if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            // Return what we accumulated so far + the failed iteration so
+            // the caller can see how far we got before erroring.
+            resp.content        = std::move(total_content) + resp.content;
+            resp.input_tokens   = total_input_tok  + resp.input_tokens;
+            resp.output_tokens  = total_output_tok + resp.output_tokens;
             return resp;
         }
         if (cost_cb_) cost_cb_(agent_id, agent_ptr->config().model, resp);
+        if (!total_content.empty() && total_content.back() != '\n') total_content += "\n";
+        total_content   += resp.content;
+        total_input_tok += resp.input_tokens;
+        total_output_tok += resp.output_tokens;
         cmds = parse_agent_commands(resp.content);
         recover_truncated_writes(agent_ptr, resp, cmds, cb);
         if (cmds.empty()) break;
         resp.had_tool_calls = true;
     }
 
+    // Replace per-iteration content/token counts with the cumulative values
+    // before returning.  `resp` already carries the latest turn's `ok`,
+    // `error`, and provider metadata, which is what we want to surface.
+    resp.content        = std::move(total_content);
+    resp.input_tokens   = total_input_tok;
+    resp.output_tokens  = total_output_tok;
     if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
     return resp;
 }

@@ -134,6 +134,26 @@ using StructuredMemoryReader = std::function<std::string(const std::string& kind
 using StructuredMemoryWriter = std::function<std::string(const std::string& kind,
                                                           const std::string& args)>;
 
+// Replaces the filesystem file-scratchpad path with a tenant-scoped
+// DB-backed implementation when set.  Without this callback the /mem
+// read|write|clear and /mem shared read|write|clear dispatch falls
+// back to cmd_mem_* on the local filesystem (the CLI/REPL path).
+//
+// Operations:
+//   "read"          — read this agent's scratchpad → markdown content
+//   "write"         — append `args` to this agent's scratchpad → "OK: ..."
+//   "clear"         — clear this agent's scratchpad → ""
+//   "shared-read"   — read the shared scratchpad → markdown
+//   "shared-write"  — append `args` to the shared scratchpad → "OK: ..."
+//   "shared-clear"  — clear the shared scratchpad → "OK"
+// The callback receives the calling agent's id (used by per-agent ops;
+// ignored by shared-*) and the inline args (text for writes, "" for
+// reads/clears).  Tenant scoping happens inside the callback via closure.
+using MemoryScratchpadInvoker = std::function<std::string(
+    const std::string& op,
+    const std::string& agent_id,
+    const std::string& args)>;
+
 // Bridge to the per-request MCP session manager.  Drives the agent-
 // facing /mcp slash surface:
 //   /mcp tools                       — list every configured server's tools
@@ -178,7 +198,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ParallelInvoker parallel_invoker = nullptr,
                                    StructuredMemoryReader structured_memory_reader = nullptr,
                                    StructuredMemoryWriter structured_memory_writer = nullptr,
-                                   MCPInvoker     mcp_invoker     = nullptr);
+                                   MCPInvoker     mcp_invoker     = nullptr,
+                                   MemoryScratchpadInvoker memory_scratchpad = nullptr);
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

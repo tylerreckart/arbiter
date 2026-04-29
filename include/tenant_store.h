@@ -73,6 +73,25 @@ struct ConversationMessage {
     std::string request_id;             // correlates with usage_log + cancel
 };
 
+// One row from the agent_scratchpad table.  The legacy file scratchpad
+// at `~/.arbiter/memory/t<tid>/<agent_id>.md` is replaced by per-tenant
+// rows here when the API is the consumer — keeping notes inside the
+// same DB the conversation history lives in (no orphan files when a
+// tenant is deleted; no per-machine filesystem state to back up).
+//
+// `scope_key` is the agent_id for per-agent scratchpads or "" (the
+// empty string) for the pipeline-shared scratchpad that every agent in
+// a turn can read/write.  `content` is the cumulative markdown text
+// — appends modify the row in place, keeping the read path a single
+// SELECT.  `updated_at` is bumped on every write.
+struct AgentScratchpad {
+    int64_t     id          = 0;
+    int64_t     tenant_id   = 0;
+    std::string scope_key;              // agent_id or "" for shared
+    std::string content;
+    int64_t     updated_at  = 0;
+};
+
 // One row from the tenant_agents table.  Persists per-tenant agent
 // definitions sent from the front-end so callers can reference them
 // across requests by `agent_id` instead of re-sending the full
@@ -354,6 +373,34 @@ public:
                               const std::string& agent_def_json);
 
     bool delete_agent_record(int64_t tenant_id, const std::string& agent_id);
+
+    // ── Agent file-scratchpad (DB-backed) ───────────────────────────────
+    //
+    // Replaces the per-tenant filesystem scratchpad at
+    // `~/.arbiter/memory/t<tid>/<agent_id>.md`.  Pass `scope_key = ""` for
+    // the pipeline-shared scratchpad; any other value is treated as an
+    // agent_id.  Empty content is returned for missing rows (read is
+    // non-fatal).  append_scratchpad inserts the row on first write and
+    // appends a timestamped block on subsequent writes — same semantics
+    // as the file-based version.
+
+    std::string read_scratchpad(int64_t tenant_id,
+                                 const std::string& scope_key) const;
+
+    // Appends a `\n<!-- <ts> -->\n<text>\n` block to the existing content
+    // (or starts the content with that block on first write).  Returns
+    // the new total content size in bytes (callers usually ignore).
+    int64_t append_scratchpad(int64_t tenant_id,
+                               const std::string& scope_key,
+                               const std::string& text);
+
+    // Returns true if a row was deleted.  Idempotent.
+    bool clear_scratchpad(int64_t tenant_id, const std::string& scope_key);
+
+    // List every scope_key that has a non-empty scratchpad for this
+    // tenant.  Used by `GET /v1/memory` to enumerate available agent
+    // notebooks without reading the filesystem.
+    std::vector<std::string> list_scratchpad_scopes(int64_t tenant_id) const;
 
     // ── Structured memory entries + relations ───────────────────────────
     //

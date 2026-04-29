@@ -42,7 +42,9 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <csignal>
 #include <errno.h>
+#include <execinfo.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -1246,40 +1248,22 @@ std::optional<std::string> read_small_file(const std::string& path) {
     return out;
 }
 
-void handle_memory_list(int fd, const ApiServerOptions& opts,
-                         const Tenant& tenant) {
-    const std::string dir = tenant_memory_dir(opts, tenant);
+void handle_memory_list(int fd, const ApiServerOptions& /*opts*/,
+                         TenantStore& tenants, const Tenant& tenant) {
+    // Scratchpads now live in `agent_scratchpad`, not on the filesystem.
+    // We surface them with the same shape the legacy file-listing
+    // produced (agent_id + kind + size) so the front-end's renderer
+    // doesn't need a parallel code path.
     auto arr = jarr();
     auto& a = arr->as_array_mut();
-    if (!dir.empty() && fs::exists(dir)) {
-        std::error_code ec;
-        for (auto& ent : fs::directory_iterator(dir, ec)) {
-            if (ec) break;
-            if (!ent.is_regular_file()) continue;
-            std::string name = ent.path().filename().string();
-            // Only .md files — memory is markdown-formatted.
-            if (name.size() < 4 || name.substr(name.size() - 3) != ".md") continue;
-
-            auto entry = jobj();
-            auto& m = entry->as_object_mut();
-            const std::string id = name.substr(0, name.size() - 3);
-            m["agent_id"] = jstr(id == "shared" ? "" : id);
-            m["kind"]     = jstr(id == "shared" ? "shared" : "agent");
-            m["size"]     = jnum(static_cast<double>(ent.file_size(ec)));
-            auto ts = fs::last_write_time(ent.path(), ec);
-            if (!ec) {
-                // filesystem::file_time_type → epoch seconds.  C++20 has
-                // file_clock; avoid that to keep the toolchain compatibility
-                // matrix narrow — duration_cast via system_clock works for
-                // our observational precision (seconds).
-                auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                    ts - decltype(ts)::clock::now() + std::chrono::system_clock::now());
-                m["modified_at"] = jnum(static_cast<double>(
-                    std::chrono::duration_cast<std::chrono::seconds>(
-                        sctp.time_since_epoch()).count()));
-            }
-            a.push_back(std::move(entry));
-        }
+    for (auto& scope : tenants.list_scratchpad_scopes(tenant.id)) {
+        auto entry = jobj();
+        auto& m = entry->as_object_mut();
+        m["agent_id"] = jstr(scope);    // "" for the shared scratchpad
+        m["kind"]     = jstr(scope.empty() ? "shared" : "agent");
+        const std::string content = tenants.read_scratchpad(tenant.id, scope);
+        m["size"]     = jnum(static_cast<double>(content.size()));
+        a.push_back(std::move(entry));
     }
     auto body = jobj();
     auto& m = body->as_object_mut();
@@ -1514,43 +1498,27 @@ void handle_models_list(int fd) {
 }
 
 void handle_memory_read(int fd, const std::string& agent_id,
-                         const ApiServerOptions& opts, const Tenant& tenant) {
-    if (!agent_id_is_safe(agent_id)) {
+                         TenantStore& tenants, const Tenant& tenant) {
+    // Path-shape: GET /v1/memory/:agent_id (any segment), or
+    //             GET /v1/memory/shared    (legacy shared alias).
+    // We accept "shared" as a special agent id for the shared scratchpad
+    // — keeps the front-end URL stable while the storage now lives in
+    // the agent_scratchpad table under scope_key="".
+    const std::string scope = (agent_id == "shared") ? std::string{} : agent_id;
+    if (!scope.empty() && !agent_id_is_safe(scope)) {
         auto e = jobj();
         e->as_object_mut()["error"] = jstr("invalid agent id");
         write_json_response(fd, 400, e);
         return;
     }
-    const std::string dir = tenant_memory_dir(opts, tenant);
-    if (dir.empty()) {
-        auto e = jobj();
-        e->as_object_mut()["error"] = jstr("memory not configured on this server");
-        write_json_response(fd, 503, e);
-        return;
-    }
-    const std::string path = dir + "/" + agent_id + ".md";
-    auto content = read_small_file(path);
-    if (!content) {
-        // Missing memory is not an error — the agent has simply never
-        // written anything yet.  Return 200 with empty content so the
-        // sibling UI can render "(no memory yet)" without a special case.
-        auto body = jobj();
-        auto& m = body->as_object_mut();
-        m["agent_id"] = jstr(agent_id == "shared" ? "" : agent_id);
-        m["kind"]     = jstr(agent_id == "shared" ? "shared" : "agent");
-        m["content"]  = jstr("");
-        m["size"]     = jnum(0);
-        m["exists"]   = jbool(false);
-        write_json_response(fd, 200, body);
-        return;
-    }
+    const std::string content = tenants.read_scratchpad(tenant.id, scope);
     auto body = jobj();
     auto& m = body->as_object_mut();
-    m["agent_id"] = jstr(agent_id == "shared" ? "" : agent_id);
-    m["kind"]     = jstr(agent_id == "shared" ? "shared" : "agent");
-    m["content"]  = jstr(*content);
-    m["size"]     = jnum(static_cast<double>(content->size()));
-    m["exists"]   = jbool(true);
+    m["agent_id"] = jstr(scope);
+    m["kind"]     = jstr(scope.empty() ? "shared" : "agent");
+    m["content"]  = jstr(content);
+    m["size"]     = jnum(static_cast<double>(content.size()));
+    m["exists"]   = jbool(!content.empty());
     write_json_response(fd, 200, body);
 }
 
@@ -1597,6 +1565,23 @@ canonical_tags_json(const std::shared_ptr<JsonValue>& v, std::string& err) {
         a.push_back(jstr(s));
     }
     return json_serialize(*out);
+}
+
+// Lightweight logger for the memory handlers.  Writes one timestamped
+// line per call to stderr — picked up by `arbiter --api --verbose` in
+// the same stream as the orchestrate-side log_error closure.  Always-on
+// (not gated by verbose) since these events are infrequent and any
+// segfault investigation needs the breadcrumbs unconditionally.
+void log_memory_event(const std::string& tag,
+                       int64_t tenant_id,
+                       const std::string& detail) {
+    std::time_t now = std::time(nullptr);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%H:%M:%S", std::localtime(&now));
+    std::fprintf(stderr, "[%s] [memory] tenant=%lld %s: %s\n",
+                  ts, static_cast<long long>(tenant_id),
+                  tag.c_str(), detail.c_str());
+    std::fflush(stderr);
 }
 
 std::shared_ptr<JsonValue> memory_entry_to_json(const MemoryEntry& e) {
@@ -1740,19 +1725,33 @@ void handle_memory_entry_get(int fd, int64_t id,
 
 void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
                                 TenantStore& tenants, const Tenant& tenant) {
+    log_memory_event("entry.patch.enter", tenant.id,
+                      "id=" + std::to_string(id) +
+                      " body_bytes=" + std::to_string(req.body.size()));
+
     std::shared_ptr<JsonValue> body;
     try { body = json_parse(req.body); }
     catch (const std::exception& e) {
+        log_memory_event("entry.patch.parse_error", tenant.id, e.what());
         return write_memory_error(fd, 400, std::string("invalid JSON: ") + e.what());
     }
-    if (!body || !body->is_object())
+    if (!body || !body->is_object()) {
+        log_memory_event("entry.patch.shape_error", tenant.id,
+                          "body is not a JSON object");
         return write_memory_error(fd, 400, "body must be a JSON object");
+    }
 
     // Confirm the entry exists and belongs to this tenant before doing
     // input validation work — reduces 404 vs 400 ambiguity for callers.
     auto existing = tenants.get_entry(tenant.id, id);
-    if (!existing)
+    if (!existing) {
+        log_memory_event("entry.patch.not_found", tenant.id,
+                          "id=" + std::to_string(id));
         return write_memory_error(fd, 404, "entry not found");
+    }
+    log_memory_event("entry.patch.found", tenant.id,
+                      "id=" + std::to_string(id) +
+                      " current_status=" + existing->status);
 
     std::optional<std::string> title, content, source, tags_json, type;
     bool promote_to_accepted = false;
@@ -1796,10 +1795,27 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
         promote_to_accepted = true;
     }
 
-    if (!tenants.update_entry(tenant.id, id, title, content, source, tags_json, type))
+    log_memory_event("entry.patch.update", tenant.id,
+                      "id=" + std::to_string(id) +
+                      " promote_to_accepted=" + (promote_to_accepted ? "yes" : "no") +
+                      " field_changes=" +
+                      std::to_string(int(title.has_value())   +
+                                      int(content.has_value()) +
+                                      int(source.has_value())  +
+                                      int(tags_json.has_value()) +
+                                      int(type.has_value())));
+
+    if (!tenants.update_entry(tenant.id, id, title, content, source, tags_json, type)) {
+        log_memory_event("entry.patch.update_failed", tenant.id,
+                          "id=" + std::to_string(id) + " (row vanished?)");
         return write_memory_error(fd, 404, "entry not found");
+    }
     if (promote_to_accepted) {
-        if (!tenants.accept_entry(tenant.id, id)) {
+        const bool ok = tenants.accept_entry(tenant.id, id);
+        log_memory_event("entry.patch.accept_entry", tenant.id,
+                          "id=" + std::to_string(id) + " result=" +
+                          (ok ? "promoted" : "no_change"));
+        if (!ok) {
             // Was already accepted (no-op error), or status changed under
             // us between the existence check and the update.  409 either
             // way — caller can re-fetch to see the live state.
@@ -1812,6 +1828,23 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
     }
 
     auto e = tenants.get_entry(tenant.id, id);
+    if (!e) {
+        // Vanished between accept and re-fetch — should be vanishingly
+        // rare (DELETE on the same row from another connection), but
+        // dereferencing a nullopt segfaults.  Log + return a 410 Gone
+        // so the client knows the row is no longer addressable.
+        log_memory_event("entry.patch.refetch_missing", tenant.id,
+                          "id=" + std::to_string(id) +
+                          " — entry disappeared after accept; possible concurrent DELETE");
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("entry vanished between accept and re-fetch — refresh and retry");
+        write_json_response(fd, 410, err);
+        return;
+    }
+    log_memory_event("entry.patch.ok", tenant.id,
+                      "id=" + std::to_string(id) +
+                      " new_status=" + e->status);
     write_json_response(fd, 200, memory_entry_to_json(*e));
 }
 
@@ -1919,34 +1952,57 @@ void handle_memory_relation_delete(int fd, int64_t id,
 // so the reviewer accepts the entry endpoints first.
 void handle_memory_relation_patch(int fd, int64_t id, const HttpRequest& req,
                                    TenantStore& tenants, const Tenant& tenant) {
+    log_memory_event("relation.patch.enter", tenant.id,
+                      "id=" + std::to_string(id) +
+                      " body_bytes=" + std::to_string(req.body.size()));
+
     std::shared_ptr<JsonValue> body;
     try { body = json_parse(req.body); }
     catch (const std::exception& e) {
+        log_memory_event("relation.patch.parse_error", tenant.id, e.what());
         return write_memory_error(fd, 400, std::string("invalid JSON: ") + e.what());
     }
-    if (!body || !body->is_object())
+    if (!body || !body->is_object()) {
+        log_memory_event("relation.patch.shape_error", tenant.id,
+                          "body is not a JSON object");
         return write_memory_error(fd, 400, "body must be a JSON object");
+    }
 
     auto v = body->get("status");
-    if (!v || !v->is_string() || v->as_string() != "accepted")
+    if (!v || !v->is_string() || v->as_string() != "accepted") {
+        log_memory_event("relation.patch.bad_status", tenant.id,
+                          std::string("got=") + (v ? (v->is_string() ? v->as_string()
+                                                                       : "(non-string)")
+                                                   : "(missing)"));
         return write_memory_error(fd, 400,
             "the only supported PATCH on a relation is "
             "{\"status\": \"accepted\"} — reject by DELETE.");
+    }
 
-    // Existence check first so we can disambiguate 404 from 409.  list_relations
-    // by id isn't a thing, so use an internal find via list with id=0 won't
-    // work either — easiest is two list calls scoped narrowly, but we already
-    // have accept_relation's preflight read.  For a clean error, look it up
-    // with a list_relations narrowed to this tenant and walk for the id:
-    bool exists = false;
+    // Existence check.  list_relations + walk is O(n); fine for v1
+    // tenant scales but worth replacing with a get-by-id helper if a
+    // tenant ever pushes past the 1000-row cap below (the row would
+    // appear missing and we'd 404 incorrectly).
+    bool   exists = false;
+    size_t scanned = 0;
     {
         auto rows = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000,
                                            /*status=*/std::string{});
+        scanned = rows.size();
         for (auto& r : rows) if (r.id == id) { exists = true; break; }
     }
-    if (!exists) return write_memory_error(fd, 404, "relation not found");
+    if (!exists) {
+        log_memory_event("relation.patch.not_found", tenant.id,
+                          "id=" + std::to_string(id) +
+                          " scanned_rows=" + std::to_string(scanned));
+        return write_memory_error(fd, 404, "relation not found");
+    }
 
-    if (!tenants.accept_relation(tenant.id, id)) {
+    const bool accepted = tenants.accept_relation(tenant.id, id);
+    log_memory_event("relation.patch.accept_relation", tenant.id,
+                      "id=" + std::to_string(id) + " result=" +
+                      (accepted ? "promoted" : "no_change"));
+    if (!accepted) {
         auto err = jobj();
         err->as_object_mut()["error"] =
             jstr("cannot accept relation — it must be in 'proposed' status "
@@ -1956,17 +2012,31 @@ void handle_memory_relation_patch(int fd, int64_t id, const HttpRequest& req,
         return;
     }
 
-    // Re-fetch the canonical row for the response.  list_relations again,
-    // narrowed by source_id then walk — same pattern as the existence check.
+    // Re-fetch the canonical row for the response.  Same list-and-walk as
+    // the existence check — the alternative would be a dedicated get-by-id
+    // method on TenantStore, which we'll add when this becomes a hot path.
     auto rows = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000,
                                        /*status=*/std::string{});
     for (auto& r : rows) {
-        if (r.id == id) { write_json_response(fd, 200, memory_relation_to_json(r)); return; }
+        if (r.id == id) {
+            log_memory_event("relation.patch.ok", tenant.id,
+                              "id=" + std::to_string(id) +
+                              " new_status=" + r.status);
+            write_json_response(fd, 200, memory_relation_to_json(r));
+            return;
+        }
     }
-    // Race: row vanished between accept and re-fetch.  Treat as success.
-    auto ok = jobj();
-    ok->as_object_mut()["accepted"] = jbool(true);
-    write_json_response(fd, 200, ok);
+    // Row vanished between accept and re-fetch (unlikely — only DELETE
+    // on the same id from another connection would do this).  Don't
+    // synthesise a fake response that pretends nothing happened; surface
+    // 410 Gone so the client refreshes its view.
+    log_memory_event("relation.patch.refetch_missing", tenant.id,
+                      "id=" + std::to_string(id) +
+                      " — relation disappeared after accept; possible concurrent DELETE");
+    auto err = jobj();
+    err->as_object_mut()["error"] =
+        jstr("relation vanished between accept and re-fetch — refresh and retry");
+    write_json_response(fd, 410, err);
 }
 
 // GET /v1/memory/proposals
@@ -1977,6 +2047,9 @@ void handle_memory_relation_patch(int fd, int64_t id, const HttpRequest& req,
 // accept/reject UI.
 void handle_memory_proposals_list(int fd, const HttpRequest& req,
                                    TenantStore& tenants, const Tenant& tenant) {
+    log_memory_event("proposals.list.enter", tenant.id,
+                      "path=" + req.path);
+
     const auto qp = parse_query(req.path);
     auto get_str = [&](const std::string& k) -> std::string {
         auto it = qp.find(k);
@@ -1989,10 +2062,15 @@ void handle_memory_proposals_list(int fd, const HttpRequest& req,
     };
 
     const std::string kind = get_str("kind");
-    if (!kind.empty() && kind != "entries" && kind != "relations")
+    if (!kind.empty() && kind != "entries" && kind != "relations") {
+        log_memory_event("proposals.list.bad_kind", tenant.id, "kind=" + kind);
         return write_memory_error(fd, 400, "kind must be 'entries' or 'relations'");
+    }
 
     const int limit = static_cast<int>(get_int("limit"));
+    log_memory_event("proposals.list.params", tenant.id,
+                      "kind=" + (kind.empty() ? "<both>" : kind) +
+                      " limit=" + std::to_string(limit));
 
     auto body = jobj();
     auto& m = body->as_object_mut();
@@ -2002,26 +2080,66 @@ void handle_memory_proposals_list(int fd, const HttpRequest& req,
         TenantStore::EntryFilter f;
         f.status = "proposed";
         f.limit  = limit > 0 ? limit : 100;
-        auto entries = tenants.list_entries(tenant.id, f);
+        std::vector<MemoryEntry> entries;
+        try {
+            entries = tenants.list_entries(tenant.id, f);
+        } catch (const std::exception& ex) {
+            log_memory_event("proposals.list.entries_query_threw", tenant.id, ex.what());
+            return write_memory_error(fd, 500,
+                std::string("entries query failed: ") + ex.what());
+        }
+        log_memory_event("proposals.list.entries_loaded", tenant.id,
+                          "count=" + std::to_string(entries.size()));
         auto arr = jarr();
         auto& a = arr->as_array_mut();
-        for (auto& e : entries) a.push_back(memory_entry_to_json(e));
+        for (size_t i = 0; i < entries.size(); ++i) {
+            try {
+                a.push_back(memory_entry_to_json(entries[i]));
+            } catch (const std::exception& ex) {
+                log_memory_event("proposals.list.entry_render_threw", tenant.id,
+                                  "index=" + std::to_string(i) +
+                                  " entry_id=" + std::to_string(entries[i].id) +
+                                  " err=" + ex.what());
+                throw;   // surface to the connection-level catch
+            }
+        }
         m["entries"]       = arr;
         m["entries_count"] = jnum(static_cast<double>(entries.size()));
     }
 
     if (kind != "entries") {
-        auto rels = tenants.list_relations(tenant.id, 0, 0, std::string{},
+        std::vector<MemoryRelation> rels;
+        try {
+            rels = tenants.list_relations(tenant.id, 0, 0, std::string{},
                                             limit > 0 ? limit : 200,
                                             /*status=*/"proposed");
+        } catch (const std::exception& ex) {
+            log_memory_event("proposals.list.relations_query_threw", tenant.id, ex.what());
+            return write_memory_error(fd, 500,
+                std::string("relations query failed: ") + ex.what());
+        }
+        log_memory_event("proposals.list.relations_loaded", tenant.id,
+                          "count=" + std::to_string(rels.size()));
         auto arr = jarr();
         auto& a = arr->as_array_mut();
-        for (auto& r : rels) a.push_back(memory_relation_to_json(r));
+        for (size_t i = 0; i < rels.size(); ++i) {
+            try {
+                a.push_back(memory_relation_to_json(rels[i]));
+            } catch (const std::exception& ex) {
+                log_memory_event("proposals.list.relation_render_threw", tenant.id,
+                                  "index=" + std::to_string(i) +
+                                  " rel_id=" + std::to_string(rels[i].id) +
+                                  " err=" + ex.what());
+                throw;
+            }
+        }
         m["relations"]       = arr;
         m["relations_count"] = jnum(static_cast<double>(rels.size()));
     }
 
+    log_memory_event("proposals.list.write", tenant.id, "ready");
     write_json_response(fd, 200, body);
+    log_memory_event("proposals.list.ok", tenant.id, "done");
 }
 
 void handle_memory_graph(int fd, const HttpRequest& req,
@@ -2387,10 +2505,56 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         return;
     }
     // Memory is tenant-scoped so /mem commands can never leak between
-    // accounts.  Directory created on first write; empty until then.
+    // accounts.  set_memory_dir is kept as a no-op fallback path for
+    // any code that still expects a filesystem location, but the
+    // canonical scratchpad storage is now the agent_scratchpad table
+    // wired below.
     if (!opts.memory_root.empty()) {
         orch->set_memory_dir(opts.memory_root + "/t" +
                               std::to_string(tenant.id));
+    }
+
+    // DB-backed file-scratchpad bridge.  /mem read|write|clear and
+    // /mem shared read|write|clear all flow through here, scoped to
+    // this request's tenant.  Without this callback the dispatcher
+    // would fall back to the filesystem path — fine for the CLI/REPL
+    // (which doesn't have a tenant), but the API path always wires it.
+    {
+        const int64_t tid = tenant.id;
+        TenantStore*  store = &tenants;
+        orch->set_memory_scratchpad(
+            [tid, store](const std::string& op,
+                          const std::string& agent_id,
+                          const std::string& args) -> std::string {
+                // Per-agent ops use the calling agent's id; shared-* use
+                // the empty scope key.  Output strings match the legacy
+                // file-based responses so the model sees the same
+                // [/mem write] OK: ... framing it always has.
+                if (op == "read") {
+                    return store->read_scratchpad(tid, agent_id);
+                }
+                if (op == "shared-read") {
+                    return store->read_scratchpad(tid, std::string{});
+                }
+                if (op == "write") {
+                    int64_t sz = store->append_scratchpad(tid, agent_id, args);
+                    return "OK: memory written (" + std::to_string(sz) +
+                           " bytes total in scratchpad)";
+                }
+                if (op == "shared-write") {
+                    int64_t sz = store->append_scratchpad(tid, std::string{}, args);
+                    return "OK (" + std::to_string(sz) + " bytes total)";
+                }
+                if (op == "clear") {
+                    store->clear_scratchpad(tid, agent_id);
+                    return "OK: memory cleared";
+                }
+                if (op == "shared-clear") {
+                    store->clear_scratchpad(tid, std::string{});
+                    return "OK";
+                }
+                return "ERR: unknown scratchpad op '" + op + "'";
+            });
     }
 
     // Install the tenant's stored catalog first so /agent and /parallel
@@ -3160,9 +3324,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         m["duration_ms"] = jnum(static_cast<double>(elapsed_ms));
         emit("done", done);
 
-        // Persist the assistant turn to the conversation thread.  We log
-        // the request-level totals (resp.input_tokens etc. are master's
-        // first turn only, so prefer the aggregated billing counters).
+        // Persist the assistant turn to the conversation thread.  resp's
+        // content + token counts are cumulative across all tool-call
+        // re-entry iterations (Orchestrator::send_streaming aggregates
+        // them before returning), so what we persist is the full
+        // multi-turn assistant response — not just the closing remark.
+        // `prov + mk` is the aggregate billing from cost_cb_ firings.
         if (conversation_id > 0 && resp.ok) {
             try {
                 tenants.append_message(tenant.id, conversation_id,
@@ -3191,8 +3358,59 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
 
 ApiServer::~ApiServer() { stop(); }
 
+// Install a SIGSEGV/SIGABRT/SIGBUS handler that prints a backtrace
+// before re-raising the signal.  Once-only — multiple ApiServer
+// instances in the same process share the handler.  Used to leave a
+// forensic trail when the API server crashes mid-request: the kernel
+// signal arrives, we print frames to stderr, then re-raise so the
+// default action runs (core dump or exit).
+//
+// Uses backtrace(3) which is async-signal-unsafe in the strict sense
+// but works in practice on darwin and glibc-Linux for crashes that
+// don't corrupt malloc state — that's exactly the case we want
+// breadcrumbs for.  If a future crash hangs in the handler we'll
+// switch to a pre-allocated buffer.
+
+namespace {
+
+void crash_handler(int sig) {
+    constexpr int kFrames = 32;
+    void* buf[kFrames];
+    int n = ::backtrace(buf, kFrames);
+    const char* sig_name =
+        sig == SIGSEGV ? "SIGSEGV" :
+        sig == SIGABRT ? "SIGABRT" :
+        sig == SIGBUS  ? "SIGBUS"  :
+        sig == SIGFPE  ? "SIGFPE"  : "signal";
+    // write(2) is async-signal-safe; fprintf is not, but in practice
+    // it works for the cases we care about (the handler is best-effort
+    // forensic, not a guarantee).
+    std::fprintf(stderr, "\n=== arbiter crashed (%s, sig %d) — backtrace ===\n",
+                 sig_name, sig);
+    ::backtrace_symbols_fd(buf, n, fileno(stderr));
+    std::fprintf(stderr, "=== end backtrace ===\n");
+    std::fflush(stderr);
+    // Restore default disposition and re-raise so the OS records the
+    // crash properly (core file, parent's wait status).
+    std::signal(sig, SIG_DFL);
+    ::raise(sig);
+}
+
+void install_crash_handlers_once() {
+    static std::atomic<bool> installed{false};
+    bool expected = false;
+    if (!installed.compare_exchange_strong(expected, true)) return;
+    std::signal(SIGSEGV, crash_handler);
+    std::signal(SIGABRT, crash_handler);
+    std::signal(SIGBUS,  crash_handler);
+    std::signal(SIGFPE,  crash_handler);
+}
+
+} // namespace
+
 void ApiServer::start() {
     if (running_.load()) return;
+    install_crash_handlers_once();
 
     listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0)
@@ -3278,6 +3496,21 @@ void ApiServer::handle_connection(int fd) {
         write_plain_response(fd, 400, "Bad Request", "bad request\n");
         return;
     }
+    // Connection-level exception trap.  Without this, an uncaught throw
+    // anywhere downstream propagates out of the connection thread and
+    // calls std::terminate, killing the whole API server process —
+    // which most users perceive as a "segfault".  The try/catch keeps
+    // the daemon up and tells us exactly what threw + on which route.
+    auto log_uncaught = [&](const char* what) {
+        std::time_t now = std::time(nullptr);
+        char ts[32];
+        std::strftime(ts, sizeof(ts), "%H:%M:%S", std::localtime(&now));
+        std::fprintf(stderr,
+            "[%s] [api] UNCAUGHT EXCEPTION in %s %s: %s\n",
+            ts, req.method.c_str(), req.path.c_str(), what);
+        std::fflush(stderr);
+    };
+    try {
 
     // CORS preflight short-circuits before auth — browsers fire OPTIONS
     // without the Authorization header by design.  Any path answers the
@@ -3538,11 +3771,11 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             if (segs.size() == 2) {
-                handle_memory_list(fd, opts_, *tenant);
+                handle_memory_list(fd, opts_, tenants_, *tenant);
                 return;
             }
             if (segs.size() == 3) {
-                handle_memory_read(fd, segs[2], opts_, *tenant);
+                handle_memory_read(fd, segs[2], tenants_, *tenant);
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "memory route not found\n");
@@ -3551,6 +3784,14 @@ void ApiServer::handle_connection(int fd) {
     }
 
     write_plain_response(fd, 404, "Not Found", "endpoint not found\n");
+    } catch (const std::exception& e) {
+        log_uncaught(e.what());
+        write_plain_response(fd, 500, "Internal Server Error",
+                              std::string("internal error: ") + e.what() + "\n");
+    } catch (...) {
+        log_uncaught("(non-std exception)");
+        write_plain_response(fd, 500, "Internal Server Error", "internal error\n");
+    }
 }
 
 } // namespace index_ai

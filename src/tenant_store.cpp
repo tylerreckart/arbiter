@@ -142,7 +142,22 @@ TenantStore::~TenantStore() {
 
 void TenantStore::open(const std::string& path) {
     if (db_) return;   // idempotent; caller re-opening the same instance is a no-op
-    int rc = sqlite3_open(path.c_str(), &db_);
+    // SQLITE_OPEN_FULLMUTEX forces the connection into serialized
+    // threading mode regardless of the underlying library's build
+    // defaults.  Without this, the system SQLite on macOS is
+    // typically built in multi-thread mode (SQLITE_THREADSAFE=2),
+    // which forbids sharing one `sqlite3*` across threads — and the
+    // API server's accept loop spawns one thread per connection, all
+    // calling into this TenantStore.  Sharing a non-serialized
+    // connection would race the parser and surface as garbage error
+    // messages ("no such table: <…>") followed by SIGSEGV inside
+    // sqlite3RunParser.  FULLMUTEX makes every API call take an
+    // internal mutex on the connection, making concurrent calls safe
+    // at the cost of one mutex per SQL op (negligible for our scale).
+    int rc = sqlite3_open_v2(
+        path.c_str(), &db_,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+        nullptr);
     if (rc != SQLITE_OK) {
         std::string msg = "sqlite3_open: " + std::string(sqlite3_errmsg(db_));
         sqlite3_close(db_);
@@ -390,6 +405,26 @@ void TenantStore::open(const std::string& path) {
     exec_sql(db_, R"SQL(
         CREATE INDEX IF NOT EXISTS tenant_agents_tenant_updated
             ON tenant_agents(tenant_id, updated_at DESC);
+    )SQL");
+
+    // ── Agent file-scratchpad storage (added in v7) ────────────────────
+    // Replaces the filesystem scratchpad at ~/.arbiter/memory/t<tid>/.
+    // One row per (tenant, scope_key); scope_key == "" is the shared
+    // pipeline scratchpad, any other value is an agent_id.  Single
+    // cumulative `content` blob per row — appends rewrite the column.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS agent_scratchpad (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id   INTEGER NOT NULL,
+            scope_key   TEXT    NOT NULL,
+            content     TEXT    NOT NULL DEFAULT '',
+            updated_at  INTEGER NOT NULL,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE UNIQUE INDEX IF NOT EXISTS agent_scratchpad_tenant_scope
+            ON agent_scratchpad(tenant_id, scope_key);
     )SQL");
 }
 
@@ -1397,6 +1432,112 @@ bool TenantStore::delete_agent_record(int64_t tenant_id,
     q.bind(2, agent_id);
     q.step();
     return sqlite3_changes(db_) > 0;
+}
+
+// ── Agent file-scratchpad ──────────────────────────────────────────────
+
+std::string TenantStore::read_scratchpad(int64_t tenant_id,
+                                          const std::string& scope_key) const {
+    if (!db_) return "";
+    Stmt q(db_, "SELECT content FROM agent_scratchpad "
+                 "WHERE tenant_id = ? AND scope_key = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, scope_key);
+    if (q.step() != SQLITE_ROW) return "";
+    return q.column_text(0);
+}
+
+namespace {
+std::string scratchpad_block(const std::string& text) {
+    // Match the file-based format so existing prompts and consumers
+    // still see `<!-- YYYY-MM-DD HH:MM:SS --> ...` between entries.
+    std::time_t now = std::time(nullptr);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+    std::string out;
+    out.reserve(text.size() + 64);
+    out += "\n<!-- ";
+    out += ts;
+    out += " -->\n";
+    out += text;
+    out += "\n";
+    return out;
+}
+} // namespace
+
+int64_t TenantStore::append_scratchpad(int64_t tenant_id,
+                                        const std::string& scope_key,
+                                        const std::string& text) {
+    if (!db_) return 0;
+    const std::string block = scratchpad_block(text);
+    const int64_t now = now_epoch();
+    // Read-modify-write under the shared connection: SQLite serialises
+    // writers via the busy-timeout pragma, so concurrent appends from
+    // parallel orchestrator threads will queue rather than corrupt.
+    std::string current;
+    {
+        Stmt sel(db_, "SELECT content FROM agent_scratchpad "
+                       "WHERE tenant_id = ? AND scope_key = ?;");
+        sel.bind(1, tenant_id);
+        sel.bind(2, scope_key);
+        if (sel.step() == SQLITE_ROW) current = sel.column_text(0);
+    }
+    const std::string new_content = current + block;
+
+    if (current.empty()) {
+        // First write — try INSERT; on UNIQUE conflict (a parallel
+        // appender beat us to it) fall through to UPDATE.
+        Stmt ins(db_,
+            "INSERT OR IGNORE INTO agent_scratchpad "
+            "(tenant_id, scope_key, content, updated_at) "
+            "VALUES (?, ?, ?, ?);");
+        ins.bind(1, tenant_id);
+        ins.bind(2, scope_key);
+        ins.bind(3, new_content);
+        ins.bind(4, now);
+        ins.step();
+        if (sqlite3_changes(db_) > 0) return static_cast<int64_t>(new_content.size());
+    }
+
+    Stmt upd(db_,
+        "UPDATE agent_scratchpad SET content = content || ?, updated_at = ? "
+        " WHERE tenant_id = ? AND scope_key = ?;");
+    upd.bind(1, block);
+    upd.bind(2, now);
+    upd.bind(3, tenant_id);
+    upd.bind(4, scope_key);
+    upd.step();
+    // Fetch the post-update size so the caller can surface a useful
+    // "OK: wrote N bytes" line that matches the file path's behaviour.
+    Stmt sz(db_, "SELECT length(content) FROM agent_scratchpad "
+                  "WHERE tenant_id = ? AND scope_key = ?;");
+    sz.bind(1, tenant_id);
+    sz.bind(2, scope_key);
+    if (sz.step() == SQLITE_ROW) return sz.column_int64(0);
+    return 0;
+}
+
+bool TenantStore::clear_scratchpad(int64_t tenant_id,
+                                    const std::string& scope_key) {
+    if (!db_) return false;
+    Stmt q(db_, "DELETE FROM agent_scratchpad "
+                 "WHERE tenant_id = ? AND scope_key = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, scope_key);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+std::vector<std::string>
+TenantStore::list_scratchpad_scopes(int64_t tenant_id) const {
+    std::vector<std::string> out;
+    if (!db_) return out;
+    Stmt q(db_, "SELECT scope_key FROM agent_scratchpad "
+                 "WHERE tenant_id = ? AND length(content) > 0 "
+                 " ORDER BY scope_key;");
+    q.bind(1, tenant_id);
+    while (q.step() == SQLITE_ROW) out.push_back(q.column_text(0));
+    return out;
 }
 
 } // namespace index_ai

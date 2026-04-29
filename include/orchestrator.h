@@ -96,6 +96,16 @@ public:
     // contexts don't spawn MCP servers.
     void set_mcp_invoker(MCPInvoker cb) { mcp_invoker_cb_ = std::move(cb); }
 
+    // DB-backed file-scratchpad bridge.  /mem read|write|clear and
+    // /mem shared read|write|clear route through this callback when set;
+    // otherwise they fall back to the filesystem (~/.arbiter/memory/...).
+    // The HTTP API wires this to a TenantStore-backed implementation so
+    // tenant memory persists in the same database as conversations and
+    // structured memory; the CLI/REPL leaves it null.
+    void set_memory_scratchpad(MemoryScratchpadInvoker cb) {
+        memory_scratchpad_cb_ = std::move(cb);
+    }
+
     // Flip /exec off for this orchestrator.  Agents that emit /exec get a
     // tool result explaining the ban; they're expected to adapt their plan.
     // Used by the HTTP API so SaaS callers can't invoke arbitrary shell
@@ -250,6 +260,7 @@ private:
     StructuredMemoryReader structured_memory_reader_cb_;
     StructuredMemoryWriter structured_memory_writer_cb_;
     MCPInvoker         mcp_invoker_cb_;
+    MemoryScratchpadInvoker memory_scratchpad_cb_;
     bool               exec_disabled_ = false;
 
     StreamStartCallback stream_start_cb_;
@@ -270,6 +281,20 @@ private:
                               int depth = 0,
                               std::map<std::string, std::string>* shared_cache = nullptr,
                               const std::string& original_query = "");
+
+    // Dispatch-loop core, parameterised on the Agent instance.  Lets the
+    // parallel invoker run two (or more) children with the same agent_id
+    // by spinning up ephemeral Agent objects (cloned Constitution, fresh
+    // history_) per child — without those clones, two threads would race
+    // a single Agent's history_ vector.  agent_id is the *display* id
+    // surfaced to callbacks and tool-result framing; the ephemeral Agent
+    // need not be registered in agents_.
+    ApiResponse run_dispatch(Agent& agent,
+                              const std::string& agent_id,
+                              const std::string& current_msg,
+                              int depth,
+                              std::map<std::string, std::string>* shared_cache,
+                              const std::string& original_query);
 
     // Build an AgentInvoker lambda for use in command dispatch.
     // depth is the current nesting level; invoker refuses beyond depth 2.
