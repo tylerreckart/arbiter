@@ -43,6 +43,7 @@
 
 #include <arpa/inet.h>
 #include <csignal>
+#include <curl/curl.h>
 #include <errno.h>
 #include <execinfo.h>
 #include <netinet/in.h>
@@ -893,6 +894,178 @@ void handle_admin(int fd, const HttpRequest& req,
     admin_error(fd, 404, "admin resource not found");
 }
 
+// ─── Web search backend ─────────────────────────────────────────────────────
+//
+// One libcurl GET to the Brave Search API per /search call.  Brave is the
+// v1 provider; the SearchProvider field in ApiServerOptions reserves slots
+// for Tavily/Exa, which would each plug in here as a parallel branch.
+//
+// Output format matches the SearchInvoker contract documented in
+// commands.h: numbered lines "<n>. <title> — <snippet>\n   <url>".  The
+// dispatcher wraps this in [/search ...] / [END SEARCH] framing and
+// applies the 16 KB body cap.
+
+namespace {
+
+size_t brave_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* buf = static_cast<std::string*>(userdata);
+    const size_t bytes = size * nmemb;
+    // Cap inbound JSON at 256 KB — Brave's web/search response is ~10–50 KB
+    // for the default 10 results, but a misbehaving response shouldn't be
+    // able to exhaust process memory.
+    constexpr size_t kMaxResponseBytes = 256 * 1024;
+    if (buf->size() + bytes > kMaxResponseBytes) return 0;
+    buf->append(ptr, bytes);
+    return bytes;
+}
+
+// Percent-encode the query string for use in a URL.  We can't rely on
+// curl_easy_escape because we'd need a CURL handle to call it; the inline
+// encoder here is fine for the small character set we care about.
+std::string url_encode(const std::string& in) {
+    std::ostringstream out;
+    out << std::hex << std::uppercase;
+    for (unsigned char c : in) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+            out << static_cast<char>(c);
+        } else {
+            out << '%';
+            if (c < 0x10) out << '0';
+            out << static_cast<int>(c);
+        }
+    }
+    return out.str();
+}
+
+// Trim whitespace from both ends.
+std::string trim(std::string s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' ||
+                           s.front() == '\n' || s.front() == '\r')) s.erase(0, 1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' ||
+                           s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
+}
+
+// Render a Brave Search /web/search response into the SearchInvoker output
+// format.  Pulls title, URL, and description from each web.results entry.
+// On any shape surprise (missing field, non-string type) we skip the entry
+// rather than failing the whole call — partial results beat no results.
+std::string brave_render(const std::string& json_body, int top_n) {
+    std::shared_ptr<JsonValue> root;
+    try { root = json_parse(json_body); }
+    catch (const std::exception& e) {
+        return std::string("ERR: Brave returned non-JSON response: ") + e.what();
+    }
+    if (!root || !root->is_object()) {
+        return "ERR: Brave response was not a JSON object";
+    }
+    // Surface API-level errors verbatim — the caller wants to see "rate
+    // limited" or "invalid token" instead of a silent empty result list.
+    if (auto err = root->get("error"); err && err->is_object()) {
+        std::string msg = err->get_string("message", "");
+        std::string code = err->get_string("code", "");
+        return "ERR: Brave API error" +
+               (code.empty() ? "" : " [" + code + "]") +
+               (msg.empty()  ? "" : ": "  + msg);
+    }
+    auto web = root->get("web");
+    if (!web || !web->is_object()) return "(no web results)\n";
+    auto results = web->get("results");
+    if (!results || !results->is_array() || results->as_array().empty())
+        return "(no web results)\n";
+
+    std::ostringstream out;
+    int n = 0;
+    for (auto& item : results->as_array()) {
+        if (!item || !item->is_object()) continue;
+        std::string title = item->get_string("title", "");
+        std::string url   = item->get_string("url", "");
+        std::string desc  = item->get_string("description", "");
+        if (url.empty()) continue;
+        // Trim long descriptions — Brave can return 300+ chars; 240 keeps
+        // the per-line block readable while preserving the gist.
+        if (desc.size() > 240) { desc.resize(237); desc += "..."; }
+        // Normalise <strong>...</strong> highlighting Brave injects into
+        // titles + descriptions; stripping the tags keeps the model's
+        // output clean.
+        for (const char* tag : {"<strong>", "</strong>", "<b>", "</b>"}) {
+            for (auto pos = desc.find(tag); pos != std::string::npos; pos = desc.find(tag)) {
+                desc.erase(pos, std::strlen(tag));
+            }
+            for (auto pos = title.find(tag); pos != std::string::npos; pos = title.find(tag)) {
+                title.erase(pos, std::strlen(tag));
+            }
+        }
+        ++n;
+        out << n << ". " << title;
+        if (!desc.empty()) out << " — " << desc;
+        out << "\n   " << url << "\n";
+        if (n >= top_n) break;
+    }
+    if (n == 0) return "(no web results)\n";
+    return out.str();
+}
+
+std::string brave_search(const std::string& query, const std::string& api_key,
+                          int top_n) {
+    if (api_key.empty()) {
+        return "ERR: search provider configured without an API key — set "
+               "ARBITER_SEARCH_API_KEY (or BRAVE_SEARCH_API_KEY) in the "
+               "API server's environment.";
+    }
+    if (query.empty()) return "ERR: empty query";
+
+    const int requested = std::clamp(top_n, 1, 20);
+    std::string url = "https://api.search.brave.com/res/v1/web/search?q=" +
+                       url_encode(query) +
+                       "&count=" + std::to_string(requested);
+
+    CURL* curl = curl_easy_init();
+    if (!curl) return "ERR: curl_easy_init failed";
+
+    std::string response;
+    struct curl_slist* headers = nullptr;
+    const std::string subscription_header = "X-Subscription-Token: " + api_key;
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, subscription_header.c_str());
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, brave_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 12L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 6L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "arbiter/0.3.6");
+
+    CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK) {
+        return std::string("ERR: HTTP failure (") + curl_easy_strerror(rc) + ")";
+    }
+    if (http_code == 401 || http_code == 403) {
+        return "ERR: Brave returned " + std::to_string(http_code) +
+               " — check ARBITER_SEARCH_API_KEY";
+    }
+    if (http_code == 429) {
+        return "ERR: Brave rate-limited (429) — slow down or upgrade plan";
+    }
+    if (http_code < 200 || http_code >= 300) {
+        return "ERR: Brave returned HTTP " + std::to_string(http_code);
+    }
+    return brave_render(response, requested);
+}
+
+} // namespace
+
 // ─── Tenant-scoped agents + memory ──────────────────────────────────────────
 
 namespace fs = std::filesystem;
@@ -1604,8 +1777,38 @@ std::shared_ptr<JsonValue> memory_entry_to_json(const MemoryEntry& e) {
         m["tags"] = jarr();
     }
     m["status"]     = jstr(e.status);
+    // 0 ⇒ JSON null; positive ⇒ bare id.  List/graph endpoints surface
+    // just the id so the frontend can decide whether to hydrate.
+    if (e.artifact_id > 0) m["artifact_id"] = jnum(static_cast<double>(e.artifact_id));
+    else                    m["artifact_id"] = jnull();
     m["created_at"] = jnum(static_cast<double>(e.created_at));
     m["updated_at"] = jnum(static_cast<double>(e.updated_at));
+    return o;
+}
+
+// Single-entry hydration: attaches a nested `artifact` object with
+// metadata when the entry has artifact_id set and the row resolves.
+// Stale links (artifact deleted under us) leave `artifact_id` set but
+// `artifact` omitted — caller can detect and surface "expired".
+std::shared_ptr<JsonValue>
+memory_entry_to_json_hydrated(const MemoryEntry& e, TenantStore& tenants) {
+    auto o = memory_entry_to_json(e);
+    if (e.artifact_id > 0) {
+        if (auto art = tenants.get_artifact_meta(e.tenant_id, e.artifact_id)) {
+            auto& m = o->as_object_mut();
+            auto a = jobj();
+            auto& am = a->as_object_mut();
+            am["id"]              = jnum(static_cast<double>(art->id));
+            am["conversation_id"] = jnum(static_cast<double>(art->conversation_id));
+            am["path"]            = jstr(art->path);
+            am["sha256"]          = jstr(art->sha256);
+            am["mime_type"]       = jstr(art->mime_type);
+            am["size"]            = jnum(static_cast<double>(art->size));
+            am["created_at"]      = jnum(static_cast<double>(art->created_at));
+            am["updated_at"]      = jnum(static_cast<double>(art->updated_at));
+            m["artifact"] = a;
+        }
+    }
     return o;
 }
 
@@ -1656,8 +1859,24 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
     auto tags = canonical_tags_json(body->get("tags"), tags_err);
     if (!tags) return write_memory_error(fd, 400, tags_err);
 
-    auto e = tenants.create_entry(tenant.id, type, title, content, source, *tags);
-    write_json_response(fd, 201, memory_entry_to_json(e));
+    // Optional artifact link.  Validated against the tenant's artifact
+    // catalogue here — passing a foreign tenant's id surfaces as 400
+    // "artifact_id does not belong to this tenant" rather than a 500.
+    int64_t artifact_id = 0;
+    if (auto v = body->get("artifact_id"); v && v->is_number()) {
+        artifact_id = static_cast<int64_t>(v->as_number());
+        if (artifact_id < 0)
+            return write_memory_error(fd, 400, "artifact_id must be ≥ 0");
+        if (artifact_id > 0 &&
+            !tenants.get_artifact_meta(tenant.id, artifact_id)) {
+            return write_memory_error(fd, 400,
+                "artifact_id does not exist for this tenant");
+        }
+    }
+
+    auto e = tenants.create_entry(tenant.id, type, title, content, source,
+                                    *tags, "accepted", artifact_id);
+    write_json_response(fd, 201, memory_entry_to_json_hydrated(e, tenants));
 }
 
 void handle_memory_entry_list(int fd, const HttpRequest& req,
@@ -1720,7 +1939,10 @@ void handle_memory_entry_get(int fd, int64_t id,
     // GET /v1/memory/proposals.
     if (!e || e->status != "accepted")
         return write_memory_error(fd, 404, "entry not found");
-    write_json_response(fd, 200, memory_entry_to_json(*e));
+    // Single-entry GET hydrates the artifact link so the frontend can
+    // render the file metadata next to the entry without a second round
+    // trip.  Lists deliberately stay lightweight.
+    write_json_response(fd, 200, memory_entry_to_json_hydrated(*e, tenants));
 }
 
 void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
@@ -1795,6 +2017,27 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
         promote_to_accepted = true;
     }
 
+    // artifact_id PATCH semantics: explicit `null` clears the link,
+    // a positive integer sets it (validated against the tenant's
+    // catalogue), and absence leaves it untouched.
+    std::optional<int64_t> artifact_id;
+    if (auto v = body->get("artifact_id")) {
+        if (v->is_null()) {
+            artifact_id = 0;       // 0 in storage layer = clear
+        } else if (v->is_number()) {
+            const int64_t aid = static_cast<int64_t>(v->as_number());
+            if (aid < 0)
+                return write_memory_error(fd, 400, "artifact_id must be ≥ 0");
+            if (aid > 0 && !tenants.get_artifact_meta(tenant.id, aid))
+                return write_memory_error(fd, 400,
+                    "artifact_id does not exist for this tenant");
+            artifact_id = aid;
+        } else {
+            return write_memory_error(fd, 400,
+                "artifact_id must be a number or null");
+        }
+    }
+
     log_memory_event("entry.patch.update", tenant.id,
                       "id=" + std::to_string(id) +
                       " promote_to_accepted=" + (promote_to_accepted ? "yes" : "no") +
@@ -1803,9 +2046,11 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
                                       int(content.has_value()) +
                                       int(source.has_value())  +
                                       int(tags_json.has_value()) +
-                                      int(type.has_value())));
+                                      int(type.has_value())     +
+                                      int(artifact_id.has_value())));
 
-    if (!tenants.update_entry(tenant.id, id, title, content, source, tags_json, type)) {
+    if (!tenants.update_entry(tenant.id, id, title, content, source, tags_json,
+                                type, artifact_id)) {
         log_memory_event("entry.patch.update_failed", tenant.id,
                           "id=" + std::to_string(id) + " (row vanished?)");
         return write_memory_error(fd, 404, "entry not found");
@@ -1845,7 +2090,7 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
     log_memory_event("entry.patch.ok", tenant.id,
                       "id=" + std::to_string(id) +
                       " new_status=" + e->status);
-    write_json_response(fd, 200, memory_entry_to_json(*e));
+    write_json_response(fd, 200, memory_entry_to_json_hydrated(*e, tenants));
 }
 
 void handle_memory_entry_delete(int fd, int64_t id,
@@ -2223,6 +2468,180 @@ void handle_memory_graph(int fd, const HttpRequest& req,
     m["tenant_id"] = jnum(static_cast<double>(tenant.id));
     m["entries"]   = entries_arr;
     m["relations"] = rels_arr;
+    write_json_response(fd, 200, body);
+}
+
+// ─── Artifact store (HTTP surface) ──────────────────────────────────────
+//
+// Persistent per-(tenant, conversation) file blobs.  Two axes of access:
+//   • /v1/conversations/:id/artifacts        — primary, conversation-scoped
+//   • /v1/artifacts                          — secondary, tenant-wide discovery
+// Both surface the same ArtifactRecord shape; metadata responses never
+// include `content` (the raw blob ships only on /raw, with proper
+// Content-Type + ETag).
+
+std::shared_ptr<JsonValue> artifact_to_json(const ArtifactRecord& a) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["id"]              = jnum(static_cast<double>(a.id));
+    m["tenant_id"]       = jnum(static_cast<double>(a.tenant_id));
+    m["conversation_id"] = jnum(static_cast<double>(a.conversation_id));
+    m["path"]            = jstr(a.path);
+    m["sha256"]          = jstr(a.sha256);
+    m["mime_type"]       = jstr(a.mime_type);
+    m["size"]            = jnum(static_cast<double>(a.size));
+    m["created_at"]      = jnum(static_cast<double>(a.created_at));
+    m["updated_at"]      = jnum(static_cast<double>(a.updated_at));
+    return o;
+}
+
+void write_artifact_error(int fd, int code, const std::string& msg) {
+    auto e = jobj();
+    e->as_object_mut()["error"] = jstr(msg);
+    write_json_response(fd, code, e);
+}
+
+// POST /v1/conversations/:id/artifacts
+// Body: { "path": "...", "content": "...", "mime_type"?: "..." }
+// Used by the frontend (or any non-agent caller) to drop a file into a
+// conversation's working dir.  Same path validator + quota math as the
+// agent /write --persist path.
+void handle_artifact_create(int fd, int64_t conversation_id,
+                              const HttpRequest& req,
+                              TenantStore& tenants, const Tenant& tenant) {
+    auto conv = tenants.get_conversation(tenant.id, conversation_id);
+    if (!conv) return write_artifact_error(fd, 404, "conversation not found");
+
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        return write_artifact_error(fd, 400, std::string("invalid JSON: ") + e.what());
+    }
+    if (!body || !body->is_object())
+        return write_artifact_error(fd, 400, "body must be a JSON object");
+
+    const std::string raw_path = body->get_string("path", "");
+    const std::string content  = body->get_string("content", "");
+    const std::string mime     = body->get_string("mime_type", "");
+
+    std::string sanitize_err;
+    auto canonical = sanitize_artifact_path(raw_path, sanitize_err);
+    if (!canonical)
+        return write_artifact_error(fd, 400, "invalid path: " + sanitize_err);
+
+    auto put = tenants.put_artifact(tenant.id, conversation_id, *canonical,
+                                     content, mime);
+    switch (put.status) {
+        case PutArtifactResult::Status::Created:
+        case PutArtifactResult::Status::Updated: {
+            auto resp = jobj();
+            auto& m = resp->as_object_mut();
+            m["artifact"] = artifact_to_json(*put.record);
+            m["tenant_used_bytes"]       = jnum(static_cast<double>(put.tenant_used_bytes));
+            m["conversation_used_bytes"] = jnum(static_cast<double>(put.conversation_used_bytes));
+            m["created"] = jbool(put.status == PutArtifactResult::Status::Created);
+            const int code = (put.status == PutArtifactResult::Status::Created) ? 201 : 200;
+            write_json_response(fd, code, resp);
+            return;
+        }
+        case PutArtifactResult::Status::QuotaExceeded:
+            return write_artifact_error(fd, 413, put.error_msg);
+        case PutArtifactResult::Status::PathRejected:
+            return write_artifact_error(fd, 409, put.error_msg);
+    }
+}
+
+// GET /v1/conversations/:id/artifacts
+// Lists this conversation's artifacts, newest-updated first.
+void handle_artifact_list_conversation(int fd, int64_t conversation_id,
+                                        TenantStore& tenants, const Tenant& tenant) {
+    auto conv = tenants.get_conversation(tenant.id, conversation_id);
+    if (!conv) return write_artifact_error(fd, 404, "conversation not found");
+
+    auto rows = tenants.list_artifacts_conversation(tenant.id, conversation_id, 200);
+    auto arr = jarr();
+    auto& a = arr->as_array_mut();
+    for (auto& r : rows) a.push_back(artifact_to_json(r));
+
+    auto body = jobj();
+    auto& m = body->as_object_mut();
+    m["conversation_id"]         = jnum(static_cast<double>(conversation_id));
+    m["artifacts"]               = arr;
+    m["count"]                   = jnum(static_cast<double>(rows.size()));
+    m["bytes_used"]              = jnum(static_cast<double>(
+        tenants.bytes_used_conversation(tenant.id, conversation_id)));
+    m["tenant_bytes_used"]       = jnum(static_cast<double>(
+        tenants.bytes_used_tenant(tenant.id)));
+    write_json_response(fd, 200, body);
+}
+
+// GET /v1/artifacts — tenant-scoped cross-conversation discovery.
+void handle_artifact_list_tenant(int fd, TenantStore& tenants, const Tenant& tenant) {
+    auto rows = tenants.list_artifacts_tenant(tenant.id, 200);
+    auto arr = jarr();
+    auto& a = arr->as_array_mut();
+    for (auto& r : rows) a.push_back(artifact_to_json(r));
+
+    auto body = jobj();
+    auto& m = body->as_object_mut();
+    m["tenant_id"]   = jnum(static_cast<double>(tenant.id));
+    m["artifacts"]   = arr;
+    m["count"]       = jnum(static_cast<double>(rows.size()));
+    m["bytes_used"]  = jnum(static_cast<double>(tenants.bytes_used_tenant(tenant.id)));
+    write_json_response(fd, 200, body);
+}
+
+void handle_artifact_get_meta(int fd, int64_t artifact_id,
+                                TenantStore& tenants, const Tenant& tenant) {
+    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id);
+    if (!rec) return write_artifact_error(fd, 404, "artifact not found");
+    write_json_response(fd, 200, artifact_to_json(*rec));
+}
+
+// GET /v1/artifacts/:id/raw — content body with proper Content-Type +
+// ETag (= sha256) for conditional GETs.  Tenant-scoped lookup; cross-
+// tenant id surfaces as 404.
+void handle_artifact_get_raw(int fd, int64_t artifact_id,
+                              const HttpRequest& req,
+                              TenantStore& tenants, const Tenant& tenant) {
+    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id);
+    if (!rec) return write_artifact_error(fd, 404, "artifact not found");
+
+    // ETag honors the strong-validator semantics — sha256 of the bytes.
+    // Quote per RFC 7232.  If-None-Match returns 304 cheaply.
+    const std::string etag = "\"" + rec->sha256 + "\"";
+    auto inm = req.headers.find("if-none-match");
+    if (inm != req.headers.end() && inm->second == etag) {
+        std::ostringstream ss;
+        ss << "HTTP/1.1 304 Not Modified\r\n"
+           << "ETag: " << etag << "\r\n"
+           << kCorsHeaders
+           << "Content-Length: 0\r\n"
+           << "Connection: close\r\n\r\n";
+        write_all(fd, ss.str());
+        return;
+    }
+
+    auto blob = tenants.get_artifact_content(tenant.id, artifact_id);
+    if (!blob) return write_artifact_error(fd, 404, "artifact content missing");
+
+    std::ostringstream ss;
+    ss << "HTTP/1.1 200 OK\r\n"
+       << "Content-Type: " << rec->mime_type << "\r\n"
+       << "Content-Length: " << blob->size() << "\r\n"
+       << "ETag: " << etag << "\r\n"
+       << kCorsHeaders
+       << "Connection: close\r\n\r\n";
+    write_all(fd, ss.str());
+    write_all(fd, *blob);
+}
+
+void handle_artifact_delete(int fd, int64_t artifact_id,
+                              TenantStore& tenants, const Tenant& tenant) {
+    if (!tenants.delete_artifact(tenant.id, artifact_id))
+        return write_artifact_error(fd, 404, "artifact not found");
+    auto body = jobj();
+    body->as_object_mut()["deleted"] = jbool(true);
     write_json_response(fd, 200, body);
 }
 
@@ -3042,6 +3461,116 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             return "ERR: unknown /mcp subcommand";
         });
 
+    // ── Web search ────────────────────────────────────────────────────
+    // /search <query> [top=N] dispatches against the configured provider.
+    // Only "brave" is implemented in v1; an unrecognised provider returns
+    // ERR rather than silently doing the wrong thing.  Captures the key
+    // by value so a future request that reloads ApiServerOptions doesn't
+    // race the in-flight lambda.
+    {
+        const std::string provider = opts.search_provider.empty()
+                                        ? std::string("brave")
+                                        : opts.search_provider;
+        const std::string key      = opts.search_api_key;
+        if (provider == "brave" && !key.empty()) {
+            orch->set_search_invoker(
+                [key](const std::string& query, int top_n) -> std::string {
+                    return brave_search(query, key, top_n);
+                });
+        } else if (!provider.empty() && provider != "brave" && !key.empty()) {
+            orch->set_search_invoker(
+                [provider](const std::string&, int) -> std::string {
+                    return "ERR: search provider '" + provider +
+                           "' is configured but not implemented in this "
+                           "build.  Only 'brave' is supported in v1.";
+                });
+        }
+        // No key ⇒ leave the invoker null; the dispatcher returns its own
+        // ERR with a more useful message ("web search unavailable…").
+    }
+
+    // ── Artifact store bridges ────────────────────────────────────────
+    // Wire /write --persist, /read, and /list against TenantStore +
+    // the active conversation_id.  When the request didn't come in
+    // through a conversation (e.g. raw /v1/orchestrate without a thread),
+    // the writer/reader/lister stay null — the agent's slash dispatchers
+    // surface a clear "no conversation context" warning + ephemeral
+    // fallback for /write --persist.
+    if (conversation_id > 0) {
+        const int64_t tid    = tenant.id;
+        const int64_t cid    = conversation_id;
+        TenantStore*  store  = &tenants;
+
+        orch->set_artifact_writer(
+            [tid, cid, store](const std::string& raw_path,
+                                const std::string& content) -> std::string {
+                std::string err;
+                auto canonical = sanitize_artifact_path(raw_path, err);
+                if (!canonical) {
+                    return std::string("ERR: invalid path: ") + err;
+                }
+                // mime_type stays default ('application/octet-stream') —
+                // the agent doesn't know what to declare and we don't
+                // sniff in v1.  HTTP callers can set it explicitly via
+                // the POST endpoint.
+                auto put = store->put_artifact(tid, cid, *canonical,
+                                                 content, std::string{});
+                std::ostringstream out;
+                switch (put.status) {
+                    case PutArtifactResult::Status::Created:
+                    case PutArtifactResult::Status::Updated:
+                        out << (put.status == PutArtifactResult::Status::Created
+                                ? "OK: persisted "
+                                : "OK: updated ")
+                            << put.record->size << " bytes (artifact #"
+                            << put.record->id << ", "
+                            << put.conversation_used_bytes << " of "
+                            << kArtifactPerConversationMaxBytes
+                            << " bytes used in this conversation)";
+                        break;
+                    case PutArtifactResult::Status::QuotaExceeded:
+                        out << "ERR: " << put.error_msg;
+                        break;
+                    case PutArtifactResult::Status::PathRejected:
+                        out << "ERR: " << put.error_msg;
+                        break;
+                }
+                return out.str();
+            });
+
+        orch->set_artifact_reader(
+            [tid, cid, store](const std::string& raw_path) -> std::string {
+                std::string err;
+                auto canonical = sanitize_artifact_path(raw_path, err);
+                if (!canonical) return std::string("ERR: invalid path: ") + err;
+
+                auto meta = store->get_artifact_meta_by_path(tid, cid, *canonical);
+                if (!meta) {
+                    return std::string("ERR: '") + *canonical +
+                           "' not found in this conversation's artifacts";
+                }
+                auto blob = store->get_artifact_content(tid, meta->id);
+                if (!blob) {
+                    return std::string("ERR: artifact #") +
+                           std::to_string(meta->id) + " content missing";
+                }
+                return *blob;
+            });
+
+        orch->set_artifact_lister(
+            [tid, cid, store]() -> std::string {
+                auto rows = store->list_artifacts_conversation(tid, cid, 200);
+                if (rows.empty()) return std::string{};
+                std::ostringstream out;
+                for (auto& r : rows) {
+                    out << r.path << "  (" << r.size
+                        << " bytes, mime=" << r.mime_type
+                        << ", id=" << r.id << ")\n";
+                }
+                return out.str();
+            });
+    }
+
     // ── Fleet lifecycle ────────────────────────────────────────────────
     // stream_start/stream_end bracket each turn; consumers open a UI slot
     // on stream_start and close it on stream_end.  Fires at every depth
@@ -3621,8 +4150,91 @@ void ApiServer::handle_connection(int fd) {
                                      "method not allowed\n");
                 return;
             }
+            // ── /v1/conversations/:id/artifacts[/:aid][/raw] ───────────
+            if (segs.size() >= 4 && segs[3] == "artifacts") {
+                if (segs.size() == 4) {
+                    if (req.method == "POST")
+                        return handle_artifact_create(fd, id, req, tenants_, *tenant);
+                    if (req.method == "GET")
+                        return handle_artifact_list_conversation(fd, id, tenants_, *tenant);
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                if (segs.size() >= 5) {
+                    int64_t aid = 0;
+                    try { aid = std::stoll(segs[4]); } catch (...) { aid = 0; }
+                    if (aid <= 0) {
+                        write_plain_response(fd, 400, "Bad Request",
+                                              "bad artifact id\n");
+                        return;
+                    }
+                    // /raw returns the blob with proper Content-Type +
+                    // ETag; the bare id returns metadata JSON.
+                    if (segs.size() == 6 && segs[5] == "raw") {
+                        if (req.method != "GET") {
+                            write_plain_response(fd, 405, "Method Not Allowed",
+                                                  "method not allowed\n");
+                            return;
+                        }
+                        return handle_artifact_get_raw(fd, aid, req, tenants_, *tenant);
+                    }
+                    if (segs.size() == 5) {
+                        if (req.method == "GET")
+                            return handle_artifact_get_meta(fd, aid, tenants_, *tenant);
+                        if (req.method == "DELETE")
+                            return handle_artifact_delete(fd, aid, tenants_, *tenant);
+                        write_plain_response(fd, 405, "Method Not Allowed",
+                                              "method not allowed\n");
+                        return;
+                    }
+                }
+                write_plain_response(fd, 404, "Not Found",
+                                      "artifact route not found\n");
+                return;
+            }
             write_plain_response(fd, 404, "Not Found",
                                  "conversation route not found\n");
+            return;
+        }
+
+        // ── /v1/artifacts (tenant-scoped, cross-conversation) ─────────
+        if (segs.size() >= 2 && segs[0] == "v1" && segs[1] == "artifacts") {
+            if (segs.size() == 2) {
+                if (req.method == "GET")
+                    return handle_artifact_list_tenant(fd, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                      "method not allowed\n");
+                return;
+            }
+            if (segs.size() >= 3) {
+                int64_t aid = 0;
+                try { aid = std::stoll(segs[2]); } catch (...) { aid = 0; }
+                if (aid <= 0) {
+                    write_plain_response(fd, 400, "Bad Request",
+                                          "bad artifact id\n");
+                    return;
+                }
+                if (segs.size() == 4 && segs[3] == "raw") {
+                    if (req.method != "GET") {
+                        write_plain_response(fd, 405, "Method Not Allowed",
+                                              "method not allowed\n");
+                        return;
+                    }
+                    return handle_artifact_get_raw(fd, aid, req, tenants_, *tenant);
+                }
+                if (segs.size() == 3) {
+                    if (req.method == "GET")
+                        return handle_artifact_get_meta(fd, aid, tenants_, *tenant);
+                    if (req.method == "DELETE")
+                        return handle_artifact_delete(fd, aid, tenants_, *tenant);
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                          "method not allowed\n");
+                    return;
+                }
+            }
+            write_plain_response(fd, 404, "Not Found",
+                                  "artifact route not found\n");
             return;
         }
     }

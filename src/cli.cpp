@@ -247,6 +247,18 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     // request gets a per-request MCP manager loaded from this file.  See
     // docs/api.md → MCP servers for the schema.
     opts.mcp_servers_path = dir + "/mcp_servers.json";
+    // Web search — provider + key from env vars.  Either ARBITER-prefixed
+    // (preferred, scoped) or the bare BRAVE_SEARCH_API_KEY (convenience).
+    // Without a key, /search returns ERR — agents drop the step and fall
+    // back to /fetch on URLs they already know.
+    if (const char* p = std::getenv("ARBITER_SEARCH_PROVIDER"); p && *p) {
+        opts.search_provider = p;
+    }
+    if (const char* k = std::getenv("ARBITER_SEARCH_API_KEY"); k && *k) {
+        opts.search_api_key = k;
+    } else if (const char* k = std::getenv("BRAVE_SEARCH_API_KEY"); k && *k) {
+        opts.search_api_key = k;
+    }
 
     ApiServer server(std::move(opts), tenants);
 

@@ -11,7 +11,10 @@
       "WebSearch",
       "WebFetch(domain:developers.openai.com)",
       "Bash(git stash *)",
-      "Bash(/Users/tyler/arbiter/arbiter/build/index_tests --test-case=\"*card*\")"
+      "Bash(/Users/tyler/arbiter/arbiter/build/index_tests --test-case=\"*card*\")",
+      "Bash(/Users/tyler/arbiter/arbiter/build/unit_artifacts)",
+      "Bash(ctest --output-on-failure -E \"tui_integration|unit_mcp\")",
+      "Bash(/Users/tyler/arbiter/arbiter/build/unit_mcp --test-case-exclude=\"Subprocess: terminate*\")"
     ]
   }
 }

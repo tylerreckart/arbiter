@@ -256,6 +256,24 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_tenant_agents COMMAND unit_tenant_agents)
 
+    # Per-tenant + per-conversation artifact store (POST/GET/DELETE
+    # /v1/.../artifacts and the agent /write --persist surface).
+    add_executable(unit_artifacts
+        tests/test_artifacts.cpp
+        src/tenant_store.cpp
+    )
+    target_include_directories(unit_artifacts PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_artifacts PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_artifacts COMMAND unit_artifacts)
+
     # MCP layer (JSON-RPC framing, subprocess wrapper, /mcp dispatch).
     # Live-server tests are intentionally not wired here — manual smoke
     # via `arbiter --api` covers the playwright path.

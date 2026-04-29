@@ -351,6 +351,12 @@ void TenantStore::open(const std::string& path) {
         exec_sql(db_, sql.c_str());
     };
     add_entries_col("status", "TEXT NOT NULL DEFAULT 'accepted'");
+    // Optional artifact reference (added in v9).  Nullable → 0 in our
+    // row mapping when unset.  No FK declared inline because ALTER TABLE
+    // ADD COLUMN can't add a FK in SQLite — the soft reference is fine
+    // since cleanup happens via an explicit nullify in delete_artifact()
+    // rather than relying on the engine's cascade.
+    add_entries_col("artifact_id", "INTEGER");
 
     auto relations_col_exists = [this](const char* col) -> bool {
         Stmt q(db_, "PRAGMA table_info(memory_relations);");
@@ -425,6 +431,56 @@ void TenantStore::open(const std::string& path) {
     exec_sql(db_, R"SQL(
         CREATE UNIQUE INDEX IF NOT EXISTS agent_scratchpad_tenant_scope
             ON agent_scratchpad(tenant_id, scope_key);
+    )SQL");
+
+    // ── Artifact store (added in v8) ───────────────────────────────────
+    // Per-(tenant, conversation, path) blobs for /write --persist.  The
+    // unique index gates PUT-on-conflict semantics in put_artifact; the
+    // CASCADE FKs on conversation_id + tenant_id mean conversation /
+    // tenant deletion drops artifacts automatically.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS tenant_artifacts (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id       INTEGER NOT NULL,
+            conversation_id INTEGER NOT NULL,
+            path            TEXT    NOT NULL,
+            content         BLOB    NOT NULL,
+            sha256          TEXT    NOT NULL,
+            mime_type       TEXT    NOT NULL DEFAULT 'application/octet-stream',
+            size            INTEGER NOT NULL,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            FOREIGN KEY (tenant_id)       REFERENCES tenants(id)       ON DELETE CASCADE,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE UNIQUE INDEX IF NOT EXISTS tenant_artifacts_unique
+            ON tenant_artifacts(tenant_id, conversation_id, path);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS tenant_artifacts_tenant_updated
+            ON tenant_artifacts(tenant_id, updated_at DESC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS tenant_artifacts_conv_updated
+            ON tenant_artifacts(conversation_id, updated_at DESC);
+    )SQL");
+
+    // Nullify dangling memory_entries.artifact_id references when an
+    // artifact is deleted by ANY path — including the FK CASCADE that
+    // fires when a conversation is dropped (which our delete_artifact
+    // helper never sees).  Without this trigger, the next read of the
+    // affected memory entry would surface a stale id pointing at
+    // nothing.
+    exec_sql(db_, R"SQL(
+        CREATE TRIGGER IF NOT EXISTS memory_entries_artifact_id_clear
+        AFTER DELETE ON tenant_artifacts
+        BEGIN
+            UPDATE memory_entries
+               SET artifact_id = NULL
+             WHERE artifact_id = OLD.id;
+        END;
     )SQL");
 }
 
@@ -992,20 +1048,24 @@ bool TenantStore::reload_tenant(int64_t id, Tenant& t) const {
 namespace {
 
 constexpr const char* kEntryCols =
-    "id, tenant_id, type, title, content, source, tags, status, created_at, updated_at";
+    "id, tenant_id, type, title, content, source, tags, status, "
+    "artifact_id, created_at, updated_at";
 
 MemoryEntry row_to_entry(Stmt& q) {
     MemoryEntry e;
-    e.id         = q.column_int64(0);
-    e.tenant_id  = q.column_int64(1);
-    e.type       = q.column_text(2);
-    e.title      = q.column_text(3);
-    e.content    = q.column_text(4);
-    e.source     = q.column_text(5);
-    e.tags_json  = q.column_text(6);
-    e.status     = q.column_text(7);
-    e.created_at = q.column_int64(8);
-    e.updated_at = q.column_int64(9);
+    e.id          = q.column_int64(0);
+    e.tenant_id   = q.column_int64(1);
+    e.type        = q.column_text(2);
+    e.title       = q.column_text(3);
+    e.content     = q.column_text(4);
+    e.source      = q.column_text(5);
+    e.tags_json   = q.column_text(6);
+    e.status      = q.column_text(7);
+    // SQLite NULL → 0 via column_int64; matches our "0 = no artifact"
+    // sentinel in the public struct.
+    e.artifact_id = q.column_int64(8);
+    e.created_at  = q.column_int64(9);
+    e.updated_at  = q.column_int64(10);
     return e;
 }
 
@@ -1032,14 +1092,16 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
                                        const std::string& content,
                                        const std::string& source,
                                        const std::string& tags_json,
-                                       const std::string& status) {
+                                       const std::string& status,
+                                       int64_t artifact_id) {
     if (!db_) throw std::runtime_error("TenantStore not opened");
 
     const int64_t now = now_epoch();
     Stmt q(db_,
         "INSERT INTO memory_entries "
-        "(tenant_id, type, title, content, source, tags, status, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);");
+        "(tenant_id, type, title, content, source, tags, status, "
+        " artifact_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
     q.bind(1, tenant_id);
     q.bind(2, type);
     q.bind(3, title);
@@ -1047,22 +1109,27 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
     q.bind(5, source);
     q.bind(6, tags_json.empty() ? std::string("[]") : tags_json);
     q.bind(7, status.empty() ? std::string("accepted") : status);
-    q.bind(8, now);
-    q.bind(9, now);
+    // 0 ⇒ NULL — keeps the column sparse rather than seeding zero
+    // pseudo-references that would all collide on join.
+    if (artifact_id > 0) q.bind(8, artifact_id);
+    else                  sqlite3_bind_null(q.raw(), 8);
+    q.bind(9,  now);
+    q.bind(10, now);
     int rc = q.step();
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert memory_entry");
 
     MemoryEntry e;
-    e.id         = sqlite3_last_insert_rowid(db_);
-    e.tenant_id  = tenant_id;
-    e.type       = type;
-    e.title      = title;
-    e.content    = content;
-    e.source     = source;
-    e.tags_json  = tags_json.empty() ? "[]" : tags_json;
-    e.status     = status.empty() ? "accepted" : status;
-    e.created_at = now;
-    e.updated_at = now;
+    e.id          = sqlite3_last_insert_rowid(db_);
+    e.tenant_id   = tenant_id;
+    e.type        = type;
+    e.title       = title;
+    e.content     = content;
+    e.source      = source;
+    e.tags_json   = tags_json.empty() ? "[]" : tags_json;
+    e.status      = status.empty() ? "accepted" : status;
+    e.artifact_id = artifact_id;
+    e.created_at  = now;
+    e.updated_at  = now;
     return e;
 }
 
@@ -1131,15 +1198,17 @@ bool TenantStore::update_entry(int64_t tenant_id, int64_t id,
                                 const std::optional<std::string>& content,
                                 const std::optional<std::string>& source,
                                 const std::optional<std::string>& tags_json,
-                                const std::optional<std::string>& type) {
+                                const std::optional<std::string>& type,
+                                const std::optional<int64_t>& artifact_id) {
     if (!db_) return false;
 
     std::vector<std::string> sets;
-    if (title)     sets.push_back("title = ?");
-    if (content)   sets.push_back("content = ?");
-    if (source)    sets.push_back("source = ?");
-    if (tags_json) sets.push_back("tags = ?");
-    if (type)      sets.push_back("type = ?");
+    if (title)       sets.push_back("title = ?");
+    if (content)     sets.push_back("content = ?");
+    if (source)      sets.push_back("source = ?");
+    if (tags_json)   sets.push_back("tags = ?");
+    if (type)        sets.push_back("type = ?");
+    if (artifact_id) sets.push_back("artifact_id = ?");
     if (sets.empty()) {
         // Nothing to change — match update_conversation's PATCH shape and
         // return true if the row exists.
@@ -1161,6 +1230,11 @@ bool TenantStore::update_entry(int64_t tenant_id, int64_t id,
     if (source)    q.bind(idx++, *source);
     if (tags_json) q.bind(idx++, *tags_json);
     if (type)      q.bind(idx++, *type);
+    if (artifact_id) {
+        // Caller passes 0 to clear the link (NULL); positive id sets it.
+        if (*artifact_id > 0) q.bind(idx++, *artifact_id);
+        else                   sqlite3_bind_null(q.raw(), idx++);
+    }
     q.bind(idx++, now_epoch());
     q.bind(idx++, tenant_id);
     q.bind(idx, id);
@@ -1538,6 +1612,401 @@ TenantStore::list_scratchpad_scopes(int64_t tenant_id) const {
     q.bind(1, tenant_id);
     while (q.step() == SQLITE_ROW) out.push_back(q.column_text(0));
     return out;
+}
+
+// ── Artifact path sanitizer ────────────────────────────────────────────
+
+namespace {
+
+bool ci_equals(const std::string& a, const char* b) {
+    size_t i = 0;
+    for (; i < a.size() && b[i]; ++i) {
+        char ca = a[i], cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb - 'A' + 'a');
+        if (ca != cb) return false;
+    }
+    return i == a.size() && b[i] == '\0';
+}
+
+// Strip an extension before checking Windows-reserved names — `CON.txt`
+// is just as broken as `CON` on Windows.
+std::string component_stem(const std::string& comp) {
+    auto dot = comp.find('.');
+    if (dot == std::string::npos) return comp;
+    return comp.substr(0, dot);
+}
+
+bool is_windows_reserved_stem(const std::string& stem) {
+    static const char* reserved[] = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5",
+        "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+        "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+    for (auto* r : reserved) if (ci_equals(stem, r)) return true;
+    return false;
+}
+
+} // namespace
+
+std::optional<std::string>
+sanitize_artifact_path(const std::string& raw, std::string& err) {
+    err.clear();
+    if (raw.empty()) {
+        err = "empty path";
+        return std::nullopt;
+    }
+    if (raw.size() > 256) {
+        err = "path > 256 chars";
+        return std::nullopt;
+    }
+
+    // Normalise backslashes.  Then a Windows drive letter (`C:\foo`) shows
+    // up as `C:/foo` and the `:` in the first component triggers the
+    // colon check below.
+    std::string s = raw;
+    for (auto& c : s) if (c == '\\') c = '/';
+
+    if (s.front() == '/') {
+        err = "absolute paths not allowed";
+        return std::nullopt;
+    }
+
+    // Walk components, rejecting anything dodgy.  We rebuild the canonical
+    // form as we go — collapses runs of `/` and trims trailing slashes.
+    std::ostringstream canon;
+    size_t start = 0;
+    bool first_component = true;
+    while (start <= s.size()) {
+        size_t slash = s.find('/', start);
+        const size_t end = (slash == std::string::npos) ? s.size() : slash;
+        std::string comp = s.substr(start, end - start);
+
+        if (comp.empty()) {
+            // `foo//bar` collapses to `foo/bar`; trailing `/` is dropped
+            // by the loop terminating at end-of-string.  But a leading
+            // `/` already errored above, so an empty FIRST component
+            // can't reach here.
+            if (slash == std::string::npos) break;
+            start = slash + 1;
+            continue;
+        }
+        if (comp.size() > 128) {
+            err = "path component '" + comp.substr(0, 16) + "...' > 128 chars";
+            return std::nullopt;
+        }
+        if (comp == "." || comp == "..") {
+            err = "traversal component '" + comp + "' not allowed";
+            return std::nullopt;
+        }
+        if (comp.front() == '.') {
+            err = "hidden / dotfile components not allowed: '" + comp + "'";
+            return std::nullopt;
+        }
+        for (unsigned char ch : comp) {
+            if (ch == 0) {
+                err = "null byte in path";
+                return std::nullopt;
+            }
+            if (ch < 0x20 || ch == 0x7f) {
+                err = "control character in path";
+                return std::nullopt;
+            }
+            if (ch == ':') {
+                err = "':' not allowed in path components (Windows alt-stream)";
+                return std::nullopt;
+            }
+        }
+        if (is_windows_reserved_stem(component_stem(comp))) {
+            err = "'" + comp + "' is a Windows-reserved name";
+            return std::nullopt;
+        }
+
+        if (!first_component) canon << '/';
+        canon << comp;
+        first_component = false;
+        if (slash == std::string::npos) break;
+        start = slash + 1;
+    }
+
+    std::string out = canon.str();
+    if (out.empty()) {
+        err = "path resolved to empty after canonicalisation";
+        return std::nullopt;
+    }
+    return out;
+}
+
+// ── Artifact CRUD ──────────────────────────────────────────────────────
+
+namespace {
+
+constexpr const char* kArtifactMetaCols =
+    "id, tenant_id, conversation_id, path, sha256, mime_type, size, "
+    "created_at, updated_at";
+
+ArtifactRecord row_to_artifact(Stmt& q) {
+    ArtifactRecord r;
+    r.id              = q.column_int64(0);
+    r.tenant_id       = q.column_int64(1);
+    r.conversation_id = q.column_int64(2);
+    r.path            = q.column_text(3);
+    r.sha256          = q.column_text(4);
+    r.mime_type       = q.column_text(5);
+    r.size            = q.column_int64(6);
+    r.created_at      = q.column_int64(7);
+    r.updated_at      = q.column_int64(8);
+    return r;
+}
+
+} // namespace
+
+PutArtifactResult
+TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
+                           const std::string& sanitized_path,
+                           const std::string& content,
+                           const std::string& mime_type) {
+    PutArtifactResult out;
+    if (!db_) {
+        out.status    = PutArtifactResult::Status::PathRejected;
+        out.error_msg = "store not opened";
+        return out;
+    }
+
+    const int64_t size = static_cast<int64_t>(content.size());
+    if (size > kArtifactPerFileMaxBytes) {
+        out.status    = PutArtifactResult::Status::QuotaExceeded;
+        out.error_msg = "file size " + std::to_string(size) +
+                         " exceeds per-file cap " +
+                         std::to_string(kArtifactPerFileMaxBytes) + " bytes";
+        out.tenant_used_bytes       = bytes_used_tenant(tenant_id);
+        out.conversation_used_bytes =
+            bytes_used_conversation(tenant_id, conversation_id);
+        return out;
+    }
+
+    // Determine if this is an in-place update (same path → subtract its
+    // size from quota math) or a fresh insert.
+    int64_t existing_size = 0;
+    bool    is_update     = false;
+    {
+        Stmt sel(db_, "SELECT size FROM tenant_artifacts "
+                       "WHERE tenant_id = ? AND conversation_id = ? AND path = ?;");
+        sel.bind(1, tenant_id);
+        sel.bind(2, conversation_id);
+        sel.bind(3, sanitized_path);
+        if (sel.step() == SQLITE_ROW) {
+            existing_size = sel.column_int64(0);
+            is_update     = true;
+        }
+    }
+
+    const int64_t conv_used   = bytes_used_conversation(tenant_id, conversation_id);
+    const int64_t tenant_used = bytes_used_tenant(tenant_id);
+    const int64_t conv_after  = conv_used   - existing_size + size;
+    const int64_t tnt_after   = tenant_used - existing_size + size;
+
+    if (conv_after > kArtifactPerConversationMaxBytes) {
+        out.status    = PutArtifactResult::Status::QuotaExceeded;
+        out.error_msg = "conversation quota exhausted: " +
+                         std::to_string(conv_after) + " > " +
+                         std::to_string(kArtifactPerConversationMaxBytes) + " bytes";
+        out.tenant_used_bytes       = tenant_used;
+        out.conversation_used_bytes = conv_used;
+        return out;
+    }
+    if (tnt_after > kArtifactPerTenantMaxBytes) {
+        out.status    = PutArtifactResult::Status::QuotaExceeded;
+        out.error_msg = "tenant quota exhausted: " +
+                         std::to_string(tnt_after) + " > " +
+                         std::to_string(kArtifactPerTenantMaxBytes) + " bytes";
+        out.tenant_used_bytes       = tenant_used;
+        out.conversation_used_bytes = conv_used;
+        return out;
+    }
+
+    const std::string digest    = sha256_hex(content);
+    const std::string mime_safe = mime_type.empty() ? "application/octet-stream"
+                                                     : mime_type;
+    const int64_t now = now_epoch();
+
+    if (is_update) {
+        Stmt upd(db_,
+            "UPDATE tenant_artifacts "
+            "   SET content = ?, sha256 = ?, mime_type = ?, "
+            "       size = ?, updated_at = ? "
+            " WHERE tenant_id = ? AND conversation_id = ? AND path = ?;");
+        sqlite3_bind_blob(upd.raw(), 1, content.data(),
+                          static_cast<int>(content.size()), SQLITE_TRANSIENT);
+        upd.bind(2, digest);
+        upd.bind(3, mime_safe);
+        upd.bind(4, size);
+        upd.bind(5, now);
+        upd.bind(6, tenant_id);
+        upd.bind(7, conversation_id);
+        upd.bind(8, sanitized_path);
+        upd.step();
+        out.status = PutArtifactResult::Status::Updated;
+    } else {
+        Stmt ins(db_,
+            "INSERT INTO tenant_artifacts "
+            "(tenant_id, conversation_id, path, content, sha256, "
+            " mime_type, size, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);");
+        ins.bind(1, tenant_id);
+        ins.bind(2, conversation_id);
+        ins.bind(3, sanitized_path);
+        sqlite3_bind_blob(ins.raw(), 4, content.data(),
+                          static_cast<int>(content.size()), SQLITE_TRANSIENT);
+        ins.bind(5, digest);
+        ins.bind(6, mime_safe);
+        ins.bind(7, size);
+        ins.bind(8, now);
+        ins.bind(9, now);
+        int rc = ins.step();
+        if (rc == SQLITE_CONSTRAINT) {
+            // Race: a parallel writer beat us between the SELECT and the
+            // INSERT.  Surface a clean error rather than silently
+            // overwriting; the caller can retry as a PUT.
+            out.status    = PutArtifactResult::Status::PathRejected;
+            out.error_msg = "path collision (concurrent write); retry";
+            out.tenant_used_bytes       = tenant_used;
+            out.conversation_used_bytes = conv_used;
+            return out;
+        }
+        out.status = PutArtifactResult::Status::Created;
+    }
+
+    // Reload the canonical row so the caller's response shape is
+    // identical for create and update.
+    Stmt sel(db_, (std::string("SELECT ") + kArtifactMetaCols +
+                   " FROM tenant_artifacts "
+                   "WHERE tenant_id = ? AND conversation_id = ? AND path = ?;").c_str());
+    sel.bind(1, tenant_id);
+    sel.bind(2, conversation_id);
+    sel.bind(3, sanitized_path);
+    if (sel.step() == SQLITE_ROW) {
+        out.record = row_to_artifact(sel);
+    }
+    out.tenant_used_bytes       = tnt_after;
+    out.conversation_used_bytes = conv_after;
+    return out;
+}
+
+std::optional<ArtifactRecord>
+TenantStore::get_artifact_meta(int64_t tenant_id, int64_t id) const {
+    if (!db_) return std::nullopt;
+    Stmt q(db_, (std::string("SELECT ") + kArtifactMetaCols +
+                 " FROM tenant_artifacts WHERE tenant_id = ? AND id = ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_artifact(q);
+}
+
+std::optional<std::string>
+TenantStore::get_artifact_content(int64_t tenant_id, int64_t id) const {
+    if (!db_) return std::nullopt;
+    Stmt q(db_, "SELECT content FROM tenant_artifacts "
+                 "WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    const void* blob = sqlite3_column_blob(q.raw(), 0);
+    int n = sqlite3_column_bytes(q.raw(), 0);
+    if (!blob || n <= 0) return std::string{};
+    return std::string(static_cast<const char*>(blob), static_cast<size_t>(n));
+}
+
+std::optional<ArtifactRecord>
+TenantStore::get_artifact_meta_by_path(int64_t tenant_id,
+                                        int64_t conversation_id,
+                                        const std::string& sanitized_path) const {
+    if (!db_) return std::nullopt;
+    Stmt q(db_, (std::string("SELECT ") + kArtifactMetaCols +
+                 " FROM tenant_artifacts "
+                 "WHERE tenant_id = ? AND conversation_id = ? AND path = ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, conversation_id);
+    q.bind(3, sanitized_path);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_artifact(q);
+}
+
+std::vector<ArtifactRecord>
+TenantStore::list_artifacts_conversation(int64_t tenant_id,
+                                          int64_t conversation_id,
+                                          int limit) const {
+    std::vector<ArtifactRecord> out;
+    if (!db_) return out;
+    const int cap = (limit > 0 && limit <= 200) ? limit : 50;
+    Stmt q(db_, (std::string("SELECT ") + kArtifactMetaCols +
+                 " FROM tenant_artifacts "
+                 "WHERE tenant_id = ? AND conversation_id = ? "
+                 " ORDER BY updated_at DESC LIMIT ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, conversation_id);
+    q.bind(3, static_cast<int64_t>(cap));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_artifact(q));
+    return out;
+}
+
+std::vector<ArtifactRecord>
+TenantStore::list_artifacts_tenant(int64_t tenant_id, int limit) const {
+    std::vector<ArtifactRecord> out;
+    if (!db_) return out;
+    const int cap = (limit > 0 && limit <= 200) ? limit : 50;
+    Stmt q(db_, (std::string("SELECT ") + kArtifactMetaCols +
+                 " FROM tenant_artifacts "
+                 "WHERE tenant_id = ? "
+                 " ORDER BY updated_at DESC LIMIT ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, static_cast<int64_t>(cap));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_artifact(q));
+    return out;
+}
+
+bool TenantStore::delete_artifact(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    // Soft cascade: nullify memory_entries.artifact_id referencing this
+    // row before deleting it.  The schema-level FK couldn't be added by
+    // ALTER TABLE (SQLite limitation), so we do the SET NULL ourselves.
+    // Tenant scope is doubly enforced — the WHERE clauses on both
+    // statements include tenant_id.
+    {
+        Stmt clr(db_, "UPDATE memory_entries SET artifact_id = NULL "
+                       "WHERE tenant_id = ? AND artifact_id = ?;");
+        clr.bind(1, tenant_id);
+        clr.bind(2, id);
+        clr.step();
+    }
+    Stmt q(db_, "DELETE FROM tenant_artifacts WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+int64_t TenantStore::bytes_used_tenant(int64_t tenant_id) const {
+    if (!db_) return 0;
+    Stmt q(db_, "SELECT COALESCE(SUM(size), 0) FROM tenant_artifacts "
+                 "WHERE tenant_id = ?;");
+    q.bind(1, tenant_id);
+    if (q.step() != SQLITE_ROW) return 0;
+    return q.column_int64(0);
+}
+
+int64_t TenantStore::bytes_used_conversation(int64_t tenant_id,
+                                              int64_t conversation_id) const {
+    if (!db_) return 0;
+    Stmt q(db_, "SELECT COALESCE(SUM(size), 0) FROM tenant_artifacts "
+                 "WHERE tenant_id = ? AND conversation_id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, conversation_id);
+    if (q.step() != SQLITE_ROW) return 0;
+    return q.column_int64(0);
 }
 
 } // namespace index_ai

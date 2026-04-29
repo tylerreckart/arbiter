@@ -51,6 +51,8 @@ Start with `arbiter --api --port 8080`. The default bind is `127.0.0.1`; product
   - [`GET /v1/admin/usage`](#get-v1adminusage)
   - [`GET /v1/admin/usage/summary`](#get-v1adminusagesummary)
 - [MCP servers](#mcp-servers)
+- [Web search](#web-search)
+- [Artifacts](#artifacts)
 - [SSE event catalog](#sse-event-catalog)
 - [Fleet streaming](#fleet-streaming)
 - [Data model](#data-model)
@@ -1215,6 +1217,225 @@ MCP calls are **not** billed — they don't consume tokens. The agent's tokens s
 | `ERR: MCP unavailable in this context`           | CLI/REPL context — no `mcp::Manager` is wired (HTTP-only feature).   | Tool-result block; agent drops the /mcp step. |
 
 A subprocess that crashes mid-request is **not auto-restarted** within that request — the manager keeps the dead `Client` and subsequent calls return ERR. The next request gets a fresh manager and a fresh subprocess. This avoids resurrection loops on a server that's broken for protocol reasons.
+
+---
+
+## Web search
+
+Agents can issue `/search <query>` mid-turn to discover sources before fetching them — the missing piece that turned previous research turns into "guess a DOI from training memory and hope it resolves." Configured per-deployment via two `ApiServerOptions` fields:
+
+| Field              | Default | Description                                                                                                |
+|--------------------|---------|------------------------------------------------------------------------------------------------------------|
+| `search_provider`  | `brave` | Search backend. Only `brave` is implemented in v1; `tavily` and `exa` slots reserved.                      |
+| `search_api_key`   | `""`    | Provider API key. Empty ⇒ `/search` returns ERR with a clear "configure ARBITER_SEARCH_API_KEY" message.   |
+
+`arbiter --api` reads the key from `ARBITER_SEARCH_API_KEY` (preferred — provider-agnostic name) or `BRAVE_SEARCH_API_KEY` (convenience for Brave-only deployments). The provider can be set via `ARBITER_SEARCH_PROVIDER`. Without a key the slash command degrades cleanly: agents see `ERR: web search unavailable in this context` and adapt by dropping the `/search` step.
+
+### Slash commands
+
+| Command                          | Effect                                                                              |
+|----------------------------------|-------------------------------------------------------------------------------------|
+| `/search <query>`                | Top 10 results for the query.                                                       |
+| `/search <query> top=N`          | Top N results (clamped to 1..20). The `top=N` token is stripped from the query.      |
+
+Capped at **4 searches per turn** (vs. /fetch's 3), since result bodies are small and agents typically need a couple of search→fetch round trips per topic.
+
+### Result format
+
+Numbered lines, one per hit, with title, snippet, and URL:
+
+```
+[/search planet nine 2024 top=5]
+1. Title of the first result — Snippet text from the search engine, lightly trimmed.
+   https://example.com/article-1
+2. Second result title — More snippet text.
+   https://example.com/article-2
+...
+[END SEARCH]
+```
+
+The dispatcher applies a 16 KB body cap (matching /fetch). Brave's `<strong>...</strong>` highlighting is stripped before rendering.
+
+### Provider notes
+
+**Brave** — `https://api.search.brave.com/res/v1/web/search`. The free tier gives 2,000 queries/month; production deployments should set a paid plan and a per-tenant rate limit at the proxy layer. Errors propagate verbatim: `ERR: Brave returned 401` on a bad key, `ERR: Brave rate-limited (429)` on quota exhaustion.
+
+### Workflow for agents
+
+The master constitution (and every research-flavoured starter agent) instructs agents to **search → fetch → browse**, in that order of escalation:
+
+```
+/search planet nine orbital clustering 2024
+                                                       # next turn returns ranked URLs
+/fetch https://arxiv.org/abs/2403.05451                # cheap libcurl read — preferred
+/browse https://www.nature.com/articles/...            # JS / paywall — playwright
+```
+
+Guessing URLs from prior knowledge produces fabricated DOIs and dead links — `/search` discovers them, `/fetch` reads them when the page is static, and `/browse` falls back to a real browser when /fetch hits Cloudflare's "Just a moment", a login wall, or an SPA-only page.
+
+### `/browse <url>`
+
+JS-rendering fetch via the configured **playwright** MCP server. Composes two MCP calls under the hood:
+
+1. `playwright/browser_navigate {"url": "..."}` — opens the URL.
+2. `playwright/browser_snapshot` — captures the rendered accessibility tree.
+
+The snapshot text is what arrives in the agent's tool-result block; the navigate confirmation is suppressed. On nav failure (timeout, transport ERR, or `isError=true`), the snapshot is skipped and the navigate error surfaces verbatim.
+
+**Requirements:** an MCP server registered as `playwright` in `mcp_servers_path` (see [MCP servers](#mcp-servers) for registry shape and the sample at `docs/mcp_servers.example.json`). Without it, `/browse` returns:
+
+```
+ERR: /browse requires a playwright MCP server configured for this deployment.
+Adapt: try /fetch <url> instead (works for static pages).
+```
+
+**Budget:** `/browse` and `/fetch` share a combined **3 URL reads per turn** — they're alternatives. Cold-start cost on the first `/browse` per request is multi-second (npx-spawning Chromium); subsequent `/browse` calls in the same turn share the live browser context per the [per-request, stateful MCP model](#mcp-servers).
+
+**When to escalate to /browse:**
+
+| Symptom from /fetch                              | Escalate? |
+|--------------------------------------------------|-----------|
+| Empty body or just nav chrome on a JS-heavy SPA  | yes       |
+| "Just a moment..." (Cloudflare interstitial)     | yes       |
+| Login-wall redirect, no article body             | yes       |
+| Static HTML with the content present             | no — keep /fetch |
+
+**Don't** /browse a URL that /fetch already retrieved successfully — that's a wasted browser spawn.
+
+---
+
+## Artifacts
+
+Persistent server-side file storage scoped to **(tenant, conversation)**. Replaces the file-on-disk model with a sandboxed blob store that lives in the same SQLite database as conversations and structured memory — no host filesystem access, no path-traversal attack surface, automatic cleanup when a conversation is deleted.
+
+The default `/write` slash command stays **ephemeral** — content is streamed as an SSE `file` event the frontend renders, with no server-side persistence. Adding `--persist` saves the same content into the artifact store. Two slash commands let agents read it back: `/read <path>` and `/list`.
+
+### Storage model
+
+| Property | Value |
+|----------|-------|
+| Backing store | SQLite BLOB column on `tenant_artifacts` |
+| Primary key | `(tenant_id, conversation_id, path)` unique |
+| Concurrency | Serialised by `SQLITE_OPEN_FULLMUTEX` (see Operational notes) |
+| Cascade delete | FK `ON DELETE CASCADE` on `tenants(id)` and `conversations(id)` — drop a conversation, its artifacts go with it |
+
+Paths are validated by a single canonical `sanitize_artifact_path` helper used by every entry point. Rules:
+
+| Rejected | Reason |
+|----------|--------|
+| Empty path or > 256 chars | length |
+| Component > 128 chars | length |
+| Absolute (`/foo`, leading `\`) | path traversal protection |
+| Drive letter (`C:\`, anything with `:`) | Windows safety |
+| `..`, `.` | path traversal |
+| Hidden (`.env`, `.git`, any `.foo`) | accidental dotfile leakage |
+| Null bytes or control chars (< 0x20 or 0x7f) | injection / display safety |
+| Windows-reserved names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-9, `LPT1`-9, case-insensitive, with or without extension) | cross-platform safety |
+
+Backslashes are normalised to forward slashes before validation; repeated separators collapse; trailing slash is dropped. The canonical form is what goes into the unique index.
+
+### Quotas
+
+Hard ceilings, enforced inside `put_artifact` for every entry point:
+
+| Scope | Default |
+|-------|---------|
+| Per file | **1 MB** |
+| Per conversation | **50 MB** |
+| Per tenant | **500 MB** |
+
+PUT-on-conflict semantics: writing to an existing path **replaces** the row (same `id`, bumped `updated_at`), and quota math subtracts the existing size before checking the cap. Overwriting a 100 KB file with 200 KB only "costs" 100 KB against the conversation quota.
+
+Responses surface the post-write totals in `tenant_used_bytes` and `conversation_used_bytes` so callers (and the agent's own tool result) know how close to the cap they are.
+
+### `POST /v1/conversations/:id/artifacts`
+
+Create or update an artifact in a conversation's working directory. Tenant auth + conversation existence check.
+
+**Request body:**
+
+| Field        | Type   | Required | Description                                                |
+|--------------|--------|----------|------------------------------------------------------------|
+| `path`       | string | yes      | Will be sanitized — caller can pass user-supplied paths.   |
+| `content`    | string | yes      | UTF-8 string. Binary blobs over the JSON path is awkward; for binary content use a future direct-upload endpoint. |
+| `mime_type`  | string | no       | Defaults to `application/octet-stream`. Free-form; not sniffed. |
+
+**Responses:**
+- `201 Created` on a fresh insert, `200 OK` on overwrite, body is `{ "artifact": {...}, "tenant_used_bytes": N, "conversation_used_bytes": N, "created": bool }`.
+- `400` — invalid JSON or invalid path. The error message is the sanitizer's reason.
+- `404` — conversation not found.
+- `413` — quota exceeded (per-file, per-conversation, or per-tenant). Body identifies which.
+
+```json
+{
+  "artifact": {
+    "id": 12,
+    "tenant_id": 1,
+    "conversation_id": 7,
+    "path": "output/report.md",
+    "sha256": "ad14a...e3",
+    "mime_type": "text/markdown",
+    "size": 1832,
+    "created_at": 1777060001,
+    "updated_at": 1777060123
+  },
+  "tenant_used_bytes": 4231,
+  "conversation_used_bytes": 1832,
+  "created": false
+}
+```
+
+### `GET /v1/conversations/:id/artifacts`
+
+List the conversation's artifacts, newest-`updated_at` first. Capped at 200 per page (no cursor in v1; conversations of that size should migrate off the SQLite tier). Tenant auth.
+
+**Response 200:** `{ "conversation_id": N, "artifacts": [...], "count": N, "bytes_used": N, "tenant_bytes_used": N }`. Each entry is the metadata shape above (no `content`).
+
+### `GET /v1/conversations/:id/artifacts/:aid`
+
+Metadata for one artifact. Returns the same shape as a list entry. `404` if the id doesn't exist for this tenant + conversation pair.
+
+### `GET /v1/conversations/:id/artifacts/:aid/raw`
+
+Raw content blob with proper `Content-Type` (from the artifact's `mime_type`) and a strong `ETag` (= `"<sha256>"`). Conditional `If-None-Match` returns `304 Not Modified` cheaply. Tenant auth.
+
+### `DELETE /v1/conversations/:id/artifacts/:aid`
+
+Permanently delete the artifact. Tenant auth. **Response 200:** `{ "deleted": true }`.
+
+### `GET /v1/artifacts`
+
+Tenant-wide cross-conversation discovery. Same response shape as the conversation list, minus the `conversation_id` field. Useful for a sibling UI rendering "all my files" rather than "files in this thread".
+
+### `GET /v1/artifacts/:aid` and `GET /v1/artifacts/:aid/raw`
+
+Tenant-scoped lookups by artifact id — the conversation id is inferred from the row. Same semantics as the conversation-scoped versions; cross-tenant ids surface as 404 (never as 403, to avoid id-existence side channels).
+
+### `DELETE /v1/artifacts/:aid`
+
+Tenant-scoped delete. Same as the conversation-scoped version.
+
+### Agent slash commands
+
+| Command                                | Effect                                                                                                  |
+|----------------------------------------|---------------------------------------------------------------------------------------------------------|
+| `/write <path>`                        | Ephemeral SSE `file` event only. The default; matches the prior behaviour exactly.                      |
+| `/write --persist <path>`              | SSE event AND artifact-store row. Returns "OK: persisted N bytes (artifact #ID, K of LIMIT bytes used)" so the agent can self-throttle on quota. |
+| `/read <path>`                         | Reads a previously persisted artifact in this conversation. ERR if path is invalid or not present.       |
+| `/list`                                | Lists this conversation's artifacts, one per line: `<path>  (<size> bytes, mime=<type>, id=<id>)`.       |
+
+The `--persist` write goes through the same path validator as the HTTP endpoint — the agent can't smuggle in `..` or absolute paths even if it tries. CLI/REPL contexts (no conversation, no tenant) leave the artifact callbacks null; `/write --persist` falls back to ephemeral with a `WARN: --persist requested but artifact store is unavailable` line, and `/read`/`/list` return ERR.
+
+### Frontend safety
+
+The path string lands on the client as a UTF-8 display field — it's untrusted. **The frontend must NOT pass it directly to `fs.writeFile` or any other path-sensitive API** without its own client-side sanitizer (same rules as the server's, plus your platform's specifics). If you let the user save the artifact to disk, build the destination path from the basename and a vetted directory of your choosing — never from the agent-supplied path.
+
+### Non-goals (v1)
+
+- No object-storage backend yet (S3/MinIO). The same interface fronts a future tier when tenants push past the SQLite ceiling.
+- No artifact versioning beyond PUT-overwrites. `git`-style history is a separate feature.
+- No public / cross-tenant sharing.
+- No mime sniffing; agents declare or accept the default. Frontends should validate the type field they trust before rendering inline.
 
 ---
 

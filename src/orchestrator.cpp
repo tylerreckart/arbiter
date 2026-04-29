@@ -528,7 +528,11 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               structured_memory_reader_cb_,
                                               structured_memory_writer_cb_,
                                               mcp_invoker_cb_,
-                                              memory_scratchpad_cb_);
+                                              memory_scratchpad_cb_,
+                                              search_invoker_cb_,
+                                              artifact_writer_cb_,
+                                              artifact_reader_cb_,
+                                              artifact_lister_cb_);
     }
 
     // Cumulative content/tokens replace the last iteration's values so the
@@ -663,7 +667,11 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                               structured_memory_reader_cb_,
                                               structured_memory_writer_cb_,
                                               mcp_invoker_cb_,
-                                              memory_scratchpad_cb_);
+                                              memory_scratchpad_cb_,
+                                              search_invoker_cb_,
+                                              artifact_writer_cb_,
+                                              artifact_reader_cb_,
+                                              artifact_lister_cb_);
         resp = agent_ptr->stream(current_msg, cb);
         if (!resp.ok) {
             if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);

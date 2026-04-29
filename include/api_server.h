@@ -105,6 +105,14 @@ struct ApiServerOptions {
     // configured (the /mcp slash command returns ERR with a clear
     // message).  See docs/api.md → "MCP servers" for the schema.
     std::string mcp_servers_path;
+
+    // Web-search provider config.  When `search_api_key` is non-empty
+    // and the provider is recognized, /search <query> [top=N] dispatches
+    // an HTTPS call against the provider's API.  Empty key ⇒ /search
+    // returns a clean ERR.  Default provider is "brave"; the only one
+    // implemented in v1, with Tavily/Exa slots reserved.
+    std::string search_provider = "brave";
+    std::string search_api_key;
 };
 
 class ApiServer {

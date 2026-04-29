@@ -85,7 +85,12 @@ static std::string index_ai_prompt(Brevity level) {
         "Commands must appear alone on their own line (not inside code blocks).\n"
         "Issue multiple commands in one response if needed — all execute before the next turn.\n"
         "Available commands:\n"
-        "  /fetch <url>                  — fetch a webpage; result returned in next message\n"
+        "  /search <query>               — web search; returns ranked title/snippet/url for top N results\n"
+        "  /search <query> top=N         — top N results (max 20)\n"
+        "  /fetch <url>                  — fast static fetch (libcurl); strips HTML to text\n"
+        "  /browse <url>                 — JS-rendering fetch via playwright MCP; use when /fetch hits Cloudflare,\n"
+        "                                  paywalls, or pages that only render content from JavaScript.  Heavier\n"
+        "                                  (multi-second cold start) so don't reach for it first.\n"
         "  /exec <shell command>         — run a shell command; stdout+stderr returned\n"
         "  /agent <agent_id> <message>   — invoke a sub-agent and receive its response inline\n"
         "  /parallel                     — fan out multiple /agent calls concurrently (block form,\n"
@@ -95,6 +100,12 @@ static std::string index_ai_prompt(Brevity level) {
         "                                  message when it finishes, then the user is prompted\n"
         "                                  to close it\n"
         "  /write <path>                 — write a file; content on subsequent lines until /endwrite\n"
+        "                                  Streamed to the client live via an SSE `file` event\n"
+        "                                  (ephemeral — vanishes when the request ends).\n"
+        "  /write --persist <path>       — same, AND saves to the conversation's artifact store\n"
+        "                                  (durable; readable later via /read or HTTP).\n"
+        "  /read <path>                  — read a previously persisted artifact in this conversation\n"
+        "  /list                         — list this conversation's persisted artifacts (path + size)\n"
         "  /mem write <text>             — append a note to your persistent scratchpad\n"
         "  /mem read                     — load your persistent scratchpad into context\n"
         "  /mem show                     — display raw scratchpad\n"
@@ -122,14 +133,28 @@ static std::string index_ai_prompt(Brevity level) {
         "- To produce a file (code, essay, README, report, PRD, config): ALWAYS use /write.\n"
         "  NEVER say 'here is the content' without issuing /write to actually create the file.\n"
         "  /write <path> followed by content lines, closed by /endwrite on its own line.\n"
+        "  Default /write is EPHEMERAL — the user sees it inline but the server doesn't keep\n"
+        "  it.  Add --persist to save into the conversation's artifact store when the user\n"
+        "  will likely want to read or refine the file in a later turn.  Read it back with\n"
+        "  /read <path>; list everything saved with /list.\n"
+        "  Path safety: relative paths only, no '..', no leading '/' or drive letters,\n"
+        "  no hidden (dotfile) names, ≤ 256 chars total.\n"
         "  Example:\n"
-        "  /write output/report.md\n"
+        "  /write --persist output/report.md\n"
         "  # Report Title\n"
         "\n"
         "  Body text here.\n"
         "  /endwrite\n"
-        "- Web search / browse / read a URL: use /fetch <url>. Do not apologize for\n"
-        "  lacking web access — use the command.\n"
+        "- Web research workflow: SEARCH → FETCH → BROWSE, in that order of escalation:\n"
+        "    1. /search <query> — discover ranked URLs (don't guess from training memory;\n"
+        "       it produces fabricated DOIs and dead links).\n"
+        "    2. /fetch <url> — fast static read for arxiv abstracts, blog posts, plain HTML.\n"
+        "       Cheap; preferred when it works.\n"
+        "    3. /browse <url> — when /fetch returned 'Just a moment' (Cloudflare), a paywall\n"
+        "       login redirect, or no useful content (SPA-only pages).  Spawns a real browser\n"
+        "       via playwright MCP — slower cold-start but renders JS and handles modern\n"
+        "       news/journal sites.  Don't /browse a page that /fetch already retrieved.\n"
+        "  Do not apologize for lacking web access — use the commands.\n"
         "- Delegate tasks to the appropriate sub-agent with /agent <id> <message>.\n"
         "  The system status prepended to each query shows available agents and their roles.\n"
         "  Use /agent proactively: if the user asks for research, code review, or infra work,\n"
@@ -342,39 +367,74 @@ static std::string weak_executor_prompt(const Constitution& c) {
 
     if (!c.advisor_model.empty()) {
         ss << "ADVISOR — model: " << c.advisor_model << "\n";
-        ss << "The advisor answers ONE question you pose, then you continue.  "
-              "It sees only the text after /advise, nothing from prior "
-              "conversation.  State the decision being made and the "
-              "constraints in the question itself.\n";
-        ss << "Emit /advise BEFORE committing to:\n";
-        ss << "  - a decision between two reasonable paths (architectural, "
-              "methodological, editorial)\n";
-        ss << "  - an interpretation of ambiguous or contradictory evidence\n";
-        ss << "  - a judgment about whether a claim is well-supported enough "
-              "to state as fact\n";
-        ss << "Do NOT emit /advise for single-fact lookups, formatting "
-              "choices, style decisions, or anything a primary source can "
-              "resolve.  Budget: at most 2 consults per turn.\n\n";
+        ss << "The advisor is ONE LLM consult that gets ONLY the text you "
+              "write after /advise.  No conversation history, no tool "
+              "results, no prior turns, no project context.  Treat it as "
+              "a senior peer you're slacking once before deciding "
+              "something genuinely hard.\n\n";
 
-        ss << "EXAMPLE — consulting the advisor on a judgment call:\n";
+        ss << "WHEN to consult (scenarios that benefit from a second opinion):\n";
+        ss << "  - You gathered evidence with /search /fetch /browse and the "
+              "sources DISAGREE; you need to decide which to weight.\n";
+        ss << "  - Two reasonable architectural / methodological / editorial "
+              "paths trade off against constraints you can name.\n";
+        ss << "  - You're about to commit to a multi-step plan and want a "
+              "sanity check on the decomposition before sinking turns.\n";
+        ss << "  - A claim is supportable but inference-heavy; you want a "
+              "calibrated read on whether to state it as fact or hedge.\n\n";
+
+        ss << "WHEN NOT to consult (do it yourself):\n";
+        ss << "  - Single-fact lookups → /search or /fetch.\n";
+        ss << "  - Formatting / style / phrasing → pick one, ship it.\n";
+        ss << "  - Anything you already know with high confidence — don't escalate.\n";
+        ss << "  - Restating the user's request in different words.\n";
+        ss << "  - As a substitute for doing the research yourself.\n\n";
+
+        ss << "QUESTION QUALITY — pack four things into the /advise body:\n";
+        ss << "  1. The decision in one sentence.\n";
+        ss << "  2. The 2–3 plausible alternatives with their key trade-offs.\n";
+        ss << "  3. The constraints (audience, scale, deadline, priors).\n";
+        ss << "  4. What would change your mind in either direction.\n";
+        ss << "  Bad:  /advise Which JS framework is best?\n";
+        ss << "  Good: /advise A 4-engineer team is shipping a B2B dashboard "
+              "in 6 weeks; React is institutional knowledge here, Svelte "
+              "would be the team's first time but the demo data fits "
+              "Svelte's reactive model better.  Stability matters more "
+              "than novelty.  Which, and what would flip your answer?\n\n";
+
+        ss << "WORKFLOW — emit /advise AFTER you have evidence and BEFORE "
+              "you commit prose to the user.  /advise mid-research is "
+              "usually premature (gather first).  /advise after the report "
+              "is drafted is too late to change anything (deliver and move "
+              "on).\n\n";
+
+        ss << "BUDGET: 2 consults per turn.  A third wanted consult is a "
+              "strong signal the task is under-scoped — deliver what you "
+              "have and flag the open question for the user instead of "
+              "asking the advisor to choose for you.\n\n";
+
+        ss << "EXAMPLE — evidence-gathered judgment call:\n";
         ss << "---\n";
-        ss << "User task: \"Research competing JavaScript bundlers and "
-              "recommend one for a new team project.\"\n\n";
+        ss << "User task: \"Recommend a JavaScript bundler for our new "
+              "team project.\"\n\n";
         ss << "Your response:\n";
+        ss << "/search webpack vs vite production maturity 2024\n";
         ss << "/fetch https://webpack.js.org/concepts/\n";
         ss << "/fetch https://vitejs.dev/guide/why.html\n\n";
-        ss << "I now have feature and positioning material from both.  The "
-              "choice hinges on the team's priorities.\n\n";
-        ss << "/advise I'm comparing Webpack and Vite for a new team "
-              "project.  Webpack is mature with the broadest plugin "
-              "ecosystem; Vite is significantly faster in the dev loop but "
-              "its production story is newer and has fewer enterprise case "
-              "studies.  Assume a team of six that values long-term "
+        ss << "Both fetched.  Webpack: mature plugin ecosystem, slower dev "
+              "loop, well-documented at scale.  Vite: faster dev iteration, "
+              "production story newer, fewer large-team case studies.  The "
+              "choice hinges on the team's priorities — that's a judgment "
+              "call, not a fact lookup.\n\n";
+        ss << "/advise Comparing Webpack and Vite for a new B2B project. "
+              "Team of six engineers, 18-month roadmap, values long-term "
               "stability and onboarding predictability over dev-loop speed.  "
-              "Which should they pick, and what's the single strongest "
-              "reason?\n\n";
-        ss << "[advisor replies, e.g. \"Webpack.  Its plugin ecosystem and "
-              "production maturity reduce integration risk...\"]\n\n";
+              "Webpack: largest plugin ecosystem, mature; Vite: faster dev, "
+              "production story 3 years younger.  Which, and what would "
+              "flip your answer?\n\n";
+        ss << "[advisor replies, e.g. \"Webpack.  Plugin maturity reduces "
+              "integration risk for a stability-prioritising team; flip to "
+              "Vite if dev-loop speed becomes a recruiting / morale issue.\"]\n\n";
         ss << "Based on the advisor's guidance, I write my final "
               "recommendation with the reasoning baked in.\n";
         ss << "---\n\n";
@@ -438,23 +498,40 @@ std::string Constitution::build_system_prompt() const {
     // question must be self-contained.
     if (!advisor_model.empty()) {
         ss << "\nADVISOR:\n";
-        ss << "You have an advisor model (" << advisor_model
-           << ") available via:\n";
+        ss << "One-shot consult against " << advisor_model
+           << " — typically a more capable model.  Each call is a separate "
+              "round trip and bills like any other LLM turn, so use it where "
+              "the second opinion is load-bearing for your final answer.\n";
         ss << "  /advise <question>\n";
-        ss << "The advisor is a one-shot consult — it sees ONLY the text you "
-              "write after /advise, nothing else.  State the decision you are "
-              "making and the constraints.  It replies once; there is no "
-              "back-and-forth.\n";
-        ss << "Consult when: architectural tradeoffs, genuine ambiguity, "
-              "multi-step planning decisions, adjudicating contradictory "
-              "evidence.\n";
-        ss << "Do NOT consult for: single-fact lookups, formatting choices, "
-              "style decisions, anything a primary source or /fetch can "
-              "resolve.  If you already know the answer with high confidence, "
-              "state it — don't escalate.\n";
-        ss << "Budget: at most 2 consults per turn.  A third wanted consult "
-              "means the task is under-scoped — deliver what you have and "
-              "flag the open question instead.\n";
+        ss << "It sees ONLY the text after /advise.  No conversation history, "
+              "no tool results, no project context.  Self-contained question "
+              "or it can't help you.\n\n";
+
+        ss << "Consult when:\n"
+              "  - Sources you've gathered DISAGREE and you need to decide "
+              "which to weight.\n"
+              "  - Two reasonable paths trade off against constraints you "
+              "can name (architectural, methodological, editorial).\n"
+              "  - A multi-step plan is about to be committed and you want "
+              "a sanity check on the decomposition.\n"
+              "  - A claim is supportable but inference-heavy and you need "
+              "calibration on hedge-vs-state.\n";
+        ss << "Do NOT consult for: single-fact lookups (use /search or "
+              "/fetch), formatting / style / phrasing choices, anything "
+              "you already know with high confidence, or as a substitute "
+              "for doing the research yourself.\n\n";
+
+        ss << "Question quality — pack four things into the body:\n"
+              "  1. The decision in one sentence.\n"
+              "  2. The 2–3 plausible alternatives + their trade-offs.\n"
+              "  3. The constraints (audience, scale, deadline, priors).\n"
+              "  4. What would change your mind in either direction.\n";
+        ss << "Workflow — /advise AFTER evidence is gathered and BEFORE "
+              "prose is committed.  Mid-research is premature; after the "
+              "report is drafted is too late.\n";
+        ss << "Budget: 2 consults per turn.  A third wanted consult means "
+              "the task is under-scoped — deliver what you have and flag "
+              "the open question for the user instead.\n";
     }
 
     return ss.str();

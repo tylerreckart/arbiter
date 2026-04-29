@@ -53,6 +53,32 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = line.substr(7);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
+        } else if (line.size() > 8 && line.substr(0, 8) == "/search ") {
+            AgentCommand cmd;
+            cmd.name = "search";
+            cmd.args = line.substr(8);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+
+        } else if (line.size() > 8 && line.substr(0, 8) == "/browse ") {
+            AgentCommand cmd;
+            cmd.name = "browse";
+            cmd.args = line.substr(8);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+
+        } else if (line.size() > 6 && line.substr(0, 6) == "/read ") {
+            // /read <path> — read this conversation's persisted artifact.
+            AgentCommand cmd;
+            cmd.name = "read";
+            cmd.args = line.substr(6);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+
+        } else if (line == "/list") {
+            // /list — list this conversation's persisted artifacts.
+            // No-arg command; the args field stays empty.
+            AgentCommand cmd;
+            cmd.name = "list";
+            result.push_back(std::move(cmd));
+
         } else if (line.size() > 5 && line.substr(0, 5) == "/mcp ") {
             AgentCommand cmd;
             cmd.name = "mcp";
@@ -812,16 +838,25 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    StructuredMemoryReader structured_memory_reader,
                                    StructuredMemoryWriter structured_memory_writer,
                                    MCPInvoker     mcp_invoker,
-                                   MemoryScratchpadInvoker memory_scratchpad) {
+                                   MemoryScratchpadInvoker memory_scratchpad,
+                                   SearchInvoker  search_invoker,
+                                   ArtifactWriter artifact_writer,
+                                   ArtifactReader artifact_reader,
+                                   ArtifactLister artifact_lister) {
     std::ostringstream out;
     out << "\n";
 
     // Caps: 16 KB per fetch (stripped text), max 3 fetches per turn,
-    // and a total tool-result budget of 32 KB.
+    // and a total tool-result budget of 32 KB.  /search shares the
+    // body cap but has its own per-turn budget — search results are
+    // small and cheap relative to fetch, and agents typically need
+    // 1–2 searches before doing 1–3 follow-up fetches.
     static constexpr size_t kPerFetchLimit  = 16384;
     static constexpr size_t kTotalLimit     = 32768;
     static constexpr int    kMaxFetches     = 3;
-    int fetch_count = 0;
+    static constexpr int    kMaxSearches    = 4;
+    int fetch_count  = 0;
+    int search_count = 0;
 
     for (auto& cmd : cmds) {
         // Enforce total budget
@@ -874,6 +909,153 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 }
                 block << fetched << "\n";
                 block << "[END FETCH]\n\n";
+            }
+
+        } else if (cmd.name == "search") {
+            // /search <query>            — top 10 results
+            // /search <query> top=N      — top N (capped at 20)
+            // Pulled apart here so the SearchInvoker only sees a clean
+            // query string + integer N.  The trailing `top=N` token is
+            // stripped from the query before dispatch.
+            std::string query = cmd.args;
+            int top_n = 10;
+            {
+                auto pos = query.rfind(" top=");
+                if (pos != std::string::npos) {
+                    try {
+                        int parsed = std::stoi(query.substr(pos + 5));
+                        if (parsed > 0) {
+                            top_n = std::min(parsed, 20);
+                            query.resize(pos);
+                        }
+                    } catch (...) { /* leave query intact, use default */ }
+                }
+            }
+            // Trim trailing whitespace from the query.
+            while (!query.empty() && (query.back() == ' ' || query.back() == '\t'))
+                query.pop_back();
+
+            if (search_count >= kMaxSearches) {
+                block << "[/search " << query << "]\n"
+                      << "SKIPPED: max " << kMaxSearches << " searches per turn\n"
+                      << "[END SEARCH]\n\n";
+                cache_result = false;
+            } else if (query.empty()) {
+                block << "[/search]\n"
+                      << "ERR: empty query — usage: /search <query> [top=N]\n"
+                      << "[END SEARCH]\n\n";
+                cache_result = false;
+            } else if (!search_invoker) {
+                block << "[/search " << query << "]\n"
+                      << "ERR: web search unavailable in this context — only "
+                         "the HTTP API wires a search provider.  Adapt: drop "
+                         "the /search step, or fall back to /fetch with a known "
+                         "URL.\n"
+                      << "[END SEARCH]\n\n";
+                cache_result = false;
+            } else {
+                ++search_count;
+                block << "[/search " << query << "]\n";
+                std::string body = search_invoker(query, top_n);
+                if (body.size() > kPerFetchLimit) {
+                    body.resize(kPerFetchLimit);
+                    body += "\n... [truncated]";
+                }
+                block << body;
+                if (body.empty() || body.back() != '\n') block << "\n";
+                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
+                block << "[END SEARCH]\n\n";
+            }
+
+        } else if (cmd.name == "browse") {
+            // /browse <url> — JS-rendering fetch via the configured
+            // playwright MCP server.  Use this when /fetch fails on
+            // Cloudflare / paywalls / SPA-only sites; libcurl can't
+            // execute JS and many modern news/journal pages need a
+            // real browser to surface their content.
+            //
+            // Composition: navigate to the URL, then snapshot the
+            // accessibility tree.  Both calls go through the existing
+            // MCPInvoker so the per-request mcp::Manager (and its one
+            // subprocess) handles spawn/lifecycle.  Cold start is
+            // multi-second on the first /browse per request; later
+            // /browse calls in the same turn share the live browser.
+            //
+            // Shares the /fetch budget — these are alternatives, and
+            // total "URL reads per turn" stays at 3.
+            std::string url = cmd.args;
+            while (!url.empty() && (url.back() == ' ' || url.back() == '\t'))
+                url.pop_back();
+            while (!url.empty() && (url.front() == ' ' || url.front() == '\t'))
+                url.erase(0, 1);
+
+            if (fetch_count >= kMaxFetches) {
+                block << "[/browse " << url << "]\n"
+                      << "SKIPPED: max " << kMaxFetches
+                      << " URL reads per turn (shared with /fetch)\n"
+                      << "[END BROWSE]\n\n";
+                cache_result = false;
+            } else if (url.empty()) {
+                block << "[/browse]\n"
+                      << "ERR: empty URL — usage: /browse <url>\n"
+                      << "[END BROWSE]\n\n";
+                cache_result = false;
+            } else if (!mcp_invoker) {
+                block << "[/browse " << url << "]\n"
+                      << "ERR: /browse requires a playwright MCP server "
+                         "configured for this deployment.  Adapt: try "
+                         "/fetch <url> instead (works for static pages).\n"
+                      << "[END BROWSE]\n\n";
+                cache_result = false;
+            } else {
+                ++fetch_count;
+                block << "[/browse " << url << "]\n";
+
+                // JSON-escape the URL for safe interpolation into the
+                // {"url":"..."} args object.  URLs rarely contain " or \
+                // but defensive escaping costs nothing.
+                std::string escaped;
+                escaped.reserve(url.size() + 8);
+                for (char c : url) {
+                    if (c == '"' || c == '\\') { escaped += '\\'; escaped += c; }
+                    else if (c == '\n') escaped += "\\n";
+                    else if (c == '\r') escaped += "\\r";
+                    else if (c == '\t') escaped += "\\t";
+                    else escaped += c;
+                }
+
+                const std::string nav_args =
+                    "playwright browser_navigate {\"url\":\"" + escaped + "\"}";
+                std::string nav = mcp_invoker("call", nav_args);
+
+                // navigate failure (transport ERR or tool-level isError):
+                // surface it and skip the snapshot — no point taking a
+                // picture of an unloaded page.
+                const bool nav_err =
+                    (nav.size() >= 4 && nav.compare(0, 4, "ERR:") == 0) ||
+                    nav.find("[tool reported isError=true]") != std::string::npos;
+                if (nav_err) {
+                    block << nav;
+                    if (nav.empty() || nav.back() != '\n') block << "\n";
+                    cache_result = false;
+                } else {
+                    // Snapshot returns the accessibility tree as text —
+                    // structured but parseable by the agent.  Cap at the
+                    // shared per-fetch limit; trees on rich pages can be
+                    // tens of KB.
+                    std::string snap = mcp_invoker("call",
+                                                    "playwright browser_snapshot");
+                    if (snap.size() > kPerFetchLimit) {
+                        snap.resize(kPerFetchLimit);
+                        snap += "\n... [truncated]";
+                    }
+                    block << snap;
+                    if (snap.empty() || snap.back() != '\n') block << "\n";
+                    if (snap.size() >= 4 && snap.compare(0, 4, "ERR:") == 0)
+                        cache_result = false;
+                }
+                block << "[END BROWSE]\n\n";
             }
 
         } else if (cmd.name == "mcp") {
@@ -1253,13 +1435,36 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             block << "[END AGENT]\n\n";
 
         } else if (cmd.name == "write") {
-            block << "[/write " << cmd.args << "]\n";
+            // Detect the --persist flag.  Grammar: `/write [--persist] <path>`.
+            // The flag is parsed off the front of args; what remains is the
+            // user-supplied path.  When --persist is set AND the API has
+            // wired an ArtifactWriter, the write goes to BOTH the SSE
+            // event (via write_interceptor for live UI) AND the artifact
+            // store (durable, addressable via /read).
+            bool persist = false;
+            std::string path = cmd.args;
+            {
+                // Trim leading whitespace before flag detection.
+                while (!path.empty() && (path.front() == ' ' || path.front() == '\t'))
+                    path.erase(0, 1);
+                const std::string flag = "--persist";
+                if (path.size() > flag.size() &&
+                    path.compare(0, flag.size(), flag) == 0 &&
+                    (path[flag.size()] == ' ' || path[flag.size()] == '\t')) {
+                    persist = true;
+                    path.erase(0, flag.size());
+                    while (!path.empty() && (path.front() == ' ' || path.front() == '\t'))
+                        path.erase(0, 1);
+                }
+            }
+            const std::string display = persist ? "--persist " + path : path;
+            block << "[/write " << display << "]\n";
             // Orchestrator attempted to recover unclosed /write blocks before
             // we got here.  If `truncated` is STILL set, recovery exhausted
             // its retries — refuse to persist the partial and tell the model
             // explicitly so the next turn can retry with a fresh /write.
             if (cmd.truncated) {
-                block << "ERR: /write block for " << cmd.args
+                block << "ERR: /write block for " << path
                       << " was truncated mid-generation (missing /endwrite) "
                          "and could not be recovered.  File NOT written.  "
                          "Re-emit the full /write block from scratch.\n";
@@ -1275,7 +1480,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 // clobber the user's filesystem, so no confirm is needed.
                 size_t lines = std::count(cmd.content.begin(), cmd.content.end(), '\n');
                 if (!cmd.content.empty() && cmd.content.back() != '\n') ++lines;
-                std::string p = "write " + cmd.args + " (" +
+                std::string p = "write " + path + " (" +
                                 std::to_string(lines) + " lines, " +
                                 std::to_string(cmd.content.size()) + " bytes)?";
                 if (!confirm(p)) {
@@ -1290,11 +1495,70 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             // API / sandboxed callers route the write through their own
             // sink (e.g. an SSE `file` event) instead of touching disk.
             if (write_interceptor) {
-                block << write_interceptor(cmd.args, cmd.content) << "\n";
+                block << write_interceptor(path, cmd.content) << "\n";
             } else {
-                block << cmd_write(cmd.args, cmd.content) << "\n";
+                block << cmd_write(path, cmd.content) << "\n";
+            }
+            // Persistent write — appends a second OK/ERR line for the
+            // artifact-store outcome.  Falls back to a clear "ephemeral
+            // only" notice when the API didn't wire the writer (e.g. a
+            // request without conversation_id, or CLI/REPL).
+            if (persist) {
+                if (artifact_writer) {
+                    std::string body = artifact_writer(path, cmd.content);
+                    block << body;
+                    if (body.empty() || body.back() != '\n') block << "\n";
+                    if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                        cache_result = false;
+                } else {
+                    block << "WARN: --persist requested but artifact store is "
+                             "unavailable in this context (no conversation, or "
+                             "CLI/REPL); the write was ephemeral only.\n";
+                }
             }
             block << "[END WRITE]\n\n";
+
+        } else if (cmd.name == "read") {
+            std::string path = cmd.args;
+            while (!path.empty() && (path.back() == ' ' || path.back() == '\t'))
+                path.pop_back();
+            while (!path.empty() && (path.front() == ' ' || path.front() == '\t'))
+                path.erase(0, 1);
+            block << "[/read " << path << "]\n";
+            if (path.empty()) {
+                block << "ERR: usage: /read <path>\n";
+                cache_result = false;
+            } else if (!artifact_reader) {
+                block << "ERR: artifact store unavailable in this context — "
+                         "/read works only inside an HTTP conversation.  "
+                         "Adapt: drop the /read step.\n";
+                cache_result = false;
+            } else {
+                std::string body = artifact_reader(path);
+                if (body.size() > kPerFetchLimit) {
+                    body.resize(kPerFetchLimit);
+                    body += "\n... [truncated]";
+                }
+                block << body;
+                if (body.empty() || body.back() != '\n') block << "\n";
+                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
+            }
+            block << "[END READ]\n\n";
+
+        } else if (cmd.name == "list") {
+            block << "[/list]\n";
+            if (!artifact_lister) {
+                block << "ERR: artifact store unavailable in this context — "
+                         "/list works only inside an HTTP conversation.\n";
+                cache_result = false;
+            } else {
+                std::string body = artifact_lister();
+                if (body.empty()) body = "(no persisted artifacts in this conversation)\n";
+                block << body;
+                if (body.back() != '\n') block << "\n";
+            }
+            block << "[END LIST]\n\n";
         }
 
         // Flush per-command block into the aggregate and record it in the

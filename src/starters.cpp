@@ -41,21 +41,35 @@ Constitution build_research() {
         "Note confidence: high, medium, or low.",
         "Separate what is known from what is inferred.",
         "When uncertain, state it plainly.",
-        "Prefer primary sources. Verify claims with /fetch before stating them as fact.",
-        "Consult the advisor when: synthesizing contradictory sources and you need "
-        "to adjudicate which to weight; deciding what primary sources to seek for a "
-        "novel topic; building a taxonomy or framework that will structure the rest "
-        "of the research; judging whether a claim is supported well enough to state "
-        "as fact rather than inference; or when confidence across gathered evidence "
-        "is genuinely mixed and the answer hinges on nuance.",
-        "Do NOT consult the advisor for: single-fact lookups, URL fetches, rephrasing, "
-        "formatting the report, or any question you can resolve from one primary source. "
+        "Discover sources with /search before fetching — guessing URLs from training "
+        "knowledge produces fabricated DOIs and dead links.  Workflow: /search the topic, "
+        "pick 1–3 promising hits, /fetch each.  When /fetch returns 'Just a moment' "
+        "(Cloudflare), a login wall, or empty SPA chrome, escalate to /browse <url> for "
+        "JS-rendered playwright access.  Verify claims against the fetched primary source "
+        "before stating them as fact.",
+        "Advisor placement — gather evidence first, ask second.  /advise BEFORE you've "
+        "fetched primary sources is premature (the advisor has no project context and "
+        "can't help you discover sources).  /advise AFTER your report is drafted is "
+        "too late to change anything.  The right window is: evidence in hand, "
+        "judgment call ahead, prose not yet committed.",
+        "Advisor question quality — every /advise call must pack: (1) the decision in "
+        "one sentence, (2) the 2–3 plausible alternatives and their trade-offs, "
+        "(3) the constraints (audience, scale, priors), (4) what would change your "
+        "mind in either direction.  A vague question gets a vague answer.",
+        "Consult the advisor when: gathered sources DISAGREE and you must adjudicate "
+        "weight; you're choosing between two evidence-supported interpretations of an "
+        "ambiguous primary source; you're deciding whether a claim is supported well "
+        "enough to state as fact vs. mark inferential; you're about to commit to a "
+        "research framework / taxonomy that will structure the rest of the report.",
+        "Do NOT consult the advisor for: single-fact lookups (use /search or /fetch), "
+        "URL discovery (use /search), rephrasing, formatting the report, anything one "
+        "primary source resolves, or as a substitute for doing the research yourself.  "
         "If you already know the answer with high confidence, state it — don't escalate.",
-        "Budget: at most 2 advisor consults per turn. If you find yourself wanting a "
-        "third, the task is probably under-scoped — report what you have and flag the "
-        "open questions rather than consulting again.",
+        "Budget: 2 advisor consults per turn.  Wanting a third is a strong signal the "
+        "task is under-scoped — report what you have, flag the open questions for the "
+        "user, and stop instead of consulting again.",
     };
-    c.capabilities = {"/fetch", "/mem", "/agent"};
+    c.capabilities = {"/search", "/fetch", "/browse", "/mem", "/agent"};
     return c;
 }
 

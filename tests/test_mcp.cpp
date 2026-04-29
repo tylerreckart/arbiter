@@ -248,3 +248,218 @@ TEST_CASE("/mcp rejects unknown subcommands without invoking") {
     CHECK_FALSE(invoked);
     CHECK(out.find("ERR: usage:") != std::string::npos);
 }
+
+// ── 4. /search slash dispatch ──────────────────────────────────────
+
+TEST_CASE("parse_agent_commands recognises /search") {
+    auto cmds = parse_agent_commands(
+        "/search planet nine 2024\n"
+        "/search arrokoth formation top=5\n"
+    );
+    REQUIRE(cmds.size() == 2);
+    CHECK(cmds[0].name == "search");
+    CHECK(cmds[0].args == "planet nine 2024");
+    CHECK(cmds[1].name == "search");
+    CHECK(cmds[1].args == "arrokoth formation top=5");
+}
+
+TEST_CASE("/search returns ERR when no SearchInvoker is wired") {
+    auto cmds = parse_agent_commands("/search neanderthal gene flow\n");
+    auto out = execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr, nullptr, nullptr,
+        /*search_invoker=*/nullptr);
+    CHECK(out.find("[/search neanderthal gene flow]") != std::string::npos);
+    CHECK(out.find("ERR: web search unavailable") != std::string::npos);
+    CHECK(out.find("[END SEARCH]") != std::string::npos);
+}
+
+TEST_CASE("/search routes query + top_n to the invoker") {
+    std::string seen_query;
+    int seen_top = -1;
+    auto invoker = [&seen_query, &seen_top](const std::string& q, int n) {
+        seen_query = q;
+        seen_top   = n;
+        return std::string("1. Result A — A summary\n   https://a.example/\n");
+    };
+
+    auto cmds = parse_agent_commands("/search arrokoth formation top=5\n");
+    auto out = execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr, nullptr, nullptr,
+        /*search_invoker=*/invoker);
+
+    CHECK(seen_query == "arrokoth formation");      // top=N stripped from query
+    CHECK(seen_top   == 5);
+    CHECK(out.find("Result A") != std::string::npos);
+    CHECK(out.find("https://a.example/") != std::string::npos);
+    CHECK(out.find("[END SEARCH]") != std::string::npos);
+}
+
+TEST_CASE("/search defaults top_n to 10 when unspecified") {
+    int seen_top = -1;
+    auto invoker = [&seen_top](const std::string&, int n) {
+        seen_top = n;
+        return std::string("(no results)\n");
+    };
+    auto cmds = parse_agent_commands("/search planet nine\n");
+    execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr, nullptr, nullptr, invoker);
+    CHECK(seen_top == 10);
+}
+
+TEST_CASE("/search caps top_n at 20") {
+    int seen_top = -1;
+    auto invoker = [&seen_top](const std::string&, int n) {
+        seen_top = n;
+        return std::string{};
+    };
+    auto cmds = parse_agent_commands("/search xyz top=999\n");
+    execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr, nullptr, nullptr, invoker);
+    CHECK(seen_top == 20);
+}
+
+TEST_CASE("/search per-turn budget caps at 4 calls") {
+    int call_count = 0;
+    auto invoker = [&call_count](const std::string&, int) {
+        ++call_count;
+        return std::string("hit\n");
+    };
+    auto cmds = parse_agent_commands(
+        "/search a\n/search b\n/search c\n/search d\n/search e\n"
+    );
+    auto out = execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr, nullptr, nullptr, invoker);
+    CHECK(call_count == 4);
+    CHECK(out.find("SKIPPED: max 4 searches per turn") != std::string::npos);
+}
+
+// ── 5. /browse slash dispatch ──────────────────────────────────────
+
+TEST_CASE("parse_agent_commands recognises /browse") {
+    auto cmds = parse_agent_commands(
+        "/browse https://example.com/article\n"
+        "/browse https://news.ycombinator.com/\n"
+    );
+    REQUIRE(cmds.size() == 2);
+    CHECK(cmds[0].name == "browse");
+    CHECK(cmds[0].args == "https://example.com/article");
+    CHECK(cmds[1].name == "browse");
+    CHECK(cmds[1].args == "https://news.ycombinator.com/");
+}
+
+TEST_CASE("/browse returns ERR when no MCPInvoker is wired") {
+    auto cmds = parse_agent_commands("/browse https://example.com\n");
+    auto out = execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr,
+        /*mcp_invoker=*/nullptr);
+    CHECK(out.find("[/browse https://example.com]") != std::string::npos);
+    CHECK(out.find("ERR: /browse requires a playwright MCP") != std::string::npos);
+    CHECK(out.find("/fetch") != std::string::npos);    // hint to fall back
+    CHECK(out.find("[END BROWSE]") != std::string::npos);
+}
+
+TEST_CASE("/browse composes browser_navigate + browser_snapshot") {
+    std::vector<std::pair<std::string,std::string>> calls;
+    auto invoker = [&calls](const std::string& kind, const std::string& args) {
+        calls.push_back({kind, args});
+        if (args.find("browser_navigate") != std::string::npos)
+            return std::string("Navigated to https://example.com\n");
+        if (args.find("browser_snapshot") != std::string::npos)
+            return std::string("- heading: Example Domain\n- paragraph: This domain is for use in...\n");
+        return std::string("ERR: unexpected\n");
+    };
+
+    auto cmds = parse_agent_commands("/browse https://example.com\n");
+    auto out = execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr,
+        /*mcp_invoker=*/invoker);
+
+    REQUIRE(calls.size() == 2);
+    CHECK(calls[0].first  == "call");
+    CHECK(calls[0].second.find("playwright browser_navigate") != std::string::npos);
+    CHECK(calls[0].second.find("\"url\":\"https://example.com\"") != std::string::npos);
+    CHECK(calls[1].first  == "call");
+    CHECK(calls[1].second.find("playwright browser_snapshot") != std::string::npos);
+
+    // Snapshot text appears in the rendered block; navigate confirmation does NOT.
+    CHECK(out.find("Example Domain") != std::string::npos);
+    CHECK(out.find("Navigated to") == std::string::npos);
+    CHECK(out.find("[END BROWSE]") != std::string::npos);
+}
+
+TEST_CASE("/browse skips snapshot when navigate fails") {
+    int navigate_calls = 0;
+    int snapshot_calls = 0;
+    auto invoker = [&](const std::string&, const std::string& args) {
+        if (args.find("browser_navigate") != std::string::npos) {
+            ++navigate_calls;
+            return std::string("ERR: target page unreachable (timeout)\n");
+        }
+        if (args.find("browser_snapshot") != std::string::npos) {
+            ++snapshot_calls;
+            return std::string("(unreached)\n");
+        }
+        return std::string("ERR: unexpected\n");
+    };
+
+    auto cmds = parse_agent_commands("/browse https://busted.example/\n");
+    auto out = execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr, invoker);
+
+    CHECK(navigate_calls == 1);
+    CHECK(snapshot_calls == 0);                 // skipped on nav failure
+    CHECK(out.find("ERR: target page unreachable") != std::string::npos);
+    CHECK(out.find("[END BROWSE]") != std::string::npos);
+}
+
+TEST_CASE("/browse and /fetch share the per-turn budget") {
+    int browse_calls = 0;
+    auto mcp = [&browse_calls](const std::string&, const std::string& args) {
+        if (args.find("browser_navigate") != std::string::npos) {
+            ++browse_calls;
+            return std::string("ok\n");
+        }
+        return std::string("- snapshot\n");
+    };
+
+    // 3 fetches + 2 browses = 5 URL reads requested; budget allows 3 total.
+    // /fetch hits real URLs which (in test env) typically fail fast — we
+    // only care that the 3-call budget gates browse afterwards.
+    auto cmds = parse_agent_commands(
+        "/fetch https://example.com/a\n"
+        "/fetch https://example.com/b\n"
+        "/fetch https://example.com/c\n"
+        "/browse https://example.com/d\n"
+        "/browse https://example.com/e\n"
+    );
+    auto out = execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr, mcp);
+
+    CHECK(browse_calls == 0);                    // both browses skipped
+    CHECK(out.find("SKIPPED: max 3 URL reads per turn") != std::string::npos);
+}
+
+TEST_CASE("/browse JSON-escapes special characters in the URL") {
+    std::string seen;
+    auto invoker = [&seen](const std::string&, const std::string& args) {
+        if (args.find("browser_navigate") != std::string::npos) seen = args;
+        return std::string("- snap\n");
+    };
+    auto cmds = parse_agent_commands(
+        "/browse https://example.com/path?q=\"hello\"\\backslash\n"
+    );
+    execute_agent_commands(cmds, "test", "/tmp",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, false, nullptr, nullptr, nullptr, invoker);
+    CHECK(seen.find("\\\"hello\\\"") != std::string::npos);
+    CHECK(seen.find("\\\\backslash") != std::string::npos);
+}

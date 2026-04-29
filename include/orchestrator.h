@@ -106,6 +106,21 @@ public:
         memory_scratchpad_cb_ = std::move(cb);
     }
 
+    // Web-search bridge (/search <query> [top=N]).  Wired by the API
+    // server to a Brave-backed (or other provider) HTTPS call when an
+    // API key is configured; CLI/REPL contexts leave it null and the
+    // dispatcher returns a clean ERR.
+    void set_search_invoker(SearchInvoker cb) { search_invoker_cb_ = std::move(cb); }
+
+    // Artifact-store bridges (/write --persist, /read, /list).  Bound
+    // by the API server to TenantStore + the request's conversation_id
+    // so artifacts are scoped to the active thread.  Without them set,
+    // /write --persist degrades to ephemeral SSE only and /read / /list
+    // return ERR.
+    void set_artifact_writer(ArtifactWriter cb) { artifact_writer_cb_ = std::move(cb); }
+    void set_artifact_reader(ArtifactReader cb) { artifact_reader_cb_ = std::move(cb); }
+    void set_artifact_lister(ArtifactLister cb) { artifact_lister_cb_ = std::move(cb); }
+
     // Flip /exec off for this orchestrator.  Agents that emit /exec get a
     // tool result explaining the ban; they're expected to adapt their plan.
     // Used by the HTTP API so SaaS callers can't invoke arbitrary shell
@@ -261,6 +276,10 @@ private:
     StructuredMemoryWriter structured_memory_writer_cb_;
     MCPInvoker         mcp_invoker_cb_;
     MemoryScratchpadInvoker memory_scratchpad_cb_;
+    SearchInvoker      search_invoker_cb_;
+    ArtifactWriter     artifact_writer_cb_;
+    ArtifactReader     artifact_reader_cb_;
+    ArtifactLister     artifact_lister_cb_;
     bool               exec_disabled_ = false;
 
     StreamStartCallback stream_start_cb_;

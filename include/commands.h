@@ -154,6 +154,47 @@ using MemoryScratchpadInvoker = std::function<std::string(
     const std::string& agent_id,
     const std::string& args)>;
 
+// Persistent artifact write — bridges /write --persist to the
+// per-conversation artifact store.  Returns the formatted body for
+// the [/write --persist <path>] tool-result block (typically
+// "OK: persisted N bytes (artifact #ID, K of LIMIT bytes used in
+// conversation)").  When set, the dispatcher fires this AFTER the
+// existing WriteInterceptor (so the SSE `file` event still goes out
+// for the live UI) and AFTER any /write confirmation gate.
+//
+// Errors come back as "ERR: ..." which the dispatcher caches as a
+// failed call so the agent doesn't infinite-loop on a quota cap.
+using ArtifactWriter = std::function<std::string(const std::string& path,
+                                                  const std::string& content)>;
+
+// Persistent artifact read.  When set, /read <path> resolves the
+// agent's request against the conversation's artifact namespace and
+// returns the body for the [/read <path>] block — file content on hit,
+// "ERR: ..." on miss / path-rejection.  Without this the dispatcher
+// returns ERR; CLI/REPL contexts leave it null.
+using ArtifactReader = std::function<std::string(const std::string& path)>;
+
+// Persistent artifact listing.  When set, /list returns one path per
+// line with size + updated_at metadata so the agent can plan
+// follow-up work without re-reading.  Returns an empty string when
+// the conversation has no persisted artifacts (the dispatcher then
+// surfaces "(no artifacts)").
+using ArtifactLister = std::function<std::string()>;
+
+// Web-search bridge.  When set, /search <query> [top=N] routes through
+// this callback; the API server wires it to the configured provider
+// (Brave in v1).  CLI/REPL contexts leave it null → /search returns
+// ERR with a clear "configure ApiServerOptions::search_api_key" message
+// so agents adapt without trying again.
+//
+// The callback receives the raw query string and a result count
+// (defaulted to 10 when the agent didn't specify), and returns the
+// pre-formatted body for the [/search ...] tool-result block — one
+// numbered result per line: "<n>. <title> — <snippet>\n   <url>\n".
+// Errors come back as "ERR: ..." which the dispatcher caches as failed.
+using SearchInvoker = std::function<std::string(const std::string& query,
+                                                  int top_n)>;
+
 // Bridge to the per-request MCP session manager.  Drives the agent-
 // facing /mcp slash surface:
 //   /mcp tools                       — list every configured server's tools
@@ -199,7 +240,11 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    StructuredMemoryReader structured_memory_reader = nullptr,
                                    StructuredMemoryWriter structured_memory_writer = nullptr,
                                    MCPInvoker     mcp_invoker     = nullptr,
-                                   MemoryScratchpadInvoker memory_scratchpad = nullptr);
+                                   MemoryScratchpadInvoker memory_scratchpad = nullptr,
+                                   SearchInvoker  search_invoker  = nullptr,
+                                   ArtifactWriter artifact_writer = nullptr,
+                                   ArtifactReader artifact_reader = nullptr,
+                                   ArtifactLister artifact_lister = nullptr);
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

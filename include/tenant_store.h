@@ -73,6 +73,66 @@ struct ConversationMessage {
     std::string request_id;             // correlates with usage_log + cancel
 };
 
+// One row from the tenant_artifacts table.  Persistent server-side
+// artifact storage for agent-generated files.  Distinct from the
+// ephemeral SSE `file` events emitted by /write — artifacts here
+// outlive the request, are tenant + conversation scoped, and are
+// addressable through GET /v1/conversations/:id/artifacts/:aid.
+//
+// Lookups never load `content` by default — list / get_meta calls
+// return everything else; the blob is fetched separately via
+// get_artifact_content so the list path stays cheap.  `path` is
+// stored already sanitized; entry-point validation happens in
+// sanitize_artifact_path before insert.
+struct ArtifactRecord {
+    int64_t     id              = 0;
+    int64_t     tenant_id       = 0;
+    int64_t     conversation_id = 0;
+    std::string path;
+    std::string sha256;                 // hex digest of content
+    std::string mime_type;
+    int64_t     size            = 0;    // bytes
+    int64_t     created_at      = 0;
+    int64_t     updated_at      = 0;
+};
+
+// Outcome of put_artifact.  Distinct rejection codes so HTTP and
+// agent callers can map cleanly: PathRejected → 400, QuotaExceeded
+// → 413, Created → 201, Updated → 200.  `tenant_used_bytes` and
+// `conversation_used_bytes` are POST-write totals — let the caller
+// surface "you have N bytes left" tool-result feedback.
+struct PutArtifactResult {
+    enum class Status { Created, Updated, QuotaExceeded, PathRejected };
+    Status                          status                  = Status::PathRejected;
+    std::optional<ArtifactRecord>   record;
+    std::string                     error_msg;
+    int64_t                         tenant_used_bytes       = 0;
+    int64_t                         conversation_used_bytes = 0;
+};
+
+// Validate + canonicalise an untrusted artifact path.  Returns the
+// canonical form on success (forward-slash separators, no trailing
+// slash, components trimmed).  On rejection returns nullopt and
+// populates `err` with a caller-shippable message.  Rules:
+//   • not empty, ≤ 256 chars total
+//   • each component 1..128 chars
+//   • not absolute (no leading /, no Windows drive letter)
+//   • no traversal (`.`, `..`, hidden `.foo`)
+//   • no null bytes or control chars
+//   • not a Windows-reserved name (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+// Backslashes are normalised to forward slashes before validation.
+// Caller passes the user-supplied path; the canonical form is what
+// goes into the unique index.
+std::optional<std::string>
+sanitize_artifact_path(const std::string& raw, std::string& err);
+
+// Hard quota ceilings.  Enforced inside put_artifact; the per-tenant
+// number is the upper bound for the SQLite-blob backing — tenants
+// approaching it should migrate to the (future) object-storage tier.
+constexpr int64_t kArtifactPerFileMaxBytes         = 1ll  * 1024 * 1024;
+constexpr int64_t kArtifactPerConversationMaxBytes = 50ll * 1024 * 1024;
+constexpr int64_t kArtifactPerTenantMaxBytes       = 500ll * 1024 * 1024;
+
 // One row from the agent_scratchpad table.  The legacy file scratchpad
 // at `~/.arbiter/memory/t<tid>/<agent_id>.md` is replaced by per-tenant
 // rows here when the API is the consumer — keeping notes inside the
@@ -140,6 +200,14 @@ struct MemoryEntry {
     //              via /mem entries|entry|search) — only surfaces through
     //              GET /v1/memory/proposals.
     std::string status;
+    // Optional reference to a tenant_artifacts row.  0 = no artifact.
+    // FK ON DELETE SET NULL — if the linked artifact's conversation is
+    // dropped (cascade) the link nulls out but the memory entry stays.
+    // The linked artifact may live in a different conversation than the
+    // reader; cross-conversation reads require the agent to cite the
+    // memory entry (`/read #<aid> via=mem:<mid>`) so access flows through
+    // the curated graph rather than around it.
+    int64_t     artifact_id = 0;
     int64_t     created_at  = 0;
     int64_t     updated_at  = 0;
 };
@@ -374,6 +442,65 @@ public:
 
     bool delete_agent_record(int64_t tenant_id, const std::string& agent_id);
 
+    // ── Artifact store (per-conversation persistent files) ──────────────
+    //
+    // Tenant + conversation scoped, addressed by `path` within a single
+    // conversation's "working directory".  Content is stored as a BLOB
+    // in SQLite — fine to single-digit-GB scale per tenant; beyond that,
+    // the same interface can be re-implemented against S3/MinIO without
+    // the agents or HTTP callers noticing.
+    //
+    // Path validation (sanitize_artifact_path) is the caller's job.  The
+    // store treats `sanitized_path` as already-trusted and only enforces
+    // the unique index, quota, and per-file ceiling.
+
+    // PUT-style on path conflict — replaces content, sha256, size,
+    // mime_type and bumps updated_at.  Returns Status + the post-write
+    // record on success.  Quota checks subtract any pre-existing entry's
+    // size before testing the cap, so an in-place overwrite of a 100 KB
+    // file with 200 KB only "costs" 100 KB against the conversation
+    // quota.
+    PutArtifactResult put_artifact(int64_t tenant_id,
+                                    int64_t conversation_id,
+                                    const std::string& sanitized_path,
+                                    const std::string& content,
+                                    const std::string& mime_type);
+
+    // Metadata-only fetch — does NOT load the BLOB.  Use this for list
+    // pages, the JSON metadata endpoint, agent /list, etc.
+    std::optional<ArtifactRecord>
+    get_artifact_meta(int64_t tenant_id, int64_t id) const;
+
+    // BLOB fetch — separate so list paths don't pull megabytes.  Returns
+    // nullopt if the row doesn't exist for this tenant.
+    std::optional<std::string>
+    get_artifact_content(int64_t tenant_id, int64_t id) const;
+
+    // Lookup by (tenant, conversation, path) — used by the agent
+    // /read slash command to address artifacts the way they were
+    // written.  Returns the metadata row.
+    std::optional<ArtifactRecord>
+    get_artifact_meta_by_path(int64_t tenant_id, int64_t conversation_id,
+                                const std::string& sanitized_path) const;
+
+    // Newest `updated_at` first.  Hard-capped at 200 per page.
+    std::vector<ArtifactRecord>
+    list_artifacts_conversation(int64_t tenant_id, int64_t conversation_id,
+                                  int limit) const;
+
+    // Cross-conversation discovery for this tenant.  Same ordering and
+    // page cap.
+    std::vector<ArtifactRecord>
+    list_artifacts_tenant(int64_t tenant_id, int limit) const;
+
+    bool delete_artifact(int64_t tenant_id, int64_t id);
+
+    // SUM(size) — used by put_artifact for quota math and by HTTP
+    // callers exposing "you have used X of Y" surfaces.
+    int64_t bytes_used_tenant(int64_t tenant_id) const;
+    int64_t bytes_used_conversation(int64_t tenant_id,
+                                     int64_t conversation_id) const;
+
     // ── Agent file-scratchpad (DB-backed) ───────────────────────────────
     //
     // Replaces the per-tenant filesystem scratchpad at
@@ -414,14 +541,18 @@ public:
     // shape (this layer trusts it).  `source` is a free-form provenance
     // string ("planning", "ingest", a URL, etc.).  `status` defaults to
     // "accepted" for the HTTP create path; agent-contributed proposals
-    // pass "proposed".
+    // pass "proposed".  `artifact_id` is an optional FK to a tenant_artifacts
+    // row — caller is responsible for verifying the artifact belongs to
+    // this tenant (use get_artifact_meta) before passing the id in.  Pass
+    // 0 for "no artifact".
     MemoryEntry create_entry(int64_t tenant_id,
                               const std::string& type,
                               const std::string& title,
                               const std::string& content,
                               const std::string& source,
                               const std::string& tags_json,
-                              const std::string& status = "accepted");
+                              const std::string& status = "accepted",
+                              int64_t artifact_id = 0);
 
     std::optional<MemoryEntry> get_entry(int64_t tenant_id, int64_t id) const;
 
@@ -443,13 +574,15 @@ public:
 
     // PATCH-style: any std::nullopt argument leaves the field untouched.
     // Bumps updated_at on a successful change.  Returns false if the entry
-    // doesn't belong to this tenant.
+    // doesn't belong to this tenant.  `artifact_id` uses the same nullopt
+    // semantics; pass `std::optional(0)` to explicitly clear the link.
     bool update_entry(int64_t tenant_id, int64_t id,
                       const std::optional<std::string>& title,
                       const std::optional<std::string>& content,
                       const std::optional<std::string>& source,
                       const std::optional<std::string>& tags_json,
-                      const std::optional<std::string>& type);
+                      const std::optional<std::string>& type,
+                      const std::optional<int64_t>& artifact_id = std::nullopt);
 
     bool delete_entry(int64_t tenant_id, int64_t id);
 
