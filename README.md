@@ -71,8 +71,7 @@ Common control commands: `/agents`, `/status`, `/tokens`, `/reset`.
 
 ### API server
 
-    arbiter --add-tenant acme --cap 100
-    arbiter --gen-token acme
+    arbiter --add-tenant acme --cap 100         # prints the tenant's bearer token
     arbiter --api --port 8080 --bind 0.0.0.0
 
 Authenticate with `Authorization: Bearer <token>`. Per-endpoint

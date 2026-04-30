@@ -1,9 +1,8 @@
 // Usage:
 //   arbiter                          — interactive REPL
-//   arbiter --serve [--port 9077]    — start TCP server
+//   arbiter --api [--port 8080]      — HTTP+SSE multi-tenant API server
 //   arbiter --send <agent> <msg>     — one-shot message
-//   arbiter --init                   — generate token + example agents
-//   arbiter --gen-token              — generate new auth token
+//   arbiter --init                   — create config dir + example agents
 
 #include "orchestrator.h"
 #include "commands.h"
@@ -1489,18 +1488,6 @@ int main(int argc, char* argv[]) {
             index_ai::cmd_init();
             return 0;
         }
-        if (arg1 == "--gen-token" || arg1 == "gen-token") {
-            index_ai::cmd_gen_token();
-            return 0;
-        }
-        if (arg1 == "--serve" || arg1 == "serve") {
-            int port = 9077;
-            if (argc >= 4 && std::string(argv[2]) == "--port") {
-                port = std::atoi(argv[3]);
-            }
-            index_ai::cmd_serve(port);
-            return 0;
-        }
         if (arg1 == "--api" || arg1 == "api") {
             // arbiter --api [--port N] [--bind ADDR] [--verbose]
             int port = 8080;
@@ -1596,10 +1583,8 @@ int main(int argc, char* argv[]) {
                 "                                     HTTP+SSE orchestration API (default 127.0.0.1:8080).\n"
                 "                                     --verbose mirrors every SSE event (text deltas, tool calls,\n"
                 "                                     thinking, etc.) to stderr.  Env: ARBITER_API_VERBOSE=1.\n"
-                "  arbiter --serve [--port N]         Line-protocol TCP server (default 9077)\n"
                 "  arbiter --send <agent> <msg>       One-shot message\n"
-                "  arbiter --init                     Initialize config + tokens\n"
-                "  arbiter --gen-token                Generate new auth token\n"
+                "  arbiter --init                     Initialize config + example agents\n"
                 "  arbiter --help                     This help\n\n"
                 "Tenant / billing (for --api):\n"
                 "  arbiter --add-tenant <name> [--cap <usd>]\n"
@@ -1615,7 +1600,6 @@ int main(int argc, char* argv[]) {
                 "Config: ~/.arbiter/\n"
                 "  api_key                            Anthropic key file\n"
                 "  openai_api_key                     OpenAI key file\n"
-                "  auth_tokens                        Hashed access tokens (--serve)\n"
                 "  tenants.db                         Tenant + usage store (--api)\n"
                 "  agents/*.json                      Agent constitutions\n";
             return 0;

@@ -61,8 +61,8 @@ public:
     void set_tool_status_callback(ToolStatusFn cb) { tool_status_cb_ = std::move(cb); }
 
     // Spawn a new UI pane running `agent_id` with `message` queued as its
-    // first command.  The REPL provides this; without it (e.g. --send /
-    // --serve callers) /pane commands from agents get an "ERR: pane
+    // first command.  The REPL provides this; without it (e.g. --send or
+    // --api callers) /pane commands from agents get an "ERR: pane
     // spawning unavailable" tool result and the agent is told not to retry.
     void set_pane_spawner(PaneSpawner cb) { pane_spawner_cb_ = std::move(cb); }
 

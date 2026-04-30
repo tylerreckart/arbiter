@@ -3,9 +3,7 @@
 //
 // Non-REPL entry points.  Each function corresponds to one command-line mode:
 //
-//   arbiter --init                    → cmd_init       (generate tokens + example agents)
-//   arbiter --gen-token               → cmd_gen_token  (add a new auth token)
-//   arbiter --serve [--port N]        → cmd_serve      (TCP server loop, line protocol)
+//   arbiter --init                    → cmd_init       (create example agents + config dir)
 //   arbiter --api  [--port N]         → cmd_api        (HTTP+SSE orchestration API)
 //   arbiter --send <a> <msg>          → cmd_oneshot    (one-turn request, no TUI)
 //
@@ -25,8 +23,6 @@
 namespace index_ai {
 
 void cmd_init();
-void cmd_gen_token();
-void cmd_serve(int port);
 void cmd_api(int port, const std::string& bind, bool verbose);
 void cmd_oneshot(const std::string& agent_id, const std::string& msg);
 

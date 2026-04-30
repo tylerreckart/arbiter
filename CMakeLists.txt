@@ -78,9 +78,7 @@ set(INDEX_AI_SOURCES
     src/agent.cpp
     src/constitution.cpp
     src/orchestrator.cpp
-    src/server.cpp
     src/api_server.cpp
-    src/auth.cpp
     src/tenant_store.cpp
     src/json.cpp
     src/commands.cpp
