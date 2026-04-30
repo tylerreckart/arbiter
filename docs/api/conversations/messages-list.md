@@ -38,7 +38,6 @@ curl -H "Authorization: Bearer atr_…" \
       "content": "what's a fanout in DSLs?",
       "input_tokens": 0,
       "output_tokens": 0,
-      "billed_micro_cents": 0,
       "created_at": 1777088746,
       "request_id": "a889e53a7211eefa"
     },
@@ -49,7 +48,6 @@ curl -H "Authorization: Bearer atr_…" \
       "content": "A fanout is …",
       "input_tokens": 1234,
       "output_tokens": 567,
-      "billed_micro_cents": 4823,
       "created_at": 1777088752,
       "request_id": "a889e53a7211eefa"
     }
@@ -57,7 +55,7 @@ curl -H "Authorization: Bearer atr_…" \
 }
 ```
 
-User messages have zero tokens / billing (they're the input, not the cost). Assistant messages carry the **full request totals** (cumulative across the master + every delegated / parallel sub-agent's billing for that turn). `request_id` correlates with the `usage_log` row created during that turn.
+User messages have zero tokens (they're the input, not a measured turn). Assistant messages carry the **full request totals** (cumulative across the master + every delegated / parallel sub-agent for that turn). `request_id` correlates with the SSE stream and the matching Quartermaster usage record.
 
 The assistant `content` field is the **cumulative** master output across every tool-call re-entry iteration, joined with newlines. This is what the next message replays into the agent's history. Field schemas: [Data model → ConversationMessage](../concepts/data-model.md#conversationmessage).
 
@@ -71,4 +69,3 @@ The assistant `content` field is the **cumulative** master output across every t
 ## See also
 
 - [`POST /v1/conversations/:id/messages`](messages-post.md) — append a turn.
-- [Billing](../concepts/billing.md) — how `billed_micro_cents` is computed.

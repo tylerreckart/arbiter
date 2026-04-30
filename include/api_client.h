@@ -69,10 +69,6 @@ struct Provider {
 // Returns a reference into the static registry — never null.
 const Provider& provider_for(const std::string& model);
 
-// True when pricing tables in cost_tracker apply.  Local providers return
-// false so CostTracker can skip them.
-bool is_priced(const std::string& model);
-
 // True when the model likely needs the "weak-executor" prompt profile — a
 // leaner, tool-vocabulary-first system prompt with few-shot examples of
 // tool emission.  Today that's local Ollama models; small local models

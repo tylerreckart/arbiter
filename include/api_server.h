@@ -12,16 +12,18 @@
 //   GET  /v1/admin/tenants       — list tenants (admin auth)
 //   POST /v1/admin/tenants       — create tenant, returns plaintext token (admin auth)
 //   GET  /v1/admin/tenants/{id}  — one tenant (admin auth)
-//   PATCH /v1/admin/tenants/{id} — update {disabled, monthly_cap_usd} (admin auth)
-//   GET  /v1/admin/usage         — usage log, filters: tenant_id, since, until, limit
+//   PATCH /v1/admin/tenants/{id} — update {disabled} (admin auth)
+//
+// Billing — eligibility checks, cost tracking, caps, invoicing — runs
+// through the sibling Quartermaster service when configured (see
+// `quartermaster_url` below).  The runtime no longer exposes a usage
+// ledger of its own.
 //
 // Auth:
 //   Tenant routes  — Bearer token that maps to a Tenant in the TenantStore.
 //   Admin  routes  — Bearer admin token.  Admin token is distinct from tenant
 //                    tokens and only works on /v1/admin/*; tenant tokens are
-//                    rejected on admin routes and vice versa.  This lets a
-//                    sibling service (billing/dashboards) read the ledger
-//                    without being able to impersonate a tenant.
+//                    rejected on admin routes and vice versa.
 //
 // Concurrency:
 //   One thread per connection.  Each request gets a fresh Orchestrator —
@@ -46,6 +48,7 @@
 
 #include <atomic>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -54,6 +57,7 @@
 namespace index_ai {
 
 class Orchestrator;
+class QuartermasterClient;
 class TenantStore;
 
 // Tracks in-flight orchestrations so a cancel request on thread Y can
@@ -113,6 +117,17 @@ struct ApiServerOptions {
     // implemented in v1, with Tavily/Exa slots reserved.
     std::string search_provider = "brave";
     std::string search_api_key;
+
+    // Quartermaster billing service base URL (e.g. "http://localhost:4000").
+    // When set, every /v1/orchestrate call:
+    //   • exchanges the bearer for a workspace_id via /v1/runtime/auth/validate
+    //   • pre-flights against /v1/runtime/quota/check
+    //   • fires post-turn telemetry to /v1/runtime/usage/record
+    // Empty ⇒ skip Quartermaster entirely; requests pass through to the
+    // configured provider API keys with no eligibility check.  This is
+    // the documented escape hatch for self-hosted deploys without a
+    // sibling billing service.  Loaded from $QUARTERMASTER_URL.
+    std::string quartermaster_url;
 };
 
 class ApiServer {
@@ -140,6 +155,10 @@ private:
     ApiServerOptions  opts_;
     TenantStore&      tenants_;
     InFlightRegistry  in_flight_;
+    // Lazily constructed iff opts_.quartermaster_url is set.  In disabled
+    // mode the pointer stays null and every billing-touching helper
+    // short-circuits, so the runtime keeps routing to provider keys.
+    std::unique_ptr<QuartermasterClient> quartermaster_;
     int               listen_fd_  = -1;
     int               bound_port_ = 0;
     std::atomic<bool> running_{false};

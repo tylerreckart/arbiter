@@ -4,37 +4,15 @@ Reference shapes for the rows arbiter persists. Every endpoint that returns one 
 
 ## Tenant
 
-| Field                        | Type    | Notes |
-|------------------------------|---------|-------|
-| `id`                         | integer | Assigned at creation. Stable. |
-| `name`                       | string  | Display-only; no uniqueness constraint. |
-| `disabled`                   | boolean | `true` → all `/v1/orchestrate` calls return 401. |
-| `monthly_cap_micro_cents`    | integer | 0 = unlimited. |
-| `month_yyyymm`               | string  | Current billing period, e.g. `"2026-04"`. UTC calendar. |
-| `month_to_date_micro_cents`  | integer | Running total for the period; reset on first call of a new month. |
-| `created_at`                 | integer | Epoch seconds. |
-| `last_used_at`               | integer | Epoch seconds. 0 if the tenant has never made a call. |
+| Field          | Type    | Notes |
+|----------------|---------|-------|
+| `id`           | integer | Assigned at creation. Stable. |
+| `name`         | string  | Display-only; no uniqueness constraint. |
+| `disabled`     | boolean | `true` → all `/v1/orchestrate` calls return 401. |
+| `created_at`   | integer | Epoch seconds. |
+| `last_used_at` | integer | Epoch seconds. 0 if the tenant has never made a call. |
 
-## UsageEntry
-
-| Field                          | Type    | Notes |
-|--------------------------------|---------|-------|
-| `id`                           | integer | Append-only. Monotonically increasing. |
-| `tenant_id`                    | integer | FK into `tenants`. |
-| `timestamp`                    | integer | Epoch seconds, write time. |
-| `model`                        | string  | The exact model string the request routed to. |
-| `input_tokens`                 | integer | Total input, including cached. |
-| `output_tokens`                | integer |  |
-| `cache_read_tokens`            | integer | Subset of input that hit a cache. |
-| `cache_create_tokens`          | integer | Tokens newly written to cache. Anthropic only. |
-| `input_micro_cents`            | integer | Plain (non-cached) input cost. |
-| `output_micro_cents`           | integer |  |
-| `cache_read_micro_cents`       | integer | Cached-input cost (typically ~10% of input rate). |
-| `cache_create_micro_cents`     | integer | Cache-write cost (typically ~125% of input rate). |
-| `provider_micro_cents`         | integer | Sum of the four `*_micro_cents` above. |
-| `markup_micro_cents`           | integer | 20% of `provider_micro_cents`, rounded up. |
-| `billed_micro_cents`           | integer | `provider_micro_cents + markup_micro_cents`. |
-| `request_id`                   | string? | Opaque correlation id; empty if unset. |
+Billing fields (caps, plan, MTD, usage entries) live in the sibling Quartermaster service and are not part of the runtime data model.
 
 ## Conversation
 
@@ -52,17 +30,16 @@ Reference shapes for the rows arbiter persists. Every endpoint that returns one 
 
 ## ConversationMessage
 
-| Field                | Type    | Notes |
-|----------------------|---------|-------|
-| `id`                 | integer | Append-only, ordered. |
-| `conversation_id`    | integer | FK into `conversations`. |
-| `role`               | string  | `"user"` or `"assistant"`. |
-| `content`            | string  | Full message text. |
-| `input_tokens`       | integer | 0 for user messages; full request total for assistant messages. |
-| `output_tokens`      | integer | Same. |
-| `billed_micro_cents` | integer | What the tenant was billed for the turn this message belongs to. |
-| `created_at`         | integer | Epoch seconds. |
-| `request_id`         | string? | Correlates to the SSE stream + `usage_log` row that produced it. |
+| Field             | Type    | Notes |
+|-------------------|---------|-------|
+| `id`              | integer | Append-only, ordered. |
+| `conversation_id` | integer | FK into `conversations`. |
+| `role`            | string  | `"user"` or `"assistant"`. |
+| `content`         | string  | Full message text. |
+| `input_tokens`    | integer | 0 for user messages; full request total for assistant messages. |
+| `output_tokens`   | integer | Same. |
+| `created_at`      | integer | Epoch seconds. |
+| `request_id`      | string? | Correlates to the SSE stream that produced it. |
 
 ## Agent (catalog row)
 
@@ -126,4 +103,4 @@ Reference shapes for the rows arbiter persists. Every endpoint that returns one 
 
 ## See also
 
-- [Tenants](tenants.md), [Billing](billing.md), [Structured memory](structured-memory.md), [Artifacts](artifacts.md).
+- [Tenants](tenants.md), [Structured memory](structured-memory.md), [Artifacts](artifacts.md).

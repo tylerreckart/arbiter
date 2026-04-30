@@ -2,7 +2,9 @@
 
 **Auth:** tenant — _Status:_ stable
 
-List the models arbiter knows how to price + route. Powers the frontend's model picker. The response is the full pricing table — clients should cache it briefly (it changes only when the operator deploys a new build) but should re-fetch on a fresh session.
+List the models arbiter knows how to route. Powers the frontend's model picker. The catalogue changes only when the operator deploys a new build — clients should cache it briefly and re-fetch on a fresh session.
+
+Pricing is not included in the runtime response — it lives in **Quartermaster's** rate card. Frontends that need cost-per-token figures should fetch them from the Quartermaster pricing endpoint instead.
 
 ## Request
 
@@ -19,30 +21,19 @@ curl -H "Authorization: Bearer atr_…" \
 
 ```json
 {
-  "count": 41,
+  "count": 11,
   "models": [
-    {
-      "id": "claude-opus-4-7",
-      "provider": "anthropic",
-      "input_per_mtok_usd": 5.0,
-      "output_per_mtok_usd": 25.0,
-      "cache_read_per_mtok_usd": 0.5,
-      "cache_create_per_mtok_usd": 6.25,
-      "supports_caching": true
-    }
+    { "id": "claude-opus-4-7",   "provider": "anthropic" },
+    { "id": "claude-sonnet-4-6", "provider": "anthropic" },
+    { "id": "openai/gpt-5.4",    "provider": "openai" }
   ]
 }
 ```
 
-| Field                       | Type    | Description |
-|-----------------------------|---------|-------------|
-| `id`                        | string  | Matches what you pass in `agent_def.model` (or as the model on a stored agent). |
-| `provider`                  | string  | Inferred from the id: `anthropic`, `openai`, `ollama`. |
-| `input_per_mtok_usd`        | number  | List-price USD per 1M input tokens (before arbiter's 20% markup). |
-| `output_per_mtok_usd`       | number  | List-price USD per 1M output tokens. |
-| `cache_read_per_mtok_usd`   | number  | Cached-input rate. Only meaningful when `supports_caching = true`. |
-| `cache_create_per_mtok_usd` | number  | Cache-write rate. Only meaningful when `supports_caching = true`. |
-| `supports_caching`          | boolean | Whether the family bills cache reads/writes separately. |
+| Field      | Type   | Description |
+|------------|--------|-------------|
+| `id`       | string | Matches what you pass in `agent_def.model` (or as the model on a stored agent). |
+| `provider` | string | `anthropic`, `openai`, or `ollama`. |
 
 ## Failure modes
 
@@ -52,5 +43,4 @@ curl -H "Authorization: Bearer atr_…" \
 
 ## See also
 
-- [Billing](concepts/billing.md) — markup math and ledger semantics.
 - [`POST /v1/orchestrate`](orchestrate.md) — `agent_def.model` is validated against this catalogue at request time.

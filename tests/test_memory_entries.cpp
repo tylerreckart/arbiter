@@ -46,7 +46,7 @@ struct TempDb {
 
 // Convenience: make one tenant and return its id.
 int64_t make_tenant(TenantStore& s, const std::string& name) {
-    return s.create_tenant(name, 0).tenant.id;
+    return s.create_tenant(name).tenant.id;
 }
 
 } // namespace

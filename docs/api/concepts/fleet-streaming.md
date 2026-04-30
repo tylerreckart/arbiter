@@ -41,19 +41,19 @@ text              stream_id=3 agent="researcher_c" delta="RESULT: Rome..."
 text              stream_id=2 agent="researcher_b" delta="RESULT: Berlin..."
 text              stream_id=1 agent="researcher_a" delta="RESULT: Paris..."
 sub_agent_response stream_id=3 agent="researcher_c"
-token_usage       stream_id=3 agent="researcher_c" billed_micro_cents=2549
+token_usage       stream_id=3 agent="researcher_c" input_tokens=842 output_tokens=126
 stream_end        stream_id=3 ok=true
 sub_agent_response stream_id=2 agent="researcher_b"
-token_usage       stream_id=2 agent="researcher_b" billed_micro_cents=2711
+token_usage       stream_id=2 agent="researcher_b" input_tokens=910 output_tokens=143
 stream_end        stream_id=2 ok=true
 sub_agent_response stream_id=1 agent="researcher_a"
-token_usage       stream_id=1 agent="researcher_a" billed_micro_cents=2525
+token_usage       stream_id=1 agent="researcher_a" input_tokens=803 output_tokens=131
 stream_end        stream_id=1 ok=true
 tool_call         stream_id=0 tool="parallel" ok=true
-token_usage       stream_id=0 agent="index" billed_micro_cents=4204
+token_usage       stream_id=0 agent="index" input_tokens=1240 output_tokens=210
 text              stream_id=0 agent="index" delta="Paris, Berlin, and Rome..."
 stream_end        stream_id=0 ok=true
-done              ok=true billed_micro_cents=16043
+done              ok=true
 ```
 
 ## Parallel safety rails

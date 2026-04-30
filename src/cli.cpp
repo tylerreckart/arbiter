@@ -137,8 +137,12 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     // agent produces is streamed to the client rather than landing on the
     // server disk.
     //
-    // Auth + billing run through TenantStore (`~/.arbiter/tenants.db`).
-    // Provision tokens with `arbiter --add-tenant <name> [--cap <usd>]`.
+    // Tenant identity (tokens, conversations, artifacts, scratchpad)
+    // runs through TenantStore (`~/.arbiter/tenants.db`).  Eligibility
+    // and per-turn billing are delegated to Quartermaster when
+    // $QUARTERMASTER_URL is set; otherwise the runtime routes every
+    // authenticated request through to the configured provider keys
+    // with no cap enforcement.
     std::string dir = get_config_dir();
     auto api_keys = get_api_keys();
 
@@ -191,6 +195,13 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     } else if (const char* k = std::getenv("BRAVE_SEARCH_API_KEY"); k && *k) {
         opts.search_api_key = k;
     }
+    // Quartermaster billing host.  Empty ⇒ no billing; requests pass
+    // through to the configured provider keys.  See ApiServerOptions.
+    if (const char* q = std::getenv("QUARTERMASTER_URL"); q && *q) {
+        opts.quartermaster_url = q;
+    }
+
+    const bool billing_on = !opts.quartermaster_url.empty();
 
     ApiServer server(std::move(opts), tenants);
 
@@ -209,9 +220,11 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     std::cout << "  POST  /v1/orchestrate          (Bearer <tenant-token>)\n";
     std::cout << "  GET   /v1/health\n";
     std::cout << "  *     /v1/admin/tenants[/:id]  (Bearer <admin-token>)\n";
-    std::cout << "  GET   /v1/admin/usage          (Bearer <admin-token>)\n";
     std::cout << "Tenants: " << all.size() << " configured"
-              << "  (markup 20% over provider cost)\n";
+              << "  (billing: "
+              << (billing_on ? "Quartermaster"
+                              : "off — requests use configured provider keys")
+              << ")\n";
     std::cout << "Logging: " << (log_verbose ? "verbose (per-event mirror to stderr)"
                                               : "request-level only "
                                                 "(use --verbose for streamed deltas)")
@@ -263,17 +276,6 @@ namespace {
 
 std::string tenants_db_path() { return get_config_dir() + "/tenants.db"; }
 
-// "1.2345" → "$1.23" for display.  Sub-cent values fall back to 4 digits
-// so a fraction-of-a-cent call doesn't look like zero.
-std::string fmt_usd(int64_t uc) {
-    const double d = uc_to_usd(uc);
-    std::ostringstream ss;
-    ss << "$" << std::fixed
-       << std::setprecision(d >= 0.01 ? 2 : 4)
-       << d;
-    return ss.str();
-}
-
 std::string fmt_ts(int64_t epoch_seconds) {
     if (epoch_seconds == 0) return "never";
     std::time_t t = static_cast<std::time_t>(epoch_seconds);
@@ -286,20 +288,17 @@ std::string fmt_ts(int64_t epoch_seconds) {
 
 } // namespace
 
-void cmd_add_tenant(const std::string& name, double cap_usd) {
+void cmd_add_tenant(const std::string& name) {
     if (name.empty()) {
-        std::cerr << "Usage: arbiter --add-tenant <name> [--cap <usd>]\n";
+        std::cerr << "Usage: arbiter --add-tenant <name>\n";
         std::exit(1);
     }
     TenantStore store;
     store.open(tenants_db_path());
-    const int64_t cap_uc = usd_to_uc(cap_usd);
-    auto created = store.create_tenant(name, cap_uc);
+    auto created = store.create_tenant(name);
 
     std::cout << "Created tenant #" << created.tenant.id
               << " (" << created.tenant.name << ")\n";
-    if (cap_uc > 0) std::cout << "  Monthly cap: " << fmt_usd(cap_uc) << "\n";
-    else            std::cout << "  Monthly cap: unlimited\n";
 
     // The plaintext token is only visible here.  After this, the DB only
     // stores its SHA-256 digest — a misplaced token means issuing a new one.
@@ -326,19 +325,13 @@ void cmd_list_tenants() {
               << std::setw(5)  << "ID"
               << std::setw(20) << "Name"
               << std::setw(12) << "Status"
-              << std::setw(12) << "Month"
-              << std::setw(12) << "MTD"
-              << std::setw(12) << "Cap"
               << "Last used\n";
-    std::cout << std::string(90, '-') << "\n";
+    std::cout << std::string(60, '-') << "\n";
     for (auto& t : tenants) {
         std::cout << std::left
                   << std::setw(5)  << t.id
                   << std::setw(20) << (t.name.size() > 19 ? t.name.substr(0, 16) + "..." : t.name)
                   << std::setw(12) << (t.disabled ? "disabled" : "active")
-                  << std::setw(12) << (t.month_yyyymm.empty() ? "-" : t.month_yyyymm)
-                  << std::setw(12) << fmt_usd(t.month_to_date_uc)
-                  << std::setw(12) << (t.monthly_cap_uc > 0 ? fmt_usd(t.monthly_cap_uc) : std::string("unlimited"))
                   << fmt_ts(t.last_used_at) << "\n";
     }
 }
@@ -367,39 +360,6 @@ void cmd_enable_tenant(const std::string& key) {
         std::cout << "Enabled tenant '" << key << "'.\n";
     else
         std::cerr << "No tenant matched '" << key << "'.\n", std::exit(1);
-}
-
-void cmd_tenant_usage(const std::string& key) {
-    TenantStore store;
-    store.open(tenants_db_path());
-    auto tenants = store.list_tenants();
-
-    // Filter to one tenant if a key was supplied; matching follows the same
-    // numeric-id-then-name rule as set_disabled.
-    if (!key.empty()) {
-        int64_t want_id = 0;
-        try { want_id = std::stoll(key); } catch (...) { want_id = 0; }
-        tenants.erase(std::remove_if(tenants.begin(), tenants.end(),
-            [&](const Tenant& t) {
-                if (want_id > 0) return t.id != want_id;
-                return t.name != key;
-            }), tenants.end());
-        if (tenants.empty()) {
-            std::cerr << "No tenant matched '" << key << "'.\n";
-            std::exit(1);
-        }
-    }
-
-    for (auto& t : tenants) {
-        std::cout << "#" << t.id << "  " << t.name
-                  << (t.disabled ? "  [disabled]" : "") << "\n"
-                  << "  created:   " << fmt_ts(t.created_at)   << "\n"
-                  << "  last used: " << fmt_ts(t.last_used_at) << "\n"
-                  << "  month:     " << (t.month_yyyymm.empty() ? "-" : t.month_yyyymm) << "\n"
-                  << "  MTD:       " << fmt_usd(t.month_to_date_uc) << "\n"
-                  << "  cap:       " << (t.monthly_cap_uc > 0 ? fmt_usd(t.monthly_cap_uc)
-                                                               : std::string("unlimited")) << "\n\n";
-    }
 }
 
 } // namespace index_ai

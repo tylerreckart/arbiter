@@ -8,7 +8,6 @@
 #include "commands.h"
 #include "constitution.h"
 #include "readline_wrapper.h"
-#include "cost_tracker.h"
 #include "markdown.h"
 #include "cli_helpers.h"
 #include "repl/queues.h"
@@ -129,7 +128,6 @@ static void cmd_interactive() {
     // flag changes.  Not persisted across sessions by design.
     index_ai::Config cfg;
     LoopManager loops;
-    index_ai::CostTracker tracker;
 
     // Each pane's exec thread sets ::g_active_pane (file-scope thread_local)
     // at startup; orch callbacks read that thread's value to route output to
@@ -313,8 +311,7 @@ static void cmd_interactive() {
 
     // ── Orchestrator callbacks ─────────────────────────────────────────────
     // All pane-facing callbacks route through g_active_pane (thread-local),
-    // which each pane's exec thread sets at startup.  Cost tracking is
-    // app-scope (the tracker is shared across panes).
+    // which each pane's exec thread sets at startup.
     orch.set_progress_callback([&](const std::string& /*agent_id*/,
                                     const std::string& content) {
         Pane* p = g_active_pane;
@@ -339,11 +336,9 @@ static void cmd_interactive() {
         Pane* p = g_active_pane;
         if (p) p->tool_indicator.bump(kind, ok);
     });
-    orch.set_cost_callback([&](const std::string& agent_id,
-                                const std::string& model,
-                                const index_ai::ApiResponse& resp) {
-        tracker.record(agent_id, model, resp);
-    });
+    // No local cost callback in REPL mode — billing/cost reporting has
+    // moved to the Quartermaster service for the API path, and the
+    // interactive REPL no longer prints per-turn cost summaries.
     orch.set_agent_start_callback([&](const std::string& agent_id) {
         Pane* p = g_active_pane;
         if (p) p->thinking.start(agent_id + ": thinking");
@@ -423,7 +418,7 @@ static void cmd_interactive() {
                 return;
             }
             if (cmd == "tokens") {
-                output_queue.push_msg(tracker.format_summary());
+                output_queue.push_msg("token stats: removed (billing now lives in Quartermaster)");
                 return;
             }
             if (cmd == "use" || cmd == "switch") {
@@ -432,7 +427,7 @@ static void cmd_interactive() {
                 if (id == "index" || orch.has_agent(id)) {
                     current_agent = id;
                     current_model = orch.get_agent_model(id);
-                    tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
+                    tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                 } else {
                     output_queue.push_msg("ERR: no agent '" + id + "'");
                 }
@@ -464,8 +459,7 @@ static void cmd_interactive() {
                     // the next message.
                     output_queue.end_message();
                     if (resp.ok) {
-                        tracker.record(id, orch.get_agent_model(id), resp);
-                        tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
+                        tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                         maybe_generate_title(msg, resp.content);
                     } else {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
@@ -519,8 +513,7 @@ static void cmd_interactive() {
                     if (!tool_summary.empty()) output_queue.push(tool_summary);
                     output_queue.end_message();
                     if (resp.ok) {
-                        tracker.record("index", orch.get_agent_model("index"), resp);
-                        tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
+                        tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                         maybe_generate_title(query, resp.content);
                     } else {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
@@ -600,7 +593,7 @@ static void cmd_interactive() {
                     output_queue.push_msg("ERR: no agent '" + id + "'");
                     return;
                 }
-                std::string lid = loops.start(orch, id, prompt, &tracker, &output_queue);
+                std::string lid = loops.start(orch, id, prompt, &output_queue);
                 output_queue.push_msg("Loop started: " + lid + " (agent: " + id + ")");
                 return;
             }
@@ -725,8 +718,7 @@ static void cmd_interactive() {
                     thinking.stop();
                     if (resp.ok) {
                         output_queue.push_msg(index_ai::render_markdown(resp.content));
-                        tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
-                        tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
+                        tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                     } else {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
                     }
@@ -791,8 +783,7 @@ static void cmd_interactive() {
                         thinking.stop();
                         if (resp.ok) {
                             output_queue.push_msg(index_ai::render_markdown(resp.content));
-                            tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
-                            tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
+                            tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                         } else {
                             output_queue.push_msg("ERR: " + resp.error);
                         }
@@ -968,8 +959,7 @@ static void cmd_interactive() {
             pane.last_response = resp.ok ? resp.content
                                          : ("ERR: " + resp.error);
             if (resp.ok) {
-                tracker.record(current_agent, orch.get_agent_model(current_agent), resp);
-                tui.update(current_agent, current_model, tracker.format_session_stats(), agent_color(current_agent));
+                tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                 maybe_generate_title(line, resp.content);
             } else {
                 output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
@@ -1470,9 +1460,6 @@ static void cmd_interactive() {
 
     TUI::leave_alt_screen();
     std::cout << "\n";
-    if (tracker.session_cost() > 0.0) {
-        std::cout << tracker.format_summary();
-    }
 }
 
 int main(int argc, char* argv[]) {
@@ -1530,24 +1517,16 @@ int main(int argc, char* argv[]) {
             index_ai::cmd_oneshot(agent, msg);
             return 0;
         }
-        // Tenant / billing admin — `arbiter --api` uses the resulting
-        // tenants.db for bearer-token auth and per-request billing.
+        // Tenant identity admin — `arbiter --api` uses the resulting
+        // tenants.db for bearer-token auth.  Billing (caps, usage, the
+        // ledger) lives in the Quartermaster sibling service when
+        // configured via $QUARTERMASTER_URL.
         if (arg1 == "--add-tenant") {
             if (argc < 3) {
-                std::cerr << "Usage: arbiter --add-tenant <name> [--cap <usd>]\n";
+                std::cerr << "Usage: arbiter --add-tenant <name>\n";
                 return 1;
             }
-            std::string name = argv[2];
-            double cap = 0.0;                 // 0 = unlimited
-            for (int i = 3; i + 1 < argc; i += 2) {
-                if (std::string(argv[i]) == "--cap") {
-                    cap = std::atof(argv[i + 1]);
-                } else {
-                    std::cerr << "Unknown --add-tenant flag: " << argv[i] << "\n";
-                    return 1;
-                }
-            }
-            index_ai::cmd_add_tenant(name, cap);
+            index_ai::cmd_add_tenant(argv[2]);
             return 0;
         }
         if (arg1 == "--list-tenants") {
@@ -1570,10 +1549,6 @@ int main(int argc, char* argv[]) {
             index_ai::cmd_enable_tenant(argv[2]);
             return 0;
         }
-        if (arg1 == "--tenant-usage") {
-            index_ai::cmd_tenant_usage(argc >= 3 ? argv[2] : std::string());
-            return 0;
-        }
         if (arg1 == "--help" || arg1 == "-h" || arg1 == "help") {
             std::cout << BANNER;
             std::cout <<
@@ -1586,21 +1561,23 @@ int main(int argc, char* argv[]) {
                 "  arbiter --send <agent> <msg>       One-shot message\n"
                 "  arbiter --init                     Initialize config + example agents\n"
                 "  arbiter --help                     This help\n\n"
-                "Tenant / billing (for --api):\n"
-                "  arbiter --add-tenant <name> [--cap <usd>]\n"
-                "                                     Provision a tenant + API key\n"
-                "  arbiter --list-tenants             List tenants and MTD usage\n"
+                "Tenants (for --api):\n"
+                "  arbiter --add-tenant <name>        Provision a tenant + API key\n"
+                "  arbiter --list-tenants             List tenants\n"
                 "  arbiter --disable-tenant <id|name> Revoke a tenant's access\n"
-                "  arbiter --enable-tenant  <id|name> Restore a tenant's access\n"
-                "  arbiter --tenant-usage [<id|name>] Detail usage for one/all tenants\n\n"
+                "  arbiter --enable-tenant  <id|name> Restore a tenant's access\n\n"
                 "Environment:\n"
                 "  ANTHROPIC_API_KEY                  Claude API key\n"
                 "  OPENAI_API_KEY                     OpenAI API key\n"
-                "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n\n"
+                "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n"
+                "  QUARTERMASTER_URL                  Billing service base URL.  When set, requests\n"
+                "                                     pre-flight against /v1/runtime/quota/check and\n"
+                "                                     post-turn usage to /v1/runtime/usage/record.\n"
+                "                                     Empty ⇒ no billing; requests use provider keys.\n\n"
                 "Config: ~/.arbiter/\n"
                 "  api_key                            Anthropic key file\n"
                 "  openai_api_key                     OpenAI key file\n"
-                "  tenants.db                         Tenant + usage store (--api)\n"
+                "  tenants.db                         Tenant identity store (--api)\n"
                 "  agents/*.json                      Agent constitutions\n";
             return 0;
         }

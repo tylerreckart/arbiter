@@ -71,11 +71,17 @@ Common control commands: `/agents`, `/status`, `/tokens`, `/reset`.
 
 ### API server
 
-    arbiter --add-tenant acme --cap 100         # prints the tenant's bearer token
+    arbiter --add-tenant acme                   # prints the tenant's bearer token
     arbiter --api --port 8080 --bind 0.0.0.0
 
-Authenticate with `Authorization: Bearer <token>`. Per-endpoint
+Authenticate with `Authorization: Bearer <token>`. Set
+`QUARTERMASTER_URL` to delegate eligibility checks and usage
+tracking to the sibling [Quartermaster][quartermaster] service;
+unset, the runtime acts as a thin pass-through using the
+configured provider keys, with no caps. Per-endpoint
 documentation lives in `docs/api/`.
+
+[quartermaster]: https://github.com/arbiter-runtime/quartermaster
 
 ### One-shot
 

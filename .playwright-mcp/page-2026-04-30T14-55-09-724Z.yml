@@ -1,0 +1,123 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Jump directly to main navigation" [ref=e4] [cursor=pointer]:
+      - /url: "#content"
+    - link "Jump directly to content" [ref=e5] [cursor=pointer]:
+      - /url: "#content"
+    - link "Jump to sub navigation" [ref=e6] [cursor=pointer]:
+      - /url: "#sub-nav"
+    - banner [ref=e7]:
+      - navigation [ref=e9]:
+        - navigation [ref=e11]:
+          - generic [ref=e12]:
+            - generic [ref=e13]:
+              - link [ref=e14] [cursor=pointer]:
+                - /url: https://www.mpg.de/
+              - link [ref=e15] [cursor=pointer]:
+                - /url: /index/
+            - search [ref=e19]:
+              - generic [ref=e20]:
+                - textbox "Keyword" [ref=e21]
+                - button "" [ref=e23] [cursor=pointer]:
+                  - generic [ref=e24]: 
+          - generic [ref=e25]:
+            - list [ref=e29]:
+              - listitem [ref=e30]:
+                - link "Institute" [ref=e31] [cursor=pointer]:
+                  - /url: /index/
+              - listitem [ref=e32]:
+                - link "Research" [ref=e33] [cursor=pointer]:
+                  - /url: /research/
+              - listitem [ref=e34]:
+                - link "Service" [ref=e35] [cursor=pointer]:
+                  - /url: /service/
+              - listitem [ref=e36]:
+                - link "Career" [ref=e37] [cursor=pointer]:
+                  - /url: /career/positions-available/
+              - listitem [ref=e38]:
+                - link "Press" [ref=e39] [cursor=pointer]:
+                  - /url: /press/news/
+            - list [ref=e40]:
+              - listitem [ref=e41]:
+                - link "English English" [ref=e42] [cursor=pointer]:
+                  - /url: /error-404/
+                  - img "English" [ref=e43]
+                  - text: English
+              - listitem [ref=e44]:
+                - link "Deutsch Deutsch" [ref=e45] [cursor=pointer]:
+                  - /url: /de/error-404/
+                  - img "Deutsch" [ref=e46]
+                  - text: Deutsch
+            - text: 
+        - generic: 
+      - list [ref=e50]:
+        - listitem [ref=e51]:
+          - link "Error 404 - Page not found" [ref=e52] [cursor=pointer]:
+            - /url: /error-404/
+    - main [ref=e53]:
+      - main [ref=e55]:
+        - generic [ref=e58]:
+          - heading "Page not found! (Error 404)" [level=1] [ref=e61]
+          - paragraph [ref=e62]: Unfortunately, the page you requested could not be found. It may no longer exist, or may have been replaced by a newer version.
+          - paragraph [ref=e63]: We have redesigned and improved our website. Some deep links may not work correctly anymore. Please change your bookmarks and referrers.
+          - paragraph [ref=e64]:
+            - text: In order to locate the document, we suggest to browse through our menu. If you continue to encounter problems, please
+            - link "contact" [ref=e65] [cursor=pointer]:
+              - /url: /contact/
+            - text: us.
+        - complementary [ref=e66]
+    - contentinfo [ref=e67]:
+      - generic [ref=e75]:
+        - generic [ref=e78]:
+          - heading "Max Planck Institute for Evolutionary Anthropology" [level=3] [ref=e81]
+          - paragraph [ref=e82]:
+            - text: Deutscher Platz 6
+            - text: 04103 Leipzig
+            - text: "Phone :"
+            - link "+49 (341) 3550 - 0" [ref=e83] [cursor=pointer]:
+              - /url: tel:+4934135500
+            - text: "Fax: +49 (341) 3550 - 119"
+            - link " info@ [>>> Please remove the text! <<<] eva.mpg.de" [ref=e84] [cursor=pointer]:
+              - /url: javascript:linkTo_UnCryptMailto(%27kygjrm8gldmYcty%2Ckne%2Cbc%27);
+              - text:  info@
+              - generic [ref=e85]: "[>>> Please remove the text! <<<]"
+              - text: eva.mpg.de
+        - generic [ref=e89]:
+          - heading "Quick Links" [level=3] [ref=e92]
+          - paragraph [ref=e93]:
+            - link " Institute" [ref=e94] [cursor=pointer]:
+              - /url: /index/
+            - link " Departments and groups" [ref=e95] [cursor=pointer]:
+              - /url: /research/
+            - link " Service" [ref=e96] [cursor=pointer]:
+              - /url: /service/
+            - link " Career" [ref=e97] [cursor=pointer]:
+              - /url: /career/positions-available/
+            - link " Press" [ref=e98] [cursor=pointer]:
+              - /url: /press/news/
+        - generic [ref=e102]:
+          - generic [ref=e103]:
+            - link "Intranet" [ref=e105] [cursor=pointer]:
+              - /url: https://intranet.eva.mpg.de/
+            - link "Webmail" [ref=e107] [cursor=pointer]:
+              - /url: https://webmail.eva.mpg.de
+            - link "Max Planck Society" [ref=e109] [cursor=pointer]:
+              - /url: https://www.mpg.de
+          - generic [ref=e110]:
+            - link "YouTube" [ref=e112] [cursor=pointer]:
+              - /url: https://www.youtube.com/channel/UCJuEvfaKVGgDsvlONXAODMg
+            - link "Bluesky" [ref=e114] [cursor=pointer]:
+              - /url: https://bsky.app/profile/mpi-eva-leipzig.bsky.social
+      - generic [ref=e117]:
+        - paragraph [ref=e119]: © 2026, Max Planck Institute for Evolutionary Anthropology
+        - list [ref=e121]:
+          - listitem [ref=e122]:
+            - link "Sitemap" [ref=e123] [cursor=pointer]:
+              - /url: /sitemap/
+          - listitem [ref=e124]:
+            - link "Imprint" [ref=e125] [cursor=pointer]:
+              - /url: /imprint/
+          - listitem [ref=e126]:
+            - link "Privacy Policy" [ref=e127] [cursor=pointer]:
+              - /url: /privacy-policy/
+  - generic "Scroll Back to Top" [ref=e128] [cursor=pointer]

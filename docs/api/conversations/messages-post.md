@@ -32,7 +32,7 @@ curl -N \
 3. Prior messages loaded from the DB and replayed into the agent's history (capped at the most recent 100 turns to keep request payload bounded).
 4. The user's `message` is persisted with the `request_id` issued for this stream.
 5. The orchestrator runs and streams events exactly as [`POST /v1/orchestrate`](../orchestrate.md) would.
-6. On a successful `done`, the assistant's full cumulative response (across every tool-call re-entry iteration) is persisted alongside the request's billing totals (`input_tokens`, `output_tokens`, `billed_micro_cents`).
+6. On a successful `done`, the assistant's full cumulative response (across every tool-call re-entry iteration) is persisted alongside the request's `input_tokens` / `output_tokens` totals.
 7. On failure (`done.ok = false`), the assistant message is **not** persisted — only the user message remains. Retry is safe.
 
 ## Response
@@ -48,10 +48,10 @@ The `request_id` from this call's `request_received` event is the handle to pass
 | 400    | Body isn't a JSON object; missing `message`; `agent_def` shape invalid. | `{"error": "..."}` |
 | 401    | Missing / invalid bearer. | `{"error": "..."}` |
 | 404    | Conversation doesn't exist or belongs to another tenant. | `{"error": "conversation not found"}` |
-| 200 + `done.ok = false` | LLM upstream failure, cap exceeded, transient I/O. See [`POST /v1/orchestrate`](../orchestrate.md#failure-modes). | SSE stream |
+| 200 + `done.ok = false` | LLM upstream failure, Quartermaster denial, transient I/O. See [`POST /v1/orchestrate`](../orchestrate.md#failure-modes). | SSE stream |
 
 ## See also
 
 - [`POST /v1/orchestrate`](../orchestrate.md) — single-turn variant without history replay.
 - [`GET /v1/conversations/:id/messages`](messages-list.md) — read history back.
-- [`POST /v1/requests/:id/cancel`](../requests-cancel.md), [SSE event catalog](../concepts/sse-events.md), [Billing](../concepts/billing.md).
+- [`POST /v1/requests/:id/cancel`](../requests-cancel.md), [SSE event catalog](../concepts/sse-events.md).

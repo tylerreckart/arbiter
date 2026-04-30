@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-RESTful equivalent of [`POST /v1/orchestrate`](../orchestrate.md) with a path-bound agent id. Same SSE shape, same billing, same safety policies.
+RESTful equivalent of [`POST /v1/orchestrate`](../orchestrate.md) with a path-bound agent id. Same SSE shape, same Quartermaster gating, same safety policies.
 
 The path `:id` resolves through the same chain as `/v1/orchestrate` — inline `agent_def` first, then the tenant's stored catalog, then the built-in `index`. So you can hit a stored agent with no body beyond `message`.
 

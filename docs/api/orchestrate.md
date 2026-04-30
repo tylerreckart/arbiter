@@ -98,19 +98,18 @@ The stream begins with `request_received`, contains a sequence of `stream_start`
 
 The "after-headers" mode is intentional: by the time the SSE stream is open, returning a non-200 status code would split the response in confusing ways for clients. All recoverable errors come through as `error` SSE events with structured fields; the terminal `done.ok` flag is the canonical success/failure signal.
 
-### Cap-exceeded specifically
+### Quartermaster denial specifically
 
-When a turn would push `mtd_micro_cents` past `monthly_cap_micro_cents`:
+When the configured Quartermaster service rejects the pre-flight quota check (suspended tenant, exhausted budget, etc.):
 
-1. `error` event with `message: "monthly usage cap exceeded"`, `mtd_micro_cents`, `cap_micro_cents`.
-2. In-progress turns complete (already paid for); no further turns start.
-3. `done` with `cap_exceeded: true`.
+1. `error` event with the upstream `message`, `reason` (`tenant_suspended` | `tenant_disabled` | `insufficient_budget`), and the matching `*_micro_cents` budget fields.
+2. `done` with `ok: false` and no further turns.
 
-See [Billing → Caps](concepts/billing.md#caps).
+A transport error to Quartermaster fails open — the runtime proceeds rather than blocking the request on a billing-service blip.
 
 ## See also
 
 - [`POST /v1/agents/:id/chat`](agents/chat.md) — REST shape with a path-bound agent.
 - [`POST /v1/conversations/:id/messages`](conversations/messages-post.md) — multi-turn variant with history replay.
 - [`POST /v1/requests/:id/cancel`](requests-cancel.md) — interrupt an in-flight stream.
-- [SSE event catalog](concepts/sse-events.md), [Fleet streaming](concepts/fleet-streaming.md), [Billing](concepts/billing.md).
+- [SSE event catalog](concepts/sse-events.md), [Fleet streaming](concepts/fleet-streaming.md).

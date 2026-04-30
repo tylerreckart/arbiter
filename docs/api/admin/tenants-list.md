@@ -2,7 +2,7 @@
 
 **Auth:** admin — _Status:_ stable
 
-List all tenants. Used by the admin dashboard / billing UI.
+List all tenants. Used by the admin dashboard.
 
 ## Request
 
@@ -24,9 +24,6 @@ curl -H "Authorization: Bearer adm_…" \
       "id": 1,
       "name": "acme",
       "disabled": false,
-      "monthly_cap_micro_cents": 25000000,
-      "month_yyyymm": "2026-04",
-      "month_to_date_micro_cents": 1248300,
       "created_at": 1777056438,
       "last_used_at": 1777078022
     }

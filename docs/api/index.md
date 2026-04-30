@@ -1,6 +1,8 @@
 # Arbiter HTTP API
 
-Arbiter exposes its multi-agent orchestrator as an HTTP + Server-Sent Events API. One `POST /v1/orchestrate` drives the full agentic loop — master agent turns, delegated and parallel sub-agent calls, tool invocations, generated files — and streams the whole thing back as SSE events. Tenant authentication and usage billing are built in; a separate admin surface lets an external billing/dashboard service read the ledger.
+Arbiter exposes its multi-agent orchestrator as an HTTP + Server-Sent Events API. One `POST /v1/orchestrate` drives the full agentic loop — master agent turns, delegated and parallel sub-agent calls, tool invocations, generated files — and streams the whole thing back as SSE events.
+
+Billing — eligibility checks, rate cards, caps, invoicing — is delegated to the sibling **Quartermaster** service when `QUARTERMASTER_URL` is set. The runtime exchanges every bearer for a workspace_id via `POST /v1/runtime/auth/validate`, pre-flights against `POST /v1/runtime/quota/check`, and posts post-turn telemetry to `POST /v1/runtime/usage/record`. With the env var unset, the runtime acts as a thin pass-through using the operator-supplied provider keys, with no eligibility checks.
 
 Start with `arbiter --api --port 8080`. The default bind is `127.0.0.1`; production deployments should put TLS termination, DDoS protection, and rate limiting in a reverse proxy (nginx, caddy, cloudflare) in front of the process.
 
@@ -10,7 +12,6 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 
 - [Tenants](concepts/tenants.md)
 - [Authentication](concepts/authentication.md)
-- [Billing](concepts/billing.md)
 - [Fleet streaming](concepts/fleet-streaming.md)
 - [SSE event catalog](concepts/sse-events.md)
 - [Structured memory](concepts/structured-memory.md)
@@ -76,8 +77,8 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`POST /v1/admin/tenants`](admin/tenants-create.md)
 - [`GET /v1/admin/tenants/:id`](admin/tenants-get.md)
 - [`PATCH /v1/admin/tenants/:id`](admin/tenants-patch.md)
-- [`GET /v1/admin/usage`](admin/usage.md)
-- [`GET /v1/admin/usage/summary`](admin/usage-summary.md)
+
+Usage ledger, rate cards, caps, and invoices live in **Quartermaster**, not here. See its docs for `/v1/admin/usage`-equivalent endpoints.
 
 ## Versioning
 

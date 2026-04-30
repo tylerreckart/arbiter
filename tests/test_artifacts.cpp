@@ -44,7 +44,7 @@ struct TempDb {
 };
 
 int64_t make_tenant(TenantStore& s, const std::string& name) {
-    return s.create_tenant(name, 0).tenant.id;
+    return s.create_tenant(name).tenant.id;
 }
 
 int64_t make_conversation(TenantStore& s, int64_t tid, const std::string& title) {

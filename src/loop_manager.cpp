@@ -60,7 +60,6 @@ LoopManager::~LoopManager() {
 std::string LoopManager::start(Orchestrator& orch,
                                const std::string& agent_id,
                                const std::string& initial_prompt,
-                               CostTracker* tracker,
                                OutputQueue* oq) {
     std::lock_guard<std::mutex> lk(mu_);
     std::string lid = "loop-" + std::to_string(next_id_++);
@@ -69,7 +68,6 @@ std::string LoopManager::start(Orchestrator& orch,
     e->agent_id = agent_id;
     e->started  = std::chrono::steady_clock::now();
     e->state    = LoopState::Running;
-    e->tracker  = tracker;
     e->oq       = oq;
     e->thread   = std::thread(run_loop, e.get(), std::ref(orch), initial_prompt);
     loops_[lid] = std::move(e);
@@ -289,14 +287,8 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
                   << " #" << e->iter << "]\n";
             if (resp.ok) {
                 entry << render_markdown(resp.content) << "\n";
-                if (e->tracker) {
-                    std::string model = orch.get_agent_model(e->agent_id);
-                    e->tracker->record(e->agent_id, model, resp);
-                    entry << "  " << e->tracker->format_footer(resp, model) << "\n";
-                } else {
-                    entry << "  [in:" << resp.input_tokens
-                          << " out:" << resp.output_tokens << "]\n";
-                }
+                entry << "  [in:" << resp.input_tokens
+                      << " out:" << resp.output_tokens << "]\n";
             } else {
                 entry << "ERR: " << resp.error << "\n";
             }

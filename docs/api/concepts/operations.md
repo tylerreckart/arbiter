@@ -87,4 +87,3 @@ Agent-generated files (via `/write`, ephemeral path) are captured in memory and 
 ## See also
 
 - [Authentication](authentication.md)
-- [Billing](billing.md)

@@ -14,8 +14,8 @@
 //
 // All panes share one Orchestrator so agent state (history, memory, configs)
 // is global — panes are windows onto that state, not independent worlds.
-// Shared cross-pane services (CostTracker, LoopManager, Config, Orchestrator)
-// live next to the Pane at the REPL level.
+// Shared cross-pane services (LoopManager, Config, Orchestrator) live next
+// to the Pane at the REPL level.
 
 #include "repl/queues.h"
 #include "tui/line_editor.h"

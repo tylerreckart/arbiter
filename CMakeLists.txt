@@ -79,6 +79,7 @@ set(INDEX_AI_SOURCES
     src/constitution.cpp
     src/orchestrator.cpp
     src/api_server.cpp
+    src/quartermaster_client.cpp
     src/tenant_store.cpp
     src/json.cpp
     src/commands.cpp
@@ -87,7 +88,6 @@ set(INDEX_AI_SOURCES
     src/mcp/client.cpp
     src/mcp/manager.cpp
     src/readline_wrapper.cpp
-    src/cost_tracker.cpp
     src/markdown.cpp
 )
 

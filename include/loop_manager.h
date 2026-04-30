@@ -24,7 +24,6 @@
 // manager is safe to let go of scope.
 
 #include "orchestrator.h"
-#include "cost_tracker.h"
 #include "repl/queues.h"
 
 #include <chrono>
@@ -62,9 +61,6 @@ struct LoopEntry {
     // Terminal-visible error message set when loop exits abnormally.
     std::string stop_reason;
 
-    // Optional cost tracker for per-loop cost accounting.
-    CostTracker* tracker = nullptr;
-
     // Output queue: loop threads push failure / completion banners here.
     OutputQueue* oq = nullptr;
 
@@ -84,7 +80,6 @@ public:
     std::string start(Orchestrator& orch,
                       const std::string& agent_id,
                       const std::string& initial_prompt,
-                      CostTracker* tracker = nullptr,
                       OutputQueue* oq = nullptr);
 
     bool kill   (const std::string& lid);

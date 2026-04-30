@@ -127,11 +127,6 @@ const Provider& provider_for(const std::string& model) {
     return reg.front();
 }
 
-bool is_priced(const std::string& model) {
-    const auto& name = provider_for(model).name;
-    return name == "anthropic" || name == "openai";
-}
-
 bool is_weak_executor(const std::string& model) {
     // Local small models need the tool-vocabulary-first prompt profile;
     // frontier cloud models (Anthropic, OpenAI) follow abstract tool
@@ -702,7 +697,8 @@ ApiResponse ApiClient::parse_body_openai(const std::string& body) {
         // Usage is optional on openai-compat servers.  Ollama reports it.
         // OpenAI nests cached-prompt tokens under prompt_tokens_details
         // (implicit caching, no write cost), which we surface as
-        // cache_read_tokens so CostTracker discounts them.
+        // cache_read_tokens so Quartermaster's rate card can discount
+        // them.
         auto usage = root->get("usage");
         if (usage && usage->is_object()) {
             resp.input_tokens  = usage->get_int("prompt_tokens");

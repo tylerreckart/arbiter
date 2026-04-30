@@ -11,10 +11,10 @@
 #include "commands.h"
 #include "config.h"
 #include "constitution.h"
-#include "cost_tracker.h"
 #include "json.h"
 #include "mcp/manager.h"
 #include "orchestrator.h"
+#include "quartermaster_client.h"
 #include "tenant_store.h"
 #include "tui/stream_filter.h"
 #include "api_client.h"
@@ -409,25 +409,22 @@ public:
         if (ev == "request_received") {
             const std::string agent = payload ? payload->get_string("agent") : "";
             const std::string msg   = payload ? payload->get_string("message") : "";
-            line << color(kBoldCyan) << "→ POST /orchestrate" << reset()
-                 << "  agent=" << color_for_agent(agent) << agent << reset()
+            line << color(kBoldCyan) << "POST /orchestrate" << reset()
+                 << "  agent=" << color_for_agent(agent)
+                 << display_agent(agent) << reset()
                  << "  " << quote_short(msg, 100);
         } else if (ev == "done") {
             const bool ok    = payload && payload->get_bool("ok");
             const double dur = payload ? payload->get_number("duration_ms") : 0;
             const double in  = payload ? payload->get_number("input_tokens") : 0;
             const double out = payload ? payload->get_number("output_tokens") : 0;
-            const double bm  = payload ? payload->get_number("billed_micro_cents") : 0;
-            const bool capped = payload && payload->get_bool("cap_exceeded");
             line << color(ok ? kBoldGreen : kBoldRed)
-                 << (ok ? "✓ DONE " : "✗ FAIL ") << reset()
+                 << (ok ? "DONE " : "FAIL ") << reset()
                  << static_cast<int64_t>(dur) << "ms"
                  << color(kDim)
                  << "  in=" << static_cast<int>(in)
                  << " out=" << static_cast<int>(out)
-                 << " " << fmt_uc(static_cast<int64_t>(bm))
                  << reset();
-            if (capped) line << "  " << color(kYellow) << "[cap_exceeded]" << reset();
             if (!ok && payload) {
                 const std::string err = payload->get_string("error");
                 if (!err.empty()) line << "  " << quote_short(err, 80);
@@ -436,19 +433,20 @@ public:
             flush_all_locked(line);
         } else if (ev == "error") {
             const std::string m = payload ? payload->get_string("message") : "";
-            line << color(kBoldRed) << "✗ ERROR" << reset() << "  " << quote_short(m, 100);
+            line << color(kBoldRed) << "ERROR" << reset() << "  " << quote_short(m, 100);
         } else if (ev == "stream_end") {
             const bool ok = payload && payload->get_bool("ok");
             const std::string agent = payload ? payload->get_string("agent") : "";
             // Drain that stream's buffered text so the next line isn't a
             // mid-sentence stub.
             if (payload) flush_buffered_locked(static_cast<int>(payload->get_number("stream_id")), line);
-            // Successful ends are quiet (a green ✓ on its own line is more
-            // noise than signal across many parallel streams); failures still
-            // surface so an operator notices a stalled sub-agent.
+            // Successful ends are quiet (a coloured success marker on its own
+            // line is more noise than signal across many parallel streams);
+            // failures still surface so an operator notices a stalled sub-agent.
             if (ok) return;
-            line << color(kBoldRed) << "✗" << reset()
-                 << " " << color_for_agent(agent) << agent << reset()
+            line << color(kBoldRed) << "FAIL" << reset()
+                 << " " << color_for_agent(agent)
+                 << display_agent(agent) << reset()
                  << " " << color(kDim) << "stream ended without ok" << reset();
         } else if (ev == "text") {
             buffer_delta_locked(payload, /*kind=*/"text", line);
@@ -458,21 +456,19 @@ public:
             const std::string tool  = payload ? payload->get_string("tool") : "";
             const std::string agent = payload ? payload->get_string("agent") : "";
             const bool ok = payload && payload->get_bool("ok");
-            line << color_for_agent(agent) << agent << reset()
-                 << "  " << color(kBoldYellow) << tool << reset()
+            line << color_for_agent(agent) << display_agent(agent) << reset()
+                 << "  " << color_for_tool(tool) << tool << reset()
                  << " " << (ok ? color(kGreen) : color(kBoldRed))
-                 << (ok ? "✓" : "✗") << reset();
+                 << (ok ? "ok" : "ERR") << reset();
         } else if (ev == "token_usage") {
             // Per-turn token tally, dimmed since it's a sidebar metric.
             const std::string agent = payload ? payload->get_string("agent") : "";
             const double in  = payload ? payload->get_number("input_tokens") : 0;
             const double out = payload ? payload->get_number("output_tokens") : 0;
-            const double bm  = payload ? payload->get_number("billed_micro_cents") : 0;
-            line << color_for_agent(agent) << agent << reset()
-                 << "  " << color(kDim) << "↳ "
+            line << color_for_agent(agent) << display_agent(agent) << reset()
+                 << "  " << color(kDim) << "tokens: "
                  << "in=" << static_cast<int>(in)
                  << " out=" << static_cast<int>(out)
-                 << " " << fmt_uc(static_cast<int64_t>(bm))
                  << reset();
         } else if (ev == "sub_agent_response") {
             // Boundary marker when a /agent or parallel child returns.
@@ -480,16 +476,16 @@ public:
             // so a content reprint would be noise.
             const std::string agent = payload ? payload->get_string("agent") : "";
             const std::string content = payload ? payload->get_string("content") : "";
-            line << color_for_agent(agent) << agent << reset()
-                 << "  " << color(kDim) << "← returned "
+            line << color_for_agent(agent) << display_agent(agent) << reset()
+                 << "  " << color(kDim) << "returned "
                  << fmt_size(static_cast<int64_t>(content.size()))
                  << reset();
         } else if (ev == "file") {
             const std::string path  = payload ? payload->get_string("path") : "";
             const std::string agent = payload ? payload->get_string("agent") : "";
             const double size = payload ? payload->get_number("size") : 0;
-            line << color_for_agent(agent) << agent << reset()
-                 << "  " << color(kBoldMagenta) << "📄 " << path << reset()
+            line << color_for_agent(agent) << display_agent(agent) << reset()
+                 << "  " << color(kBoldMagenta) << "wrote " << path << reset()
                  << color(kDim) << " (" << fmt_size(static_cast<int64_t>(size)) << ")"
                  << reset();
         } else {
@@ -515,25 +511,66 @@ private:
     static constexpr const char* kBoldRed      = "\033[1;31m";
     static constexpr const char* kBoldGreen    = "\033[1;32m";
     static constexpr const char* kBoldCyan     = "\033[1;36m";
-    static constexpr const char* kBoldYellow   = "\033[1;33m";
     static constexpr const char* kBoldMagenta  = "\033[1;35m";
-    // Per-agent colour palette — picked so two siblings in /parallel stay
-    // visually distinct.  Hashed by agent name so the same agent always
-    // gets the same colour within a process.
+    // Per-agent colour palette — muted 256-colour shades.  The previous
+    // bright-only palette read uniformly garish across siblings in a
+    // /parallel fan-out; these tones stay distinguishable side-by-side
+    // without competing for attention.  Hashed on the *display* name
+    // (post-`seed-` strip) so a starter and its prefixed twin draw in
+    // the same colour.
     static constexpr const char* kAgentPalette[] = {
-        "\033[96m",   // bright cyan
-        "\033[92m",   // bright green
-        "\033[95m",   // bright magenta
-        "\033[94m",   // bright blue
-        "\033[93m",   // bright yellow
-        "\033[91m",   // bright red
+        "\033[38;5;109m",  // soft cyan
+        "\033[38;5;144m",  // khaki
+        "\033[38;5;110m",  // light steel blue
+        "\033[38;5;138m",  // dusty pink
+        "\033[38;5;108m",  // sage
+        "\033[38;5;180m",  // warm tan
+        "\033[38;5;175m",  // mauve
+        "\033[38;5;152m",  // pale aqua
+        "\033[38;5;187m",  // light buff
+        "\033[38;5;146m",  // periwinkle
     };
+    // Per-tool colour palette — distinct from the agent palette so the
+    // tool token visually separates from the agent token on the same
+    // line.  Hashed on the tool name (`search`, `fetch`, `mem`, ...) so
+    // every invocation of the same tool draws in the same colour.
+    static constexpr const char* kToolPalette[] = {
+        "\033[38;5;73m",   // teal
+        "\033[38;5;178m",  // gold
+        "\033[38;5;168m",  // rose
+        "\033[38;5;105m",  // periwinkle (deeper)
+        "\033[38;5;137m",  // terracotta
+        "\033[38;5;79m",   // seafoam
+        "\033[38;5;167m",  // coral
+        "\033[38;5;115m",  // mint
+        "\033[38;5;215m",  // peach
+        "\033[38;5;141m",  // amethyst
+    };
+
+    // Strip a `seed-` prefix from the displayed agent name.  The starter
+    // agents seeded by `arbiter --init` carry that prefix internally for
+    // disambiguation; surfacing it in every log line is just noise.
+    static std::string display_agent(const std::string& name) {
+        constexpr const char* kPrefix = "seed-";
+        constexpr size_t      kLen    = 5;
+        if (name.size() > kLen && name.compare(0, kLen, kPrefix) == 0)
+            return name.substr(kLen);
+        return name;
+    }
     const char* color_for_agent(const std::string& name) const {
+        if (!color_ || name.empty()) return "";
+        const std::string disp = display_agent(name);
+        size_t h = 0;
+        for (char c : disp) h = h * 131 + static_cast<unsigned char>(c);
+        constexpr size_t N = sizeof(kAgentPalette) / sizeof(kAgentPalette[0]);
+        return kAgentPalette[h % N];
+    }
+    const char* color_for_tool(const std::string& name) const {
         if (!color_ || name.empty()) return "";
         size_t h = 0;
         for (char c : name) h = h * 131 + static_cast<unsigned char>(c);
-        constexpr size_t N = sizeof(kAgentPalette) / sizeof(kAgentPalette[0]);
-        return kAgentPalette[h % N];
+        constexpr size_t N = sizeof(kToolPalette) / sizeof(kToolPalette[0]);
+        return kToolPalette[h % N];
     }
 
     const char* color(const char* c) const { return color_ ? c : ""; }
@@ -597,13 +634,14 @@ private:
     void emit_text_line_locked(const std::string& agent, bool thinking,
                                 const std::string& chunk,
                                 std::ostringstream& line) {
+        const std::string disp = display_agent(agent);
         // Thinking blocks are rare (only some models surface them) and
         // dim-grey so they read as side-channel reasoning, not output.
         if (thinking) {
-            line << color(kDim) << "(" << agent << " thinking) "
+            line << color(kDim) << "(" << disp << " thinking) "
                  << quote_short(chunk, 100) << reset();
         } else {
-            line << color_for_agent(agent) << agent << reset()
+            line << color_for_agent(agent) << disp << reset()
                  << "  " << quote_short(chunk, 110);
         }
         std::fputs(line.str().c_str(), stderr);
@@ -637,16 +675,6 @@ private:
         return out;
     }
 
-    // µ¢ → "$0.0124" / "$0.0001" so a glance at the log conveys spend.
-    static std::string fmt_uc(int64_t uc) {
-        const double usd = static_cast<double>(uc) / 1'000'000.0;
-        std::ostringstream o;
-        o << "$" << std::fixed
-          << std::setprecision(usd >= 0.01 ? 4 : 6)
-          << usd;
-        return o.str();
-    }
-
     // Bytes → "120B" / "3.4KB" / "1.2MB".  Demo-friendly file/size labels.
     static std::string fmt_size(int64_t bytes) {
         std::ostringstream o;
@@ -672,64 +700,18 @@ void emit_error(SseStream& sse, const std::string& msg) {
 
 // ─── Admin endpoints ────────────────────────────────────────────────────────
 //
-// All admin routes are JSON-in, JSON-out.  Field naming is stable: once
-// documented for the sibling billing service, these shapes need to be
-// versioned rather than renamed.  Monetary values are always in µ¢
-// (micro-cents; 1 USD = 1,000,000 µ¢) on the wire — the sibling decides
-// how to display them.
+// All admin routes are JSON-in, JSON-out.  Billing has moved to
+// Quartermaster — this surface only manages tenant identity and the
+// per-tenant access tokens used by the runtime hot path.
 
 std::shared_ptr<JsonValue> tenant_to_json(const Tenant& t) {
     auto o = jobj();
     auto& m = o->as_object_mut();
-    m["id"]                        = jnum(static_cast<double>(t.id));
-    m["name"]                      = jstr(t.name);
-    m["disabled"]                  = jbool(t.disabled);
-    m["monthly_cap_micro_cents"]   = jnum(static_cast<double>(t.monthly_cap_uc));
-    m["month_yyyymm"]              = jstr(t.month_yyyymm);
-    m["month_to_date_micro_cents"] = jnum(static_cast<double>(t.month_to_date_uc));
-    m["created_at"]                = jnum(static_cast<double>(t.created_at));
-    m["last_used_at"]              = jnum(static_cast<double>(t.last_used_at));
-    return o;
-}
-
-std::shared_ptr<JsonValue> usage_to_json(const UsageEntry& e) {
-    auto o = jobj();
-    auto& m = o->as_object_mut();
-    m["id"]                          = jnum(static_cast<double>(e.id));
-    m["tenant_id"]                   = jnum(static_cast<double>(e.tenant_id));
-    m["timestamp"]                   = jnum(static_cast<double>(e.timestamp));
-    m["model"]                       = jstr(e.model);
-    m["input_tokens"]                = jnum(static_cast<double>(e.input_tokens));
-    m["output_tokens"]               = jnum(static_cast<double>(e.output_tokens));
-    m["cache_read_tokens"]           = jnum(static_cast<double>(e.cache_read_tokens));
-    m["cache_create_tokens"]         = jnum(static_cast<double>(e.cache_create_tokens));
-    m["input_micro_cents"]           = jnum(static_cast<double>(e.input_uc));
-    m["output_micro_cents"]          = jnum(static_cast<double>(e.output_uc));
-    m["cache_read_micro_cents"]      = jnum(static_cast<double>(e.cache_read_uc));
-    m["cache_create_micro_cents"]    = jnum(static_cast<double>(e.cache_create_uc));
-    m["provider_micro_cents"]        = jnum(static_cast<double>(e.provider_uc));
-    m["markup_micro_cents"]          = jnum(static_cast<double>(e.markup_uc));
-    m["billed_micro_cents"]          = jnum(static_cast<double>(e.provider_uc + e.markup_uc));
-    if (!e.request_id.empty()) m["request_id"] = jstr(e.request_id);
-    return o;
-}
-
-std::shared_ptr<JsonValue> bucket_to_json(const TenantStore::UsageBucket& b) {
-    auto o = jobj();
-    auto& m = o->as_object_mut();
-    m["key"]                         = jstr(b.key);
-    m["calls"]                       = jnum(static_cast<double>(b.calls));
-    m["input_tokens"]                = jnum(static_cast<double>(b.input_tokens));
-    m["output_tokens"]               = jnum(static_cast<double>(b.output_tokens));
-    m["cache_read_tokens"]           = jnum(static_cast<double>(b.cache_read_tokens));
-    m["cache_create_tokens"]         = jnum(static_cast<double>(b.cache_create_tokens));
-    m["input_micro_cents"]           = jnum(static_cast<double>(b.input_uc));
-    m["output_micro_cents"]          = jnum(static_cast<double>(b.output_uc));
-    m["cache_read_micro_cents"]      = jnum(static_cast<double>(b.cache_read_uc));
-    m["cache_create_micro_cents"]    = jnum(static_cast<double>(b.cache_create_uc));
-    m["provider_micro_cents"]        = jnum(static_cast<double>(b.provider_uc));
-    m["markup_micro_cents"]          = jnum(static_cast<double>(b.markup_uc));
-    m["billed_micro_cents"]          = jnum(static_cast<double>(b.provider_uc + b.markup_uc));
+    m["id"]           = jnum(static_cast<double>(t.id));
+    m["name"]         = jstr(t.name);
+    m["disabled"]     = jbool(t.disabled);
+    m["created_at"]   = jnum(static_cast<double>(t.created_at));
+    m["last_used_at"] = jnum(static_cast<double>(t.last_used_at));
     return o;
 }
 
@@ -799,18 +781,9 @@ void handle_admin(int fd, const HttpRequest& req,
                     admin_error(fd, 400, "missing required field: 'name'");
                     return;
                 }
-                // Accept either cap_usd (float) or monthly_cap_micro_cents
-                // (integer) so callers can choose their preferred unit.
-                int64_t cap_uc = 0;
-                if (auto v = body->get("monthly_cap_micro_cents"); v && v->is_number()) {
-                    cap_uc = static_cast<int64_t>(v->as_number());
-                } else if (auto v2 = body->get("cap_usd"); v2 && v2->is_number()) {
-                    cap_uc = usd_to_uc(v2->as_number());
-                }
-                if (cap_uc < 0) cap_uc = 0;
 
                 TenantStore::CreatedTenant created;
-                try { created = tenants.create_tenant(name, cap_uc); }
+                try { created = tenants.create_tenant(name); }
                 catch (const std::exception& e) {
                     admin_error(fd, 500, std::string("create failed: ") + e.what());
                     return;
@@ -848,14 +821,10 @@ void handle_admin(int fd, const HttpRequest& req,
                     admin_error(fd, 400, "body must be a JSON object");
                     return;
                 }
-                // Both fields optional; apply whichever are present.
+                // `disabled` is the only mutable field — billing-related
+                // fields have moved to Quartermaster.
                 if (auto v = body->get("disabled"); v && v->is_bool()) {
                     tenants.set_disabled(std::to_string(id), v->as_bool());
-                }
-                if (auto v = body->get("monthly_cap_micro_cents"); v && v->is_number()) {
-                    tenants.set_cap(id, static_cast<int64_t>(v->as_number()));
-                } else if (auto v2 = body->get("monthly_cap_usd"); v2 && v2->is_number()) {
-                    tenants.set_cap(id, usd_to_uc(v2->as_number()));
                 }
                 auto t = tenants.get_tenant(id);
                 if (!t) { admin_error(fd, 404, "tenant not found"); return; }
@@ -870,57 +839,9 @@ void handle_admin(int fd, const HttpRequest& req,
         return;
     }
 
-    // ── /v1/admin/usage and /v1/admin/usage/summary ─────────────────────
-    if (resource == "usage") {
-        if (req.method != "GET") { admin_error(fd, 405, "method not allowed"); return; }
-        const auto qp = parse_query(req.path);
-        auto as_int64 = [&](const std::string& k) -> int64_t {
-            auto it = qp.find(k);
-            if (it == qp.end()) return 0;
-            try { return std::stoll(it->second); } catch (...) { return 0; }
-        };
-        const int64_t tenant_id = as_int64("tenant_id");
-        const int64_t since     = as_int64("since");
-        const int64_t until     = as_int64("until");
-
-        // /v1/admin/usage/summary?group_by=model|day|tenant — pre-aggregated
-        // rollups for analytics.  Saves the sibling service from pulling
-        // tens of thousands of raw rows just to render a chart.
-        if (segs.size() == 4 && segs[3] == "summary") {
-            std::string group_by = "model";
-            if (auto it = qp.find("group_by"); it != qp.end()) group_by = it->second;
-            auto buckets = tenants.usage_summary(tenant_id, since, until, group_by);
-
-            auto arr = jarr();
-            auto& a = arr->as_array_mut();
-            for (auto& b : buckets) a.push_back(bucket_to_json(b));
-            auto body = jobj();
-            auto& m = body->as_object_mut();
-            m["group_by"] = jstr(group_by);
-            m["buckets"]  = arr;
-            m["count"]    = jnum(static_cast<double>(buckets.size()));
-            write_json_response(fd, 200, body);
-            return;
-        }
-
-        if (segs.size() != 3) {
-            admin_error(fd, 404, "admin route not found");
-            return;
-        }
-
-        const int     limit     = static_cast<int>(as_int64("limit"));
-        auto rows = tenants.list_usage(tenant_id, since, until, limit);
-        auto arr = jarr();
-        auto& a = arr->as_array_mut();
-        for (auto& e : rows) a.push_back(usage_to_json(e));
-        auto body = jobj();
-        auto& m = body->as_object_mut();
-        m["entries"] = arr;
-        m["count"]   = jnum(static_cast<double>(rows.size()));
-        write_json_response(fd, 200, body);
-        return;
-    }
-
+    // Usage/billing endpoints have moved to Quartermaster.  The runtime
+    // no longer exposes /v1/admin/usage or /v1/admin/usage/summary —
+    // the sibling billing service owns the ledger and any rollups.
     admin_error(fd, 404, "admin resource not found");
 }
 
@@ -1510,7 +1431,6 @@ conversation_message_to_json(const ConversationMessage& m) {
     obj["content"]         = jstr(m.content);
     obj["input_tokens"]    = jnum(static_cast<double>(m.input_tokens));
     obj["output_tokens"]   = jnum(static_cast<double>(m.output_tokens));
-    obj["billed_micro_cents"] = jnum(static_cast<double>(m.billed_uc));
     obj["created_at"]      = jnum(static_cast<double>(m.created_at));
     if (!m.request_id.empty()) obj["request_id"] = jstr(m.request_id);
     return o;
@@ -1668,30 +1588,35 @@ void handle_conversation_messages(int fd, int64_t id, const HttpRequest& req,
 }
 
 void handle_models_list(int fd) {
+    // Static catalog of model ids the orchestrator can route to, paired
+    // with the provider that handles them.  Pricing is intentionally
+    // absent — Quartermaster's rate card is the source of truth for
+    // billing-grade numbers; the runtime only needs to know what
+    // routes to what provider.
+    struct ModelEntry { const char* id; const char* provider; };
+    static constexpr ModelEntry kModels[] = {
+        // Anthropic Claude
+        {"claude-opus-4-7",    "anthropic"},
+        {"claude-opus-4-6",    "anthropic"},
+        {"claude-opus-4-5",    "anthropic"},
+        {"claude-sonnet-4-6",  "anthropic"},
+        {"claude-sonnet-4-5",  "anthropic"},
+        {"claude-haiku-4-5",   "anthropic"},
+        // OpenAI
+        {"openai/gpt-5.4",     "openai"},
+        {"openai/gpt-4.1",     "openai"},
+        {"openai/gpt-4o",      "openai"},
+        {"openai/gpt-4o-mini", "openai"},
+        {"openai/o4-mini",     "openai"},
+    };
+
     auto arr = jarr();
     auto& a = arr->as_array_mut();
-    for (auto& m : CostTracker::all_models()) {
+    for (auto& m : kModels) {
         auto entry = jobj();
         auto& o = entry->as_object_mut();
-        o["id"] = jstr(m.id);
-
-        // Infer provider from id: "openai/" and "ollama/" use explicit
-        // prefixes; anything else routes to Anthropic today.
-        std::string provider = "anthropic";
-        if (m.id.rfind("openai/", 0) == 0)      provider = "openai";
-        else if (m.id.rfind("ollama/", 0) == 0) provider = "ollama";
-        else if (m.id.rfind("gpt-", 0) == 0 ||
-                 m.id.rfind("o1", 0) == 0 ||
-                 m.id.rfind("o3", 0) == 0 ||
-                 m.id.rfind("o4", 0) == 0)      provider = "openai";
-        o["provider"] = jstr(provider);
-
-        o["input_per_mtok_usd"]        = jnum(m.pricing.input_per_mtok);
-        o["output_per_mtok_usd"]       = jnum(m.pricing.output_per_mtok);
-        o["cache_read_per_mtok_usd"]   = jnum(m.pricing.cache_read_per_mtok);
-        o["cache_create_per_mtok_usd"] = jnum(m.pricing.cache_write_per_mtok);
-        o["supports_caching"]          = jbool(m.pricing.cache_read_per_mtok > 0.0 ||
-                                                m.pricing.cache_write_per_mtok > 0.0);
+        o["id"]       = jstr(m.id);
+        o["provider"] = jstr(m.provider);
         a.push_back(std::move(entry));
     }
     auto body = jobj();
@@ -2525,6 +2450,17 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         const ApiServerOptions& opts,
                         TenantStore& tenants,
                         InFlightRegistry& in_flight,
+                        // Nullable.  When non-null, drives pre-flight quota
+                        // checks and post-turn usage records — the runtime
+                        // becomes a thin gateway and Quartermaster owns
+                        // billing.  When null, neither call fires; the
+                        // turn runs straight through to the provider keys
+                        // configured in `opts.api_keys`.
+                        QuartermasterClient* quartermaster,
+                        // The Quartermaster workspace_id the bearer maps to
+                        // (returned from /v1/runtime/auth/validate).  Empty
+                        // when `quartermaster` is null.
+                        const std::string& workspace_id,
                         const Tenant& tenant_in,
                         const std::string& agent_override = "",
                         int64_t conversation_id = 0,
@@ -2843,7 +2779,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             tenants.append_message(tenant.id, conversation_id,
                                     "user", message,
                                     /*input=*/0, /*output=*/0,
-                                    /*billed=*/0, request_id);
+                                    request_id);
         } catch (const std::exception& e) {
             log_error(std::string("could not persist user message: ") + e.what());
             return;
@@ -3901,93 +3837,55 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             stamp(p);
             emit("tool_call", p);
         });
-    // Per-turn billing.  Every agent turn (master + delegated) records:
-    //   provider_uc  — our actual cost to the LLM vendor, in µ¢
-    //   markup_uc    — 20% over that, rounded up to the nearest µ¢
-    // Total charged to the tenant = provider_uc + markup_uc.  If the new
-    // MTD exceeds the tenant's monthly cap, cancel the in-flight
-    // orchestration so the rest of this request stops generating cost.
-    std::atomic<int64_t> req_provider_uc{0};
-    std::atomic<int64_t> req_markup_uc{0};
-    std::atomic<bool>    cap_exceeded{false};
+    // Per-turn telemetry.  Direct billing has been pulled out of the
+    // runtime — Quartermaster (when configured) is the source of truth
+    // for cost accounting, cap enforcement, and credit consumption.
+    // The runtime no longer prices turns locally; the SSE event carries
+    // raw token counts and the model id, and Quartermaster's
+    // `usage/record` endpoint settles the µ¢ figure on its side.
+    std::atomic<int> turn_counter{0};
 
     orch->set_cost_callback(
-        [&emit, &tenants, &tenant, &req_provider_uc, &req_markup_uc,
-         &cap_exceeded, orch_ptr, stamp](const std::string& id,
+        [&emit, &turn_counter, quartermaster, &workspace_id,
+         &request_id, orch_ptr, stamp](const std::string& id,
                                           const std::string& model,
                                           const ApiResponse& resp) {
-            // Breakdown is captured at write time so historical rows don't
-            // drift when the pricing table updates later.  Sum equals
-            // provider_uc; markup is 20% of that, rounded up.
-            const auto bd = CostTracker::compute_cost_breakdown(model, resp);
-            TenantStore::CostParts parts;
-            parts.input_uc        = usd_to_uc(bd.input);
-            parts.output_uc       = usd_to_uc(bd.output);
-            parts.cache_read_uc   = usd_to_uc(bd.cache_read);
-            parts.cache_create_uc = usd_to_uc(bd.cache_create);
-            const int64_t provider_uc = parts.input_uc + parts.output_uc +
-                                        parts.cache_read_uc + parts.cache_create_uc;
-            const int64_t markup      = markup_uc(provider_uc);
-            req_provider_uc.fetch_add(provider_uc);
-            req_markup_uc.fetch_add(markup);
+            // Per-turn idempotency key for Quartermaster.  The runtime's
+            // request_id covers the whole orchestration (master + delegated
+            // sub-agents); each cost-callback firing is one logical LLM
+            // turn, so we suffix a counter to give Quartermaster a stable
+            // unique id per turn that survives a retry of *that* turn.
+            const int turn_idx = turn_counter.fetch_add(1);
+            const std::string turn_request_id =
+                request_id + "-t" + std::to_string(turn_idx);
 
-            int64_t mtd = 0;
-            try {
-                mtd = tenants.record_usage(
-                    tenant.id, model,
-                    resp.input_tokens, resp.output_tokens,
-                    resp.cache_read_tokens,
-                    resp.cache_creation_tokens,
-                    parts, markup);
-            } catch (...) {
-                // Accounting failure is not fatal to the request itself —
-                // the turn already ran, the cost already landed.  Emit an
-                // error event so the operator sees it; keep streaming.
-                auto e = jobj();
-                e->as_object_mut()["message"] =
-                    jstr("usage accounting failed — this turn is not billed");
-                emit("error", e);
+            if (quartermaster && quartermaster->enabled() &&
+                !workspace_id.empty()) {
+                QuartermasterClient::UsageRecord ur;
+                ur.request_id    = turn_request_id;
+                ur.workspace_id  = workspace_id;
+                ur.model         = model;
+                ur.input_tokens  = resp.input_tokens;
+                ur.output_tokens = resp.output_tokens;
+                ur.cached_tokens = resp.cache_read_tokens;
+                ur.agent_id      = id;
+                ur.depth         = orch_ptr->current_stream_depth();
+                quartermaster->record_usage(ur);
             }
 
             auto p = jobj();
             auto& m = p->as_object_mut();
-            m["agent"]                  = jstr(id);
-            m["model"]                  = jstr(model);
-            m["input_tokens"]           = jnum(static_cast<double>(resp.input_tokens));
-            m["output_tokens"]          = jnum(static_cast<double>(resp.output_tokens));
+            m["agent"]         = jstr(id);
+            m["model"]         = jstr(model);
+            m["input_tokens"]  = jnum(static_cast<double>(resp.input_tokens));
+            m["output_tokens"] = jnum(static_cast<double>(resp.output_tokens));
             if (resp.cache_read_tokens > 0)
                 m["cache_read_tokens"]   = jnum(static_cast<double>(resp.cache_read_tokens));
             if (resp.cache_creation_tokens > 0)
                 m["cache_create_tokens"] = jnum(static_cast<double>(resp.cache_creation_tokens));
-
-            // Per-token-type cost breakdown.  Same units as provider_micro_cents.
-            // Sums to provider_micro_cents; consumers can render a stacked-bar
-            // chart of input/output/cache spend without re-pricing.
-            m["input_micro_cents"]        = jnum(static_cast<double>(parts.input_uc));
-            m["output_micro_cents"]       = jnum(static_cast<double>(parts.output_uc));
-            m["cache_read_micro_cents"]   = jnum(static_cast<double>(parts.cache_read_uc));
-            m["cache_create_micro_cents"] = jnum(static_cast<double>(parts.cache_create_uc));
-
-            m["provider_micro_cents"]   = jnum(static_cast<double>(provider_uc));
-            m["billed_micro_cents"]     = jnum(static_cast<double>(provider_uc + markup));
-            m["mtd_micro_cents"]        = jnum(static_cast<double>(mtd));
-            m["stream_id"]              = jnum(static_cast<double>(orch_ptr->current_stream_id()));
-            m["depth"]                  = jnum(static_cast<double>(orch_ptr->current_stream_depth()));
+            m["stream_id"] = jnum(static_cast<double>(orch_ptr->current_stream_id()));
+            m["depth"]     = jnum(static_cast<double>(orch_ptr->current_stream_depth()));
             emit("token_usage", p);
-
-            // Cap enforcement.  0 = unlimited.  If exceeded, cancel the
-            // orchestrator to abort any in-flight stream and the next
-            // turn's API call.
-            if (tenant.monthly_cap_uc > 0 && mtd > tenant.monthly_cap_uc &&
-                !cap_exceeded.exchange(true)) {
-                auto e = jobj();
-                auto& em = e->as_object_mut();
-                em["message"] = jstr("monthly usage cap exceeded");
-                em["mtd_micro_cents"] = jnum(static_cast<double>(mtd));
-                em["cap_micro_cents"] = jnum(static_cast<double>(tenant.monthly_cap_uc));
-                emit("error", e);
-                if (orch_ptr) orch_ptr->cancel();
-            }
         });
     // progress_callback fires at depth>0 with the sub-agent's full turn
     // output — the "completed delegation" signal for the caller.  Still
@@ -4030,19 +3928,62 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         emit("request_received", p);
     }
 
-    // Pre-flight cap check.  The per-turn callback catches the limit mid-
-    // request; this catches the case where the tenant was already over cap
-    // before this request even started (e.g., cap lowered by admin).
-    if (tenant.monthly_cap_uc > 0 &&
-        tenant.month_to_date_uc >= tenant.monthly_cap_uc) {
-        auto e = jobj();
-        auto& em = e->as_object_mut();
-        em["message"] = jstr("monthly usage cap already reached — no work done");
-        em["mtd_micro_cents"] = jnum(static_cast<double>(tenant.month_to_date_uc));
-        em["cap_micro_cents"] = jnum(static_cast<double>(tenant.monthly_cap_uc));
-        emit("error", e);
-        sse.close();
-        return;
+    // Pre-flight Quartermaster quota check.  Asks the billing service
+    // whether this tenant has the budget to run the upcoming turn.  We
+    // only know the master agent's model up front (delegations may pick
+    // different models mid-stream), so the estimate is approximate;
+    // Quartermaster's per-turn `usage/record` callback below settles
+    // the actual cost.
+    //
+    // Skipped entirely when Quartermaster is not configured — the
+    // runtime then becomes a thin pass-through to the operator-supplied
+    // provider keys with no cap enforcement, per the documented escape
+    // hatch in `ApiServerOptions::quartermaster_url`.
+    if (quartermaster && quartermaster->enabled() && !workspace_id.empty()) {
+        // Best-effort model: prefer the inline agent_def's declared
+        // model so quota_check prices against the right rate card; fall
+        // back to a representative default when no agent_def is present
+        // (e.g. resolved-by-id catalog agent — Quartermaster will treat
+        // an unknown model as priced-at-zero, which is acceptable for
+        // the budget *check* though not for `usage/record`).
+        const std::string preflight_model =
+            parsed_cfg ? parsed_cfg->model : std::string("claude-sonnet-4-6");
+
+        // Conservative input estimate: ~3 chars/token rounds the count
+        // up vs the 4-chars/token typical, so we err on the side of
+        // declining a request that would be on the edge.  Output budget
+        // is a fixed 4096-token cap; the agent rarely exceeds that and
+        // overshooting only matters at the tenant's cap edge.
+        const int est_in  = static_cast<int>(message.size() / 3);
+        const int est_out = 4096;
+
+        auto qr = quartermaster->check_quota(workspace_id, preflight_model,
+                                              est_in, est_out, request_id);
+        if (qr.ok && !qr.allow) {
+            auto e = jobj();
+            auto& em = e->as_object_mut();
+            em["message"] = jstr(qr.message.empty()
+                                 ? std::string("request denied by billing service")
+                                 : qr.message);
+            if (!qr.reason.empty()) em["reason"] = jstr(qr.reason);
+            em["estimated_cost_micro_cents"] =
+                jnum(static_cast<double>(qr.estimated_cost_uc));
+            if (qr.plan_remaining_uc >= 0)
+                em["plan_remaining_micro_cents"] =
+                    jnum(static_cast<double>(qr.plan_remaining_uc));
+            em["credit_balance_micro_cents"] =
+                jnum(static_cast<double>(qr.credit_balance_uc));
+            if (qr.total_budget_uc >= 0)
+                em["total_budget_micro_cents"] =
+                    jnum(static_cast<double>(qr.total_budget_uc));
+            emit("error", e);
+            sse.close();
+            return;
+        }
+        // Transport errors (qr.ok=false) fall through — fail open so a
+        // billing-service blip doesn't take the runtime offline.  An
+        // operator alert on Quartermaster availability is the right
+        // place to act on this.
     }
 
     // The master agent's own streamed text arrives with /cmd lines
@@ -4112,20 +4053,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         m["output_tokens"] = jnum(static_cast<double>(resp.output_tokens));
         m["files_bytes"]   = jnum(static_cast<double>(bytes_captured.load()));
 
-        // Billing summary for the whole request.  provider_micro_cents is
-        // what we paid the LLM vendor; billed_micro_cents is what we bill
-        // the tenant (provider + 20% markup).  Both are sums across all
-        // turns in this request (master + delegated sub-agents).
-        const int64_t prov  = req_provider_uc.load();
-        const int64_t mk    = req_markup_uc.load();
-        m["provider_micro_cents"] = jnum(static_cast<double>(prov));
-        m["billed_micro_cents"]   = jnum(static_cast<double>(prov + mk));
-        m["markup_micro_cents"]   = jnum(static_cast<double>(mk));
-        m["tenant_id"]            = jnum(static_cast<double>(tenant.id));
-        m["request_id"]           = jstr(request_id);
-        m["cap_exceeded"]         = jbool(cap_exceeded.load());
+        // No local cost figure on the runtime side — Quartermaster's
+        // ledger is authoritative for the billed amount.  Consumers
+        // wanting a request-level total query Quartermaster directly.
+        m["tenant_id"]   = jnum(static_cast<double>(tenant.id));
+        m["request_id"]  = jstr(request_id);
         if (conversation_id > 0)
-            m["conversation_id"]   = jnum(static_cast<double>(conversation_id));
+            m["conversation_id"] = jnum(static_cast<double>(conversation_id));
 
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_time).count();
@@ -4137,13 +4071,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         // re-entry iterations (Orchestrator::send_streaming aggregates
         // them before returning), so what we persist is the full
         // multi-turn assistant response — not just the closing remark.
-        // `prov + mk` is the aggregate billing from cost_cb_ firings.
         if (conversation_id > 0 && resp.ok) {
             try {
                 tenants.append_message(tenant.id, conversation_id,
                                         "assistant", resp.content,
                                         resp.input_tokens, resp.output_tokens,
-                                        prov + mk, request_id);
+                                        request_id);
             } catch (...) {
                 // Best-effort persistence; emit but don't fail the stream.
                 log_error("assistant message could not be persisted to "
@@ -4162,7 +4095,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 // ─── ApiServer public API ───────────────────────────────────────────────────
 
 ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
-    : opts_(std::move(opts)), tenants_(tenants) {}
+    : opts_(std::move(opts)), tenants_(tenants) {
+    if (!opts_.quartermaster_url.empty()) {
+        quartermaster_ = std::make_unique<QuartermasterClient>(
+            opts_.quartermaster_url);
+    }
+}
 
 ApiServer::~ApiServer() { stop(); }
 
@@ -4351,8 +4289,36 @@ void ApiServer::handle_connection(int fd) {
         return;
     }
 
+    // Quartermaster gate.  When billing is configured, every authenticated
+    // request goes through /v1/runtime/auth/validate so a back-office
+    // suspension or revocation lands within the cached TTL window.  A
+    // transport-error to Quartermaster fails open — we'd rather bill
+    // imperfectly than brick the runtime on a single-service outage.
+    std::string workspace_id;
+    if (quartermaster_ && quartermaster_->enabled()) {
+        auto av = quartermaster_->validate(token);
+        if (av.ok) {
+            workspace_id = av.workspace_id;
+        } else if (av.http_status == 401) {
+            write_plain_response(fd, 401, "Unauthorized",
+                                 "billing service rejected token\n");
+            return;
+        } else if (av.http_status == 403) {
+            write_plain_response(fd, 403, "Forbidden",
+                                 av.message.empty()
+                                     ? "tenant not active\n"
+                                     : (av.message + "\n"));
+            return;
+        }
+        // Anything else (transport_error, 5xx, malformed) falls through —
+        // workspace_id stays empty, so downstream quota_check sees an
+        // unknown workspace and the QuartermasterClient's own
+        // fail-open path keeps the request flowing.
+    }
+
     if (req.method == "POST" && req.path == "/v1/orchestrate") {
-        handle_orchestrate(fd, req, opts_, tenants_, in_flight_, *tenant);
+        handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
+                           quartermaster_.get(), workspace_id, *tenant);
         return;
     }
 
@@ -4419,6 +4385,7 @@ void ApiServer::handle_connection(int fd) {
                         return;
                     }
                     handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
+                                        quartermaster_.get(), workspace_id,
                                         *tenant,
                                         /*agent_override=*/conv->agent_id,
                                         /*conversation_id=*/id,
@@ -4550,6 +4517,7 @@ void ApiServer::handle_connection(int fd) {
             }
             if (req.method == "POST" && segs.size() == 4 && segs[3] == "chat") {
                 handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
+                                    quartermaster_.get(), workspace_id,
                                     *tenant, segs[2]);
                 return;
             }

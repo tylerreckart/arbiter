@@ -45,7 +45,7 @@ struct TempDb {
 };
 
 int64_t make_tenant(TenantStore& s, const std::string& name) {
-    return s.create_tenant(name, 0).tenant.id;
+    return s.create_tenant(name).tenant.id;
 }
 
 // The store treats agent_def_json as an opaque blob — any non-empty
