@@ -7,7 +7,7 @@ moving. PRs are welcome; please read this first.
 ## Quick start
 
 ```bash
-git clone https://github.com/arbiter-intelligence/arbiter-core.git
+git clone https://github.com/arbitercorp/arbiter-core.git
 cd arbiter-core
 cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j
@@ -114,8 +114,7 @@ deploy.
 
 - Major architectural rewrites without prior discussion in an issue.
 - New billing primitives in the runtime — billing belongs in the
-  sibling [Quartermaster](https://github.com/arbiter-intelligence/quartermaster)
-  service, not here.
+  external billing service the runtime calls out to, not here.
 - New unsandboxed surfaces. `/exec` is the only unsandboxed tool, and
   any analog has to start out gated behind an explicit operator opt-in.
 - Cosmetic-only changes to the welcome card / chrome. Those are not

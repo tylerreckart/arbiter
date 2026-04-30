@@ -697,7 +697,7 @@ ApiResponse ApiClient::parse_body_openai(const std::string& body) {
         // Usage is optional on openai-compat servers.  Ollama reports it.
         // OpenAI nests cached-prompt tokens under prompt_tokens_details
         // (implicit caching, no write cost), which we surface as
-        // cache_read_tokens so Quartermaster's rate card can discount
+        // cache_read_tokens so the external billing service can discount
         // them.
         auto usage = root->get("usage");
         if (usage && usage->is_object()) {

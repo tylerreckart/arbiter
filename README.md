@@ -87,13 +87,15 @@ Common control commands: `/agents`, `/status`, `/tokens`, `/reset`.
     arbiter --api --port 8080 --bind 0.0.0.0
 
 Authenticate with `Authorization: Bearer <token>`. Set
-`QUARTERMASTER_URL` to delegate eligibility checks and usage
-tracking to the sibling [Quartermaster][quartermaster] billing
-service; unset, the runtime acts as a thin pass-through using the
-configured provider keys, with no caps. Per-endpoint
-documentation lives in [`docs/api/`](docs/api/index.md).
-
-[quartermaster]: https://github.com/arbiter-intelligence/quartermaster
+`ARBITER_BILLING_URL` to delegate eligibility checks and usage
+tracking to an external billing service; unset, the runtime acts
+as a thin pass-through using the configured provider keys, with
+no caps. Anyone running arbiter commercially needs to provide
+their own billing service that implements the runtime's billing
+protocol (three HTTP endpoints under `/v1/runtime/`; the in-tree
+client is a reference for what the runtime sends and expects to
+receive). Per-endpoint documentation lives in
+[`docs/api/`](docs/api/index.md).
 
 ### One-shot
 

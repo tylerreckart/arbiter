@@ -1,5 +1,5 @@
-// index/src/quartermaster_client.cpp — see quartermaster_client.h
-#include "quartermaster_client.h"
+// index/src/billing_client.cpp — see billing_client.h
+#include "billing_client.h"
 
 #include "json.h"
 
@@ -27,8 +27,9 @@ std::string sha256_hex(const std::string& s) {
 size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* out = static_cast<std::string*>(userdata);
     const size_t bytes = size * nmemb;
-    // Hard-cap at 64 KiB — Quartermaster responses are tiny JSON; anything
-    // larger is almost certainly a misconfigured proxy serving HTML.
+    // Hard-cap at 64 KiB — billing-service responses are tiny JSON;
+    // anything larger is almost certainly a misconfigured proxy serving
+    // HTML.
     constexpr size_t kMax = 64 * 1024;
     if (out->size() + bytes > kMax) return 0;
     out->append(ptr, bytes);
@@ -37,7 +38,7 @@ size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
 
 // Pull `int64_t` from a JSON field that may be a number or null.  Returns
 // `null_sentinel` when the field is missing/null so the unlimited-tenant
-// case (Quartermaster sends literal JSON null) round-trips faithfully.
+// case (billing service sends literal JSON null) round-trips faithfully.
 int64_t get_i64_or(const std::shared_ptr<JsonValue>& obj,
                     const char* key,
                     int64_t null_sentinel = 0) {
@@ -50,14 +51,14 @@ int64_t get_i64_or(const std::shared_ptr<JsonValue>& obj,
 
 }  // namespace
 
-QuartermasterClient::QuartermasterClient(std::string base_url)
+BillingClient::BillingClient(std::string base_url)
     : base_url_(std::move(base_url)) {
     // Strip a trailing slash so callers can append "/v1/runtime/..." without
     // worrying about a double separator.  Empty stays empty.
     while (!base_url_.empty() && base_url_.back() == '/') base_url_.pop_back();
 }
 
-int QuartermasterClient::post_json(const std::string& path,
+int BillingClient::post_json(const std::string& path,
                                     const std::string& body,
                                     std::string&        body_out,
                                     int                 timeout_seconds) {
@@ -81,8 +82,9 @@ int QuartermasterClient::post_json(const std::string& path,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    // Follow redirects sparingly.  Quartermaster is a back-office service
-    // we control; redirects mean misconfiguration, not a CDN bounce.
+    // Follow redirects sparingly.  The billing service is back-office
+    // infrastructure under operator control; redirects mean
+    // misconfiguration, not a CDN bounce.
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
 
     long status = 0;
@@ -98,8 +100,8 @@ int QuartermasterClient::post_json(const std::string& path,
     return static_cast<int>(status);
 }
 
-QuartermasterClient::AuthResult
-QuartermasterClient::validate(const std::string& token) {
+BillingClient::AuthResult
+BillingClient::validate(const std::string& token) {
     AuthResult r;
     if (!enabled() || token.empty()) {
         r.error_code = "disabled";
@@ -160,8 +162,8 @@ QuartermasterClient::validate(const std::string& token) {
     return r;
 }
 
-QuartermasterClient::QuotaResult
-QuartermasterClient::check_quota(const std::string& workspace_id,
+BillingClient::QuotaResult
+BillingClient::check_quota(const std::string& workspace_id,
                                   const std::string& model,
                                   int est_input_tokens,
                                   int est_output_tokens,
@@ -188,7 +190,7 @@ QuartermasterClient::check_quota(const std::string& workspace_id,
 
     if (status == 0) {
         // Transport failure — fail open so a flaky billing service can't
-        // brick the runtime.  An operator alert on Quartermaster
+        // brick the runtime.  An operator alert on billing-service
         // unavailability is the right place to act on this; refusing
         // every request would amplify a single-service outage into a
         // total runtime outage.
@@ -217,8 +219,9 @@ QuartermasterClient::check_quota(const std::string& workspace_id,
     }
 
     // Non-200 — propagate the error code and DENY by default.  Unlike a
-    // transport error, a clean 4xx from Quartermaster is a definitive
-    // "this isn't allowed" (unknown_workspace, invalid_input, etc.).
+    // transport error, a clean 4xx from the billing service is a
+    // definitive "this isn't allowed" (unknown_workspace,
+    // invalid_input, etc.).
     r.ok    = true;
     r.allow = false;
     if (j && j->is_object()) {
@@ -230,7 +233,7 @@ QuartermasterClient::check_quota(const std::string& workspace_id,
     return r;
 }
 
-void QuartermasterClient::record_usage(const UsageRecord& rec) {
+void BillingClient::record_usage(const UsageRecord& rec) {
     if (!enabled()) return;
 
     // Build the payload synchronously so we don't capture-by-reference

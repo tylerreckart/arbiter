@@ -171,11 +171,11 @@ void TenantStore::open(const std::string& path) {
 
     // Billing-cleanup migration.  Older DBs carry a usage_log table plus
     // monthly_cap_uc/month_yyyymm/month_to_date_uc columns on `tenants` —
-    // billing has moved to Quartermaster, so drop the dead schema on
-    // first open of an upgraded DB.  ALTER TABLE DROP COLUMN needs
-    // SQLite ≥ 3.35 (Mar 2021); both macOS and modern Linux ship newer
-    // builds.  IF EXISTS / column-existence guards keep the migration
-    // idempotent across reopens.
+    // billing is now external, so drop the dead schema on first open of
+    // an upgraded DB.  ALTER TABLE DROP COLUMN needs SQLite ≥ 3.35
+    // (Mar 2021); both macOS and modern Linux ship newer builds.
+    // IF EXISTS / column-existence guards keep the migration idempotent
+    // across reopens.
     exec_sql(db_, "DROP TABLE IF EXISTS usage_log;");
     auto tenant_col_exists = [this](const char* col) -> bool {
         Stmt q(db_, "PRAGMA table_info(tenants);");
@@ -234,7 +234,8 @@ void TenantStore::open(const std::string& path) {
             ON messages(conversation_id, id);
     )SQL");
     // Billing-cleanup migration: drop the legacy `billed_uc` column on
-    // pre-Quartermaster DBs.  Same idempotent pattern as tenants above.
+    // pre-billing-extraction DBs.  Same idempotent pattern as tenants
+    // above.
     {
         auto msg_col_exists = [this](const char* col) -> bool {
             Stmt q(db_, "PRAGMA table_info(messages);");

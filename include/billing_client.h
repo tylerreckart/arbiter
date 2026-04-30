@@ -1,9 +1,9 @@
 #pragma once
-// index/include/quartermaster_client.h
+// index/include/billing_client.h
 //
-// Thin client for the Quartermaster billing service.  Wraps the three
-// runtime hot-path endpoints documented at
-// ~/arbiter/quartermaster/docs/endpoints/runtime/:
+// Thin client for the external billing service that arbiter delegates
+// eligibility checks and per-turn usage tracking to.  Wraps three
+// runtime hot-path endpoints:
 //
 //   POST /v1/runtime/auth/validate   — exchange an `atr_…` bearer token for
 //                                       its workspace_id + tenant_id.
@@ -11,11 +11,15 @@
 //                                       tenant's plan cap + credit balance.
 //   POST /v1/runtime/usage/record    — post-turn fire-and-forget telemetry.
 //
-// When `base_url` is empty the runtime treats Quartermaster as
-// unconfigured: every call becomes a no-op that returns "allowed" so
-// requests still route through to the configured provider API keys.
-// This is the documented escape hatch for self-hosted deploys that
-// don't run a sibling billing service.
+// When `base_url` is empty the runtime treats billing as unconfigured:
+// every call becomes a no-op that returns "allowed" so requests still
+// route through to the configured provider API keys.  This is the
+// documented escape hatch for self-hosted deploys that don't run an
+// external billing service.
+//
+// The protocol above is what an operator's billing service must
+// implement; arbiter ships no reference implementation under this
+// repository.
 //
 // Auth/validate results are cached in-process by SHA-256(token) for
 // `ttl_seconds` (whatever the server returned) so back-to-back requests
@@ -30,10 +34,10 @@
 
 namespace index_ai {
 
-class QuartermasterClient {
+class BillingClient {
 public:
     // base_url like "http://localhost:4000"; empty = disabled.
-    explicit QuartermasterClient(std::string base_url);
+    explicit BillingClient(std::string base_url);
 
     bool enabled() const { return !base_url_.empty(); }
 

@@ -98,14 +98,14 @@ The stream begins with `request_received`, contains a sequence of `stream_start`
 
 The "after-headers" mode is intentional: by the time the SSE stream is open, returning a non-200 status code would split the response in confusing ways for clients. All recoverable errors come through as `error` SSE events with structured fields; the terminal `done.ok` flag is the canonical success/failure signal.
 
-### Quartermaster denial specifically
+### Billing-service denial specifically
 
-When the configured Quartermaster service rejects the pre-flight quota check (suspended tenant, exhausted budget, etc.):
+When the configured billing service rejects the pre-flight quota check (suspended tenant, exhausted budget, etc.):
 
 1. `error` event with the upstream `message`, `reason` (`tenant_suspended` | `tenant_disabled` | `insufficient_budget`), and the matching `*_micro_cents` budget fields.
 2. `done` with `ok: false` and no further turns.
 
-A transport error to Quartermaster fails open — the runtime proceeds rather than blocking the request on a billing-service blip.
+A transport error to the billing service fails open — the runtime proceeds rather than blocking the request on a billing-service blip.
 
 ## See also
 

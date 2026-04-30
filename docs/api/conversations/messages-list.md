@@ -55,7 +55,7 @@ curl -H "Authorization: Bearer atr_…" \
 }
 ```
 
-User messages have zero tokens (they're the input, not a measured turn). Assistant messages carry the **full request totals** (cumulative across the master + every delegated / parallel sub-agent for that turn). `request_id` correlates with the SSE stream and the matching Quartermaster usage record.
+User messages have zero tokens (they're the input, not a measured turn). Assistant messages carry the **full request totals** (cumulative across the master + every delegated / parallel sub-agent for that turn). `request_id` correlates with the SSE stream and the matching billing-service usage record.
 
 The assistant `content` field is the **cumulative** master output across every tool-call re-entry iteration, joined with newlines. This is what the next message replays into the agent's history. Field schemas: [Data model → ConversationMessage](../concepts/data-model.md#conversationmessage).
 

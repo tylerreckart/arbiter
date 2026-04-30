@@ -139,10 +139,10 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     //
     // Tenant identity (tokens, conversations, artifacts, scratchpad)
     // runs through TenantStore (`~/.arbiter/tenants.db`).  Eligibility
-    // and per-turn billing are delegated to Quartermaster when
-    // $QUARTERMASTER_URL is set; otherwise the runtime routes every
-    // authenticated request through to the configured provider keys
-    // with no cap enforcement.
+    // and per-turn billing are delegated to an external billing service
+    // when $ARBITER_BILLING_URL is set; otherwise the runtime routes
+    // every authenticated request through to the configured provider
+    // keys with no cap enforcement.
     std::string dir = get_config_dir();
     auto api_keys = get_api_keys();
 
@@ -195,13 +195,13 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     } else if (const char* k = std::getenv("BRAVE_SEARCH_API_KEY"); k && *k) {
         opts.search_api_key = k;
     }
-    // Quartermaster billing host.  Empty ⇒ no billing; requests pass
+    // External billing host.  Empty ⇒ no billing; requests pass
     // through to the configured provider keys.  See ApiServerOptions.
-    if (const char* q = std::getenv("QUARTERMASTER_URL"); q && *q) {
-        opts.quartermaster_url = q;
+    if (const char* q = std::getenv("ARBITER_BILLING_URL"); q && *q) {
+        opts.billing_url = q;
     }
 
-    const bool billing_on = !opts.quartermaster_url.empty();
+    const bool billing_on = !opts.billing_url.empty();
 
     ApiServer server(std::move(opts), tenants);
 
@@ -222,7 +222,7 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     std::cout << "  *     /v1/admin/tenants[/:id]  (Bearer <admin-token>)\n";
     std::cout << "Tenants: " << all.size() << " configured"
               << "  (billing: "
-              << (billing_on ? "Quartermaster"
+              << (billing_on ? "external service"
                               : "off — requests use configured provider keys")
               << ")\n";
     std::cout << "Logging: " << (log_verbose ? "verbose (per-event mirror to stderr)"

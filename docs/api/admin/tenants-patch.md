@@ -2,7 +2,7 @@
 
 **Auth:** admin — _Status:_ stable
 
-Update a tenant. The only mutable field today is `disabled` — billing-related fields (caps, plans, credits) live in the sibling Quartermaster service.
+Update a tenant. The only mutable field today is `disabled` — billing-related fields (caps, plans, credits) live in the external billing service.
 
 ## Request
 

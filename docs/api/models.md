@@ -4,7 +4,7 @@
 
 List the models arbiter knows how to route. Powers the frontend's model picker. The catalogue changes only when the operator deploys a new build — clients should cache it briefly and re-fetch on a fresh session.
 
-Pricing is not included in the runtime response — it lives in **Quartermaster's** rate card. Frontends that need cost-per-token figures should fetch them from the Quartermaster pricing endpoint instead.
+Pricing is not included in the runtime response — it lives in the configured billing service's rate card. Frontends that need cost-per-token figures should fetch them from the billing service directly.
 
 ## Request
 

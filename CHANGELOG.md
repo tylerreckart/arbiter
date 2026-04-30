@@ -8,14 +8,16 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
-- Quartermaster billing integration. When `QUARTERMASTER_URL` is set,
-  every authenticated request is exchanged for a workspace_id via
+- External billing-service integration. When `ARBITER_BILLING_URL` is
+  set, every authenticated request is exchanged for a workspace_id via
   `POST /v1/runtime/auth/validate`, pre-flighted against
   `POST /v1/runtime/quota/check`, and post-turn telemetry is fired
   (fire-and-forget, idempotent on `request_id-tN` per turn) to
   `POST /v1/runtime/usage/record`. With the env var unset, the runtime
   is a thin pass-through using the operator-supplied provider keys —
-  no eligibility checks, no caps.
+  no eligibility checks, no caps. The runtime ships no billing-service
+  reference implementation; commercial deployments must implement the
+  protocol against a service of their choosing.
 - Per-tenant artifact store. `POST /v1/conversations/:id/artifacts` and
   the matching list / get / raw / delete endpoints persist agent-
   generated files server-side with per-conversation and per-tenant
@@ -50,22 +52,22 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `set_cap`, `list_usage`, `usage_summary`, `UsageEntry`, `UsageBucket`,
   and `CostParts` are removed from the public API.
 - **Breaking**: `/v1/admin/usage` and `/v1/admin/usage/summary` removed
-  — the usage ledger lives in Quartermaster.
+  — the usage ledger lives in the external billing service.
 - **Breaking**: SSE event shapes lost their cost fields.
   `token_usage` no longer carries `provider_micro_cents`,
   `billed_micro_cents`, `markup_micro_cents`, or `mtd_micro_cents`.
   `done` no longer carries `cap_exceeded`, `provider_micro_cents`,
   `billed_micro_cents`, or `markup_micro_cents`. `error` events for
-  Quartermaster denials carry `reason`, `*_micro_cents` budget fields,
-  and a human-readable `message` instead.
+  billing-service denials carry `reason`, `*_micro_cents` budget
+  fields, and a human-readable `message` instead.
 - **Breaking**: `POST /v1/admin/tenants` no longer accepts `cap_usd` or
   `monthly_cap_micro_cents` in the body. `PATCH /v1/admin/tenants/:id`
   only accepts `disabled`.
 - **Breaking**: CLI `--add-tenant` no longer takes `--cap`, and
   `--tenant-usage` is gone.
 - **Breaking**: `/v1/models` no longer includes pricing fields. The
-  endpoint returns `id` + `provider` only; pricing now lives in
-  Quartermaster's rate card.
+  endpoint returns `id` + `provider` only; pricing now lives in the
+  billing service's rate card.
 - `release.yml` now publishes to this repo's own GitHub Releases via
   `GITHUB_TOKEN`; the previous public-companion-repo flow and
   `RELEASES_REPO_TOKEN` requirement are gone.
@@ -78,7 +80,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ### Removed
 - `cost_tracker` module deleted entirely. Local pricing tables and the
-  REPL session-cost footer are gone — Quartermaster owns pricing.
+  REPL session-cost footer are gone — pricing is now external.
 - `markup_uc`, `usd_to_uc`, `uc_to_usd`, `uc_to_cents_ceil` helpers
   removed.
 - `is_priced(model)` removed from `api_client.h`.

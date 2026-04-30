@@ -37,7 +37,7 @@ curl -X POST \
 
 The `token` field is the plaintext tenant token and is **only** returned here.
 
-Caps, usage tracking, and invoicing are owned by the sibling [Quartermaster](../../../../quartermaster/docs/README.md) service when configured — provision the matching workspace there separately.
+Caps, usage tracking, and invoicing are owned by the external billing service when configured — provision the matching workspace there separately.
 
 ## Failure modes
 

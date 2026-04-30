@@ -74,9 +74,9 @@ that simply demonstrate them are not vulnerabilities:
 - **Local file reads through `/read`** are bounded by `arbiter`'s
   process credentials. If an agent on a developer's machine reads a
   file the user already has access to, that's the documented behavior.
-- **Provider rate-limit / cost-spike issues**. Use Quartermaster (or
-  any sibling billing service) to enforce per-tenant caps if you need
-  cost protection.
+- **Provider rate-limit / cost-spike issues**. Configure an external
+  billing service (`ARBITER_BILLING_URL`) to enforce per-tenant caps
+  if you need cost protection.
 - Vulnerabilities in third-party dependencies that have already been
   publicly disclosed and are tracked upstream — please file those with
   the dependency rather than here, but we'd appreciate a heads-up.
@@ -88,15 +88,15 @@ If you run `arbiter --api` in a multi-tenant context, please:
 1. Always front the server with a TLS-terminating reverse proxy.
 2. Bind to `127.0.0.1` and let the proxy handle public traffic, or
    restrict the public bind via firewall rules.
-3. Set `ADMIN_TOKENS` (Quartermaster) and the runtime's admin token via
-   environment, never via tracked config files.
+3. Set the runtime's admin token (and any tokens your billing service
+   needs) via environment variables, never via tracked config files.
 4. Rotate tenant tokens promptly when staff turnover happens — the
    `--disable-tenant` CLI flag flips a kill-switch immediately.
 5. Run the process under a dedicated unprivileged user. The default
    `/exec` policy on the API path is "disabled," but defense in depth
    matters — a future bug shouldn't compromise the host.
-6. Use Quartermaster (`QUARTERMASTER_URL`) to cap spend per tenant. The
-   runtime alone does not enforce caps.
+6. Configure an external billing service (`ARBITER_BILLING_URL`) to
+   cap spend per tenant. The runtime alone does not enforce caps.
 7. Outbound fetches are filtered through an SSRF guard
    (`src/commands.cpp` — `is_blocked_address`) that rejects RFC1918,
    loopback, link-local, CGNAT, and cloud-metadata-adjacent addresses

@@ -10,7 +10,7 @@
 //   • A disabled flag for admin kill-switches.
 //
 // Billing — eligibility, pricing, ledger, caps — is delegated to the
-// sibling Quartermaster service (see `include/quartermaster_client.h`)
+// external billing service (see `include/billing_client.h`)
 // and is no longer this store's responsibility.  The historical
 // `usage_log`, `monthly_cap_uc`, and `month_to_date_uc` fields have
 // been removed; existing DBs upgrade by dropping the orphan columns

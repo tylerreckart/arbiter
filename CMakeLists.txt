@@ -79,7 +79,7 @@ set(INDEX_AI_SOURCES
     src/constitution.cpp
     src/orchestrator.cpp
     src/api_server.cpp
-    src/quartermaster_client.cpp
+    src/billing_client.cpp
     src/tenant_store.cpp
     src/json.cpp
     src/commands.cpp

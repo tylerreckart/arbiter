@@ -337,7 +337,7 @@ static void cmd_interactive() {
         if (p) p->tool_indicator.bump(kind, ok);
     });
     // No local cost callback in REPL mode — billing/cost reporting has
-    // moved to the Quartermaster service for the API path, and the
+    // moved to an external billing service on the API path, and the
     // interactive REPL no longer prints per-turn cost summaries.
     orch.set_agent_start_callback([&](const std::string& agent_id) {
         Pane* p = g_active_pane;
@@ -418,7 +418,7 @@ static void cmd_interactive() {
                 return;
             }
             if (cmd == "tokens") {
-                output_queue.push_msg("token stats: removed (billing now lives in Quartermaster)");
+                output_queue.push_msg("token stats: removed (billing is external)");
                 return;
             }
             if (cmd == "use" || cmd == "switch") {
@@ -1519,8 +1519,8 @@ int main(int argc, char* argv[]) {
         }
         // Tenant identity admin — `arbiter --api` uses the resulting
         // tenants.db for bearer-token auth.  Billing (caps, usage, the
-        // ledger) lives in the Quartermaster sibling service when
-        // configured via $QUARTERMASTER_URL.
+        // ledger) lives in the external billing service when configured
+        // via $ARBITER_BILLING_URL.
         if (arg1 == "--add-tenant") {
             if (argc < 3) {
                 std::cerr << "Usage: arbiter --add-tenant <name>\n";
@@ -1570,7 +1570,7 @@ int main(int argc, char* argv[]) {
                 "  ANTHROPIC_API_KEY                  Claude API key\n"
                 "  OPENAI_API_KEY                     OpenAI API key\n"
                 "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n"
-                "  QUARTERMASTER_URL                  Billing service base URL.  When set, requests\n"
+                "  ARBITER_BILLING_URL                Billing service base URL.  When set, requests\n"
                 "                                     pre-flight against /v1/runtime/quota/check and\n"
                 "                                     post-turn usage to /v1/runtime/usage/record.\n"
                 "                                     Empty ⇒ no billing; requests use provider keys.\n\n"

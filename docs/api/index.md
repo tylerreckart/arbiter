@@ -2,7 +2,7 @@
 
 Arbiter exposes its multi-agent orchestrator as an HTTP + Server-Sent Events API. One `POST /v1/orchestrate` drives the full agentic loop — master agent turns, delegated and parallel sub-agent calls, tool invocations, generated files — and streams the whole thing back as SSE events.
 
-Billing — eligibility checks, rate cards, caps, invoicing — is delegated to the sibling **Quartermaster** service when `QUARTERMASTER_URL` is set. The runtime exchanges every bearer for a workspace_id via `POST /v1/runtime/auth/validate`, pre-flights against `POST /v1/runtime/quota/check`, and posts post-turn telemetry to `POST /v1/runtime/usage/record`. With the env var unset, the runtime acts as a thin pass-through using the operator-supplied provider keys, with no eligibility checks.
+Billing — eligibility checks, rate cards, caps, invoicing — is delegated to an external billing service when `ARBITER_BILLING_URL` is set. The runtime exchanges every bearer for a workspace_id via `POST /v1/runtime/auth/validate`, pre-flights against `POST /v1/runtime/quota/check`, and posts post-turn telemetry to `POST /v1/runtime/usage/record`. Operators wanting a commercial deployment must implement that protocol against a service of their choosing — arbiter ships no reference implementation under this repository. With the env var unset, the runtime acts as a thin pass-through using the operator-supplied provider keys, with no eligibility checks.
 
 Start with `arbiter --api --port 8080`. The default bind is `127.0.0.1`; production deployments should put TLS termination, DDoS protection, and rate limiting in a reverse proxy (nginx, caddy, cloudflare) in front of the process.
 
@@ -78,7 +78,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/admin/tenants/:id`](admin/tenants-get.md)
 - [`PATCH /v1/admin/tenants/:id`](admin/tenants-patch.md)
 
-Usage ledger, rate cards, caps, and invoices live in **Quartermaster**, not here. See its docs for `/v1/admin/usage`-equivalent endpoints.
+Usage ledger, rate cards, caps, and invoices live in the operator's billing service, not here.
 
 ## Versioning
 

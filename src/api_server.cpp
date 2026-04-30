@@ -14,7 +14,7 @@
 #include "json.h"
 #include "mcp/manager.h"
 #include "orchestrator.h"
-#include "quartermaster_client.h"
+#include "billing_client.h"
 #include "tenant_store.h"
 #include "tui/stream_filter.h"
 #include "api_client.h"
@@ -701,7 +701,7 @@ void emit_error(SseStream& sse, const std::string& msg) {
 // ─── Admin endpoints ────────────────────────────────────────────────────────
 //
 // All admin routes are JSON-in, JSON-out.  Billing has moved to
-// Quartermaster — this surface only manages tenant identity and the
+// the billing service — this surface only manages tenant identity and the
 // per-tenant access tokens used by the runtime hot path.
 
 std::shared_ptr<JsonValue> tenant_to_json(const Tenant& t) {
@@ -822,7 +822,7 @@ void handle_admin(int fd, const HttpRequest& req,
                     return;
                 }
                 // `disabled` is the only mutable field — billing-related
-                // fields have moved to Quartermaster.
+                // fields have moved to the billing service.
                 if (auto v = body->get("disabled"); v && v->is_bool()) {
                     tenants.set_disabled(std::to_string(id), v->as_bool());
                 }
@@ -839,7 +839,7 @@ void handle_admin(int fd, const HttpRequest& req,
         return;
     }
 
-    // Usage/billing endpoints have moved to Quartermaster.  The runtime
+    // Usage/billing endpoints have moved to the billing service.  The runtime
     // no longer exposes /v1/admin/usage or /v1/admin/usage/summary —
     // the sibling billing service owns the ledger and any rollups.
     admin_error(fd, 404, "admin resource not found");
@@ -1590,7 +1590,7 @@ void handle_conversation_messages(int fd, int64_t id, const HttpRequest& req,
 void handle_models_list(int fd) {
     // Static catalog of model ids the orchestrator can route to, paired
     // with the provider that handles them.  Pricing is intentionally
-    // absent — Quartermaster's rate card is the source of truth for
+    // absent — the billing service's rate card is the source of truth for
     // billing-grade numbers; the runtime only needs to know what
     // routes to what provider.
     struct ModelEntry { const char* id; const char* provider; };
@@ -2452,14 +2452,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         InFlightRegistry& in_flight,
                         // Nullable.  When non-null, drives pre-flight quota
                         // checks and post-turn usage records — the runtime
-                        // becomes a thin gateway and Quartermaster owns
+                        // becomes a thin gateway and the billing service owns
                         // billing.  When null, neither call fires; the
                         // turn runs straight through to the provider keys
                         // configured in `opts.api_keys`.
-                        QuartermasterClient* quartermaster,
-                        // The Quartermaster workspace_id the bearer maps to
+                        BillingClient* billing,
+                        // The billing service's workspace_id the bearer maps to
                         // (returned from /v1/runtime/auth/validate).  Empty
-                        // when `quartermaster` is null.
+                        // when `billing` is null.
                         const std::string& workspace_id,
                         const Tenant& tenant_in,
                         const std::string& agent_override = "",
@@ -3838,30 +3838,30 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             emit("tool_call", p);
         });
     // Per-turn telemetry.  Direct billing has been pulled out of the
-    // runtime — Quartermaster (when configured) is the source of truth
+    // runtime — the billing service (when configured) is the source of truth
     // for cost accounting, cap enforcement, and credit consumption.
     // The runtime no longer prices turns locally; the SSE event carries
-    // raw token counts and the model id, and Quartermaster's
+    // raw token counts and the model id, and the billing service's
     // `usage/record` endpoint settles the µ¢ figure on its side.
     std::atomic<int> turn_counter{0};
 
     orch->set_cost_callback(
-        [&emit, &turn_counter, quartermaster, &workspace_id,
+        [&emit, &turn_counter, billing, &workspace_id,
          &request_id, orch_ptr, stamp](const std::string& id,
                                           const std::string& model,
                                           const ApiResponse& resp) {
-            // Per-turn idempotency key for Quartermaster.  The runtime's
+            // Per-turn idempotency key for the billing service.  The runtime's
             // request_id covers the whole orchestration (master + delegated
             // sub-agents); each cost-callback firing is one logical LLM
-            // turn, so we suffix a counter to give Quartermaster a stable
+            // turn, so we suffix a counter to give the billing service a stable
             // unique id per turn that survives a retry of *that* turn.
             const int turn_idx = turn_counter.fetch_add(1);
             const std::string turn_request_id =
                 request_id + "-t" + std::to_string(turn_idx);
 
-            if (quartermaster && quartermaster->enabled() &&
+            if (billing && billing->enabled() &&
                 !workspace_id.empty()) {
-                QuartermasterClient::UsageRecord ur;
+                BillingClient::UsageRecord ur;
                 ur.request_id    = turn_request_id;
                 ur.workspace_id  = workspace_id;
                 ur.model         = model;
@@ -3870,7 +3870,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 ur.cached_tokens = resp.cache_read_tokens;
                 ur.agent_id      = id;
                 ur.depth         = orch_ptr->current_stream_depth();
-                quartermaster->record_usage(ur);
+                billing->record_usage(ur);
             }
 
             auto p = jobj();
@@ -3928,22 +3928,22 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         emit("request_received", p);
     }
 
-    // Pre-flight Quartermaster quota check.  Asks the billing service
+    // Pre-flight quota check.  Asks the billing service
     // whether this tenant has the budget to run the upcoming turn.  We
     // only know the master agent's model up front (delegations may pick
     // different models mid-stream), so the estimate is approximate;
-    // Quartermaster's per-turn `usage/record` callback below settles
+    // the billing service's per-turn `usage/record` callback below settles
     // the actual cost.
     //
-    // Skipped entirely when Quartermaster is not configured — the
+    // Skipped entirely when the billing service is not configured — the
     // runtime then becomes a thin pass-through to the operator-supplied
     // provider keys with no cap enforcement, per the documented escape
-    // hatch in `ApiServerOptions::quartermaster_url`.
-    if (quartermaster && quartermaster->enabled() && !workspace_id.empty()) {
+    // hatch in `ApiServerOptions::billing_url`.
+    if (billing && billing->enabled() && !workspace_id.empty()) {
         // Best-effort model: prefer the inline agent_def's declared
         // model so quota_check prices against the right rate card; fall
         // back to a representative default when no agent_def is present
-        // (e.g. resolved-by-id catalog agent — Quartermaster will treat
+        // (e.g. resolved-by-id catalog agent — the billing service will treat
         // an unknown model as priced-at-zero, which is acceptable for
         // the budget *check* though not for `usage/record`).
         const std::string preflight_model =
@@ -3957,7 +3957,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         const int est_in  = static_cast<int>(message.size() / 3);
         const int est_out = 4096;
 
-        auto qr = quartermaster->check_quota(workspace_id, preflight_model,
+        auto qr = billing->check_quota(workspace_id, preflight_model,
                                               est_in, est_out, request_id);
         if (qr.ok && !qr.allow) {
             auto e = jobj();
@@ -3982,7 +3982,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
         // Transport errors (qr.ok=false) fall through — fail open so a
         // billing-service blip doesn't take the runtime offline.  An
-        // operator alert on Quartermaster availability is the right
+        // operator alert on the billing service availability is the right
         // place to act on this.
     }
 
@@ -4053,9 +4053,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         m["output_tokens"] = jnum(static_cast<double>(resp.output_tokens));
         m["files_bytes"]   = jnum(static_cast<double>(bytes_captured.load()));
 
-        // No local cost figure on the runtime side — Quartermaster's
+        // No local cost figure on the runtime side — the billing service's
         // ledger is authoritative for the billed amount.  Consumers
-        // wanting a request-level total query Quartermaster directly.
+        // wanting a request-level total query the billing service directly.
         m["tenant_id"]   = jnum(static_cast<double>(tenant.id));
         m["request_id"]  = jstr(request_id);
         if (conversation_id > 0)
@@ -4096,9 +4096,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
 ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     : opts_(std::move(opts)), tenants_(tenants) {
-    if (!opts_.quartermaster_url.empty()) {
-        quartermaster_ = std::make_unique<QuartermasterClient>(
-            opts_.quartermaster_url);
+    if (!opts_.billing_url.empty()) {
+        billing_ = std::make_unique<BillingClient>(
+            opts_.billing_url);
     }
 }
 
@@ -4289,14 +4289,14 @@ void ApiServer::handle_connection(int fd) {
         return;
     }
 
-    // Quartermaster gate.  When billing is configured, every authenticated
+    // the billing service gate.  When billing is configured, every authenticated
     // request goes through /v1/runtime/auth/validate so a back-office
     // suspension or revocation lands within the cached TTL window.  A
-    // transport-error to Quartermaster fails open — we'd rather bill
+    // transport-error to the billing service fails open — we'd rather bill
     // imperfectly than brick the runtime on a single-service outage.
     std::string workspace_id;
-    if (quartermaster_ && quartermaster_->enabled()) {
-        auto av = quartermaster_->validate(token);
+    if (billing_ && billing_->enabled()) {
+        auto av = billing_->validate(token);
         if (av.ok) {
             workspace_id = av.workspace_id;
         } else if (av.http_status == 401) {
@@ -4312,13 +4312,13 @@ void ApiServer::handle_connection(int fd) {
         }
         // Anything else (transport_error, 5xx, malformed) falls through —
         // workspace_id stays empty, so downstream quota_check sees an
-        // unknown workspace and the QuartermasterClient's own
+        // unknown workspace and the BillingClient's own
         // fail-open path keeps the request flowing.
     }
 
     if (req.method == "POST" && req.path == "/v1/orchestrate") {
         handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
-                           quartermaster_.get(), workspace_id, *tenant);
+                           billing_.get(), workspace_id, *tenant);
         return;
     }
 
@@ -4385,7 +4385,7 @@ void ApiServer::handle_connection(int fd) {
                         return;
                     }
                     handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
-                                        quartermaster_.get(), workspace_id,
+                                        billing_.get(), workspace_id,
                                         *tenant,
                                         /*agent_override=*/conv->agent_id,
                                         /*conversation_id=*/id,
@@ -4517,7 +4517,7 @@ void ApiServer::handle_connection(int fd) {
             }
             if (req.method == "POST" && segs.size() == 4 && segs[3] == "chat") {
                 handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
-                                    quartermaster_.get(), workspace_id,
+                                    billing_.get(), workspace_id,
                                     *tenant, segs[2]);
                 return;
             }

@@ -12,7 +12,7 @@ Reference shapes for the rows arbiter persists. Every endpoint that returns one 
 | `created_at`   | integer | Epoch seconds. |
 | `last_used_at` | integer | Epoch seconds. 0 if the tenant has never made a call. |
 
-Billing fields (caps, plan, MTD, usage entries) live in the sibling Quartermaster service and are not part of the runtime data model.
+Billing fields (caps, plan, MTD, usage entries) live in the external billing service and are not part of the runtime data model.
 
 ## Conversation
 

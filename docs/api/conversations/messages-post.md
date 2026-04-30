@@ -48,7 +48,7 @@ The `request_id` from this call's `request_received` event is the handle to pass
 | 400    | Body isn't a JSON object; missing `message`; `agent_def` shape invalid. | `{"error": "..."}` |
 | 401    | Missing / invalid bearer. | `{"error": "..."}` |
 | 404    | Conversation doesn't exist or belongs to another tenant. | `{"error": "conversation not found"}` |
-| 200 + `done.ok = false` | LLM upstream failure, Quartermaster denial, transient I/O. See [`POST /v1/orchestrate`](../orchestrate.md#failure-modes). | SSE stream |
+| 200 + `done.ok = false` | LLM upstream failure, billing-service denial, transient I/O. See [`POST /v1/orchestrate`](../orchestrate.md#failure-modes). | SSE stream |
 
 ## See also
 
