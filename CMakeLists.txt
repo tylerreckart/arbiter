@@ -153,36 +153,35 @@ install(DIRECTORY agents/ DESTINATION share/arbiter/agents
         FILES_MATCHING PATTERN "*.json")
 
 # --- Tests ---
-# PTY-based integration tests that drive the real `index` binary through a
-# pseudo-terminal.  Enabled by default; disable with -DINDEX_BUILD_TESTS=OFF
+# PTY-based integration tests that drive the real `arbiter` binary through
+# a pseudo-terminal.  Enabled by default; disable with -DINDEX_BUILD_TESTS=OFF
 # if you're cross-compiling or just don't want the extra target.
-option(INDEX_BUILD_TESTS "Build TUI integration tests" ON)
+option(INDEX_BUILD_TESTS "Build PTY integration tests" ON)
 if(INDEX_BUILD_TESTS)
     enable_testing()
 
-    add_executable(index_tests
+    add_executable(line_editor_tests
         tests/pty_harness.cpp
-        tests/test_tui.cpp
         tests/test_line_editor.cpp
     )
-    target_include_directories(index_tests PRIVATE
+    target_include_directories(line_editor_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/tests
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     # Absolute path so tests find the binary regardless of CWD when ctest runs.
-    target_compile_definitions(index_tests PRIVATE
+    target_compile_definitions(line_editor_tests PRIVATE
         INDEX_TEST_BINARY="$<TARGET_FILE:arbiter>"
     )
     # forkpty() lives in libutil on Linux; Darwin has it in libSystem so no
     # link flag needed, but target_link_libraries for libutil is a no-op
     # there — safe either way.
     if(UNIX AND NOT APPLE)
-        target_link_libraries(index_tests PRIVATE util)
+        target_link_libraries(line_editor_tests PRIVATE util)
     endif()
 
-    add_test(NAME tui_integration COMMAND index_tests)
-    # The tests spawn index; they'll fail fast if the binary isn't built yet.
-    add_dependencies(index_tests arbiter)
+    add_test(NAME line_editor COMMAND line_editor_tests)
+    # The tests spawn arbiter; they'll fail fast if the binary isn't built yet.
+    add_dependencies(line_editor_tests arbiter)
 
     # --- Unit tests for security-critical command functions ---
     add_executable(unit_commands

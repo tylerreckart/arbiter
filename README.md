@@ -12,7 +12,7 @@ shell command, write a file, record a memory, call each other.
 It runs in three shapes.
 
 - `arbiter` — an interactive terminal client. A persistent header shows
-  the current agent, model, and cost. Commands you type while agents are
+  the current agent and model. Commands you type while agents are
   working queue up and dispatch in order. Parallel sub-agents render in
   their own panes.
 - `arbiter --api` — a multi-tenant HTTP server with bearer-token auth and
@@ -24,6 +24,18 @@ It runs in three shapes.
 Arbiter is experimental. The slash-command surface, agent constitutions,
 and HTTP shape are subject to change. `/exec` is unsandboxed; treat it
 accordingly.
+
+
+## Documentation
+
+- [`docs/api/`](docs/api/index.md) — full HTTP API reference: concept
+  pages (tenants, auth, SSE events, fleet streaming, MCP, artifacts,
+  structured memory, operations) and one page per endpoint.
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed, when. Breaking
+  changes are flagged.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, tests, PR conventions.
+- [`SECURITY.md`](SECURITY.md) — disclosure path for security
+  vulnerabilities and operator hardening notes.
 
 
 ## Install
@@ -76,12 +88,12 @@ Common control commands: `/agents`, `/status`, `/tokens`, `/reset`.
 
 Authenticate with `Authorization: Bearer <token>`. Set
 `QUARTERMASTER_URL` to delegate eligibility checks and usage
-tracking to the sibling [Quartermaster][quartermaster] service;
-unset, the runtime acts as a thin pass-through using the
+tracking to the sibling [Quartermaster][quartermaster] billing
+service; unset, the runtime acts as a thin pass-through using the
 configured provider keys, with no caps. Per-endpoint
-documentation lives in `docs/api/`.
+documentation lives in [`docs/api/`](docs/api/index.md).
 
-[quartermaster]: https://github.com/arbiter-runtime/quartermaster
+[quartermaster]: https://github.com/arbiter-intelligence/quartermaster
 
 ### One-shot
 
@@ -259,4 +271,9 @@ told to deliver what it has.
 Routing is by model-string prefix, so executor and advisor can be on
 different providers. Advisor tokens post to the caller's cost ledger
 using the advisor's model pricing.
+
+
+---
+
+Licensed under the [Apache License 2.0](LICENSE).
 

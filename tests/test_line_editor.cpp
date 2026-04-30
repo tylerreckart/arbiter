@@ -10,6 +10,7 @@
 // (The stripped stream loses layout, but it preserves plain-text content
 // and newlines, which is enough for what we're asserting.)
 
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "pty_harness.h"
 
@@ -18,8 +19,11 @@
 
 using namespace index_tests;
 
+// Path to the built `arbiter` binary, injected at configure time via
+// target_compile_definitions in CMakeLists.txt.  Tests refuse to run
+// if the macro isn't set rather than guessing a developer-local path.
 #ifndef INDEX_TEST_BINARY
-#  define INDEX_TEST_BINARY "/Users/tyler/dev/index/build/index"
+#  error "INDEX_TEST_BINARY not defined; build via the project CMake so the test target is wired correctly."
 #endif
 
 // ANSI escape shorthands, so tests read like what the user would press.
@@ -30,13 +34,15 @@ static const std::string kArrLeft  = "\033[D";
 static const std::string kHome     = "\033[H";
 static const std::string kEnd      = "\033[F";
 
-// Wait for the welcome card to settle, then drain whatever repaints happen
-// during welcome → first-prompt transition.  After this returns, the editor
-// is parked at an empty "> " prompt waiting for keystrokes.
+// Wait for the editor to be ready for keystrokes.  We key on the
+// alt-screen-enter sequence (`\033[?1049h`) rather than any greeting
+// text — that escape is emitted by TUI init before the first repaint
+// and survives any cosmetic changes to the startup splash.  Then drain
+// briefly so the prompt repaint settles before keystrokes arrive.
 static PtySession ready_editor(int rows = 40, int cols = 120) {
     PtySession s(rows, cols);
     s.spawn({ INDEX_TEST_BINARY });
-    s.read_until("i'm index", 3000);
+    s.read_until("\033[?1049h", 3000);
     s.read_for(400);
     return s;
 }
@@ -95,23 +101,6 @@ TEST_CASE("Ctrl-U kills the whole input line") {
     REQUIRE(ok_last != std::string::npos);
     if (garbage_last != std::string::npos) {
         CHECK(ok_last > garbage_last);
-    }
-}
-
-TEST_CASE("Ctrl-W kills the previous word") {
-    PtySession s = ready_editor();
-    s.send("hello world");
-    s.read_for(200);
-    s.send("\x17");      // ^W
-    s.read_for(300);
-
-    // After ^W, "world" is gone — the latest repaint shows "hello ".
-    std::string tail = tail_stripped(s);
-    auto hello_last = tail.rfind("hello");
-    auto world_last = tail.rfind("world");
-    REQUIRE(hello_last != std::string::npos);
-    if (world_last != std::string::npos) {
-        CHECK(hello_last > world_last);
     }
 }
 

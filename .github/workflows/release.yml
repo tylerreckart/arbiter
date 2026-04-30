@@ -1,25 +1,17 @@
 name: Build and publish release
 
-# Build arbiter on tag push, stage each platform's binary into a tarball,
-# and publish the whole set as a GitHub Release on the PUBLIC companion
-# repo (hapticsoftware/arbiter-releases) so that install.sh can fetch them
-# without auth.  The source repo (this one) stays private.
+# Build arbiter on tag push and publish a GitHub Release on this same
+# repository with prebuilt binaries for each platform.  Tag-driven —
+# pushing a `vX.Y.Z` tag is the only thing that fires this.
 #
 # Setup prereqs (one-time):
-#   1. Create a public companion repo:
-#        https://github.com/hapticsoftware/arbiter-releases
-#      (description: "prebuilt binaries for arbiter"; enable Releases;
-#      no source files needed — this workflow will populate it)
-#   2. Generate a fine-grained PAT with 'Contents: Read and write' scoped
-#      to that companion repo only.
-#   3. In THIS repo: Settings → Secrets and variables → Actions → New
-#      repository secret, name RELEASES_REPO_TOKEN, paste the PAT.
-#   4. Push a tag (e.g., git tag v0.3.6 && git push origin v0.3.6) and
-#      this workflow runs.  Or trigger it manually via Actions → Build
-#      and publish release → Run workflow → pick a tag.
+#   - Bump `project(arbiter VERSION X.Y.Z ...)` in CMakeLists.txt to match
+#     the tag you're about to push (the binary embeds it via INDEX_VERSION).
+#   - `git tag vX.Y.Z && git push origin vX.Y.Z` runs this workflow.
+#     Or: Actions → Build and publish release → Run workflow → pick a tag.
 #
 # Asset naming (kept version-free so `releases/latest/download/...` works
-# as a stable URL in install.sh):
+# as a stable URL in install scripts):
 #   arbiter-macos-arm64.tar.gz    (+ .sha256 sibling)
 #   arbiter-macos-x86_64.tar.gz   (+ .sha256)
 #   arbiter-linux-x86_64.tar.gz   (+ .sha256)
@@ -35,8 +27,8 @@ on:
         description: "Tag to build and publish (e.g., v0.3.6)"
         required: true
 
-# Default perms are read-only; the publish job mints its own write token
-# via the RELEASES_REPO_TOKEN secret.
+# Default perms are read-only; the publish job grants itself `contents:
+# write` to upload assets to the GitHub Release of this repo.
 permissions:
   contents: read
 
@@ -136,9 +128,11 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Publish to public releases repo
+    name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -151,25 +145,24 @@ jobs:
 
       - name: Create release and upload
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          RELEASES_REPO="hapticsoftware/arbiter-releases"
-          SOURCE_REPO="${{ github.repository }}"
+          REPO="${{ github.repository }}"
 
           # Create the release if it doesn't already exist.  --clobber on
           # upload makes re-running the workflow for the same tag idempotent
           # (assets replaced rather than duplicated).
-          if ! gh release view "$TAG" --repo "$RELEASES_REPO" >/dev/null 2>&1; then
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release create "$TAG" \
-              --repo "$RELEASES_REPO" \
+              --repo "$REPO" \
               --title "arbiter $TAG" \
-              --notes "Prebuilt binaries for arbiter $TAG."$'\n\nSource: private repo on GitHub.'
+              --generate-notes
           fi
 
           gh release upload "$TAG" \
-            --repo "$RELEASES_REPO" \
+            --repo "$REPO" \
             --clobber \
             artifacts/arbiter-*.tar.gz \
             artifacts/arbiter-*.tar.gz.sha256
