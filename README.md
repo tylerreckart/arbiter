@@ -330,9 +330,3 @@ in the per-tenant SQLite catalogue when running under `--api`.
 
 The bundle composer applies only to the unset mode; `writer` and `planner`
 have their own dedicated base prompts.
-
----
-
-## License
-
-CC BY-NC 4.0
