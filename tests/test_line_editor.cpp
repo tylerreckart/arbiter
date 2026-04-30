@@ -39,10 +39,14 @@ static const std::string kEnd      = "\033[F";
 // text — that escape is emitted by TUI init before the first repaint
 // and survives any cosmetic changes to the startup splash.  Then drain
 // briefly so the prompt repaint settles before keystrokes arrive.
+//
+// 10s startup budget instead of 3s — GitHub-hosted macOS runners are
+// notoriously slow on first PTY spawn (sandbox warmup, code-signing
+// checks).  Locally this is <100 ms; in CI it can take ~5 s.
 static PtySession ready_editor(int rows = 40, int cols = 120) {
     PtySession s(rows, cols);
     s.spawn({ INDEX_TEST_BINARY });
-    s.read_until("\033[?1049h", 3000);
+    s.read_until("\033[?1049h", 10000);
     s.read_for(400);
     return s;
 }
@@ -109,8 +113,10 @@ TEST_CASE("history: up arrow recalls previous submission") {
 
     // Submit a first line.  With a dummy API key the send will surface an
     // error, but the line is nonetheless pushed into editor history.
+    // The wait covers a real TLS handshake to api.anthropic.com (and back
+    // with a 401) — slow CI runners can take 3-4 s for the round trip.
     s.send("first\r");
-    s.read_for(1200);     // let the dismiss + echo + API failure settle
+    s.read_for(5000);
 
     // Up arrow — should repaint the input row with "first" in the buffer.
     s.send(kArrUp);
@@ -137,8 +143,9 @@ TEST_CASE("multi-line continuation: trailing backslash defers submission") {
 
     // Second fragment — submitting it should push the combined line through
     // the echo path.  Echo uses ANSI colors so check the stripped view.
+    // 5s budget for the same reason as the history test above.
     s.send("second\r");
-    s.read_for(1500);
+    s.read_for(5000);
 
     std::string plain = PtySession::strip_ansi(s.output());
     CHECK(plain.find("first") != std::string::npos);

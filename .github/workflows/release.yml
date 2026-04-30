@@ -36,6 +36,7 @@ jobs:
   build:
     name: Build ${{ matrix.os_slug }}-${{ matrix.arch_slug }}
     runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -55,15 +56,22 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      # cmake is preinstalled on GitHub's macOS images; reinstalling via
+      # `brew install cmake` triggers symlink conflicts ("cmake is keg-only
+      # but is already linked").  Stick to libs that aren't pre-installed.
+      # No `|| true` — a brew failure here means the release build is
+      # broken; better to surface it loudly than mask it.
       - name: Install deps (macOS)
         if: runner.os == 'macOS'
         run: |
+          set -euxo pipefail
           brew update --quiet
-          brew install cmake openssl@3 libedit || true
+          brew install --formula openssl@3 libedit
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake pkg-config \
@@ -131,6 +139,7 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

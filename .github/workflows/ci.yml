@@ -26,6 +26,9 @@ jobs:
   build_and_test:
     name: ${{ matrix.os_slug }}-${{ matrix.arch_slug }}
     runs-on: ${{ matrix.runs_on }}
+    # Hard upper bound: a hung PTY test should fail fast, not eat hours
+    # of the workflow's 6-hour default budget.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -43,15 +46,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # cmake is preinstalled on GitHub's macOS images; reinstalling via
+      # `brew install cmake` triggers symlink conflicts ("cmake is keg-only
+      # but is already linked").  Stick to libs that aren't pre-installed.
+      # No `|| true` — a brew failure here means the build will fail
+      # later in CMake configure with a less obvious error message; better
+      # to surface the real cause now.
       - name: Install deps (macOS)
         if: runner.os == 'macOS'
         run: |
+          set -euxo pipefail
           brew update --quiet
-          brew install cmake openssl@3 libedit || true
+          brew install --formula openssl@3 libedit
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake pkg-config \
@@ -71,5 +82,9 @@ jobs:
       - name: Build
         run: cmake --build build --config Debug -j
 
+      # `--no-tests=error` makes ctest fail loudly if no tests are
+      # registered (a regression that would otherwise silently pass).
+      # Tests run sequentially (`-j 1`) so the PTY-driven line_editor
+      # suite doesn't fight other tests for runner CPU on slow images.
       - name: Test
-        run: ctest --test-dir build --output-on-failure -j 4
+        run: ctest --test-dir build --output-on-failure --no-tests=error -j 1
