@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-List entries for the authenticated tenant, newest `updated_at` first. **Curated graph only** — proposals (`status="proposed"`) are hidden from this endpoint; fetch them via [`GET /v1/memory/proposals`](../proposals.md).
+List entries for the authenticated tenant, newest `updated_at` first.
 
 ## Request
 
@@ -38,7 +38,6 @@ curl -H "Authorization: Bearer atr_…" \
       "content": "...",
       "source": "agent",
       "tags": ["report"],
-      "status": "accepted",
       "artifact_id": 88,
       "created_at": 1777058449,
       "updated_at": 1777058449
@@ -59,5 +58,4 @@ List responses include the bare `artifact_id` (no nested `artifact` block) to ke
 ## See also
 
 - [`POST /v1/memory/entries`](create.md), [`GET /v1/memory/entries/:id`](get.md), [`PATCH /v1/memory/entries/:id`](patch.md), [`DELETE /v1/memory/entries/:id`](delete.md).
-- [`GET /v1/memory/proposals`](../proposals.md) — proposed entries.
 - [`GET /v1/memory/graph`](../graph.md) — bulk fetch including relations.

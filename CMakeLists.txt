@@ -290,4 +290,25 @@ if(INDEX_BUILD_TESTS)
     )
     target_link_libraries(unit_mcp PRIVATE CURL::libcurl)
     add_test(NAME unit_mcp COMMAND unit_mcp)
+
+    # Constitution / prompt composer.  Pins the capability-bundle resolution
+    # and verifies that empty-capabilities still emits the legacy surface
+    # (back-compat for the master orchestrator).
+    add_executable(unit_constitution
+        tests/test_constitution.cpp
+        src/constitution.cpp
+        src/api_client.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_constitution PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_constitution PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+    )
+    add_test(NAME unit_constitution COMMAND unit_constitution)
 endif()

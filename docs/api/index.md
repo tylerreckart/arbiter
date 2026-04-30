@@ -57,10 +57,8 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`DELETE /v1/memory/entries/:id`](memory/entries/delete.md)
 - [`POST /v1/memory/relations`](memory/relations/create.md)
 - [`GET /v1/memory/relations`](memory/relations/list.md)
-- [`PATCH /v1/memory/relations/:id`](memory/relations/patch.md)
 - [`DELETE /v1/memory/relations/:id`](memory/relations/delete.md)
 - [`GET /v1/memory/graph`](memory/graph.md)
-- [`GET /v1/memory/proposals`](memory/proposals.md)
 
 ### Artifacts
 - [`POST /v1/conversations/:id/artifacts`](artifacts/conversations-create.md)

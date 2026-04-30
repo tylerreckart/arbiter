@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Permanently delete an entry. **Cascades to relations** with this entry as either endpoint (regardless of status). This is also the **rejection path for proposed entries** — there is no separate `/reject` verb.
+Permanently delete an entry. **Cascades to relations** with this entry as either endpoint.
 
 ## Request
 
@@ -33,5 +33,5 @@ curl -X DELETE \
 
 ## See also
 
-- [`PATCH /v1/memory/entries/:id`](patch.md) — accept the proposal instead.
-- [Structured memory → Proposal queue](../../concepts/structured-memory.md#proposal-queue).
+- [`PATCH /v1/memory/entries/:id`](patch.md).
+- [Structured memory](../../concepts/structured-memory.md).

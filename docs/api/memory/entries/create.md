@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Create an entry in the structured memory graph. Entries created via this endpoint always land in `status="accepted"` (curated). Agent-originated entries go into the proposal queue with `status="proposed"` — see [Structured memory → Proposal queue](../../concepts/structured-memory.md#proposal-queue).
+Create an entry in the structured memory graph. Both HTTP callers and agents write directly into the curated graph — see [Structured memory](../../concepts/structured-memory.md).
 
 ## Request
 
@@ -40,7 +40,6 @@ The new `Entry`. Single-entry POST/GET/PATCH responses include a hydrated `artif
   "content": "Source: agent /write --persist",
   "source": "agent",
   "tags": ["report"],
-  "status": "accepted",
   "artifact_id": 88,
   "artifact": {
     "id": 88,

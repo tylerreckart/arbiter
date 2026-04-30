@@ -122,17 +122,21 @@ using StructuredMemoryReader = std::function<std::string(const std::string& kind
 
 // Write window for agent-contributed entries and links.  When set, the
 // dispatcher exposes:
-//   /mem propose entry <type> <title>           — propose a new typed node
-//   /mem propose link <src_id> <relation> <dst_id> — propose a directed edge
-// All writes land in the proposal queue with status='proposed' — they do
-// NOT show up in the curated graph reads (or in the agent's own reads via
-// /mem entries|entry|search) until a human accepts them through the HTTP
-// surface.  The callback receives the subcommand kind ("propose-entry" |
-// "propose-link") and the rest of the line, and returns the formatted body
-// for the [/mem propose ...] tool-result block.  Without this callback
-// wired, the dispatcher returns ERR.
+//   /mem add entry <type> <title> [--artifact #<id>]
+//       <content body — required, synthesised retrievable text>
+//   /endmem
+//
+//   /mem add link <src_id> <relation> <dst_id>     — single-line
+//
+// Writes land in the curated graph immediately and are visible to all
+// subsequent reads (HTTP and /mem entries|entry|search).  The callback
+// receives the subcommand kind ("add-entry" | "add-link"), the args from
+// the header line, and the body block (empty for link; required non-empty
+// for entry).  It returns the formatted body for the [/mem add ...] tool-
+// result block.  Without this callback wired, the dispatcher returns ERR.
 using StructuredMemoryWriter = std::function<std::string(const std::string& kind,
-                                                          const std::string& args)>;
+                                                          const std::string& args,
+                                                          const std::string& body)>;
 
 // Replaces the filesystem file-scratchpad path with a tenant-scoped
 // DB-backed implementation when set.  Without this callback the /mem

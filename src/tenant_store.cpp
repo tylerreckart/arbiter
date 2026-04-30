@@ -1047,8 +1047,12 @@ bool TenantStore::reload_tenant(int64_t id, Tenant& t) const {
 
 namespace {
 
+// The `status` column is preserved on disk for back-compat with rows
+// written under the old proposal-queue model — those rows now appear
+// alongside everything else, since agents write directly without a
+// review step.  We just stop selecting / filtering on it.
 constexpr const char* kEntryCols =
-    "id, tenant_id, type, title, content, source, tags, status, "
+    "id, tenant_id, type, title, content, source, tags, "
     "artifact_id, created_at, updated_at";
 
 MemoryEntry row_to_entry(Stmt& q) {
@@ -1060,17 +1064,16 @@ MemoryEntry row_to_entry(Stmt& q) {
     e.content     = q.column_text(4);
     e.source      = q.column_text(5);
     e.tags_json   = q.column_text(6);
-    e.status      = q.column_text(7);
     // SQLite NULL → 0 via column_int64; matches our "0 = no artifact"
     // sentinel in the public struct.
-    e.artifact_id = q.column_int64(8);
-    e.created_at  = q.column_int64(9);
-    e.updated_at  = q.column_int64(10);
+    e.artifact_id = q.column_int64(7);
+    e.created_at  = q.column_int64(8);
+    e.updated_at  = q.column_int64(9);
     return e;
 }
 
 constexpr const char* kRelationCols =
-    "id, tenant_id, source_id, target_id, relation, status, created_at";
+    "id, tenant_id, source_id, target_id, relation, created_at";
 
 MemoryRelation row_to_relation(Stmt& q) {
     MemoryRelation r;
@@ -1079,8 +1082,7 @@ MemoryRelation row_to_relation(Stmt& q) {
     r.source_id  = q.column_int64(2);
     r.target_id  = q.column_int64(3);
     r.relation   = q.column_text(4);
-    r.status     = q.column_text(5);
-    r.created_at = q.column_int64(6);
+    r.created_at = q.column_int64(5);
     return r;
 }
 
@@ -1092,29 +1094,30 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
                                        const std::string& content,
                                        const std::string& source,
                                        const std::string& tags_json,
-                                       const std::string& status,
                                        int64_t artifact_id) {
     if (!db_) throw std::runtime_error("TenantStore not opened");
 
     const int64_t now = now_epoch();
+    // Don't write the status column explicitly — its SQL default is
+    // 'accepted' from the legacy schema, which is what we want now that
+    // proposals are gone.
     Stmt q(db_,
         "INSERT INTO memory_entries "
-        "(tenant_id, type, title, content, source, tags, status, "
+        "(tenant_id, type, title, content, source, tags, "
         " artifact_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);");
     q.bind(1, tenant_id);
     q.bind(2, type);
     q.bind(3, title);
     q.bind(4, content);
     q.bind(5, source);
     q.bind(6, tags_json.empty() ? std::string("[]") : tags_json);
-    q.bind(7, status.empty() ? std::string("accepted") : status);
     // 0 ⇒ NULL — keeps the column sparse rather than seeding zero
     // pseudo-references that would all collide on join.
-    if (artifact_id > 0) q.bind(8, artifact_id);
-    else                  sqlite3_bind_null(q.raw(), 8);
-    q.bind(9,  now);
-    q.bind(10, now);
+    if (artifact_id > 0) q.bind(7, artifact_id);
+    else                  sqlite3_bind_null(q.raw(), 7);
+    q.bind(8, now);
+    q.bind(9, now);
     int rc = q.step();
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert memory_entry");
 
@@ -1126,7 +1129,6 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
     e.content     = content;
     e.source      = source;
     e.tags_json   = tags_json.empty() ? "[]" : tags_json;
-    e.status      = status.empty() ? "accepted" : status;
     e.artifact_id = artifact_id;
     e.created_at  = now;
     e.updated_at  = now;
@@ -1166,7 +1168,6 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
     if (!f.q.empty())            sql += " AND (title LIKE ? OR content LIKE ?)";
     if (f.since > 0)             sql += " AND created_at >= ?";
     if (f.before_updated_at > 0) sql += " AND updated_at < ?";
-    if (!f.status.empty())       sql += " AND status = ?";
 
     const int cap = (f.limit > 0 && f.limit <= 200) ? f.limit : 50;
     sql += " ORDER BY updated_at DESC LIMIT ?;";
@@ -1186,7 +1187,6 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
     }
     if (f.since > 0)             q.bind(idx++, f.since);
     if (f.before_updated_at > 0) q.bind(idx++, f.before_updated_at);
-    if (!f.status.empty())       q.bind(idx++, f.status);
     q.bind(idx, static_cast<int64_t>(cap));
 
     while (q.step() == SQLITE_ROW) out.push_back(row_to_entry(q));
@@ -1256,21 +1256,20 @@ bool TenantStore::delete_entry(int64_t tenant_id, int64_t id) {
 std::optional<MemoryRelation>
 TenantStore::create_relation(int64_t tenant_id,
                               int64_t source_id, int64_t target_id,
-                              const std::string& relation,
-                              const std::string& status) {
+                              const std::string& relation) {
     if (!db_) return std::nullopt;
     const int64_t now = now_epoch();
-    const std::string s = status.empty() ? std::string("accepted") : status;
+    // Don't write the legacy `status` column; SQL default ('accepted')
+    // applies for back-compat with existing rows that still have it.
     Stmt q(db_,
         "INSERT INTO memory_relations "
-        "(tenant_id, source_id, target_id, relation, status, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?);");
+        "(tenant_id, source_id, target_id, relation, created_at) "
+        "VALUES (?, ?, ?, ?, ?);");
     q.bind(1, tenant_id);
     q.bind(2, source_id);
     q.bind(3, target_id);
     q.bind(4, relation);
-    q.bind(5, s);
-    q.bind(6, now);
+    q.bind(5, now);
     int rc = q.step();
     if (rc == SQLITE_CONSTRAINT) return std::nullopt;
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert memory_relation");
@@ -1281,7 +1280,6 @@ TenantStore::create_relation(int64_t tenant_id,
     r.source_id  = source_id;
     r.target_id  = target_id;
     r.relation   = relation;
-    r.status     = s;
     r.created_at = now;
     return r;
 }
@@ -1306,8 +1304,7 @@ std::vector<MemoryRelation>
 TenantStore::list_relations(int64_t tenant_id,
                              int64_t source_id, int64_t target_id,
                              const std::string& relation,
-                             int limit,
-                             const std::string& status) const {
+                             int limit) const {
     std::vector<MemoryRelation> out;
     if (!db_) return out;
 
@@ -1316,7 +1313,6 @@ TenantStore::list_relations(int64_t tenant_id,
     if (source_id > 0)     sql += " AND source_id = ?";
     if (target_id > 0)     sql += " AND target_id = ?";
     if (!relation.empty()) sql += " AND relation = ?";
-    if (!status.empty())   sql += " AND status = ?";
     const int cap = (limit > 0 && limit <= 1000) ? limit : 200;
     sql += " ORDER BY id DESC LIMIT ?;";
 
@@ -1326,7 +1322,6 @@ TenantStore::list_relations(int64_t tenant_id,
     if (source_id > 0)     q.bind(idx++, source_id);
     if (target_id > 0)     q.bind(idx++, target_id);
     if (!relation.empty()) q.bind(idx++, relation);
-    if (!status.empty())   q.bind(idx++, status);
     q.bind(idx, static_cast<int64_t>(cap));
 
     while (q.step() == SQLITE_ROW) out.push_back(row_to_relation(q));
@@ -1336,50 +1331,6 @@ TenantStore::list_relations(int64_t tenant_id,
 bool TenantStore::delete_relation(int64_t tenant_id, int64_t id) {
     if (!db_) return false;
     Stmt q(db_, "DELETE FROM memory_relations WHERE tenant_id = ? AND id = ?;");
-    q.bind(1, tenant_id);
-    q.bind(2, id);
-    q.step();
-    return sqlite3_changes(db_) > 0;
-}
-
-bool TenantStore::accept_entry(int64_t tenant_id, int64_t id) {
-    if (!db_) return false;
-    // Conditional update — only succeeds if the row is currently 'proposed'.
-    // Rows that don't exist or are already accepted leave sqlite3_changes() at 0.
-    Stmt q(db_,
-        "UPDATE memory_entries "
-        "   SET status = 'accepted', updated_at = ? "
-        " WHERE tenant_id = ? AND id = ? AND status = 'proposed';");
-    q.bind(1, now_epoch());
-    q.bind(2, tenant_id);
-    q.bind(3, id);
-    q.step();
-    return sqlite3_changes(db_) > 0;
-}
-
-bool TenantStore::accept_relation(int64_t tenant_id, int64_t id) {
-    if (!db_) return false;
-    // Read the row first so we can validate the both-endpoints-accepted
-    // invariant before flipping status.  A relation pointing at a still-
-    // proposed entry would surface as a dangling edge in the curated graph.
-    Stmt s(db_, (std::string("SELECT ") + kRelationCols +
-                 " FROM memory_relations WHERE tenant_id = ? AND id = ?;").c_str());
-    s.bind(1, tenant_id);
-    s.bind(2, id);
-    if (s.step() != SQLITE_ROW) return false;
-    MemoryRelation rel = row_to_relation(s);
-    if (rel.status != "proposed") return false;
-
-    // Both endpoint entries must already be in the curated graph.
-    auto src = get_entry(tenant_id, rel.source_id);
-    auto dst = get_entry(tenant_id, rel.target_id);
-    if (!src || !dst) return false;
-    if (src->status != "accepted" || dst->status != "accepted") return false;
-
-    Stmt q(db_,
-        "UPDATE memory_relations "
-        "   SET status = 'accepted' "
-        " WHERE tenant_id = ? AND id = ? AND status = 'proposed';");
     q.bind(1, tenant_id);
     q.bind(2, id);
     q.step();

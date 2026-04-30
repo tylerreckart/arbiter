@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Single bulk fetch — entries plus relations in one round trip. The frontend calls this on mount to hydrate the force graph. **Curated graph only** — proposed entries and edges are hidden so the visualised graph never shows pending review items.
+Single bulk fetch — entries plus relations in one round trip. The frontend calls this on mount to hydrate the force graph. The graph reflects the curated, directly-written set of entries and relations.
 
 ## Request
 
@@ -43,4 +43,3 @@ No pagination in v1 — the unfiltered set is expected to fit in one response. T
 ## See also
 
 - [`GET /v1/memory/entries`](entries/list.md), [`GET /v1/memory/relations`](relations/list.md) — paginable per-resource lists.
-- [`GET /v1/memory/proposals`](proposals.md) — proposal queue.

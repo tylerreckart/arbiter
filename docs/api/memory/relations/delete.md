@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Delete one edge. Works on both accepted and proposed rows; the latter is the **rejection path for a proposed relation**.
+Delete one edge.
 
 ## Request
 
@@ -33,4 +33,4 @@ curl -X DELETE \
 
 ## See also
 
-- [`POST /v1/memory/relations`](create.md), [`PATCH /v1/memory/relations/:id`](patch.md).
+- [`POST /v1/memory/relations`](create.md).

@@ -95,7 +95,6 @@ Reference shapes for the rows arbiter persists. Every endpoint that returns one 
 | `content`     | string  | ≤ 64 KiB. |
 | `source`      | string  | Free-form provenance, ≤ 200 chars. |
 | `tags`        | array<string> | 0..32 tags, each 1–64 chars. |
-| `status`      | string  | `"accepted"` (curated) \| `"proposed"` (review queue). |
 | `artifact_id` | int?    | Optional FK to `tenant_artifacts`. `null` when unlinked. |
 | `created_at`  | integer | Epoch seconds. |
 | `updated_at`  | integer | Epoch seconds. |
@@ -109,7 +108,6 @@ Reference shapes for the rows arbiter persists. Every endpoint that returns one 
 | `source_id`  | integer | FK to `memory_entries.id`. |
 | `target_id`  | integer | FK to `memory_entries.id`. Different from `source_id` (no self-loops). |
 | `relation`   | string  | `relates_to` \| `refines` \| `contradicts` \| `supersedes` \| `supports`. |
-| `status`     | string  | `"accepted"` \| `"proposed"`. |
 | `created_at` | integer | Epoch seconds. |
 
 ## ArtifactRecord

@@ -81,10 +81,10 @@ public:
         structured_memory_reader_cb_ = std::move(cb);
     }
 
-    // Write window for agent-contributed proposals.  /mem propose entry|link
-    // routes through this callback and lands rows in the 'proposed' status —
-    // they don't surface to readers (HTTP or agent) until a human accepts
-    // them.  Wired by the API per-tenant; CLI/REPL contexts leave it null.
+    // Write window for agent-contributed entries and links.  /mem add entry|link
+    // routes through this callback and lands rows directly in the curated
+    // graph — they surface to all readers (HTTP or agent) immediately.
+    // Wired by the API per-tenant; CLI/REPL contexts leave it null.
     void set_structured_memory_writer(StructuredMemoryWriter cb) {
         structured_memory_writer_cb_ = std::move(cb);
     }

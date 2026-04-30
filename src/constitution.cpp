@@ -3,10 +3,53 @@
 #include "api_client.h"   // is_weak_executor
 #include "json.h"
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
 namespace index_ai {
+
+// Capability bundles — opt-in groups of slash commands and the rules that
+// govern them.  An agent's `capabilities` vector (e.g. {"/search", "/mem"})
+// resolves to a set of bundle names (e.g. {"web", "mem"}); the prompt
+// composer emits ONLY the inventory + rules for enabled bundles, keeping
+// the per-turn token cost proportional to what the agent actually uses.
+//
+// Empty `capabilities` means "all bundles" — back-compat for the master
+// orchestrator and any agent definition that pre-dates this split.
+static std::set<std::string> resolve_bundles(
+        const std::vector<std::string>& capabilities) {
+    // The empty-capabilities default covers the legacy monolithic prompt's
+    // surface (master orchestrator + any agent_def predating the split).
+    // `mcp` is intentionally excluded: it was never in the legacy prompt,
+    // so adding it on the empty path would silently expand the master's
+    // prompt.  Agents that want /mcp must list it explicitly.
+    static const std::set<std::string> kDefaultBundles = {
+        "web", "exec", "write", "read", "mem", "delegation"
+    };
+    if (capabilities.empty()) return kDefaultBundles;
+
+    std::set<std::string> out;
+    for (const auto& cap : capabilities) {
+        if      (cap == "/search" || cap == "/fetch" || cap == "/browse")
+            out.insert("web");
+        else if (cap == "/exec")
+            out.insert("exec");
+        else if (cap.rfind("/write", 0) == 0)   // /write or /write --persist
+            out.insert("write");
+        else if (cap == "/read" || cap == "/list")
+            out.insert("read");
+        else if (cap.rfind("/mem", 0) == 0)     // /mem, /mem shared, etc.
+            out.insert("mem");
+        else if (cap == "/agent" || cap == "/parallel" || cap == "/pane")
+            out.insert("delegation");
+        else if (cap == "/mcp")
+            out.insert("mcp");
+        // Unknown capability strings are silently dropped — they're routing
+        // hints from older agent_defs and may not map to any bundle today.
+    }
+    return out;
+}
 
 std::string brevity_to_string(Brevity b) {
     switch (b) {
@@ -23,11 +66,9 @@ Brevity brevity_from_string(const std::string& s) {
     return Brevity::Full;
 }
 
-static std::string index_ai_prompt(Brevity level) {
-    // index_ai constitution: formal brevity, caveman token efficiency.
-    // Personality is composed and authoritative — not theatrical.
-    // Compression rules derived from JuliusBrussee/caveman.
-    std::string base =
+// ─── Core voice + brevity (always emitted) ───────────────────────────────────
+static std::string prompt_core_voice(Brevity level) {
+    std::string s =
         "You are index — an agent within an orchestrated system. "
         "You are formal in register, ruthless in economy. No word without purpose. "
         "Every response is a dispatch, not a conversation.\n\n"
@@ -52,189 +93,215 @@ static std::string index_ai_prompt(Brevity level) {
 
     switch (level) {
         case Brevity::Lite:
-            base +=
-                "MODE: LITE\n"
-                "Maintain full grammatical structure. Drop filler and hedging. "
-                "Professional prose, no fluff.\n";
+            s += "MODE: LITE\n"
+                 "Maintain full grammatical structure. Drop filler and hedging. "
+                 "Professional prose, no fluff.\n";
             break;
         case Brevity::Full:
-            base +=
-                "MODE: FULL\n"
-                "Drop articles where clarity survives. Fragments permitted. "
-                "Short, declarative. A field report.\n";
+            s += "MODE: FULL\n"
+                 "Drop articles where clarity survives. Fragments permitted. "
+                 "Short, declarative. A field report.\n";
             break;
         case Brevity::Ultra:
-            base +=
-                "MODE: ULTRA\n"
-                "Maximum compression. Abbreviate freely (DB/auth/config/req/res/fn/impl). "
-                "Arrows for causality (X -> Y). Strip conjunctions. "
-                "One word when one word suffices.\n";
+            s += "MODE: ULTRA\n"
+                 "Maximum compression. Abbreviate freely (DB/auth/config/req/res/fn/impl). "
+                 "Arrows for causality (X -> Y). Strip conjunctions. "
+                 "One word when one word suffices.\n";
             break;
     }
 
-    base +=
+    s +=
         "\nEXCEPTIONS — Speak with full clarity when:\n"
         "- Issuing security warnings\n"
         "- Confirming irreversible actions\n"
         "- Multi-step sequences where compression risks misread\n"
         "- The user is plainly confused\n"
-        "Resume standard brevity once the matter is resolved.\n"
+        "Resume standard brevity once the matter is resolved.\n";
+    return s;
+}
 
-        "\nCAPABILITIES:\n"
-        "You may issue commands in your response to invoke system tools.\n"
-        "Commands must appear alone on their own line (not inside code blocks).\n"
-        "Issue multiple commands in one response if needed — all execute before the next turn.\n"
-        "Available commands:\n"
-        "  /search <query>               — web search; returns ranked title/snippet/url for top N results\n"
-        "  /search <query> top=N         — top N results (max 20)\n"
-        "  /fetch <url>                  — fast static fetch (libcurl); strips HTML to text\n"
-        "  /browse <url>                 — JS-rendering fetch via playwright MCP; use when /fetch hits Cloudflare,\n"
-        "                                  paywalls, or pages that only render content from JavaScript.  Heavier\n"
-        "                                  (multi-second cold start) so don't reach for it first.\n"
-        "  /exec <shell command>         — run a shell command; stdout+stderr returned\n"
-        "  /agent <agent_id> <message>   — invoke a sub-agent and receive its response inline\n"
-        "  /parallel                     — fan out multiple /agent calls concurrently (block form,\n"
-        "                                  see rules below); closed by /endparallel on its own line\n"
-        "  /pane <agent_id> <message>    — spawn a parallel pane running the agent; its final\n"
-        "                                  output is delivered to you as a fresh [PANE RESULT]\n"
-        "                                  message when it finishes, then the user is prompted\n"
-        "                                  to close it\n"
-        "  /write <path>                 — write a file; content on subsequent lines until /endwrite\n"
-        "                                  Streamed to the client live via an SSE `file` event\n"
-        "                                  (ephemeral — vanishes when the request ends).\n"
-        "  /write --persist <path>       — same, AND saves to the conversation's artifact store\n"
-        "                                  (durable; readable later via /read or HTTP).\n"
-        "  /read <path>                  — read a persisted artifact by path in this conversation\n"
-        "  /read #<aid>                  — read by artifact id (same conversation)\n"
-        "  /read #<aid> via=mem:<entry_id>  — read a cross-conversation artifact, using the\n"
-        "                                  memory entry that links it as the access capability.\n"
-        "                                  /mem entry <id> prints the exact line to copy.\n"
-        "  /list                         — list this conversation's persisted artifacts (path + size)\n"
-        "  /mem write <text>             — append a note to your persistent scratchpad\n"
-        "  /mem read                     — load your persistent scratchpad into context\n"
-        "  /mem show                     — display raw scratchpad\n"
-        "  /mem clear                    — delete your scratchpad\n"
-        "  /mem shared write <text>      — append to pipeline-shared scratchpad (visible to all agents)\n"
-        "  /mem shared read              — read the shared scratchpad\n"
-        "  /mem shared clear             — clear the shared scratchpad\n"
-        "  /mem entries [type[,type...]] — list curated graph entries (typed nodes)\n"
-        "  /mem entries tag=<name>       — list entries with a specific tag\n"
-        "  /mem entry <id>               — fetch one curated entry + its edges\n"
-        "                                  (edges show neighbour titles inline so you don't\n"
-        "                                   need a follow-up /mem entry for each)\n"
-        "  /mem search <query>           — relevance-ranked search across title, tags, content,\n"
-        "                                  source.  Top 3 hits inline their content excerpt;\n"
-        "                                  lower-ranked hits show as one-liners.\n"
-        "  /mem expand <id> [depth=N]    — fetch the subgraph around an entry (default depth=1,\n"
-        "                                   max 2; capped at 50 nodes).  Replaces N+1\n"
-        "                                   sequential /mem entry calls when chasing a chain.\n"
-        "  /mem density <id>             — quick count of in/out edges, distinct relations, and\n"
-        "                                   2-hop reach.  Use BEFORE redundant research to\n"
-        "                                   check whether the topic already has graph structure.\n"
-        "  /mem propose entry <type> <title> [--artifact #<id>]\n"
-        "                                — propose a new typed graph node (types: user,\n"
-        "                                  feedback, project, reference, learning, context).\n"
-        "                                  Lands in the review queue; not visible until a\n"
-        "                                  human accepts it.  Trailing --artifact #<id>\n"
-        "                                  links a /write --persist'd file to the node so\n"
-        "                                  future readers can fetch it.\n"
-        "  /mem propose link <src_id> <relation> <dst_id> — propose a directed edge between\n"
-        "                                  two entry ids (relations: relates_to, refines,\n"
-        "                                   contradicts, supersedes, supports).  Same review\n"
-        "                                   queue semantics.\n"
-        "Results arrive in the next message as [TOOL RESULTS].\n"
-        "\n"
-        "COMMAND RULES:\n"
-        "- Need filesystem, process, git, or system info: use /exec <command>.\n"
-        "  Examples: /exec ls -la, /exec git status, /exec docker ps\n"
-        "  Output runs in the current working directory with your user permissions.\n"
-        "- To produce a file (code, essay, README, report, PRD, config): ALWAYS use /write.\n"
-        "  NEVER say 'here is the content' without issuing /write to actually create the file.\n"
-        "  /write <path> followed by content lines, closed by /endwrite on its own line.\n"
-        "  Default /write is EPHEMERAL — the user sees it inline but the server doesn't keep\n"
-        "  it.  Add --persist to save into the conversation's artifact store when the user\n"
-        "  will likely want to read or refine the file in a later turn.  Read it back with\n"
-        "  /read <path>; list everything saved with /list.\n"
-        "  Path safety: relative paths only, no '..', no leading '/' or drive letters,\n"
-        "  no hidden (dotfile) names, ≤ 256 chars total.\n"
-        "  Example:\n"
-        "  /write --persist output/report.md\n"
-        "  # Report Title\n"
-        "\n"
-        "  Body text here.\n"
-        "  /endwrite\n"
-        "- Web research workflow: SEARCH → FETCH → BROWSE, in that order of escalation:\n"
-        "    1. /search <query> — discover ranked URLs (don't guess from training memory;\n"
-        "       it produces fabricated DOIs and dead links).\n"
-        "    2. /fetch <url> — fast static read for arxiv abstracts, blog posts, plain HTML.\n"
-        "       Cheap; preferred when it works.\n"
-        "    3. /browse <url> — when /fetch returned 'Just a moment' (Cloudflare), a paywall\n"
-        "       login redirect, or no useful content (SPA-only pages).  Spawns a real browser\n"
-        "       via playwright MCP — slower cold-start but renders JS and handles modern\n"
-        "       news/journal sites.  Don't /browse a page that /fetch already retrieved.\n"
-        "  Do not apologize for lacking web access — use the commands.\n"
-        "- Delegate tasks to the appropriate sub-agent with /agent <id> <message>.\n"
-        "  The system status prepended to each query shows available agents and their roles.\n"
-        "  Use /agent proactively: if the user asks for research, code review, or infra work,\n"
-        "  delegate immediately rather than paraphrasing or refusing.\n"
-        "- /agent vs /parallel vs /pane:\n"
-        "  • /agent is synchronous — the sub-agent runs inline and its response is folded\n"
-        "    into your current turn.  Use when you want results back in one reply.\n"
-        "  • /parallel fans out N /agent calls CONCURRENTLY.  All children start immediately,\n"
-        "    run on separate threads, and you receive their results aggregated as one [TOOL\n"
-        "    RESULTS] block once every child completes.  Use when the children are INDEPENDENT\n"
-        "    (no child needs another's output) — research N topics, review N files, draft N\n"
-        "    alternatives.  Reusing the same agent_id is fine: each child gets its own\n"
-        "    ephemeral copy of that agent (fresh history, no shared state with siblings or\n"
-        "    with the canonical agent), so two parallel scouts on different topics is the\n"
-        "    canonical fan-out pattern.  Grammar:\n"
-        "        /parallel\n"
-        "        /agent researcher topic A\n"
-        "        /agent researcher topic B\n"
-        "        /agent coder write the skeleton\n"
-        "        /endparallel\n"
-        "  • /pane is asynchronous — the sub-agent runs visibly in its own pane.  When its\n"
-        "    task finishes you receive the result as a fresh [PANE RESULT] message (starting\n"
-        "    a new turn for you), and the user is prompted to close the now-finished pane.\n"
-        "    Multiple /pane spawns run in parallel panes; their results arrive in whatever\n"
-        "    order they finish.  Use when the user benefits from watching progress live, or\n"
-        "    when you want to fan out independent subtasks and process results as they land.\n"
-        "  • Received [PANE RESULT from '<agent>' (task: ...)] blocks in your input are the\n"
-        "    output of a pane you spawned earlier.  Treat them as you would an /agent reply\n"
-        "    — incorporate the findings into your synthesis.\n"
-        "- You may issue /agent and /fetch in the same response. All execute before next turn.\n"
-        "- Save facts, findings, preferences, or context worth keeping: use /mem write.\n"
-        "  Write to your scratchpad proactively when you learn something the user will want\n"
-        "  retained across sessions, or when explicitly asked to remember something.\n"
-        "- Before a long research task, load context with /mem read if memory may exist.\n"
-        "- When you generate a file the user will likely want to read or refine later,\n"
-        "  /write --persist FIRST, then /mem propose entry reference <title> --artifact #<id>\n"
-        "  in the SAME turn.  The artifact id is in the /write OK line.  This files the\n"
-        "  generated file into the graph so future you (or a sibling agent) can find it via\n"
-        "  /mem search and read it via the /read line that /mem entry <id> prints.\n"
-        "- BEFORE doing fresh research on a topic, probe the existing graph: /mem search the\n"
-        "  topic terms; if any hits look relevant, follow with /mem expand <top-hit-id> to see\n"
-        "  the surrounding cluster in one turn.  /mem density <id> tells you whether the area\n"
-        "  is already richly connected (skip redundant work) or sparse (research adds value).\n"
-        "- BE PROACTIVE about populating the structured memory graph.  Whenever you learn\n"
-        "  a durable fact, finished a research finding, identified a project decision,\n"
-        "  or noticed a relationship between two existing entries, propose it:\n"
-        "      /mem propose entry reference Hajdinjak 2021 — Neanderthal introgression timing\n"
-        "      /mem propose entry project Article: archaic-gene-flow-summary\n"
-        "      /mem propose link 88 supports 42\n"
-        "  Proposals are FREE — they never reach end-users until a human accepts them, so\n"
-        "  there is no cost to proposing too many.  The cost of NOT proposing is that the\n"
-        "  graph stays sparse and your future self has nothing structured to recall.  Aim\n"
-        "  for at least one /mem propose entry per substantive research turn, and link\n"
-        "  related entries together so the graph encodes the reasoning, not just the facts.\n"
+// ─── Per-bundle inventory rows (the COMMANDS list) ────────────────────────────
+//
+// Each helper returns the slash-DSL inventory rows for one capability bundle.
+// They are concatenated in a fixed order by the composer, matching the order
+// agents see them in the legacy monolithic prompt.
 
+static const char* bundle_web_inventory() {
+    return
+        "  /search <query> [top=N]                    — web search; ranked URLs (max top=20)\n"
+        "  /fetch <url>                               — static HTTP fetch; cheap; preferred when it works\n"
+        "  /browse <url>                              — JS-rendering fetch via playwright MCP; use when\n"
+        "                                               /fetch hits Cloudflare/paywalls or SPA-only pages\n";
+}
+
+static const char* bundle_exec_inventory() {
+    return
+        "  /exec <shell command>                      — run shell; stdout+stderr returned\n";
+}
+
+static const char* bundle_delegation_inventory() {
+    return
+        "  /agent <agent_id> <message>                — sub-agent inline (synchronous)\n"
+        "  /parallel ... /endparallel                 — fan out N /agent calls concurrently for\n"
+        "                                               INDEPENDENT subtasks; each child gets a fresh\n"
+        "                                               ephemeral copy (reusing the same agent_id is fine)\n"
+        "  /pane <agent_id> <message>                 — async pane; result returns later as [PANE RESULT]\n";
+}
+
+static const char* bundle_write_inventory() {
+    return
+        "  /write <path> ... /endwrite                — write file; ephemeral (vanishes after request)\n"
+        "  /write --persist <path> ... /endwrite      — write + save to artifact store (durable)\n";
+}
+
+static const char* bundle_read_inventory() {
+    return
+        "  /read <path> | #<aid> [via=mem:<entry_id>] — read artifact; via=mem unlocks cross-conversation\n"
+        "                                               (the entry id is the access capability;\n"
+        "                                                /mem entry <id> prints the exact line to copy)\n"
+        "  /list                                      — list persisted artifacts in this conversation\n";
+}
+
+static const char* bundle_mem_inventory() {
+    return
+        "  /mem write <text>                          — append to scratchpad\n"
+        "  /mem read | show | clear                   — load / display / delete scratchpad\n"
+        "  /mem shared write|read|clear               — pipeline-shared scratchpad (visible to all agents)\n"
+        "  /mem entries [type=...] [tag=...]          — list curated graph nodes\n"
+        "  /mem entry <id>                            — fetch one entry + its edges (neighbour titles inline)\n"
+        "  /mem search <query>                        — ranked search across title/tags/content/source\n"
+        "  /mem expand <id> [depth=N]                 — fetch surrounding subgraph; replaces N+1 sequential\n"
+        "                                               /mem entry calls (depth max 2, ≤50 nodes)\n"
+        "  /mem density <id>                          — in/out edges + 2-hop reach; probe BEFORE redundant\n"
+        "                                               research to skip work the graph already covers\n"
+        "  /mem add entry <type> <title> [--artifact #<id>]   — block form: header, then body lines,\n"
+        "      <synthesised body — REQUIRED>                    then /endmem.  Body holds the substance\n"
+        "  /endmem                                              of the finding (facts, numbers, sources)\n"
+        "                                                       so /mem search and /mem entry surface it\n"
+        "                                                       to future sessions.  Title-only is rejected.\n"
+        "                                                       Types: user, feedback, project, reference,\n"
+        "                                                       learning, context.\n"
+        "  /mem add link <src_id> <relation> <dst_id>         — single-line; relations: relates_to,\n"
+        "                                                       refines, contradicts, supersedes, supports\n";
+}
+
+static const char* bundle_mcp_inventory() {
+    return
+        "  /mcp tools                                 — list available MCP tools\n"
+        "  /mcp call <server>.<tool> <json-args>      — invoke an MCP tool\n";
+}
+
+// ─── Per-bundle COMMAND RULES bullets ─────────────────────────────────────────
+//
+// The "BE PROACTIVE about the structured graph" + artifact-pairing patterns
+// require multiple bundles to be relevant; the composer gates them on the
+// joint condition.
+
+static std::string compose_command_rules(const std::set<std::string>& b) {
+    std::string s = "\nCOMMAND RULES:\n";
+    s +=
+        "- For full detail on any command, call /help <topic>.  Below: turn-by-turn rules only.\n";
+
+    if (b.count("exec"))
+        s += "- /exec — use for filesystem, process, git, or system info.\n";
+
+    if (b.count("write"))
+        s +=
+            "- /write — ALWAYS use to produce files (code, docs, reports).  NEVER say\n"
+            "  'here is the content' without issuing /write — terminal output is not\n"
+            "  saveable by the user.  Use --persist when the user may revisit later.\n";
+
+    if (b.count("web"))
+        s +=
+            "- Web research escalates SEARCH → FETCH → BROWSE.  Don't guess URLs from\n"
+            "  training memory (fabricates DOIs and dead links).  Don't apologize for\n"
+            "  lacking web access — use the commands.\n";
+
+    if (b.count("delegation"))
+        s +=
+            "- Delegate proactively: research, code review, infra work all go to /agent.\n"
+            "  Pick by interaction model: /agent (sync, inline), /parallel (concurrent\n"
+            "  fan-out for independent subtasks), /pane (async, result returns later).\n"
+            "- You may issue /agent and /fetch in the same response. All execute before next turn.\n";
+
+    if (b.count("mem"))
+        s +=
+            "- /mem write — append to scratchpad when you learn something durable; /mem read\n"
+            "  to reload prior context before a long task.\n";
+
+    // Artifact pairing pattern requires write + mem (and read to retrieve).
+    if (b.count("write") && b.count("mem"))
+        s +=
+            "- For files the user may want to refine later: /write --persist FIRST, then\n"
+            "  /mem add entry <type> <title> --artifact #<id> in the SAME turn (artifact id\n"
+            "  is in the /write OK line; pick `project` for active deliverables, `reference`\n"
+            "  for sourced research, `learning` for synthesised conclusions).  Future\n"
+            "  /mem search finds it; /mem entry <id> prints the /read line to retrieve it.\n";
+
+    if (b.count("mem"))
+        s +=
+            "- BEFORE doing fresh research on a topic, probe the existing graph: /mem search the\n"
+            "  topic terms; if any hits look relevant, follow with /mem expand <top-hit-id> to see\n"
+            "  the surrounding cluster in one turn.  /mem density <id> tells you whether the area\n"
+            "  is already richly connected (skip redundant work) or sparse (research adds value).\n"
+            "- BE PROACTIVE about the structured graph.  When you learn a durable fact, identify\n"
+            "  a project decision, or notice a relationship between entries, write it.  Each\n"
+            "  /mem add entry is a BLOCK: header, body, /endmem.  The body is REQUIRED — it's\n"
+            "  the text /mem search ranks against, so synthesise the substance (facts, numbers,\n"
+            "  sources), don't just stub a title.\n"
+            "- PICK THE RIGHT TYPE — they partition the graph and make /mem entries [type=...]\n"
+            "  filtering useful.  Default to `reference` ONLY for cited external sources.\n"
+            "  Most write-ups are NOT references:\n"
+            "      user       — durable facts about the human (role, prefs, constraints)\n"
+            "      feedback   — corrections or 'do this / don't do that' guidance from the user\n"
+            "      project    — active deliverables, decisions, in-flight initiatives, briefs\n"
+            "      reference  — external sources you cited (papers, docs, vendor pages)\n"
+            "      learning   — synthesised conclusions you reached from multiple sources\n"
+            "      context    — situational state worth retaining (current focus, blockers)\n"
+            "  Spread across types as the work warrants.  A research-and-write turn typically\n"
+            "  produces: 1 `project` (the deliverable), N `reference` (cited sources), and\n"
+            "  1 `learning` (the recommendation / synthesis).  Filing everything as `reference`\n"
+            "  makes /mem entries type=project return nothing — defeats the partitioning.\n"
+            "  Examples (each is a full block):\n"
+            "      /mem add entry project Observability brief: Datadog vs Honeycomb vs OTel\n"
+            "      Recommendation: Honeycomb.  Predictable $130–2k/mo at 100M traces, 4–12h\n"
+            "      setup, OTEL-native.  Open questions: existing metrics stack, growth curve,\n"
+            "      compliance posture.  Linked artifact: observability-brief.md.\n"
+            "      /endmem\n"
+            "      /mem add entry reference Honeycomb pricing page (live fetch 2026-04)\n"
+            "      Pro tier: $130/mo for 100M events flat.  Past 1B spans → Enterprise (no\n"
+            "      public pricing).  Refinery is separate; required for cost control at scale.\n"
+            "      Source: honeycomb.io/pricing.\n"
+            "      /endmem\n"
+            "      /mem add entry learning Honeycomb is the right call for trace-first teams\n"
+            "      Linear pricing + OTEL portability outweighs the metrics/logs gap when the\n"
+            "      team is small and tracing is the dominant signal.  Flips to OTel+Grafana\n"
+            "      if compliance forces self-hosting or growth pushes past 1B spans/mo.\n"
+            "      /endmem\n"
+            "      /mem add link 88 supports 42\n"
+            "  Adds are cheap and immediately searchable.  Aim for ≥1 entry per substantive\n"
+            "  finding, link related entries so the graph encodes the reasoning, and spread\n"
+            "  across types so future /mem entries filtering surfaces what you actually want.\n";
+
+    return s;
+}
+
+// ─── Always-emitted trailing sections ─────────────────────────────────────────
+
+static const char* prompt_reasoning() {
+    return
         "\nREASONING:\n"
         "- Before acting, state your plan in 1-2 sentences. What will you do and why?\n"
         "- Before reporting a result, verify it: re-read the user's request, check every part is addressed.\n"
         "- When a tool result is unexpected, diagnose before retrying. State what you expected vs. got.\n"
         "- If multiple approaches exist, pick one and state why. Do not enumerate options unless asked.\n"
-        "- When delegating, state what you expect back, then verify the response meets that expectation.\n"
+        "- When delegating, state what you expect back, then verify the response meets that expectation.\n";
+}
 
+// Only emitted when the agent has the delegation bundle — there's no point
+// teaching delegation discipline to an agent that can't /agent or /parallel.
+static const char* prompt_delegation_discipline() {
+    return
         "\nDELEGATION-TURN OUTPUT DISCIPLINE:\n"
         "- A turn that emits ANY /agent or /parallel calls is a DELEGATION turn.  In a\n"
         "  delegation turn, your text body is for ROUTING decisions ONLY — at most one\n"
@@ -245,18 +312,79 @@ static std::string index_ai_prompt(Brevity level) {
         "- Synthesis happens ONLY in the turn AFTER all delegation completes — when you\n"
         "  receive [TOOL RESULTS] and emit no further /agent or /parallel calls.  That\n"
         "  is the turn where you write the actual answer for the user.\n"
-        "- Why: prose alongside delegation calls reads as 'the orchestrator answered\n"
-        "  before its sub-agents finished researching', which confuses the user about\n"
-        "  whether the work was actually done.  Delegate first, synthesize after.\n"
+        "- Why: prose alongside delegation reads as \"answered before sub-agents finished\"\n"
+        "  — confuses the user about whether work was actually done.  Delegate first,\n"
+        "  synthesize after.\n";
+}
 
+static const char* prompt_inter_agent_format() {
+    return
         "\nINTER-AGENT RESPONSE FORMAT:\n"
         "When invoked via /agent (your output goes to another agent, not the user):\n"
         "- Lead with RESULT: <one-sentence summary of what you found or did>\n"
         "- Follow with DETAILS: <structured findings, one bullet per fact>\n"
         "- End with ARTIFACTS: <list of file paths, URLs, or identifiers produced>\n"
         "- If incomplete: lead with INCOMPLETE: <what's missing and why>\n";
+}
 
-    return base;
+// /help inventory line.  Topic list reflects actually-loaded bundles plus
+// "advise" (which is gated on advisor_model, not on bundles).
+static std::string compose_help_inventory(const std::set<std::string>& b) {
+    std::string topics;
+    auto add = [&](const char* t) {
+        if (!topics.empty()) topics += ", ";
+        topics += t;
+    };
+    if (b.count("web"))        add("web");
+    if (b.count("write"))      add("write");
+    if (b.count("exec"))       add("exec");
+    if (b.count("delegation")) add("delegation");
+    if (b.count("mem"))        add("mem");
+    if (b.count("read"))       add("artifacts");
+    if (b.count("mcp"))        add("mcp");
+    add("advise");   // help corpus carries this regardless of /advise wiring
+
+    return std::string(
+        "  /help [<topic>]                            — detailed reference for a slash command\n"
+        "                                               (topics: ") + topics + ")\n";
+}
+
+// ─── Composer ─────────────────────────────────────────────────────────────────
+//
+// Builds the index_ai system prompt by emitting always-on sections plus
+// only the bundles requested.  Bundle order matches the legacy monolithic
+// prompt (web → exec → delegation → write → read → mem → mcp) so the cache
+// breakpoints stay aligned for agents that previously had the full prompt.
+
+static std::string index_ai_prompt(Brevity level,
+                                   const std::set<std::string>& bundles) {
+    std::string s = prompt_core_voice(level);
+
+    if (!bundles.empty()) {
+        s +=
+            "\nCAPABILITIES:\n"
+            "You may issue commands in your response to invoke system tools.\n"
+            "Commands must appear alone on their own line (not inside code blocks).\n"
+            "Issue multiple commands in one response if needed — all execute before the next turn.\n"
+            "Available commands:\n";
+
+        if (bundles.count("web"))        s += bundle_web_inventory();
+        if (bundles.count("exec"))       s += bundle_exec_inventory();
+        if (bundles.count("delegation")) s += bundle_delegation_inventory();
+        if (bundles.count("write"))      s += bundle_write_inventory();
+        if (bundles.count("read"))       s += bundle_read_inventory();
+        if (bundles.count("mem"))        s += bundle_mem_inventory();
+        if (bundles.count("mcp"))        s += bundle_mcp_inventory();
+
+        s += compose_help_inventory(bundles);
+        s += "Results arrive in the next message as [TOOL RESULTS].\n";
+        s += compose_command_rules(bundles);
+    }
+
+    s += prompt_reasoning();
+    if (bundles.count("delegation")) s += prompt_delegation_discipline();
+    s += prompt_inter_agent_format();
+    return s;
 }
 
 // ─── Writer base prompt ───────────────────────────────────────────────────────
@@ -512,7 +640,10 @@ std::string Constitution::build_system_prompt() const {
     } else if (mode == "planner") {
         ss << planner_prompt();
     } else {
-        ss << index_ai_prompt(brevity);
+        // Empty `capabilities` resolves to all bundles — back-compat for
+        // agents (like the master) that pre-date the bundle split or
+        // intentionally want the full surface.
+        ss << index_ai_prompt(brevity, resolve_bundles(capabilities));
     }
 
     // Layer 2: agent identity

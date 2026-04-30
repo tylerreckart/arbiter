@@ -62,7 +62,7 @@ The `--persist` write goes through the same path validator as the HTTP endpoint 
 Memory entries can carry an optional `artifact_id` field referencing a row in the artifact store. The link is set via:
 
 - **HTTP**: [`POST /v1/memory/entries`](../memory/entries/create.md) or [`PATCH /v1/memory/entries/:id`](../memory/entries/patch.md) with `artifact_id` in the body. Cross-tenant ids return 400.
-- **Agent slash**: `/mem propose entry <type> <title> --artifact #<id>` — the agent that just `/write --persist`-ed a file can file it directly into a memory proposal in the same turn.
+- **Agent slash**: `/mem write entry <type> <title> --artifact #<id>` — the agent that just `/write --persist`-ed a file can file it directly into a memory entry in the same turn.
 
 When the linked artifact is deleted (directly via [`DELETE /v1/artifacts/:aid`](../artifacts/delete.md), or indirectly via its conversation being deleted), the database trigger `memory_entries_artifact_id_clear` nullifies the link automatically. The memory entry survives; future reads see `artifact_id: null` (or `(link expired ...)` in the agent-facing format).
 
@@ -80,9 +80,9 @@ Server-side, the artifact reader validates that:
 
 1. The artifact exists for this tenant.
 2. If the artifact's home conversation matches the active conversation, the read is allowed.
-3. Otherwise, `via=mem:<entry_id>` MUST resolve to an `accepted` memory entry in this tenant whose `artifact_id` equals the requested id.
+3. Otherwise, `via=mem:<entry_id>` MUST resolve to a memory entry in this tenant whose `artifact_id` equals the requested id. Any visible entry can be referenced this way.
 
-A missing or mismatched `via=` clause returns ERR. The agent never sees a cross-conversation artifact unless a curated memory grants access — the human accepting the memory proposal is the access-control boundary. Same-conversation reads (the common path) need no citation.
+A missing or mismatched `via=` clause returns ERR. The agent never sees a cross-conversation artifact unless a memory entry grants access. Same-conversation reads (the common path) need no citation.
 
 The `/mem entry <id>` agent response prints the literal `/read` line to copy:
 

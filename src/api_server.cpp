@@ -366,18 +366,26 @@ std::string extract_bearer(const HttpRequest& req) {
 //   • Always — request_received, done, error, cap_exceeded.  These are
 //     low-volume and useful even in production: one INFO line per call,
 //     plus errors.
-//   • Verbose — text/thinking/tool_call/stream_start/stream_end/
-//     token_usage/sub_agent_response.  Off by default; enabled per process
-//     via `--verbose` or env `ARBITER_API_VERBOSE=1`.  Each stream's
-//     deltas are line-buffered so a 200-token response doesn't fragment
-//     into 200 stderr lines — we flush on newline or stream_end.
+//   • Verbose — text/thinking/tool_call/stream_end/file.  Off by default;
+//     enabled per process via `--verbose` or env `ARBITER_API_VERBOSE=1`.
+//     Each stream's deltas are line-buffered so a 200-token response
+//     doesn't fragment into 200 stderr lines — we flush on newline.
+//
+// The output format is tuned for live demos: timestamps, request ids,
+// tenant names, and internal stream/depth markers are all suppressed.
+// Agent names are coloured per-agent so two parallel streams stay
+// visually distinct; tool calls and file paths get their own colours.
+// Each line stays narrow enough to avoid terminal wrapping.
 class EventLogger {
 public:
     EventLogger(bool verbose, std::string request_id, std::string tenant_name)
         : verbose_(verbose),
           color_(::isatty(fileno(stderr)) != 0),
           request_id_(std::move(request_id)),
-          tenant_name_(std::move(tenant_name)) {}
+          tenant_name_(std::move(tenant_name)) {
+        (void)request_id_;    // retained for future structured logging;
+        (void)tenant_name_;   // currently suppressed for demo readability.
+    }
 
     // Emit one event.  `ev` is the SSE event name; `payload` mirrors the
     // JSON body about to be written to the wire.  The logger reads only
@@ -387,16 +395,23 @@ public:
                              ev == "error");
         if (!always && !verbose_) return;
 
+        // Events suppressed entirely in the demo-friendly verbose stream:
+        //   stream_start  — pre-announces a turn before any real content;
+        //                   the first text/tool line is a sufficient cue.
+        //   agent_start   — already silent in the legacy logger; kept so.
+        if (ev == "stream_start" || ev == "agent_start") {
+            return;
+        }
+
         std::lock_guard<std::mutex> lk(mu_);
         std::ostringstream line;
-        line << ts() << ' ' << prefix();
 
         if (ev == "request_received") {
             const std::string agent = payload ? payload->get_string("agent") : "";
             const std::string msg   = payload ? payload->get_string("message") : "";
-            line << color(kBoldCyan) << "POST /v1/orchestrate" << reset()
-                 << "  agent=" << agent
-                 << "  msg=" << quote_short(msg);
+            line << color(kBoldCyan) << "→ POST /orchestrate" << reset()
+                 << "  agent=" << color_for_agent(agent) << agent << reset()
+                 << "  " << quote_short(msg, 100);
         } else if (ev == "done") {
             const bool ok    = payload && payload->get_bool("ok");
             const double dur = payload ? payload->get_number("duration_ms") : 0;
@@ -405,68 +420,81 @@ public:
             const double bm  = payload ? payload->get_number("billed_micro_cents") : 0;
             const bool capped = payload && payload->get_bool("cap_exceeded");
             line << color(ok ? kBoldGreen : kBoldRed)
-                 << (ok ? "DONE " : "FAIL ") << reset()
+                 << (ok ? "✓ DONE " : "✗ FAIL ") << reset()
                  << static_cast<int64_t>(dur) << "ms"
+                 << color(kDim)
                  << "  in=" << static_cast<int>(in)
-                 << "  out=" << static_cast<int>(out)
-                 << "  billed=" << fmt_uc(static_cast<int64_t>(bm));
+                 << " out=" << static_cast<int>(out)
+                 << " " << fmt_uc(static_cast<int64_t>(bm))
+                 << reset();
             if (capped) line << "  " << color(kYellow) << "[cap_exceeded]" << reset();
             if (!ok && payload) {
                 const std::string err = payload->get_string("error");
-                if (!err.empty()) line << "  err=" << quote_short(err);
+                if (!err.empty()) line << "  " << quote_short(err, 80);
             }
             // Final flush of any text/thinking buffers that didn't end on a newline.
             flush_all_locked(line);
         } else if (ev == "error") {
             const std::string m = payload ? payload->get_string("message") : "";
-            line << color(kBoldRed) << "ERROR" << reset() << "  " << m;
-        } else if (ev == "stream_start") {
-            line << color(kDim) << "stream_start" << reset()
-                 << "  " << stream_tag(payload);
+            line << color(kBoldRed) << "✗ ERROR" << reset() << "  " << quote_short(m, 100);
         } else if (ev == "stream_end") {
             const bool ok = payload && payload->get_bool("ok");
+            const std::string agent = payload ? payload->get_string("agent") : "";
             // Drain that stream's buffered text so the next line isn't a
             // mid-sentence stub.
             if (payload) flush_buffered_locked(static_cast<int>(payload->get_number("stream_id")), line);
-            line << color(kDim) << "stream_end" << reset()
-                 << "  " << stream_tag(payload)
-                 << "  ok=" << (ok ? "true" : "false");
-        } else if (ev == "agent_start") {
-            // Quiet — stream_start already announced the turn.
-            return;
+            // Successful ends are quiet (a green ✓ on its own line is more
+            // noise than signal across many parallel streams); failures still
+            // surface so an operator notices a stalled sub-agent.
+            if (ok) return;
+            line << color(kBoldRed) << "✗" << reset()
+                 << " " << color_for_agent(agent) << agent << reset()
+                 << " " << color(kDim) << "stream ended without ok" << reset();
         } else if (ev == "text") {
             buffer_delta_locked(payload, /*kind=*/"text", line);
         } else if (ev == "thinking") {
             buffer_delta_locked(payload, /*kind=*/"thinking", line);
         } else if (ev == "tool_call") {
-            const std::string tool = payload ? payload->get_string("tool") : "";
+            const std::string tool  = payload ? payload->get_string("tool") : "";
+            const std::string agent = payload ? payload->get_string("agent") : "";
             const bool ok = payload && payload->get_bool("ok");
-            line << (ok ? color(kYellow) : color(kRed))
-                 << "tool" << reset() << "  " << stream_tag(payload)
-                 << "  " << tool << "=" << (ok ? "ok" : "ERR");
+            line << color_for_agent(agent) << agent << reset()
+                 << "  " << color(kBoldYellow) << tool << reset()
+                 << " " << (ok ? color(kGreen) : color(kBoldRed))
+                 << (ok ? "✓" : "✗") << reset();
         } else if (ev == "token_usage") {
+            // Per-turn token tally, dimmed since it's a sidebar metric.
+            const std::string agent = payload ? payload->get_string("agent") : "";
             const double in  = payload ? payload->get_number("input_tokens") : 0;
             const double out = payload ? payload->get_number("output_tokens") : 0;
             const double bm  = payload ? payload->get_number("billed_micro_cents") : 0;
-            line << color(kDim) << "usage" << reset()
-                 << "  " << stream_tag(payload)
-                 << "  in=" << static_cast<int>(in)
+            line << color_for_agent(agent) << agent << reset()
+                 << "  " << color(kDim) << "↳ "
+                 << "in=" << static_cast<int>(in)
                  << " out=" << static_cast<int>(out)
-                 << " billed=" << fmt_uc(static_cast<int64_t>(bm));
+                 << " " << fmt_uc(static_cast<int64_t>(bm))
+                 << reset();
         } else if (ev == "sub_agent_response") {
+            // Boundary marker when a /agent or parallel child returns.
+            // Show the size only — the deltas already streamed the body,
+            // so a content reprint would be noise.
+            const std::string agent = payload ? payload->get_string("agent") : "";
             const std::string content = payload ? payload->get_string("content") : "";
-            line << color(kDim) << "sub_agent_response" << reset()
-                 << "  " << stream_tag(payload)
-                 << "  " << static_cast<int>(content.size()) << " chars";
+            line << color_for_agent(agent) << agent << reset()
+                 << "  " << color(kDim) << "← returned "
+                 << fmt_size(static_cast<int64_t>(content.size()))
+                 << reset();
         } else if (ev == "file") {
-            const std::string path = payload ? payload->get_string("path") : "";
+            const std::string path  = payload ? payload->get_string("path") : "";
+            const std::string agent = payload ? payload->get_string("agent") : "";
             const double size = payload ? payload->get_number("size") : 0;
-            line << color(kCyan) << "file" << reset()
-                 << "  " << stream_tag(payload)
-                 << "  " << path << " (" << static_cast<int64_t>(size) << " bytes)";
+            line << color_for_agent(agent) << agent << reset()
+                 << "  " << color(kBoldMagenta) << "📄 " << path << reset()
+                 << color(kDim) << " (" << fmt_size(static_cast<int64_t>(size)) << ")"
+                 << reset();
         } else {
             // Unknown event — log the name only; useful while iterating.
-            line << ev;
+            line << color(kDim) << ev << reset();
         }
 
         const std::string s = line.str();
@@ -478,14 +506,35 @@ public:
 
 private:
     // ANSI colour codes — only emitted when stderr is a TTY.
-    static constexpr const char* kReset      = "\033[0m";
-    static constexpr const char* kDim        = "\033[2m";
-    static constexpr const char* kRed        = "\033[31m";
-    static constexpr const char* kYellow     = "\033[33m";
-    static constexpr const char* kCyan       = "\033[36m";
-    static constexpr const char* kBoldRed    = "\033[1;31m";
-    static constexpr const char* kBoldGreen  = "\033[1;32m";
-    static constexpr const char* kBoldCyan   = "\033[1;36m";
+    static constexpr const char* kReset        = "\033[0m";
+    static constexpr const char* kDim          = "\033[2m";
+    static constexpr const char* kRed          = "\033[31m";
+    static constexpr const char* kGreen        = "\033[32m";
+    static constexpr const char* kYellow       = "\033[33m";
+    static constexpr const char* kCyan         = "\033[36m";
+    static constexpr const char* kBoldRed      = "\033[1;31m";
+    static constexpr const char* kBoldGreen    = "\033[1;32m";
+    static constexpr const char* kBoldCyan     = "\033[1;36m";
+    static constexpr const char* kBoldYellow   = "\033[1;33m";
+    static constexpr const char* kBoldMagenta  = "\033[1;35m";
+    // Per-agent colour palette — picked so two siblings in /parallel stay
+    // visually distinct.  Hashed by agent name so the same agent always
+    // gets the same colour within a process.
+    static constexpr const char* kAgentPalette[] = {
+        "\033[96m",   // bright cyan
+        "\033[92m",   // bright green
+        "\033[95m",   // bright magenta
+        "\033[94m",   // bright blue
+        "\033[93m",   // bright yellow
+        "\033[91m",   // bright red
+    };
+    const char* color_for_agent(const std::string& name) const {
+        if (!color_ || name.empty()) return "";
+        size_t h = 0;
+        for (char c : name) h = h * 131 + static_cast<unsigned char>(c);
+        constexpr size_t N = sizeof(kAgentPalette) / sizeof(kAgentPalette[0]);
+        return kAgentPalette[h % N];
+    }
 
     const char* color(const char* c) const { return color_ ? c : ""; }
     const char* reset() const               { return color_ ? kReset : ""; }
@@ -525,17 +574,7 @@ private:
             b.pending.erase(0, nl + 1);
             // Skip empty lines inside the buffer — they pile up otherwise.
             if (chunk.empty()) continue;
-            line << kind_color(thinking) << kind << reset()
-                 << "  s=" << sid << " d=" << depth << " " << b.agent
-                 << "  " << quote_short(chunk);
-            // Direct-write here: callers expect log() to emit one line at
-            // most, and we may have several to flush.  Caller's `line`
-            // gets the LAST one; earlier ones go straight to stderr.
-            // To keep ordering simple, just flush all to stderr now and
-            // clear `line` so the caller doesn't double-print.
-            std::fputs(line.str().c_str(), stderr);
-            std::fputc('\n', stderr);
-            line.str(""); line.clear();
+            emit_text_line_locked(b.agent, thinking, chunk, line);
         }
     }
 
@@ -545,16 +584,31 @@ private:
             if (it == bufs_.end()) continue;
             auto& b = it->second;
             if (!b.pending.empty()) {
-                line << kind_color(kindbit == 1) << b.kind << reset()
-                     << "  s=" << sid << " d=" << b.depth << " " << b.agent
-                     << "  " << quote_short(b.pending);
-                std::fputs(line.str().c_str(), stderr);
-                std::fputc('\n', stderr);
-                line.str(""); line.clear();
+                emit_text_line_locked(b.agent, kindbit == 1, b.pending, line);
                 b.pending.clear();
             }
             bufs_.erase(it);
         }
+    }
+
+    // Emit one text/thinking line in the demo format and reset `line` so
+    // the caller can either chain another emit or fall through to log()'s
+    // own stderr write with an empty line.
+    void emit_text_line_locked(const std::string& agent, bool thinking,
+                                const std::string& chunk,
+                                std::ostringstream& line) {
+        // Thinking blocks are rare (only some models surface them) and
+        // dim-grey so they read as side-channel reasoning, not output.
+        if (thinking) {
+            line << color(kDim) << "(" << agent << " thinking) "
+                 << quote_short(chunk, 100) << reset();
+        } else {
+            line << color_for_agent(agent) << agent << reset()
+                 << "  " << quote_short(chunk, 110);
+        }
+        std::fputs(line.str().c_str(), stderr);
+        std::fputc('\n', stderr);
+        line.str(""); line.clear();
     }
 
     void flush_all_locked(std::ostringstream& line) {
@@ -566,44 +620,9 @@ private:
         for (int k : keys) flush_buffered_locked(k >> 1, line);
     }
 
-    const char* kind_color(bool thinking) const {
-        return thinking ? color(kDim) : color(kCyan);
-    }
-
-    static std::string ts() {
-        using namespace std::chrono;
-        auto now = system_clock::now();
-        auto t   = system_clock::to_time_t(now);
-        auto ms  = duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
-        std::tm tm{};
-        ::localtime_r(&t, &tm);
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03lld",
-                      tm.tm_hour, tm.tm_min, tm.tm_sec,
-                      static_cast<long long>(ms));
-        return buf;
-    }
-
-    std::string prefix() const {
-        std::ostringstream o;
-        o << "[" << request_id_;
-        if (!tenant_name_.empty()) o << " " << tenant_name_;
-        o << "] ";
-        return o.str();
-    }
-
-    static std::string stream_tag(const std::shared_ptr<JsonValue>& p) {
-        if (!p) return "";
-        std::ostringstream o;
-        o << "s=" << static_cast<int>(p->get_number("stream_id"))
-          << " d=" << static_cast<int>(p->get_number("depth"))
-          << " " << p->get_string("agent");
-        return o.str();
-    }
-
     // Truncate to a screen-friendly preview and quote.  Newlines flatten to
     // spaces so a single log line stays one row in the operator's terminal.
-    static std::string quote_short(const std::string& s, size_t cap = 160) {
+    static std::string quote_short(const std::string& s, size_t cap = 110) {
         std::string out;
         out.reserve(std::min(s.size(), cap) + 8);
         out += '"';
@@ -625,6 +644,16 @@ private:
         o << "$" << std::fixed
           << std::setprecision(usd >= 0.01 ? 4 : 6)
           << usd;
+        return o.str();
+    }
+
+    // Bytes → "120B" / "3.4KB" / "1.2MB".  Demo-friendly file/size labels.
+    static std::string fmt_size(int64_t bytes) {
+        std::ostringstream o;
+        o << std::fixed << std::setprecision(1);
+        if (bytes < 1024)              o << bytes << "B";
+        else if (bytes < 1024 * 1024)  o << (bytes / 1024.0) << "KB";
+        else                            o << (bytes / (1024.0 * 1024.0)) << "MB";
         return o.str();
     }
 
@@ -1777,7 +1806,6 @@ std::shared_ptr<JsonValue> memory_entry_to_json(const MemoryEntry& e) {
     } catch (...) {
         m["tags"] = jarr();
     }
-    m["status"]     = jstr(e.status);
     // 0 ⇒ JSON null; positive ⇒ bare id.  List/graph endpoints surface
     // just the id so the frontend can decide whether to hydrate.
     if (e.artifact_id > 0) m["artifact_id"] = jnum(static_cast<double>(e.artifact_id));
@@ -1821,7 +1849,6 @@ std::shared_ptr<JsonValue> memory_relation_to_json(const MemoryRelation& r) {
     m["source_id"]  = jnum(static_cast<double>(r.source_id));
     m["target_id"]  = jnum(static_cast<double>(r.target_id));
     m["relation"]   = jstr(r.relation);
-    m["status"]     = jstr(r.status);
     m["created_at"] = jnum(static_cast<double>(r.created_at));
     return o;
 }
@@ -1876,7 +1903,7 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
     }
 
     auto e = tenants.create_entry(tenant.id, type, title, content, source,
-                                    *tags, "accepted", artifact_id);
+                                    *tags, artifact_id);
     write_json_response(fd, 201, memory_entry_to_json_hydrated(e, tenants));
 }
 
@@ -1918,8 +1945,6 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     f.since             = get_int("since");
     f.before_updated_at = get_int("before_updated_at");
     f.limit             = static_cast<int>(get_int("limit"));
-    // Curated graph only — proposals live behind GET /v1/memory/proposals.
-    f.status            = "accepted";
 
     auto entries = tenants.list_entries(tenant.id, f);
     auto arr = jarr();
@@ -1935,10 +1960,7 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
 void handle_memory_entry_get(int fd, int64_t id,
                               TenantStore& tenants, const Tenant& tenant) {
     auto e = tenants.get_entry(tenant.id, id);
-    // Proposed entries are not addressable through the curated read path —
-    // 404, same as a non-existent id.  Reviewers see them via
-    // GET /v1/memory/proposals.
-    if (!e || e->status != "accepted")
+    if (!e)
         return write_memory_error(fd, 404, "entry not found");
     // Single-entry GET hydrates the artifact link so the frontend can
     // render the file metadata next to the entry without a second round
@@ -1973,11 +1995,9 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
         return write_memory_error(fd, 404, "entry not found");
     }
     log_memory_event("entry.patch.found", tenant.id,
-                      "id=" + std::to_string(id) +
-                      " current_status=" + existing->status);
+                      "id=" + std::to_string(id));
 
     std::optional<std::string> title, content, source, tags_json, type;
-    bool promote_to_accepted = false;
 
     if (auto v = body->get("title"); v && v->is_string()) {
         if (v->as_string().empty() || v->as_string().size() > 200)
@@ -2005,18 +2025,6 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
             return write_memory_error(fd, 400, "invalid type");
         type = v->as_string();
     }
-    // status is the proposal-queue acceptance lever.  Only "accepted" is
-    // a valid PATCH value; demoting an accepted entry back to proposed
-    // would be confusing and has no use case.  Reject hits 400; trying
-    // to accept an already-accepted entry is a no-op below (returns false
-    // from accept_entry, surfaces as 409).
-    if (auto v = body->get("status"); v && v->is_string()) {
-        if (v->as_string() != "accepted")
-            return write_memory_error(fd, 400,
-                "invalid status — only 'accepted' is a valid PATCH value "
-                "(reject by DELETE).");
-        promote_to_accepted = true;
-    }
 
     // artifact_id PATCH semantics: explicit `null` clears the link,
     // a positive integer sets it (validated against the tenant's
@@ -2041,7 +2049,6 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
 
     log_memory_event("entry.patch.update", tenant.id,
                       "id=" + std::to_string(id) +
-                      " promote_to_accepted=" + (promote_to_accepted ? "yes" : "no") +
                       " field_changes=" +
                       std::to_string(int(title.has_value())   +
                                       int(content.has_value()) +
@@ -2056,41 +2063,21 @@ void handle_memory_entry_patch(int fd, int64_t id, const HttpRequest& req,
                           "id=" + std::to_string(id) + " (row vanished?)");
         return write_memory_error(fd, 404, "entry not found");
     }
-    if (promote_to_accepted) {
-        const bool ok = tenants.accept_entry(tenant.id, id);
-        log_memory_event("entry.patch.accept_entry", tenant.id,
-                          "id=" + std::to_string(id) + " result=" +
-                          (ok ? "promoted" : "no_change"));
-        if (!ok) {
-            // Was already accepted (no-op error), or status changed under
-            // us between the existence check and the update.  409 either
-            // way — caller can re-fetch to see the live state.
-            auto err = jobj();
-            err->as_object_mut()["error"] =
-                jstr("entry is not in 'proposed' status — nothing to accept.");
-            write_json_response(fd, 409, err);
-            return;
-        }
-    }
 
     auto e = tenants.get_entry(tenant.id, id);
     if (!e) {
-        // Vanished between accept and re-fetch — should be vanishingly
-        // rare (DELETE on the same row from another connection), but
-        // dereferencing a nullopt segfaults.  Log + return a 410 Gone
-        // so the client knows the row is no longer addressable.
+        // Vanished between update and re-fetch — should be vanishingly
+        // rare (concurrent DELETE on the same row).  Log + 410 Gone.
         log_memory_event("entry.patch.refetch_missing", tenant.id,
                           "id=" + std::to_string(id) +
-                          " — entry disappeared after accept; possible concurrent DELETE");
+                          " — entry disappeared after update; possible concurrent DELETE");
         auto err = jobj();
         err->as_object_mut()["error"] =
-            jstr("entry vanished between accept and re-fetch — refresh and retry");
+            jstr("entry vanished between update and re-fetch — refresh and retry");
         write_json_response(fd, 410, err);
         return;
     }
-    log_memory_event("entry.patch.ok", tenant.id,
-                      "id=" + std::to_string(id) +
-                      " new_status=" + e->status);
+    log_memory_event("entry.patch.ok", tenant.id, "id=" + std::to_string(id));
     write_json_response(fd, 200, memory_entry_to_json_hydrated(*e, tenants));
 }
 
@@ -2167,9 +2154,8 @@ void handle_memory_relation_list(int fd, const HttpRequest& req,
     if (!relation.empty() && !memory_relation_is_valid(relation))
         return write_memory_error(fd, 400, "invalid relation filter");
 
-    // Curated graph only.  Proposed relations live in /v1/memory/proposals.
     auto rels = tenants.list_relations(tenant.id, source_id, target_id, relation,
-                                        limit, /*status=*/"accepted");
+                                        limit);
     auto arr = jarr();
     auto& a = arr->as_array_mut();
     for (auto& r : rels) a.push_back(memory_relation_to_json(r));
@@ -2189,204 +2175,11 @@ void handle_memory_relation_delete(int fd, int64_t id,
     write_json_response(fd, 200, body);
 }
 
-// PATCH /v1/memory/relations/:id  body: { "status": "accepted" }
-//
-// Relations are otherwise immutable (no title/content/etc to update); this
-// endpoint exists solely to promote a proposed relation into the curated
-// graph.  accept_relation enforces the both-endpoints-accepted invariant —
-// accepting a relation that points at a still-proposed entry returns 409
-// so the reviewer accepts the entry endpoints first.
-void handle_memory_relation_patch(int fd, int64_t id, const HttpRequest& req,
-                                   TenantStore& tenants, const Tenant& tenant) {
-    log_memory_event("relation.patch.enter", tenant.id,
-                      "id=" + std::to_string(id) +
-                      " body_bytes=" + std::to_string(req.body.size()));
+// (PATCH /v1/memory/relations/:id and GET /v1/memory/proposals were
+// removed when the proposal-queue model was retired — agents now write
+// directly into the curated graph.  Reject paths use DELETE on the
+// underlying entry / relation row.)
 
-    std::shared_ptr<JsonValue> body;
-    try { body = json_parse(req.body); }
-    catch (const std::exception& e) {
-        log_memory_event("relation.patch.parse_error", tenant.id, e.what());
-        return write_memory_error(fd, 400, std::string("invalid JSON: ") + e.what());
-    }
-    if (!body || !body->is_object()) {
-        log_memory_event("relation.patch.shape_error", tenant.id,
-                          "body is not a JSON object");
-        return write_memory_error(fd, 400, "body must be a JSON object");
-    }
-
-    auto v = body->get("status");
-    if (!v || !v->is_string() || v->as_string() != "accepted") {
-        log_memory_event("relation.patch.bad_status", tenant.id,
-                          std::string("got=") + (v ? (v->is_string() ? v->as_string()
-                                                                       : "(non-string)")
-                                                   : "(missing)"));
-        return write_memory_error(fd, 400,
-            "the only supported PATCH on a relation is "
-            "{\"status\": \"accepted\"} — reject by DELETE.");
-    }
-
-    // Existence check.  list_relations + walk is O(n); fine for v1
-    // tenant scales but worth replacing with a get-by-id helper if a
-    // tenant ever pushes past the 1000-row cap below (the row would
-    // appear missing and we'd 404 incorrectly).
-    bool   exists = false;
-    size_t scanned = 0;
-    {
-        auto rows = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000,
-                                           /*status=*/std::string{});
-        scanned = rows.size();
-        for (auto& r : rows) if (r.id == id) { exists = true; break; }
-    }
-    if (!exists) {
-        log_memory_event("relation.patch.not_found", tenant.id,
-                          "id=" + std::to_string(id) +
-                          " scanned_rows=" + std::to_string(scanned));
-        return write_memory_error(fd, 404, "relation not found");
-    }
-
-    const bool accepted = tenants.accept_relation(tenant.id, id);
-    log_memory_event("relation.patch.accept_relation", tenant.id,
-                      "id=" + std::to_string(id) + " result=" +
-                      (accepted ? "promoted" : "no_change"));
-    if (!accepted) {
-        auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr("cannot accept relation — it must be in 'proposed' status "
-                 "and both endpoint entries must already be accepted.  "
-                 "Accept the entry endpoints first, then retry.");
-        write_json_response(fd, 409, err);
-        return;
-    }
-
-    // Re-fetch the canonical row for the response.  Same list-and-walk as
-    // the existence check — the alternative would be a dedicated get-by-id
-    // method on TenantStore, which we'll add when this becomes a hot path.
-    auto rows = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000,
-                                       /*status=*/std::string{});
-    for (auto& r : rows) {
-        if (r.id == id) {
-            log_memory_event("relation.patch.ok", tenant.id,
-                              "id=" + std::to_string(id) +
-                              " new_status=" + r.status);
-            write_json_response(fd, 200, memory_relation_to_json(r));
-            return;
-        }
-    }
-    // Row vanished between accept and re-fetch (unlikely — only DELETE
-    // on the same id from another connection would do this).  Don't
-    // synthesise a fake response that pretends nothing happened; surface
-    // 410 Gone so the client refreshes its view.
-    log_memory_event("relation.patch.refetch_missing", tenant.id,
-                      "id=" + std::to_string(id) +
-                      " — relation disappeared after accept; possible concurrent DELETE");
-    auto err = jobj();
-    err->as_object_mut()["error"] =
-        jstr("relation vanished between accept and re-fetch — refresh and retry");
-    write_json_response(fd, 410, err);
-}
-
-// GET /v1/memory/proposals
-//
-// List the proposal queue: every entry and relation currently in 'proposed'
-// status for this tenant.  Newest first.  Optional `?kind=entries|relations`
-// to scope; default returns both.  Reviewers use this to drive the
-// accept/reject UI.
-void handle_memory_proposals_list(int fd, const HttpRequest& req,
-                                   TenantStore& tenants, const Tenant& tenant) {
-    log_memory_event("proposals.list.enter", tenant.id,
-                      "path=" + req.path);
-
-    const auto qp = parse_query(req.path);
-    auto get_str = [&](const std::string& k) -> std::string {
-        auto it = qp.find(k);
-        return it == qp.end() ? std::string{} : it->second;
-    };
-    auto get_int = [&](const std::string& k) -> int64_t {
-        auto it = qp.find(k);
-        if (it == qp.end()) return 0;
-        try { return std::stoll(it->second); } catch (...) { return 0; }
-    };
-
-    const std::string kind = get_str("kind");
-    if (!kind.empty() && kind != "entries" && kind != "relations") {
-        log_memory_event("proposals.list.bad_kind", tenant.id, "kind=" + kind);
-        return write_memory_error(fd, 400, "kind must be 'entries' or 'relations'");
-    }
-
-    const int limit = static_cast<int>(get_int("limit"));
-    log_memory_event("proposals.list.params", tenant.id,
-                      "kind=" + (kind.empty() ? "<both>" : kind) +
-                      " limit=" + std::to_string(limit));
-
-    auto body = jobj();
-    auto& m = body->as_object_mut();
-    m["tenant_id"] = jnum(static_cast<double>(tenant.id));
-
-    if (kind != "relations") {
-        TenantStore::EntryFilter f;
-        f.status = "proposed";
-        f.limit  = limit > 0 ? limit : 100;
-        std::vector<MemoryEntry> entries;
-        try {
-            entries = tenants.list_entries(tenant.id, f);
-        } catch (const std::exception& ex) {
-            log_memory_event("proposals.list.entries_query_threw", tenant.id, ex.what());
-            return write_memory_error(fd, 500,
-                std::string("entries query failed: ") + ex.what());
-        }
-        log_memory_event("proposals.list.entries_loaded", tenant.id,
-                          "count=" + std::to_string(entries.size()));
-        auto arr = jarr();
-        auto& a = arr->as_array_mut();
-        for (size_t i = 0; i < entries.size(); ++i) {
-            try {
-                a.push_back(memory_entry_to_json(entries[i]));
-            } catch (const std::exception& ex) {
-                log_memory_event("proposals.list.entry_render_threw", tenant.id,
-                                  "index=" + std::to_string(i) +
-                                  " entry_id=" + std::to_string(entries[i].id) +
-                                  " err=" + ex.what());
-                throw;   // surface to the connection-level catch
-            }
-        }
-        m["entries"]       = arr;
-        m["entries_count"] = jnum(static_cast<double>(entries.size()));
-    }
-
-    if (kind != "entries") {
-        std::vector<MemoryRelation> rels;
-        try {
-            rels = tenants.list_relations(tenant.id, 0, 0, std::string{},
-                                            limit > 0 ? limit : 200,
-                                            /*status=*/"proposed");
-        } catch (const std::exception& ex) {
-            log_memory_event("proposals.list.relations_query_threw", tenant.id, ex.what());
-            return write_memory_error(fd, 500,
-                std::string("relations query failed: ") + ex.what());
-        }
-        log_memory_event("proposals.list.relations_loaded", tenant.id,
-                          "count=" + std::to_string(rels.size()));
-        auto arr = jarr();
-        auto& a = arr->as_array_mut();
-        for (size_t i = 0; i < rels.size(); ++i) {
-            try {
-                a.push_back(memory_relation_to_json(rels[i]));
-            } catch (const std::exception& ex) {
-                log_memory_event("proposals.list.relation_render_threw", tenant.id,
-                                  "index=" + std::to_string(i) +
-                                  " rel_id=" + std::to_string(rels[i].id) +
-                                  " err=" + ex.what());
-                throw;
-            }
-        }
-        m["relations"]       = arr;
-        m["relations_count"] = jnum(static_cast<double>(rels.size()));
-    }
-
-    log_memory_event("proposals.list.write", tenant.id, "ready");
-    write_json_response(fd, 200, body);
-    log_memory_event("proposals.list.ok", tenant.id, "done");
-}
 
 void handle_memory_graph(int fd, const HttpRequest& req,
                           TenantStore& tenants, const Tenant& tenant) {
@@ -2403,7 +2196,6 @@ void handle_memory_graph(int fd, const HttpRequest& req,
 
     TenantStore::EntryFilter f;
     f.limit  = 200;  // hit the per-call ceiling
-    f.status = "accepted";   // curated graph only
     const std::string types_csv = get_str("type");
     if (!types_csv.empty()) {
         size_t start = 0;
@@ -2446,11 +2238,9 @@ void handle_memory_graph(int fd, const HttpRequest& req,
     entry_set.reserve(entries.size() * 2);
     for (auto& e : entries) entry_set[e.id] = true;
 
-    // All accepted relations for this tenant; filter by the entry set in
-    // memory (cheap relative to a join, and keeps the relation query
-    // trivial).  Proposed relations stay in the proposals queue.
-    auto rels = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000,
-                                        /*status=*/"accepted");
+    // All relations for this tenant; filter by the entry set in memory
+    // (cheap relative to a join, and keeps the relation query trivial).
+    auto rels = tenants.list_relations(tenant.id, 0, 0, std::string{}, 1000);
 
     auto entries_arr = jarr();
     auto& ea = entries_arr->as_array_mut();
@@ -3187,7 +2977,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 // facet they're most likely to organise around.
                 TenantStore::EntryFilter f;
                 f.limit  = 100;
-                f.status = "accepted";   // agents see curated graph only
 
                 std::string a = args;
                 while (!a.empty() && a.front() == ' ') a.erase(0, 1);
@@ -3230,10 +3019,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 try { id = std::stoll(args); } catch (...) { id = 0; }
                 if (id <= 0) return "ERR: usage: /mem entry <id>";
                 auto e = tenants.get_entry(reader_tenant_id, id);
-                // Proposed entries are invisible to agent reads — return
-                // the same "not found" path so an agent can't introspect
-                // another agent's pending proposals.
-                if (!e || e->status != "accepted")
+                if (!e)
                     return "ERR: entry " + std::to_string(id) + " not found";
                 std::ostringstream out;
                 out << fmt_entry_line(*e) << "\n";
@@ -3266,22 +3052,20 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                             << e->artifact_id << " no longer exists)\n";
                     }
                 }
-                // Edges: accepted relations where this entry is source OR
-                // target.  We resolve neighbour titles in a small ad-hoc
-                // cache so an entry with N edges to the same neighbour
-                // doesn't N-times-fetch the same row.
+                // Edges: relations where this entry is source OR target.
+                // Resolve neighbour titles in a small ad-hoc cache so an
+                // entry with N edges to the same neighbour doesn't
+                // N-times-fetch the same row.
                 auto out_edges = tenants.list_relations(reader_tenant_id, id, 0,
-                                                        std::string{}, 200,
-                                                        /*status=*/"accepted");
+                                                        std::string{}, 200);
                 auto in_edges  = tenants.list_relations(reader_tenant_id, 0, id,
-                                                        std::string{}, 200,
-                                                        /*status=*/"accepted");
+                                                        std::string{}, 200);
                 std::map<int64_t, std::pair<std::string, std::string>> title_cache;
                 auto resolve = [&](int64_t nid) -> std::pair<std::string, std::string> {
                     auto it = title_cache.find(nid);
                     if (it != title_cache.end()) return it->second;
                     auto neighbour = tenants.get_entry(reader_tenant_id, nid);
-                    if (!neighbour || neighbour->status != "accepted") {
+                    if (!neighbour) {
                         title_cache[nid] = {"(unavailable)", ""};
                     } else {
                         title_cache[nid] = {neighbour->title, neighbour->type};
@@ -3331,7 +3115,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 // here, but for v1 the rank-in-memory approach is plenty).
                 TenantStore::EntryFilter f;
                 f.limit  = 200;
-                f.status = "accepted";
                 auto entries = tenants.list_entries(reader_tenant_id, f);
 
                 struct Scored {
@@ -3448,7 +3231,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 if (depth > 2) depth = 2;
 
                 auto seed = tenants.get_entry(reader_tenant_id, seed_id);
-                if (!seed || seed->status != "accepted")
+                if (!seed)
                     return "ERR: entry " + std::to_string(seed_id) + " not found";
 
                 // BFS with a 50-node cap; node order tracks discovery so
@@ -3467,15 +3250,15 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         if (nodes.size() >= kMaxNodes) break;
                         auto outs = tenants.list_relations(reader_tenant_id,
                                                            nid, 0, std::string{},
-                                                           50, "accepted");
+                                                           50);
                         auto ins  = tenants.list_relations(reader_tenant_id,
                                                            0, nid, std::string{},
-                                                           50, "accepted");
+                                                           50);
                         auto add_edge_target = [&](int64_t target) {
                             if (nodes.size() >= kMaxNodes) return;
                             if (nodes.count(target)) return;
                             auto neighbour = tenants.get_entry(reader_tenant_id, target);
-                            if (!neighbour || neighbour->status != "accepted") return;
+                            if (!neighbour) return;
                             nodes[target] = *neighbour;
                             hop_of[target] = d + 1;
                             next_frontier.push_back(target);
@@ -3545,13 +3328,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 try { id = std::stoll(a); } catch (...) { id = 0; }
                 if (id <= 0) return "ERR: usage: /mem density <id>";
                 auto e = tenants.get_entry(reader_tenant_id, id);
-                if (!e || e->status != "accepted")
+                if (!e)
                     return "ERR: entry " + std::to_string(id) + " not found";
 
                 auto outs = tenants.list_relations(reader_tenant_id, id, 0,
-                                                    std::string{}, 200, "accepted");
+                                                    std::string{}, 200);
                 auto ins  = tenants.list_relations(reader_tenant_id, 0, id,
-                                                    std::string{}, 200, "accepted");
+                                                    std::string{}, 200);
 
                 std::set<std::string> relation_kinds;
                 std::set<int64_t> hop1_nodes;
@@ -3572,9 +3355,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 for (int64_t n : hop1_nodes) {
                     if (++probed > 50) break;
                     auto o = tenants.list_relations(reader_tenant_id, n, 0,
-                                                     std::string{}, 50, "accepted");
+                                                     std::string{}, 50);
                     auto i = tenants.list_relations(reader_tenant_id, 0, n,
-                                                     std::string{}, 50, "accepted");
+                                                     std::string{}, 50);
                     for (auto& r : o) if (r.target_id != id) hop2_nodes.insert(r.target_id);
                     for (auto& r : i) if (r.source_id != id) hop2_nodes.insert(r.source_id);
                 }
@@ -3601,7 +3384,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                     << " new nodes (beyond direct neighbours)\n";
                 if (outs.empty() && ins.empty()) {
                     out << "  → isolated node — no relations yet.  "
-                           "Consider /mem propose link to connect it.\n";
+                           "Consider /mem add link to connect it.\n";
                 } else if (hop1_nodes.size() + hop2_nodes.size() < 4) {
                     out << "  → sparse neighbourhood.  Likely worth research / linking.\n";
                 } else {
@@ -3614,13 +3397,16 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             return "ERR: unknown structured-memory subcommand";
         });
 
-    // Proposal-queue writer.  Mirror the reader's tenant scoping — agents
-    // can only propose into their own tenant's queue, and the rows land in
-    // 'proposed' status so they don't pollute the curated graph until a
-    // human accepts them.
+    // Structured-memory writer.  Tenant-scoped (mirrors the reader); writes
+    // land directly in the curated graph and are visible to subsequent
+    // reads on the next turn.  /mem add entry requires a non-empty body
+    // (passed in as `body`) — the dispatcher rejects empty bodies before
+    // the request reaches us, so by the time we see it we can trust the
+    // body is meaningful synthesised text.
     orch->set_structured_memory_writer(
         [&tenants, reader_tenant_id](const std::string& kind,
-                                      const std::string& args) -> std::string {
+                                      const std::string& args,
+                                      const std::string& body) -> std::string {
             // Trim leading/trailing whitespace from a token.
             auto trim = [](std::string s) {
                 while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
@@ -3628,11 +3414,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 return s;
             };
 
-            if (kind == "propose-entry") {
-                // /mem propose entry <type> <title> [--artifact #<id>]
-                // The trailing --artifact flag lets an agent that just
-                // /write --persist'd a file file it directly into the
-                // memory proposal in one turn.
+            if (kind == "add-entry") {
+                // /mem add entry <type> <title> [--artifact #<id>]
+                // Trailing --artifact links a /write --persist'd file
+                // straight into the new entry.
                 std::istringstream iss(args);
                 std::string type;
                 iss >> type;
@@ -3640,7 +3425,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 std::getline(iss, title);
                 title = trim(title);
                 if (type.empty() || title.empty()) {
-                    return "ERR: usage: /mem propose entry <type> <title> "
+                    return "ERR: usage: /mem add entry <type> <title> "
                            "[--artifact #<id>]";
                 }
 
@@ -3653,7 +3438,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                     if (pos != std::string::npos &&
                         (pos == 0 || title[pos - 1] == ' ' || title[pos - 1] == '\t')) {
                         std::string tail = title.substr(pos + flag.size());
-                        // Trim leading spaces and the '#' marker.
                         while (!tail.empty() && (tail.front() == ' ' || tail.front() == '\t'))
                             tail.erase(0, 1);
                         if (!tail.empty() && tail.front() == '#') tail.erase(0, 1);
@@ -3663,9 +3447,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                             return "ERR: --artifact requires a positive id, "
                                    "e.g. --artifact #42";
                         }
-                        // Strip the flag (and its preceding space) from
-                        // the title so it doesn't bleed into the stored
-                        // title field.
                         if (pos > 0 && (title[pos - 1] == ' ' || title[pos - 1] == '\t'))
                             --pos;
                         title.resize(pos);
@@ -3690,31 +3471,46 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                            " does not exist for this tenant";
                 }
 
+                // Defense in depth: the dispatcher already rejects empty
+                // bodies, but if one slips through (older caller path or
+                // future regression), refuse the write here too — a
+                // title-only entry has no value to /mem search.
+                std::string content = trim(body);
+                if (content.empty()) {
+                    return "ERR: /mem add entry requires a content body "
+                           "(synthesised retrievable text between the "
+                           "header line and /endmem)";
+                }
+                if (content.size() > 32 * 1024) {
+                    return "ERR: content body too large (limit 32KB; got " +
+                           std::to_string(content.size()) + " bytes).  "
+                           "Trim to the load-bearing facts; the artifact "
+                           "store holds long-form output via /write --persist";
+                }
+
                 auto e = tenants.create_entry(reader_tenant_id, type, title,
-                                               /*content=*/"", /*source=*/"agent",
+                                               content, /*source=*/"agent",
                                                /*tags_json=*/"[]",
-                                               /*status=*/"proposed",
                                                artifact_id);
                 std::ostringstream out;
-                out << "OK: proposed entry #" << e.id << " [" << e.type << "] "
+                out << "OK: added entry #" << e.id << " [" << e.type << "] "
                     << e.title;
                 if (artifact_id > 0) {
                     out << " (linked to artifact #" << artifact_id << ")";
                 }
-                out << " (status=proposed; awaiting human review).  Use this "
-                       "id in subsequent /mem propose link calls to reference "
-                       "it.\n";
+                out << ".  Use this id in subsequent /mem add link calls to "
+                       "reference it.\n";
                 return out.str();
             }
 
-            if (kind == "propose-link") {
-                // /mem propose link <src_id> <relation> <dst_id>
+            if (kind == "add-link") {
+                // /mem add link <src_id> <relation> <dst_id>
                 std::istringstream iss(args);
                 int64_t src = 0, dst = 0;
                 std::string relation;
                 iss >> src >> relation >> dst;
                 if (src <= 0 || dst <= 0 || relation.empty()) {
-                    return "ERR: usage: /mem propose link <src_id> <relation> <dst_id>";
+                    return "ERR: usage: /mem add link <src_id> <relation> <dst_id>";
                 }
                 if (src == dst) {
                     return "ERR: self-loops not allowed";
@@ -3724,9 +3520,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                            "one of: relates_to, refines, contradicts, "
                            "supersedes, supports";
                 }
-                // Both endpoints must already exist for this tenant — but
-                // can be either accepted or proposed.  An agent might have
-                // just proposed both endpoints in the same turn.
                 auto src_entry = tenants.get_entry(reader_tenant_id, src);
                 auto dst_entry = tenants.get_entry(reader_tenant_id, dst);
                 if (!src_entry || !dst_entry) {
@@ -3734,23 +3527,20 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                            "this tenant";
                 }
                 auto created = tenants.create_relation(reader_tenant_id,
-                                                        src, dst, relation,
-                                                        /*status=*/"proposed");
+                                                        src, dst, relation);
                 if (!created) {
                     auto existing = tenants.find_relation(reader_tenant_id,
                                                            src, dst, relation);
                     std::ostringstream out;
                     out << "ERR: a " << relation << " relation from #" << src
                         << " to #" << dst << " already exists";
-                    if (existing) out << " (id=" << existing->id
-                                       << ", status=" << existing->status << ")";
+                    if (existing) out << " (id=" << existing->id << ")";
                     out << "\n";
                     return out.str();
                 }
                 std::ostringstream out;
-                out << "OK: proposed relation #" << created->id << ": #" << src
-                    << " --[" << relation << "]--> #" << dst
-                    << " (status=proposed; awaiting human review).\n";
+                out << "OK: added relation #" << created->id << ": #" << src
+                    << " --[" << relation << "]--> #" << dst << ".\n";
                 return out.str();
             }
 
@@ -4035,13 +3825,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                                std::to_string(artifact_id) +
                                " (its artifact_id=" +
                                std::to_string(mem->artifact_id) + ")";
-                    }
-                    if (mem->status != "accepted") {
-                        return std::string("ERR: memory entry #") +
-                               std::to_string(via_memory_id) +
-                               " is not in 'accepted' status; only curated "
-                               "memory entries can authorise cross-"
-                               "conversation artifact reads";
                     }
                 }
                 auto blob = store->get_artifact_content(tid, artifact_id);
@@ -4840,8 +4623,6 @@ void ApiServer::handle_connection(int fd) {
                         write_plain_response(fd, 400, "Bad Request", "bad relation id\n");
                         return;
                     }
-                    if (req.method == "PATCH")
-                        return handle_memory_relation_patch(fd, id, req, tenants_, *tenant);
                     if (req.method == "DELETE")
                         return handle_memory_relation_delete(fd, id, tenants_, *tenant);
                     write_plain_response(fd, 405, "Method Not Allowed",
@@ -4849,16 +4630,6 @@ void ApiServer::handle_connection(int fd) {
                     return;
                 }
                 write_plain_response(fd, 404, "Not Found", "memory route not found\n");
-                return;
-            }
-            // ── /v1/memory/proposals ───────────────────────────────────
-            if (segs.size() == 3 && segs[2] == "proposals") {
-                if (req.method != "GET") {
-                    write_plain_response(fd, 405, "Method Not Allowed",
-                                         "method not allowed\n");
-                    return;
-                }
-                handle_memory_proposals_list(fd, req, tenants_, *tenant);
                 return;
             }
             // ── /v1/memory/graph ───────────────────────────────────────

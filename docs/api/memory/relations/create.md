@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Create a directed labeled edge between two entries. Relations created via this endpoint always land in `status="accepted"`. Agent-originated edges go into the proposal queue with `status="proposed"` — see [Structured memory → Proposal queue](../../concepts/structured-memory.md#proposal-queue).
+Create a directed labeled edge between two entries. Both HTTP callers and agents write directly into the curated graph — see [Structured memory](../../concepts/structured-memory.md).
 
 Relations are **directed and per-type** — the same pair can have multiple relations of different kinds; the same `(source, target, relation)` triple cannot exist twice. Symmetric relations like `contradicts` are still stored directed; clients dedupe for display.
 
@@ -35,7 +35,6 @@ curl -X POST \
   "source_id": 42,
   "target_id": 43,
   "relation": "supports",
-  "status": "accepted",
   "created_at": 1777058500
 }
 ```
@@ -52,5 +51,5 @@ Field schemas: [Data model → MemoryRelation](../../concepts/data-model.md#memo
 
 ## See also
 
-- [`GET /v1/memory/relations`](list.md), [`PATCH /v1/memory/relations/:id`](patch.md), [`DELETE /v1/memory/relations/:id`](delete.md).
+- [`GET /v1/memory/relations`](list.md), [`DELETE /v1/memory/relations/:id`](delete.md).
 - [Structured memory](../../concepts/structured-memory.md).

@@ -188,3 +188,226 @@ TEST_CASE("parse_agent_commands skips code fences") {
     CHECK(cmds[0].name == "exec");
     CHECK(cmds[0].args == "ls");
 }
+
+TEST_CASE("parse_agent_commands recognises /help with and without topic") {
+    {
+        auto cmds = parse_agent_commands("/help\n");
+        REQUIRE(cmds.size() == 1);
+        CHECK(cmds[0].name == "help");
+        CHECK(cmds[0].args.empty());
+    }
+    {
+        auto cmds = parse_agent_commands("/help mem\n");
+        REQUIRE(cmds.size() == 1);
+        CHECK(cmds[0].name == "help");
+        CHECK(cmds[0].args == "mem");
+    }
+    {
+        // Multi-token args are accepted by the parser; the dispatcher takes
+        // the first token to resolve the topic (e.g. "/help mem add" → "mem").
+        auto cmds = parse_agent_commands("/help mem add\n");
+        REQUIRE(cmds.size() == 1);
+        CHECK(cmds[0].name == "help");
+        CHECK(cmds[0].args == "mem add");
+    }
+}
+
+TEST_CASE("parse_agent_commands handles /mem add entry as a /endmem-terminated block") {
+    {
+        // Happy path: header line, body, /endmem.
+        std::string response =
+            "/mem add entry reference Honeycomb pricing\n"
+            "Pro tier $130/mo for 100M events.  Span:trace 5–20 typical.\n"
+            "Source: live fetch.\n"
+            "/endmem\n";
+        auto cmds = parse_agent_commands(response);
+        REQUIRE(cmds.size() == 1);
+        CHECK(cmds[0].name == "mem");
+        CHECK(cmds[0].args == "add entry reference Honeycomb pricing");
+        CHECK(cmds[0].content.find("Pro tier $130") != std::string::npos);
+        CHECK(cmds[0].content.find("/endmem")       == std::string::npos);
+        CHECK(cmds[0].truncated == false);
+    }
+    {
+        // Truncated: header but no /endmem.  cmd.truncated must be true so
+        // the orchestrator can decide to continue rather than commit
+        // a half-written entry.
+        std::string response =
+            "/mem add entry reference Half-written\n"
+            "Body in progress, model ran out of tokens";
+        auto cmds = parse_agent_commands(response);
+        REQUIRE(cmds.size() == 1);
+        CHECK(cmds[0].name == "mem");
+        CHECK(cmds[0].truncated == true);
+    }
+    {
+        // /mem add link is single-line; the parser must NOT swallow
+        // following lines as a block.
+        std::string response =
+            "/mem add link 88 supports 42\n"
+            "/exec ls\n";
+        auto cmds = parse_agent_commands(response);
+        REQUIRE(cmds.size() == 2);
+        CHECK(cmds[0].name == "mem");
+        CHECK(cmds[0].args == "add link 88 supports 42");
+        CHECK(cmds[0].content.empty());
+        CHECK(cmds[1].name == "exec");
+    }
+    {
+        // /mem read / /mem search / /mem entries stay single-line — the
+        // /mem add entry block path must not engage on other /mem subforms.
+        std::string response =
+            "/mem search observability\n"
+            "/mem entry 42\n";
+        auto cmds = parse_agent_commands(response);
+        REQUIRE(cmds.size() == 2);
+        CHECK(cmds[0].args == "search observability");
+        CHECK(cmds[1].args == "entry 42");
+        CHECK(cmds[0].content.empty());
+        CHECK(cmds[1].content.empty());
+    }
+}
+
+TEST_CASE("/mem add entry dispatcher rejects empty body and unclosed block") {
+    // Stub writer captures (kind, args, body) so we can inspect what the
+    // dispatcher passes through.  Returns "OK: stubbed" so the dispatcher
+    // treats it as a successful write.
+    std::string captured_kind, captured_args, captured_body;
+    auto writer = [&](const std::string& k, const std::string& a,
+                      const std::string& b) -> std::string {
+        captured_kind = k;
+        captured_args = a;
+        captured_body = b;
+        return "OK: stubbed entry recorded\n";
+    };
+
+    {
+        // Block with body — should reach the writer with body intact.
+        std::vector<AgentCommand> cmds;
+        AgentCommand c;
+        c.name = "mem";
+        c.args = "add entry reference Test title";
+        c.content = "Body line one.\nBody line two.";
+        c.truncated = false;
+        cmds.push_back(c);
+
+        captured_kind.clear();
+        auto out = execute_agent_commands(
+            cmds, "test", "",
+            /*agent_invoker=*/nullptr, /*confirm=*/nullptr,
+            /*dedup_cache=*/nullptr, /*advisor_invoker=*/nullptr,
+            /*tool_status=*/nullptr, /*pane_spawner=*/nullptr,
+            /*write_interceptor=*/nullptr, /*exec_disabled=*/false,
+            /*parallel_invoker=*/nullptr,
+            /*structured_memory_reader=*/nullptr,
+            /*structured_memory_writer=*/writer);
+
+        // The dispatcher consumes "entry" before invoking the writer, so
+        // `args` here is the type+title remainder, not the full second token.
+        CHECK(captured_kind == "add-entry");
+        CHECK(captured_args == "reference Test title");
+        CHECK(captured_body == "Body line one.\nBody line two.");
+        CHECK(out.find("OK: stubbed") != std::string::npos);
+    }
+    {
+        // Empty body — dispatcher must refuse before reaching the writer.
+        captured_kind.clear();
+        std::vector<AgentCommand> cmds;
+        AgentCommand c;
+        c.name = "mem";
+        c.args = "add entry reference Title only";
+        c.content = "";
+        c.truncated = false;
+        cmds.push_back(c);
+
+        auto out = execute_agent_commands(
+            cmds, "test", "",
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            false, nullptr, nullptr, writer);
+        CHECK(captured_kind.empty());   // writer was NOT called
+        CHECK(out.find("ERR: /mem add entry requires a content body") != std::string::npos);
+    }
+    {
+        // Truncated block (no /endmem) — dispatcher must refuse.
+        captured_kind.clear();
+        std::vector<AgentCommand> cmds;
+        AgentCommand c;
+        c.name = "mem";
+        c.args = "add entry reference Truncated";
+        c.content = "Half a body";
+        c.truncated = true;
+        cmds.push_back(c);
+
+        auto out = execute_agent_commands(
+            cmds, "test", "",
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            false, nullptr, nullptr, writer);
+        CHECK(captured_kind.empty());
+        CHECK(out.find("not closed with /endmem") != std::string::npos);
+    }
+    {
+        // /mem add link does NOT require a body.  Passes args through.
+        captured_kind.clear();
+        std::vector<AgentCommand> cmds;
+        AgentCommand c;
+        c.name = "mem";
+        c.args = "add link 1 supports 2";
+        c.content = "";
+        c.truncated = false;
+        cmds.push_back(c);
+
+        auto out = execute_agent_commands(
+            cmds, "test", "",
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            false, nullptr, nullptr, writer);
+        // Same convention as add-entry: dispatcher strips the "link" token.
+        CHECK(captured_kind == "add-link");
+        CHECK(captured_args == "1 supports 2");
+        CHECK(captured_body.empty());
+    }
+}
+
+TEST_CASE("/help dispatch returns topic body or ERR for unknown topic") {
+    // The /help dispatch path needs no callbacks — it reads from the
+    // help corpus baked into commands.cpp.  Smoke-test the three shapes:
+    //   - no topic           → topic index
+    //   - known topic        → topic body
+    //   - unknown topic      → ERR with caller-facing hint
+
+    {
+        std::vector<AgentCommand> cmds;
+        AgentCommand h; h.name = "help"; h.args = "";
+        cmds.push_back(h);
+        auto result = execute_agent_commands(cmds, "test", "");
+        CHECK(result.find("[/help]") != std::string::npos);
+        CHECK(result.find("Available topics:") != std::string::npos);
+        CHECK(result.find("[END HELP]") != std::string::npos);
+    }
+    {
+        std::vector<AgentCommand> cmds;
+        AgentCommand h; h.name = "help"; h.args = "mem";
+        cmds.push_back(h);
+        auto result = execute_agent_commands(cmds, "test", "");
+        CHECK(result.find("[/help mem]") != std::string::npos);
+        // Anchor on a string from the mem topic body so we know the right
+        // corpus entry was emitted.
+        CHECK(result.find("/mem entries") != std::string::npos);
+    }
+    {
+        std::vector<AgentCommand> cmds;
+        AgentCommand h; h.name = "help"; h.args = "definitely-not-a-topic";
+        cmds.push_back(h);
+        auto result = execute_agent_commands(cmds, "test", "");
+        CHECK(result.find("ERR: unknown topic") != std::string::npos);
+    }
+    {
+        // First-token resolution: "/help mem add" should resolve to the
+        // "mem" topic, not error out on the multi-word args.
+        std::vector<AgentCommand> cmds;
+        AgentCommand h; h.name = "help"; h.args = "Mem Add";  // also case-insensitive
+        cmds.push_back(h);
+        auto result = execute_agent_commands(cmds, "test", "");
+        CHECK(result.find("/mem entries") != std::string::npos);
+        CHECK(result.find("ERR:") == std::string::npos);
+    }
+}

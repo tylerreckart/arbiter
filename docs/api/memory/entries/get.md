@@ -26,7 +26,7 @@ Same shape as the [POST response](create.md), with a nested `artifact` block whe
 | Status | When | Body |
 |--------|------|------|
 | 401    | Missing / invalid bearer. | `{"error": "..."}` |
-| 404    | Id doesn't exist, belongs to another tenant, or is in `status="proposed"` (proposals aren't addressable through the curated read path; use [`GET /v1/memory/proposals`](../proposals.md)). | `{"error": "entry not found"}` |
+| 404    | Id doesn't exist or belongs to another tenant. | `{"error": "entry not found"}` |
 
 ## See also
 

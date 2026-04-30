@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-List relations for the authenticated tenant. **Curated graph only** — proposed edges (`status="proposed"`) are hidden; fetch them via [`GET /v1/memory/proposals`](../proposals.md).
+List relations for the authenticated tenant.
 
 ## Request
 
@@ -34,7 +34,6 @@ curl -H "Authorization: Bearer atr_…" \
       "source_id": 42,
       "target_id": 43,
       "relation": "supports",
-      "status": "accepted",
       "created_at": 1777058500
     }
   ]
@@ -50,5 +49,5 @@ curl -H "Authorization: Bearer atr_…" \
 
 ## See also
 
-- [`POST /v1/memory/relations`](create.md), [`PATCH /v1/memory/relations/:id`](patch.md), [`DELETE /v1/memory/relations/:id`](delete.md).
+- [`POST /v1/memory/relations`](create.md), [`DELETE /v1/memory/relations/:id`](delete.md).
 - [`GET /v1/memory/graph`](../graph.md) — bulk fetch.

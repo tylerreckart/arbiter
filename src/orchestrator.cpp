@@ -441,22 +441,6 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     auto advisor_invoker  = make_advisor_invoker(agent_id);
     auto parallel_invoker = make_parallel_invoker(agent_id, depth, orig_q);
 
-    // One-line diagnostic: which callback bridges this dispatch sees.
-    // Fires at every depth + sub-agent so a missing wiring upstream
-    // surfaces immediately in `arbiter --api --verbose` logs as a
-    // mismatch between the master's set and the child's see.
-    std::fprintf(stderr,
-        "[orch] dispatch agent=%s depth=%d  "
-        "search=%s mcp=%s mem_r=%s mem_w=%s art_w=%s art_r=%s art_l=%s\n",
-        agent_id.c_str(), depth,
-        search_invoker_cb_           ? "✓" : "✗",
-        mcp_invoker_cb_              ? "✓" : "✗",
-        structured_memory_reader_cb_ ? "✓" : "✗",
-        structured_memory_writer_cb_ ? "✓" : "✗",
-        artifact_writer_cb_          ? "✓" : "✗",
-        artifact_reader_cb_          ? "✓" : "✗",
-        artifact_lister_cb_          ? "✓" : "✗");
-
     // One stream_id per turn-sequence for this agent.  Every callback that
     // fires before this scope unwinds sees (stream_id, agent_id, depth)
     // via current_stream_*.

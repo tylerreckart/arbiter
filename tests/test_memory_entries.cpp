@@ -275,113 +275,23 @@ TEST_CASE("memory relations are tenant-isolated") {
     CHECK(s.list_relations(a, 0, 0, std::string{}, 100).size() == 1);
 }
 
-TEST_CASE("proposed entries are filtered out of the curated read path") {
+TEST_CASE("entries are immediately visible to reads after creation") {
+    // The proposal-queue model has been retired — agents and HTTP
+    // callers both write straight into the curated graph, and reads
+    // surface every row they see.
     TempDb db;
     TenantStore s;
     s.open(db.path.string());
-    const int64_t tid = make_tenant(s, "queue");
+    const int64_t tid = make_tenant(s, "direct-write");
 
-    auto accepted = s.create_entry(tid, "project", "Curated", "",   "", "[]");
-    auto proposed = s.create_entry(tid, "project", "Pending", "",   "", "[]",
-                                    /*status=*/"proposed");
-    CHECK(accepted.status == "accepted");
-    CHECK(proposed.status == "proposed");
+    auto a = s.create_entry(tid, "project", "First",  "", "", "[]");
+    auto b = s.create_entry(tid, "project", "Second", "", "", "[]");
+    CHECK(a.id > 0);
+    CHECK(b.id > 0);
 
-    // Default filter is "" (all statuses) — useful for tests but the HTTP
-    // layer always sets status='accepted'.  Verify the filter actually works.
-    {
-        TenantStore::EntryFilter f;
-        f.status = "accepted";
-        auto rows = s.list_entries(tid, f);
-        REQUIRE(rows.size() == 1);
-        CHECK(rows[0].id == accepted.id);
-    }
-    {
-        TenantStore::EntryFilter f;
-        f.status = "proposed";
-        auto rows = s.list_entries(tid, f);
-        REQUIRE(rows.size() == 1);
-        CHECK(rows[0].id == proposed.id);
-    }
-    {
-        TenantStore::EntryFilter f;   // status="" (no filter)
-        auto rows = s.list_entries(tid, f);
-        CHECK(rows.size() == 2);
-    }
-}
-
-TEST_CASE("accept_entry promotes a proposal exactly once") {
-    TempDb db;
-    TenantStore s;
-    s.open(db.path.string());
-    const int64_t tid = make_tenant(s, "promote");
-
-    auto e = s.create_entry(tid, "project", "T", "", "", "[]", "proposed");
-
-    CHECK(s.accept_entry(tid, e.id));            // first accept flips status
-    auto after = s.get_entry(tid, e.id);
-    REQUIRE(after.has_value());
-    CHECK(after->status == "accepted");
-    CHECK(after->updated_at >= e.updated_at);
-
-    CHECK_FALSE(s.accept_entry(tid, e.id));      // second accept is a no-op
-    CHECK_FALSE(s.accept_entry(tid, 99999));     // unknown id
-
-    // Tenant isolation: accept on another tenant's id is also a no-op.
-    const int64_t other = make_tenant(s, "other");
-    auto e2 = s.create_entry(tid, "project", "T2", "", "", "[]", "proposed");
-    CHECK_FALSE(s.accept_entry(other, e2.id));
-    auto still = s.get_entry(tid, e2.id);
-    REQUIRE(still.has_value());
-    CHECK(still->status == "proposed");
-}
-
-TEST_CASE("accept_relation requires both endpoints to be accepted") {
-    TempDb db;
-    TenantStore s;
-    s.open(db.path.string());
-    const int64_t tid = make_tenant(s, "rel-promote");
-
-    auto a = s.create_entry(tid, "project", "A", "", "", "[]");                 // accepted
-    auto b = s.create_entry(tid, "project", "B", "", "", "[]", "proposed");     // proposed
-
-    auto r = s.create_relation(tid, a.id, b.id, "supports", "proposed");
-    REQUIRE(r.has_value());
-
-    // Cannot accept while B is still proposed — reviewer must accept B first.
-    CHECK_FALSE(s.accept_relation(tid, r->id));
-
-    // Promote B; now the relation accept goes through.
-    REQUIRE(s.accept_entry(tid, b.id));
-    CHECK(s.accept_relation(tid, r->id));
-
-    // Idempotency + bad ids.
-    CHECK_FALSE(s.accept_relation(tid, r->id));    // already accepted
-    CHECK_FALSE(s.accept_relation(tid, 99999));    // unknown id
-
-    // Listing relations status='accepted' surfaces the promoted edge.
-    auto rows = s.list_relations(tid, 0, 0, std::string{}, 100,
-                                  /*status=*/"accepted");
-    REQUIRE(rows.size() == 1);
-    CHECK(rows[0].id == r->id);
-}
-
-TEST_CASE("rejecting an entry cascade-deletes proposed relations referencing it") {
-    TempDb db;
-    TenantStore s;
-    s.open(db.path.string());
-    const int64_t tid = make_tenant(s, "reject");
-
-    auto a = s.create_entry(tid, "project", "A", "", "", "[]");                 // accepted
-    auto b = s.create_entry(tid, "project", "B", "", "", "[]", "proposed");     // proposed
-    auto r = s.create_relation(tid, a.id, b.id, "supports", "proposed");
-    REQUIRE(r.has_value());
-
-    // Reject = DELETE.  Pulls the proposed relation with it via FK cascade.
-    REQUIRE(s.delete_entry(tid, b.id));
-    auto remaining = s.list_relations(tid, 0, 0, std::string{}, 100,
-                                       /*status=*/std::string{});
-    CHECK(remaining.empty());
+    TenantStore::EntryFilter f;
+    auto rows = s.list_entries(tid, f);
+    CHECK(rows.size() == 2);
 }
 
 TEST_CASE("schema migrations are idempotent across re-opens") {

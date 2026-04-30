@@ -61,7 +61,7 @@ location /v1/ {
 
 `ApiServer::start()` installs a `SIGSEGV` / `SIGABRT` / `SIGBUS` / `SIGFPE` handler that prints a backtrace to stderr before re-raising. Combined with the connection-level try/catch (which catches `std::exception` and turns it into a 500 with the `what()`), runaway throws don't take down the daemon — they get logged with the request method + path and surface as a clean 500 to the client.
 
-Per-handler `[memory] tenant=<id> entry.patch.* …` breadcrumbs are emitted along the proposal-acceptance paths so the *last* line printed before a crash localises the failing step.
+Per-handler `[memory] tenant=<id> entry.patch.* …` breadcrumbs are emitted along the entry mutation paths so the *last* line printed before a crash localises the failing step.
 
 ## File cap
 
@@ -78,7 +78,7 @@ Agent-generated files (via `/write`, ephemeral path) are captured in memory and 
 | 401  | Missing / invalid / mismatched bearer token, or tenant `disabled=true`. |
 | 404  | Unknown endpoint, or id not found / wrong tenant on a GET / PATCH / DELETE. |
 | 405  | Method not allowed on an existing route. |
-| 409  | Conflict (duplicate id, status-promotion failure). |
+| 409  | Conflict (duplicate id). |
 | 410  | The row vanished mid-request (concurrent DELETE). |
 | 413  | Quota exceeded (artifact stores). |
 | 500  | Uncaught exception during handling. The body includes `what()`. |

@@ -2,6 +2,7 @@
 #include "commands.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -85,6 +86,34 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = line.substr(5);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
+        } else if (line.size() > 14 && line.substr(0, 14) == "/mem add entry") {
+            // Block form: /mem add entry <type> <title> [--artifact #<id>]
+            //             <content body, multi-line>
+            //             /endmem
+            // The body is REQUIRED — empty content is rejected by the
+            // dispatcher.  The block form ensures agents synthesise
+            // retrievable text rather than stubbing entries with a title
+            // alone (which makes /mem search useless across sessions).
+            AgentCommand cmd;
+            cmd.name = "mem";
+            cmd.args = line.substr(5);   // "add entry <type> <title> [--artifact #<id>]"
+
+            std::ostringstream body;
+            bool closed = false;
+            while (std::getline(ss, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line == "/endmem") { closed = true; break; }
+                body << line << "\n";
+            }
+            cmd.content = body.str();
+            if (!cmd.content.empty() && cmd.content.back() == '\n')
+                cmd.content.pop_back();
+            // Mid-stream cutoff (no /endmem yet): the orchestrator can use
+            // this signal to request a continuation before the body is
+            // submitted incomplete to the writer.
+            cmd.truncated = !closed;
+            result.push_back(std::move(cmd));
+
         } else if (line.size() > 5 && line.substr(0, 5) == "/mem ") {
             AgentCommand cmd;
             cmd.name = "mem";
@@ -135,6 +164,15 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = line.substr(6);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
+        } else if (line.size() >= 5 &&
+                   (line == "/help" || line.substr(0, 6) == "/help ")) {
+            // /help            — list available topics
+            // /help <topic>    — detailed reference for one slash command
+            AgentCommand cmd;
+            cmd.name = "help";
+            cmd.args = (line.size() > 6) ? line.substr(6) : "";
+            result.push_back(std::move(cmd));
+
         } else if (line.size() > 7 && line.substr(0, 7) == "/write ") {
             // Multiline write block: /write <path>\n<content>\n/endwrite
             AgentCommand cmd;
@@ -166,6 +204,260 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
     }
 
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// /help corpus — detailed slash-command reference, on-demand
+// ---------------------------------------------------------------------------
+// The system prompt carries a compressed COMMANDS inventory plus values and
+// turn-by-turn behavioral rules.  Verbose how-to-use prose, illustrative
+// examples, path safety details, and escalation patterns live here and are
+// surfaced only when the agent calls /help <topic>.  Topics are matched on
+// the first whitespace-delimited token of the args, lowercased.
+
+static std::string help_index() {
+    return
+        "Available topics:\n"
+        "  /help web        — search / fetch / browse escalation pattern\n"
+        "  /help write      — file output: ephemeral vs persist, path safety, examples\n"
+        "  /help exec       — shell command usage and safety\n"
+        "  /help delegation — /agent vs /parallel vs /pane semantics\n"
+        "  /help mem        — structured memory graph + scratchpad reference\n"
+        "  /help artifacts  — /read, /list, cross-conversation via=mem:<id>\n"
+        "  /help mcp        — MCP tool invocation\n"
+        "  /help advise     — when and how to consult the advisor model\n";
+}
+
+static std::string help_for_topic(const std::string& topic) {
+    if (topic == "web" || topic == "search" || topic == "fetch" || topic == "browse") {
+        return
+            "Web research workflow — escalate in this order:\n"
+            "  1. /search <query> [top=N]\n"
+            "       Discover ranked URLs.  Don't guess from training memory — that\n"
+            "       produces fabricated DOIs and dead links.  Default top=10, max 20.\n"
+            "  2. /fetch <url>\n"
+            "       Fast static HTTP fetch via libcurl.  Strips HTML to text.  Cheap;\n"
+            "       preferred for arxiv abstracts, blog posts, plain HTML.\n"
+            "  3. /browse <url>\n"
+            "       JS-rendering fetch via playwright MCP.  Use ONLY when /fetch\n"
+            "       returned 'Just a moment' (Cloudflare), a paywall login redirect,\n"
+            "       or empty content (SPA-only pages).  Slower cold-start but renders\n"
+            "       JS and handles modern news/journal sites.\n"
+            "       Don't /browse a page that /fetch already retrieved successfully.\n"
+            "Do not apologize for lacking web access — use the commands.\n";
+    }
+    if (topic == "write") {
+        return
+            "/write <path> ... /endwrite\n"
+            "  Ephemeral file write — streamed to the client live as an SSE `file`\n"
+            "  event.  The user sees the content inline but the server doesn't keep\n"
+            "  it after the request ends.\n"
+            "\n"
+            "/write --persist <path> ... /endwrite\n"
+            "  Same write, AND saves to the conversation's artifact store.  Durable;\n"
+            "  readable later via /read <path>, /read #<aid>, or HTTP.  Use whenever\n"
+            "  the user will likely refine or revisit the file in a later turn.\n"
+            "\n"
+            "Path safety (enforced server-side; failure rejects the write):\n"
+            "  - Relative paths only.  No '..', no leading '/' or drive letters.\n"
+            "  - No hidden (dotfile) names.\n"
+            "  - ≤ 256 chars total.\n"
+            "\n"
+            "ALWAYS use /write to produce files.  NEVER say 'here is the content'\n"
+            "without issuing /write — terminal output is not saveable by the user.\n"
+            "\n"
+            "Example:\n"
+            "  /write --persist output/report.md\n"
+            "  # Report Title\n"
+            "\n"
+            "  Body text here.\n"
+            "  /endwrite\n";
+    }
+    if (topic == "exec") {
+        return
+            "/exec <shell command>\n"
+            "  Runs in the current working directory with your user permissions.\n"
+            "  Returns stdout+stderr; non-zero exit appended as [exit N].\n"
+            "  Examples: /exec ls -la, /exec git status, /exec docker ps.\n"
+            "  Use for filesystem inspection, process state, git, or system info.\n";
+    }
+    if (topic == "delegation" || topic == "agent" ||
+        topic == "parallel" || topic == "pane") {
+        return
+            "/agent <agent_id> <message>\n"
+            "  Synchronous: the sub-agent runs inline and its response is folded\n"
+            "  into your current turn.\n"
+            "\n"
+            "/parallel ... /endparallel\n"
+            "  Concurrent fan-out for INDEPENDENT subtasks (no child needs another's\n"
+            "  output).  All children start immediately on separate threads; results\n"
+            "  arrive aggregated as one [TOOL RESULTS] block when every child\n"
+            "  finishes.  Reusing the same agent_id is fine — each child gets its\n"
+            "  own ephemeral copy with fresh history, no shared state with siblings\n"
+            "  or with the canonical agent.\n"
+            "  Grammar (block form, no nesting):\n"
+            "        /parallel\n"
+            "        /agent researcher topic A\n"
+            "        /agent researcher topic B\n"
+            "        /agent coder write the skeleton\n"
+            "        /endparallel\n"
+            "\n"
+            "/pane <agent_id> <message>\n"
+            "  Asynchronous: the sub-agent runs visibly in its own pane.  When the\n"
+            "  task finishes you receive the result as a fresh [PANE RESULT from\n"
+            "  '<agent>' (task: ...)] message starting a new turn.  Multiple panes\n"
+            "  run concurrently; results arrive in completion order.  Use when the\n"
+            "  user benefits from watching progress live, or for fan-out where\n"
+            "  result timing is unpredictable.\n"
+            "  Treat received [PANE RESULT] blocks like /agent replies — fold the\n"
+            "  findings into your synthesis.\n"
+            "\n"
+            "Delegation discipline:\n"
+            "  - In a turn that emits ANY /agent or /parallel calls, your text body\n"
+            "    is for ROUTING decisions ONLY.  At most one short sentence saying\n"
+            "    what you're delegating and why; no synthesis, no preliminary\n"
+            "    conclusions.  Synthesis happens in the turn AFTER results arrive.\n";
+    }
+    if (topic == "mem" || topic == "memory") {
+        return
+            "Structured memory graph (curated nodes + directed edges):\n"
+            "  /mem entries [type=...] [tag=...]\n"
+            "       List nodes.  Optional type filter (comma-separated) and/or tag\n"
+            "       substring filter.\n"
+            "  /mem entry <id>\n"
+            "       Fetch one entry plus its in/out edges.  Neighbour titles inline\n"
+            "       so you don't need a follow-up /mem entry per neighbour.\n"
+            "  /mem search <query>\n"
+            "       Relevance-ranked search across title, tags, content, source.\n"
+            "       Top 3 hits inline a content excerpt; lower hits are one-liners.\n"
+            "  /mem expand <id> [depth=N]\n"
+            "       Fetch the subgraph around an entry.  Default depth=1, max 2;\n"
+            "       capped at 50 nodes.  Replaces N+1 sequential /mem entry calls\n"
+            "       when chasing a chain.\n"
+            "  /mem density <id>\n"
+            "       In/out edge counts, distinct relations, 2-hop reach.  Probe\n"
+            "       BEFORE redundant research to skip work the graph already covers.\n"
+            "  /mem add entry <type> <title> [--artifact #<id>]\n"
+            "      <content body — REQUIRED, synthesised retrievable text>\n"
+            "  /endmem\n"
+            "       Add a typed node.  Block form: header line, body lines, /endmem\n"
+            "       on its own line to close.  Optional --artifact #<id> links\n"
+            "       a /write --persist'd file to the node.\n"
+            "       The body is REQUIRED and must contain the substance of the\n"
+            "       finding (key facts, numbers, sources) — it's the text that\n"
+            "       /mem search ranks against and that /mem entry surfaces back\n"
+            "       in future sessions.  Title-only entries are rejected.\n"
+            "\n"
+            "       Type legend — pick the one that matches what the entry IS:\n"
+            "         user       durable facts about the human (role, prefs, constraints)\n"
+            "         feedback   corrections / 'do this, not that' guidance from the user\n"
+            "         project    active deliverables, decisions, in-flight work, briefs\n"
+            "         reference  external sources you cited (papers, docs, vendor pages)\n"
+            "         learning   synthesised conclusions reached from multiple sources\n"
+            "         context    situational state worth retaining (current focus, blockers)\n"
+            "       Default-to-`reference` is wrong for most writes.  A research-and-write\n"
+            "       turn typically produces 1 project (the deliverable), N reference (the\n"
+            "       cited sources), 1 learning (the recommendation/synthesis).  Filing\n"
+            "       everything as reference defeats /mem entries [type=...] partitioning.\n"
+            "\n"
+            "       Examples (one per common type):\n"
+            "           /mem add entry project Q3 observability rollout plan\n"
+            "           Migrate the 30-service fleet to Honeycomb in two phases: (1) auto-\n"
+            "           instrumented services first (Node.js, Python — 18 services, 1 wk),\n"
+            "           (2) manual Go/Rust spans second (12 services, 2 wks).  Sampling\n"
+            "           policy via Refinery on Pro tier.  Owner: backend infra.\n"
+            "           /endmem\n"
+            "           /mem add entry reference Honeycomb pricing page (live fetch 2026-04)\n"
+            "           Pro tier $130/mo for 100M events flat.  Past 1B spans → Enterprise\n"
+            "           (custom).  Refinery is a separate deployment, recommended at scale.\n"
+            "           Source: honeycomb.io/pricing.\n"
+            "           /endmem\n"
+            "           /mem add entry learning Honeycomb wins for trace-first small teams\n"
+            "           Linear pricing + OTEL portability beats the metrics/logs gap when\n"
+            "           the team is small and tracing is the dominant signal.  Flips to\n"
+            "           OTel+Grafana if compliance forces self-host or growth pushes past\n"
+            "           1B spans/mo.\n"
+            "           /endmem\n"
+            "           /mem add entry context Currently picking between three obs backends\n"
+            "           User is mid-decision (Datadog / Honeycomb / OTel+Grafana) for a\n"
+            "           5-eng team, 30 services, 100M traces/mo.  Brief drafted; awaiting\n"
+            "           answers on existing Prometheus footprint and growth curve.\n"
+            "           /endmem\n"
+            "  /mem add link <src_id> <relation> <dst_id>\n"
+            "       Add a directed edge.  Single-line; no body.  Relations:\n"
+            "       relates_to, refines, contradicts, supersedes, supports.\n"
+            "\n"
+            "Per-agent scratchpad (free-form text, persistent across sessions):\n"
+            "  /mem write <text>     — append a note\n"
+            "  /mem read             — load scratchpad into context\n"
+            "  /mem show             — display raw scratchpad\n"
+            "  /mem clear            — delete scratchpad\n"
+            "\n"
+            "Pipeline-shared scratchpad (visible to all agents in this conversation):\n"
+            "  /mem shared write <text>\n"
+            "  /mem shared read\n"
+            "  /mem shared clear\n";
+    }
+    if (topic == "artifacts" || topic == "read" || topic == "list") {
+        return
+            "/read <path>\n"
+            "  Read a persisted artifact by path in this conversation.\n"
+            "/read #<aid>\n"
+            "  Read by artifact id (same conversation).\n"
+            "/read #<aid> via=mem:<entry_id>\n"
+            "  Read a CROSS-CONVERSATION artifact, using the memory entry that\n"
+            "  links it as the access capability.  /mem entry <id> prints the\n"
+            "  exact /read line to copy.  Without via=mem, cross-conversation\n"
+            "  reads are denied.\n"
+            "/list\n"
+            "  List this conversation's persisted artifacts (path + size).\n"
+            "\n"
+            "Pairing pattern — file the user may want to refine later:\n"
+            "  1. /write --persist <path> ... /endwrite   (note the artifact id\n"
+            "     in the OK line)\n"
+            "  2. /mem add entry reference <title> --artifact #<id>   (in the\n"
+            "     SAME turn)\n"
+            "Future /mem search finds the entry; /mem entry <id> prints the\n"
+            "/read line to retrieve the file.\n";
+    }
+    if (topic == "mcp") {
+        return
+            "/mcp tools\n"
+            "  List MCP tools available on the configured servers.\n"
+            "/mcp call <server>.<tool> <json-args>\n"
+            "  Invoke a tool.  Args are a JSON object on the same line.\n"
+            "MCP servers are spawned per-request as stdio subprocesses; their\n"
+            "lifetime matches the orchestrator's.\n";
+    }
+    if (topic == "advise" || topic == "advisor") {
+        return
+            "/advise <question>\n"
+            "  One-shot consult against a more capable model.  The advisor sees\n"
+            "  ONLY the text after /advise — no conversation history, no tool\n"
+            "  results, no project context.  Self-contained question or it can't\n"
+            "  help.\n"
+            "\n"
+            "Consult when:\n"
+            "  - Sources you've gathered DISAGREE; you need to decide which to weight.\n"
+            "  - Two reasonable paths trade off against constraints you can name.\n"
+            "  - A multi-step plan is about to be committed; sanity-check the\n"
+            "    decomposition.\n"
+            "  - A claim is supportable but inference-heavy; calibrate hedge-vs-state.\n"
+            "Do NOT consult for: single-fact lookups (use /search or /fetch),\n"
+            "formatting/style/phrasing, anything you already know with high\n"
+            "confidence, or as a substitute for doing the research yourself.\n"
+            "\n"
+            "Question quality — pack four things into the body:\n"
+            "  1. The decision in one sentence.\n"
+            "  2. The 2–3 plausible alternatives + their trade-offs.\n"
+            "  3. The constraints (audience, scale, deadline, priors).\n"
+            "  4. What would change your mind in either direction.\n"
+            "Workflow: /advise AFTER evidence is gathered, BEFORE prose is committed.\n"
+            "Budget: 2 consults per turn.  A third wanted consult means the task is\n"
+            "under-scoped — deliver what you have and flag the open question instead.\n";
+    }
+
+    return std::string{};   // empty ⇒ unknown topic; caller surfaces an error
 }
 
 // ---------------------------------------------------------------------------
@@ -1210,15 +1502,18 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 }
                 block << "[END MEMORY]\n\n";
 
-            } else if (subcmd == "propose") {
-                // Agent-contributed proposal queue.  Two shapes:
-                //   /mem propose entry <type> <title>
-                //   /mem propose link  <src_id> <relation> <dst_id>
-                // Both land in 'proposed' status and stay invisible to
-                // every read path (HTTP and agent) until a human accepts
-                // them via PATCH {"status":"accepted"}.  Reject = DELETE.
-                // Reading the second token consumes it; the rest of the
-                // line is handed to the writer callback as `args`.
+            } else if (subcmd == "add") {
+                // Agent direct-write into the structured memory graph.
+                // Two shapes:
+                //   /mem add entry <type> <title> [--artifact #<id>]
+                //       <body — required>
+                //   /endmem
+                //   /mem add link  <src_id> <relation> <dst_id>
+                // Writes land in the curated graph immediately.  Reading
+                // the second token consumes it; the rest of the line is
+                // handed to the writer callback as `args`, and the
+                // optional /endmem-terminated block (parser-collected
+                // into cmd.content) is handed in as `body`.
                 std::string kind;
                 iss >> kind;
                 std::string args;
@@ -1226,23 +1521,43 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 if (!args.empty() && args[0] == ' ') args.erase(0, 1);
 
                 std::string callback_kind;
-                if      (kind == "entry") callback_kind = "propose-entry";
-                else if (kind == "link")  callback_kind = "propose-link";
+                if      (kind == "entry") callback_kind = "add-entry";
+                else if (kind == "link")  callback_kind = "add-link";
 
-                block << "[/mem propose " << kind
+                block << "[/mem add " << kind
                       << (args.empty() ? "" : " " + args) << "]\n";
                 if (callback_kind.empty()) {
-                    block << "ERR: usage: /mem propose entry <type> <title> "
-                             "OR /mem propose link <src_id> <relation> <dst_id>\n";
+                    block << "ERR: usage: /mem add entry <type> <title> "
+                             "(then body, then /endmem) OR /mem add link "
+                             "<src_id> <relation> <dst_id>\n";
                     cache_result = false;
                 } else if (!structured_memory_writer) {
                     block << "ERR: structured memory unavailable in this context — "
                              "this surface is only available when running under "
                              "the HTTP API with a tenant token.  Adapt: drop "
-                             "the /mem propose step.\n";
+                             "the /mem add step.\n";
+                    cache_result = false;
+                } else if (kind == "entry" && cmd.truncated) {
+                    // Parser hit EOF before /endmem.  Don't commit a
+                    // partial entry — let the orchestrator's continuation
+                    // path try again with the rest of the body.
+                    block << "ERR: /mem add entry block was not closed with "
+                             "/endmem; entry not written.  Re-emit the full "
+                             "block in the next turn.\n";
+                    cache_result = false;
+                } else if (kind == "entry" && cmd.content.empty()) {
+                    // Empty body — refuse the write.  Forces the agent to
+                    // synthesise retrievable text; a title-only entry is
+                    // worthless to /mem search across sessions.
+                    block << "ERR: /mem add entry requires a content body "
+                             "between the header and /endmem.  Synthesise "
+                             "the substance of the finding (key facts, "
+                             "numbers, sources) so future /mem search and "
+                             "/mem entry calls return useful context.\n";
                     cache_result = false;
                 } else {
-                    std::string body = structured_memory_writer(callback_kind, args);
+                    std::string body = structured_memory_writer(
+                        callback_kind, args, cmd.content);
                     block << body;
                     if (body.empty() || body.back() != '\n') block << "\n";
                     if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
@@ -1253,9 +1568,36 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             } else {
                 block << "[/mem] ERR: unknown subcommand '" << subcmd
                       << "' — use read, write, show, clear, shared, "
-                         "entries, entry, search, or propose\n\n";
+                         "entries, entry, search, expand, density, or add\n\n";
                 cache_result = false;
             }
+
+        } else if (cmd.name == "help") {
+            // /help [<topic>] — surface detailed slash-command reference on
+            // demand.  The system prompt only carries a compressed inventory;
+            // full prose lives in help_for_topic() and is loaded only when
+            // the agent asks for it, keeping the per-turn prompt small.
+            std::string topic = cmd.args;
+            // Lowercase + take the first whitespace-delimited token so
+            // "/help mem add" still resolves to topic="mem".
+            for (auto& ch : topic) ch = static_cast<char>(std::tolower(ch));
+            auto sp = topic.find_first_of(" \t");
+            if (sp != std::string::npos) topic.resize(sp);
+
+            block << "[/help" << (topic.empty() ? "" : " ") << topic << "]\n";
+            if (topic.empty()) {
+                block << help_index();
+            } else {
+                std::string body = help_for_topic(topic);
+                if (body.empty()) {
+                    block << "ERR: unknown topic '" << topic
+                          << "' — call /help with no args to list available topics\n";
+                    cache_result = false;
+                } else {
+                    block << body;
+                }
+            }
+            block << "[END HELP]\n\n";
 
         } else if (cmd.name == "exec") {
             block << "[/exec " << cmd.args << "]\n";

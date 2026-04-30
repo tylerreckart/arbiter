@@ -317,7 +317,7 @@ TEST_CASE("memory entry can carry an artifact_id; round-trips through storage") 
 
     auto entry = s.create_entry(tid, "reference", "Findings report",
                                   "Source: agent /write --persist", "agent",
-                                  "[]", "accepted", aid);
+                                  "[]", aid);
     CHECK(entry.artifact_id == aid);
 
     auto reload = s.get_entry(tid, entry.id);
@@ -362,7 +362,7 @@ TEST_CASE("deleting an artifact nullifies referencing memory entries (direct del
     auto art = s.put_artifact(tid, cid, "doomed.md", "soon-gone", "text/markdown");
     REQUIRE(art.record.has_value());
     auto entry = s.create_entry(tid, "reference", "Refers", "", "", "[]",
-                                  "accepted", art.record->id);
+                                  art.record->id);
     REQUIRE(entry.artifact_id == art.record->id);
 
     REQUIRE(s.delete_artifact(tid, art.record->id));
@@ -380,7 +380,7 @@ TEST_CASE("conversation cascade-delete also nullifies referencing memory entries
     auto art = s.put_artifact(tid, cid, "ephemeral.md", "by", "text/markdown");
     REQUIRE(art.record.has_value());
     auto entry = s.create_entry(tid, "reference", "Refers", "", "", "[]",
-                                  "accepted", art.record->id);
+                                  art.record->id);
 
     // Conversation delete cascades to artifacts via FK; the trigger
     // fires on each cascaded artifact delete and clears the memory link.
@@ -401,7 +401,7 @@ TEST_CASE("artifact link is not affected by another tenant's delete") {
     auto a_art = s.put_artifact(a, a_conv, "a.md", "A", "text/markdown");
     auto b_art = s.put_artifact(b, b_conv, "b.md", "B", "text/markdown");
     auto a_ent = s.create_entry(a, "reference", "A entry", "", "", "[]",
-                                  "accepted", a_art.record->id);
+                                  a_art.record->id);
 
     // Tenant B trying to delete tenant A's artifact does nothing.
     CHECK_FALSE(s.delete_artifact(b, a_art.record->id));
