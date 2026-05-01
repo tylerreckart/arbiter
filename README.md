@@ -40,11 +40,6 @@ accordingly.
 
 ## Install
 
-Homebrew (macOS):
-
-    brew tap tylerreckart/tap
-    brew install arbiter
-
 Build from source:
 
     cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -102,13 +97,35 @@ receive). Per-endpoint documentation lives in
     arbiter --send reviewer "review: if (arr.length = 0) return;"
 
 
+## Benchmarks
+
+Retrieval quality on [LongMemEval](https://github.com/xiaowu0162/LongMemEval). 500 questions, ~247K conversational turns. **R@K** is the fraction of
+questions where at least one ground-truth turn appears in the top K
+results from `GET /v1/memory/entries`.
+
+| Variant      | R@1   | R@5   | R@10  | p50      | p95     |
+|--------------|------:|------:|------:|---------:|--------:|
+| `bm25`       | 16.6% | 34.8% | 42.2% |   513 ms |  957 ms |
+| `graduated`  | 49.8% | 80.6% | 88.0% |   129 ms |  187 ms |
+| `rerank`     | 56.8% | 85.2% | 88.0% |  1022 ms | 1949 ms |
+
+What each variant actually measures:
+
+- **`bm25`** — FTS5 + Okapi-BM25 across the entire tenant corpus, no
+  scope hint.
+- **`graduated`** — conversation-scoped first pass with tenant-wide
+  fallback if the first pass returns fewer than `limit` candidates.
+- **`rerank`** — `graduated` retrieval, then the top-N candidates
+  reordered by an LLM (here `claude-haiku-4-5`). One extra LLM call
+  per query.
+
 ## What agents can do
 
 Agents emit slash commands as part of their replies. The orchestrator
 parses them, runs them, and feeds results back as a tool-result block
 before the next turn.
 
-Web research
+**Web research**
 
 - `/search <query> [top=N]` — web search; ranked URLs.
 - `/fetch <url>` — static HTTP fetch; HTML stripped to readable text.
@@ -116,7 +133,7 @@ Web research
   hits Cloudflare, paywalls, or pages that only render content from
   JavaScript.
 
-Files
+**Files**
 
 - `/write <path>` — write a file. Content follows until `/endwrite`.
   Default is ephemeral: the user sees it inline but the server doesn't
@@ -129,12 +146,12 @@ Files
   conversations using a memory entry as the access capability.
 - `/list` — list saved artifacts in this conversation.
 
-Shell
+**Shell**
 
 - `/exec <command>` — run a shell command; stdout and stderr are
   returned. Not sandboxed.
 
-Delegation
+**Orchestration**
 
 - `/agent <id> <message>` — call a sub-agent synchronously; its reply
   folds into the current turn.
@@ -142,7 +159,7 @@ Delegation
 - `/pane <id> <message>` — call a sub-agent asynchronously; its result
   arrives in a later turn as a fresh `[PANE RESULT]` message.
 
-Memory — free-form scratchpad
+**Memory — _free-form scratchpad_**
 
 - `/mem write <text>` — append a note.
 - `/mem read` — load the scratchpad into context.
@@ -150,7 +167,7 @@ Memory — free-form scratchpad
 - `/mem shared write|read|clear` — pipeline-shared scratchpad visible to
   every agent in the conversation.
 
-Memory — structured graph
+**Memory — _structured graph_**
 
 - `/mem entries [type=...] [tag=...]` — list curated graph nodes.
 - `/mem entry <id>` — fetch one entry plus its edges.
@@ -166,17 +183,17 @@ Memory — structured graph
 - `/mem add link <src_id> <relation> <dst_id>` — add a directed edge.
   Relations: relates_to, refines, contradicts, supersedes, supports.
 
-MCP
+**MCP**
 
 - `/mcp tools` — list tools exposed by the configured MCP servers.
 - `/mcp call <server>.<tool> <json-args>` — invoke a tool.
 
-Advisor
+**Advisor**
 
 - `/advise <question>` — one-shot consult against a more capable model.
   Available only when the agent's constitution sets `advisor_model`.
 
-Discovery
+**Discovery**
 
 - `/help` — list help topics.
 - `/help <topic>` — detailed reference for one slash command. Topics

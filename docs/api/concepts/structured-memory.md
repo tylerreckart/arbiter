@@ -126,7 +126,7 @@ The window is half-open `[valid_from, valid_to)` — at the exact invalidation m
 The retrieval layer is built on five signals, applied in this order:
 
 1. **Lexical** — Okapi-BM25 over an FTS5 index on `(title, content, tags, source)` with per-field weights. SQLite ships FTS5; no external service needed.
-2. **Metadata boost** — when the caller passes `types=[…]` or a `tag`, matching rows have their score multiplied (rather than non-matching rows being filtered out). MemPalace-inspired "signal not gate."
+2. **Metadata boost** — when the caller passes `types=[…]` or a `tag`, matching rows have their score multiplied (rather than non-matching rows being filtered out).
 3. **Locality** — when the call is part of a conversation, conversation-pinned hits surface above tenant-wide hits via `search_entries_graduated`. Two-pass: scoped first, broad-fill if scoped didn't reach the cap.
 4. **Semantic** — optional `--rerank` flag on `/mem search` routes the top-10 candidates through the calling agent's `advisor_model` for a final reorder. Costs one LLM call; only worth it when BM25 produces close-scored ambiguous candidates.
 5. **Validity** — invalidated rows are excluded by default. `as_of` swaps in a historical-window check.

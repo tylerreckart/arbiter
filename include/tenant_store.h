@@ -461,10 +461,7 @@ public:
         // When `q` is non-empty: results are ranked by Okapi-BM25 over the
         // FTS5 index on (title, content, tags, source).  In that mode,
         // `types` and `tag` become *boost factors* — matching rows score
-        // higher rather than non-matching rows being excluded.  This
-        // mirrors MemPalace's "metadata as signal, not gate" pattern: an
-        // agent that filters too aggressively can otherwise miss entries
-        // that are objectively relevant but tagged differently.
+        // higher rather than non-matching rows being excluded.
         std::vector<std::string> types;             // OR-set; boost when q is set
         std::string              tag;               // single-tag substring match
         std::string              q;                 // FTS5 query when set

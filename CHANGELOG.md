@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-04-30
+
 ### Added
 - External billing-service integration. When `ARBITER_BILLING_URL` is
   set, every authenticated request is exchanged for a workspace_id via
@@ -24,6 +26,37 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   quotas.
 - Structured-memory graph: `/v1/memory/entries`, `/v1/memory/relations`,
   and `/v1/memory/graph` for typed nodes + directed labeled edges.
+- **FTS5 + Okapi-BM25 ranked search** for `/v1/memory/entries?q=…` and
+  the agent-side `/mem search`. Replaces the previous `LIKE %q%`
+  substring scan. Per-field weights (title ×10, tags ×8, content ×4,
+  source ×2) shipped as defaults; rebuild-guarded by
+  `PRAGMA user_version` so existing tenants migrate on first open.
+- **Metadata-as-boost ranking**: when `q` is set, type and tag filters
+  no longer hard-`WHERE` away non-matching rows; they multiply the
+  BM25 score (type ×1.3, tag ×1.2). Filters still apply as hard
+  predicates when `q` is omitted.
+- **Temporal validity columns** `valid_from` / `valid_to` on memory
+  entries. New `POST /v1/memory/entries/:id/invalidate` and matching
+  `/mem invalidate <id>` slash command. `EntryFilter::as_of` returns
+  the historical view at a timestamp using half-open
+  `[valid_from, valid_to)` windows. `delete_entry` is unchanged
+  (still hard-delete); soft-deletion is the dedicated invalidate path.
+- **Conversation-scoped graduated search**. New `conversation_id`
+  column on entries plus `search_entries_graduated()`: a
+  conversation-scoped first pass, then a tenant-wide fill if results
+  are sparse. Exposed as
+  `?conversation_id=<id>&graduated=true` on the entries endpoint and
+  the default scope hint for agent-side `/mem search`.
+- **Optional LLM reranker** via `?rerank=<model>` on the HTTP entries
+  endpoint and `/mem search --rerank=<model>` on the agent path. Both
+  paths share `rerank_with_advisor()`; the agent path billed through
+  the existing orchestrator advisor invoker, the HTTP path through a
+  per-request `ApiClient` keyed off the operator's provider keys.
+- **LongMemEval benchmark harness** at `bench/longmemeval/`
+  (Python-stdlib, ingest + query). Headline numbers on
+  `longmemeval_s` at v0.4.0: bm25 R@5 = 34.8%, graduated R@5 = 80.6%,
+  graduated + Haiku rerank R@5 = 85.2%. See `README.md` for the full
+  table and comparison to other systems.
 - Tenant-stored agent catalog: `POST /v1/agents` and friends let
   callers register agent definitions once and reference them by id on
   subsequent `/v1/orchestrate` and `/v1/conversations/:id/messages`
