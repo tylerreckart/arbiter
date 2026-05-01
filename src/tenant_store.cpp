@@ -31,6 +31,41 @@ int64_t now_epoch() {
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+// Convert a free-form user query into a safe FTS5 expression.  Tokenises
+// on whitespace, quotes each token to neutralise FTS5 operator
+// characters (-, +, *, ^, :, parens), and joins tokens with spaces so
+// FTS5's implicit-AND semantics apply (every token must appear).
+// Returns an empty string when the input has no non-whitespace content
+// — caller should treat that as "no filter".
+//
+// Quoting still goes through the Porter tokenizer at match time, so a
+// query for "deploys" still matches a document containing "deployment".
+std::string fts5_escape(const std::string& q) {
+    std::string out;
+    size_t i = 0;
+    while (i < q.size()) {
+        while (i < q.size() &&
+               std::isspace(static_cast<unsigned char>(q[i]))) ++i;
+        if (i >= q.size()) break;
+        size_t j = i;
+        while (j < q.size() &&
+               !std::isspace(static_cast<unsigned char>(q[j]))) ++j;
+        std::string tok = q.substr(i, j - i);
+        i = j;
+        std::string esc;
+        esc.reserve(tok.size() + 2);
+        esc += '"';
+        for (char c : tok) {
+            if (c == '"') esc += "\"\"";
+            else          esc += c;
+        }
+        esc += '"';
+        if (!out.empty()) out += ' ';
+        out += esc;
+    }
+    return out;
+}
+
 std::string bytes_to_hex(const unsigned char* data, size_t len) {
     std::ostringstream ss;
     ss << std::hex << std::setfill('0');
@@ -331,6 +366,30 @@ void TenantStore::open(const std::string& path) {
     // since cleanup happens via an explicit nullify in delete_artifact()
     // rather than relying on the engine's cascade.
     add_entries_col("artifact_id", "INTEGER");
+    // Temporal validity windows.  `valid_from` is when the fact became
+    // true (defaults to created_at on insert); `valid_to` is when it
+    // stopped being true.  NULL valid_to means "currently active" — the
+    // common case.  Soft-delete via invalidate_entry() sets valid_to.
+    // Default reads filter to active rows; EntryFilter::as_of selects a
+    // historical timestamp.  Hard delete still cascades through
+    // delete_entry() — the temporal window doesn't replace it, it adds
+    // a fact-no-longer-true semantic alongside.
+    add_entries_col("valid_from", "INTEGER");
+    add_entries_col("valid_to",   "INTEGER");
+    // Backfill `valid_from` for rows that pre-date the migration.  No-op
+    // on subsequent opens (create_entry sets the column explicitly).
+    exec_sql(db_,
+        "UPDATE memory_entries "
+        "   SET valid_from = created_at "
+        " WHERE valid_from IS NULL;");
+    // Partial index makes the default "active rows only" filter cheap on
+    // tenants with deep history.  WHERE valid_to IS NULL keeps the index
+    // small — invalidated rows aren't indexed at all here.
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS memory_entries_tenant_active
+            ON memory_entries(tenant_id, updated_at DESC)
+            WHERE valid_to IS NULL;
+    )SQL");
 
     auto relations_col_exists = [this](const char* col) -> bool {
         Stmt q(db_, "PRAGMA table_info(memory_relations);");
@@ -355,6 +414,82 @@ void TenantStore::open(const std::string& path) {
         CREATE INDEX IF NOT EXISTS memory_relations_tenant_status
             ON memory_relations(tenant_id, status);
     )SQL");
+
+    // ── Memory-entry full-text search (FTS5) ───────────────────────────
+    // External-content table mirroring memory_entries(title, content,
+    // tags, source) so `/mem search` ranks by Okapi-BM25 instead of
+    // returning anything containing a substring, newest-first.
+    //
+    // External-content mode (`content='memory_entries'`) means the FTS
+    // table stores only the inverted index; the original text is fetched
+    // through `content_rowid='id'` from the source table.  Three triggers
+    // keep the index in sync; a one-shot rebuild guard below populates
+    // it for DBs that existed before this migration landed.
+    //
+    // Tokenizer:
+    //   • porter — English stemming so "deploys" matches "deployment"
+    //   • unicode61 — case-folded Unicode word breaks
+    //   • remove_diacritics 2 — accent-insensitive (NFKD pass)
+    exec_sql(db_, R"SQL(
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_entries_fts
+        USING fts5(
+            title, content, tags, source,
+            content='memory_entries',
+            content_rowid='id',
+            tokenize='porter unicode61 remove_diacritics 2'
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE TRIGGER IF NOT EXISTS memory_entries_fts_ai
+        AFTER INSERT ON memory_entries
+        BEGIN
+            INSERT INTO memory_entries_fts(rowid, title, content, tags, source)
+            VALUES (new.id, new.title, new.content, new.tags, new.source);
+        END;
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE TRIGGER IF NOT EXISTS memory_entries_fts_ad
+        AFTER DELETE ON memory_entries
+        BEGIN
+            INSERT INTO memory_entries_fts(memory_entries_fts, rowid,
+                                            title, content, tags, source)
+            VALUES('delete', old.id, old.title, old.content,
+                   old.tags, old.source);
+        END;
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE TRIGGER IF NOT EXISTS memory_entries_fts_au
+        AFTER UPDATE ON memory_entries
+        BEGIN
+            INSERT INTO memory_entries_fts(memory_entries_fts, rowid,
+                                            title, content, tags, source)
+            VALUES('delete', old.id, old.title, old.content,
+                   old.tags, old.source);
+            INSERT INTO memory_entries_fts(rowid, title, content, tags, source)
+            VALUES (new.id, new.title, new.content, new.tags, new.source);
+        END;
+    )SQL");
+
+    // One-shot rebuild for DBs that pre-date the FTS table.  Triggers
+    // catch every future write; this fills the index for rows that
+    // already existed.
+    //
+    // Detection uses PRAGMA user_version rather than a COUNT(*) probe:
+    // an external-content FTS5 table delegates COUNT(*) to the source
+    // table, so it always reports the source row count, never zero,
+    // even when the inverted index is empty.  user_version defaults to
+    // 0 on every fresh-or-pre-migration DB; we bump to 1 once after a
+    // successful rebuild and skip on subsequent opens.
+    {
+        Stmt q(db_, "PRAGMA user_version;");
+        int64_t v = (q.step() == SQLITE_ROW) ? q.column_int64(0) : 0;
+        if (v < 1) {
+            exec_sql(db_,
+                "INSERT INTO memory_entries_fts(memory_entries_fts) "
+                "VALUES('rebuild');");
+            exec_sql(db_, "PRAGMA user_version = 1;");
+        }
+    }
 
     // ── Per-tenant agent catalog (added in v6) ─────────────────────────
     // Stores agent_def blobs sent from the front-end so callers can
@@ -803,7 +938,7 @@ namespace {
 // review step.  We just stop selecting / filtering on it.
 constexpr const char* kEntryCols =
     "id, tenant_id, type, title, content, source, tags, "
-    "artifact_id, created_at, updated_at";
+    "artifact_id, created_at, updated_at, valid_from, valid_to";
 
 MemoryEntry row_to_entry(Stmt& q) {
     MemoryEntry e;
@@ -819,6 +954,11 @@ MemoryEntry row_to_entry(Stmt& q) {
     e.artifact_id = q.column_int64(7);
     e.created_at  = q.column_int64(8);
     e.updated_at  = q.column_int64(9);
+    // valid_from is always set on insert (no NULL).  valid_to is NULL
+    // for active rows; column_int64 maps NULL → 0, matching the
+    // "0 = active" convention in MemoryEntry.
+    e.valid_from  = q.column_int64(10);
+    e.valid_to    = q.column_int64(11);
     return e;
 }
 
@@ -850,12 +990,13 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
     const int64_t now = now_epoch();
     // Don't write the status column explicitly — its SQL default is
     // 'accepted' from the legacy schema, which is what we want now that
-    // proposals are gone.
+    // proposals are gone.  `valid_from` is set explicitly to make the
+    // column non-NULL on insert; `valid_to` stays NULL (active row).
     Stmt q(db_,
         "INSERT INTO memory_entries "
         "(tenant_id, type, title, content, source, tags, "
-        " artifact_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);");
+        " artifact_id, created_at, updated_at, valid_from) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
     q.bind(1, tenant_id);
     q.bind(2, type);
     q.bind(3, title);
@@ -868,6 +1009,7 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
     else                  sqlite3_bind_null(q.raw(), 7);
     q.bind(8, now);
     q.bind(9, now);
+    q.bind(10, now);
     int rc = q.step();
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert memory_entry");
 
@@ -882,14 +1024,22 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
     e.artifact_id = artifact_id;
     e.created_at  = now;
     e.updated_at  = now;
+    e.valid_from  = now;
+    e.valid_to    = 0;          // active
     return e;
 }
 
 std::optional<MemoryEntry>
 TenantStore::get_entry(int64_t tenant_id, int64_t id) const {
     if (!db_) return std::nullopt;
+    // Filters to active rows only — invalidated entries surface via
+    // list_entries with EntryFilter::as_of, not through point-lookup.
+    // A direct id read of an invalidated entry returning the row would
+    // make it easy for callers to skip the temporal-window check by
+    // accident; the path of least resistance should respect validity.
     Stmt q(db_, (std::string("SELECT ") + kEntryCols +
-                 " FROM memory_entries WHERE tenant_id = ? AND id = ?;").c_str());
+                 " FROM memory_entries "
+                 "WHERE tenant_id = ? AND id = ? AND valid_to IS NULL;").c_str());
     q.bind(1, tenant_id);
     q.bind(2, id);
     if (q.step() != SQLITE_ROW) return std::nullopt;
@@ -901,9 +1051,103 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
     std::vector<MemoryEntry> out;
     if (!db_) return out;
 
-    // Build WHERE incrementally so each filter is optional.  Placeholders
-    // are appended in the same order as the binds below, so the index walk
-    // is mechanical.
+    const int cap = (f.limit > 0 && f.limit <= 200) ? f.limit : 50;
+    const std::string fts_query = f.q.empty() ? std::string()
+                                              : fts5_escape(f.q);
+
+    // ── Search path (q is non-empty) ───────────────────────────────────
+    // FTS5 MATCH + Okapi-BM25 ranking, with type / tag treated as score
+    // *boosts* rather than hard filters — see EntryFilter doc-comment.
+    //
+    // Per-field weights in the bm25() call (title, content, tags, source).
+    // Title and tags are short, editorial, and high-information per token;
+    // content is long and noisier; source is provenance flavour.
+    //
+    // SQLite's bm25() returns a value where smaller (more-negative) is a
+    // stronger match.  Multiplying by a fraction < 1 makes a more-negative
+    // score *more* negative — i.e. boosts it up the ranking.  Boost
+    // factors below were tuned by hand: roughly 30% for type match, 20%
+    // for tag match.  Tunable; document if changed.
+    if (!fts_query.empty()) {
+        // SQLite's bm25() returns *negative* numbers where smaller (more
+        // negative) is a stronger match.  To boost a row we want to make
+        // its score *more* negative — which means multiplying by a number
+        // greater than 1.  Suppression would use a factor < 1, but we
+        // don't currently use that direction.
+        //
+        // Boost magnitudes were tuned by hand on small fixtures: ~30% for
+        // a type match, ~20% for a tag match.  Tunable; document if
+        // changed.
+        constexpr double kTypeBoost = 1.3;
+        constexpr double kTagBoost  = 1.2;
+        // Prefixed select-list — same column order as kEntryCols so
+        // row_to_entry's positional reads still line up.  Required because
+        // memory_entries_fts has columns of the same name (title, content,
+        // tags, source) on the join.
+        constexpr const char* kEntryColsPrefixed =
+            "e.id, e.tenant_id, e.type, e.title, e.content, e.source, "
+            "e.tags, e.artifact_id, e.created_at, e.updated_at, "
+            "e.valid_from, e.valid_to";
+
+        std::string sql =
+            std::string("SELECT ") + kEntryColsPrefixed + ", "
+            "(bm25(memory_entries_fts, 10.0, 4.0, 8.0, 2.0)";
+        if (!f.types.empty()) {
+            sql += " * CASE WHEN e.type IN (";
+            for (size_t i = 0; i < f.types.size(); ++i) {
+                if (i) sql += ",";
+                sql += "?";
+            }
+            sql += ") THEN " + std::to_string(kTypeBoost) +
+                   " ELSE 1.0 END";
+        }
+        if (!f.tag.empty()) {
+            sql += " * CASE WHEN e.tags LIKE ? THEN " +
+                   std::to_string(kTagBoost) + " ELSE 1.0 END";
+        }
+        sql += ") AS score "
+               "FROM memory_entries e "
+               "JOIN memory_entries_fts fts ON fts.rowid = e.id "
+               "WHERE e.tenant_id = ? "
+               "  AND memory_entries_fts MATCH ?";
+        if (f.as_of > 0) {
+            sql += " AND e.valid_from <= ? "
+                   " AND (e.valid_to IS NULL OR e.valid_to > ?)";
+        } else {
+            sql += " AND e.valid_to IS NULL";
+        }
+        if (f.since > 0)             sql += " AND e.created_at >= ?";
+        if (f.before_updated_at > 0) sql += " AND e.updated_at < ?";
+        sql += " ORDER BY score ASC LIMIT ?;";
+
+        Stmt q(db_, sql.c_str());
+        int idx = 1;
+        // Aliased columns first by virtue of the SELECT order ⇒ binds
+        // come in CASE / WHERE / cap order.
+        for (auto& t : f.types) q.bind(idx++, t);
+        std::string tag_pat;
+        if (!f.tag.empty()) {
+            tag_pat = "%\"" + f.tag + "\"%";
+            q.bind(idx++, tag_pat);
+        }
+        q.bind(idx++, tenant_id);
+        q.bind(idx++, fts_query);
+        if (f.as_of > 0) {
+            q.bind(idx++, f.as_of);
+            q.bind(idx++, f.as_of);
+        }
+        if (f.since > 0)             q.bind(idx++, f.since);
+        if (f.before_updated_at > 0) q.bind(idx++, f.before_updated_at);
+        q.bind(idx, static_cast<int64_t>(cap));
+
+        while (q.step() == SQLITE_ROW) out.push_back(row_to_entry(q));
+        return out;
+    }
+
+    // ── Browse path (q is empty) ───────────────────────────────────────
+    // Hard-filter on type / tag and order by recency.  Same shape as
+    // before the FTS migration — agents that just want "the latest N
+    // project entries" still get a deterministic chronological list.
     std::string sql = std::string("SELECT ") + kEntryCols +
                        " FROM memory_entries WHERE tenant_id = ?";
     if (!f.types.empty()) {
@@ -915,25 +1159,28 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         sql += ")";
     }
     if (!f.tag.empty())          sql += " AND tags LIKE ?";
-    if (!f.q.empty())            sql += " AND (title LIKE ? OR content LIKE ?)";
+    if (f.as_of > 0) {
+        sql += " AND valid_from <= ? "
+               " AND (valid_to IS NULL OR valid_to > ?)";
+    } else {
+        sql += " AND valid_to IS NULL";
+    }
     if (f.since > 0)             sql += " AND created_at >= ?";
     if (f.before_updated_at > 0) sql += " AND updated_at < ?";
-
-    const int cap = (f.limit > 0 && f.limit <= 200) ? f.limit : 50;
     sql += " ORDER BY updated_at DESC LIMIT ?;";
 
     Stmt q(db_, sql.c_str());
     int idx = 1;
     q.bind(idx++, tenant_id);
     for (auto& t : f.types) q.bind(idx++, t);
-    if (!f.tag.empty()) q.bind(idx++, std::string("%\"" + f.tag + "\"%"));
-    if (!f.q.empty()) {
-        // Bind a fresh string at each idx — sqlite3_bind_text with
-        // SQLITE_TRANSIENT will copy, but the underlying std::string must
-        // outlive the bind call until step().  Using two locals here.
-        const std::string pat = "%" + f.q + "%";
-        q.bind(idx++, pat);
-        q.bind(idx++, pat);
+    std::string tag_pat;
+    if (!f.tag.empty()) {
+        tag_pat = "%\"" + f.tag + "\"%";
+        q.bind(idx++, tag_pat);
+    }
+    if (f.as_of > 0) {
+        q.bind(idx++, f.as_of);
+        q.bind(idx++, f.as_of);
     }
     if (f.since > 0)             q.bind(idx++, f.since);
     if (f.before_updated_at > 0) q.bind(idx++, f.before_updated_at);
@@ -971,7 +1218,10 @@ bool TenantStore::update_entry(int64_t tenant_id, int64_t id,
         if (i) sql += ", ";
         sql += sets[i];
     }
-    sql += " WHERE tenant_id = ? AND id = ?;";
+    // Active-rows-only filter mirrors get_entry: an invalidated row can't
+    // be edited.  If the caller needs to correct a historical record they
+    // hard-delete and re-create — keeps "what was true at time T" honest.
+    sql += " WHERE tenant_id = ? AND id = ? AND valid_to IS NULL;";
 
     Stmt q(db_, sql.c_str());
     int idx = 1;
@@ -999,6 +1249,24 @@ bool TenantStore::delete_entry(int64_t tenant_id, int64_t id) {
     Stmt q(db_, "DELETE FROM memory_entries WHERE tenant_id = ? AND id = ?;");
     q.bind(1, tenant_id);
     q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::invalidate_entry(int64_t tenant_id, int64_t id, int64_t when) {
+    if (!db_) return false;
+    const int64_t ts = (when > 0) ? when : now_epoch();
+    // Idempotent rejection: only mark valid_to on rows where it's still
+    // NULL.  A second call returns false rather than silently moving the
+    // invalidation timestamp around — callers that want to change a
+    // window should hard-delete and re-create instead.
+    Stmt q(db_,
+        "UPDATE memory_entries "
+        "   SET valid_to = ? "
+        " WHERE tenant_id = ? AND id = ? AND valid_to IS NULL;");
+    q.bind(1, ts);
+    q.bind(2, tenant_id);
+    q.bind(3, id);
     q.step();
     return sqlite3_changes(db_) > 0;
 }

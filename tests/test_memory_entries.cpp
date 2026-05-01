@@ -13,6 +13,8 @@
 #include "doctest.h"
 #include "tenant_store.h"
 
+#include <sqlite3.h>
+
 #include <chrono>
 #include <filesystem>
 #include <thread>
@@ -314,4 +316,308 @@ TEST_CASE("schema migrations are idempotent across re-opens") {
         REQUIRE(rows.size() == 1);
         CHECK(rows[0].title == "First");
     }
+}
+
+// ─── FTS5 + BM25 ranking ────────────────────────────────────────────────────
+//
+// The search path of list_entries (when EntryFilter::q is set) goes through
+// SQLite's FTS5 index with bm25() ranking, plus type/tag score multipliers.
+// These tests pin the *ordering* contract; substring-only or filter-only
+// behaviour is covered by the test cases above.
+
+TEST_CASE("BM25 ranks title-match above content-only match") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "fts");
+
+    // Two entries — same query token ("kubernetes") appears in different
+    // fields.  Title is a high-information field per token; the BM25
+    // weights (10.0 for title, 4.0 for content) should put the title-
+    // match above the body-only match regardless of insert order.
+    auto body_hit = s.create_entry(tid, "reference",
+        "Generic notes",
+        "Some long preamble that mentions kubernetes once and then "
+        "drifts off into other deployment topics for a while.",
+        "", "[]");
+    auto title_hit = s.create_entry(tid, "reference",
+        "Kubernetes deployment runbook",
+        "Notes on rollout strategy.",
+        "", "[]");
+
+    TenantStore::EntryFilter f;
+    f.q = "kubernetes";
+    auto rows = s.list_entries(tid, f);
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].id == title_hit.id);
+    CHECK(rows[1].id == body_hit.id);
+}
+
+TEST_CASE("type acts as a boost, not a hard filter, when q is set") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "fts-type");
+
+    // Same query word in identical positions across two entries with
+    // different `type`.  Without the type boost they'd tie (or order
+    // arbitrarily).  With a `types=["project"]` boost, the project row
+    // must come first, *and* the reference row must still appear —
+    // that's the "signal not gate" property.
+    auto ref = s.create_entry(tid, "reference",
+        "Auth notes", "Discussion of auth flow nuances.", "", "[]");
+    auto proj = s.create_entry(tid, "project",
+        "Auth flow", "Project plan covering the auth flow.", "", "[]");
+
+    TenantStore::EntryFilter f;
+    f.q     = "auth";
+    f.types = {"project"};
+    auto rows = s.list_entries(tid, f);
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].id == proj.id);
+    CHECK(rows[1].id == ref.id);
+}
+
+TEST_CASE("tag match boosts rank without excluding non-matching rows") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "fts-tag");
+
+    // Same content, only difference is the tags array.  Tag-match boost
+    // should reorder them.
+    auto plain = s.create_entry(tid, "project",
+        "Cache writeback", "Notes on cache writeback semantics.",
+        "", R"(["misc"])");
+    auto tagged = s.create_entry(tid, "project",
+        "Cache writeback details", "Notes on cache writeback edge cases.",
+        "", R"(["urgent","ops"])");
+
+    TenantStore::EntryFilter f;
+    f.q   = "writeback";
+    f.tag = "urgent";
+    auto rows = s.list_entries(tid, f);
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].id == tagged.id);  // boosted
+    CHECK(rows[1].id == plain.id);   // present, just lower
+}
+
+TEST_CASE("FTS triggers keep the index in sync on insert / update / delete") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "fts-sync");
+
+    // Insert: searchable immediately.
+    auto e = s.create_entry(tid, "project", "Original title",
+        "Body mentions raptor.", "", "[]");
+    {
+        TenantStore::EntryFilter f;
+        f.q = "raptor";
+        auto rows = s.list_entries(tid, f);
+        REQUIRE(rows.size() == 1);
+        CHECK(rows[0].id == e.id);
+    }
+
+    // Update: new title indexed; old title no longer matches.
+    REQUIRE(s.update_entry(tid, e.id,
+        /*title=*/std::string("Renamed phoenix"),
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+    {
+        TenantStore::EntryFilter f;
+        f.q = "phoenix";
+        auto rows = s.list_entries(tid, f);
+        REQUIRE(rows.size() == 1);
+        CHECK(rows[0].id == e.id);
+    }
+    {
+        TenantStore::EntryFilter f;
+        f.q = "original";
+        auto rows = s.list_entries(tid, f);
+        // "Original" was the old title; after the update the FTS index
+        // no longer holds it.  "raptor" is still in the body, but "original"
+        // is gone.
+        CHECK(rows.empty());
+    }
+
+    // Delete: gone from the index.
+    REQUIRE(s.delete_entry(tid, e.id));
+    {
+        TenantStore::EntryFilter f;
+        f.q = "raptor";
+        auto rows = s.list_entries(tid, f);
+        CHECK(rows.empty());
+    }
+}
+
+TEST_CASE("FTS index is rebuilt on first open after a stale-index migration") {
+    TempDb db;
+
+    // 1) Populate normally, then simulate the pre-FTS-migration state
+    //    by dropping the FTS table and resetting PRAGMA user_version
+    //    back to 0.  An older DB literally has neither — that's the
+    //    state on first open after the migration ships.
+    {
+        TenantStore s;
+        s.open(db.path.string());
+        const int64_t tid = make_tenant(s, "rebuild");
+        s.create_entry(tid, "project", "Quokka kingdom",
+            "Notes on quokka habitats.", "", "[]");
+        s.create_entry(tid, "reference", "Habitat survey",
+            "Body mentions quokka twice.  quokka quokka.", "", "[]");
+
+        // No public DB-handle accessor; use a fresh connection to issue
+        // the maintenance commands.  Drop the triggers as well as the
+        // table — a true pre-migration DB has neither, and leftover
+        // triggers referencing a missing virtual table would cause the
+        // backfill UPDATE on memory_entries to fail before the rebuild
+        // guard ever runs.
+        sqlite3* raw_handle = nullptr;
+        REQUIRE(sqlite3_open(db.path.string().c_str(), &raw_handle) == SQLITE_OK);
+        char* err = nullptr;
+        REQUIRE(sqlite3_exec(raw_handle,
+            "DROP TRIGGER IF EXISTS memory_entries_fts_ai;"
+            "DROP TRIGGER IF EXISTS memory_entries_fts_ad;"
+            "DROP TRIGGER IF EXISTS memory_entries_fts_au;"
+            "DROP TABLE   IF EXISTS memory_entries_fts;"
+            "PRAGMA user_version = 0;",
+            nullptr, nullptr, &err) == SQLITE_OK);
+        sqlite3_close(raw_handle);
+    }
+
+    // 2) Re-open through the normal path — the migration recreates the
+    //    FTS table, the user_version<1 guard fires the rebuild, and the
+    //    pre-existing rows become searchable.
+    {
+        TenantStore s;
+        s.open(db.path.string());
+        const auto tenants = s.list_tenants();
+        REQUIRE(tenants.size() == 1);
+        TenantStore::EntryFilter f;
+        f.q = "quokka";
+        auto rows = s.list_entries(tenants[0].id, f);
+        REQUIRE(rows.size() == 2);  // both pre-existing rows are searchable
+    }
+}
+
+// ─── Temporal validity windows ─────────────────────────────────────────────
+//
+// Soft-delete via invalidate_entry; default reads filter to active rows;
+// EntryFilter::as_of selects historical state.  Hard delete via
+// delete_entry continues to cascade (covered by the existing
+// "deleting an entry cascades to its relations" test).
+
+TEST_CASE("invalidated entries are hidden from default reads") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "temporal");
+
+    auto e = s.create_entry(tid, "project", "Stale fact",
+        "Once was true, no longer.", "", "[]");
+
+    // Active before invalidation: visible via list, get, search.
+    REQUIRE(s.get_entry(tid, e.id).has_value());
+    {
+        TenantStore::EntryFilter f;
+        CHECK(s.list_entries(tid, f).size() == 1);
+        f.q = "stale";
+        CHECK(s.list_entries(tid, f).size() == 1);
+    }
+
+    // Invalidate at created_at + 1000 so as_of windowing in the next
+    // test is deterministic relative to the entry's own clock.
+    const int64_t valid_until = e.created_at + 1000;
+    REQUIRE(s.invalidate_entry(tid, e.id, valid_until));
+
+    // Hidden from default reads: get returns None, list returns empty,
+    // search returns empty.
+    CHECK_FALSE(s.get_entry(tid, e.id).has_value());
+    {
+        TenantStore::EntryFilter f;
+        CHECK(s.list_entries(tid, f).empty());
+        f.q = "stale";
+        CHECK(s.list_entries(tid, f).empty());
+    }
+}
+
+TEST_CASE("as_of restores rows that were active at the given timestamp") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "as-of");
+
+    auto e = s.create_entry(tid, "project", "Vanishing fact",
+        "Body of the fact.", "", "[]");
+
+    // Use timestamps relative to the entry's own creation time so the
+    // test doesn't depend on wall-clock.  valid window is then
+    // [created_at, created_at + 1000).
+    const int64_t valid_until = e.created_at + 1000;
+    REQUIRE(s.invalidate_entry(tid, e.id, valid_until));
+
+    // as_of inside the window → entry is visible.
+    {
+        TenantStore::EntryFilter f;
+        f.as_of = e.created_at + 500;
+        auto rows = s.list_entries(tid, f);
+        REQUIRE(rows.size() == 1);
+        CHECK(rows[0].id == e.id);
+    }
+    // as_of at the exact invalidation moment → NOT in the window
+    // (valid_to > as_of is required, not valid_to >= as_of).
+    {
+        TenantStore::EntryFilter f;
+        f.as_of = valid_until;
+        auto rows = s.list_entries(tid, f);
+        CHECK(rows.empty());
+    }
+    // Same temporal contract on the FTS search path.
+    {
+        TenantStore::EntryFilter f;
+        f.as_of = e.created_at + 500;
+        f.q = "vanishing";
+        auto rows = s.list_entries(tid, f);
+        REQUIRE(rows.size() == 1);
+    }
+}
+
+TEST_CASE("invalidate_entry rejects unknown ids and double-invalidate") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "reject");
+
+    // Unknown id.
+    CHECK_FALSE(s.invalidate_entry(tid, /*id=*/9999));
+
+    auto e = s.create_entry(tid, "project", "Once", "Body.", "", "[]");
+    REQUIRE(s.invalidate_entry(tid, e.id));
+    // Already invalidated → idempotent rejection (false), valid_to from
+    // the first call stays put.
+    CHECK_FALSE(s.invalidate_entry(tid, e.id));
+
+    // Cross-tenant: another tenant can't invalidate someone else's row.
+    const int64_t other = make_tenant(s, "other");
+    auto e2 = s.create_entry(tid, "project", "Mine", "Mine.", "", "[]");
+    CHECK_FALSE(s.invalidate_entry(other, e2.id));
+    // Original tenant still sees it as active.
+    CHECK(s.get_entry(tid, e2.id).has_value());
+}
+
+TEST_CASE("update_entry refuses to mutate invalidated rows") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "update-block");
+
+    auto e = s.create_entry(tid, "project", "Before", "Body.", "", "[]");
+    REQUIRE(s.invalidate_entry(tid, e.id));
+
+    // Editing an invalidated entry returns false — historical records
+    // are immutable through this path.  Caller can hard-delete + re-create
+    // if they really need the change.
+    CHECK_FALSE(s.update_entry(tid, e.id,
+        /*title=*/std::string("After"),
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt));
 }

@@ -130,6 +130,13 @@ std::string json_serialize(const JsonValue& val) {
 struct Parser {
     std::string_view src;
     size_t pos = 0;
+    // Hard cap on nested array/object depth.  Bodies up to 16 MiB
+    // (api_server.cpp::kMaxBody) of `[[[[...` would otherwise blow the
+    // worker thread's stack — every level recurses through parse_value.
+    // 256 is comfortably deeper than any legitimate API payload and far
+    // below the ~10k-frame limit of an 8 MiB pthread stack.
+    int depth = 0;
+    static constexpr int kMaxDepth = 256;
 
     char peek() const {
         return pos < src.size() ? src[pos] : '\0';
@@ -252,10 +259,11 @@ struct Parser {
     }
 
     std::shared_ptr<JsonValue> parse_array() {
+        if (++depth > kMaxDepth) error("max nesting depth exceeded");
         advance(); // '['
         skip_ws();
         JsonArray arr;
-        if (peek() == ']') { advance(); return jarr(std::move(arr)); }
+        if (peek() == ']') { advance(); --depth; return jarr(std::move(arr)); }
         while (true) {
             arr.push_back(parse_value());
             skip_ws();
@@ -263,14 +271,16 @@ struct Parser {
             if (peek() != ',') error("expected ',' or ']'");
             advance();
         }
+        --depth;
         return jarr(std::move(arr));
     }
 
     std::shared_ptr<JsonValue> parse_object() {
+        if (++depth > kMaxDepth) error("max nesting depth exceeded");
         advance(); // '{'
         skip_ws();
         JsonObject obj;
-        if (peek() == '}') { advance(); return jobj(std::move(obj)); }
+        if (peek() == '}') { advance(); --depth; return jobj(std::move(obj)); }
         while (true) {
             skip_ws();
             std::string key = parse_string();
@@ -282,6 +292,7 @@ struct Parser {
             if (peek() != ',') error("expected ',' or '}'");
             advance();
         }
+        --depth;
         return jobj(std::move(obj));
     }
 };

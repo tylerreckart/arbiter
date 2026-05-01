@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <filesystem>
 #include <curl/curl.h>
@@ -386,6 +387,14 @@ static std::string help_for_topic(const std::string& topic) {
             "  /mem add link <src_id> <relation> <dst_id>\n"
             "       Add a directed edge.  Single-line; no body.  Relations:\n"
             "       relates_to, refines, contradicts, supersedes, supports.\n"
+            "  /mem invalidate <id>\n"
+            "       Mark an entry as no-longer-true at the current moment.\n"
+            "       Hides it from default `/mem entries|entry|search` reads;\n"
+            "       the row stays in the DB and remains reachable via\n"
+            "       historical reads.  Use when a recorded fact has changed\n"
+            "       (user pivoted, project shipped, source contradicted).\n"
+            "       Distinct from a hard delete — there is no agent surface\n"
+            "       for hard delete.\n"
             "\n"
             "Per-agent scratchpad (free-form text, persistent across sessions):\n"
             "  /mem write <text>     — append a note\n"
@@ -609,6 +618,76 @@ static bool is_blocked_v4(uint32_t ip_host_order) {
     return false;
 }
 
+// IPv6 SSRF guard.  IN6_IS_ADDR_* macros from libc cover loopback/link-
+// local/v4-mapped/multicast but miss several routable transition prefixes
+// that re-encode IPv4 — without explicit checks below, a 6to4 literal like
+// http://[2002:7f00:1::]/ or http://[2002:a9fe:a9fe::]/ resolves to v6 at
+// connect time but actually reaches 127.0.0.1 / 169.254.169.254 (AWS IMDS)
+// via a 6to4 relay if v6 egress is open.  Same for Teredo (2001::/32).
+// We do explicit prefix checks instead of relying solely on libc macros.
+static bool is_blocked_v6(const struct in6_addr* a6) {
+    const uint8_t* b = (const uint8_t*)a6;
+
+    // ::/128 unspecified, ::1/128 loopback
+    if (IN6_IS_ADDR_UNSPECIFIED(a6)) return true;
+    if (IN6_IS_ADDR_LOOPBACK(a6))    return true;
+    // ::ffff:a.b.c.d — IPv4-mapped — recurse on embedded v4
+    if (IN6_IS_ADDR_V4MAPPED(a6)) {
+        uint32_t ip = ntohl(((const uint32_t*)a6)[3]);
+        return is_blocked_v4(ip);
+    }
+    // ::a.b.c.d — IPv4-compatible (deprecated but routable on some stacks)
+    {
+        bool zero_high = true;
+        for (int i = 0; i < 12; ++i) if (b[i]) { zero_high = false; break; }
+        if (zero_high && (b[12] || b[13] || b[14] || b[15])) {
+            uint32_t ip = ntohl(((const uint32_t*)a6)[3]);
+            return is_blocked_v4(ip);
+        }
+    }
+    // 64:ff9b::/96 NAT64 well-known + 64:ff9b:1::/48 local-use NAT64
+    if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b) {
+        if (b[4] == 0x00 && b[5] == 0x00 &&
+            b[6] == 0x00 && b[7] == 0x00 &&
+            b[8] == 0x00 && b[9] == 0x00 &&
+            b[10] == 0x00 && b[11] == 0x00) {
+            uint32_t ip = ntohl(((const uint32_t*)a6)[3]);
+            return is_blocked_v4(ip);
+        }
+        // 64:ff9b:1::/48 — extract embedded IPv4 from low 32 bits
+        if (b[4] == 0x00 && b[5] == 0x01) {
+            uint32_t ip = ntohl(((const uint32_t*)a6)[3]);
+            return is_blocked_v4(ip);
+        }
+    }
+    // 100::/64 discard-only address block
+    if (b[0] == 0x01 && b[1] == 0x00 &&
+        b[2] == 0x00 && b[3] == 0x00 &&
+        b[4] == 0x00 && b[5] == 0x00 &&
+        b[6] == 0x00 && b[7] == 0x00) return true;
+    // 2001::/32 Teredo — embeds an IPv4 in bytes 12..15 (XOR'd with 0xff)
+    if (b[0] == 0x20 && b[1] == 0x01 &&
+        b[2] == 0x00 && b[3] == 0x00) {
+        uint32_t ip = ntohl(((const uint32_t*)a6)[3]) ^ 0xffffffffu;
+        if (is_blocked_v4(ip)) return true;
+    }
+    // 2001:db8::/32 documentation
+    if (b[0] == 0x20 && b[1] == 0x01 &&
+        b[2] == 0x0d && b[3] == 0xb8) return true;
+    // 2002::/16 6to4 — IPv4 lives in bytes 2..5
+    if (b[0] == 0x20 && b[1] == 0x02) {
+        uint32_t ip = (uint32_t(b[2]) << 24) | (uint32_t(b[3]) << 16) |
+                      (uint32_t(b[4]) << 8)  |  uint32_t(b[5]);
+        if (is_blocked_v4(ip)) return true;
+    }
+    if (IN6_IS_ADDR_LINKLOCAL(a6)) return true;
+    if (IN6_IS_ADDR_SITELOCAL(a6)) return true;     // fec0::/10 deprecated
+    if (IN6_IS_ADDR_MULTICAST(a6)) return true;
+    if ((b[0] & 0xfe) == 0xfc)     return true;     // fc00::/7 unique-local
+                                                      // (catches fd00:ec2::254 etc.)
+    return false;
+}
+
 static bool is_blocked_address(const struct sockaddr* sa) {
     if (!sa) return true;
     if (sa->sa_family == AF_INET) {
@@ -616,18 +695,7 @@ static bool is_blocked_address(const struct sockaddr* sa) {
         return is_blocked_v4(ip);
     }
     if (sa->sa_family == AF_INET6) {
-        const auto* a6 = &((const struct sockaddr_in6*)sa)->sin6_addr;
-        if (IN6_IS_ADDR_LOOPBACK(a6))  return true;
-        if (IN6_IS_ADDR_LINKLOCAL(a6)) return true;
-        if (IN6_IS_ADDR_SITELOCAL(a6)) return true;
-        if (IN6_IS_ADDR_MULTICAST(a6)) return true;
-        if (IN6_IS_ADDR_V4MAPPED(a6)) {
-            uint32_t ip = ntohl(((const uint32_t*)a6)[3]);
-            return is_blocked_v4(ip);
-        }
-        const uint8_t first = ((const uint8_t*)a6)[0];
-        if ((first & 0xfe) == 0xfc) return true;     // fc00::/7 unique-local
-        return false;
+        return is_blocked_v6(&((const struct sockaddr_in6*)sa)->sin6_addr);
     }
     return true;
 }
@@ -637,6 +705,120 @@ static curl_socket_t safe_opensocket_cb(void* /*clientp*/, curlsocktype purpose,
     if (purpose != CURLSOCKTYPE_IPCXN) return CURL_SOCKET_BAD;
     if (is_blocked_address(&addr->addr)) return CURL_SOCKET_BAD;
     return ::socket(addr->family, addr->socktype, addr->protocol);
+}
+
+// Extract the host component from an http(s) URL.  Handles userinfo
+// (`http://user@host/`), bracketed IPv6 literals, and ports.  Returns
+// empty on shapes that don't look like an absolute http/https URL —
+// the caller treats empty as "block by default."  We lowercase and
+// strip a trailing dot so "Metadata.Google.Internal." normalises.
+static std::string url_host(const std::string& url) {
+    auto sep = url.find("://");
+    if (sep == std::string::npos) return {};
+    size_t start = sep + 3;
+    // Path / query / fragment terminate the authority.
+    size_t end = url.size();
+    for (size_t i = start; i < url.size(); ++i) {
+        if (url[i] == '/' || url[i] == '?' || url[i] == '#') { end = i; break; }
+    }
+    std::string authority = url.substr(start, end - start);
+    auto at = authority.rfind('@');
+    if (at != std::string::npos) authority.erase(0, at + 1);
+
+    std::string host;
+    if (!authority.empty() && authority.front() == '[') {
+        auto rb = authority.find(']');
+        if (rb == std::string::npos) return {};
+        host = authority.substr(1, rb - 1);     // bare IPv6, no brackets
+    } else {
+        auto colon = authority.find(':');
+        host = authority.substr(0, colon);
+    }
+    // Lowercase ASCII + strip trailing dots so "metadata.google.internal."
+    // normalises to "metadata.google.internal".
+    for (auto& c : host) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+    }
+    while (!host.empty() && host.back() == '.') host.pop_back();
+    return host;
+}
+
+// Hostname denylist for cloud-provider metadata services.  IP-layer
+// guards catch the canonical 169.254.169.254 / fd00:ec2::254 only
+// when DNS actually returns those addresses.  A split-horizon resolver
+// or future provider alias can still resolve these names to *some*
+// routable IP — refuse the name outright.
+static bool is_blocked_metadata_host(const std::string& host) {
+    static const char* kBlocked[] = {
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata",
+        "instance-data",
+        "instance-data.ec2.internal",
+        "kubernetes.default.svc",
+        "kubernetes.default.svc.cluster.local",
+    };
+    for (const auto* h : kBlocked) {
+        if (host == h) return true;
+    }
+    return false;
+}
+
+// Pre-flight SSRF check by hostname resolution.  Used by callers that
+// hand the URL off to an external resolver (Playwright via /browse,
+// MCP children, etc.) where the safe_opensocket_cb hook cannot
+// intervene.  This is best-effort: there is an unavoidable TOCTOU
+// between our resolution here and the downstream's resolution at
+// connect time, but it catches literal-IP attacks and DNS that
+// always returns blocked addresses, which closes the obvious holes.
+//
+// Returns empty string on success; on rejection returns a short
+// reason suitable to splice into an "ERR: refused — ..." message.
+static std::string preflight_ssrf_check(const std::string& url) {
+    const bool is_http  = url.size() >= 7 && url.compare(0, 7, "http://")  == 0;
+    const bool is_https = url.size() >= 8 && url.compare(0, 8, "https://") == 0;
+    if (!is_http && !is_https) return "URL must start with http:// or https://";
+
+    std::string host = url_host(url);
+    if (host.empty()) return "could not parse host from URL";
+
+    if (is_blocked_metadata_host(host))
+        return "host on metadata-service denylist";
+
+    // Literal-IP fast paths.  inet_pton catches every numeric form
+    // (decimal/hex/octal triggers EINVAL on most libc — those are
+    // the curl-canonical-but-not-libc cases we actually want to fail
+    // closed on; getaddrinfo below will resolve them as hostnames
+    // and likely return the corresponding loopback/private IP).
+    struct in_addr v4{};
+    struct in6_addr v6{};
+    if (inet_pton(AF_INET, host.c_str(), &v4) == 1) {
+        if (is_blocked_v4(ntohl(v4.s_addr)))
+            return "literal IPv4 address resolves to a blocked range";
+    } else if (inet_pton(AF_INET6, host.c_str(), &v6) == 1) {
+        if (is_blocked_v6(&v6))
+            return "literal IPv6 address resolves to a blocked range";
+    }
+
+    struct addrinfo hints{};
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = nullptr;
+    int rc = getaddrinfo(host.c_str(), nullptr, &hints, &res);
+    if (rc != 0 || !res) {
+        // Fail closed: if we can't resolve, we can't validate.
+        if (res) freeaddrinfo(res);
+        return std::string("could not resolve host: ") + gai_strerror(rc);
+    }
+    bool any_blocked = false;
+    for (auto* p = res; p; p = p->ai_next) {
+        if (is_blocked_address(p->ai_addr)) { any_blocked = true; break; }
+    }
+    freeaddrinfo(res);
+    if (any_blocked)
+        return "host resolves to a private, loopback, link-local, or "
+               "metadata-adjacent address";
+    return {};
 }
 } // namespace
 
@@ -1134,7 +1316,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    SearchInvoker  search_invoker,
                                    ArtifactWriter artifact_writer,
                                    ArtifactReader artifact_reader,
-                                   ArtifactLister artifact_lister) {
+                                   ArtifactLister artifact_lister,
+                                   const std::vector<std::string>& capabilities) {
     std::ostringstream out;
     out << "\n";
 
@@ -1147,14 +1330,84 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
     static constexpr size_t kTotalLimit     = 32768;
     static constexpr int    kMaxFetches     = 3;
     static constexpr int    kMaxSearches    = 4;
+    // README: "Consults are capped at two per turn — a third desired
+    // call means the task is under-scoped, and the executor is told to
+    // deliver what it has."  Without this counter the cap was prompt-
+    // text only; an adversarial or misbehaving agent could fan out
+    // arbitrary advisor calls and run up the cost ledger.
+    static constexpr int    kMaxAdvise      = 2;
     int fetch_count  = 0;
     int search_count = 0;
+    int advise_count = 0;
+
+    // Resolve the calling agent's capability bundles once.  Empty input
+    // means "all bundles" (legacy master-orchestrator behavior).  This
+    // mirrors resolve_bundles() in constitution.cpp — the prompt and the
+    // dispatcher must agree on the surface, otherwise we'd promise the
+    // agent a tool we then refuse to run.
+    std::set<std::string> allowed_bundles;
+    const bool unrestricted = capabilities.empty();
+    if (!unrestricted) {
+        for (const auto& cap : capabilities) {
+            if      (cap == "/search" || cap == "/fetch" || cap == "/browse")
+                allowed_bundles.insert("web");
+            else if (cap == "/exec")
+                allowed_bundles.insert("exec");
+            else if (cap.rfind("/write", 0) == 0)
+                allowed_bundles.insert("write");
+            else if (cap == "/read" || cap == "/list")
+                allowed_bundles.insert("read");
+            else if (cap.rfind("/mem", 0) == 0)
+                allowed_bundles.insert("mem");
+            else if (cap == "/agent" || cap == "/parallel" || cap == "/pane")
+                allowed_bundles.insert("delegation");
+            else if (cap == "/mcp")
+                allowed_bundles.insert("mcp");
+            else if (cap == "/advise")
+                allowed_bundles.insert("advise");
+        }
+    }
+
+    auto bundle_of = [](const std::string& name) -> const char* {
+        if (name == "fetch" || name == "search" || name == "browse") return "web";
+        if (name == "exec")                                          return "exec";
+        if (name == "write")                                         return "write";
+        if (name == "read"  || name == "list")                       return "read";
+        if (name == "mem")                                           return "mem";
+        if (name == "agent" || name == "parallel" || name == "pane") return "delegation";
+        if (name == "mcp")                                           return "mcp";
+        if (name == "advise")                                        return "advise";
+        return "";   // "help" and unknowns are always allowed
+    };
 
     for (auto& cmd : cmds) {
         // Enforce total budget
         if (out.tellp() >= static_cast<std::streampos>(kTotalLimit)) {
             out << "[TOOL RESULTS TRUNCATED: budget exhausted]\n\n";
             break;
+        }
+
+        // ── Capability gate ─────────────────────────────────────────────
+        // If the calling agent declared a non-empty `capabilities` list,
+        // reject any slash command whose bundle isn't in that list.  The
+        // empty list keeps the master-orchestrator's all-bundles default
+        // intact.  Without this check the `capabilities` array is purely
+        // a prompt-text hint — a prompt-injected or jailbroken agent can
+        // emit /exec / /write / /fetch even if its constitution lists
+        // only /search.
+        if (!unrestricted) {
+            const char* needed = bundle_of(cmd.name);
+            if (*needed && !allowed_bundles.count(needed)) {
+                out << "[/" << cmd.name << " " << cmd.args << "]\n"
+                    << "ERR: capability not granted — this agent's "
+                    << "`capabilities` does not include /" << cmd.name
+                    << " (bundle '" << needed << "').  Adapt: stop "
+                    << "emitting /" << cmd.name
+                    << " or delegate via /agent to one that has it.\n"
+                    << "[END " << cmd.name << "]\n\n";
+                if (tool_status) tool_status(cmd.name, false);
+                continue;
+            }
         }
 
         // ── Dedup gate ────────────────────────────────────────────────────
@@ -1298,6 +1551,17 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                       << "ERR: /browse requires a playwright MCP server "
                          "configured for this deployment.  Adapt: try "
                          "/fetch <url> instead (works for static pages).\n"
+                      << "[END BROWSE]\n\n";
+                cache_result = false;
+            } else if (auto reject = preflight_ssrf_check(url); !reject.empty()) {
+                // Pre-flight the URL against the same SSRF blocklist
+                // /fetch enforces.  Unlike libcurl-driven fetches,
+                // /browse hands the URL off to Playwright via MCP,
+                // which does its own DNS + connect with no hook for
+                // us to intervene — without this check the SSRF guard
+                // is bypassed entirely.
+                block << "[/browse " << url << "]\n"
+                      << "ERR: refused — " << reject << " (SSRF guard)\n"
                       << "[END BROWSE]\n\n";
                 cache_result = false;
             } else {
@@ -1502,6 +1766,40 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 }
                 block << "[END MEMORY]\n\n";
 
+            } else if (subcmd == "invalidate") {
+                // /mem invalidate <id>
+                // Soft-delete one entry by id.  The row stays in the DB and
+                // remains reachable via `as_of` reads (audit / replay) but
+                // disappears from default `/mem entries`, `/mem entry`, and
+                // `/mem search` results.  Distinct from a hard delete (no
+                // agent-facing surface for that — REST-DELETE is the only
+                // path).  Use this when a recorded fact is no longer true:
+                // the user changed their mind, a project shipped, etc.
+                std::string args;
+                std::getline(iss, args);
+                if (!args.empty() && args[0] == ' ') args.erase(0, 1);
+
+                block << "[/mem invalidate"
+                      << (args.empty() ? "" : " " + args) << "]\n";
+                if (!structured_memory_writer) {
+                    block << "ERR: structured memory unavailable in this context — "
+                             "this surface is only available when running under "
+                             "the HTTP API with a tenant token.  Adapt: drop "
+                             "the /mem invalidate step.\n";
+                    cache_result = false;
+                } else if (args.empty()) {
+                    block << "ERR: usage: /mem invalidate <id>\n";
+                    cache_result = false;
+                } else {
+                    std::string body = structured_memory_writer(
+                        "invalidate", args, /*body=*/"");
+                    block << body;
+                    if (body.empty() || body.back() != '\n') block << "\n";
+                    if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                        cache_result = false;
+                }
+                block << "[END MEMORY]\n\n";
+
             } else if (subcmd == "add") {
                 // Agent direct-write into the structured memory graph.
                 // Two shapes:
@@ -1568,7 +1866,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             } else {
                 block << "[/mem] ERR: unknown subcommand '" << subcmd
                       << "' — use read, write, show, clear, shared, "
-                         "entries, entry, search, expand, density, or add\n\n";
+                         "entries, entry, search, expand, density, "
+                         "add, or invalidate\n\n";
                 cache_result = false;
             }
 
@@ -1633,7 +1932,14 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << "ERR: advisor not configured — set advisor_model in "
                          "the agent config to enable /advise.\n";
                 cache_result = false;
+            } else if (advise_count >= kMaxAdvise) {
+                block << "SKIPPED: max " << kMaxAdvise
+                      << " advisor consults per turn.  A third call means the "
+                         "task is under-scoped — deliver what you have and note "
+                         "the open question in your output.\n";
+                cache_result = false;
             } else {
+                ++advise_count;
                 std::string answer = advisor_invoker(cmd.args);
                 block << answer;
                 if (!answer.empty() && answer.back() != '\n') block << "\n";

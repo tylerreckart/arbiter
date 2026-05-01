@@ -409,7 +409,11 @@ TEST_CASE("/browse skips snapshot when navigate fails") {
         return std::string("ERR: unexpected\n");
     };
 
-    auto cmds = parse_agent_commands("/browse https://busted.example/\n");
+    // Uses example.com (RFC 2606 reserved, resolves to a routable
+    // public IP) so the SSRF preflight passes; the mock invoker
+    // returns ERR regardless of the URL, which is what the test is
+    // exercising — Playwright reporting an unreachable target.
+    auto cmds = parse_agent_commands("/browse https://example.com/\n");
     auto out = execute_agent_commands(cmds, "test", "/tmp",
         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
         nullptr, false, nullptr, nullptr, nullptr, invoker);

@@ -196,6 +196,12 @@ struct MemoryEntry {
     int64_t     artifact_id = 0;
     int64_t     created_at  = 0;
     int64_t     updated_at  = 0;
+    // Temporal validity window.  `valid_from` is set on insert and is
+    // typically equal to `created_at`.  `valid_to == 0` means the entry
+    // is currently active; non-zero is the moment it was invalidated.
+    // Storage exposes invalidated rows only via `EntryFilter::as_of`.
+    int64_t     valid_from  = 0;
+    int64_t     valid_to    = 0;
 };
 
 // One row from the memory_relations table.  Relations are directed and
@@ -438,12 +444,28 @@ public:
     std::optional<MemoryEntry> get_entry(int64_t tenant_id, int64_t id) const;
 
     struct EntryFilter {
-        std::vector<std::string> types;             // OR-filter; empty = all
+        // When `q` is empty: types/tag are *hard filters* and results are
+        // ordered by `updated_at DESC`.
+        // When `q` is non-empty: results are ranked by Okapi-BM25 over the
+        // FTS5 index on (title, content, tags, source).  In that mode,
+        // `types` and `tag` become *boost factors* — matching rows score
+        // higher rather than non-matching rows being excluded.  This
+        // mirrors MemPalace's "metadata as signal, not gate" pattern: an
+        // agent that filters too aggressively can otherwise miss entries
+        // that are objectively relevant but tagged differently.
+        std::vector<std::string> types;             // OR-set; boost when q is set
         std::string              tag;               // single-tag substring match
-        std::string              q;                 // LIKE on title + content
+        std::string              q;                 // FTS5 query when set
         int64_t                  since                 = 0;  // created_at >= since
         int64_t                  before_updated_at     = 0;  // cursor; 0 = latest
         int                      limit                 = 50;
+        // Historical-snapshot timestamp (epoch seconds).  When 0 the
+        // default "active rows only" filter applies (`valid_to IS NULL`).
+        // When non-zero, the read returns rows whose validity window
+        // covers `as_of` — i.e., `valid_from <= as_of AND
+        // (valid_to IS NULL OR valid_to > as_of)`.  Use to reconstruct
+        // what an agent's memory looked like at a past moment.
+        int64_t                  as_of                 = 0;
     };
     std::vector<MemoryEntry> list_entries(int64_t tenant_id,
                                            const EntryFilter& f) const;
@@ -461,6 +483,21 @@ public:
                       const std::optional<int64_t>& artifact_id = std::nullopt);
 
     bool delete_entry(int64_t tenant_id, int64_t id);
+
+    // Mark an entry as no-longer-true at a given moment.  Sets
+    // `valid_to`.  Default reads (and FTS search) hide invalidated
+    // entries; reads with `EntryFilter::as_of <= when` still see them
+    // for replay / audit.  `when == 0` means "now (epoch seconds)".
+    //
+    // Distinct from delete_entry, which is a hard DELETE that cascades
+    // through memory_relations.  Soft invalidation preserves history
+    // and the relation graph; hard delete erases the row entirely.
+    //
+    // Returns false when:
+    //   • the entry doesn't exist (or belongs to a different tenant);
+    //   • the entry was already invalidated (idempotent rejection — to
+    //     change the invalidation timestamp, hard-delete and re-create).
+    bool invalidate_entry(int64_t tenant_id, int64_t id, int64_t when = 0);
 
     // Returns nullopt on unique-index conflict — caller pairs that with
     // find_relation() to surface the existing row in a 409 response.

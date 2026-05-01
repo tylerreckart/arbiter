@@ -532,7 +532,8 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               search_invoker_cb_,
                                               artifact_writer_cb_,
                                               artifact_reader_cb_,
-                                              artifact_lister_cb_);
+                                              artifact_lister_cb_,
+                                              agent_ptr->config().capabilities);
     }
 
     // Cumulative content/tokens replace the last iteration's values so the
@@ -758,7 +759,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                               search_invoker_cb_,
                                               artifact_writer_cb_,
                                               artifact_reader_cb_,
-                                              artifact_lister_cb_);
+                                              artifact_lister_cb_,
+                                              agent_ptr->config().capabilities);
         resp = agent_ptr->stream(current_msg, gated_cb);
         if (!resp.ok) {
             if (!iter_buffer.empty() && cb) cb(iter_buffer);

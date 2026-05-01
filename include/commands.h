@@ -255,7 +255,20 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    SearchInvoker  search_invoker  = nullptr,
                                    ArtifactWriter artifact_writer = nullptr,
                                    ArtifactReader artifact_reader = nullptr,
-                                   ArtifactLister artifact_lister = nullptr);
+                                   ArtifactLister artifact_lister = nullptr,
+                                   // Capability allowlist matching the
+                                   // calling agent's constitution.  Empty
+                                   // = "all bundles" (preserves legacy
+                                   // master-orchestrator behavior).  When
+                                   // non-empty, slash commands outside the
+                                   // allowed bundles are rejected at
+                                   // dispatch time with an ERR block,
+                                   // before any side-effecting work.  This
+                                   // turns `capabilities` from a prompt-
+                                   // selection hint into an enforcement
+                                   // boundary, so a prompt-injected agent
+                                   // can't escape its declared toolbelt.
+                                   const std::vector<std::string>& capabilities = {});
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

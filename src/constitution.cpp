@@ -182,7 +182,11 @@ static const char* bundle_mem_inventory() {
         "                                                       Types: user, feedback, project, reference,\n"
         "                                                       learning, context.\n"
         "  /mem add link <src_id> <relation> <dst_id>         — single-line; relations: relates_to,\n"
-        "                                                       refines, contradicts, supersedes, supports\n";
+        "                                                       refines, contradicts, supersedes, supports\n"
+        "  /mem invalidate <id>                       — soft-delete an entry that is no longer true\n"
+        "                                               (user pivoted, project shipped, source\n"
+        "                                               contradicted).  Hides it from default reads;\n"
+        "                                               historical reads still return it for audit.\n";
 }
 
 static const char* bundle_mcp_inventory() {

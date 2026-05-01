@@ -142,6 +142,15 @@ bool parse_http_request(int fd, HttpRequest& req) {
     if (req.method.empty() || req.path.empty()) return false;
 
     // Headers until the empty line.
+    //
+    // Smuggling defense: a downstream proxy may interpret the request
+    // differently from us if (a) Content-Length appears more than once,
+    // (b) Transfer-Encoding is present (we don't speak chunked, so the
+    // proxy and us would disagree on body framing), or (c) both
+    // Content-Length and Transfer-Encoding are sent.  Reject all three
+    // shapes outright.  We track this via duplicate-key detection
+    // because the unordered_map below otherwise silently last-wins.
+    bool saw_cl = false;
     while (std::getline(ss, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) break;
@@ -153,6 +162,11 @@ bool parse_http_request(int fd, HttpRequest& req) {
         size_t vstart = 0;
         while (vstart < value.size() && (value[vstart] == ' ' || value[vstart] == '\t'))
             ++vstart;
+        if (name == "transfer-encoding") return false;     // not supported, also smuggling vector
+        if (name == "content-length") {
+            if (saw_cl) return false;                       // duplicate CL — refuse
+            saw_cl = true;
+        }
         req.headers[std::move(name)] = value.substr(vstart);
     }
 
@@ -160,9 +174,18 @@ bool parse_http_request(int fd, HttpRequest& req) {
     // out of scope; the one caller of this API sends a simple POST.
     auto it = req.headers.find("content-length");
     if (it != req.headers.end()) {
+        // Strict digit-only parse — std::stoul would silently accept
+        // "+5", trailing junk ("100garbage"), or spaces, which a
+        // misbehaving proxy could interpret differently.
+        const std::string& v = it->second;
+        if (v.empty()) return false;
         size_t want = 0;
-        try { want = static_cast<size_t>(std::stoul(it->second)); }
-        catch (...) { return false; }
+        for (char c : v) {
+            if (c < '0' || c > '9') return false;
+            size_t prev = want;
+            want = want * 10 + static_cast<size_t>(c - '0');
+            if (want < prev) return false;                  // overflow
+        }
         static constexpr size_t kMaxBody = 16 * 1024 * 1024;  // hard cap
         if (want > kMaxBody) return false;
         req.body = leftover;
@@ -734,6 +757,7 @@ bool admin_token_matches(const std::string& got, const std::string& want) {
 
 void handle_admin(int fd, const HttpRequest& req,
                   TenantStore& tenants,
+                  InFlightRegistry& in_flight,
                   const ApiServerOptions& opts) {
     if (opts.admin_token.empty()) {
         admin_error(fd, 503, "admin endpoints disabled (no admin token configured)");
@@ -824,7 +848,23 @@ void handle_admin(int fd, const HttpRequest& req,
                 // `disabled` is the only mutable field — billing-related
                 // fields have moved to the billing service.
                 if (auto v = body->get("disabled"); v && v->is_bool()) {
-                    tenants.set_disabled(std::to_string(id), v->as_bool());
+                    const bool now_disabled = v->as_bool();
+                    tenants.set_disabled(std::to_string(id), now_disabled);
+                    // Kill in-flight streams immediately when disabling.
+                    // Without this, an authenticated tenant's existing
+                    // SSE stream keeps running until the model finishes —
+                    // the operator believes the kill-switch is hot when
+                    // it isn't.  Holding reg.mu across cancel() is safe:
+                    // Orchestrator::cancel only flips an atomic and
+                    // shuts down sockets under its own mutex.
+                    if (now_disabled) {
+                        std::lock_guard<std::mutex> lk(in_flight.mu);
+                        for (auto& [_, entry] : in_flight.by_id) {
+                            if (entry.tenant_id == id && entry.orch) {
+                                entry.orch->cancel();
+                            }
+                        }
+                    }
                 }
                 auto t = tenants.get_tenant(id);
                 if (!t) { admin_error(fd, 404, "tenant not found"); return; }
@@ -1737,6 +1777,11 @@ std::shared_ptr<JsonValue> memory_entry_to_json(const MemoryEntry& e) {
     else                    m["artifact_id"] = jnull();
     m["created_at"] = jnum(static_cast<double>(e.created_at));
     m["updated_at"] = jnum(static_cast<double>(e.updated_at));
+    // Temporal validity window.  `valid_from` is always set; `valid_to`
+    // is null while the entry is active and an epoch when invalidated.
+    m["valid_from"] = jnum(static_cast<double>(e.valid_from));
+    if (e.valid_to > 0) m["valid_to"] = jnum(static_cast<double>(e.valid_to));
+    else                m["valid_to"] = jnull();
     return o;
 }
 
@@ -1870,6 +1915,10 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     f.since             = get_int("since");
     f.before_updated_at = get_int("before_updated_at");
     f.limit             = static_cast<int>(get_int("limit"));
+    // `as_of=<epoch>` reconstructs the active set at a past timestamp:
+    // includes invalidated rows whose validity window covers that
+    // moment.  Default 0 ⇒ "now", which means "active rows only".
+    f.as_of             = get_int("as_of");
 
     auto entries = tenants.list_entries(tenant.id, f);
     auto arr = jarr();
@@ -2012,6 +2061,65 @@ void handle_memory_entry_delete(int fd, int64_t id,
         return write_memory_error(fd, 404, "entry not found");
     auto body = jobj();
     body->as_object_mut()["deleted"] = jbool(true);
+    write_json_response(fd, 200, body);
+}
+
+// POST /v1/memory/entries/:id/invalidate — soft delete with a temporal
+// window.  Distinct from DELETE: the row stays in the DB and is still
+// reachable through `?as_of=<epoch>` for replay / audit, but disappears
+// from the default active set.  The optional body `{"when": <epoch>}`
+// pins the invalidation moment; without it we use the wall clock.
+void handle_memory_entry_invalidate(int fd, int64_t id, const HttpRequest& req,
+                                     TenantStore& tenants, const Tenant& tenant) {
+    int64_t when = 0;
+    if (!req.body.empty()) {
+        std::shared_ptr<JsonValue> body;
+        try { body = json_parse(req.body); }
+        catch (const std::exception& e) {
+            return write_memory_error(fd, 400,
+                std::string("invalid JSON: ") + e.what());
+        }
+        if (body && body->is_object()) {
+            // Treat null / missing as "now".  Negative values are
+            // operator error and rejected up front.
+            if (auto v = body->get("when"); v && v->is_number()) {
+                when = static_cast<int64_t>(v->as_number());
+                if (when < 0)
+                    return write_memory_error(fd, 400,
+                        "'when' must be a non-negative epoch");
+            }
+        }
+    }
+
+    if (!tenants.invalidate_entry(tenant.id, id, when)) {
+        // The storage layer collapses three rejection cases into a
+        // single false: missing row, cross-tenant, or already-invalidated.
+        // Distinguish with a probe so the HTTP status is informative.
+        // get_entry filters to active rows; if it returns the row, we
+        // reached this branch via concurrent invalidate — race; report
+        // 409.  If get_entry is empty but a raw read finds the row with
+        // valid_to set, this is double-invalidate → 409.  Otherwise the
+        // row genuinely doesn't exist → 404.
+        auto active = tenants.get_entry(tenant.id, id);
+        if (active) {
+            return write_memory_error(fd, 409,
+                "entry was already invalidated by a concurrent request");
+        }
+        // We don't currently expose a "fetch invalidated" point read in
+        // the storage layer (intentionally — see get_entry's comment).
+        // Treat the false here as either-not-found-or-already-invalid
+        // and return 409 only when the caller's intent ("soft-delete
+        // this") is satisfied by current state.  Without a way to tell,
+        // 404 is the conservative default.
+        return write_memory_error(fd, 404,
+            "entry not found or already invalidated");
+    }
+    auto e = tenants.get_entry(tenant.id, id);   // returns None — entry is now inactive
+    (void)e;
+    auto body = jobj();
+    auto& m = body->as_object_mut();
+    m["invalidated"] = jbool(true);
+    m["id"]          = jnum(static_cast<double>(id));
     write_json_response(fd, 200, body);
 }
 
@@ -2217,6 +2325,24 @@ void write_artifact_error(int fd, int code, const std::string& msg) {
     write_json_response(fd, code, e);
 }
 
+// Validate a tenant-supplied media type before storage.  This value is
+// later echoed verbatim into the Content-Type response header on
+// /v1/artifacts/:id/raw — without this guard a tenant can inject
+// CRLF + extra headers + body, splitting the response.  We accept any
+// printable ASCII (0x20..0x7E) up to 127 chars containing at least one
+// '/', and reject CR/LF/NUL/CTLs/non-ASCII outright.  Empty stays
+// empty (the store applies its `application/octet-stream` default).
+bool is_valid_mime_type(const std::string& s) {
+    if (s.empty()) return true;          // store fills in a safe default
+    if (s.size() > 127) return false;
+    bool saw_slash = false;
+    for (unsigned char c : s) {
+        if (c < 0x20 || c > 0x7E) return false;   // CTLs + 8-bit
+        if (c == '/') saw_slash = true;
+    }
+    return saw_slash;
+}
+
 // POST /v1/conversations/:id/artifacts
 // Body: { "path": "...", "content": "...", "mime_type"?: "..." }
 // Used by the frontend (or any non-agent caller) to drop a file into a
@@ -2239,6 +2365,11 @@ void handle_artifact_create(int fd, int64_t conversation_id,
     const std::string raw_path = body->get_string("path", "");
     const std::string content  = body->get_string("content", "");
     const std::string mime     = body->get_string("mime_type", "");
+
+    if (!is_valid_mime_type(mime))
+        return write_artifact_error(fd, 400,
+            "invalid mime_type: must be printable ASCII, contain '/', "
+            "and be ≤127 chars (no CR/LF/NUL)");
 
     std::string sanitize_err;
     auto canonical = sanitize_artifact_path(raw_path, sanitize_err);
@@ -2415,25 +2546,29 @@ void handle_cancel(int fd, const HttpRequest& req,
     }
     const std::string request_id = segs[2];
 
-    Orchestrator* target = nullptr;
+    // Critical: we must call target->cancel() *while holding* reg.mu.
+    // Releasing the lock and then dereferencing `target` outside the
+    // critical section is a use-after-free: the owning request thread
+    // can run ~InFlightScope (which acquires reg.mu and erases the
+    // entry) and continue stack-unwinding, destroying the Orchestrator,
+    // before this thread reaches the deref.  cancel() is short — sets
+    // an atomic and shuts down sockets under a different mutex — so
+    // holding reg.mu through it costs nothing and rules out the race.
+    bool cancelled = false;
     {
         std::lock_guard<std::mutex> lk(reg.mu);
         auto it = reg.by_id.find(request_id);
-        if (it != reg.by_id.end()) {
-            // Enforce tenant isolation — a tenant cannot cancel another
-            // tenant's request even if they guessed/scraped a request_id.
-            if (it->second.tenant_id == tenant.id) {
-                target = it->second.orch;
-            } else {
-                target = nullptr;   // deliberately opaque — same response as "not found"
-            }
+        if (it != reg.by_id.end() && it->second.tenant_id == tenant.id) {
+            // Tenant isolation: cross-tenant ids surface as 404, never
+            // as a successful cancel of another tenant's stream.
+            it->second.orch->cancel();
+            cancelled = true;
         }
     }
     auto body = jobj();
     auto& m = body->as_object_mut();
     m["request_id"] = jstr(request_id);
-    if (target) {
-        target->cancel();
+    if (cancelled) {
         m["cancelled"] = jbool(true);
         write_json_response(fd, 200, body);
     } else {
@@ -2441,6 +2576,40 @@ void handle_cancel(int fd, const HttpRequest& req,
         m["reason"]    = jstr("no in-flight request with that id");
         write_json_response(fd, 404, body);
     }
+}
+
+// Map an upstream provider's error_type to a fixed taxonomy of safe
+// codes for SSE consumers.  We never proxy the provider's free-form
+// `error.message` through to the tenant — that field can quote the
+// offending Authorization header or other request data depending on
+// the provider, and a future provider change would silently leak the
+// runtime's shared API key to every tenant who triggered it.
+//
+// Operator-side stderr keeps the raw message; only the safe code and
+// a fixed user-facing string ship over the wire.
+const char* sanitised_provider_error_code(const std::string& error_type) {
+    if (error_type == "authentication_error") return "auth_failed";
+    if (error_type == "permission_error")     return "auth_failed";
+    if (error_type == "rate_limit_error")     return "rate_limited";
+    if (error_type == "overloaded_error")     return "rate_limited";
+    if (error_type == "invalid_request_error")return "invalid_request";
+    if (error_type == "not_found_error")      return "not_found";
+    if (error_type == "request_too_large")    return "request_too_large";
+    return "provider_error";
+}
+
+const char* sanitised_provider_error_message(const char* code) {
+    if (std::strcmp(code, "auth_failed") == 0)
+        return "the provider rejected the runtime's credentials";
+    if (std::strcmp(code, "rate_limited") == 0)
+        return "the provider is rate-limiting or overloaded — retry with backoff";
+    if (std::strcmp(code, "invalid_request") == 0)
+        return "the provider rejected the request shape";
+    if (std::strcmp(code, "not_found") == 0)
+        return "the configured model or resource is unavailable";
+    if (std::strcmp(code, "request_too_large") == 0)
+        return "the request exceeded the provider's size limit";
+    return "the upstream provider returned an error";
 }
 
 // Two entry points funnel here: /v1/orchestrate (agent_override == "", read
@@ -3439,6 +3608,34 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 return out.str();
             }
 
+            if (kind == "invalidate") {
+                // /mem invalidate <id>
+                // Args is just the id token.  Anything past the first
+                // whitespace is ignored — keeps the grammar tight.
+                std::istringstream iss(args);
+                int64_t id = 0;
+                iss >> id;
+                if (id <= 0) {
+                    return "ERR: usage: /mem invalidate <id>";
+                }
+                if (!tenants.invalidate_entry(reader_tenant_id, id)) {
+                    // Same false-collapse the HTTP handler navigates: the
+                    // row is missing, cross-tenant, or already invalid.
+                    // From the agent's perspective the after-state is the
+                    // same ("the row is no longer active"), so the wording
+                    // here merges those cases.
+                    std::ostringstream out;
+                    out << "ERR: entry #" << id
+                        << " not found or already invalidated";
+                    return out.str();
+                }
+                std::ostringstream out;
+                out << "OK: invalidated entry #" << id
+                    << " (still reachable through historical reads, "
+                    << "hidden from default queries).\n";
+                return out.str();
+            }
+
             if (kind == "add-link") {
                 // /mem add link <src_id> <relation> <dst_id>
                 std::istringstream iss(args);
@@ -4047,7 +4244,17 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         auto done = jobj();
         auto& m = done->as_object_mut();
         m["ok"]      = jbool(resp.ok);
-        if (!resp.ok) m["error"] = jstr(resp.error);
+        if (!resp.ok) {
+            // Never proxy the provider's free-form error message —
+            // log it operator-side, ship a fixed taxonomy on the wire.
+            const char* code = sanitised_provider_error_code(resp.error_type);
+            m["error"]      = jstr(sanitised_provider_error_message(code));
+            m["error_code"] = jstr(code);
+            std::fprintf(stderr,
+                "[arbiter] tenant=%lld request=%s upstream error: type=%s message=%s\n",
+                static_cast<long long>(tenant.id), request_id.c_str(),
+                resp.error_type.c_str(), resp.error.c_str());
+        }
         m["content"] = jstr(resp.content);
         m["input_tokens"]  = jnum(static_cast<double>(resp.input_tokens));
         m["output_tokens"] = jnum(static_cast<double>(resp.output_tokens));
@@ -4276,7 +4483,7 @@ void ApiServer::handle_connection(int fd) {
     // Matched by prefix so /v1/admin, /v1/admin/tenants, /v1/admin/usage?…
     // all funnel into handle_admin, which sub-dispatches.
     if (req.path.rfind("/v1/admin", 0) == 0) {
-        handle_admin(fd, req, tenants_, opts_);
+        handle_admin(fd, req, tenants_, in_flight_, opts_);
         return;
     }
 
@@ -4569,6 +4776,23 @@ void ApiServer::handle_connection(int fd) {
                     write_plain_response(fd, 405, "Method Not Allowed",
                                          "method not allowed\n");
                     return;
+                }
+                // /v1/memory/entries/:id/invalidate (POST) — soft-delete
+                // with a temporal window.  See handle_memory_entry_invalidate.
+                if (segs.size() == 5 && segs[4] == "invalidate") {
+                    int64_t id = 0;
+                    try { id = std::stoll(segs[3]); } catch (...) { id = 0; }
+                    if (id <= 0) {
+                        write_plain_response(fd, 400, "Bad Request", "bad entry id\n");
+                        return;
+                    }
+                    if (req.method != "POST") {
+                        write_plain_response(fd, 405, "Method Not Allowed",
+                                             "method not allowed\n");
+                        return;
+                    }
+                    return handle_memory_entry_invalidate(fd, id, req,
+                                                           tenants_, *tenant);
                 }
                 write_plain_response(fd, 404, "Not Found", "memory route not found\n");
                 return;

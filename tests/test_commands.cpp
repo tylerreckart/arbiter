@@ -266,6 +266,22 @@ TEST_CASE("parse_agent_commands handles /mem add entry as a /endmem-terminated b
         CHECK(cmds[0].content.empty());
         CHECK(cmds[1].content.empty());
     }
+    {
+        // /mem invalidate is single-line.  Prefix collision check: starts
+        // with "/mem add entry"-substring would hijack via the block path
+        // (/mem add entry vs /mem invalidate share length but differ at
+        // byte 5), so this guard pins the parser branch.
+        std::string response =
+            "/mem invalidate 17\n"
+            "/exec ls\n";
+        auto cmds = parse_agent_commands(response);
+        REQUIRE(cmds.size() == 2);
+        CHECK(cmds[0].name == "mem");
+        CHECK(cmds[0].args == "invalidate 17");
+        CHECK(cmds[0].content.empty());
+        CHECK(cmds[0].truncated == false);
+        CHECK(cmds[1].name == "exec");
+    }
 }
 
 TEST_CASE("/mem add entry dispatcher rejects empty body and unclosed block") {
