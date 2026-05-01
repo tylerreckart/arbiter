@@ -63,18 +63,21 @@ Billing fields (caps, plan, MTD, usage entries) live in the external billing ser
 
 ## MemoryEntry
 
-| Field         | Type    | Notes |
-|---------------|---------|-------|
-| `id`          | integer | Stable. |
-| `tenant_id`   | integer | FK. |
-| `type`        | string  | `user` \| `feedback` \| `project` \| `reference` \| `learning` \| `context`. |
-| `title`       | string  | Non-empty, ≤ 200 chars. |
-| `content`     | string  | ≤ 64 KiB. |
-| `source`      | string  | Free-form provenance, ≤ 200 chars. |
-| `tags`        | array<string> | 0..32 tags, each 1–64 chars. |
-| `artifact_id` | int?    | Optional FK to `tenant_artifacts`. `null` when unlinked. |
-| `created_at`  | integer | Epoch seconds. |
-| `updated_at`  | integer | Epoch seconds. |
+| Field             | Type    | Notes |
+|-------------------|---------|-------|
+| `id`              | integer | Stable. |
+| `tenant_id`       | integer | FK. |
+| `type`            | string  | `user` \| `feedback` \| `project` \| `reference` \| `learning` \| `context`. |
+| `title`           | string  | Non-empty, ≤ 200 chars. |
+| `content`         | string  | ≤ 64 KiB. |
+| `source`          | string  | Free-form provenance, ≤ 200 chars. |
+| `tags`            | array<string> | 0..32 tags, each 1–64 chars. |
+| `artifact_id`     | int?    | Optional FK to `tenant_artifacts`. `null` when unlinked. |
+| `conversation_id` | int?    | Optional scope. `null` = unscoped (visible from every conversation). Positive = pinned to one conversation; conversation-local search ranks it above tenant-wide hits. |
+| `valid_from`      | integer | Epoch seconds. When the fact became true. Set automatically on insert (= `created_at`); not editable. |
+| `valid_to`        | int?    | Epoch seconds when the entry was invalidated. `null` while active. Stamped by `POST /v1/memory/entries/:id/invalidate`; once set, the row is hidden from default reads but reachable via `?as_of=<epoch>`. See [Structured memory → Temporal model](structured-memory.md#temporal-model). |
+| `created_at`      | integer | Epoch seconds. |
+| `updated_at`      | integer | Epoch seconds. |
 
 ## MemoryRelation
 

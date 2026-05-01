@@ -4,6 +4,8 @@
 
 Update any subset of `{title, content, source, tags, type, artifact_id}`. `created_at` is immutable; `updated_at` is bumped on a successful change.
 
+**Active rows only.** Invalidated entries (those with a non-null `valid_to`) cannot be modified through this endpoint — historical records are immutable. To correct an invalidated entry, hard-delete it (`DELETE /v1/memory/entries/:id`) and re-create. See [Structured memory → Temporal model](../../concepts/structured-memory.md#temporal-model).
+
 ## Request
 
 | Path param | Type | Description |
@@ -43,9 +45,9 @@ The updated `Entry` (hydrated `artifact` block if linked).
 |--------|------|------|
 | 400    | Invalid JSON; field constraint violated; `artifact_id` doesn't exist for this tenant. | `{"error": "..."}` |
 | 401    | Missing / invalid bearer. | `{"error": "..."}` |
-| 404    | Id not found, or belongs to another tenant. | `{"error": "entry not found"}` |
+| 404    | Id not found, belongs to another tenant, or has been invalidated. | `{"error": "entry not found"}` |
 
 ## See also
 
-- [`DELETE /v1/memory/entries/:id`](delete.md).
+- [`DELETE /v1/memory/entries/:id`](delete.md), [`POST /v1/memory/entries/:id/invalidate`](invalidate.md).
 - [Structured memory](../../concepts/structured-memory.md).
