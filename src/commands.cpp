@@ -328,9 +328,14 @@ static std::string help_for_topic(const std::string& topic) {
             "  /mem entry <id>\n"
             "       Fetch one entry plus its in/out edges.  Neighbour titles inline\n"
             "       so you don't need a follow-up /mem entry per neighbour.\n"
-            "  /mem search <query>\n"
+            "  /mem search <query> [--rerank]\n"
             "       Relevance-ranked search across title, tags, content, source.\n"
             "       Top 3 hits inline a content excerpt; lower hits are one-liners.\n"
+            "       --rerank routes the top-10 candidates through this agent's\n"
+            "       advisor_model for a final reorder — costs one LLM call.  Use\n"
+            "       on ambiguous queries where BM25 alone scored several\n"
+            "       candidates close together; skip on unambiguous lookups.\n"
+            "       Falls back to the FTS order if no advisor_model is configured.\n"
             "  /mem expand <id> [depth=N]\n"
             "       Fetch the subgraph around an entry.  Default depth=1, max 2;\n"
             "       capped at 50 nodes.  Replaces N+1 sequential /mem entry calls\n"
@@ -1758,7 +1763,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                              "the /mem " << subcmd << " step.\n";
                     cache_result = false;
                 } else {
-                    std::string body = structured_memory_reader(subcmd, args);
+                    std::string body = structured_memory_reader(subcmd, args, agent_id);
                     block << body;
                     if (body.empty() || body.back() != '\n') block << "\n";
                     if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)

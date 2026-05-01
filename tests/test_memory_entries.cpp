@@ -17,6 +17,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <set>
 #include <thread>
 
 namespace fs = std::filesystem;
@@ -620,4 +621,125 @@ TEST_CASE("update_entry refuses to mutate invalidated rows") {
     CHECK_FALSE(s.update_entry(tid, e.id,
         /*title=*/std::string("After"),
         std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+}
+
+// ─── Conversation scoping + graduated search ───────────────────────────────
+//
+// Conversation_id pins entries to one conversation; reads filter with an
+// OR-NULL fallback so unscoped (pre-migration / cross-conversation) rows
+// stay visible everywhere.  search_entries_graduated layers a
+// conversation-first ordering on top of FTS5 ranking.
+
+TEST_CASE("conversation_id filter includes unscoped rows (OR-NULL fallback)") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "scope-fallback");
+    auto conv = s.create_conversation(tid, "thread-1", "index", "");
+
+    // One entry pinned to the conversation; one unscoped (pre-migration
+    // analog); one pinned to a *different* conversation.
+    auto pinned = s.create_entry(tid, "project", "scoped fact",
+        "Body of scoped fact.", "", "[]", /*artifact=*/0,
+        /*conversation_id=*/conv.id);
+    auto unscoped = s.create_entry(tid, "project", "global fact",
+        "Body of global fact.", "", "[]", /*artifact=*/0,
+        /*conversation_id=*/0);
+    auto other_conv = s.create_conversation(tid, "thread-2", "index", "");
+    auto other = s.create_entry(tid, "project", "other thread fact",
+        "Body of other thread fact.", "", "[]", /*artifact=*/0,
+        /*conversation_id=*/other_conv.id);
+
+    // Conversation-scoped browse: the pinned and the unscoped row
+    // appear; the other-conversation row is filtered out.
+    {
+        TenantStore::EntryFilter f;
+        f.conversation_id = conv.id;
+        auto rows = s.list_entries(tid, f);
+        REQUIRE(rows.size() == 2);
+        bool saw_pinned   = false;
+        bool saw_unscoped = false;
+        bool saw_other    = false;
+        for (auto& r : rows) {
+            if (r.id == pinned.id)   saw_pinned = true;
+            if (r.id == unscoped.id) saw_unscoped = true;
+            if (r.id == other.id)    saw_other = true;
+        }
+        CHECK(saw_pinned);
+        CHECK(saw_unscoped);
+        CHECK_FALSE(saw_other);
+    }
+
+    // No conversation filter ⇒ all three rows.
+    {
+        TenantStore::EntryFilter f;
+        auto rows = s.list_entries(tid, f);
+        CHECK(rows.size() == 3);
+    }
+}
+
+TEST_CASE("graduated search prefers conversation hits, fills from tenant-wide") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "graduated");
+    auto conv = s.create_conversation(tid, "active", "index", "");
+
+    // Two conversation-pinned hits and two tenant-wide hits all match
+    // the same query word.  Graduated search puts the conversation hits
+    // first regardless of BM25 score against the unscoped peers.
+    auto wide_a = s.create_entry(tid, "project", "raptor flight survey",
+        "Notes on raptor flight patterns.", "", "[]");
+    auto wide_b = s.create_entry(tid, "reference", "raptor field guide",
+        "Reference: raptor identification by silhouette.", "", "[]");
+    auto pinned_a = s.create_entry(tid, "project", "raptor migration",
+        "Pinned: raptor migration corridor analysis.", "", "[]",
+        /*artifact=*/0, conv.id);
+    auto pinned_b = s.create_entry(tid, "learning", "raptor handling",
+        "Pinned: raptor handling protocols.", "", "[]",
+        /*artifact=*/0, conv.id);
+
+    TenantStore::EntryFilter f;
+    f.q               = "raptor";
+    f.conversation_id = conv.id;
+    f.limit           = 10;
+
+    auto rows = s.search_entries_graduated(tid, f);
+    REQUIRE(rows.size() == 4);
+
+    // First two slots must be the conversation-pinned rows (locality
+    // bias).  Order between the two pinned rows depends on BM25; we
+    // don't pin a specific permutation, only the first-2 / last-2 split.
+    auto is_pinned = [&](int64_t id) {
+        return id == pinned_a.id || id == pinned_b.id;
+    };
+    CHECK(is_pinned(rows[0].id));
+    CHECK(is_pinned(rows[1].id));
+    CHECK_FALSE(is_pinned(rows[2].id));
+    CHECK_FALSE(is_pinned(rows[3].id));
+
+    // No duplicates — pinned rows surface in pass 1 (with OR-NULL
+    // fallback they'd reappear in pass 2 too if dedup were broken).
+    std::set<int64_t> seen;
+    for (auto& r : rows) seen.insert(r.id);
+    CHECK(seen.size() == rows.size());
+}
+
+TEST_CASE("graduated search collapses to single-pass when no conversation context") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "no-context");
+
+    auto a = s.create_entry(tid, "project", "alpha entry",
+        "alpha alpha alpha.", "", "[]");
+    auto b = s.create_entry(tid, "project", "beta entry",
+        "alpha mention.", "", "[]");
+    (void)a; (void)b;
+
+    TenantStore::EntryFilter f;
+    f.q = "alpha";
+    // f.conversation_id stays 0 → single tenant-wide pass.
+    auto rows = s.search_entries_graduated(tid, f);
+    CHECK(rows.size() == 2);
 }

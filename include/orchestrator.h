@@ -259,6 +259,18 @@ public:
     // exec thread is blocked in a streaming read.
     void cancel();
 
+    // Build an AdvisorInvoker bound to a specific caller.  Returns a lambda
+    // that makes a one-shot, history-less call against the caller's
+    // configured advisor_model (from the caller's Constitution).  If the
+    // caller has no advisor_model set, the returned lambda returns an
+    // ERR string explaining the misconfiguration.
+    //
+    // Public so external callers (e.g. the api_server's structured-memory
+    // reader using this for `/mem search --rerank`) can issue advisor
+    // calls scoped to the calling agent without going through a slash
+    // command.  Cost attribution still flows through cost_cb_.
+    AdvisorInvoker make_advisor_invoker(const std::string& caller_id);
+
 private:
     ApiClient client_;
     std::unordered_map<std::string, std::unique_ptr<Agent>> agents_;
@@ -330,13 +342,6 @@ private:
     // the calling turn until every child completes.
     ParallelInvoker make_parallel_invoker(const std::string& caller_id, int depth,
                                           const std::string& original_query);
-
-    // Build an AdvisorInvoker bound to a specific caller.  Returns a lambda
-    // that makes a one-shot, history-less call against the caller's
-    // configured advisor_model (from the caller's Constitution).  If the
-    // caller has no advisor_model set, the returned lambda returns an
-    // ERR string explaining the misconfiguration.
-    AdvisorInvoker make_advisor_invoker(const std::string& caller_id);
 
     // Truncation recovery.  If `cmds` contains an unclosed /write block
     // (body ended before /endwrite, typically because the model stopped

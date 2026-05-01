@@ -376,6 +376,14 @@ void TenantStore::open(const std::string& path) {
     // a fact-no-longer-true semantic alongside.
     add_entries_col("valid_from", "INTEGER");
     add_entries_col("valid_to",   "INTEGER");
+    // Optional conversation scope.  NULL means "unscoped — available from
+    // any conversation" so old rows that pre-date the column stay
+    // discoverable across all reads.  Positive values pin the entry to
+    // a specific conversation, e.g. a /mem add entry made during turn N
+    // gets that turn's conversation_id; reads run conversation-scoped
+    // first via search_entries_graduated and broaden if not enough hits
+    // come back.
+    add_entries_col("conversation_id", "INTEGER");
     // Backfill `valid_from` for rows that pre-date the migration.  No-op
     // on subsequent opens (create_entry sets the column explicitly).
     exec_sql(db_,
@@ -388,6 +396,13 @@ void TenantStore::open(const std::string& path) {
     exec_sql(db_, R"SQL(
         CREATE INDEX IF NOT EXISTS memory_entries_tenant_active
             ON memory_entries(tenant_id, updated_at DESC)
+            WHERE valid_to IS NULL;
+    )SQL");
+    // Conversation-scoped reads use this index.  Same partial filter as
+    // above so the index stays small — invalidated rows aren't indexed.
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS memory_entries_tenant_conv_active
+            ON memory_entries(tenant_id, conversation_id, updated_at DESC)
             WHERE valid_to IS NULL;
     )SQL");
 
@@ -938,7 +953,8 @@ namespace {
 // review step.  We just stop selecting / filtering on it.
 constexpr const char* kEntryCols =
     "id, tenant_id, type, title, content, source, tags, "
-    "artifact_id, created_at, updated_at, valid_from, valid_to";
+    "artifact_id, created_at, updated_at, valid_from, valid_to, "
+    "conversation_id";
 
 MemoryEntry row_to_entry(Stmt& q) {
     MemoryEntry e;
@@ -957,8 +973,10 @@ MemoryEntry row_to_entry(Stmt& q) {
     // valid_from is always set on insert (no NULL).  valid_to is NULL
     // for active rows; column_int64 maps NULL → 0, matching the
     // "0 = active" convention in MemoryEntry.
-    e.valid_from  = q.column_int64(10);
-    e.valid_to    = q.column_int64(11);
+    e.valid_from       = q.column_int64(10);
+    e.valid_to         = q.column_int64(11);
+    // conversation_id NULL → 0 (unscoped).
+    e.conversation_id  = q.column_int64(12);
     return e;
 }
 
@@ -984,7 +1002,8 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
                                        const std::string& content,
                                        const std::string& source,
                                        const std::string& tags_json,
-                                       int64_t artifact_id) {
+                                       int64_t artifact_id,
+                                       int64_t conversation_id) {
     if (!db_) throw std::runtime_error("TenantStore not opened");
 
     const int64_t now = now_epoch();
@@ -992,11 +1011,16 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
     // 'accepted' from the legacy schema, which is what we want now that
     // proposals are gone.  `valid_from` is set explicitly to make the
     // column non-NULL on insert; `valid_to` stays NULL (active row).
+    // `conversation_id` is NULL when the caller passes 0 — keeps the
+    // column sparse for entries created outside a conversation context
+    // (HTTP admin imports, scripted seeds, the historical case where
+    // the column didn't exist).
     Stmt q(db_,
         "INSERT INTO memory_entries "
         "(tenant_id, type, title, content, source, tags, "
-        " artifact_id, created_at, updated_at, valid_from) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
+        " artifact_id, created_at, updated_at, valid_from, "
+        " conversation_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
     q.bind(1, tenant_id);
     q.bind(2, type);
     q.bind(3, title);
@@ -1010,22 +1034,25 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
     q.bind(8, now);
     q.bind(9, now);
     q.bind(10, now);
+    if (conversation_id > 0) q.bind(11, conversation_id);
+    else                      sqlite3_bind_null(q.raw(), 11);
     int rc = q.step();
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert memory_entry");
 
     MemoryEntry e;
-    e.id          = sqlite3_last_insert_rowid(db_);
-    e.tenant_id   = tenant_id;
-    e.type        = type;
-    e.title       = title;
-    e.content     = content;
-    e.source      = source;
-    e.tags_json   = tags_json.empty() ? "[]" : tags_json;
-    e.artifact_id = artifact_id;
-    e.created_at  = now;
-    e.updated_at  = now;
-    e.valid_from  = now;
-    e.valid_to    = 0;          // active
+    e.id              = sqlite3_last_insert_rowid(db_);
+    e.tenant_id       = tenant_id;
+    e.type            = type;
+    e.title           = title;
+    e.content         = content;
+    e.source          = source;
+    e.tags_json       = tags_json.empty() ? "[]" : tags_json;
+    e.artifact_id     = artifact_id;
+    e.created_at      = now;
+    e.updated_at      = now;
+    e.valid_from      = now;
+    e.valid_to        = 0;          // active
+    e.conversation_id = conversation_id;
     return e;
 }
 
@@ -1087,7 +1114,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         constexpr const char* kEntryColsPrefixed =
             "e.id, e.tenant_id, e.type, e.title, e.content, e.source, "
             "e.tags, e.artifact_id, e.created_at, e.updated_at, "
-            "e.valid_from, e.valid_to";
+            "e.valid_from, e.valid_to, e.conversation_id";
 
         std::string sql =
             std::string("SELECT ") + kEntryColsPrefixed + ", "
@@ -1116,6 +1143,13 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         } else {
             sql += " AND e.valid_to IS NULL";
         }
+        if (f.conversation_id > 0) {
+            // OR-NULL fallback: rows pinned to this conversation OR rows
+            // that are unscoped stay reachable.  Pre-migration entries
+            // (NULL conversation_id) are visible from every conversation.
+            sql += " AND (e.conversation_id = ? "
+                   "      OR e.conversation_id IS NULL)";
+        }
         if (f.since > 0)             sql += " AND e.created_at >= ?";
         if (f.before_updated_at > 0) sql += " AND e.updated_at < ?";
         sql += " ORDER BY score ASC LIMIT ?;";
@@ -1136,6 +1170,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
             q.bind(idx++, f.as_of);
             q.bind(idx++, f.as_of);
         }
+        if (f.conversation_id > 0) q.bind(idx++, f.conversation_id);
         if (f.since > 0)             q.bind(idx++, f.since);
         if (f.before_updated_at > 0) q.bind(idx++, f.before_updated_at);
         q.bind(idx, static_cast<int64_t>(cap));
@@ -1165,6 +1200,9 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
     } else {
         sql += " AND valid_to IS NULL";
     }
+    if (f.conversation_id > 0) {
+        sql += " AND (conversation_id = ? OR conversation_id IS NULL)";
+    }
     if (f.since > 0)             sql += " AND created_at >= ?";
     if (f.before_updated_at > 0) sql += " AND updated_at < ?";
     sql += " ORDER BY updated_at DESC LIMIT ?;";
@@ -1182,12 +1220,56 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         q.bind(idx++, f.as_of);
         q.bind(idx++, f.as_of);
     }
+    if (f.conversation_id > 0) q.bind(idx++, f.conversation_id);
     if (f.since > 0)             q.bind(idx++, f.since);
     if (f.before_updated_at > 0) q.bind(idx++, f.before_updated_at);
     q.bind(idx, static_cast<int64_t>(cap));
 
     while (q.step() == SQLITE_ROW) out.push_back(row_to_entry(q));
     return out;
+}
+
+std::vector<MemoryEntry>
+TenantStore::search_entries_graduated(int64_t tenant_id,
+                                       const EntryFilter& f) const {
+    // Empty FTS query: nothing to rank, return empty.  Caller wanting a
+    // browse should use list_entries directly.
+    if (f.q.empty()) return {};
+
+    const int cap = (f.limit > 0 && f.limit <= 200) ? f.limit : 50;
+
+    // No conversation context ⇒ collapse to a single tenant-wide query.
+    if (f.conversation_id <= 0) {
+        return list_entries(tenant_id, f);
+    }
+
+    // Pass 1: conversation-scoped (rows pinned here OR unscoped — see
+    // EntryFilter::conversation_id).  Locality-biased — these come first
+    // in the merged result.
+    std::vector<MemoryEntry> hits = list_entries(tenant_id, f);
+    if (static_cast<int>(hits.size()) >= cap) return hits;
+
+    // Pass 2: tenant-wide.  Drop the conversation filter and re-run.
+    EntryFilter wide = f;
+    wide.conversation_id = 0;
+    wide.limit = cap;
+    auto wide_hits = list_entries(tenant_id, wide);
+
+    // Dedupe by id, preserving conversation hits' order.  Cheap because
+    // both lists are bounded by `cap` (default 50).
+    std::vector<MemoryEntry> merged = std::move(hits);
+    merged.reserve(static_cast<size_t>(cap));
+    for (auto& e : wide_hits) {
+        bool seen = false;
+        for (auto& m : merged) {
+            if (m.id == e.id) { seen = true; break; }
+        }
+        if (!seen) {
+            merged.push_back(std::move(e));
+            if (static_cast<int>(merged.size()) >= cap) break;
+        }
+    }
+    return merged;
 }
 
 bool TenantStore::update_entry(int64_t tenant_id, int64_t id,

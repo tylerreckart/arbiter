@@ -282,6 +282,21 @@ TEST_CASE("parse_agent_commands handles /mem add entry as a /endmem-terminated b
         CHECK(cmds[0].truncated == false);
         CHECK(cmds[1].name == "exec");
     }
+    {
+        // /mem search --rerank is still single-line.  The flag travels
+        // through `cmd.args` verbatim and is parsed by the dispatcher
+        // (api_server's reader callback), not by parse_agent_commands.
+        std::string response =
+            "/mem search auth flow --rerank\n"
+            "/exec ls\n";
+        auto cmds = parse_agent_commands(response);
+        REQUIRE(cmds.size() == 2);
+        CHECK(cmds[0].name == "mem");
+        CHECK(cmds[0].args == "search auth flow --rerank");
+        CHECK(cmds[0].content.empty());
+        CHECK(cmds[0].truncated == false);
+        CHECK(cmds[1].name == "exec");
+    }
 }
 
 TEST_CASE("/mem add entry dispatcher rejects empty body and unclosed block") {

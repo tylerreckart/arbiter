@@ -111,14 +111,20 @@ using WriteInterceptor = std::function<std::string(const std::string& path,
 // turn.  When set, the slash-command dispatcher exposes:
 //   /mem entries [type[,type...]]   — list entries (optional comma-sep type filter)
 //   /mem entry <id>                 — one entry's full content + its edges
-//   /mem search <query>             — substring match on title + content
-// The callback receives the subcommand kind ("entries" | "entry" | "search")
-// and the rest of the line, and returns the pre-formatted body that goes
-// into the [/mem ...] tool-result block (without the [/mem ...] header).
+//   /mem search <query> [--rerank]  — FTS5 + BM25 ranking; --rerank routes
+//                                     the top-N candidates through the
+//                                     calling agent's advisor_model for a
+//                                     final reorder
+// The callback receives the subcommand kind ("entries" | "entry" | "search"
+// | "expand" | "density"), the rest of the line, and the calling agent's
+// id (used by --rerank to look up that agent's advisor_model).  It returns
+// the pre-formatted body that goes into the [/mem ...] tool-result block
+// (without the [/mem ...] header).
 // Reads only — see StructuredMemoryWriter for the write half.  Without this
 // callback wired, the dispatcher returns ERR so the agent adapts.
 using StructuredMemoryReader = std::function<std::string(const std::string& kind,
-                                                          const std::string& args)>;
+                                                          const std::string& args,
+                                                          const std::string& caller_id)>;
 
 // Write window for agent-contributed entries and links.  When set, the
 // dispatcher exposes:

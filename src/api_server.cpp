@@ -1782,6 +1782,14 @@ std::shared_ptr<JsonValue> memory_entry_to_json(const MemoryEntry& e) {
     m["valid_from"] = jnum(static_cast<double>(e.valid_from));
     if (e.valid_to > 0) m["valid_to"] = jnum(static_cast<double>(e.valid_to));
     else                m["valid_to"] = jnull();
+    // Optional conversation scope.  null means "unscoped — visible from
+    // any conversation"; a positive id means the entry was created in
+    // that conversation's context and ranks higher under graduated
+    // search there.
+    if (e.conversation_id > 0)
+        m["conversation_id"] = jnum(static_cast<double>(e.conversation_id));
+    else
+        m["conversation_id"] = jnull();
     return o;
 }
 
@@ -1872,8 +1880,23 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
         }
     }
 
+    // Optional conversation scope.  Validated tenant-side so a foreign
+    // tenant's conversation id can't be smuggled in.  Pass 0 to leave
+    // the entry unscoped (visible from every conversation).
+    int64_t conversation_id = 0;
+    if (auto v = body->get("conversation_id"); v && v->is_number()) {
+        conversation_id = static_cast<int64_t>(v->as_number());
+        if (conversation_id < 0)
+            return write_memory_error(fd, 400, "conversation_id must be ≥ 0");
+        if (conversation_id > 0 &&
+            !tenants.get_conversation(tenant.id, conversation_id)) {
+            return write_memory_error(fd, 400,
+                "conversation_id does not exist for this tenant");
+        }
+    }
+
     auto e = tenants.create_entry(tenant.id, type, title, content, source,
-                                    *tags, artifact_id);
+                                    *tags, artifact_id, conversation_id);
     write_json_response(fd, 201, memory_entry_to_json_hydrated(e, tenants));
 }
 
@@ -1919,8 +1942,29 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     // includes invalidated rows whose validity window covers that
     // moment.  Default 0 ⇒ "now", which means "active rows only".
     f.as_of             = get_int("as_of");
+    // `conversation_id=<id>` scopes results to one conversation, with
+    // an OR-NULL fallback so unscoped entries stay reachable.  Stripped
+    // here if it doesn't belong to this tenant — silent drop rather
+    // than 400 because it's a hint, not a hard constraint.
+    f.conversation_id   = get_int("conversation_id");
+    if (f.conversation_id > 0 &&
+        !tenants.get_conversation(tenant.id, f.conversation_id)) {
+        f.conversation_id = 0;
+    }
+    // `graduated=true` (only meaningful with q + conversation_id) runs
+    // search_entries_graduated: tries conversation-scoped first, fills
+    // out from tenant-wide if fewer than `limit` hits.  Without it the
+    // single-pass list_entries semantic applies.
+    const std::string graduated = get_str("graduated");
+    const bool use_graduated = !graduated.empty() &&
+                               graduated != "0" &&
+                               graduated != "false" &&
+                               !f.q.empty() &&
+                               f.conversation_id > 0;
 
-    auto entries = tenants.list_entries(tenant.id, f);
+    auto entries = use_graduated
+        ? tenants.search_entries_graduated(tenant.id, f)
+        : tenants.list_entries(tenant.id, f);
     auto arr = jarr();
     auto& a = arr->as_array_mut();
     for (auto& e : entries) a.push_back(memory_entry_to_json(e));
@@ -3014,8 +3058,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // therefore cross-conversation by definition.
     const int64_t reader_conversation_id = conversation_id;
     orch->set_structured_memory_reader(
-        [&tenants, reader_tenant_id, reader_conversation_id]
-        (const std::string& kind, const std::string& args) -> std::string {
+        [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
+        (const std::string& kind, const std::string& args,
+         const std::string& caller_id) -> std::string {
             // Helper formatters reused across kinds.
             auto fmt_tags = [](const std::string& tags_json) -> std::string {
                 try {
@@ -3200,106 +3245,199 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             }
 
             if (kind == "search") {
-                // Multi-field substring search with rough relevance
-                // ranking.  Title hits weight heaviest, then tags, content,
-                // source.  Multi-word queries score by sum-of-per-term
-                // hits so "more terms matched" outranks "one long
-                // substring matches".  The top 3 by score get their
-                // content excerpted inline so a single /mem search call
-                // resolves into something the agent can actually read.
+                // FTS5 + Okapi-BM25 ranking via TenantStore.  When the
+                // request is part of a conversation, search runs through
+                // search_entries_graduated: conversation-scoped hits
+                // come first (locality bias), tenant-wide hits fill out
+                // the page if conversation-scoped didn't reach the cap.
+                // Top 3 by rank get their content excerpted inline so a
+                // single /mem search resolves into something the agent
+                // can actually read without follow-up /mem entry calls.
+                //
+                // Optional `--rerank` flag routes the top-10 candidates
+                // through the calling agent's advisor_model for a final
+                // reorder.  Costs one LLM call; only worth it on
+                // ambiguous queries where BM25 produces close-scored
+                // candidates that need semantic disambiguation.
+
+                // Strip --rerank from anywhere in the args; remaining
+                // text is the query.  Multiple instances are tolerated
+                // (rare, but someone'll do it).
                 std::string q = args;
+                bool rerank = false;
+                {
+                    const std::string flag = "--rerank";
+                    size_t p;
+                    while ((p = q.find(flag)) != std::string::npos) {
+                        rerank = true;
+                        size_t end = p + flag.size();
+                        // Eat one trailing space so we don't leave a
+                        // double-space in the middle.
+                        if (end < q.size() && q[end] == ' ') ++end;
+                        size_t begin = p;
+                        if (begin > 0 && q[begin - 1] == ' ') --begin;
+                        q.erase(begin, end - begin);
+                    }
+                }
                 while (!q.empty() && q.front() == ' ') q.erase(0, 1);
                 while (!q.empty() && q.back()  == ' ') q.pop_back();
-                if (q.empty()) return "ERR: usage: /mem search <query>";
+                if (q.empty()) return "ERR: usage: /mem search <query> [--rerank]";
 
-                auto terms = split_terms(q);
-                if (terms.empty()) terms.push_back(q);
-
-                // Pull the full accepted-entries window (capped at 200 by
-                // EntryFilter; tenants past that should add pagination
-                // here, but for v1 the rank-in-memory approach is plenty).
                 TenantStore::EntryFilter f;
-                f.limit  = 200;
-                auto entries = tenants.list_entries(reader_tenant_id, f);
+                f.q               = q;
+                f.conversation_id = reader_conversation_id;
+                // 10 for rerank (small enough for the advisor prompt),
+                // 50 otherwise (the renderer shows up to 50 lines).
+                f.limit           = rerank ? 10 : 50;
 
-                struct Scored {
-                    MemoryEntry entry;
-                    int score;
-                    int title_hits;
-                    int tag_hits;
-                    int content_hits;
-                    int source_hits;
-                };
-                std::vector<Scored> scored;
-                for (auto& e : entries) {
-                    int title_hits = 0, tag_hits = 0;
-                    int content_hits = 0, source_hits = 0;
-                    for (auto& t : terms) {
-                        title_hits   += ci_count(e.title,     t);
-                        tag_hits     += ci_count(e.tags_json, t);
-                        content_hits += ci_count(e.content,   t);
-                        source_hits  += ci_count(e.source,    t);
-                    }
-                    if (title_hits + tag_hits + content_hits + source_hits == 0) continue;
-                    int score = title_hits   * 100
-                              + tag_hits     *  60
-                              + content_hits *  20
-                              + source_hits  *  10;
-                    scored.push_back({e, score, title_hits, tag_hits,
-                                       content_hits, source_hits});
+                auto entries = (reader_conversation_id > 0)
+                    ? tenants.search_entries_graduated(reader_tenant_id, f)
+                    : tenants.list_entries(reader_tenant_id, f);
+
+                if (entries.empty()) {
+                    return "(no entries match '" + q + "')";
                 }
-                if (scored.empty()) return "(no entries match '" + q + "')";
 
-                // Sort by score DESC, then updated_at DESC as tie-break.
-                std::sort(scored.begin(), scored.end(),
-                          [](const Scored& a, const Scored& b) {
-                              if (a.score != b.score) return a.score > b.score;
-                              return a.entry.updated_at > b.entry.updated_at;
-                          });
+                std::string rerank_note;
+                if (rerank && entries.size() > 1) {
+                    // Build a structured prompt asking for comma-separated
+                    // ids.  Excerpt each candidate's content to ~200 bytes
+                    // so the prompt stays well under typical advisor
+                    // context budgets even with 10 candidates.
+                    std::ostringstream prompt;
+                    prompt << "Rerank these search results by relevance to "
+                           << "the query.\n\n"
+                           << "Query: \"" << q << "\"\n\n"
+                           << "Candidates:\n";
+                    for (auto& e : entries) {
+                        prompt << "[id=" << e.id << "] " << e.title << "\n";
+                        if (!e.content.empty()) {
+                            std::string excerpt = e.content;
+                            if (excerpt.size() > 200) {
+                                excerpt.resize(200);
+                                excerpt += "...";
+                            }
+                            for (auto& c : excerpt) if (c == '\n') c = ' ';
+                            prompt << "  " << excerpt << "\n";
+                        }
+                    }
+                    prompt << "\nReturn ONLY the ids of the top 3 most "
+                           << "relevant, comma-separated, in order of "
+                           << "relevance.  Example: 17,42,23";
+
+                    auto advisor = orch_ptr->make_advisor_invoker(caller_id);
+                    std::string resp = advisor(prompt.str());
+
+                    if (resp.size() >= 4 && resp.compare(0, 4, "ERR:") == 0) {
+                        // Advisor unavailable / errored — keep the FTS
+                        // order, surface the reason so the agent can
+                        // adapt (drop --rerank, configure advisor_model,
+                        // retry without).
+                        rerank_note = "(rerank requested but advisor "
+                                      "unavailable:" + resp.substr(4) +
+                                      " — falling back to FTS order)\n";
+                    } else {
+                        // Parse digit-runs out of the response.  Lenient
+                        // by design: model output is usually clean
+                        // ("17,42,23") but may include quotes, prefix
+                        // ("Result:"), or trailing prose — extract the
+                        // ids regardless.  Only ids in the candidate
+                        // set count; duplicates dropped.
+                        std::vector<int64_t> picked;
+                        int64_t accum = 0;
+                        bool in_num = false;
+                        auto flush = [&]() {
+                            if (!in_num) return;
+                            for (auto& e : entries) {
+                                if (e.id == accum) {
+                                    bool seen = false;
+                                    for (auto p2 : picked)
+                                        if (p2 == accum) { seen = true; break; }
+                                    if (!seen) picked.push_back(accum);
+                                    break;
+                                }
+                            }
+                            accum = 0;
+                            in_num = false;
+                        };
+                        for (char c : resp) {
+                            if (c >= '0' && c <= '9') {
+                                accum = accum * 10 + (c - '0');
+                                in_num = true;
+                            } else {
+                                flush();
+                            }
+                        }
+                        flush();
+
+                        if (picked.empty()) {
+                            rerank_note = "(rerank produced no parseable "
+                                          "ids — falling back to FTS order)\n";
+                        } else {
+                            // Reorder: picked ids first (in advisor
+                            // order), then everything else in original
+                            // FTS order.
+                            std::vector<MemoryEntry> reordered;
+                            reordered.reserve(entries.size());
+                            for (auto pid : picked) {
+                                for (auto& e : entries) {
+                                    if (e.id == pid) {
+                                        reordered.push_back(e);
+                                        break;
+                                    }
+                                }
+                            }
+                            for (auto& e : entries) {
+                                bool already = false;
+                                for (auto& r : reordered)
+                                    if (r.id == e.id) { already = true; break; }
+                                if (!already) reordered.push_back(e);
+                            }
+                            entries = std::move(reordered);
+                            rerank_note = "(reranked by advisor model)\n";
+                        }
+                    }
+                }
 
                 std::ostringstream out;
-                out << scored.size() << " match" << (scored.size() == 1 ? "" : "es")
+                if (!rerank_note.empty()) out << rerank_note;
+                out << entries.size() << " match"
+                    << (entries.size() == 1 ? "" : "es")
                     << " for '" << q << "' (top by relevance):\n";
 
-                // Top 3 get inline content excerpts so the agent can read
-                // them without a follow-up /mem entry call.
-                static constexpr int kInlineTopN = 3;
+                static constexpr size_t kInlineTopN  = 3;
                 static constexpr size_t kExcerptBytes = 480;
-                const size_t shown = std::min<size_t>(scored.size(), 50);
-                for (size_t i = 0; i < shown; ++i) {
-                    const auto& s = scored[i];
-                    out << fmt_entry_line(s.entry);
-                    out << "  [score=" << s.score
-                        << " title=" << s.title_hits
-                        << " tag="   << s.tag_hits
-                        << " content=" << s.content_hits;
-                    if (s.source_hits) out << " source=" << s.source_hits;
-                    out << "]\n";
-                    if (i < kInlineTopN && !s.entry.content.empty()) {
-                        std::string excerpt = s.entry.content;
+                for (size_t i = 0; i < entries.size(); ++i) {
+                    const auto& e = entries[i];
+                    out << fmt_entry_line(e);
+                    // Mark conversation-scoped hits so the agent can tell
+                    // local context from broader tenant memory at a glance.
+                    if (reader_conversation_id > 0 &&
+                        e.conversation_id == reader_conversation_id) {
+                        out << "  [conversation]";
+                    }
+                    out << "\n";
+                    if (i < kInlineTopN && !e.content.empty()) {
+                        std::string excerpt = e.content;
                         if (excerpt.size() > kExcerptBytes) {
                             excerpt.resize(kExcerptBytes);
                             excerpt += " ...";
                         }
-                        // Indent each line so the excerpt visually nests
-                        // under the bullet.
                         std::ostringstream indented;
                         size_t start = 0;
                         while (start < excerpt.size()) {
                             size_t nl = excerpt.find('\n', start);
                             indented << "    | "
                                      << excerpt.substr(start,
-                                          nl == std::string::npos ? std::string::npos
-                                                                   : nl - start)
+                                          nl == std::string::npos
+                                              ? std::string::npos
+                                              : nl - start)
                                      << "\n";
                             if (nl == std::string::npos) break;
                             start = nl + 1;
                         }
                         out << indented.str();
                     }
-                }
-                if (scored.size() > shown) {
-                    out << "(... " << (scored.size() - shown) << " more lower-ranked)\n";
                 }
                 return out.str();
             }
@@ -3509,9 +3647,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // the request reaches us, so by the time we see it we can trust the
     // body is meaningful synthesised text.
     orch->set_structured_memory_writer(
-        [&tenants, reader_tenant_id](const std::string& kind,
-                                      const std::string& args,
-                                      const std::string& body) -> std::string {
+        [&tenants, reader_tenant_id, reader_conversation_id]
+        (const std::string& kind,
+         const std::string& args,
+         const std::string& body) -> std::string {
             // Trim leading/trailing whitespace from a token.
             auto trim = [](std::string s) {
                 while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
@@ -3593,10 +3732,15 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                            "store holds long-form output via /write --persist";
                 }
 
+                // Pin the entry to the active conversation when one is
+                // present.  Without that link, /mem add entry inside a
+                // conversation produces tenant-wide entries that don't
+                // bias the conversation-scoped /mem search ranking.
                 auto e = tenants.create_entry(reader_tenant_id, type, title,
                                                content, /*source=*/"agent",
                                                /*tags_json=*/"[]",
-                                               artifact_id);
+                                               artifact_id,
+                                               reader_conversation_id);
                 std::ostringstream out;
                 out << "OK: added entry #" << e.id << " [" << e.type << "] "
                     << e.title;

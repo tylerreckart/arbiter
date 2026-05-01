@@ -202,6 +202,12 @@ struct MemoryEntry {
     // Storage exposes invalidated rows only via `EntryFilter::as_of`.
     int64_t     valid_from  = 0;
     int64_t     valid_to    = 0;
+    // Optional conversation scope.  0 (NULL on disk) means "unscoped —
+    // visible from any conversation".  Positive values pin the entry to
+    // one conversation; conversation-scoped reads return rows that
+    // either match or are unscoped (the OR-NULL fallback keeps old rows
+    // discoverable everywhere).
+    int64_t     conversation_id = 0;
 };
 
 // One row from the memory_relations table.  Relations are directed and
@@ -433,13 +439,19 @@ public:
     // optional FK to a tenant_artifacts row — caller is responsible for
     // verifying the artifact belongs to this tenant (use get_artifact_meta)
     // before passing the id in.  Pass 0 for "no artifact".
+    // `conversation_id` ties an entry to one conversation for graduated
+    // search.  Pass 0 to leave it unscoped (visible from every
+    // conversation).  Positive values are not validated against the
+    // conversations table here — caller should ensure the conversation
+    // belongs to this tenant before passing the id in.
     MemoryEntry create_entry(int64_t tenant_id,
                               const std::string& type,
                               const std::string& title,
                               const std::string& content,
                               const std::string& source,
                               const std::string& tags_json,
-                              int64_t artifact_id = 0);
+                              int64_t artifact_id     = 0,
+                              int64_t conversation_id = 0);
 
     std::optional<MemoryEntry> get_entry(int64_t tenant_id, int64_t id) const;
 
@@ -466,9 +478,24 @@ public:
         // (valid_to IS NULL OR valid_to > as_of)`.  Use to reconstruct
         // what an agent's memory looked like at a past moment.
         int64_t                  as_of                 = 0;
+        // Conversation scope.  0 = no filter (tenant-wide).  Positive =
+        // include rows pinned to this conversation OR rows that are
+        // unscoped (`conversation_id IS NULL`); the OR-NULL fallback
+        // keeps pre-migration entries visible everywhere.
+        int64_t                  conversation_id       = 0;
     };
     std::vector<MemoryEntry> list_entries(int64_t tenant_id,
                                            const EntryFilter& f) const;
+
+    // Graduated FTS search.  Runs the conversation-scoped query first;
+    // if that returns fewer than `f.limit` results, retries tenant-wide
+    // and merges — conversation hits ordered first (locality bias),
+    // tenant-wide hits filling out the page without duplicates.  When
+    // `f.conversation_id == 0` this collapses to a single tenant-wide
+    // query (same as list_entries).  Caller passes the FTS query in
+    // `f.q`; an empty query returns an empty vector (nothing to rank).
+    std::vector<MemoryEntry>
+    search_entries_graduated(int64_t tenant_id, const EntryFilter& f) const;
 
     // PATCH-style: any std::nullopt argument leaves the field untouched.
     // Bumps updated_at on a successful change.  Returns false if the entry
