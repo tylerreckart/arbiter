@@ -12,14 +12,13 @@ we're measuring.
 
 ## What this measures
 
-Two retrieval variants today; rerank is a TODO until the HTTP surface
-exists for it:
+Three retrieval variants:
 
 | Variant       | What gets exercised |
 |---------------|---------------------|
 | `bm25`        | `GET /v1/memory/entries?q=…` — single-pass FTS5 + Okapi-BM25 ranking, no scope hint. Pure lexical baseline. |
 | `graduated`   | `GET /v1/memory/entries?q=…&conversation_id=<session>&graduated=true` — conversation-scoped first pass, tenant-wide fill. Locality-bias contribution. |
-| `rerank`      | *(not wired to HTTP yet — see open issues)* |
+| `rerank`      | `GET /v1/memory/entries?q=…&conversation_id=<session>&graduated=true&rerank=<model>` — graduated retrieval, then the top-N candidates routed through `<model>` for a final reorder. Opt-in via `--rerank-model`; costs one LLM call per question. |
 
 Each variant reports **R@1**, **R@5**, **R@10** — the fraction of
 questions whose ground-truth entry appears in the top K of the result
@@ -53,6 +52,14 @@ python3 ingest.py \
 python3 query.py \
     --token "$ARBITER_TOKEN" \
     --manifest /tmp/manifest.json
+
+# Optional: also run the rerank variant.  Requires the API server to
+# have an API key for the model's provider (ANTHROPIC_API_KEY or
+# OPENAI_API_KEY in the environment that started arbiter --api).
+python3 query.py \
+    --token "$ARBITER_TOKEN" \
+    --manifest /tmp/manifest.json \
+    --rerank-model claude-haiku-4-5
 
 kill $APIPID
 ```
@@ -170,9 +177,6 @@ ingestion pipeline.
 
 ## Open issues / follow-ups
 
-- **Rerank variant** — needs an HTTP surface (`?rerank=<model>` or a
-  dedicated reranker endpoint) so the harness can measure E without
-  driving `/v1/orchestrate` end-to-end. Plumbing-only addition.
 - **`--ingest-mode=classify`** — turn-level type classification via an
   LLM, for a more agent-realistic comparison.
 - **Per-question latency** — currently we report aggregate R@K only;
@@ -181,3 +185,10 @@ ingestion pipeline.
 - **Concurrency** — ingest is sequential. A `--concurrency=N` flag on
   the ingester would speed up ingestion of the full 500-question
   dataset.
+- **Rerank billing integration** — the HTTP rerank path uses a
+  per-request `ApiClient` with the operator's API keys but does not
+  pre-flight against `ARBITER_BILLING_URL` or post `usage/record`.
+  Agent-side `/mem search --rerank` does flow through the
+  orchestrator's billing because it's part of an orchestrate request.
+  If commercial deployments want HTTP-rerank to count against tenant
+  budgets, we'd thread the billing client into the rerank handler.

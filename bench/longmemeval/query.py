@@ -204,6 +204,13 @@ def main() -> int:
             conversation_id=True, graduated=True,
         ),
     ]
+    if args.rerank_model:
+        results.append(run_variant(
+            "rerank",
+            args.api, args.token, questions,
+            conversation_id=True, graduated=True,
+            rerank_model=args.rerank_model,
+        ))
 
     print_report(results)
 
