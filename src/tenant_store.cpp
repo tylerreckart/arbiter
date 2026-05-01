@@ -33,10 +33,17 @@ int64_t now_epoch() {
 
 // Convert a free-form user query into a safe FTS5 expression.  Tokenises
 // on whitespace, quotes each token to neutralise FTS5 operator
-// characters (-, +, *, ^, :, parens), and joins tokens with spaces so
-// FTS5's implicit-AND semantics apply (every token must appear).
-// Returns an empty string when the input has no non-whitespace content
-// — caller should treat that as "no filter".
+// characters (-, +, *, ^, :, parens), and joins tokens with `OR` so a
+// row matches when *any* token is present and BM25 ranking sorts by
+// term frequency / IDF.  Returns an empty string when the input has
+// no non-whitespace content — caller should treat that as "no filter".
+//
+// OR-rather-than-AND matches how natural-language queries are scored
+// in conventional search engines: a question like "What origin of
+// coffee does the user prefer?" should return rows about *coffee* and
+// *origin* even when no single row mentions every word.  Implicit-AND
+// would force every token to appear, which kills recall on
+// question-style queries that include filler words.
 //
 // Quoting still goes through the Porter tokenizer at match time, so a
 // query for "deploys" still matches a document containing "deployment".
@@ -60,7 +67,7 @@ std::string fts5_escape(const std::string& q) {
             else          esc += c;
         }
         esc += '"';
-        if (!out.empty()) out += ' ';
+        if (!out.empty()) out += " OR ";
         out += esc;
     }
     return out;

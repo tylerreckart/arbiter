@@ -1752,6 +1752,131 @@ void log_memory_event(const std::string& tag,
     std::fflush(stderr);
 }
 
+// ─── Rerank helper ──────────────────────────────────────────────────────────
+//
+// Reorders FTS candidates using a one-shot advisor LLM call.  The advisor
+// callable abstracts the only thing that varies between paths:
+//   • Agent-side `/mem search --rerank` builds it via Orchestrator's
+//     make_advisor_invoker(caller_id), which resolves the calling agent's
+//     advisor_model and routes cost attribution through cost_cb_.
+//   • HTTP `GET /v1/memory/entries?rerank=<model>` builds it as a per-
+//     request lambda using ApiClient + opts.api_keys + the explicit model
+//     from the query string.
+//
+// The advisor returns either the model's reply text or "ERR: <reason>"
+// on failure (model not configured, transport error, etc.); rerank
+// gracefully falls back to FTS order in either case.
+
+struct RerankResult {
+    std::vector<MemoryEntry> entries;   // reordered (or original on fallback)
+    std::string              note;      // empty on success
+    bool                     applied = false;
+};
+
+RerankResult rerank_with_advisor(
+    const std::function<std::string(const std::string&)>& advisor,
+    const std::string& query,
+    std::vector<MemoryEntry> candidates) {
+    if (candidates.size() <= 1) {
+        return {std::move(candidates), {}, false};
+    }
+
+    // Build a structured prompt asking for comma-separated ids.  Excerpt
+    // each candidate's content to ~200 bytes so the prompt stays well
+    // under typical advisor context budgets even with 10 candidates.
+    std::ostringstream prompt;
+    prompt << "Rerank these search results by relevance to the query.\n\n"
+           << "Query: \"" << query << "\"\n\n"
+           << "Candidates:\n";
+    for (auto& e : candidates) {
+        prompt << "[id=" << e.id << "] " << e.title << "\n";
+        if (!e.content.empty()) {
+            std::string excerpt = e.content;
+            if (excerpt.size() > 200) {
+                excerpt.resize(200);
+                excerpt += "...";
+            }
+            for (auto& c : excerpt) if (c == '\n') c = ' ';
+            prompt << "  " << excerpt << "\n";
+        }
+    }
+    prompt << "\nReturn ONLY the ids of the top 3 most relevant, "
+           << "comma-separated, in order of relevance.  Example: 17,42,23";
+
+    std::string resp = advisor(prompt.str());
+
+    if (resp.size() >= 4 && resp.compare(0, 4, "ERR:") == 0) {
+        // Advisor unavailable / errored — keep the FTS order, surface
+        // the reason so the caller can adapt.
+        return {
+            std::move(candidates),
+            "(rerank requested but advisor unavailable:" + resp.substr(4) +
+            " — falling back to FTS order)",
+            false,
+        };
+    }
+
+    // Parse digit-runs out of the response.  Lenient by design: model
+    // output is usually clean ("17,42,23") but may include quotes,
+    // prefix ("Result:"), or trailing prose — extract the ids
+    // regardless.  Only ids in the candidate set count; duplicates
+    // dropped.
+    std::vector<int64_t> picked;
+    int64_t accum = 0;
+    bool in_num = false;
+    auto flush = [&]() {
+        if (!in_num) return;
+        for (auto& e : candidates) {
+            if (e.id == accum) {
+                bool seen = false;
+                for (auto p2 : picked)
+                    if (p2 == accum) { seen = true; break; }
+                if (!seen) picked.push_back(accum);
+                break;
+            }
+        }
+        accum = 0;
+        in_num = false;
+    };
+    for (char c : resp) {
+        if (c >= '0' && c <= '9') {
+            accum = accum * 10 + (c - '0');
+            in_num = true;
+        } else {
+            flush();
+        }
+    }
+    flush();
+
+    if (picked.empty()) {
+        return {
+            std::move(candidates),
+            "(rerank produced no parseable ids — falling back to FTS order)",
+            false,
+        };
+    }
+
+    // Reorder: picked ids first (in advisor order), then everything
+    // else in original FTS order.
+    std::vector<MemoryEntry> reordered;
+    reordered.reserve(candidates.size());
+    for (auto pid : picked) {
+        for (auto& e : candidates) {
+            if (e.id == pid) {
+                reordered.push_back(e);
+                break;
+            }
+        }
+    }
+    for (auto& e : candidates) {
+        bool already = false;
+        for (auto& r : reordered)
+            if (r.id == e.id) { already = true; break; }
+        if (!already) reordered.push_back(e);
+    }
+    return {std::move(reordered), "(reranked by advisor model)", true};
+}
+
 std::shared_ptr<JsonValue> memory_entry_to_json(const MemoryEntry& e) {
     auto o = jobj();
     auto& m = o->as_object_mut();
@@ -1901,6 +2026,7 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
 }
 
 void handle_memory_entry_list(int fd, const HttpRequest& req,
+                               const ApiServerOptions& opts,
                                TenantStore& tenants, const Tenant& tenant) {
     const auto qp = parse_query(req.path);
     auto get_str = [&](const std::string& k) -> std::string {
@@ -1965,6 +2091,53 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     auto entries = use_graduated
         ? tenants.search_entries_graduated(tenant.id, f)
         : tenants.list_entries(tenant.id, f);
+
+    // `rerank=<model>` (only meaningful with `q`) runs the FTS top-N
+    // through an LLM for a final reorder.  The model is passed
+    // explicitly here because there's no calling-agent context on the
+    // HTTP path — the agent-side `/mem search --rerank` resolves the
+    // model via the agent's advisor_model field instead.  Failures
+    // (unknown model, no API key for that provider, transport error)
+    // fall back to the FTS order with a `reason` populated in the
+    // response's `rerank` block.
+    std::string rerank_model = get_str("rerank");
+    std::shared_ptr<JsonValue> rerank_meta;
+    if (!rerank_model.empty() && !f.q.empty() && entries.size() > 1) {
+        auto opts_keys = opts.api_keys;  // copy — captured by the lambda
+        const std::string sys_prompt =
+            "You are an advisor consulted by another AI agent.  Answer "
+            "the question directly and concisely.  No preamble.  No "
+            "pleasantries.  No restating the question.  No offers to "
+            "help further — the executor will re-engage if it needs "
+            "more.";
+        auto advisor = [opts_keys, rerank_model, sys_prompt]
+                       (const std::string& prompt) -> std::string {
+            // Per-request ApiClient — TLS handshake amortizes inside
+            // .complete().  Building one per rerank is fine; if this
+            // becomes a hot path we can move to a shared client member
+            // on ApiServer with the same thread-safe contract the
+            // Orchestrator's client uses.
+            ApiClient client(opts_keys);
+            ApiRequest r;
+            r.model               = rerank_model;
+            r.max_tokens          = 1024;
+            r.include_temperature = false;
+            r.system_prompt       = sys_prompt;
+            r.messages            = {{"user", prompt}};
+            ApiResponse resp = client.complete(r);
+            if (!resp.ok) return "ERR: " + resp.error;
+            return resp.content;
+        };
+        auto rr = rerank_with_advisor(advisor, f.q, std::move(entries));
+        entries = std::move(rr.entries);
+
+        rerank_meta = jobj();
+        auto& rm = rerank_meta->as_object_mut();
+        rm["applied"] = jbool(rr.applied);
+        rm["model"]   = jstr(rerank_model);
+        if (!rr.note.empty()) rm["note"] = jstr(rr.note);
+    }
+
     auto arr = jarr();
     auto& a = arr->as_array_mut();
     for (auto& e : entries) a.push_back(memory_entry_to_json(e));
@@ -1972,6 +2145,7 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     auto& m = body->as_object_mut();
     m["entries"] = arr;
     m["count"]   = jnum(static_cast<double>(entries.size()));
+    if (rerank_meta) m["rerank"] = rerank_meta;
     write_json_response(fd, 200, body);
 }
 
@@ -3300,103 +3474,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
                 std::string rerank_note;
                 if (rerank && entries.size() > 1) {
-                    // Build a structured prompt asking for comma-separated
-                    // ids.  Excerpt each candidate's content to ~200 bytes
-                    // so the prompt stays well under typical advisor
-                    // context budgets even with 10 candidates.
-                    std::ostringstream prompt;
-                    prompt << "Rerank these search results by relevance to "
-                           << "the query.\n\n"
-                           << "Query: \"" << q << "\"\n\n"
-                           << "Candidates:\n";
-                    for (auto& e : entries) {
-                        prompt << "[id=" << e.id << "] " << e.title << "\n";
-                        if (!e.content.empty()) {
-                            std::string excerpt = e.content;
-                            if (excerpt.size() > 200) {
-                                excerpt.resize(200);
-                                excerpt += "...";
-                            }
-                            for (auto& c : excerpt) if (c == '\n') c = ' ';
-                            prompt << "  " << excerpt << "\n";
-                        }
-                    }
-                    prompt << "\nReturn ONLY the ids of the top 3 most "
-                           << "relevant, comma-separated, in order of "
-                           << "relevance.  Example: 17,42,23";
-
                     auto advisor = orch_ptr->make_advisor_invoker(caller_id);
-                    std::string resp = advisor(prompt.str());
-
-                    if (resp.size() >= 4 && resp.compare(0, 4, "ERR:") == 0) {
-                        // Advisor unavailable / errored — keep the FTS
-                        // order, surface the reason so the agent can
-                        // adapt (drop --rerank, configure advisor_model,
-                        // retry without).
-                        rerank_note = "(rerank requested but advisor "
-                                      "unavailable:" + resp.substr(4) +
-                                      " — falling back to FTS order)\n";
-                    } else {
-                        // Parse digit-runs out of the response.  Lenient
-                        // by design: model output is usually clean
-                        // ("17,42,23") but may include quotes, prefix
-                        // ("Result:"), or trailing prose — extract the
-                        // ids regardless.  Only ids in the candidate
-                        // set count; duplicates dropped.
-                        std::vector<int64_t> picked;
-                        int64_t accum = 0;
-                        bool in_num = false;
-                        auto flush = [&]() {
-                            if (!in_num) return;
-                            for (auto& e : entries) {
-                                if (e.id == accum) {
-                                    bool seen = false;
-                                    for (auto p2 : picked)
-                                        if (p2 == accum) { seen = true; break; }
-                                    if (!seen) picked.push_back(accum);
-                                    break;
-                                }
-                            }
-                            accum = 0;
-                            in_num = false;
-                        };
-                        for (char c : resp) {
-                            if (c >= '0' && c <= '9') {
-                                accum = accum * 10 + (c - '0');
-                                in_num = true;
-                            } else {
-                                flush();
-                            }
-                        }
-                        flush();
-
-                        if (picked.empty()) {
-                            rerank_note = "(rerank produced no parseable "
-                                          "ids — falling back to FTS order)\n";
-                        } else {
-                            // Reorder: picked ids first (in advisor
-                            // order), then everything else in original
-                            // FTS order.
-                            std::vector<MemoryEntry> reordered;
-                            reordered.reserve(entries.size());
-                            for (auto pid : picked) {
-                                for (auto& e : entries) {
-                                    if (e.id == pid) {
-                                        reordered.push_back(e);
-                                        break;
-                                    }
-                                }
-                            }
-                            for (auto& e : entries) {
-                                bool already = false;
-                                for (auto& r : reordered)
-                                    if (r.id == e.id) { already = true; break; }
-                                if (!already) reordered.push_back(e);
-                            }
-                            entries = std::move(reordered);
-                            rerank_note = "(reranked by advisor model)\n";
-                        }
-                    }
+                    auto rr = rerank_with_advisor(advisor, q, std::move(entries));
+                    entries = std::move(rr.entries);
+                    if (!rr.note.empty()) rerank_note = rr.note + "\n";
                 }
 
                 std::ostringstream out;
@@ -4899,7 +4980,7 @@ void ApiServer::handle_connection(int fd) {
                     if (req.method == "POST")
                         return handle_memory_entry_create(fd, req, tenants_, *tenant);
                     if (req.method == "GET")
-                        return handle_memory_entry_list(fd, req, tenants_, *tenant);
+                        return handle_memory_entry_list(fd, req, opts_, tenants_, *tenant);
                     write_plain_response(fd, 405, "Method Not Allowed",
                                          "method not allowed\n");
                     return;
