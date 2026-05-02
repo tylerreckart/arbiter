@@ -1783,7 +1783,14 @@ RerankResult rerank_with_advisor(
 
     // Build a structured prompt asking for comma-separated ids.  Excerpt
     // each candidate's content to ~200 bytes so the prompt stays well
-    // under typical advisor context budgets even with 10 candidates.
+    // under typical advisor context budgets even with 25-50 candidates.
+    //
+    // We ask for the *full* ranked list rather than a top-3.  The
+    // parser only repositions ids it sees; ids the model omits keep
+    // their original FTS position, which on a top-3 prompt meant
+    // entries 4..N inherited the upstream ordering verbatim — pinning
+    // R@10 to the candidate-generation R@10.  Asking for every id
+    // lets the reorder reach the long tail.
     std::ostringstream prompt;
     prompt << "Rerank these search results by relevance to the query.\n\n"
            << "Query: \"" << query << "\"\n\n"
@@ -1800,8 +1807,9 @@ RerankResult rerank_with_advisor(
             prompt << "  " << excerpt << "\n";
         }
     }
-    prompt << "\nReturn ONLY the ids of the top 3 most relevant, "
-           << "comma-separated, in order of relevance.  Example: 17,42,23";
+    prompt << "\nReturn ALL candidate ids in order from most to least "
+           << "relevant, comma-separated.  Include every id exactly "
+           << "once.  Example for 4 candidates: 42,17,23,8";
 
     std::string resp = advisor(prompt.str());
 
@@ -2088,10 +2096,6 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
                                !f.q.empty() &&
                                f.conversation_id > 0;
 
-    auto entries = use_graduated
-        ? tenants.search_entries_graduated(tenant.id, f)
-        : tenants.list_entries(tenant.id, f);
-
     // `rerank=<model>` (only meaningful with `q`) runs the FTS top-N
     // through an LLM for a final reorder.  The model is passed
     // explicitly here because there's no calling-agent context on the
@@ -2100,7 +2104,30 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     // (unknown model, no API key for that provider, transport error)
     // fall back to the FTS order with a `reason` populated in the
     // response's `rerank` block.
+    //
+    // When rerank is on, fetch a wider candidate pool than the caller
+    // asked for: the rerank's gain comes from promoting items at
+    // positions limit+1..pool into the top `limit` — pointless if the
+    // pool never reached past `limit` to begin with.  After rerank,
+    // trim back to the caller's requested `limit` so the response
+    // shape matches what they asked for.
     std::string rerank_model = get_str("rerank");
+    const int caller_limit =
+        (f.limit > 0 && f.limit <= 200) ? f.limit : 50;
+    const bool widen_pool = !rerank_model.empty() && !f.q.empty();
+    if (widen_pool) {
+        // Pool floor of 25 lifts even small `limit=5` callers; cap at
+        // 50 so the advisor prompt stays bounded (each candidate
+        // contributes ~250 bytes of excerpt + framing).  No-op when
+        // the caller already asked for >= 50.
+        const int desired_pool = caller_limit < 25 ? 25 : caller_limit;
+        f.limit = desired_pool > 50 ? caller_limit : desired_pool;
+    }
+
+    auto entries = use_graduated
+        ? tenants.search_entries_graduated(tenant.id, f)
+        : tenants.list_entries(tenant.id, f);
+
     std::shared_ptr<JsonValue> rerank_meta;
     if (!rerank_model.empty() && !f.q.empty() && entries.size() > 1) {
         auto opts_keys = opts.api_keys;  // copy — captured by the lambda
@@ -2130,12 +2157,24 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
         };
         auto rr = rerank_with_advisor(advisor, f.q, std::move(entries));
         entries = std::move(rr.entries);
+        // Trim wider pool back to what the caller asked for.  Pool
+        // existed only to feed the reranker; final response shape
+        // matches caller_limit either way.
+        if (static_cast<int>(entries.size()) > caller_limit) {
+            entries.resize(static_cast<size_t>(caller_limit));
+        }
 
         rerank_meta = jobj();
         auto& rm = rerank_meta->as_object_mut();
         rm["applied"] = jbool(rr.applied);
         rm["model"]   = jstr(rerank_model);
         if (!rr.note.empty()) rm["note"] = jstr(rr.note);
+    } else if (widen_pool &&
+               static_cast<int>(entries.size()) > caller_limit) {
+        // Rerank was requested but didn't run (1 or 0 candidates is
+        // already trivially "ranked").  Honour caller_limit anyway so
+        // the wider pool is invisible from the response side.
+        entries.resize(static_cast<size_t>(caller_limit));
     }
 
     auto arr = jarr();
@@ -3457,12 +3496,20 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 while (!q.empty() && q.back()  == ' ') q.pop_back();
                 if (q.empty()) return "ERR: usage: /mem search <query> [--rerank]";
 
+                // Rerank widens the candidate pool internally (25)
+                // and trims to a smaller visible cap (10) after the
+                // advisor reorders.  The pool gives the reranker
+                // headroom to promote real matches from positions
+                // 11..25; the visible cap keeps the agent's reply
+                // tractable.  Non-rerank path stays at 50 (the
+                // renderer's natural cap).
+                static constexpr int kAgentRerankPool   = 25;
+                static constexpr int kAgentRerankReturn = 10;
+
                 TenantStore::EntryFilter f;
                 f.q               = q;
                 f.conversation_id = reader_conversation_id;
-                // 10 for rerank (small enough for the advisor prompt),
-                // 50 otherwise (the renderer shows up to 50 lines).
-                f.limit           = rerank ? 10 : 50;
+                f.limit           = rerank ? kAgentRerankPool : 50;
 
                 auto entries = (reader_conversation_id > 0)
                     ? tenants.search_entries_graduated(reader_tenant_id, f)
@@ -3478,6 +3525,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                     auto rr = rerank_with_advisor(advisor, q, std::move(entries));
                     entries = std::move(rr.entries);
                     if (!rr.note.empty()) rerank_note = rr.note + "\n";
+                }
+                // Trim the wider pool back to the visible cap, whether
+                // rerank applied or not — caller asked for the rerank
+                // path, the pool was internal to that.
+                if (rerank && entries.size() >
+                              static_cast<size_t>(kAgentRerankReturn)) {
+                    entries.resize(
+                        static_cast<size_t>(kAgentRerankReturn));
                 }
 
                 std::ostringstream out;

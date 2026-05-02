@@ -45,3 +45,63 @@ set.
 
 A full ingest of `longmemeval_s.json` writes ~50K-100K entries depending
 on session length; allow a few minutes on a local SQLite + HTTP loop.
+
+## Answer-grading accuracy (optional)
+
+The R@K numbers above measure **retrieval quality**: did the right entry
+land in the top K? Most other published memory frameworks (Mem0, Zep,
+Letta) instead report **answer-grading accuracy**: an LLM-as-judge score
+on a *generated answer* after retrieved entries are fed to a generator
+model. That metric convolves retrieval quality with generator quality,
+but it's the right number to publish for direct comparison against
+those systems.
+
+`grade.py` runs that two-stage pipeline on top of a `query.py` dump:
+
+```bash
+# Step 1 — query.py with --per-question-out to capture top-K entries
+# (id+title+content) per question per variant.  This is just the
+# normal query run with one extra flag.
+python3 query.py \
+    --token "$ARBITER_TOKEN" \
+    --manifest /tmp/manifest.json \
+    --rerank-model claude-haiku-4-5 \
+    --per-question-out /tmp/topk.json
+
+# Step 2 — grade.py reads the dump, calls a generator model + a judge
+# model on each question, and reports accuracy overall + by question
+# type.  Needs ANTHROPIC_API_KEY in the environment (the judge calls
+# bypass arbiter and go straight to api.anthropic.com).
+ANTHROPIC_API_KEY=sk-ant-... python3 grade.py \
+    --manifest /tmp/manifest.json \
+    --per-question-in /tmp/topk.json \
+    --gen-model claude-haiku-4-5 \
+    --judge-model claude-sonnet-4-6 \
+    --top-k 5 \
+    --json-out /tmp/grade.json
+```
+
+Useful flags while iterating:
+
+- `--variants graduated,rerank` — grade only a subset of the variants
+  in the dump (skip `bm25` if you only care about the realistic
+  retrieval modes).
+- `--limit 50` — grade only the first 50 questions per variant. Cuts
+  cost from ~1000 LLM calls per full sweep to ~200; the headline
+  number gets noisy but the per-question-type breakdown still tells
+  you where the system is weak.
+
+### Caveats on the resulting numbers
+
+- **Judge dependence.** Different judge models disagree on the hard
+  cases. `grade.py` defaults to `claude-sonnet-4-6` as the judge;
+  papers publishing comparable numbers may use GPT-4o or GPT-4o-mini
+  per the LongMemEval reference judge. To put arbiter's number into
+  someone else's table, run with their judge.
+- **Generator dependence.** Smarter generators rescue weak retrieval
+  (they can hallucinate plausible answers) and inflate accuracy.
+  Holding the generator constant across systems being compared is
+  more important than choosing the "right" generator.
+- **Cost.** A full run is `2 × variants × 500` LLM calls. With Haiku
+  on both sides that's ~$0.30 / sweep; with Sonnet as judge, a few
+  dollars. Use `--limit` for tighter loops.

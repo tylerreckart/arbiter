@@ -120,18 +120,24 @@ def create_entry(
 def turn_title(session_id: str, turn_idx: int, role: str, content: str) -> str:
     """Short title that the FTS title-weight (10x) can latch onto.
 
-    Long enough to carry real signal in the highest-weighted FTS field,
-    short enough to fit the storage layer's 200-char cap.  Includes a
-    role/session marker so collisions on identical openings stay
-    distinguishable.  Hard-clamped to 200 since some LongMemEval
-    session ids run long enough to bust a naive 140-char snippet
-    budget when the prefix is included.
+    Plain content snippet — no `[sess#N/role]` prefix.  The bm25 title
+    field carries 10x weight, so polluting it with structural metadata
+    (session ids, turn indices, role names) drowns real query signal
+    in tokens that appear identically across every entry, inflating
+    document-frequency for those tokens and downweighting the actual
+    content tokens that should dominate the ranking.  The `source`
+    field (`longmemeval:<qid>:<sess>:<turn>`) already carries the
+    provenance link at weight 2x for debugging.
+
+    Session-id and turn-idx parameters are kept in the signature for
+    backward compatibility with older harness drivers; they're
+    unused in the title now.
     """
+    del session_id, turn_idx, role
     snippet = " ".join(content.split())
-    title = f"[{session_id}#{turn_idx}/{role}] {snippet}"
-    if len(title) > 200:
-        title = title[:200]
-    return title
+    if len(snippet) > 200:
+        snippet = snippet[:200]
+    return snippet
 
 
 def ingest(api: str, token: str, dataset_path: str, manifest_path: str) -> None:
@@ -168,6 +174,12 @@ def ingest(api: str, token: str, dataset_path: str, manifest_path: str) -> None:
     for q_i, q in enumerate(questions):
         qid = str(q.get("question_id") or f"q-{q_i:04d}")
         question_text = q.get("question") or ""
+        # `answer` and `question_type` are not used during retrieval but
+        # the answer-grading harness (grade.py) reads them straight from
+        # the manifest, so we capture them here at ingest time.  Both
+        # are optional; absent fields just fall through as empty.
+        gold_answer = q.get("answer") or ""
+        question_type = q.get("question_type") or ""
         answer_session_ids = set(q.get("answer_session_ids") or [])
         haystack = q.get("haystack_sessions") or []
         # The real dataset stores session ids parallel to the sessions
@@ -252,6 +264,8 @@ def ingest(api: str, token: str, dataset_path: str, manifest_path: str) -> None:
             {
                 "question_id": qid,
                 "question": question_text,
+                "answer": gold_answer,
+                "question_type": question_type,
                 "conversation_id": conv_id,
                 "expected_entry_ids": expected_ids,
             }

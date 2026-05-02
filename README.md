@@ -105,9 +105,9 @@ results from `GET /v1/memory/entries`.
 
 | Variant      | R@1   | R@5   | R@10  | p50      | p95     |
 |--------------|------:|------:|------:|---------:|--------:|
-| `bm25`       | 16.6% | 34.8% | 42.2% |   513 ms |  957 ms |
-| `graduated`  | 49.8% | 80.6% | 88.0% |   129 ms |  187 ms |
-| `rerank`     | 56.8% | 85.2% | 88.0% |  1022 ms | 1949 ms |
+| `bm25`       | 15.6% | 35.8% | 42.6% |   507 ms |  949 ms |
+| `graduated`  | 50.6% | 80.2% | 88.4% |   125 ms |  183 ms |
+| `rerank`     | 56.6% | 88.8% | 92.8% |  1638 ms | 2356 ms |
 
 What each variant actually measures:
 
@@ -115,8 +115,9 @@ What each variant actually measures:
   scope hint.
 - **`graduated`** — conversation-scoped first pass with tenant-wide
   fallback if the first pass returns fewer than `limit` candidates.
-- **`rerank`** — `graduated` retrieval, then the top-N candidates
-  reordered by an LLM (here `claude-haiku-4-5`). One extra LLM call
+- **`rerank`** — `graduated` retrieval drawn from a 25-candidate pool,
+  then reordered by an LLM (here `claude-haiku-4-5`) over the full
+  list before trimming to the requested `limit`. One extra LLM call
   per query.
 
 ## What agents can do
