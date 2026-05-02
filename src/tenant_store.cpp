@@ -8,6 +8,7 @@
 
 #include "tenant_store.h"
 
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -15,6 +16,9 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <unordered_set>
+#include <vector>
 
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -31,44 +35,172 @@ int64_t now_epoch() {
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-// Convert a free-form user query into a safe FTS5 expression.  Tokenises
-// on whitespace, quotes each token to neutralise FTS5 operator
-// characters (-, +, *, ^, :, parens), and joins tokens with `OR` so a
-// row matches when *any* token is present and BM25 ranking sorts by
-// term frequency / IDF.  Returns an empty string when the input has
-// no non-whitespace content — caller should treat that as "no filter".
+// English stopword list — common articles, pronouns, auxiliary verbs,
+// prepositions, question words, and meta-conversational fillers ("tell",
+// "ask", "say", "want", "know") that appear in nearly every natural-
+// language question without carrying retrieval signal.  Hand-curated:
+// errs toward removing too few rather than too many, since over-
+// pruning a content word would silently drop recall on queries that
+// happen to centre on it.
 //
-// OR-rather-than-AND matches how natural-language queries are scored
-// in conventional search engines: a question like "What origin of
-// coffee does the user prefer?" should return rows about *coffee* and
-// *origin* even when no single row mentions every word.  Implicit-AND
-// would force every token to appear, which kills recall on
-// question-style queries that include filler words.
+// Why hand-curate instead of using a published list (NLTK, MySQL,
+// etc.): published stopword lists are tuned for general document
+// retrieval, not question-style conversational queries.  They tend to
+// keep "what / when / how" (which we want to drop because they're
+// ubiquitous in our query distribution) and drop "now / very" (which
+// we want to keep because they carry signal in conversational
+// memory).
+const std::unordered_set<std::string>& fts5_stopwords() {
+    static const std::unordered_set<std::string> kSet = {
+        // Articles
+        "a", "an", "the",
+        // Pronouns
+        "i", "me", "my", "mine", "myself",
+        "you", "your", "yours", "yourself",
+        "he", "him", "his", "himself",
+        "she", "her", "hers", "herself",
+        "it", "its", "itself",
+        "we", "us", "our", "ours", "ourselves",
+        "they", "them", "their", "theirs", "themselves",
+        // Auxiliary / common verbs
+        "is", "was", "were", "are", "am", "be", "been", "being",
+        "do", "did", "does", "done", "doing",
+        "have", "has", "had", "having",
+        "will", "would", "could", "should", "shall",
+        "may", "might", "must", "can",
+        // Question words
+        "what", "when", "where", "who", "whom", "whose",
+        "why", "how", "which",
+        // Prepositions / conjunctions
+        "of", "in", "on", "at", "to", "for", "with", "without",
+        "from", "by", "as", "into", "onto", "about", "over", "under",
+        "and", "or", "but", "if", "so", "than", "then", "because",
+        "while", "during", "before", "after",
+        // Determiners
+        "this", "that", "these", "those",
+        "some", "any", "each", "every",
+        // Conversational fillers — meta-verbs about the conversation
+        // itself.  "Tell me about X" → drop "tell", "me", "about".
+        "tell", "told", "say", "said", "saying",
+        "ask", "asked", "asking",
+        "talk", "talked", "talking",
+        "mention", "mentioned",
+        "remember", "recall", "know", "knew",
+        // Generic verbs that rarely disambiguate
+        "get", "got", "getting",
+        "make", "made", "making",
+        "take", "took", "taking",
+        "go", "went", "going",
+        // "not" intentionally kept — negation can flip meaning.
+    };
+    return kSet;
+}
+
+bool fts5_is_stopword(const std::string& tok) {
+    std::string lower;
+    lower.reserve(tok.size());
+    for (char c : tok) {
+        lower += static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c)));
+    }
+    return fts5_stopwords().count(lower) > 0;
+}
+
+// Quote a single token for FTS5, escaping internal quotes by doubling.
+// FTS5 treats `"foo"` as a single-token query (still goes through the
+// Porter tokenizer at match time so stems still apply).
+void fts5_quote_token(std::string& out, const std::string& tok) {
+    out += '"';
+    for (char c : tok) {
+        if (c == '"') out += "\"\"";
+        else          out += c;
+    }
+    out += '"';
+}
+
+// Convert a free-form user query into a safe FTS5 expression.
 //
-// Quoting still goes through the Porter tokenizer at match time, so a
-// query for "deploys" still matches a document containing "deployment".
+// Pipeline:
+//   1. Tokenise on whitespace.
+//   2. Strip stopwords (a/the/what/did/i/you/...).  Common conversational
+//      filler dilutes BM25 scoring across hundreds of thousands of
+//      irrelevant rows; removing it concentrates the score on
+//      content-bearing tokens and dramatically tightens the
+//      candidate pool.
+//   3. If 2+ content tokens remain, emit a phrase clause first
+//      (`"tok1 tok2 ..."`) so rows containing the tokens adjacent
+//      score above rows containing them separately.  Phrase
+//      proximity is a strong signal in factual recall queries
+//      ("software engineer", "machine learning", "Tucker Carlson")
+//      where the meaningful concept is multi-word.
+//   4. Append the bag-of-words OR fallback (`tok1 OR tok2 OR ...`)
+//      so we still match rows that have the words separately —
+//      OR-rather-than-AND keeps recall on queries where no single
+//      row contains every content token.
+//
+// All tokens are quoted to neutralise FTS5 operator characters
+// (-, +, *, ^, :, parens).  Quoting still goes through Porter at match
+// time, so `"deploys"` still matches a document containing
+// "deployment".
+//
+// Degenerate cases:
+//   • Empty input → empty string (caller treats as "no filter").
+//   • Every token a stopword (e.g. "what is the?") → fall back to the
+//     original tokens.  Better to keep a low-quality query working
+//     than fail silently on an edge case.
 std::string fts5_escape(const std::string& q) {
-    std::string out;
-    size_t i = 0;
-    while (i < q.size()) {
-        while (i < q.size() &&
-               std::isspace(static_cast<unsigned char>(q[i]))) ++i;
-        if (i >= q.size()) break;
-        size_t j = i;
-        while (j < q.size() &&
-               !std::isspace(static_cast<unsigned char>(q[j]))) ++j;
-        std::string tok = q.substr(i, j - i);
-        i = j;
-        std::string esc;
-        esc.reserve(tok.size() + 2);
-        esc += '"';
-        for (char c : tok) {
-            if (c == '"') esc += "\"\"";
-            else          esc += c;
+    // Split on whitespace.
+    std::vector<std::string> tokens;
+    {
+        size_t i = 0;
+        while (i < q.size()) {
+            while (i < q.size() &&
+                   std::isspace(static_cast<unsigned char>(q[i]))) ++i;
+            if (i >= q.size()) break;
+            size_t j = i;
+            while (j < q.size() &&
+                   !std::isspace(static_cast<unsigned char>(q[j]))) ++j;
+            tokens.emplace_back(q.substr(i, j - i));
+            i = j;
         }
-        esc += '"';
+    }
+    if (tokens.empty()) return {};
+
+    // Strip stopwords; if every token was a stopword, fall back to the
+    // original list so degenerate queries still produce a result.
+    std::vector<std::string> kept;
+    kept.reserve(tokens.size());
+    for (auto& t : tokens) {
+        if (!fts5_is_stopword(t)) kept.push_back(t);
+    }
+    const std::vector<std::string>& final_toks =
+        kept.empty() ? tokens : kept;
+
+    std::string out;
+    out.reserve(q.size() * 3);
+
+    // Phrase clause for 2+ content tokens.  FTS5 treats a quoted string
+    // with internal whitespace as a phrase query (tokens must appear
+    // adjacent).  A row matching the phrase scores it as one term plus
+    // each constituent term separately (because we OR them below), so
+    // phrase-matching rows dominate the ranking automatically — no
+    // extra weight tuning required.
+    if (final_toks.size() >= 2) {
+        out += '"';
+        for (size_t k = 0; k < final_toks.size(); ++k) {
+            if (k > 0) out += ' ';
+            for (char c : final_toks[k]) {
+                if (c == '"') out += "\"\"";
+                else          out += c;
+            }
+        }
+        out += '"';
+    }
+
+    // Bag-of-words OR fallback.
+    for (auto& t : final_toks) {
         if (!out.empty()) out += " OR ";
-        out += esc;
+        fts5_quote_token(out, t);
     }
     return out;
 }

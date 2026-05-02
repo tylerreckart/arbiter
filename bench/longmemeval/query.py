@@ -30,7 +30,14 @@ LIMIT = max(KS)
 
 
 def http_get(url: str, token: str) -> dict:
-    """GET JSON, return the parsed response.  Raises on non-2xx."""
+    """GET JSON, return the parsed response.  Raises on non-2xx.
+
+    Timeout is generous (120s) because two-stage rerank queries can
+    chain Haiku + Sonnet calls server-side in a single request.
+    Sonnet on long prompts occasionally spikes past 30s — at that
+    point the right move is to wait, not fail the question and
+    skew the variant's metrics.
+    """
     req = urllib.request.Request(
         url,
         method="GET",
@@ -40,7 +47,7 @@ def http_get(url: str, token: str) -> dict:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
@@ -58,6 +65,7 @@ def search(
     graduated: bool,
     limit: int,
     rerank_model: str | None = None,
+    rerank_fine_model: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run one search variant; return ranked entries with id/title/content.
 
@@ -72,6 +80,12 @@ def search(
         params["graduated"] = "true"
     if rerank_model:
         params["rerank"] = rerank_model
+    if rerank_fine_model:
+        # Two-stage: pass 1 uses `rerank` (cheap, broad), pass 2 uses
+        # `rerank_fine` (stronger, sees only the top kFinePoolSize from
+        # pass 1 with bigger excerpts).  Server-side handles the
+        # plumbing — see handle_memory_entry_list.
+        params["rerank_fine"] = rerank_fine_model
     url = f"{api}/v1/memory/entries?" + urllib.parse.urlencode(params)
     body = http_get(url, token)
     out: list[dict[str, Any]] = []
@@ -100,6 +114,7 @@ def run_variant(
     conversation_id: bool,
     graduated: bool,
     rerank_model: str | None = None,
+    rerank_fine_model: str | None = None,
     capture_top_k: bool = False,
 ) -> dict[str, Any]:
     """Run one variant across all questions, return aggregated metrics.
@@ -131,8 +146,14 @@ def run_variant(
                 graduated=graduated,
                 limit=LIMIT,
                 rerank_model=rerank_model,
+                rerank_fine_model=rerank_fine_model,
             )
-        except RuntimeError as e:
+        except (RuntimeError, OSError) as e:
+            # Don't fail the whole variant when one question times out
+            # or the server hiccups — log, count it as a miss for that
+            # question's K, and keep going.  OSError catches
+            # socket.timeout (which urllib raises directly), connection
+            # resets, and any transport-layer flake.
             print(f"  warn: query for {q['question_id']} failed: {e}",
                   file=sys.stderr)
             continue
@@ -209,6 +230,14 @@ def main() -> int:
                         "Costs one LLM call per question; requires the "
                         "API server to have an API key for the model's "
                         "provider configured.")
+    p.add_argument("--rerank-fine-model", default=None,
+                   help="when set together with --rerank-model, runs a "
+                        "fourth `rerank2` variant that does two-stage "
+                        "rerank: pass 1 with --rerank-model coarse-"
+                        "orders the wider pool, top 8 advance to pass 2 "
+                        "with this model and larger excerpts.  Doubles "
+                        "the LLM cost per query but typically lifts "
+                        "R@1.")
     p.add_argument("--json-out", default=None,
                    help="optional path to dump full results as JSON")
     p.add_argument("--per-question-out", default=None,
@@ -248,6 +277,15 @@ def main() -> int:
             args.api, args.token, questions,
             conversation_id=True, graduated=True,
             rerank_model=args.rerank_model,
+            capture_top_k=capture,
+        ))
+    if args.rerank_model and args.rerank_fine_model:
+        results.append(run_variant(
+            "rerank2",
+            args.api, args.token, questions,
+            conversation_id=True, graduated=True,
+            rerank_model=args.rerank_model,
+            rerank_fine_model=args.rerank_fine_model,
             capture_top_k=capture,
         ))
 

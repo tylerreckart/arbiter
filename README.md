@@ -105,19 +105,23 @@ results from `GET /v1/memory/entries`.
 
 | Variant      | R@1   | R@5   | R@10  | p50      | p95     |
 |--------------|------:|------:|------:|---------:|--------:|
-| `bm25`       | 15.6% | 35.8% | 42.6% |   507 ms |  949 ms |
-| `graduated`  | 50.6% | 80.2% | 88.4% |   125 ms |  183 ms |
-| `rerank`     | 56.6% | 88.8% | 92.8% |  1638 ms | 2356 ms |
+| `bm25`       | 14.2% | 35.2% | 42.0% |   158 ms |  388 ms |
+| `graduated`  | 49.4% | 81.4% | 88.6% |    61 ms |  118 ms |
+| `rerank`     | 71.6% | 90.4% | 91.8% |  1638 ms | 2251 ms |
 
 What each variant actually measures:
 
 - **`bm25`** — FTS5 + Okapi-BM25 across the entire tenant corpus, no
-  scope hint.
+  scope hint. Query-side stopword stripping plus a phrase-boost
+  clause (`"tok1 tok2 ..." OR tok1 OR tok2 ...`) concentrate scoring
+  on content tokens and reward proximity matches.
 - **`graduated`** — conversation-scoped first pass with tenant-wide
   fallback if the first pass returns fewer than `limit` candidates.
 - **`rerank`** — `graduated` retrieval drawn from a 25-candidate pool,
   then reordered by an LLM (here `claude-haiku-4-5`) over the full
-  list before trimming to the requested `limit`. One extra LLM call
+  list before trimming to the requested `limit`. Each candidate is
+  shown to the reranker with up to 800 bytes of content excerpt so
+  the answer-bearing text is visible end-to-end. One extra LLM call
   per query.
 
 ## What agents can do

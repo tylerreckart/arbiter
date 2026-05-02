@@ -1776,14 +1776,22 @@ struct RerankResult {
 RerankResult rerank_with_advisor(
     const std::function<std::string(const std::string&)>& advisor,
     const std::string& query,
-    std::vector<MemoryEntry> candidates) {
+    std::vector<MemoryEntry> candidates,
+    size_t excerpt_bytes = 800) {
     if (candidates.size() <= 1) {
         return {std::move(candidates), {}, false};
     }
 
-    // Build a structured prompt asking for comma-separated ids.  Excerpt
-    // each candidate's content to ~200 bytes so the prompt stays well
-    // under typical advisor context budgets even with 25-50 candidates.
+    // Build a structured prompt asking for comma-separated ids.
+    //
+    // `excerpt_bytes` controls how much of each candidate's content
+    // is shown to the reranker.  Default 800 bytes — long enough that
+    // the answer-bearing detail of a typical conversational turn is
+    // visible (most turns are 300–800 chars), short enough that 25
+    // candidates fit comfortably in any modern advisor context window
+    // (~20KB total excerpt content).  Two-stage callers raise this
+    // for the fine pass where the candidate set is small and the
+    // model is expected to discriminate among close-scored matches.
     //
     // We ask for the *full* ranked list rather than a top-3.  The
     // parser only repositions ids it sees; ids the model omits keep
@@ -1799,8 +1807,8 @@ RerankResult rerank_with_advisor(
         prompt << "[id=" << e.id << "] " << e.title << "\n";
         if (!e.content.empty()) {
             std::string excerpt = e.content;
-            if (excerpt.size() > 200) {
-                excerpt.resize(200);
+            if (excerpt.size() > excerpt_bytes) {
+                excerpt.resize(excerpt_bytes);
                 excerpt += "...";
             }
             for (auto& c : excerpt) if (c == '\n') c = ' ';
@@ -2112,6 +2120,16 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     // trim back to the caller's requested `limit` so the response
     // shape matches what they asked for.
     std::string rerank_model = get_str("rerank");
+    // Optional second-stage reranker.  When set, pass 1 (the cheaper
+    // `rerank` model) coarse-orders the wider candidate pool and the
+    // top kFinePoolSize survive to pass 2 (`rerank_fine`), which sees
+    // bigger excerpts and produces the final ordering.  Tradeoff: a
+    // small fast model is good enough to ditch the obvious
+    // non-matches; a stronger model is meaningfully better at picking
+    // among the closely-scored top candidates that determine R@1.
+    // Doubles the LLM cost per query but typically lifts R@1 by
+    // several points.
+    std::string rerank_fine_model = get_str("rerank_fine");
     const int caller_limit =
         (f.limit > 0 && f.limit <= 200) ? f.limit : 50;
     const bool widen_pool = !rerank_model.empty() && !f.q.empty();
@@ -2137,26 +2155,72 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
             "pleasantries.  No restating the question.  No offers to "
             "help further — the executor will re-engage if it needs "
             "more.";
-        auto advisor = [opts_keys, rerank_model, sys_prompt]
-                       (const std::string& prompt) -> std::string {
-            // Per-request ApiClient — TLS handshake amortizes inside
-            // .complete().  Building one per rerank is fine; if this
-            // becomes a hot path we can move to a shared client member
-            // on ApiServer with the same thread-safe contract the
-            // Orchestrator's client uses.
-            ApiClient client(opts_keys);
-            ApiRequest r;
-            r.model               = rerank_model;
-            r.max_tokens          = 1024;
-            r.include_temperature = false;
-            r.system_prompt       = sys_prompt;
-            r.messages            = {{"user", prompt}};
-            ApiResponse resp = client.complete(r);
-            if (!resp.ok) return "ERR: " + resp.error;
-            return resp.content;
+        auto build_advisor = [opts_keys, sys_prompt]
+                             (const std::string& model) {
+            return [opts_keys, model, sys_prompt]
+                   (const std::string& prompt) -> std::string {
+                // Per-request ApiClient — TLS handshake amortizes
+                // inside .complete().  Building one per rerank is
+                // fine; if this becomes a hot path we can move to a
+                // shared client member on ApiServer with the same
+                // thread-safe contract the Orchestrator's client
+                // uses.
+                ApiClient client(opts_keys);
+                ApiRequest r;
+                r.model               = model;
+                r.max_tokens          = 1024;
+                r.include_temperature = false;
+                r.system_prompt       = sys_prompt;
+                r.messages            = {{"user", prompt}};
+                ApiResponse resp = client.complete(r);
+                if (!resp.ok) return "ERR: " + resp.error;
+                return resp.content;
+            };
         };
-        auto rr = rerank_with_advisor(advisor, f.q, std::move(entries));
+
+        auto coarse_advisor = build_advisor(rerank_model);
+        auto rr = rerank_with_advisor(coarse_advisor, f.q,
+                                       std::move(entries));
         entries = std::move(rr.entries);
+
+        // Two-stage path: when `rerank_fine` is set, take the top
+        // kFinePoolSize from pass 1 and rerank again with the
+        // stronger model + larger excerpts.  Use a smaller fine pool
+        // so the fine model can afford to see more of each candidate
+        // (the kFineExcerptBytes value below is meaningfully larger
+        // than the default 800).
+        //
+        // Critical: preserve pass-1 candidates beyond kFinePoolSize as
+        // a *tail* and append them after the fine-pass result.  R@K
+        // for K > kFinePoolSize must still see those candidates;
+        // otherwise the two-stage path silently caps recall at 8 and
+        // R@10 collapses below the single-stage baseline.  The fine
+        // pass sharpens the top of the list (R@1, R@5); the tail
+        // keeps recall on parity with single-stage.
+        bool fine_applied = false;
+        std::string fine_note;
+        if (!rerank_fine_model.empty() && rr.applied &&
+            entries.size() > 1) {
+            constexpr size_t kFinePoolSize    = 8;
+            constexpr size_t kFineExcerptBytes = 1500;
+            std::vector<MemoryEntry> tail;
+            if (entries.size() > kFinePoolSize) {
+                tail.reserve(entries.size() - kFinePoolSize);
+                std::move(entries.begin() +
+                              static_cast<std::ptrdiff_t>(kFinePoolSize),
+                          entries.end(), std::back_inserter(tail));
+                entries.resize(kFinePoolSize);
+            }
+            auto fine_advisor = build_advisor(rerank_fine_model);
+            auto rr2 = rerank_with_advisor(
+                fine_advisor, f.q, std::move(entries),
+                kFineExcerptBytes);
+            entries = std::move(rr2.entries);
+            fine_applied = rr2.applied;
+            fine_note = rr2.note;
+            for (auto& e : tail) entries.push_back(std::move(e));
+        }
+
         // Trim wider pool back to what the caller asked for.  Pool
         // existed only to feed the reranker; final response shape
         // matches caller_limit either way.
@@ -2169,6 +2233,12 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
         rm["applied"] = jbool(rr.applied);
         rm["model"]   = jstr(rerank_model);
         if (!rr.note.empty()) rm["note"] = jstr(rr.note);
+        if (!rerank_fine_model.empty()) {
+            rm["fine_model"]   = jstr(rerank_fine_model);
+            rm["fine_applied"] = jbool(fine_applied);
+            if (!fine_note.empty()) rm["fine_note"] = jstr(fine_note);
+            rm["stages"] = jnum(fine_applied ? 2 : 1);
+        }
     } else if (widen_pool &&
                static_cast<int>(entries.size()) > caller_limit) {
         // Rerank was requested but didn't run (1 or 0 candidates is
@@ -4637,6 +4707,13 @@ void install_crash_handlers_once() {
     std::signal(SIGABRT, crash_handler);
     std::signal(SIGBUS,  crash_handler);
     std::signal(SIGFPE,  crash_handler);
+    // Ignore SIGPIPE process-wide: any write to a peer that hung up
+    // mid-response would otherwise terminate the server with the
+    // default disposition.  macOS lacks MSG_NOSIGNAL on send(), so
+    // write_all() can't suppress at the call site portably.  Ignoring
+    // turns the failed write into a normal -1/EPIPE return that
+    // write_all already handles by giving up on that connection.
+    std::signal(SIGPIPE, SIG_IGN);
 }
 
 } // namespace
