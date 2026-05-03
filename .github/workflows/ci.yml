@@ -33,15 +33,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs_on:   macos-14         # Apple Silicon
-            os_slug:   macos
-            arch_slug: arm64
-          - runs_on:   macos-13         # Intel Macs
-            os_slug:   macos
-            arch_slug: x86_64
-          - runs_on:   ubuntu-22.04     # glibc 2.35 — broad Linux compat
-            os_slug:   linux
-            arch_slug: x86_64
+          # Single macOS job builds a universal binary covering both
+          # arm64 and x86_64 in one pass.  The previous Intel-specific
+          # `macos-13` runner image was retired by GitHub in Dec 2025
+          # and now queues forever.  AppleClang on macos-14 carries
+          # the cross-arch SDK slices, so `-DCMAKE_OSX_ARCHITECTURES`
+          # produces a fat binary native on both architectures; tests
+          # execute the arm64 slice (the runner's host arch).  The
+          # x86_64 slice is compile + link verified, not runtime
+          # tested — but the codebase has no arch-specific paths, so
+          # compile-time coverage catches any plausible regression.
+          - runs_on:    macos-14
+            os_slug:    macos
+            arch_slug:  universal
+            cmake_archs: "arm64;x86_64"
+          - runs_on:    ubuntu-22.04   # glibc 2.35 — broad Linux compat
+            os_slug:    linux
+            arch_slug:  x86_64
+            cmake_archs: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -75,10 +84,15 @@ jobs:
           if [ "${{ runner.os }}" = "macOS" ]; then
             EXTRA="-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)"
           fi
+          ARCHS_FLAG=""
+          if [ -n "${{ matrix.cmake_archs }}" ]; then
+            ARCHS_FLAG='-DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_archs }}'
+          fi
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DINDEX_BUILD_TESTS=ON \
-            $EXTRA
+            $EXTRA \
+            $ARCHS_FLAG
 
       - name: Build
         run: cmake --build build --config Debug -j
