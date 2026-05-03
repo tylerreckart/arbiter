@@ -105,9 +105,9 @@ results from `GET /v1/memory/entries`.
 
 | Variant      | R@1   | R@5   | R@10  | p50      | p95     |
 |--------------|------:|------:|------:|---------:|--------:|
-| `bm25`       | 14.2% | 35.2% | 42.0% |   158 ms |  388 ms |
-| `graduated`  | 49.4% | 81.4% | 88.6% |    61 ms |  118 ms |
-| `rerank`     | 71.6% | 90.4% | 91.8% |  1638 ms | 2251 ms |
+| `bm25`       | 14.2% | 35.2% | 42.0% |   149 ms |  370 ms |
+| `graduated`  | 49.4% | 81.4% | 88.6% |    57 ms |  109 ms |
+| `rerank`     | 72.6% | 90.4% | 91.6% |  1637 ms | 2157 ms |
 
 What each variant actually measures:
 

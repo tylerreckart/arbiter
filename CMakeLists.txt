@@ -59,6 +59,16 @@ find_package(CURL REQUIRED)
 # Ships in the macOS SDK; on Linux the `libsqlite3-dev` package provides it.
 find_package(SQLite3 REQUIRED)
 
+# CMake's FindSQLite3 module canonicalised the imported-target name from
+# `SQLite::SQLite3` to `SQLite3::SQLite3` in CMake 4.3.  Older CMake
+# versions (notably Ubuntu 22.04's apt CMake 3.22, which we use in CI)
+# only expose the `SQLite::` form.  Alias the new name to the old when
+# only the old exists so the rest of the CMake graph can use the
+# canonical `SQLite3::SQLite3` everywhere.
+if(NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
+    add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
+endif()
+
 # --- Source files ---
 set(INDEX_AI_SOURCES
     src/main.cpp
