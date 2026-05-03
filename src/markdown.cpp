@@ -3,6 +3,7 @@
 #include "markdown.h"
 #include "theme.h"
 #include <cctype>
+#include <cstring>
 #include <string>
 
 namespace index_ai {
