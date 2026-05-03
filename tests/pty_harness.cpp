@@ -14,7 +14,16 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
-#include <util.h>                 // forkpty — macOS libSystem
+
+// forkpty / openpty live in different headers depending on libc:
+//   • glibc / Linux:  <pty.h>, link -lutil
+//   • macOS / BSD:    <util.h> (libSystem, no extra link)
+// Both expose the same prototype.
+#if defined(__linux__)
+#  include <pty.h>
+#else
+#  include <util.h>
+#endif
 
 namespace index_tests {
 
