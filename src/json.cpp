@@ -1,8 +1,9 @@
 // index_ai/src/json.cpp — Minimal JSON parser + serializer
 #include "json.h"
 #include <cctype>
-#include <charconv>
+#include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 namespace index_ai {
@@ -241,9 +242,28 @@ struct Parser {
             if (peek() == '+' || peek() == '-') advance();
             while (pos < src.size() && std::isdigit(static_cast<unsigned char>(peek()))) advance();
         }
-        double val = 0;
-        auto [ptr, ec] = std::from_chars(src.data() + start, src.data() + pos, val);
-        if (ec != std::errc()) error("invalid number");
+        // std::from_chars(double) isn't implemented in AppleClang's
+        // libc++ (Xcode 15.x ships only the integral overloads, with
+        // the floating-point ones explicitly =delete'd).  strtod is
+        // the portable fallback: it parses JSON-shape numbers using
+        // the C locale, which matches JSON's grammar exactly (period
+        // decimal separator, no thousands grouping) as long as
+        // nothing in the process has called setlocale(LC_NUMERIC,
+        // ...).  arbiter never does — both the binary and its tests
+        // run with the default "C" numeric locale.
+        //
+        // Copy the digit run into a small std::string so strtod can
+        // walk a null-terminated buffer without us mutating the
+        // source.  pre-validation by the loop above guarantees the
+        // substring is well-formed; the only error we have to detect
+        // here is overflow via ERANGE.
+        std::string num_str(src.data() + start, pos - start);
+        errno = 0;
+        char* end_ptr = nullptr;
+        double val = std::strtod(num_str.c_str(), &end_ptr);
+        if (end_ptr == num_str.c_str() || errno == ERANGE) {
+            error("invalid number");
+        }
         return jnum(val);
     }
 
