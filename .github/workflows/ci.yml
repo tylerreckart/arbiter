@@ -95,3 +95,18 @@ jobs:
       # suite doesn't fight other tests for runner CPU on slow images.
       - name: Test
         run: ctest --test-dir build --output-on-failure --no-tests=error -j 1
+
+      # On a test failure, surface CTest's full per-test logs as an
+      # artifact so the doctest assertion + line number is recoverable
+      # without rerunning CI.  `LastTest.log` and `LastTestsFailed.log`
+      # land under build/Testing/Temporary/ regardless of pass/fail; we
+      # only upload when the prior step failed so green runs don't
+      # accumulate noise.
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-${{ matrix.os_slug }}-${{ matrix.arch_slug }}
+          path: build/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 7
