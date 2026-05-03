@@ -4586,6 +4586,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             emit("stream_end", p);
         });
 
+    // Advisor gate halt — sibling of stream_end so SSE clients can show
+    // the halt reason out-of-band from the agent's normal text deltas.
+    // Fires before stream_end (which arrives with ok=false).
+    orch->set_escalation_callback(
+        [&emit](const std::string& id, int sid, const std::string& reason) {
+            auto p = jobj();
+            auto& m = p->as_object_mut();
+            m["agent"]     = jstr(id);
+            m["stream_id"] = jnum(static_cast<double>(sid));
+            m["reason"]    = jstr(reason);
+            emit("escalation", p);
+        });
+
     try {
         auto resp = orch->send_streaming(agent_id, message,
             [&filter](const std::string& chunk) { filter.feed(chunk); });

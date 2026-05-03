@@ -40,7 +40,8 @@ struct ApiResponse {
     int cache_read_tokens = 0;       // prompt cache hits (Anthropic only)
     int cache_creation_tokens = 0;   // tokens written into cache (Anthropic only)
     std::string error;
-    std::string error_type;
+    std::string error_type;          // "advisor_halt" when gate halted
+    std::string halt_reason;         // populated only when error_type=="advisor_halt"
     std::string raw_body;            // full response for debug
     std::string stop_reason;
     bool had_tool_calls = false;

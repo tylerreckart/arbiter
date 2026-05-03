@@ -52,12 +52,12 @@ Prebuilt binaries.
 
 MacOS arm64:
 
-    curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
+    curl -L https://github.com/arbitercorp/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
       | tar xz -C /usr/local/bin
 
 Linux x86_64:
 
-    curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-linux-x86_64.tar.gz \
+    curl -L https://github.com/arbitercorp/arbiter/releases/latest/download/arbiter-linux-x86_64.tar.gz \
       | tar xz -C /usr/local/bin
 
 Build from source:

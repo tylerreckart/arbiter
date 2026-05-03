@@ -88,6 +88,7 @@ set(INDEX_AI_SOURCES
     src/agent.cpp
     src/constitution.cpp
     src/orchestrator.cpp
+    src/advisor_gate.cpp
     src/api_server.cpp
     src/billing_client.cpp
     src/tenant_store.cpp
@@ -318,4 +319,20 @@ if(INDEX_BUILD_TESTS)
         CURL::libcurl
     )
     add_test(NAME unit_constitution COMMAND unit_constitution)
+
+    # Advisor gate signal parser.  The parser is the only thing translating
+    # an advisor's reply into a CONTINUE/REDIRECT/HALT decision; format
+    # drift here means the runtime gate silently misroutes.  Kept as a
+    # dedicated tiny target so the parser lives independently of the
+    # orchestrator's heavy dependency graph.
+    add_executable(unit_advisor_gate
+        tests/test_advisor_gate.cpp
+        src/advisor_gate.cpp
+    )
+    target_include_directories(unit_advisor_gate PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_advisor_gate PRIVATE CURL::libcurl)
+    add_test(NAME unit_advisor_gate COMMAND unit_advisor_gate)
 endif()

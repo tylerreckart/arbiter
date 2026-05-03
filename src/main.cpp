@@ -348,6 +348,21 @@ static void cmd_interactive() {
         if (p) p->tui.set_status(agent_id + ": compacting context (" +
                                  std::to_string(n) + " msgs)");
     });
+    // Advisor gate halt — surface as a distinct banner separate from the
+    // agent's normal text stream.  HALT means the runtime stopped the
+    // executor before it could return; the user needs to see the reason
+    // out-of-band so it doesn't blend into the agent's last sentence.
+    orch.set_escalation_callback([&](const std::string& agent_id,
+                                      int /*stream_id*/,
+                                      const std::string& reason) {
+        Pane* p = g_active_pane;
+        if (!p) return;
+        std::string banner =
+            theme().accent_error + "[advisor halt: " + agent_id + "] " +
+            reason + theme().reset + "";
+        p->output_queue.push_msg(banner);
+    });
+
     orch.set_confirm_callback([&](const std::string& p) -> bool {
         std::promise<bool> done;
         auto fut = done.get_future();

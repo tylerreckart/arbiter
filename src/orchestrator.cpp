@@ -318,6 +318,10 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
     };
 }
 
+// parse_advisor_signal lives in src/advisor_gate.cpp so the gate's signal
+// parser can be unit-tested without dragging the orchestrator's heavy
+// dependency graph (Agent, ApiClient, MCP, …) into the test binary.
+
 AdvisorInvoker Orchestrator::make_advisor_invoker(const std::string& caller_id) {
     return [this, caller_id](const std::string& question) -> std::string {
         // Resolve the advisor model from the caller's constitution.
@@ -363,6 +367,155 @@ AdvisorInvoker Orchestrator::make_advisor_invoker(const std::string& caller_id) 
 
         return resp.content;
     };
+}
+
+AdvisorGateInvoker Orchestrator::make_advisor_gate_invoker(const std::string& caller_id) {
+    return [this, caller_id](const AdvisorGateInput& in) -> AdvisorGateOutput {
+        AdvisorGateOutput out;
+
+        // Resolve the advisor model + optional prompt override from the
+        // caller's constitution.  The structured `advisor` block is the
+        // source of truth for gate behaviour; the legacy `advisor_model`
+        // field is consulted only as a fallback when the structured model
+        // is empty (which can happen if a caller wired the gate via
+        // configuration outside the JSON parser path).
+        std::string advisor_model;
+        std::string prompt_override;
+        if (caller_id == "index") {
+            const auto& cfg = index_master_->config();
+            advisor_model   = cfg.advisor.model.empty() ? cfg.advisor_model
+                                                        : cfg.advisor.model;
+            prompt_override = cfg.advisor.prompt;
+        } else {
+            std::lock_guard<std::mutex> lk(agents_mutex_);
+            auto it = agents_.find(caller_id);
+            if (it == agents_.end()) {
+                out.kind = AdvisorGateOutput::Kind::Halt;
+                out.text = "no agent '" + caller_id + "' for gate";
+                out.malformed = true;
+                return out;
+            }
+            const auto& cfg = it->second->config();
+            advisor_model   = cfg.advisor.model.empty() ? cfg.advisor_model
+                                                        : cfg.advisor.model;
+            prompt_override = cfg.advisor.prompt;
+        }
+        if (advisor_model.empty()) {
+            // Defence-in-depth: callers should already have checked
+            // mode == "gate", but if a misconfiguration slips through
+            // we fail closed with a HALT explaining the issue.
+            out.kind = AdvisorGateOutput::Kind::Halt;
+            out.text = "no advisor model configured for gate on '" + caller_id + "'";
+            out.malformed = true;
+            return out;
+        }
+
+        // Default gate prompt.  Tenant can override via advisor.prompt.
+        // The prompt explicitly enumerates the three signals and the
+        // tag-based grammar — the parser is strict about tag form, so the
+        // model must produce it verbatim.
+        static constexpr const char* kDefaultGatePrompt =
+            "You are a runtime gate evaluating whether an executor agent's "
+            "terminating turn is acceptable to return to the caller.\n\n"
+            "Inputs you receive (in this order):\n"
+            "  - The original user task.\n"
+            "  - The executor's outputs for the terminating turn (text only — "
+            "no reasoning, no prior turns).\n"
+            "  - A structured summary of tool calls made this turn.\n\n"
+            "You will respond with EXACTLY ONE signal on its own line:\n\n"
+            "  <signal>CONTINUE</signal>\n"
+            "    The terminating turn satisfies the task; let the executor return.\n\n"
+            "  <signal>REDIRECT</signal>\n"
+            "  <guidance>...</guidance>\n"
+            "    The executor is on the wrong track or stopped early.  Provide a "
+            "concrete next step in <guidance>.  This will be injected as a "
+            "synthetic user turn back to the executor.\n\n"
+            "  <signal>HALT</signal>\n"
+            "  <reason>...</reason>\n"
+            "    The executor produced something the user must see before any "
+            "further work — irreversible footgun about to commit, scope "
+            "explosion, confidential data leak, fundamentally wrong premise. "
+            "This will be surfaced to the user as an escalation.\n\n"
+            "No preamble.  No markdown.  Output exactly one signal.  Default "
+            "to CONTINUE when the turn is merely terse but correct.  Default "
+            "to HALT when in doubt about safety; default to REDIRECT when in "
+            "doubt about correctness.";
+
+        std::ostringstream q;
+        q << "[ORIGINAL TASK]\n" << in.original_task << "\n[END ORIGINAL TASK]\n\n"
+          << "[EXECUTOR TERMINATING TURN]\n" << in.terminating_text
+          << "\n[END EXECUTOR TERMINATING TURN]\n\n"
+          << "[TOOL CALLS THIS TURN]\n"
+          << (in.tool_summary.empty() ? "(none)\n" : in.tool_summary)
+          << "[END TOOL CALLS]\n";
+
+        ApiRequest req;
+        req.model               = advisor_model;
+        req.max_tokens          = 512;   // signals are short
+        req.include_temperature = false; // reasoning models reject temperature
+        req.system_prompt       = prompt_override.empty()
+                                  ? std::string(kDefaultGatePrompt)
+                                  : prompt_override;
+        req.messages            = {{"user", q.str()}};
+
+        ApiResponse resp = client_.complete(req);
+        if (cost_cb_) cost_cb_(caller_id, advisor_model, resp);
+        if (!resp.ok) {
+            out.kind = AdvisorGateOutput::Kind::Halt;
+            out.text = "advisor API error: " + resp.error;
+            out.malformed = true;
+            out.raw  = resp.error;
+            return out;
+        }
+
+        return parse_advisor_signal(resp.content);
+    };
+}
+
+// Build a one-line summary of the tool calls executed this turn for the
+// advisor gate.  Format per call:
+//
+//   - <name> args=<first 80 chars> result=<first 200 chars>
+//
+// We deliberately don't include full tool-result bodies — those can be huge
+// (web fetches, /exec stdout) and the advisor only needs the shape of what
+// happened, not the raw data.  When the executor took no tool actions this
+// returns an empty string and the gate prompt prints "(none)".
+static std::string summarize_tool_calls(const std::vector<AgentCommand>& cmds,
+                                        const std::string& tool_results_block) {
+    if (cmds.empty()) return {};
+    std::ostringstream out;
+    for (auto& c : cmds) {
+        std::string args = c.args;
+        if (args.size() > 80) { args.resize(77); args += "..."; }
+        // Locate the corresponding tool-result section in the dispatcher's
+        // assembled block.  Tool results are framed as `[/<name>...]\n<body>
+        // [END <NAME>]` by execute_agent_commands; we extract the first 200
+        // chars of body.  If we can't find the marker, fall back to no
+        // result snippet.
+        std::string head_marker = "[/" + c.name;
+        auto h = tool_results_block.find(head_marker);
+        std::string snippet;
+        if (h != std::string::npos) {
+            // Move past the closing ']' of the header line, then start of body.
+            auto body_start = tool_results_block.find('\n', h);
+            if (body_start != std::string::npos) {
+                ++body_start;
+                snippet = tool_results_block.substr(body_start, 200);
+                // Trim at first END marker so we don't bleed into the next call.
+                auto end_marker = snippet.find("[END ");
+                if (end_marker != std::string::npos) snippet.resize(end_marker);
+                // Replace newlines with spaces so the summary stays one line per call.
+                for (auto& ch : snippet) if (ch == '\n') ch = ' ';
+                if (snippet.size() > 200) { snippet.resize(197); snippet += "..."; }
+            }
+        }
+        out << "- " << c.name;
+        if (!args.empty())    out << " args=" << args;
+        if (!snippet.empty()) out << " result=" << snippet;
+        out << "\n";
+    }
+    return out.str();
 }
 
 ApiResponse Orchestrator::ask_index_ai(const std::string& query) {
@@ -441,6 +594,17 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     auto advisor_invoker  = make_advisor_invoker(agent_id);
     auto parallel_invoker = make_parallel_invoker(agent_id, depth, orig_q);
 
+    // Gate-mode advisor wiring.  Built lazily — if the agent's advisor
+    // config is anything other than mode == "gate", the gate is never
+    // invoked and we keep today's terminating semantics.  Building the
+    // invoker here (rather than per-iteration) is cheap and lets the
+    // closure capture this agent's caller_id once.
+    const auto& gate_cfg = agent.config().advisor;
+    const bool   gate_active = (gate_cfg.mode == "gate" && !gate_cfg.model.empty());
+    AdvisorGateInvoker gate_invoker = gate_active
+        ? make_advisor_gate_invoker(agent_id)
+        : AdvisorGateInvoker{};
+
     // One stream_id per turn-sequence for this agent.  Every callback that
     // fires before this scope unwinds sees (stream_id, agent_id, depth)
     // via current_stream_*.
@@ -476,6 +640,17 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     int         total_input_tok  = 0;
     int         total_output_tok = 0;
     static constexpr int kMaxTurns = 6;
+
+    // Gate-mode bookkeeping.  `last_cmds` + `last_tool_results` carry the
+    // most recent tool-call iteration's data so when the executor finally
+    // produces a terminating turn (cmds.empty()), we can summarise the
+    // tools used to get there for the advisor.  `redirects_used` enforces
+    // the advisor.max_redirects budget.
+    std::vector<AgentCommand> last_cmds;
+    std::string               last_tool_results;
+    int                       redirects_used = 0;
+    const int                 max_redirects  = gate_cfg.max_redirects;
+
     for (int i = 0; i < kMaxTurns; ++i) {
         // Notify UI that a sub-agent is about to make an API call.
         if (depth > 0 && start_cb_) start_cb_(agent_id);
@@ -515,7 +690,71 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
 
         auto cmds = parse_agent_commands(resp.content);
         recover_truncated_writes(agent_ptr, resp, cmds, nullptr);
-        if (cmds.empty()) break;
+
+        // Terminating branch.  If gate-mode is off, this is identical to
+        // pre-gate behaviour: cmds.empty() means we're done.  With gate-
+        // mode active, we consult the advisor before letting the executor
+        // return — see the philosophy doc for why this gate lives below
+        // the executor's API surface rather than as a slash command.
+        if (cmds.empty()) {
+            if (!gate_active) break;
+
+            AdvisorGateOutput sig;
+            if (redirects_used >= max_redirects) {
+                // Budget exhausted — synthesise a HALT so the advisor can't
+                // pin the executor in an infinite redirect loop.  The user
+                // sees the same escalation surface as a real HALT.
+                sig.kind = AdvisorGateOutput::Kind::Halt;
+                sig.text = "advisor redirect budget exhausted (max " +
+                           std::to_string(max_redirects) + ")";
+            } else {
+                AdvisorGateInput in{
+                    /* original_task    = */ orig_q,
+                    /* terminating_text = */ resp.content,
+                    /* tool_summary     = */ summarize_tool_calls(last_cmds, last_tool_results),
+                };
+                sig = gate_invoker(in);
+
+                // Malformed-input policy: fail-closed by default (treat as
+                // HALT) so a misbehaving advisor can't silently rubber-
+                // stamp.  Configurable per agent via malformed_halts.
+                if (sig.malformed && gate_cfg.malformed_halts &&
+                    sig.kind != AdvisorGateOutput::Kind::Halt) {
+                    sig.kind = AdvisorGateOutput::Kind::Halt;
+                    sig.text = "advisor returned unparseable signal: " +
+                               sig.raw.substr(0, 200);
+                }
+            }
+
+            if (sig.kind == AdvisorGateOutput::Kind::Continue) break;
+
+            if (sig.kind == AdvisorGateOutput::Kind::Redirect) {
+                ++redirects_used;
+                current_msg =
+                    "[advisor redirect — synthetic user turn]\n" +
+                    sig.text +
+                    "\n[end advisor redirect]";
+                // Re-enter the loop; the next iteration counts against
+                // kMaxTurns the same way a tool-call iteration would.
+                continue;
+            }
+
+            // HALT — surface to the user out-of-band and return ok=false.
+            // Only the originating depth fires escalation_cb_; sub-agent
+            // halts bubble up via resp.error_type and the caller's gate
+            // (or the top-level REPL) decides what to do.
+            if (depth == 0 && escalation_cb_)
+                escalation_cb_(agent_id, sid, sig.text);
+            if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            resp.ok          = false;
+            resp.error_type  = "advisor_halt";
+            resp.error       = sig.text;
+            resp.halt_reason = sig.text;
+            resp.content      = std::move(total_content);
+            resp.input_tokens = total_input_tok;
+            resp.output_tokens = total_output_tok;
+            return resp;
+        }
 
         resp.had_tool_calls = true;
         current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
@@ -534,6 +773,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               artifact_reader_cb_,
                                               artifact_lister_cb_,
                                               agent_ptr->config().capabilities);
+        // Stash for the gate's tool summary on the eventual terminating turn.
+        last_cmds         = cmds;
+        last_tool_results = current_msg;
     }
 
     // Cumulative content/tokens replace the last iteration's values so the
@@ -725,52 +967,119 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     auto cmds = parse_agent_commands(resp.content);
     recover_truncated_writes(agent_ptr, resp, cmds, gated_cb);
 
-    // Apply the gate decision for iteration 0.
+    // Apply the gate decision for iteration 0 (delegation status / prose flush).
     end_iteration(cmds);
-
-    if (cmds.empty()) {
-        if (stream_end_cb_) stream_end_cb_(agent_id, sid, true);
-        return resp;
-    }
 
     std::map<std::string, std::string> shared_cache;
     auto invoker          = make_invoker(agent_id, 0, &shared_cache, message);
     auto advisor_invoker  = make_advisor_invoker(agent_id);
     auto parallel_invoker = make_parallel_invoker(agent_id, 0, message);
 
-    // Tool-call re-entry turns: each iteration's prose goes through the
-    // same gate.  When commands fire, the user sees a status line; when
-    // the iteration is the final synthesis, the buffered prose is flushed.
-    resp.had_tool_calls = true;
-    static constexpr int kMaxReentryTurns = 5;
-    for (int i = 0; i < kMaxReentryTurns; ++i) {
-        if (cb) cb("\n");
-        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
-                                              invoker, confirm_cb_, &shared_cache,
-                                              advisor_invoker, tool_status_cb_,
-                                              pane_spawner_cb_,
-                                              write_interceptor_cb_,
-                                              exec_disabled_,
-                                              parallel_invoker,
-                                              structured_memory_reader_cb_,
-                                              structured_memory_writer_cb_,
-                                              mcp_invoker_cb_,
-                                              memory_scratchpad_cb_,
-                                              search_invoker_cb_,
-                                              artifact_writer_cb_,
-                                              artifact_reader_cb_,
-                                              artifact_lister_cb_,
-                                              agent_ptr->config().capabilities);
+    // Gate-mode wiring (master / top-level).  Same construction as
+    // run_dispatch — see the longer comment there for the reasoning.
+    const auto& gate_cfg = agent_ptr->config().advisor;
+    const bool   gate_active = (gate_cfg.mode == "gate" && !gate_cfg.model.empty());
+    AdvisorGateInvoker gate_invoker = gate_active
+        ? make_advisor_gate_invoker(agent_id)
+        : AdvisorGateInvoker{};
+
+    // Bookkeeping for the gate's terminating-turn check.  `last_cmds` +
+    // `last_tool_results` carry the most recent iteration's tool-call data
+    // forward so the advisor sees what the executor actually did to reach
+    // its terminating output.
+    std::vector<AgentCommand> last_cmds;
+    std::string               last_tool_results;
+    int                       redirects_used = 0;
+    const int                 max_redirects  = gate_cfg.max_redirects;
+    bool                      had_any_tool_calls = !cmds.empty();
+
+    // Unified main loop — kMaxIters bounds total trips through stream(),
+    // including iter 0 (already done above).  Loop body branches on
+    // (cmds.empty + gate state) into one of: terminate, halt, redirect,
+    // or execute-tool-results-and-stream.  Pre-gate behaviour (gate
+    // inactive) is preserved exactly: cmds.empty terminates immediately.
+    static constexpr int kMaxIters = 6;
+    for (int i = 1; i < kMaxIters; ++i) {
+        if (cmds.empty()) {
+            if (!gate_active) break;
+
+            AdvisorGateOutput sig;
+            if (redirects_used >= max_redirects) {
+                sig.kind = AdvisorGateOutput::Kind::Halt;
+                sig.text = "advisor redirect budget exhausted (max " +
+                           std::to_string(max_redirects) + ")";
+            } else {
+                AdvisorGateInput in{
+                    /* original_task    = */ message,
+                    /* terminating_text = */ resp.content,
+                    /* tool_summary     = */ summarize_tool_calls(last_cmds, last_tool_results),
+                };
+                sig = gate_invoker(in);
+                if (sig.malformed && gate_cfg.malformed_halts &&
+                    sig.kind != AdvisorGateOutput::Kind::Halt) {
+                    sig.kind = AdvisorGateOutput::Kind::Halt;
+                    sig.text = "advisor returned unparseable signal: " +
+                               sig.raw.substr(0, 200);
+                }
+            }
+
+            if (sig.kind == AdvisorGateOutput::Kind::Continue) break;
+
+            if (sig.kind == AdvisorGateOutput::Kind::Halt) {
+                if (!iter_buffer.empty() && cb) cb(iter_buffer);
+                iter_buffer.clear();
+                if (escalation_cb_) escalation_cb_(agent_id, sid, sig.text);
+                if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+                resp.ok           = false;
+                resp.error_type   = "advisor_halt";
+                resp.error        = sig.text;
+                resp.halt_reason  = sig.text;
+                resp.content      = std::move(total_content);
+                resp.input_tokens = total_input_tok;
+                resp.output_tokens = total_output_tok;
+                resp.had_tool_calls = had_any_tool_calls;
+                return resp;
+            }
+
+            // REDIRECT — synthesise a user turn and stream the redirect.
+            ++redirects_used;
+            current_msg =
+                "[advisor redirect — synthetic user turn]\n" +
+                sig.text +
+                "\n[end advisor redirect]";
+            if (cb) cb("\n");
+        } else {
+            // Tool-call iteration — assemble tool results and re-enter.
+            if (cb) cb("\n");
+            current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
+                                                  invoker, confirm_cb_, &shared_cache,
+                                                  advisor_invoker, tool_status_cb_,
+                                                  pane_spawner_cb_,
+                                                  write_interceptor_cb_,
+                                                  exec_disabled_,
+                                                  parallel_invoker,
+                                                  structured_memory_reader_cb_,
+                                                  structured_memory_writer_cb_,
+                                                  mcp_invoker_cb_,
+                                                  memory_scratchpad_cb_,
+                                                  search_invoker_cb_,
+                                                  artifact_writer_cb_,
+                                                  artifact_reader_cb_,
+                                                  artifact_lister_cb_,
+                                                  agent_ptr->config().capabilities);
+            last_cmds         = cmds;
+            last_tool_results = current_msg;
+        }
+
         resp = agent_ptr->stream(current_msg, gated_cb);
         if (!resp.ok) {
             if (!iter_buffer.empty() && cb) cb(iter_buffer);
             iter_buffer.clear();
             if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
-            // Return what we accumulated so far + the failed iteration so
-            // the caller can see how far we got before erroring.
             resp.content        = std::move(total_content) + resp.content;
             resp.input_tokens   = total_input_tok  + resp.input_tokens;
             resp.output_tokens  = total_output_tok + resp.output_tokens;
+            resp.had_tool_calls = had_any_tool_calls;
             return resp;
         }
         if (cost_cb_) cost_cb_(agent_id, agent_ptr->config().model, resp);
@@ -781,8 +1090,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         cmds = parse_agent_commands(resp.content);
         recover_truncated_writes(agent_ptr, resp, cmds, gated_cb);
         end_iteration(cmds);
-        if (cmds.empty()) break;
-        resp.had_tool_calls = true;
+        if (!cmds.empty()) had_any_tool_calls = true;
     }
 
     // Replace per-iteration content/token counts with the cumulative values
@@ -791,6 +1099,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     resp.content        = std::move(total_content);
     resp.input_tokens   = total_input_tok;
     resp.output_tokens  = total_output_tok;
+    resp.had_tool_calls = had_any_tool_calls;
     if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
     return resp;
 }
