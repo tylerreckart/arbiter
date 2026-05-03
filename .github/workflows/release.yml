@@ -41,15 +41,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs_on:   macos-14         # Apple Silicon
-            os_slug:   macos
-            arch_slug: arm64
-          - runs_on:   macos-13         # Intel Macs
-            os_slug:   macos
-            arch_slug: x86_64
-          - runs_on:   ubuntu-22.04     # glibc 2.35 — broad Linux compat
-            os_slug:   linux
-            arch_slug: x86_64
+          # Single macOS job builds a universal binary, then `lipo`
+          # splits it back into per-arch slices so the existing
+          # `arbiter-macos-arm64.tar.gz` and `arbiter-macos-x86_64.tar.gz`
+          # release URLs (used by install scripts and the Homebrew
+          # tap) stay stable.  GitHub retired `macos-13` in Dec 2025;
+          # `macos-14` carries both arch SDK slices, so AppleClang
+          # builds both in one configure+compile pass.
+          - runs_on:    macos-14
+            os_slug:    macos
+            arch_slug:  universal
+            cmake_archs: "arm64;x86_64"
+          - runs_on:    ubuntu-22.04   # glibc 2.35 — broad Linux compat
+            os_slug:    linux
+            arch_slug:  x86_64
+            cmake_archs: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -83,10 +89,15 @@ jobs:
           if [ "${{ runner.os }}" = "macOS" ]; then
             EXTRA="-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)"
           fi
+          ARCHS_FLAG=""
+          if [ -n "${{ matrix.cmake_archs }}" ]; then
+            ARCHS_FLAG='-DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_archs }}'
+          fi
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DINDEX_BUILD_TESTS=OFF \
-            $EXTRA
+            $EXTRA \
+            $ARCHS_FLAG
 
       - name: Build
         run: cmake --build build --config Release -j
@@ -99,39 +110,69 @@ jobs:
             strip --strip-unneeded build/arbiter
           fi
 
+      # macOS path: split universal binary into per-arch tarballs to
+      # preserve `arbiter-macos-arm64.tar.gz` and
+      # `arbiter-macos-x86_64.tar.gz` URLs.  Linux path: single tarball.
       - name: Stage + tarball
-        id: pkg
         run: |
-          NAME="arbiter-${{ matrix.os_slug }}-${{ matrix.arch_slug }}"
-          STAGE="stage-${NAME}"
-          mkdir -p "$STAGE"
-          install -m 755 build/arbiter "$STAGE/arbiter"
-          [ -f LICENSE ]   && cp LICENSE   "$STAGE/"
-          [ -f README.md ] && cp README.md "$STAGE/"
-          tar -C "$STAGE" -czf "${NAME}.tar.gz" .
-          # SHA-256 sibling file — prefix is the hash, then two spaces and
-          # the filename so `shasum -c` / `sha256sum -c` verifies it.
-          if command -v sha256sum >/dev/null; then
-            sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+          set -euxo pipefail
+          tarball() {
+            local name="$1"; local bin="$2"
+            local stage="stage-$name"
+            mkdir -p "$stage"
+            install -m 755 "$bin" "$stage/arbiter"
+            [ -f LICENSE ]   && cp LICENSE   "$stage/"
+            [ -f README.md ] && cp README.md "$stage/"
+            tar -C "$stage" -czf "${name}.tar.gz" .
+            if command -v sha256sum >/dev/null; then
+              sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+            else
+              shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+            fi
+          }
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            for arch in arm64 x86_64; do
+              lipo -extract "$arch" build/arbiter \
+                   -output "build/arbiter-$arch"
+              tarball "arbiter-macos-$arch" "build/arbiter-$arch"
+            done
           else
-            shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+            tarball \
+              "arbiter-${{ matrix.os_slug }}-${{ matrix.arch_slug }}" \
+              build/arbiter
           fi
-          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test (extract + run --help)
         run: |
-          mkdir -p smoke
-          tar -xzf "${{ steps.pkg.outputs.name }}.tar.gz" -C smoke
-          ./smoke/arbiter --help > /dev/null
-          echo "smoke: --help exit 0"
+          set -euxo pipefail
+          smoke() {
+            local name="$1"; local runner_cmd="$2"
+            local dir="smoke-$name"
+            mkdir -p "$dir"
+            tar -xzf "${name}.tar.gz" -C "$dir"
+            $runner_cmd "./$dir/arbiter" --help > /dev/null
+            echo "smoke $name: --help exit 0"
+          }
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # arm64 runs natively; x86_64 via Rosetta 2 (preinstalled
+            # on macos-14 runners).
+            smoke "arbiter-macos-arm64" ""
+            smoke "arbiter-macos-x86_64" "arch -x86_64"
+          else
+            smoke \
+              "arbiter-${{ matrix.os_slug }}-${{ matrix.arch_slug }}" ""
+          fi
 
-      - name: Upload build artifact
+      # One artifact per produced tarball.  macOS emits two from a
+      # single job; Linux emits one.  Names match the publish step's
+      # glob (`arbiter-*.tar.gz`).
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.pkg.outputs.name }}
+          name: build-${{ matrix.os_slug }}-${{ matrix.arch_slug }}
           path: |
-            ${{ steps.pkg.outputs.name }}.tar.gz
-            ${{ steps.pkg.outputs.name }}.tar.gz.sha256
+            arbiter-*.tar.gz
+            arbiter-*.tar.gz.sha256
           if-no-files-found: error
           retention-days: 7
 
