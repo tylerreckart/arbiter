@@ -59,7 +59,7 @@ agents/                 example agent constitutions (json)
 tests/                  unit tests + PTY-based line-editor tests
 docs/api/               HTTP API reference (concept + endpoint pages)
 third_party/doctest/    vendored test framework
-.github/workflows/      CI, release, homebrew bump
+.github/workflows/      CI and release pipelines
 ```
 
 Source files use a long-form-comment convention: explain *why*, not
