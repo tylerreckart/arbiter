@@ -48,6 +48,18 @@ accordingly.
 
 ## Install
 
+Prebuilt binaries.
+
+MacOS arm64:
+
+    curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
+      | tar xz -C /usr/local/bin
+
+Linux x86_64:
+
+    curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-linux-x86_64.tar.gz \
+      | tar xz -C /usr/local/bin
+
 Build from source:
 
     cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -56,7 +68,6 @@ Build from source:
 
 Requires OpenSSL, libcurl, SQLite3, and a C++20 compiler. libedit or GNU
 readline is optional but recommended for the terminal client.
-
 
 ## Setup
 
