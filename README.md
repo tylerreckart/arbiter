@@ -28,12 +28,17 @@ accordingly.
 
 ## Documentation
 
+- [`docs/philosophy.md`](docs/philosophy.md) — design philosophy: the six
+  themes that explain why arbiter is shaped the way it is.
 - [`docs/api/`](docs/api/index.md) — full HTTP API reference: concept
   pages (tenants, auth, SSE events, fleet streaming, MCP, artifacts,
   structured memory, operations) and one page per endpoint.
-- [`docs/cli`](docs/cli/index.md) - TODO
-- [`docs/tui`](docs/tui/index.md) - TODO
-- [`PHILOSOPHY.md`](docs/philosophy.md) - TODO
+- [`docs/cli/`](docs/cli/index.md) — non-interactive command-line
+  reference: `--init`, `--send`, `--api`, tenant admin, environment
+  variables.
+- [`docs/tui/`](docs/tui/index.md) — interactive terminal client:
+  screen anatomy, slash commands, keybindings, multi-pane layouts,
+  streaming and turn lifecycle, session persistence.
 - [`CHANGELOG.md`](CHANGELOG.md) — what changed, when. Breaking
   changes are flagged.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, tests, PR conventions.
