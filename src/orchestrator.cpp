@@ -191,6 +191,27 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
 
         // Inject delegation context so sub-agent knows the user's goal
         // and its position in the pipeline.
+        // Pull recent memory entries scoped to this conversation so the
+        // sub-agent walks in knowing what siblings have already recorded.
+        // Without this hint scribe-style writers had no way to discover
+        // scout-style researchers' /mem add entry output except by
+        // guessing query terms — which fails silently and pushes the
+        // agent into "graph is cold, fall back to trained knowledge"
+        // mode even when the data is right there.  Cheap (one DB read
+        // per /agent invocation) and degrades to nothing when no reader
+        // is wired (CLI/REPL contexts have no tenant store).
+        std::string pipeline_memory;
+        if (structured_memory_reader_cb_) {
+            try {
+                std::string body = structured_memory_reader_cb_("pipeline-entries", "", caller_id);
+                if (!body.empty() &&
+                    body.compare(0, 4, "ERR:") != 0 &&
+                    body.compare(0, 11, "(no entries") != 0) {
+                    pipeline_memory = body;
+                }
+            } catch (...) { /* never let memory probe break delegation */ }
+        }
+
         std::string enriched_msg;
         if (!original_query.empty()) {
             std::string truncated_query = original_query.substr(
@@ -199,7 +220,16 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
                 "[DELEGATION CONTEXT]\n"
                 "Original request: " + truncated_query + "\n"
                 "Delegated by: " + caller_id + "\n"
-                "Pipeline depth: " + std::to_string(depth + 1) + "/2\n"
+                "Pipeline depth: " + std::to_string(depth + 1) + "/2\n";
+            if (!pipeline_memory.empty()) {
+                enriched_msg +=
+                    "Pipeline memory (entries written by prior agents this "
+                    "conversation — use /mem entry #<id> to read full content "
+                    "before searching or restating from training):\n" +
+                    pipeline_memory;
+                if (pipeline_memory.back() != '\n') enriched_msg += '\n';
+            }
+            enriched_msg +=
                 "[END DELEGATION CONTEXT]\n\n" + sub_msg;
         } else {
             enriched_msg = sub_msg;
@@ -280,7 +310,21 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
 
                 // Match make_invoker's delegation-context prelude so the
                 // sub-agent has the same framing whether it was called
-                // sequentially or via /parallel.
+                // sequentially or via /parallel.  Pipeline memory snapshot
+                // is taken on the spawning thread under no lock — the
+                // structured_memory_reader_cb_ is set once at request setup
+                // and never mutated, so concurrent reads are safe.
+                std::string pipeline_memory;
+                if (structured_memory_reader_cb_) {
+                    try {
+                        std::string body = structured_memory_reader_cb_("pipeline-entries", "", caller_id);
+                        if (!body.empty() &&
+                            body.compare(0, 4, "ERR:") != 0 &&
+                            body.compare(0, 11, "(no entries") != 0) {
+                            pipeline_memory = body;
+                        }
+                    } catch (...) { /* never break delegation on probe */ }
+                }
                 std::string enriched_msg;
                 if (!original_query.empty()) {
                     std::string truncated_query = original_query.substr(
@@ -289,7 +333,17 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                         "[DELEGATION CONTEXT]\n"
                         "Original request: " + truncated_query + "\n"
                         "Delegated by: " + caller_id + " (/parallel)\n"
-                        "Pipeline depth: " + std::to_string(depth + 1) + "/2\n"
+                        "Pipeline depth: " + std::to_string(depth + 1) + "/2\n";
+                    if (!pipeline_memory.empty()) {
+                        enriched_msg +=
+                            "Pipeline memory (entries written by prior agents "
+                            "this conversation — use /mem entry #<id> to read "
+                            "full content before searching or restating from "
+                            "training):\n" +
+                            pipeline_memory;
+                        if (pipeline_memory.back() != '\n') enriched_msg += '\n';
+                    }
+                    enriched_msg +=
                         "[END DELEGATION CONTEXT]\n\n" + sub_msg;
                 } else {
                     enriched_msg = sub_msg;
@@ -321,6 +375,32 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
 // parse_advisor_signal lives in src/advisor_gate.cpp so the gate's signal
 // parser can be unit-tested without dragging the orchestrator's heavy
 // dependency graph (Agent, ApiClient, MCP, …) into the test binary.
+
+namespace {
+
+// Build a one-line preview of the executor's terminating turn for the
+// advisor-event payload.  Strips slash-command lines (they're already
+// summarised separately) and clamps to a fixed budget so verbose logs
+// stay tidy.  Any chunk produced by parse_agent_commands shouldn't reach
+// here, so we strip raw `\n/cmd ` prefixes only.
+std::string make_terminating_preview(const std::string& s, size_t max_chars = 120) {
+    std::string out;
+    out.reserve(std::min<size_t>(s.size(), max_chars));
+    bool last_space = true;
+    for (char c : s) {
+        if (out.size() >= max_chars) break;
+        if (c == '\n' || c == '\r' || c == '\t') {
+            if (!last_space) { out.push_back(' '); last_space = true; }
+        } else {
+            out.push_back(c);
+            last_space = (c == ' ');
+        }
+    }
+    if (out.size() == max_chars) out += "…";
+    return out;
+}
+
+}  // namespace
 
 AdvisorInvoker Orchestrator::make_advisor_invoker(const std::string& caller_id) {
     return [this, caller_id](const std::string& question) -> std::string {
@@ -364,6 +444,15 @@ AdvisorInvoker Orchestrator::make_advisor_invoker(const std::string& caller_id) 
         // advisor model's pricing.  Accurate per-caller spend attribution
         // even when the advisor is a different provider.
         if (cost_cb_) cost_cb_(caller_id, advisor_model, resp);
+
+        if (advisor_event_cb_) {
+            AdvisorEvent ev;
+            ev.agent_id  = caller_id;
+            ev.stream_id = current_stream_id();
+            ev.kind      = "consult";
+            ev.detail    = question;
+            advisor_event_cb_(ev);
+        }
 
         return resp.content;
     };
@@ -700,7 +789,8 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             if (!gate_active) break;
 
             AdvisorGateOutput sig;
-            if (redirects_used >= max_redirects) {
+            bool budget_exhausted = (redirects_used >= max_redirects);
+            if (budget_exhausted) {
                 // Budget exhausted — synthesise a HALT so the advisor can't
                 // pin the executor in an infinite redirect loop.  The user
                 // sees the same escalation surface as a real HALT.
@@ -724,6 +814,32 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                     sig.text = "advisor returned unparseable signal: " +
                                sig.raw.substr(0, 200);
                 }
+            }
+
+            // Surface every gate decision to the verbose stream so an
+            // operator watching --verbose / SSE can see the runtime gate
+            // working in real time.  Includes a one-line preview of the
+            // executor's terminating turn so context is visible without
+            // the full transcript.
+            if (advisor_event_cb_) {
+                AdvisorEvent ev;
+                ev.agent_id  = agent_id;
+                ev.stream_id = sid;
+                ev.preview   = make_terminating_preview(resp.content);
+                ev.malformed = sig.malformed;
+                if (budget_exhausted) {
+                    ev.kind = "gate_budget";
+                    ev.detail = sig.text;
+                } else if (sig.kind == AdvisorGateOutput::Kind::Continue) {
+                    ev.kind = "gate_continue";
+                } else if (sig.kind == AdvisorGateOutput::Kind::Redirect) {
+                    ev.kind = "gate_redirect";
+                    ev.detail = sig.text;
+                } else {
+                    ev.kind = "gate_halt";
+                    ev.detail = sig.text;
+                }
+                advisor_event_cb_(ev);
             }
 
             if (sig.kind == AdvisorGateOutput::Kind::Continue) break;
@@ -1004,7 +1120,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             if (!gate_active) break;
 
             AdvisorGateOutput sig;
-            if (redirects_used >= max_redirects) {
+            bool budget_exhausted = (redirects_used >= max_redirects);
+            if (budget_exhausted) {
                 sig.kind = AdvisorGateOutput::Kind::Halt;
                 sig.text = "advisor redirect budget exhausted (max " +
                            std::to_string(max_redirects) + ")";
@@ -1021,6 +1138,29 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                     sig.text = "advisor returned unparseable signal: " +
                                sig.raw.substr(0, 200);
                 }
+            }
+
+            // Mirror gate decisions to the verbose stream — see run_dispatch
+            // for the matching emit and rationale.
+            if (advisor_event_cb_) {
+                AdvisorEvent ev;
+                ev.agent_id  = agent_id;
+                ev.stream_id = sid;
+                ev.preview   = make_terminating_preview(resp.content);
+                ev.malformed = sig.malformed;
+                if (budget_exhausted) {
+                    ev.kind = "gate_budget";
+                    ev.detail = sig.text;
+                } else if (sig.kind == AdvisorGateOutput::Kind::Continue) {
+                    ev.kind = "gate_continue";
+                } else if (sig.kind == AdvisorGateOutput::Kind::Redirect) {
+                    ev.kind = "gate_redirect";
+                    ev.detail = sig.text;
+                } else {
+                    ev.kind = "gate_halt";
+                    ev.detail = sig.text;
+                }
+                advisor_event_cb_(ev);
             }
 
             if (sig.kind == AdvisorGateOutput::Kind::Continue) break;

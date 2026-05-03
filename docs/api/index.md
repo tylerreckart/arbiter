@@ -14,6 +14,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [Authentication](concepts/authentication.md)
 - [Fleet streaming](concepts/fleet-streaming.md)
 - [SSE event catalog](concepts/sse-events.md)
+- [Advisor](concepts/advisor.md)
 - [Structured memory](concepts/structured-memory.md)
 - [Artifacts](concepts/artifacts.md)
 - [MCP servers](concepts/mcp.md)

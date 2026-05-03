@@ -40,8 +40,19 @@ Either a bare constitution or wrapped under `agent_def`:
 | `rules`         | array<string> | no | Behavioural constraints appended to the system prompt. |
 | `capabilities`  | array<string> | no | Tools this agent uses. Used by master for routing. |
 | `mode`          | string | no  | `""` / `"standard"` (default) or `"writer"`. |
-| `advisor_model` | string | no  | Higher-capability model for `/advise` consults. |
+| `advisor`       | object \| string | no | Advisor configuration. Object form: `{model, prompt?, mode?, max_redirects?, malformed_halts?}`. String form is treated as `{model: <s>, mode: "consult"}` (back-compat). See [advisor concept](../concepts/advisor.md). |
+| `advisor_model` | string | no  | **Legacy.** Higher-capability model for `/advise` consults. New configurations should use `advisor.model` instead. If both `advisor` and `advisor_model` are present, the structured `advisor` block wins. |
 | `personality`   | string | no  | Free-form personality overlay. |
+
+#### `advisor` object schema
+
+| Sub-field          | Type    | Default     | Notes |
+|--------------------|---------|-------------|-------|
+| `model`            | string  | (required when `mode != "off"`) | Higher-capability model used for consults and gate decisions. |
+| `mode`             | string  | `"consult"` | `"off"` disables both consult and gate; `"consult"` makes `/advise` available to the executor; `"gate"` additionally gates the executor's terminating turn — the runtime calls the advisor with the executor's output and a tool summary, and only returns to the caller on a `CONTINUE` signal. See [advisor concept](../concepts/advisor.md). |
+| `prompt`           | string  | built-in    | Override the gate's system prompt. Only consulted in `mode: "gate"`. |
+| `max_redirects`    | int     | `2`         | Cap on how many `REDIRECT` signals the gate can issue per top-level turn before the runtime synthesises a `HALT`. |
+| `malformed_halts`  | bool    | `true`      | Whether an unparseable advisor reply should be treated as `HALT` (`true` — fail-closed) or `CONTINUE` (`false` — fail-open). |
 
 ```bash
 curl -X POST \

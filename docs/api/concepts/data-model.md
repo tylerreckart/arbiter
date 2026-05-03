@@ -56,7 +56,8 @@ Billing fields (caps, plan, MTD, usage entries) live in the external billing ser
 | `rules`       | array<string> | Behavioral constraints. |
 | `capabilities`| array<string> | Tools this agent uses (used by master for routing). |
 | `mode`        | string? | `"standard"` (default) or `"writer"`. |
-| `advisor_model` | string? | Higher-capability model for `/advise` consults. |
+| `advisor`     | object? | Structured advisor config: `{model, prompt?, mode?, max_redirects?, malformed_halts?}`. `mode: "consult"` (default) makes `/advise` available; `mode: "gate"` additionally enforces a runtime gate at the executor's terminating turn. See [advisor](advisor.md). |
+| `advisor_model` | string? | **Legacy** shorthand for `advisor.model` with `mode: "consult"`. New configs should use `advisor`. |
 | `personality` | string? | Free-form personality overlay. |
 | `created_at`  | integer | Epoch seconds. Stored agents only; absent for the built-in `index`. |
 | `updated_at`  | integer | Epoch seconds. Stored agents only. |

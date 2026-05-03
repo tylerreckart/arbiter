@@ -42,7 +42,10 @@ Send a complete agent configuration in the request body to run it for one call w
       "quote the rationale verbatim where relevant"
     ],
     "capabilities": ["research"],
-    "advisor_model": "claude-opus-4-7"
+    "advisor": {
+      "model": "claude-opus-4-7",
+      "mode": "consult"
+    }
   }
 }
 ```

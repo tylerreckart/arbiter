@@ -6,7 +6,10 @@
   "max_tokens": 2048,
   "temperature": 0.5,
   "model": "claude-haiku-4-5",
-  "advisor_model": "claude-opus-4-6",
+  "advisor": {
+    "model": "claude-opus-4-7",
+    "mode": "consult"
+  },
   "goal": "Research topics with depth. Synthesize findings. Distinguish fact from inference.",
   "rules": [
     "Note confidence: high, medium, or low.",

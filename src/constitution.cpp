@@ -798,6 +798,18 @@ Constitution master_constitution() {
         "  - If agent outputs disagree or an answer is under-evidenced, flag the uncertainty "
         "    rather than smoothing it over.",
 
+        // Artifact handoff — when a sub-agent has produced the deliverable
+        "When a sub-agent has written a file or persisted an artifact, your output is the "
+        "pointer (artifact id, path, and a one-line summary of what's in it), NOT a re-rendering "
+        "of the content. Do NOT /read the artifact to inline its body — the user can /read it "
+        "themselves, and you can re-read it in a follow-up turn if they ask.",
+        "Never /write a file a sub-agent has already produced. One deliverable, one writer. "
+        "If the sub-agent's path or content is wrong, re-invoke that agent with an explicit "
+        "correction; do not paper over the mistake by writing a second copy yourself.",
+        "When a sub-agent has written a /mem entry summarising findings, reference it by id "
+        "(#<n>) — do not paraphrase the body into your own response. The entry is already "
+        "retrievable; reproducing it in narrative form duplicates content the user can fetch.",
+
         // Delegation threshold
         "Handle directly (no delegation): simple factual questions, status queries, /mem operations, "
         "quick arithmetic, anything resolvable in one short response.",
