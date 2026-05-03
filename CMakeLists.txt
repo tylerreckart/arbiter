@@ -88,6 +88,7 @@ set(INDEX_AI_SOURCES
     src/agent.cpp
     src/constitution.cpp
     src/orchestrator.cpp
+    src/advisor_gate.cpp
     src/api_server.cpp
     src/billing_client.cpp
     src/tenant_store.cpp
@@ -101,7 +102,36 @@ set(INDEX_AI_SOURCES
     src/markdown.cpp
 )
 
+# --- Starter agent definitions: embed agents/*.json into the binary -------
+# `arbiter --init` and the first-run wizard ship the same starter agents
+# users can edit on disk later.  The JSON files in agents/ are the single
+# source of truth; this build step embeds them as raw-string literals so
+# the binary is self-contained and the C++ side has no shadow definitions
+# that could drift.  Header regenerates whenever any input JSON changes.
+set(STARTERS_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+set(STARTERS_GENERATED_HEADER "${STARTERS_GENERATED_DIR}/starters_data.h")
+file(MAKE_DIRECTORY "${STARTERS_GENERATED_DIR}")
+file(GLOB STARTER_JSON_INPUTS "${CMAKE_SOURCE_DIR}/agents/*.json")
+
+add_custom_command(
+    OUTPUT ${STARTERS_GENERATED_HEADER}
+    COMMAND ${CMAKE_COMMAND}
+        -DAGENTS_DIR=${CMAKE_SOURCE_DIR}/agents
+        -DOUT_FILE=${STARTERS_GENERATED_HEADER}
+        -P ${CMAKE_SOURCE_DIR}/cmake/embed_starters.cmake
+    DEPENDS
+        ${STARTER_JSON_INPUTS}
+        ${CMAKE_SOURCE_DIR}/cmake/embed_starters.cmake
+    COMMENT "Embedding agents/*.json into starters_data.h"
+    VERBATIM
+)
+
+# Phony target so anything that needs the embedded header can depend on it.
+add_custom_target(starters_data_header DEPENDS ${STARTERS_GENERATED_HEADER})
+
 add_executable(arbiter ${INDEX_AI_SOURCES})
+add_dependencies(arbiter starters_data_header)
+target_include_directories(arbiter PRIVATE ${STARTERS_GENERATED_DIR})
 
 # Surface the project version to C++ so the welcome card can render it on
 # the bottom border.  Keep CMakeLists.txt's `project(... VERSION x.y.z)` in
@@ -318,4 +348,20 @@ if(INDEX_BUILD_TESTS)
         CURL::libcurl
     )
     add_test(NAME unit_constitution COMMAND unit_constitution)
+
+    # Advisor gate signal parser.  The parser is the only thing translating
+    # an advisor's reply into a CONTINUE/REDIRECT/HALT decision; format
+    # drift here means the runtime gate silently misroutes.  Kept as a
+    # dedicated tiny target so the parser lives independently of the
+    # orchestrator's heavy dependency graph.
+    add_executable(unit_advisor_gate
+        tests/test_advisor_gate.cpp
+        src/advisor_gate.cpp
+    )
+    target_include_directories(unit_advisor_gate PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_advisor_gate PRIVATE CURL::libcurl)
+    add_test(NAME unit_advisor_gate COMMAND unit_advisor_gate)
 endif()

@@ -21,7 +21,8 @@ arbiter --api [--port N] [--bind ADDR] [--verbose]
 5. Loads the optional MCP registry from `~/.arbiter/mcp_servers.json`. See [`docs/api/concepts/mcp.md`](../api/concepts/mcp.md).
 6. Reads optional web-search provider config from `ARBITER_SEARCH_PROVIDER` / `ARBITER_SEARCH_API_KEY` (or `BRAVE_SEARCH_API_KEY` as a convenience fallback).
 7. Reads optional billing-service URL from `ARBITER_BILLING_URL`. Unset = no eligibility checks, no usage record posting; provider keys go through directly with no caps.
-8. Binds the listen socket and starts accepting requests.
+8. Clears the terminal (ANSI `\033[2J\033[3J\033[H`) and prints the banner + endpoint summary at row 1, so the bind address and admin-token lines anchor at the top of a clean screen instead of chasing prior shell history.
+9. Binds the listen socket and starts accepting requests.
 
 `SIGINT` / `SIGTERM` triggers graceful shutdown — in-flight SSE streams close cleanly, the listen socket closes, the process exits.
 
@@ -52,7 +53,15 @@ Optional. When `ARBITER_BILLING_URL` is set, the runtime exchanges every bearer 
 
 ## Logging
 
-By default the server logs only structured events (request received, request completed, errors). Add `--verbose` (or `ARBITER_API_VERBOSE=1`) to mirror SSE events to stderr — useful when debugging an agent's tool use, noisy under normal load. Logs go to stderr; redirect with `2>` in your service unit if you want them captured separately from stdout.
+By default the server logs only structured events (request received, request completed, errors). Add `--verbose` (or `ARBITER_API_VERBOSE=1`) to mirror SSE events to stderr — useful when debugging an agent's tool use, noisy under normal load. Verbose mode renders one stderr line per event, colour-coded:
+
+- text deltas (line-buffered, flushed on newline)
+- `tool_call` — slash-command execution with ✓/✗ status
+- `advisor` — runtime advisor activity: `advise` (executor `/advise` consult), `gate ✓` (continue), `gate ↻` (redirect with guidance), `gate ✗` (halt with reason), `gate ⛔` (redirect budget exhausted). See [`docs/api/concepts/sse-events.md`](../api/concepts/sse-events.md) and [`docs/api/concepts/advisor.md`](../api/concepts/advisor.md).
+- `escalation` — out-of-band advisor halt notification (sibling of `stream_end`)
+- `file` — `/write` writes streamed to the client
+
+Logs go to stderr; redirect with `2>` in your service unit if you want them captured separately from stdout.
 
 ## Resource expectations
 

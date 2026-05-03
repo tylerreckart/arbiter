@@ -26,4 +26,11 @@ struct StarterAgent {
 // to mutate the Constitutions and save them to ~/.arbiter/agents/<id>.json.
 std::vector<StarterAgent> starter_agents();
 
+// Verbatim source-tree JSON for a given starter id, or empty when no such
+// starter is bundled.  cmd_init uses this to write the original
+// pretty-printed file on disk, which preserves field order, raw casing of
+// the "advisor" field, and avoids the IEEE-754 round-trip noise that
+// to_json() would introduce on `temperature` and other doubles.
+std::string starter_json(const std::string& id);
+
 } // namespace index_ai

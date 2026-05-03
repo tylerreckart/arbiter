@@ -153,6 +153,43 @@ public:
     void set_agent_stream_callback(AgentStreamCallback  cb) { agent_stream_cb_ = std::move(cb); }
     void set_stream_end_callback  (StreamEndCallback    cb) { stream_end_cb_   = std::move(cb); }
 
+    // Fired when an agent's gate-mode advisor returns HALT (or when the
+    // redirect budget is exhausted and the runtime synthesises one).  Sibling
+    // of stream_end_cb_, NOT a replacement — escalation_cb_ fires first with
+    // the halt reason, then stream_end_cb_(ok=false) fires as for any other
+    // failed turn.  Subscribers wire this to a UI affordance that surfaces
+    // the reason out-of-band from the agent's normal text stream (REPL
+    // banner, SSE `escalation` event, TUI overlay, etc.).
+    using EscalationCallback = std::function<void(const std::string& agent_id,
+                                                   int stream_id,
+                                                   const std::string& halt_reason)>;
+    void set_escalation_callback(EscalationCallback cb) { escalation_cb_ = std::move(cb); }
+
+    // Advisor activity stream.  Fires for every advisor interaction so a
+    // verbose log / SSE consumer can show gate decisions as they happen
+    // — distinct from escalation_cb_ (which only fires on terminal HALT).
+    //
+    //   kind="consult"        executor invoked /advise; `detail` = question
+    //   kind="gate_continue"  runtime gate accepted the terminating turn
+    //   kind="gate_redirect"  gate rerouted the executor; `detail` = guidance
+    //   kind="gate_halt"      gate halted the executor; `detail` = reason
+    //                         (escalation_cb_ also fires for this case at depth 0)
+    //   kind="gate_budget"    redirect budget exhausted; `detail` = budget reason
+    //
+    // For gate events, `preview` carries the first ~120 chars of the
+    // executor's terminating turn so an operator can see what the gate
+    // was reacting to without spelunking through the full transcript.
+    struct AdvisorEvent {
+        std::string agent_id;
+        int         stream_id = 0;
+        std::string kind;
+        std::string detail;
+        std::string preview;       // executor's terminating-turn text, truncated
+        bool        malformed = false;
+    };
+    using AdvisorEventCallback = std::function<void(const AdvisorEvent&)>;
+    void set_advisor_event_callback(AdvisorEventCallback cb) { advisor_event_cb_ = std::move(cb); }
+
     // Read the current thread's streaming context.  Callbacks (tool_status,
     // cost, progress, etc.) invoke these at emit time so every event carries
     // the `stream_id` and `agent` of whichever turn produced it — even when
@@ -271,6 +308,17 @@ public:
     // command.  Cost attribution still flows through cost_cb_.
     AdvisorInvoker make_advisor_invoker(const std::string& caller_id);
 
+    // Build an AdvisorGateInvoker bound to a specific caller.  Distinct from
+    // make_advisor_invoker: the gate variant takes structured input
+    // (original task, terminating-turn text, tool summary) and parses a
+    // CONTINUE/REDIRECT/HALT signal from the advisor's reply.  Returns a
+    // closure that ERR-equivalent-halts when no advisor model is configured
+    // — callers are expected to gate on `Constitution::AdvisorConfig::mode
+    // == "gate"` before calling, so this is a defence-in-depth check.  Cost
+    // is attributed to caller_id with the advisor model's pricing, the same
+    // way /advise consultations are billed.
+    AdvisorGateInvoker make_advisor_gate_invoker(const std::string& caller_id);
+
 private:
     ApiClient client_;
     std::unordered_map<std::string, std::unique_ptr<Agent>> agents_;
@@ -297,6 +345,8 @@ private:
     StreamStartCallback stream_start_cb_;
     AgentStreamCallback agent_stream_cb_;
     StreamEndCallback   stream_end_cb_;
+    EscalationCallback  escalation_cb_;
+    AdvisorEventCallback advisor_event_cb_;
     std::atomic<int>    stream_counter_{-1};   // next_stream_id returns 0 first
     int                 next_stream_id();
 

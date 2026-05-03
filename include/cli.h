@@ -3,7 +3,7 @@
 //
 // Non-REPL entry points.  Each function corresponds to one command-line mode:
 //
-//   arbiter --init                    → cmd_init       (create example agents + config dir)
+//   arbiter --init [--force]          → cmd_init       (create example agents + config dir)
 //   arbiter --api  [--port N]         → cmd_api        (HTTP+SSE orchestration API)
 //   arbiter --send <a> <msg>          → cmd_oneshot    (one-turn request, no TUI)
 //
@@ -24,7 +24,11 @@
 
 namespace index_ai {
 
-void cmd_init();
+// `force` overwrites existing agent JSON files in ~/.arbiter/agents/.  By
+// default cmd_init preserves files the user may have edited and only
+// writes ones that don't exist yet — re-run with force=true (CLI: --force)
+// to reset every starter back to the embedded definition.
+void cmd_init(bool force = false);
 void cmd_api(int port, const std::string& bind, bool verbose);
 void cmd_oneshot(const std::string& agent_id, const std::string& msg);
 

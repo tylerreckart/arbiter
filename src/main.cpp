@@ -348,6 +348,48 @@ static void cmd_interactive() {
         if (p) p->tui.set_status(agent_id + ": compacting context (" +
                                  std::to_string(n) + " msgs)");
     });
+    // Advisor gate halt — surface as a distinct banner separate from the
+    // agent's normal text stream.  HALT means the runtime stopped the
+    // executor before it could return; the user needs to see the reason
+    // out-of-band so it doesn't blend into the agent's last sentence.
+    orch.set_escalation_callback([&](const std::string& agent_id,
+                                      int /*stream_id*/,
+                                      const std::string& reason) {
+        Pane* p = g_active_pane;
+        if (!p) return;
+        std::string banner =
+            theme().accent_error + "[advisor halt: " + agent_id + "] " +
+            reason + theme().reset + "";
+        p->output_queue.push_msg(banner);
+    });
+
+    // Advisor activity (consults + gate decisions) — render as dim status
+    // lines so the user can watch the runtime gate without it crowding the
+    // agent's actual output.  Continue events are silent (they're the
+    // common case and wouldn't add information); only redirects, halts,
+    // budget exhaustion, and explicit /advise consultations surface here.
+    orch.set_advisor_event_callback([&](const index_ai::Orchestrator::AdvisorEvent& ev) {
+        Pane* p = g_active_pane;
+        if (!p) return;
+        if (ev.kind == "gate_continue") return;  // quiet success
+        const std::string& dim  = theme().text_dimmer;
+        const std::string& warn = theme().accent_warning;
+        const std::string& err  = theme().accent_error;
+        const std::string& rst  = theme().reset;
+        std::string label, color;
+        if      (ev.kind == "consult")       { label = "advisor consult"; color = dim; }
+        else if (ev.kind == "gate_redirect") { label = "advisor redirect"; color = warn; }
+        else if (ev.kind == "gate_halt")     { label = "advisor halt";    color = err;  }
+        else if (ev.kind == "gate_budget")   { label = "advisor budget";  color = err;  }
+        else                                  { label = ev.kind;            color = dim; }
+        std::string detail = ev.detail;
+        if (detail.size() > 200) { detail.resize(197); detail += "..."; }
+        std::string line = color + "[" + label + ": " + ev.agent_id + "]";
+        if (!detail.empty()) line += " " + detail;
+        line += rst + "";
+        p->output_queue.push_msg(line);
+    });
+
     orch.set_confirm_callback([&](const std::string& p) -> bool {
         std::promise<bool> done;
         auto fut = done.get_future();
@@ -1472,7 +1514,19 @@ int main(int argc, char* argv[]) {
         std::string arg1 = argv[1];
 
         if (arg1 == "--init" || arg1 == "init") {
-            index_ai::cmd_init();
+            // arbiter --init [--force]
+            // Without --force, --init preserves existing agent JSON files
+            // so accidental re-runs don't clobber a user's edits.
+            bool force = false;
+            for (int i = 2; i < argc; ++i) {
+                std::string a = argv[i];
+                if (a == "--force" || a == "-f") force = true;
+                else {
+                    std::cerr << "Unknown --init flag: " << a << "\n";
+                    return 1;
+                }
+            }
+            index_ai::cmd_init(force);
             return 0;
         }
         if (arg1 == "--api" || arg1 == "api") {
@@ -1559,7 +1613,9 @@ int main(int argc, char* argv[]) {
                 "                                     --verbose mirrors every SSE event (text deltas, tool calls,\n"
                 "                                     thinking, etc.) to stderr.  Env: ARBITER_API_VERBOSE=1.\n"
                 "  arbiter --send <agent> <msg>       One-shot message\n"
-                "  arbiter --init                     Initialize config + example agents\n"
+                "  arbiter --init [--force]           Initialize config + example agents\n"
+                "                                     --force overwrites existing ~/.arbiter/agents/*.json files;\n"
+                "                                     omit it to preserve user-edited agent definitions.\n"
                 "  arbiter --help                     This help\n\n"
                 "Tenants (for --api):\n"
                 "  arbiter --add-tenant <name>        Provision a tenant + API key\n"

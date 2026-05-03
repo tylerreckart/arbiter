@@ -511,6 +511,33 @@ public:
                  << "  " << color(kBoldMagenta) << "wrote " << path << reset()
                  << color(kDim) << " (" << fmt_size(static_cast<int64_t>(size)) << ")"
                  << reset();
+        } else if (ev == "advisor") {
+            // Runtime gate / /advise consultation activity.  Each decision
+            // gets one stderr line so the operator can watch the gate
+            // working — colour-coded by signal type so a redirect or halt
+            // jumps out of a long stream.
+            const std::string agent  = payload ? payload->get_string("agent") : "";
+            const std::string kind   = payload ? payload->get_string("kind")  : "";
+            const std::string detail = payload ? payload->get_string("detail") : "";
+            const std::string preview = payload ? payload->get_string("preview") : "";
+            const bool malformed = payload && payload->get_bool("malformed");
+
+            const char* tag_color = kDim;
+            std::string label = kind;
+            if (kind == "consult")        { tag_color = kCyan;     label = "advise"; }
+            else if (kind == "gate_continue") { tag_color = kGreen;    label = "gate ✓"; }
+            else if (kind == "gate_redirect") { tag_color = kYellow;   label = "gate ↻"; }
+            else if (kind == "gate_halt")     { tag_color = kBoldRed;  label = "gate ✗"; }
+            else if (kind == "gate_budget")   { tag_color = kBoldRed;  label = "gate ⛔"; }
+
+            line << color_for_agent(agent) << display_agent(agent) << reset()
+                 << "  " << color(tag_color) << label << reset();
+            if (malformed)
+                line << " " << color(kDim) << "(malformed)" << reset();
+            if (!detail.empty())
+                line << "  " << quote_short(detail, 100);
+            else if (!preview.empty())
+                line << "  " << color(kDim) << "← " << quote_short(preview, 80) << reset();
         } else {
             // Unknown event — log the name only; useful while iterating.
             line << color(kDim) << ev << reset();
@@ -897,6 +924,25 @@ void handle_admin(int fd, const HttpRequest& req,
 // applies the 16 KB body cap.
 
 namespace {
+
+// Parse a /mem-style id token, tolerantly.  /mem entries renders ids as
+// `#<n>` for human readability (matches the convention of /read #<n>);
+// agents copy that form back into follow-up calls and would otherwise
+// hit ERR because std::stoll won't parse '#'.  Strip a leading '#' and
+// surrounding whitespace before parsing so the rendered form and the
+// accepted form agree.  Returns 0 on any parse failure — callers should
+// reject 0 with a usage hint.
+inline int64_t mem_parse_id(std::string s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+        s.erase(0, 1);
+    while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t'))
+        s.pop_back();
+    if (!s.empty() && s.front() == '#') s.erase(0, 1);
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+        s.erase(0, 1);
+    try { return std::stoll(s); }
+    catch (...) { return 0; }
+}
 
 size_t brave_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* buf = static_cast<std::string*>(userdata);
@@ -3402,6 +3448,37 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 return out;
             };
 
+            if (kind == "pipeline-entries") {
+                // Internal probe used by the orchestrator's delegation
+                // path to seed sub-agents with a "what did siblings just
+                // write?" snapshot.  Distinct from agent-facing /mem
+                // entries (which is unscoped tenant-wide) because:
+                //   • Tenant-wide bleed exposes residue from PRIOR runs
+                //     of the same scenario, encouraging the sub-agent
+                //     to paraphrase old entries as if they were fresh
+                //     siblings' output.
+                //   • Pipeline memory needs to be cheap (one DB call
+                //     per /agent invocation), so the cap is small.
+                // Conversation-scoped + recent-N keeps the snapshot
+                // tight: only what *this* turn's siblings produced.
+                if (reader_conversation_id <= 0) {
+                    // No conversation context (raw /v1/orchestrate, CLI).
+                    // Without a conversation we can't isolate "this run"
+                    // entries, so return empty rather than dumping the
+                    // tenant-wide history into delegation context.
+                    return "(no entries)";
+                }
+                TenantStore::EntryFilter f;
+                f.limit = 15;
+                f.conversation_id = reader_conversation_id;
+                auto entries = tenants.list_entries(reader_tenant_id, f);
+                if (entries.empty()) return "(no entries)";
+                std::ostringstream out;
+                out << entries.size() << " entries (newest first):\n";
+                for (auto& e : entries) out << fmt_entry_line(e) << "\n";
+                return out.str();
+            }
+
             if (kind == "entries") {
                 // /mem entries [<type>[,<type>...]]
                 // /mem entries tag=<tagname>
@@ -3448,8 +3525,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             }
 
             if (kind == "entry") {
-                int64_t id = 0;
-                try { id = std::stoll(args); } catch (...) { id = 0; }
+                int64_t id = mem_parse_id(args);
                 if (id <= 0) return "ERR: usage: /mem entry <id>";
                 auto e = tenants.get_entry(reader_tenant_id, id);
                 if (!e)
@@ -3664,8 +3740,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 int64_t seed_id = 0;
                 int depth = 1;
                 {
+                    // Split on whitespace so the first token can be
+                    // run through mem_parse_id (which tolerates a leading '#').
+                    // Any subsequent tokens can carry depth=N.
                     std::istringstream iss(a);
-                    iss >> seed_id;
+                    std::string id_tok;
+                    iss >> id_tok;
+                    seed_id = mem_parse_id(id_tok);
                     std::string flag;
                     if (iss >> flag) {
                         const std::string p = "depth=";
@@ -3770,11 +3851,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 // probe — out-degree, in-degree, distinct relation kinds,
                 // and 2-hop reach.  Cheap follow-up before doing redundant
                 // research on a topic the graph already covers.
-                std::string a = args;
-                while (!a.empty() && a.front() == ' ') a.erase(0, 1);
-                while (!a.empty() && a.back()  == ' ') a.pop_back();
-                int64_t id = 0;
-                try { id = std::stoll(a); } catch (...) { id = 0; }
+                int64_t id = mem_parse_id(args);
                 if (id <= 0) return "ERR: usage: /mem density <id>";
                 auto e = tenants.get_entry(reader_tenant_id, id);
                 if (!e)
@@ -3962,9 +4039,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 // /mem invalidate <id>
                 // Args is just the id token.  Anything past the first
                 // whitespace is ignored — keeps the grammar tight.
+                // Tolerate a leading '#' so the displayed and accepted
+                // id forms agree (entries-list output uses #<n>).
                 std::istringstream iss(args);
-                int64_t id = 0;
-                iss >> id;
+                std::string id_tok;
+                iss >> id_tok;
+                int64_t id = mem_parse_id(id_tok);
                 if (id <= 0) {
                     return "ERR: usage: /mem invalidate <id>";
                 }
@@ -3988,10 +4068,15 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
             if (kind == "add-link") {
                 // /mem add link <src_id> <relation> <dst_id>
+                // Both ids tolerate a leading '#' so an agent can copy
+                // the displayed `#<n>` form straight from /mem entries
+                // or pipeline-memory output without manual stripping.
                 std::istringstream iss(args);
-                int64_t src = 0, dst = 0;
+                std::string src_tok, dst_tok;
                 std::string relation;
-                iss >> src >> relation >> dst;
+                iss >> src_tok >> relation >> dst_tok;
+                int64_t src = mem_parse_id(src_tok);
+                int64_t dst = mem_parse_id(dst_tok);
                 if (src <= 0 || dst <= 0 || relation.empty()) {
                     return "ERR: usage: /mem add link <src_id> <relation> <dst_id>";
                 }
@@ -4584,6 +4669,36 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             m["stream_id"] = jnum(static_cast<double>(sid));
             m["ok"]        = jbool(ok);
             emit("stream_end", p);
+        });
+
+    // Advisor gate halt — sibling of stream_end so SSE clients can show
+    // the halt reason out-of-band from the agent's normal text deltas.
+    // Fires before stream_end (which arrives with ok=false).
+    orch->set_escalation_callback(
+        [&emit](const std::string& id, int sid, const std::string& reason) {
+            auto p = jobj();
+            auto& m = p->as_object_mut();
+            m["agent"]     = jstr(id);
+            m["stream_id"] = jnum(static_cast<double>(sid));
+            m["reason"]    = jstr(reason);
+            emit("escalation", p);
+        });
+
+    // Advisor activity — every consult and gate decision flows through
+    // here.  Verbose logger renders these to stderr; SSE clients can
+    // surface gate reasoning in their UI.  Distinct from `escalation`,
+    // which fires only on terminal HALTs.
+    orch->set_advisor_event_callback(
+        [&emit](const Orchestrator::AdvisorEvent& ev) {
+            auto p = jobj();
+            auto& m = p->as_object_mut();
+            m["agent"]     = jstr(ev.agent_id);
+            m["stream_id"] = jnum(static_cast<double>(ev.stream_id));
+            m["kind"]      = jstr(ev.kind);
+            if (!ev.detail.empty())  m["detail"]  = jstr(ev.detail);
+            if (!ev.preview.empty()) m["preview"] = jstr(ev.preview);
+            if (ev.malformed)        m["malformed"] = jbool(true);
+            emit("advisor", p);
         });
 
     try {

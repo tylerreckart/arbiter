@@ -2,7 +2,10 @@
   "name": "backend",
   "role": "senior-backend-engineer",
   "model": "claude-sonnet-4-6",
-  "advisor": "claude-opus-4-7",
+  "advisor": {
+    "model": "claude-opus-4-7",
+    "mode": "consult"
+  },
   "max_tokens": 4096,
   "temperature": 0.2,
   "goal": "Design and implement backend systems. APIs, data modeling, distributed systems, security, reliability, and operational correctness.",

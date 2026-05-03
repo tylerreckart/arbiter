@@ -74,6 +74,44 @@ using ParallelInvoker = std::function<std::vector<std::string>(
 // through the same ApiClient's prefix-based routing.
 using AdvisorInvoker = std::function<std::string(const std::string& question)>;
 
+// Structured runtime gate.  Distinct from AdvisorInvoker (text-in/text-out
+// for /advise consultation) because the gate path needs the executor's
+// terminating-turn output and a tool-call summary, and must return one of
+// three signals — not freeform prose.  Keeping the two invokers separate
+// avoids breaking the /advise call sites and the api_server's mem-rerank
+// path that already use AdvisorInvoker, while letting the runtime impose
+// structured discipline on the gate without a parser layer in every caller.
+struct AdvisorGateInput {
+    std::string original_task;        // user's original request
+    std::string terminating_text;     // executor's text for the terminating turn
+    std::string tool_summary;         // pre-formatted, one line per call
+};
+
+struct AdvisorGateOutput {
+    enum class Kind { Continue, Redirect, Halt };
+    Kind        kind = Kind::Continue;
+    std::string text;                 // guidance (Redirect) or reason (Halt); "" for Continue
+    std::string raw;                  // raw advisor reply (telemetry / debugging)
+    bool        malformed = false;    // parser fell back due to unparseable signal
+};
+
+using AdvisorGateInvoker = std::function<AdvisorGateOutput(const AdvisorGateInput&)>;
+
+// Parse the advisor's text reply into a structured gate signal.  The wire
+// format is tag-based:
+//
+//   <signal>CONTINUE</signal>
+//   <signal>REDIRECT</signal><guidance>...</guidance>
+//   <signal>HALT</signal><reason>...</reason>
+//
+// Tag matching is literal (no regex) and case-insensitive on the signal
+// token only — bodies retain their original casing.  Whitespace and
+// surrounding prose are tolerated; the parser finds the first <signal>
+// block and ignores anything before/after.  Unparseable replies return
+// kind=Continue with malformed=true so callers can apply their own
+// failure-mode policy (the runtime gate fails closed by default).
+AdvisorGateOutput parse_advisor_signal(const std::string& reply);
+
 // Gatekeeper for potentially-destructive operations.  Given a human-readable
 // prompt (e.g. "write agents/foo.md?"), returns true to proceed, false to
 // abort.  If unset, every guarded command runs without prompting.

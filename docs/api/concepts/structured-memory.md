@@ -128,7 +128,7 @@ The retrieval layer is built on five signals, applied in this order:
 1. **Lexical** — Okapi-BM25 over an FTS5 index on `(title, content, tags, source)` with per-field weights. SQLite ships FTS5; no external service needed.
 2. **Metadata boost** — when the caller passes `types=[…]` or a `tag`, matching rows have their score multiplied (rather than non-matching rows being filtered out).
 3. **Locality** — when the call is part of a conversation, conversation-pinned hits surface above tenant-wide hits via `search_entries_graduated`. Two-pass: scoped first, broad-fill if scoped didn't reach the cap.
-4. **Semantic** — optional `--rerank` flag on `/mem search` routes the top-10 candidates through the calling agent's `advisor_model` for a final reorder. Costs one LLM call; only worth it when BM25 produces close-scored ambiguous candidates.
+4. **Semantic** — optional `--rerank` flag on `/mem search` routes the top-10 candidates through the calling agent's [advisor model](advisor.md) for a final reorder. Costs one LLM call; only worth it when BM25 produces close-scored ambiguous candidates.
 5. **Validity** — invalidated rows are excluded by default. `as_of` swaps in a historical-window check.
 
 ### How `/mem search` works under the hood
@@ -172,6 +172,8 @@ Browse the current active set. Newest-first. Optional `type=foo,bar` and `tag=ba
 ### `/mem entry <id>`
 
 One entry, with its outgoing and incoming edges and the **neighbour titles inlined on each edge**. This is the "look up one node" operation; the inlined neighbour titles save a round-trip when the agent's next move would have been `/mem entry <neighbour_id>` anyway.
+
+The `<id>` argument tolerates a leading `#`, matching the form `/mem entries` renders (`- #42  [project]  …`). `/mem entry 42` and `/mem entry #42` are equivalent. The same `#`-tolerance applies to `/mem expand`, `/mem density`, `/mem invalidate`, and both ids in `/mem add link <src> <rel> <dst>`. Agents can copy ids verbatim from any rendered output without manual stripping.
 
 ### `/mem expand <id> [depth=N]`
 
@@ -284,6 +286,39 @@ Agents running inside `/v1/orchestrate` (or `/v1/conversations/:id/messages`) ca
 | `/mem invalidate 42` | Soft-delete: set `valid_to = now()`. Row stays for `as_of` reads. |
 
 Read output lands in a `[/mem entries]` / `[/mem entry]` / `[/mem search]` / `[/mem expand]` / `[/mem density]` tool-result block, framed by `[END MEMORY]`. Write and invalidate output lands in `[/mem add entry …]` / `[/mem add link …]` / `[/mem invalidate …]` blocks — typically `OK: …` so the agent can reference the new id (or confirm the invalidation) in the same turn.
+
+## Pipeline memory at delegation boundaries
+
+When the master delegates to a sub-agent via `/agent` (or `/parallel`), the runtime probes the structured-memory reader for entries scoped to the active conversation and prepends a `Pipeline memory` section to the sub-agent's `[DELEGATION CONTEXT]` block. The intent is so the sub-agent walks in already knowing what siblings have written this conversation — no guessing `/mem search` queries to discover what scout wrote two turns ago.
+
+Constraints:
+
+- **Conversation-scoped only.** Entries written in *this* conversation, not the tenant's full history. A sub-agent on a fresh conversation sees an empty pipeline memory rather than residue from prior runs.
+- **Capped at 15 entries.** Newest first. Designed to be a compact pointer list, not a content dump — sub-agents `/mem entry #<id>` to read the full body of any entry that looks relevant.
+- **Title + type + tags only.** Bodies are not included; the agent fetches them on demand.
+- **No active conversation → empty.** Raw `/v1/orchestrate` calls (no `conversation_id`) and CLI / REPL contexts (no tenant store wired) skip the probe entirely. Pipeline memory is an HTTP-API affordance.
+- **`#`-prefixed ids.** The rendered ids carry a `#` — exactly the form `/mem entry`, `/mem expand`, `/mem density`, `/mem invalidate`, `/mem add link` accept.
+
+The injected section reads like:
+
+```
+[DELEGATION CONTEXT]
+Original request: …
+Delegated by: index
+Pipeline depth: 1/2
+Pipeline memory (entries written by prior agents this conversation —
+use /mem entry #<id> to read full content before searching or
+restating from training):
+3 entries (newest first):
+- #281  [project]  Q3 observability rollout — initial brief
+- #280  [reference]  Honeycomb pricing page (live fetch 2026-04)  [pricing]
+- #279  [learning]  Honeycomb wins for trace-first small teams
+[END DELEGATION CONTEXT]
+
+…sub-agent's actual instructions follow…
+```
+
+This structurally addresses one of the most common multi-agent failure modes: the writer agent receives the master's task, has no idea the researcher already filed sources to the graph, and falls back to "graph is cold, synthesise from training" mode. With pipeline memory, it sees the entries directly and can `/mem entry #<id>` for full content.
 
 ## Tenant scoping
 

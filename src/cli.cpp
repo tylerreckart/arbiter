@@ -114,21 +114,68 @@ std::string resolve_admin_token(const std::string& config_dir,
 }
 }
 
-void cmd_init() {
+void cmd_init(bool force) {
     std::string dir = get_config_dir();
     std::string agents_dir = dir + "/agents";
     fs::create_directories(agents_dir);
 
     std::cout << "Initialized ~/.arbiter/\n";
 
-    for (auto& starter : starter_agents()) {
-        starter.config.save(agents_dir + "/" + starter.id + ".json");
+    // Write each starter's verbatim source JSON.  Bypassing
+    // Constitution::save() preserves the source-tree formatting (pretty-
+    // print, field order, raw casing of "advisor") and avoids the IEEE-754
+    // double-to-string round-trip that otherwise turns 0.2 into
+    // 0.20000000000000001 in to_json output.
+    int written = 0, skipped = 0;
+    std::vector<std::string> created, kept;
+    for (const auto& starter : starter_agents()) {
+        std::string path = agents_dir + "/" + starter.id + ".json";
+        bool exists = fs::exists(path);
+        if (exists && !force) {
+            ++skipped;
+            kept.push_back(starter.id);
+            continue;
+        }
+        std::string body = starter_json(starter.id);
+        if (body.empty()) continue;       // no embedded JSON for this id
+        std::ofstream f(path);
+        if (!f) {
+            std::cerr << "ERR: cannot write " << path << "\n";
+            continue;
+        }
+        f << body;
+        if (!body.empty() && body.back() != '\n') f << '\n';
+        ++written;
+        created.push_back(starter.id);
     }
-    std::cout << "Example agents created in " << agents_dir << "/\n";
-    for (auto& starter : starter_agents()) {
-        std::cout << "  " << starter.id << ".json — " << starter.blurb << "\n";
+
+    if (!created.empty()) {
+        std::cout << (force ? "Reset " : "Wrote ") << created.size()
+                  << " agent" << (created.size() == 1 ? "" : "s")
+                  << " in " << agents_dir << "/\n";
+        for (const auto& id : created) {
+            // Find the blurb again — small list, linear scan is fine.
+            std::string blurb;
+            for (const auto& s : starter_agents())
+                if (s.id == id) { blurb = s.blurb; break; }
+            std::cout << "  " << id << ".json — " << blurb << "\n";
+        }
     }
-    std::cout << "\nEdit these or add your own. Then run: arbiter\n";
+    if (!kept.empty()) {
+        std::cout << "\nKept " << kept.size()
+                  << " existing file" << (kept.size() == 1 ? "" : "s")
+                  << " (re-run with --force to reset):\n";
+        for (const auto& id : kept) {
+            std::cout << "  " << id << ".json\n";
+        }
+    }
+
+    if (written == 0 && skipped > 0) {
+        std::cout << "\nNo new agents written.  Use `arbiter --init --force` "
+                     "to overwrite existing definitions.\n";
+    } else if (written > 0) {
+        std::cout << "\nEdit these or add your own. Then run: arbiter\n";
+    }
 }
 
 void cmd_api(int port, const std::string& bind, bool verbose) {
@@ -149,14 +196,10 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     TenantStore tenants;
     tenants.open(dir + "/tenants.db");
 
+    // Defer the no-tenants warning until after the screen clear, otherwise
+    // the message scrolls off when we redraw with the banner.
     const auto all = tenants.list_tenants();
-    if (all.empty()) {
-        std::cerr << "WARN: no tenants configured.  Run "
-                     "`arbiter --add-tenant <name>` (or POST /v1/admin/tenants) "
-                     "and retry.\n"
-                     "      The server will start, but every /v1/orchestrate "
-                     "call will reject with 401.\n";
-    }
+    const bool no_tenants = all.empty();
 
     bool fresh_admin = false;
     std::string admin_token = resolve_admin_token(dir, fresh_admin);
@@ -201,8 +244,6 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
         opts.billing_url = q;
     }
 
-    const bool billing_on = !opts.billing_url.empty();
-
     ApiServer server(std::move(opts), tenants);
 
     std::signal(SIGINT,  signal_handler);
@@ -215,16 +256,20 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
         std::exit(1);
     }
 
+    // Reset the terminal so the banner anchors at row 1.  ANSI sequence:
+    //   \033[2J  — erase entire screen
+    //   \033[3J  — erase scrollback (xterm/iTerm) so the banner isn't
+    //              chasing a half-screen of prior shell history
+    //   \033[H   — cursor home (1,1)
+    // Stops the operator from squinting past stale output to find the
+    // current bind address every time they restart the server.
+    std::cout << "\033[2J\033[3J\033[H";
+
     std::cout << BANNER;
     std::cout << "API listening on " << bind << ":" << server.port() << "\n";
     std::cout << "  POST  /v1/orchestrate          (Bearer <tenant-token>)\n";
     std::cout << "  GET   /v1/health\n";
     std::cout << "  *     /v1/admin/tenants[/:id]  (Bearer <admin-token>)\n";
-    std::cout << "Tenants: " << all.size() << " configured"
-              << "  (billing: "
-              << (billing_on ? "external service"
-                              : "off — requests use configured provider keys")
-              << ")\n";
     std::cout << "Logging: " << (log_verbose ? "verbose (per-event mirror to stderr)"
                                               : "request-level only "
                                                 "(use --verbose for streamed deltas)")
@@ -241,6 +286,14 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
                       ? "$ARBITER_ADMIN_TOKEN"
                       : (dir + "/admin_token").c_str())
                   << "\n";
+    }
+
+    if (no_tenants) {
+        std::cerr << "\nWARN: no tenants configured.  Run "
+                     "`arbiter --add-tenant <name>` (or POST /v1/admin/tenants) "
+                     "and retry.\n"
+                     "      The server will start, but every /v1/orchestrate "
+                     "call will reject with 401.\n";
     }
     std::cout << "\n";
 

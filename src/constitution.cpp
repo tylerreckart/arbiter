@@ -798,6 +798,18 @@ Constitution master_constitution() {
         "  - If agent outputs disagree or an answer is under-evidenced, flag the uncertainty "
         "    rather than smoothing it over.",
 
+        // Artifact handoff — when a sub-agent has produced the deliverable
+        "When a sub-agent has written a file or persisted an artifact, your output is the "
+        "pointer (artifact id, path, and a one-line summary of what's in it), NOT a re-rendering "
+        "of the content. Do NOT /read the artifact to inline its body — the user can /read it "
+        "themselves, and you can re-read it in a follow-up turn if they ask.",
+        "Never /write a file a sub-agent has already produced. One deliverable, one writer. "
+        "If the sub-agent's path or content is wrong, re-invoke that agent with an explicit "
+        "correction; do not paper over the mistake by writing a second copy yourself.",
+        "When a sub-agent has written a /mem entry summarising findings, reference it by id "
+        "(#<n>) — do not paraphrase the body into your own response. The entry is already "
+        "retrievable; reproducing it in narrative form duplicates content the user can fetch.",
+
         // Delegation threshold
         "Handle directly (no delegation): simple factual questions, status queries, /mem operations, "
         "quick arithmetic, anything resolvable in one short response.",
@@ -821,6 +833,29 @@ std::string Constitution::to_json() const {
     m["model"]        = jstr(model);
     if (!advisor_model.empty())
         m["advisor_model"] = jstr(advisor_model);
+    // Emit the structured advisor block when it carries information beyond
+    // the legacy advisor_model shorthand — i.e. mode != "consult", a custom
+    // prompt, non-default budget/halt-policy, or a model that doesn't match
+    // the legacy field.  Round-tripping a config that only set advisor_model
+    // therefore stays compact.
+    bool advisor_has_overrides =
+        advisor.mode != "consult" ||
+        !advisor.prompt.empty() ||
+        advisor.max_redirects != 2 ||
+        !advisor.malformed_halts ||
+        (!advisor.model.empty() && advisor.model != advisor_model);
+    if (advisor_has_overrides) {
+        auto a = jobj();
+        auto& am = a->as_object_mut();
+        if (!advisor.model.empty())  am["model"]  = jstr(advisor.model);
+        if (!advisor.prompt.empty()) am["prompt"] = jstr(advisor.prompt);
+        am["mode"] = jstr(advisor.mode);
+        if (advisor.max_redirects != 2)
+            am["max_redirects"] = jnum(static_cast<double>(advisor.max_redirects));
+        if (!advisor.malformed_halts)
+            am["malformed_halts"] = jbool(advisor.malformed_halts);
+        m["advisor"] = a;
+    }
     if (!mode.empty())
         m["mode"]     = jstr(mode);
     m["goal"]         = jstr(goal);
@@ -851,6 +886,47 @@ Constitution Constitution::from_json(const std::string& json_str) {
     c.advisor_model = root->get_string("advisor_model");  // "" if absent
     c.mode          = root->get_string("mode");           // "" if absent
     c.goal          = root->get_string("goal");
+
+    // Advisor resolution: object > string-shorthand > advisor_model legacy.
+    // Three valid shapes:
+    //   1. "advisor": { "model": "...", "mode": "gate", ... }   — full form
+    //   2. "advisor": "claude-opus-4-7"                          — shorthand
+    //                  (parsed as { model: <s>, mode: "consult" })
+    //   3. "advisor_model": "..."                                — legacy
+    //                  (mirrored into c.advisor.model with mode "consult")
+    // If both `advisor` (object) and `advisor_model` are present, the object
+    // wins and a stderr warning is emitted.  This fixes the silent-ignore
+    // bug where backend/frontend/devops set "advisor": "<model>" and the
+    // parser only read "advisor_model".
+    auto advisor_val = root->get("advisor");
+    if (advisor_val && advisor_val->is_object()) {
+        c.advisor.model           = advisor_val->get_string("model");
+        c.advisor.prompt          = advisor_val->get_string("prompt");
+        c.advisor.mode            = advisor_val->get_string("mode", "consult");
+        c.advisor.max_redirects   = advisor_val->get_int("max_redirects", 2);
+        c.advisor.malformed_halts = advisor_val->get_bool("malformed_halts", true);
+        if (!c.advisor_model.empty() && c.advisor_model != c.advisor.model) {
+            fprintf(stderr,
+                "WARN: agent '%s' has both 'advisor' object and 'advisor_model' "
+                "— object wins ('%s'), legacy field ignored.\n",
+                c.name.c_str(), c.advisor.model.c_str());
+        }
+        // Keep the legacy field in sync so /advise consumers that read
+        // advisor_model directly see the same model the gate would use.
+        if (c.advisor_model.empty() && !c.advisor.model.empty())
+            c.advisor_model = c.advisor.model;
+    } else if (advisor_val && advisor_val->is_string()) {
+        c.advisor.model           = advisor_val->as_string();
+        c.advisor.mode            = "consult";
+        c.advisor.max_redirects   = 2;
+        c.advisor.malformed_halts = true;
+        if (c.advisor_model.empty()) c.advisor_model = c.advisor.model;
+    } else if (!c.advisor_model.empty()) {
+        c.advisor.model           = c.advisor_model;
+        c.advisor.mode            = "consult";
+        c.advisor.max_redirects   = 2;
+        c.advisor.malformed_halts = true;
+    }
 
     auto rules_val = root->get("rules");
     if (rules_val && rules_val->is_array()) {

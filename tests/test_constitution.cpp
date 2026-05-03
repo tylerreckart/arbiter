@@ -154,6 +154,81 @@ TEST_CASE("starter-agent capability sets produce measurably smaller prompts") {
     MESSAGE("reviewer prompt: " << p_reviewer.size() << " bytes");
 }
 
+// Advisor parsing — covers the three valid JSON shapes plus the legacy/object
+// precedence rule.  Pin the resolution so the bug where "advisor": "<model>"
+// was silently dropped (because the parser only read "advisor_model") cannot
+// regress.
+TEST_CASE("advisor: legacy advisor_model populates AdvisorConfig in consult mode") {
+    std::string js = R"({
+        "name": "research",
+        "model": "claude-haiku-4-5",
+        "advisor_model": "claude-opus-4-6"
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.advisor_model == "claude-opus-4-6");
+    CHECK(c.advisor.model == "claude-opus-4-6");
+    CHECK(c.advisor.mode  == "consult");
+    CHECK(c.advisor.max_redirects == 2);
+    CHECK(c.advisor.malformed_halts == true);
+}
+
+TEST_CASE("advisor: string shorthand parses as consult-mode object") {
+    // This is the bug fix: backend.json / frontend.json / devops.json used
+    // "advisor": "<model>" and the parser silently dropped it.  After the
+    // fix, the string form maps to {model: <s>, mode: "consult"} and the
+    // legacy advisor_model field is mirrored too so /advise still works.
+    std::string js = R"({
+        "name": "backend",
+        "model": "claude-sonnet-4-6",
+        "advisor": "claude-opus-4-7"
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.advisor.model == "claude-opus-4-7");
+    CHECK(c.advisor.mode  == "consult");
+    CHECK(c.advisor_model == "claude-opus-4-7");  // mirrored for legacy /advise
+}
+
+TEST_CASE("advisor: object form with mode=gate populates all fields") {
+    std::string js = R"({
+        "name": "frontend",
+        "model": "claude-sonnet-4-6",
+        "advisor": {
+            "model": "claude-opus-4-7",
+            "mode": "gate",
+            "max_redirects": 1,
+            "malformed_halts": false
+        }
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.advisor.model == "claude-opus-4-7");
+    CHECK(c.advisor.mode  == "gate");
+    CHECK(c.advisor.max_redirects == 1);
+    CHECK(c.advisor.malformed_halts == false);
+}
+
+TEST_CASE("advisor: object form wins when both legacy and object are present") {
+    std::string js = R"({
+        "name": "research",
+        "model": "claude-haiku-4-5",
+        "advisor_model": "claude-opus-4-5",
+        "advisor": { "model": "claude-opus-4-7", "mode": "gate" }
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.advisor.model == "claude-opus-4-7");  // object wins
+    CHECK(c.advisor.mode  == "gate");
+}
+
+TEST_CASE("advisor: absent yields disabled config") {
+    std::string js = R"({
+        "name": "marketer",
+        "model": "claude-sonnet-4-6"
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.advisor.model.empty());
+    CHECK(c.advisor.mode  == "consult");  // struct default
+    CHECK(c.advisor_model.empty());
+}
+
 TEST_CASE("/mem variants all map to the mem bundle") {
     // Different agents historically declared "/mem", "/mem shared", "/mem add",
     // etc.  All should resolve to the same bundle so the prompt stays
