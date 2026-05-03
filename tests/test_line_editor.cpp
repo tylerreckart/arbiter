@@ -173,9 +173,16 @@ TEST_CASE("ESC clears an in-progress line without submitting") {
     s.read_for(300);      // give the editor's CSI-timeout code time to fire
 
     // Type a replacement so we can assert order — "willbe-cancelled" must
-    // have been rendered earlier than "after-cancel".
+    // have been rendered earlier than "after-cancel".  Wait *until the
+    // bytes actually echo* rather than for a fixed window: each typed
+    // char triggers a tty-mutex'd redraw (120-col erase + prompt + buffer
+    // repaint + fflush), and on heavily-loaded CI runners 12 of those
+    // can take longer than the previous 300 ms drain to complete.  A
+    // content-aware wait stays fast locally (returns the moment the
+    // bytes show up) and forgives slow CI without picking an arbitrary
+    // larger fixed timeout.
     s.send("after-cancel");
-    s.read_for(300);
+    s.read_until("after-cancel", 2000);
 
     std::string tail = tail_stripped(s);
     auto cancelled_last = tail.rfind("willbe-cancelled");
