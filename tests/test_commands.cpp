@@ -303,12 +303,14 @@ TEST_CASE("/mem add entry dispatcher rejects empty body and unclosed block") {
     // Stub writer captures (kind, args, body) so we can inspect what the
     // dispatcher passes through.  Returns "OK: stubbed" so the dispatcher
     // treats it as a successful write.
-    std::string captured_kind, captured_args, captured_body;
+    std::string captured_kind, captured_args, captured_body, captured_caller;
     auto writer = [&](const std::string& k, const std::string& a,
-                      const std::string& b) -> std::string {
-        captured_kind = k;
-        captured_args = a;
-        captured_body = b;
+                      const std::string& b, const std::string& cid)
+                      -> std::string {
+        captured_kind   = k;
+        captured_args   = a;
+        captured_body   = b;
+        captured_caller = cid;
         return "OK: stubbed entry recorded\n";
     };
 

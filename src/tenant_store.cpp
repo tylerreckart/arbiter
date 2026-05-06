@@ -8,6 +8,7 @@
 
 #include "tenant_store.h"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -195,6 +197,29 @@ std::string fts5_escape(const std::string& q) {
             }
         }
         out += '"';
+    }
+
+    // NEAR proximity clause — bridges the gap between strict phrase
+    // (high precision, low recall) and bag-of-words OR (high recall,
+    // low precision).  FTS5's NEAR(t1 t2 ... tn, K) matches rows where
+    // every token appears within K word positions of any other.  K=8
+    // is a comfortable default — wide enough to span "<token> the
+    // other day before <token>" but narrow enough to filter out rows
+    // that just happen to mention the tokens in different paragraphs.
+    //
+    // Only emitted for 2..6 tokens.  Single-token queries don't need
+    // proximity (NEAR needs ≥2 phrases anyway), and very long queries
+    // either devolve into runtime-expensive cross-products or lose
+    // their conceptual cohesion to the point where adjacency stops
+    // being a useful signal.
+    if (final_toks.size() >= 2 && final_toks.size() <= 6) {
+        if (!out.empty()) out += " OR ";
+        out += "NEAR(";
+        for (size_t k = 0; k < final_toks.size(); ++k) {
+            if (k > 0) out += ' ';
+            fts5_quote_token(out, final_toks[k]);
+        }
+        out += ", 8)";
     }
 
     // Bag-of-words OR fallback.
@@ -1142,10 +1167,16 @@ MemoryEntry TenantStore::create_entry(int64_t tenant_id,
                                        const std::string& source,
                                        const std::string& tags_json,
                                        int64_t artifact_id,
-                                       int64_t conversation_id) {
+                                       int64_t conversation_id,
+                                       int64_t created_at_override) {
     if (!db_) throw std::runtime_error("TenantStore not opened");
 
-    const int64_t now = now_epoch();
+    const int64_t wall_now = now_epoch();
+    // Override applies to created_at, updated_at, valid_from together —
+    // the entry should look as if it was authored at the override time.
+    // Caller is trusted to pass a sane epoch; we don't sanity-check.
+    const int64_t now = (created_at_override > 0) ? created_at_override
+                                                   : wall_now;
     // Don't write the status column explicitly — its SQL default is
     // 'accepted' from the legacy schema, which is what we want now that
     // proposals are gone.  `valid_from` is set explicitly to make the
@@ -1382,31 +1413,98 @@ TenantStore::search_entries_graduated(int64_t tenant_id,
         return list_entries(tenant_id, f);
     }
 
-    // Pass 1: conversation-scoped (rows pinned here OR unscoped — see
-    // EntryFilter::conversation_id).  Locality-biased — these come first
-    // in the merged result.
-    std::vector<MemoryEntry> hits = list_entries(tenant_id, f);
-    if (static_cast<int>(hits.size()) >= cap) return hits;
+    // Two-pass reciprocal-rank fusion.  The previous behavior was
+    // "conversation hits first, tenant-wide appended only if pass 1
+    // came up short."  That sandbagged a strong tenant-wide hit behind
+    // a weak conversation-local one whenever pass 1 returned enough
+    // rows to skip pass 2 — exactly the multi-session question case
+    // where the answer lives in another conversation.
+    //
+    // RRF treats each pass as a ranked list and scores an entry by
+    //     Σ_p  weight_p / (k + rank_p)
+    // where rank is 1-based and missing-from-pass contributes nothing.
+    // k=60 is the canonical RRF constant; weight_p tilts the fusion
+    // toward one ranker.  We weight the conversation pass at 1.5 and
+    // tenant-wide at 1.0 to keep locality bias on close calls — an
+    // entry that ranks well in *this* conversation should outrank a
+    // tenant-wide entry of the same lexical strength — without letting
+    // weak conversation hits crowd out clearly stronger wide ones.
+    constexpr double kRrfK              = 60.0;
+    constexpr double kConversationWeight = 1.5;
+    constexpr double kTenantWideWeight   = 1.0;
 
-    // Pass 2: tenant-wide.  Drop the conversation filter and re-run.
-    EntryFilter wide = f;
-    wide.conversation_id = 0;
-    wide.limit = cap;
-    auto wide_hits = list_entries(tenant_id, wide);
+    // Each pass pulls a wider candidate pool than `cap` so RRF has
+    // enough overlap to fuse.  At cap=10, fusing two top-10 lists with
+    // little overlap collapses to "concatenate," which defeats the
+    // point.  3x cap (with a 50-row floor) gives enough rank depth for
+    // genuine consensus signal without ballooning SQL cost — both
+    // passes are indexed FTS5 reads with the same MATCH expression.
+    const int pool_cap = std::max(cap * 3, 50);
 
-    // Dedupe by id, preserving conversation hits' order.  Cheap because
-    // both lists are bounded by `cap` (default 50).
-    std::vector<MemoryEntry> merged = std::move(hits);
+    EntryFilter conv_f = f;
+    conv_f.limit = pool_cap;
+    std::vector<MemoryEntry> conv_hits = list_entries(tenant_id, conv_f);
+
+    EntryFilter wide_f = f;
+    wide_f.conversation_id = 0;
+    wide_f.limit = pool_cap;
+    std::vector<MemoryEntry> wide_hits = list_entries(tenant_id, wide_f);
+
+    // Fast path: tenant-wide pass returned nothing meaningful (rare,
+    // but the FTS query could be effectively conversation-private).
+    // Skip the fusion bookkeeping entirely.
+    if (wide_hits.empty()) {
+        if (static_cast<int>(conv_hits.size()) > cap) conv_hits.resize(cap);
+        return conv_hits;
+    }
+    if (conv_hits.empty()) {
+        if (static_cast<int>(wide_hits.size()) > cap) wide_hits.resize(cap);
+        return wide_hits;
+    }
+
+    // Build id → (entry pointer, fused score).  The entry is taken
+    // from whichever pass surfaced it first; both passes return the
+    // same row, so identity follows id rather than which list owns it.
+    struct FusedRow {
+        const MemoryEntry* entry;
+        double             score;
+    };
+    std::unordered_map<int64_t, FusedRow> fused;
+    fused.reserve(conv_hits.size() + wide_hits.size());
+
+    for (size_t i = 0; i < conv_hits.size(); ++i) {
+        const auto& e = conv_hits[i];
+        double contrib = kConversationWeight /
+                         (kRrfK + static_cast<double>(i + 1));
+        auto it = fused.find(e.id);
+        if (it == fused.end()) fused.emplace(e.id, FusedRow{&e, contrib});
+        else                   it->second.score += contrib;
+    }
+    for (size_t i = 0; i < wide_hits.size(); ++i) {
+        const auto& e = wide_hits[i];
+        double contrib = kTenantWideWeight /
+                         (kRrfK + static_cast<double>(i + 1));
+        auto it = fused.find(e.id);
+        if (it == fused.end()) fused.emplace(e.id, FusedRow{&e, contrib});
+        else                   it->second.score += contrib;
+    }
+
+    // Sort by fused score descending; ties broken by id ascending so
+    // results are deterministic across runs.
+    std::vector<std::pair<int64_t, double>> ranked;
+    ranked.reserve(fused.size());
+    for (auto& [id, row] : fused) ranked.emplace_back(id, row.score);
+    std::sort(ranked.begin(), ranked.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.second != b.second) return a.second > b.second;
+                  return a.first < b.first;
+              });
+
+    std::vector<MemoryEntry> merged;
     merged.reserve(static_cast<size_t>(cap));
-    for (auto& e : wide_hits) {
-        bool seen = false;
-        for (auto& m : merged) {
-            if (m.id == e.id) { seen = true; break; }
-        }
-        if (!seen) {
-            merged.push_back(std::move(e));
-            if (static_cast<int>(merged.size()) >= cap) break;
-        }
+    for (auto& [id, _] : ranked) {
+        if (static_cast<int>(merged.size()) >= cap) break;
+        merged.push_back(*fused[id].entry);
     }
     return merged;
 }

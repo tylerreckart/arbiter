@@ -444,14 +444,21 @@ public:
     // conversation).  Positive values are not validated against the
     // conversations table here — caller should ensure the conversation
     // belongs to this tenant before passing the id in.
+    // `created_at_override`: when > 0, used for created_at, updated_at,
+    // and valid_from instead of now().  Lets callers backfill historical
+    // memory (bench ingest of dated transcripts, agent imports of
+    // older logs) so temporal queries see the entry at its real point
+    // in time rather than at ingest time.  Pass 0 (default) for the
+    // normal "stamp at write" behavior.
     MemoryEntry create_entry(int64_t tenant_id,
                               const std::string& type,
                               const std::string& title,
                               const std::string& content,
                               const std::string& source,
                               const std::string& tags_json,
-                              int64_t artifact_id     = 0,
-                              int64_t conversation_id = 0);
+                              int64_t artifact_id         = 0,
+                              int64_t conversation_id     = 0,
+                              int64_t created_at_override = 0);
 
     std::optional<MemoryEntry> get_entry(int64_t tenant_id, int64_t id) const;
 

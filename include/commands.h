@@ -178,9 +178,16 @@ using StructuredMemoryReader = std::function<std::string(const std::string& kind
 // the header line, and the body block (empty for link; required non-empty
 // for entry).  It returns the formatted body for the [/mem add ...] tool-
 // result block.  Without this callback wired, the dispatcher returns ERR.
+// `caller_id` mirrors the StructuredMemoryReader signature: it's the
+// id of the agent issuing the /mem add entry / /mem add link / /mem
+// invalidate call.  The HTTP-server-side closure resolves the caller's
+// Constitution to decide whether auto-tag / auto-supersede / etc. fire
+// on the write.  Pass-through scoping for callbacks that don't need
+// per-agent behavior (just ignore the parameter).
 using StructuredMemoryWriter = std::function<std::string(const std::string& kind,
                                                           const std::string& args,
-                                                          const std::string& body)>;
+                                                          const std::string& body,
+                                                          const std::string& caller_id)>;
 
 // Replaces the filesystem file-scratchpad path with a tenant-scoped
 // DB-backed implementation when set.  Without this callback the /mem

@@ -10,6 +10,11 @@
     "model": "claude-opus-4-7",
     "mode": "consult"
   },
+  "memory": {
+    "search_expand": true,
+    "auto_tag": true,
+    "auto_supersede": true
+  },
   "goal": "Research topics with depth. Synthesize findings. Distinguish fact from inference.",
   "rules": [
     "Note confidence: high, medium, or low.",

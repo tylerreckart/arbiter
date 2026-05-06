@@ -66,12 +66,19 @@ def search(
     limit: int,
     rerank_model: str | None = None,
     rerank_fine_model: str | None = None,
+    expand_model: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run one search variant; return ranked entries with id/title/content.
 
-    We keep title/content on the returned dicts so the answer-grading
-    harness (grade.py) can format them as context without needing to
-    re-query the API per entry.  `hit_at_k` extracts ids on demand.
+    We keep title/content/timestamps/source on the returned dicts so the
+    answer-grading harness (grade.py) can format them as context without
+    needing to re-query the API per entry.  `created_at` and `source`
+    feed the temporal-reasoning and multi-session question types — the
+    generator can't reason about *when* something was said or *which
+    session* it came from unless the context surfaces those fields, and
+    LongMemEval's two weakest categories (temporal-reasoning,
+    multi-session) bottleneck on exactly that.  `hit_at_k` extracts ids
+    on demand.
     """
     params = {"q": query, "limit": str(limit)}
     if conversation_id is not None:
@@ -86,6 +93,13 @@ def search(
         # pass 1 with bigger excerpts).  Server-side handles the
         # plumbing — see handle_memory_entry_list.
         params["rerank_fine"] = rerank_fine_model
+    if expand_model:
+        # Query reformulation: server calls this model once to generate
+        # paraphrases of the query, runs each through FTS, RRF-fuses
+        # the rankings.  No-embedding alternative to dense retrieval.
+        # Costs one extra LLM call per question; lifts R@K on
+        # paraphrase-heavy datasets.
+        params["expand"] = expand_model
     url = f"{api}/v1/memory/entries?" + urllib.parse.urlencode(params)
     body = http_get(url, token)
     out: list[dict[str, Any]] = []
@@ -95,6 +109,18 @@ def search(
                 "id": int(e["id"]),
                 "title": e.get("title") or "",
                 "content": e.get("content") or "",
+                # Epoch seconds.  grade.py formats to a human date for
+                # the generator; query.py itself doesn't use these.
+                "created_at": e.get("created_at") or 0,
+                "updated_at": e.get("updated_at") or 0,
+                "valid_from": e.get("valid_from") or 0,
+                # `valid_to` is null while the entry is active.
+                "valid_to": e.get("valid_to"),
+                # Provenance string — `longmemeval:<qid>:<sess>:<turn>`
+                # for this dataset.  grade.py parses out the session id
+                # so the generator can group entries across sessions.
+                "source": e.get("source") or "",
+                "conversation_id": e.get("conversation_id"),
             }
         )
     return out
@@ -115,6 +141,7 @@ def run_variant(
     graduated: bool,
     rerank_model: str | None = None,
     rerank_fine_model: str | None = None,
+    expand_model: str | None = None,
     capture_top_k: bool = False,
 ) -> dict[str, Any]:
     """Run one variant across all questions, return aggregated metrics.
@@ -147,6 +174,7 @@ def run_variant(
                 limit=LIMIT,
                 rerank_model=rerank_model,
                 rerank_fine_model=rerank_fine_model,
+                expand_model=expand_model,
             )
         except (RuntimeError, OSError) as e:
             # Don't fail the whole variant when one question times out
@@ -238,6 +266,14 @@ def main() -> int:
                         "with this model and larger excerpts.  Doubles "
                         "the LLM cost per query but typically lifts "
                         "R@1.")
+    p.add_argument("--expand-model", default=None,
+                   help="when set, the rerank variant also runs query "
+                        "reformulation: server calls this model once "
+                        "per question to produce 2 paraphrases, runs "
+                        "all 3 variants through FTS, RRF-fuses the "
+                        "rankings before reranking.  No-embedding "
+                        "alternative to dense retrieval; closes some "
+                        "of the recall gap on paraphrased queries.")
     p.add_argument("--json-out", default=None,
                    help="optional path to dump full results as JSON")
     p.add_argument("--per-question-out", default=None,
@@ -277,6 +313,7 @@ def main() -> int:
             args.api, args.token, questions,
             conversation_id=True, graduated=True,
             rerank_model=args.rerank_model,
+            expand_model=args.expand_model,
             capture_top_k=capture,
         ))
     if args.rerank_model and args.rerank_fine_model:
@@ -286,6 +323,7 @@ def main() -> int:
             conversation_id=True, graduated=True,
             rerank_model=args.rerank_model,
             rerank_fine_model=args.rerank_fine_model,
+            expand_model=args.expand_model,
             capture_top_k=capture,
         ))
 

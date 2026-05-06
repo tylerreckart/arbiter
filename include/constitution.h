@@ -55,6 +55,51 @@ struct Constitution {
         bool malformed_halts = true;   // gate fails closed by default
     } advisor;
 
+    // Memory enrichment toggles.  Control whether /mem search and
+    // /mem add entry invoke advisor-driven enhancements that improve
+    // retrieval quality at the cost of one extra LLM call per
+    // operation.  Defaults preserve current behavior (no extra calls)
+    // for agents that haven't opted in; agents whose work depends on
+    // long-running memory (research, planner) typically want all on.
+    //
+    // `intent_routing` is the exception — it's a regex-based question
+    // classifier with zero LLM cost, defaulted on because the worst
+    // case is "no boost applied" (monotonic vs off).
+    struct MemoryConfig {
+        // /mem search query reformulation.  When true, the orchestrator
+        // calls the agent's advisor model once per search to generate
+        // 2 paraphrases, runs each through FTS, RRF-fuses the
+        // rankings.  Closes the recall gap on paraphrased queries
+        // without any embedding storage.  Cost: ~150ms + ~$0.0001 per
+        // search.
+        bool search_expand    = false;
+
+        // /mem add entry auto-tagging.  When true, an advisor extracts
+        // 2-4 topical tags from title+content before the row is
+        // written.  Tags get the existing 8x BM25 weight on retrieval,
+        // so this is one of the strongest no-cost signals for future
+        // /mem search calls — most agent ingest paths leave tags
+        // empty otherwise.
+        bool auto_tag         = false;
+
+        // /mem add entry auto-supersession.  When true, after the new
+        // entry is created the advisor inspects the top-K FTS hits on
+        // the same title, decides whether the new entry directly
+        // contradicts any of them, and invalidates the contradicted
+        // ones.  Closes the knowledge-update accuracy gap where users
+        // change their minds without explicitly invalidating the old
+        // fact.  Bias is toward "leave alone" — false positives erase
+        // legitimate prior memory.
+        bool auto_supersede   = false;
+
+        // /mem search intent routing.  Heuristic question classifier
+        // (no LLM call) maps cue words ("favorite", "when", "how to")
+        // to memory-entry type boosts via the existing 1.3x BM25
+        // multiplier.  Defaults on because the worst case is "no
+        // match, no boost."
+        bool intent_routing   = true;
+    } memory;
+
     // --- System prompt pieces ---
     std::string goal;               // what this agent is trying to accomplish
     std::vector<std::string> rules; // explicit behavioral constraints

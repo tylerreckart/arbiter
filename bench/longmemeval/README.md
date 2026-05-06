@@ -60,26 +60,54 @@ those systems.
 
 ```bash
 # Step 1 — query.py with --per-question-out to capture top-K entries
-# (id+title+content) per question per variant.  This is just the
-# normal query run with one extra flag.
+# per question per variant.  Pass `--rerank-fine-model` together with
+# `--rerank-model` to exercise the two-stage reranker (cheap-then-strong
+# pass, top 8 promoted to the fine pass with bigger excerpts).  This is
+# the variant the headline numbers should be reported on — single-pass
+# rerank is the floor, two-stage is the ceiling.
 python3 query.py \
     --token "$ARBITER_TOKEN" \
     --manifest /tmp/manifest.json \
     --rerank-model claude-haiku-4-5 \
+    --rerank-fine-model claude-sonnet-4-6 \
     --per-question-out /tmp/topk.json
 
 # Step 2 — grade.py reads the dump, calls a generator model + a judge
 # model on each question, and reports accuracy overall + by question
 # type.  Needs ANTHROPIC_API_KEY in the environment (the judge calls
 # bypass arbiter and go straight to api.anthropic.com).
+#
+# Use Sonnet as the generator for headline numbers; Haiku gives a cheap
+# floor but leaves accuracy on the table on temporal-reasoning and
+# multi-session synthesis where reasoning over the retrieved context is
+# the bottleneck.  Top-K defaults to 10 — R@10 is ~2 points above R@5
+# on rerank, and grade.py annotates each entry with session + timestamp
+# so the wider window doesn't drown the answer in noise.
 ANTHROPIC_API_KEY=sk-ant-... python3 grade.py \
     --manifest /tmp/manifest.json \
     --per-question-in /tmp/topk.json \
-    --gen-model claude-haiku-4-5 \
+    --gen-model claude-sonnet-4-6 \
     --judge-model claude-sonnet-4-6 \
-    --top-k 5 \
+    --top-k 10 \
     --json-out /tmp/grade.json
 ```
+
+### How the generator sees retrieved context
+
+`grade.py` formats each top-K entry as:
+
+```
+[1] (session sess-3 · 2024-09-12 14:22) <title>
+<content, clipped at 2000 chars>
+```
+
+Surfacing `session` and `created_at` is what closes the gap on
+temporal-reasoning ("when did the user first mention X?") and
+multi-session questions ("the user changed their mind between
+sessions"), where retrieval is fine but the generator has no axes to
+reason on without the metadata.  Entries that have been invalidated
+(`valid_to` set) carry a `superseded at <ts>` marker so
+knowledge-update questions can prefer the live fact.
 
 Useful flags while iterating:
 

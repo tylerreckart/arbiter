@@ -20,8 +20,10 @@ Stdlib-only.  Reads ANTHROPIC_API_KEY from the environment.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -76,29 +78,91 @@ def call_anthropic(
     return ""
 
 
+# Per-entry content cap.  Reranker fine pass already feeds 1500 chars
+# server-side; the generator was getting *less* (800) than the reranker
+# saw, which guarantees the answer span lives in the prompt of one model
+# but not the next.  2000 matches a comfortable headroom for long turns
+# without blowing past Haiku's context budget at top_k=10.
+PER_ENTRY_CHAR_CAP = 2000
+
+# `source` provenance for LongMemEval entries is
+# `longmemeval:<qid>:<session_id>:<turn_idx>` (see ingest.py:236).  Pull
+# out just the session id so the generator can group/order entries
+# across sessions.  Multi-session questions specifically depend on this.
+_LME_SOURCE_RE = re.compile(r"^longmemeval:[^:]+:([^:]+):\d+$")
+
+
+def _session_label(source: str) -> str:
+    m = _LME_SOURCE_RE.match(source or "")
+    return m.group(1) if m else ""
+
+
+def _format_ts(epoch: Any) -> str:
+    """Epoch seconds → 'YYYY-MM-DD HH:MM' UTC, or '' if missing.
+
+    The generator uses this to answer temporal-reasoning questions
+    ('when did the user say X?', 'how long ago…').  Without it, the
+    generator has zero way to ground temporal claims and abstains on
+    most of them — temporal-reasoning was the worst category at 36.8%
+    accuracy before we surfaced timestamps.
+    """
+    try:
+        ts = float(epoch or 0)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    return _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime(
+        "%Y-%m-%d %H:%M"
+    )
+
+
 def format_context(entries: list[dict[str, Any]], top_k: int) -> str:
     """Render top-K retrieved entries as a single context string.
 
-    Plain markdown-ish format; no special tokens.  Truncate per-entry
-    content to keep total prompt size predictable — long entries are
-    already a sign the retriever pulled in noise, and clipping each
-    to a few hundred chars keeps generator latency bounded across
-    runs.
+    Each entry surfaces its session marker and creation timestamp so
+    the generator can answer multi-session and temporal-reasoning
+    questions.  Per-entry content is clipped at PER_ENTRY_CHAR_CAP.
     """
     chunks: list[str] = []
     for i, e in enumerate(entries[:top_k], start=1):
         content = (e.get("content") or "").strip()
-        if len(content) > 800:
-            content = content[:800] + "…"
+        if len(content) > PER_ENTRY_CHAR_CAP:
+            content = content[:PER_ENTRY_CHAR_CAP] + "…"
         title = (e.get("title") or "").strip()
-        chunks.append(f"[{i}] {title}\n{content}")
+
+        meta_bits: list[str] = []
+        sess = _session_label(e.get("source") or "")
+        if sess:
+            meta_bits.append(f"session {sess}")
+        ts = _format_ts(e.get("created_at"))
+        if ts:
+            meta_bits.append(ts)
+        # Mark superseded facts explicitly: a non-null `valid_to` means
+        # the entry was invalidated.  Knowledge-update questions live
+        # or die on this distinction.
+        valid_to = e.get("valid_to")
+        if valid_to:
+            invalidated = _format_ts(valid_to)
+            if invalidated:
+                meta_bits.append(f"superseded at {invalidated}")
+        meta = f" ({' · '.join(meta_bits)})" if meta_bits else ""
+
+        header = f"[{i}]{meta} {title}".rstrip()
+        chunks.append(f"{header}\n{content}")
     return "\n\n".join(chunks) if chunks else "(no memory available)"
 
 
 GEN_SYSTEM = (
     "You are answering a question using retrieved memory entries from "
-    "a long-running conversation. Use only the provided memory; if the "
-    "memory does not contain the answer, say you don't know. Keep "
+    "a long-running conversation. Each entry is annotated with its "
+    "session and timestamp; use those to answer questions about *when* "
+    "things happened, *which session* they came from, and *which fact "
+    "is most recent* when entries disagree. Prefer the most recent "
+    "non-superseded entry for knowledge-update questions. Use only the "
+    "provided memory; if the memory clearly does not contain the "
+    "answer, say you don't know — but if a memory entry contains the "
+    "answer or supports a confident inference, give it directly. Keep "
     "answers concise — a sentence or two at most."
 )
 
@@ -290,9 +354,12 @@ def main() -> int:
     p.add_argument("--judge-model", default="claude-sonnet-4-6",
                    help="judge model (default %(default)s) — should "
                         "be at least as capable as the generator")
-    p.add_argument("--top-k", type=int, default=5,
+    p.add_argument("--top-k", type=int, default=10,
                    help="how many top-ranked entries to feed to the "
-                        "generator as context (default %(default)s)")
+                        "generator as context (default %(default)s). "
+                        "R@10 is ~2 points higher than R@5 on graduated "
+                        "+ rerank, and the per-entry timestamp/session "
+                        "metadata keeps noise from a wider window cheap.")
     p.add_argument("--limit", type=int, default=None,
                    help="grade only the first N questions per variant "
                         "(useful for cost-bounded smoke tests)")

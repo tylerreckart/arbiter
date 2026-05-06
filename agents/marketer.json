@@ -17,5 +17,5 @@
     "Produce deliverables as files via /write — briefs, copy, strategy docs.",
     "Include success metrics for every campaign or strategy you propose."
   ],
-  "capabilities": ["/write", "/fetch", "/agent"]
+  "capabilities": ["/write", "/fetch", "/agent", "/mem"]
 }

@@ -13,6 +13,7 @@ See README.md for the dataset shape this expects.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import sys
 import urllib.error
@@ -85,13 +86,20 @@ def create_entry(
     title: str,
     content: str,
     source: str,
+    created_at: int | None = None,
 ) -> int:
     """Create a memory entry pinned to the given conversation, return id.
 
     Hard-clamps title (≤ 200 B), content (≤ 64 KiB), source (≤ 200 B) at
     the boundary so the storage layer's caps never reject a turn.
+
+    `created_at` (epoch seconds) backfills the entry's authored time —
+    LongMemEval sessions ship a `session_date`, and stamping each turn
+    with the real date is what makes temporal-reasoning questions
+    answerable.  Without it every entry shares the ingest timestamp and
+    the generator has nothing to reason about.
     """
-    payload = {
+    payload: dict[str, Any] = {
         "type": "context",
         "title": clamp_utf8_bytes(title, 200),
         "content": clamp_utf8_bytes(content, 64 * 1024),
@@ -99,6 +107,8 @@ def create_entry(
         "tags": [],
         "conversation_id": conversation_id,
     }
+    if created_at is not None and created_at > 0:
+        payload["created_at"] = int(created_at)
     try:
         resp = http_post(f"{api}/v1/memory/entries", token, payload)
     except RuntimeError:
@@ -115,6 +125,57 @@ def create_entry(
         )
         raise
     return int(resp["id"])
+
+
+def parse_session_date(raw: Any) -> int:
+    """Parse LongMemEval's `session_date` into epoch seconds; 0 on miss.
+
+    The published dataset stores dates in a few shapes — `YYYY/MM/DD`,
+    `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`, sometimes already an int epoch.
+    Be lenient: a missing or unparseable date should fall through to "no
+    timestamp" rather than abort ingest.
+    """
+    if raw is None or raw == "":
+        return 0
+    if isinstance(raw, (int, float)):
+        v = int(raw)
+        # Auto-detect ms vs s; consistent with the API server's logic.
+        return v // 1000 if v > 1_000_000_000_000 else v
+    s = str(raw).strip()
+    # LongMemEval ships dates like "2023/05/20 (Sat) 02:21".  Strip
+    # parenthetical day-of-week annotations before format matching —
+    # they're decoration and break strptime even when everything else
+    # fits a standard format.
+    while True:
+        a = s.find('(')
+        b = s.find(')', a + 1) if a >= 0 else -1
+        if a < 0 or b < 0: break
+        s = (s[:a] + s[b + 1:]).strip()
+    # Collapse runs of whitespace produced by the strip.
+    s = " ".join(s.split())
+    for fmt in (
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y/%m/%d",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
+        try:
+            dt = _dt.datetime.strptime(s, fmt).replace(tzinfo=_dt.timezone.utc)
+            return int(dt.timestamp())
+        except ValueError:
+            continue
+    return 0
+
+
+# Spread turns within a session by a fixed step so they don't all share
+# the session's wall-clock date.  60 seconds per turn is enough for the
+# generator to read "later in the same conversation" off the timestamps
+# without overflowing into the next day.
+TURN_OFFSET_SECONDS = 60
 
 
 def turn_title(session_id: str, turn_idx: int, role: str, content: str) -> str:
@@ -205,10 +266,20 @@ def ingest(api: str, token: str, dataset_path: str, manifest_path: str) -> None:
         # in-memory pass once everything's written.
         ingested: list[tuple[int, str, bool]] = []
 
+        # `haystack_dates` lives parallel to `haystack_sessions` in the
+        # real dataset (one date string per session).  Synthetic fixtures
+        # may instead nest `session_date` inside the session object.
+        # Accept either, and fall through to "no date" if neither is
+        # present — the rest of the pipeline handles missing timestamps.
+        haystack_dates = q.get("haystack_dates") or []
+
         for s_i, sess in enumerate(haystack):
             # Two shapes accepted:
             #   • list of turn dicts        (LongMemEval real format)
             #   • {"session_id":..., "turns":[...]}   (synthetic fixture)
+            sess_date_raw: Any = (
+                haystack_dates[s_i] if s_i < len(haystack_dates) else None
+            )
             if isinstance(sess, list):
                 turns = sess
                 sess_id = (str(haystack_ids[s_i])
@@ -218,8 +289,13 @@ def ingest(api: str, token: str, dataset_path: str, manifest_path: str) -> None:
                 sess_id = str(sess.get("session_id") or
                               (haystack_ids[s_i] if s_i < len(haystack_ids)
                                else f"sess-{s_i}"))
+                # Synthetic-fixture fallback: per-session date inline.
+                if sess_date_raw is None:
+                    sess_date_raw = sess.get("session_date")
             else:
                 continue
+
+            sess_epoch = parse_session_date(sess_date_raw)
 
             for t_i, turn in enumerate(turns):
                 role = str(turn.get("role") or "user")
@@ -227,6 +303,14 @@ def ingest(api: str, token: str, dataset_path: str, manifest_path: str) -> None:
                 if not content.strip():
                     continue
                 title = turn_title(sess_id, t_i, role, content)
+                # Backfill the turn's authored time as
+                # session_date + offset.  When the dataset omits a
+                # session date, pass None so the server stamps with
+                # ingest time (current behavior).
+                turn_epoch: int | None = (
+                    sess_epoch + t_i * TURN_OFFSET_SECONDS
+                    if sess_epoch > 0 else None
+                )
                 entry_id = create_entry(
                     api,
                     token,
@@ -234,6 +318,7 @@ def ingest(api: str, token: str, dataset_path: str, manifest_path: str) -> None:
                     title,
                     content,
                     f"longmemeval:{qid}:{sess_id}:{t_i}",
+                    created_at=turn_epoch,
                 )
                 total_entries += 1
                 ingested.append(

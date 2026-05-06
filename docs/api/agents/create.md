@@ -42,6 +42,7 @@ Either a bare constitution or wrapped under `agent_def`:
 | `mode`          | string | no  | `""` / `"standard"` (default) or `"writer"`. |
 | `advisor`       | object \| string | no | Advisor configuration. Object form: `{model, prompt?, mode?, max_redirects?, malformed_halts?}`. String form is treated as `{model: <s>, mode: "consult"}` (back-compat). See [advisor concept](../concepts/advisor.md). |
 | `advisor_model` | string | no  | **Legacy.** Higher-capability model for `/advise` consults. New configurations should use `advisor.model` instead. If both `advisor` and `advisor_model` are present, the structured `advisor` block wins. |
+| `memory`        | object | no  | Per-agent memory enrichment toggles for `/mem search` and `/mem add entry`. See schema below and [Memory enrichment](../concepts/structured-memory.md#memory-enrichment) in the structured-memory concept. |
 | `personality`   | string | no  | Free-form personality overlay. |
 
 #### `advisor` object schema
@@ -53,6 +54,17 @@ Either a bare constitution or wrapped under `agent_def`:
 | `prompt`           | string  | built-in    | Override the gate's system prompt. Only consulted in `mode: "gate"`. |
 | `max_redirects`    | int     | `2`         | Cap on how many `REDIRECT` signals the gate can issue per top-level turn before the runtime synthesises a `HALT`. |
 | `malformed_halts`  | bool    | `true`      | Whether an unparseable advisor reply should be treated as `HALT` (`true` — fail-closed) or `CONTINUE` (`false` — fail-open). |
+
+#### `memory` object schema
+
+Controls advisor-driven enrichment on this agent's `/mem` operations. Every field is optional; absent fields fall through to the documented default. The advisor-driven toggles (`search_expand`, `auto_tag`, `auto_supersede`) need an `advisor.model` configured — without one they silently no-op.
+
+| Sub-field          | Type | Default | Notes |
+|--------------------|------|---------|-------|
+| `search_expand`    | bool | `false` | On `/mem search`: call the advisor once to generate 2 paraphrases of the query, run all 3 variants through FTS, RRF-fuse the rankings. No-embedding alternative to dense retrieval. ~150 ms + ~$0.0001 per search at Haiku speeds. |
+| `auto_tag`         | bool | `false` | On `/mem add entry`: advisor extracts 2-4 lowercase hyphenated tags from `title` + `content` before storage. Tags get an 8× weight in the BM25 ranking, so this is one of the strongest no-cost ways to lift retrieval signal on agent ingest paths. |
+| `auto_supersede`   | bool | `false` | On `/mem add entry`: after the new entry is created, advisor inspects the top-5 same-type FTS hits on the new title for direct contradictions and stamps `valid_to=now()` on flagged ids. Bias is conservative — false positives erase legitimate prior memory. |
+| `intent_routing`   | bool | `true`  | On `/mem search`: heuristic regex-based question-intent classifier maps cue words ("favorite", "when", "how to", …) to memory-entry type boosts via the existing 1.3× BM25 multiplier. Caller-supplied `type=` always wins. Zero LLM cost; defaults on because the worst case is "no boost applied" (monotonic vs. off). |
 
 ```bash
 curl -X POST \

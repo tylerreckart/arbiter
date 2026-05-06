@@ -870,6 +870,26 @@ std::string Constitution::to_json() const {
         m["capabilities"] = cap;
     }
 
+    // Memory block — only emit when at least one toggle deviates from
+    // the default, so round-tripping a default config stays compact.
+    Constitution::MemoryConfig defaults;
+    if (memory.search_expand   != defaults.search_expand   ||
+        memory.auto_tag        != defaults.auto_tag        ||
+        memory.auto_supersede  != defaults.auto_supersede  ||
+        memory.intent_routing  != defaults.intent_routing) {
+        auto mc = jobj();
+        auto& mco = mc->as_object_mut();
+        if (memory.search_expand   != defaults.search_expand)
+            mco["search_expand"]   = jbool(memory.search_expand);
+        if (memory.auto_tag        != defaults.auto_tag)
+            mco["auto_tag"]        = jbool(memory.auto_tag);
+        if (memory.auto_supersede  != defaults.auto_supersede)
+            mco["auto_supersede"]  = jbool(memory.auto_supersede);
+        if (memory.intent_routing  != defaults.intent_routing)
+            mco["intent_routing"]  = jbool(memory.intent_routing);
+        m["memory"] = mc;
+    }
+
     return json_serialize(*obj);
 }
 
@@ -926,6 +946,23 @@ Constitution Constitution::from_json(const std::string& json_str) {
         c.advisor.mode            = "consult";
         c.advisor.max_redirects   = 2;
         c.advisor.malformed_halts = true;
+    }
+
+    // Memory config block.  All fields optional; absent → defaults
+    // (search_expand/auto_tag/auto_supersede off, intent_routing on).
+    // The block accepts only the four documented keys so typos
+    // surface in code review (we don't error on unknown keys here
+    // because the rest of from_json is also tolerant).
+    auto memory_val = root->get("memory");
+    if (memory_val && memory_val->is_object()) {
+        c.memory.search_expand   = memory_val->get_bool("search_expand",
+                                                        c.memory.search_expand);
+        c.memory.auto_tag        = memory_val->get_bool("auto_tag",
+                                                        c.memory.auto_tag);
+        c.memory.auto_supersede  = memory_val->get_bool("auto_supersede",
+                                                        c.memory.auto_supersede);
+        c.memory.intent_routing  = memory_val->get_bool("intent_routing",
+                                                        c.memory.intent_routing);
     }
 
     auto rules_val = root->get("rules");

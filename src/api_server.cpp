@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <functional>
 #include <iomanip>
 #include <map>
 #include <memory>
@@ -39,6 +40,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -1751,6 +1753,87 @@ bool memory_entry_type_is_valid(const std::string& t) {
            t == "reference" || t == "learning" || t == "context";
 }
 
+// Lightweight question-intent classifier.  Returns a list of memory-entry
+// types to *boost* (not filter on) when the caller hasn't supplied an
+// explicit `type=` filter.  Boosting goes through the existing
+// list_entries machinery (1.3x BM25 multiplier — see kTypeBoost in
+// tenant_store.cpp), so a typed entry with a comparable lexical match
+// surfaces above an untyped one when intent agrees.
+//
+// Intentionally regex-free.  The cues are short, common, and case-folded
+// — substring matching on a normalized query is fast and gives the
+// caller no new dependencies.  We bias toward false negatives: a query
+// that doesn't match any cue keeps the original (no-boost) behavior,
+// which is monotonic vs. pre-routing.
+std::vector<std::string>
+classify_question_intent(const std::string& q) {
+    if (q.empty()) return {};
+
+    std::string norm;
+    norm.reserve(q.size() + 2);
+    norm.push_back(' ');
+    for (char c : q) {
+        norm.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c))));
+    }
+    norm.push_back(' ');
+
+    auto has = [&](const char* needle) {
+        return norm.find(needle) != std::string::npos;
+    };
+
+    std::vector<std::string> types;
+    auto push_unique = [&](std::string t) {
+        for (auto& x : types) if (x == t) return;
+        types.push_back(std::move(t));
+    };
+
+    // Preference / personal-state cues — questions about what the user
+    // likes, prefers, or feels about something.  These map to the
+    // `user` type (memory-of-user) and `feedback` (corrections,
+    // opinions the user expressed).
+    if (has(" favorite ")     || has(" prefer ")  ||
+        has(" preference ")   || has(" likes ")   || has(" liked ") ||
+        has(" love ")         || has(" loved ")   || has(" hate ")  ||
+        has(" hated ")        || has(" enjoy ")   || has(" enjoys ") ||
+        has(" dislike ")      || has(" wants ")   || has(" wanted ")) {
+        push_unique("user");
+        push_unique("feedback");
+    }
+
+    // Reference / lookup cues — identity/location/specification
+    // questions.  Reference material (names, URLs, specs, contact
+    // info) lives in the `reference` type.
+    if (has(" what is ")  || has(" what's ")   || has(" where is ") ||
+        has(" where's ")  || has(" who is ")   || has(" who's ")    ||
+        has(" how many ") || has(" how much ") || has(" url ")      ||
+        has(" address ")  || has(" endpoint ") || has(" port ")) {
+        push_unique("reference");
+    }
+
+    // Learning / process cues — questions about how to do something or
+    // what was learned.  Maps to the `learning` type (didactic notes,
+    // resolved questions, captured methodology).
+    if (has(" how to ")  || has(" how do ")    || has(" how does ") ||
+        has(" why is ")  || has(" why does ")  || has(" explain ")  ||
+        has(" tutorial ")|| has(" guide ")) {
+        push_unique("learning");
+    }
+
+    // Temporal / event cues — when/before/after/during questions.
+    // Project entries are the typical home for dated events
+    // (decisions, commits, incidents, milestones).
+    if (has(" when ")     || has(" before ")  || has(" after ")    ||
+        has(" since ")    || has(" until ")   || has(" first ")    ||
+        has(" earliest ") || has(" latest ")  || has(" recent ")   ||
+        has(" recently ") || has(" ago ")     || has(" yesterday ") ||
+        has(" today ")    || has(" did ")     || has(" happened ")) {
+        push_unique("project");
+    }
+
+    return types;
+}
+
 bool memory_relation_is_valid(const std::string& r) {
     return r == "relates_to" || r == "refines" || r == "contradicts" ||
            r == "supersedes" || r == "supports";
@@ -1819,6 +1902,408 @@ struct RerankResult {
     bool                     applied = false;
 };
 
+// Type of an advisor invocation: prompt → response, where ERR-prefixed
+// responses signal transport / model failure (to be handled gracefully
+// by the caller, never crashing the search path).
+using AdvisorFn = std::function<std::string(const std::string&)>;
+
+// Build an advisor invoker that targets `model` and uses `sys_prompt`.
+// Captures `opts_keys` by value so the returned closure can outlive the
+// caller's local frame.  Centralized here so the rerank, expand, and
+// any future advisor-driven memory features share one code path.
+AdvisorFn build_memory_advisor(
+    const std::map<std::string, std::string>& opts_keys,
+    const std::string& model,
+    const std::string& sys_prompt) {
+    return [opts_keys, model, sys_prompt]
+           (const std::string& prompt) -> std::string {
+        ApiClient client(opts_keys);
+        ApiRequest r;
+        r.model               = model;
+        r.max_tokens          = 1024;
+        r.include_temperature = false;
+        r.system_prompt       = sys_prompt;
+        r.messages            = {{"user", prompt}};
+        ApiResponse resp = client.complete(r);
+        if (!resp.ok) return "ERR: " + resp.error;
+        return resp.content;
+    };
+}
+
+// One-shot query reformulation.  Returns up to `max_paraphrases`
+// alternative phrasings of `query`; never returns the original.  On
+// advisor error or unparseable output, returns an empty list — the
+// caller falls back to the un-expanded query without surfacing the
+// failure as a hard error.
+//
+// The system prompt the caller provides should pin a strict output
+// format ("one paraphrase per line, no numbering, no commentary").
+// We split on newlines and trim; lines shorter than 3 chars or
+// matching the original query verbatim are dropped.
+struct ExpansionResult {
+    std::vector<std::string> queries;  // paraphrases only
+    std::string              note;     // empty on success; reason on fail
+};
+ExpansionResult expand_query_with_advisor(
+    const AdvisorFn& advisor,
+    const std::string& query,
+    size_t max_paraphrases = 2) {
+    ExpansionResult out;
+    if (query.empty()) return out;
+
+    std::ostringstream prompt;
+    prompt << "Original query: " << query << "\n\n"
+           << "Produce " << max_paraphrases
+           << " alternative phrasings of this query. Each phrasing "
+              "should preserve the user's intent but vary the wording — "
+              "use synonyms, different sentence structure, or restate "
+              "from a different angle. The phrasings will be used as "
+              "additional search queries against a memory index, so "
+              "lexical diversity is the goal. Output the phrasings "
+              "one per line, with no numbering, no quotes, no "
+              "commentary, no preamble.";
+
+    std::string resp = advisor(prompt.str());
+    if (resp.size() >= 4 && resp.compare(0, 4, "ERR:") == 0) {
+        out.note = "(query expansion advisor unavailable:" +
+                   resp.substr(4) + " — searching original only)";
+        return out;
+    }
+
+    // Split on \n, trim, dedupe-against-original, cap at max_paraphrases.
+    auto trim = [](std::string s) {
+        size_t a = 0, b = s.size();
+        while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
+        while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+        return s.substr(a, b - a);
+    };
+
+    size_t i = 0;
+    while (i < resp.size() && out.queries.size() < max_paraphrases) {
+        size_t nl = resp.find('\n', i);
+        std::string line =
+            trim(resp.substr(i, nl == std::string::npos
+                                  ? std::string::npos : nl - i));
+        i = (nl == std::string::npos) ? resp.size() : nl + 1;
+        if (line.size() < 3) continue;
+        // Strip leading "1. " / "- " / "* " in case the model ignores
+        // the no-numbering instruction.
+        if (line.size() > 2 &&
+            (line[0] == '-' || line[0] == '*') && line[1] == ' ') {
+            line = trim(line.substr(2));
+        } else if (line.size() > 3 &&
+                   std::isdigit(static_cast<unsigned char>(line[0])) &&
+                   (line[1] == '.' || line[1] == ')') && line[2] == ' ') {
+            line = trim(line.substr(3));
+        }
+        if (line.empty() || line == query) continue;
+        bool dup = false;
+        for (auto& q : out.queries) if (q == line) { dup = true; break; }
+        if (!dup) out.queries.push_back(line);
+    }
+
+    if (out.queries.empty()) {
+        out.note = "(query expansion produced no usable paraphrases — "
+                   "searching original only)";
+    }
+    return out;
+}
+
+// One-shot tag extraction.  Asks the advisor for 2..max_tags concise
+// tags describing the entry's title + content.  Returns lowercase,
+// hyphenated tokens already de-duplicated against `existing_tags`.  On
+// advisor failure or unparseable output, returns an empty list — the
+// entry is created with the caller-supplied tags untouched.
+//
+// The output format (one tag per line, lowercase, hyphenated) is
+// constrained tightly so the parser doesn't have to second-guess
+// arbitrary punctuation; this keeps the runtime predictable across
+// model versions.  Tags get the existing 8x BM25 weight on retrieval,
+// so a clean tag set is a much stronger signal than a noisy one.
+struct TagExtractionResult {
+    std::vector<std::string> tags;
+    std::string              note;
+};
+TagExtractionResult extract_tags_with_advisor(
+    const AdvisorFn& advisor,
+    const std::string& title,
+    const std::string& content,
+    const std::vector<std::string>& existing_tags,
+    size_t max_tags = 4) {
+    TagExtractionResult out;
+
+    std::ostringstream prompt;
+    prompt << "Extract " << max_tags
+           << " concise tags describing this memory entry. Tags should "
+              "be lowercase, hyphenated where multi-word, ≤32 characters, "
+              "and capture the *topic* — not the speech act. Examples of "
+              "good tags: 'sushi', 'machine-learning', 'tokyo-trip', "
+              "'budget'. Examples of bad tags: 'the-user-said', 'a-fact', "
+              "'general'. Output one tag per line, no numbering, no "
+              "quotes, no commentary.\n\n"
+           << "Title: " << title << "\n";
+    if (!content.empty()) {
+        std::string excerpt = content;
+        if (excerpt.size() > 1500) excerpt.resize(1500);
+        for (auto& c : excerpt) if (c == '\n') c = ' ';
+        prompt << "Content: " << excerpt << "\n";
+    }
+
+    std::string resp = advisor(prompt.str());
+    if (resp.size() >= 4 && resp.compare(0, 4, "ERR:") == 0) {
+        out.note = "(auto-tag advisor unavailable:" + resp.substr(4) +
+                   " — using caller tags only)";
+        return out;
+    }
+
+    // Existing-tag set for dedupe — case-insensitive.
+    auto lower = [](std::string s) {
+        for (auto& c : s) c = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+    std::unordered_map<std::string, char> seen;
+    for (auto& t : existing_tags) seen[lower(t)] = 1;
+
+    auto trim = [](std::string s) {
+        size_t a = 0, b = s.size();
+        while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
+        while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+        return s.substr(a, b - a);
+    };
+
+    size_t i = 0;
+    while (i < resp.size() && out.tags.size() < max_tags) {
+        size_t nl = resp.find('\n', i);
+        std::string line = trim(resp.substr(
+            i, nl == std::string::npos ? std::string::npos : nl - i));
+        i = (nl == std::string::npos) ? resp.size() : nl + 1;
+        if (line.empty()) continue;
+        // Strip common list prefixes the model may add despite the
+        // instruction (- foo, * foo, 1. foo).
+        if (line.size() > 2 &&
+            (line[0] == '-' || line[0] == '*') && line[1] == ' ') {
+            line = trim(line.substr(2));
+        } else if (line.size() > 3 &&
+                   std::isdigit(static_cast<unsigned char>(line[0])) &&
+                   (line[1] == '.' || line[1] == ')') && line[2] == ' ') {
+            line = trim(line.substr(3));
+        }
+
+        // Lowercase + filter to alphanumeric/hyphen.  Anything else
+        // (quotes, parentheses, punctuation) is dropped — keeps the
+        // tag column clean even when the model ignores formatting.
+        std::string tag;
+        tag.reserve(line.size());
+        for (char c : line) {
+            unsigned char uc = static_cast<unsigned char>(c);
+            if (std::isalnum(uc)) tag.push_back(static_cast<char>(std::tolower(uc)));
+            else if (c == '-' || c == ' ') tag.push_back('-');
+        }
+        // Collapse runs of '-' and trim leading/trailing.
+        std::string compact;
+        compact.reserve(tag.size());
+        char prev = 0;
+        for (char c : tag) {
+            if (c == '-' && prev == '-') continue;
+            compact.push_back(c);
+            prev = c;
+        }
+        while (!compact.empty() && compact.front() == '-') compact.erase(0, 1);
+        while (!compact.empty() && compact.back()  == '-') compact.pop_back();
+
+        if (compact.size() < 2 || compact.size() > 32) continue;
+        if (seen.count(compact)) continue;
+        seen[compact] = 1;
+        out.tags.push_back(std::move(compact));
+    }
+
+    if (out.tags.empty() && out.note.empty()) {
+        out.note = "(auto-tag produced no usable tags)";
+    }
+    return out;
+}
+
+// Detect supersession: when a new entry asserts a fact that *replaces*
+// the truth of an older entry on the same subject, return the older
+// entry's id so the caller can call invalidate_entry() on it.
+//
+// We do not auto-invalidate as a side-effect of search.  The mutation
+// belongs to the entry-create code path because it ties cleanly to a
+// user action ("the user just told me X is now true") and respects the
+// same opt-in surface as auto-tagging.  A false positive here erases
+// (well, soft-deletes) prior memory; the prompt is deliberately strict
+// to bias toward "leave it alone" on ambiguous cases.
+//
+// `candidates` are passed in — caller is responsible for finding them
+// (typically: FTS search on the new entry's title, top 5 by BM25,
+// excluding the new entry itself).  Helper stays pure: it doesn't touch
+// the store, it just decides which ids to flag.
+struct SupersessionResult {
+    std::vector<int64_t>     invalidated_ids;
+    std::vector<int64_t>     candidate_ids;
+    std::string              note;
+};
+SupersessionResult detect_supersession_with_advisor(
+    const AdvisorFn& advisor,
+    const std::string& new_title,
+    const std::string& new_content,
+    const std::vector<MemoryEntry>& candidates) {
+    SupersessionResult out;
+    for (auto& c : candidates) out.candidate_ids.push_back(c.id);
+    if (candidates.empty()) return out;
+
+    std::ostringstream prompt;
+    prompt << "A new memory entry was just stored. Determine whether it "
+              "directly contradicts any of the existing entries below — "
+              "i.e., asserts a fact that REPLACES a previously-stored "
+              "fact about the same subject. Examples of contradictions: "
+              "'I prefer pasta' (new) vs 'I prefer sushi' (existing); "
+              "'we use Postgres now' (new) vs 'we use MySQL' (existing). "
+              "Mere relatedness or topical overlap does NOT count — the "
+              "new entry must make the old one factually WRONG. When in "
+              "doubt, prefer 'none'.\n\n"
+           << "New entry:\n"
+           << "  Title: " << new_title << "\n";
+    if (!new_content.empty()) {
+        std::string excerpt = new_content;
+        if (excerpt.size() > 1500) excerpt.resize(1500);
+        for (auto& c : excerpt) if (c == '\n') c = ' ';
+        prompt << "  Content: " << excerpt << "\n";
+    }
+    prompt << "\nExisting entries:\n";
+    for (auto& e : candidates) {
+        prompt << "[id=" << e.id << "] " << e.title << "\n";
+        if (!e.content.empty()) {
+            std::string excerpt = e.content;
+            if (excerpt.size() > 800) excerpt.resize(800);
+            for (auto& c : excerpt) if (c == '\n') c = ' ';
+            prompt << "  " << excerpt << "\n";
+        }
+    }
+    prompt << "\nRespond with the ids of existing entries that are now "
+              "factually superseded, comma-separated. If no entry is "
+              "directly contradicted, respond with the single word "
+              "'none'.";
+
+    std::string resp = advisor(prompt.str());
+    if (resp.size() >= 4 && resp.compare(0, 4, "ERR:") == 0) {
+        out.note = "(supersession advisor unavailable:" + resp.substr(4) +
+                   " — no auto-invalidation)";
+        return out;
+    }
+
+    // Explicit "none" guard: model wrote no digits, meaning no
+    // supersession.  We only consider the digit path otherwise; an
+    // utterance like "none of these" is no-op for the digit parser
+    // already, but check explicitly so the response shape is clear.
+    bool has_digit = false;
+    for (char c : resp) {
+        if (c >= '0' && c <= '9') { has_digit = true; break; }
+    }
+    if (!has_digit) return out;
+
+    // Build candidate id set for membership checks (only accept ids the
+    // advisor was actually shown — no fabrication).
+    std::unordered_map<int64_t, char> allowed;
+    for (auto& c : candidates) allowed[c.id] = 1;
+
+    int64_t accum = 0;
+    bool in_num = false;
+    auto flush = [&]() {
+        if (in_num && allowed.count(accum)) {
+            bool dup = false;
+            for (auto x : out.invalidated_ids)
+                if (x == accum) { dup = true; break; }
+            if (!dup) out.invalidated_ids.push_back(accum);
+        }
+        accum = 0;
+        in_num = false;
+    };
+    for (char c : resp) {
+        if (c >= '0' && c <= '9') {
+            accum = accum * 10 + (c - '0');
+            in_num = true;
+        } else {
+            flush();
+        }
+    }
+    flush();
+
+    return out;
+}
+
+// Reciprocal-rank fusion across N rankings of MemoryEntry rows.  Each
+// ranking is a 1-based ordered list (as returned by FTS5 or
+// search_entries_graduated); each gets a per-ranking weight to bias the
+// fusion toward more-trusted variants (e.g., the original query above
+// reformulations).  k=60 is the canonical RRF constant — tunable, but
+// the fusion is robust across k ∈ [40, 80].
+std::vector<MemoryEntry> rrf_fuse_rankings(
+    std::vector<std::vector<MemoryEntry>> rankings,
+    const std::vector<double>& weights,
+    int limit,
+    double k = 60.0) {
+    if (rankings.empty()) return {};
+    if (rankings.size() == 1) {
+        auto out = std::move(rankings[0]);
+        if (limit > 0 && static_cast<int>(out.size()) > limit) {
+            out.resize(static_cast<size_t>(limit));
+        }
+        return out;
+    }
+
+    // id → (entry pointer + accumulated score).  Pointer is into one of
+    // the input vectors (which we own here), valid for the duration of
+    // this function.  Don't move-from `rankings` until done.
+    struct Row { const MemoryEntry* entry; double score; };
+    std::unordered_map<int64_t, Row> fused;
+
+    for (size_t r = 0; r < rankings.size(); ++r) {
+        double w = (r < weights.size()) ? weights[r] : 1.0;
+        for (size_t i = 0; i < rankings[r].size(); ++i) {
+            const auto& e = rankings[r][i];
+            double contrib = w / (k + static_cast<double>(i + 1));
+            auto it = fused.find(e.id);
+            if (it == fused.end()) fused.emplace(e.id, Row{&e, contrib});
+            else                   it->second.score += contrib;
+        }
+    }
+
+    std::vector<std::pair<int64_t, double>> sorted;
+    sorted.reserve(fused.size());
+    for (auto& [id, row] : fused) sorted.emplace_back(id, row.score);
+    std::sort(sorted.begin(), sorted.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.second != b.second) return a.second > b.second;
+                  return a.first < b.first;
+              });
+
+    std::vector<MemoryEntry> out;
+    out.reserve(limit > 0 ? static_cast<size_t>(limit) : sorted.size());
+    for (auto& [id, _] : sorted) {
+        if (limit > 0 && static_cast<int>(out.size()) >= limit) break;
+        out.push_back(*fused[id].entry);
+    }
+    return out;
+}
+
+// Render an epoch-seconds timestamp as YYYY-MM-DD UTC, or "" if missing.
+// Used in rerank prompt enrichment so the LLM can pick the most-recent
+// non-superseded entry on temporal/knowledge-update questions.  We
+// deliberately omit time-of-day to keep the prompt compact — day-level
+// granularity is enough to break ties between memories on different
+// dates, and most LongMemEval-style questions ground at day resolution.
+std::string format_ts_yyyymmdd(int64_t epoch_s) {
+    if (epoch_s <= 0) return {};
+    std::time_t t = static_cast<std::time_t>(epoch_s);
+    std::tm tm{};
+    if (gmtime_r(&t, &tm) == nullptr) return {};
+    char buf[16];
+    if (std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm) == 0) return {};
+    return std::string(buf);
+}
+
 RerankResult rerank_with_advisor(
     const std::function<std::string(const std::string&)>& advisor,
     const std::string& query,
@@ -1845,12 +2330,49 @@ RerankResult rerank_with_advisor(
     // entries 4..N inherited the upstream ordering verbatim — pinning
     // R@10 to the candidate-generation R@10.  Asking for every id
     // lets the reorder reach the long tail.
+    //
+    // Each candidate row carries a short metadata header
+    // `(type · YYYY-MM-DD · superseded)` when those fields are
+    // available.  Without that, the reranker is reordering by title +
+    // excerpt only — it can't pick the most-recent preference, prefer
+    // a `type=preference` row over a `type=research` row that mentions
+    // the same topic, or skip an explicitly invalidated entry.  Those
+    // signals are exactly what knowledge-update and temporal-reasoning
+    // questions hinge on.
     std::ostringstream prompt;
-    prompt << "Rerank these search results by relevance to the query.\n\n"
+    prompt << "Rerank these search results by relevance to the query.\n"
+           << "Each candidate header carries (type · authored-date · "
+              "validity).  When ranking, prefer entries whose type "
+              "matches what the query is asking for (preference, event, "
+              "fact, etc.); on questions about *current* state, prefer "
+              "the most recent non-superseded entry; entries marked "
+              "'superseded' have been invalidated and should rank below "
+              "live entries on the same topic.\n\n"
            << "Query: \"" << query << "\"\n\n"
            << "Candidates:\n";
     for (auto& e : candidates) {
-        prompt << "[id=" << e.id << "] " << e.title << "\n";
+        // Compose the metadata header.  Only emit fields we have so the
+        // line stays terse for entries with sparse metadata.
+        std::vector<std::string> meta;
+        if (!e.type.empty()) meta.push_back(e.type);
+        std::string ts = format_ts_yyyymmdd(e.created_at);
+        if (!ts.empty()) meta.push_back(ts);
+        if (e.valid_to > 0) {
+            std::string inv = format_ts_yyyymmdd(e.valid_to);
+            meta.push_back(inv.empty()
+                ? std::string("superseded")
+                : "superseded " + inv);
+        }
+        prompt << "[id=" << e.id << "]";
+        if (!meta.empty()) {
+            prompt << " (";
+            for (size_t k = 0; k < meta.size(); ++k) {
+                if (k) prompt << " · ";
+                prompt << meta[k];
+            }
+            prompt << ")";
+        }
+        prompt << " " << e.title << "\n";
         if (!e.content.empty()) {
             std::string excerpt = e.content;
             if (excerpt.size() > excerpt_bytes) {
@@ -2025,6 +2547,7 @@ void write_memory_error(int fd, int code, const std::string& msg) {
 }
 
 void handle_memory_entry_create(int fd, const HttpRequest& req,
+                                 const ApiServerOptions& opts,
                                  TenantStore& tenants, const Tenant& tenant) {
     std::shared_ptr<JsonValue> body;
     try { body = json_parse(req.body); }
@@ -2051,6 +2574,70 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
     std::string tags_err;
     auto tags = canonical_tags_json(body->get("tags"), tags_err);
     if (!tags) return write_memory_error(fd, 400, tags_err);
+
+    // Optional auto-tagging.  When `auto_tag=<model>` is present in the
+    // body, run an advisor pass that extracts 2-4 topical tags from the
+    // title + content, dedupe-merge them with the caller-supplied tags,
+    // and store the union.  Tags carry an 8x weight in the BM25 ranking
+    // (memory_entries_fts), so a clean tag set is one of the strongest
+    // retrieval signals available — and most agent-side ingest paths
+    // currently leave it empty.  Failure is benign: the tag advisor's
+    // error surfaces in the response's `auto_tag.note` field, the entry
+    // is created with the caller-supplied tags only.
+    std::string auto_tag_model;
+    if (auto v = body->get("auto_tag"); v && v->is_string()) {
+        auto_tag_model = v->as_string();
+    }
+    std::vector<std::string> auto_tags_added;
+    std::string auto_tag_note;
+    if (!auto_tag_model.empty()) {
+        // Re-parse the canonicalized tags JSON to a vector<string> for
+        // dedupe.  Cheap — caller tag arrays are bounded at 32 entries.
+        std::vector<std::string> existing;
+        try {
+            if (auto parsed = json_parse(*tags); parsed && parsed->is_array()) {
+                for (auto& t : parsed->as_array()) {
+                    if (t && t->is_string()) existing.push_back(t->as_string());
+                }
+            }
+        } catch (...) {}
+
+        auto tag_advisor = build_memory_advisor(opts.api_keys,
+                                                  auto_tag_model,
+                                                  /*sys_prompt=*/
+            "You are a tag extractor.  Read the entry and emit short, "
+            "lowercase, hyphenated topical tags — one per line — that "
+            "describe what the entry is about.  No commentary, no "
+            "preamble, no quotes.");
+        auto extr = extract_tags_with_advisor(tag_advisor, title, content,
+                                                existing);
+        auto_tags_added = std::move(extr.tags);
+        auto_tag_note   = std::move(extr.note);
+
+        if (!auto_tags_added.empty()) {
+            // Merge: caller-supplied tags first (they own the entry's
+            // canonical labels), advisor tags appended.  Re-serialize
+            // through canonical_tags_json so length/count caps still
+            // apply.  If the merge overflows the 32-tag cap, the
+            // validator rejects with a clear error — no silent drop.
+            auto merged = jarr();
+            auto& ma = merged->as_array_mut();
+            for (auto& t : existing) ma.push_back(jstr(t));
+            for (auto& t : auto_tags_added) ma.push_back(jstr(t));
+            std::string merge_err;
+            auto canonical_merged = canonical_tags_json(merged, merge_err);
+            if (canonical_merged) {
+                tags = std::move(canonical_merged);
+            } else {
+                // Overflow / validation failure on merge — fall back to
+                // caller tags, surface the reason as a note so the
+                // caller can see what happened.
+                auto_tags_added.clear();
+                auto_tag_note = "(auto-tag merge rejected: " + merge_err +
+                                " — used caller tags only)";
+            }
+        }
+    }
 
     // Optional artifact link.  Validated against the tenant's artifact
     // catalogue here — passing a foreign tenant's id surfaces as 400
@@ -2082,9 +2669,124 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
         }
     }
 
+    // Optional `created_at` override.  Lets bench harnesses and
+    // historical-import callers stamp entries with the time the fact
+    // was originally observed rather than ingest time.  Without this,
+    // every backfilled entry shares the ingest timestamp and temporal
+    // queries ("when did the user say X?") collapse onto one moment.
+    // Accepted as either epoch seconds (preferred) or epoch
+    // milliseconds (auto-detected: anything > 10**12 is treated as ms).
+    int64_t created_at_override = 0;
+    if (auto v = body->get("created_at"); v && v->is_number()) {
+        double raw = v->as_number();
+        if (raw < 0)
+            return write_memory_error(fd, 400, "created_at must be ≥ 0");
+        int64_t cand = static_cast<int64_t>(raw);
+        if (cand > 1'000'000'000'000LL) cand /= 1000;  // ms → s
+        created_at_override = cand;
+    }
+
+    // Optional auto-supersession.  When `supersede=<model>` is in the
+    // body, after creating the new entry we ask the advisor whether
+    // the new entry contradicts any existing top-K FTS hits on the
+    // same title; ids the advisor flags get invalidated (valid_to set
+    // to now()).  This is the auto-cleanup loop for knowledge-update
+    // cases where the user changes their mind without ever explicitly
+    // invalidating the old entry — and it's where the
+    // knowledge-update accuracy gap mostly lives.  Strictly opt-in;
+    // the prompt biases toward "none" so false positives are rare.
+    std::string supersede_model;
+    if (auto v = body->get("supersede"); v && v->is_string()) {
+        supersede_model = v->as_string();
+    }
+
     auto e = tenants.create_entry(tenant.id, type, title, content, source,
-                                    *tags, artifact_id, conversation_id);
-    write_json_response(fd, 201, memory_entry_to_json_hydrated(e, tenants));
+                                    *tags, artifact_id, conversation_id,
+                                    created_at_override);
+
+    // Run supersession detection AFTER create.  We always want the new
+    // entry to be persisted; the advisor pass is auxiliary.
+    std::vector<int64_t> superseded_ids;
+    std::string supersede_note;
+    std::vector<int64_t> supersede_candidates;
+    if (!supersede_model.empty()) {
+        // Find existing candidates: FTS on the new title, type-matched
+        // (so 'preference' contradicts 'preference', not 'context').
+        // Top 6 — keep the prompt bounded; -1 in the budget to leave
+        // room for the new-entry-itself filter.
+        TenantStore::EntryFilter fcand;
+        fcand.q     = title;
+        fcand.types = { type };
+        fcand.limit = 6;
+        auto cands = tenants.list_entries(tenant.id, fcand);
+        // Drop the just-created row (FTS sees it because the AFTER
+        // INSERT trigger wrote to memory_entries_fts before this
+        // call returns).
+        cands.erase(std::remove_if(cands.begin(), cands.end(),
+            [&e](const MemoryEntry& x) { return x.id == e.id; }),
+            cands.end());
+        if (cands.size() > 5) cands.resize(5);
+
+        if (!cands.empty()) {
+            auto advisor = build_memory_advisor(opts.api_keys,
+                                                  supersede_model,
+                                                  /*sys_prompt=*/
+                "You are a memory-supersession judge.  Be conservative — "
+                "only flag an existing entry as superseded when the new "
+                "entry directly replaces its factual content.  Output "
+                "ids comma-separated, or the single word 'none'.");
+            auto sup = detect_supersession_with_advisor(advisor, title,
+                                                          content, cands);
+            superseded_ids        = std::move(sup.invalidated_ids);
+            supersede_candidates  = std::move(sup.candidate_ids);
+            supersede_note        = std::move(sup.note);
+
+            // Apply: invalidate each flagged entry.  Failures (already
+            // invalidated, cross-tenant — shouldn't happen here, but
+            // guarded in the storage call) are silently dropped.
+            for (auto id : superseded_ids) {
+                (void)tenants.invalidate_entry(tenant.id, id);
+            }
+        }
+    }
+
+    auto resp = memory_entry_to_json_hydrated(e, tenants);
+    // Auto-supersession metadata block.  Always emitted when requested
+    // so the caller can verify what the advisor decided, even on
+    // empty / no-op runs.
+    if (!supersede_model.empty()) {
+        auto sm = jobj();
+        auto& smo = sm->as_object_mut();
+        smo["model"]   = jstr(supersede_model);
+        smo["applied"] = jbool(!superseded_ids.empty());
+        auto cands_arr = jarr();
+        auto& ca = cands_arr->as_array_mut();
+        for (auto cid : supersede_candidates)
+            ca.push_back(jnum(static_cast<double>(cid)));
+        smo["candidates"] = cands_arr;
+        auto inv_arr = jarr();
+        auto& ia = inv_arr->as_array_mut();
+        for (auto iid : superseded_ids)
+            ia.push_back(jnum(static_cast<double>(iid)));
+        smo["invalidated"] = inv_arr;
+        if (!supersede_note.empty()) smo["note"] = jstr(supersede_note);
+        resp->as_object_mut()["supersede"] = sm;
+    }
+    // When auto-tagging was requested, surface what the advisor added
+    // (or why it didn't) so the caller can audit the augmentation.
+    if (!auto_tag_model.empty()) {
+        auto am = jobj();
+        auto& amo = am->as_object_mut();
+        amo["model"]   = jstr(auto_tag_model);
+        amo["applied"] = jbool(!auto_tags_added.empty());
+        auto added = jarr();
+        auto& aa = added->as_array_mut();
+        for (auto& t : auto_tags_added) aa.push_back(jstr(t));
+        amo["added"] = added;
+        if (!auto_tag_note.empty()) amo["note"] = jstr(auto_tag_note);
+        resp->as_object_mut()["auto_tag"] = am;
+    }
+    write_json_response(fd, 201, resp);
 }
 
 void handle_memory_entry_list(int fd, const HttpRequest& req,
@@ -2139,6 +2841,16 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
         !tenants.get_conversation(tenant.id, f.conversation_id)) {
         f.conversation_id = 0;
     }
+    // Question-intent routing.  When the caller hasn't supplied an
+    // explicit `type=` filter, classify the query for cue words and
+    // soft-boost matching memory types via the existing 1.3x BM25
+    // multiplier.  Opt-out via `intent=off` for callers that want
+    // pure lexical ranking (debugging, regression baselines).  No-op
+    // when q is empty (browse path) — types are hard filters there.
+    if (f.types.empty() && !f.q.empty() && get_str("intent") != "off") {
+        f.types = classify_question_intent(f.q);
+    }
+
     // `graduated=true` (only meaningful with q + conversation_id) runs
     // search_entries_graduated: tries conversation-scoped first, fills
     // out from tenant-wide if fewer than `limit` hits.  Without it the
@@ -2165,6 +2877,19 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     // pool never reached past `limit` to begin with.  After rerank,
     // trim back to the caller's requested `limit` so the response
     // shape matches what they asked for.
+    // `expand=<model>` (only meaningful with `q`) calls the model once
+    // to generate paraphrased reformulations of the query, runs each
+    // through the same FTS pipeline, then RRF-fuses the rankings.
+    // No-embedding alternative to dense retrieval: catches queries
+    // phrased differently from the answer text without adding any
+    // new index, table, or external dependency.  Cost: one extra LLM
+    // call per query (~150ms at Haiku speeds).
+    //
+    // Failure mode is benign: if the expansion model errors or returns
+    // unparseable output, the search proceeds with the original query
+    // alone and a `note` is surfaced in the `expansion` response block.
+    std::string expand_model = get_str("expand");
+
     std::string rerank_model = get_str("rerank");
     // Optional second-stage reranker.  When set, pass 1 (the cheaper
     // `rerank` model) coarse-orders the wider candidate pool and the
@@ -2188,43 +2913,82 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
         f.limit = desired_pool > 50 ? caller_limit : desired_pool;
     }
 
-    auto entries = use_graduated
-        ? tenants.search_entries_graduated(tenant.id, f)
-        : tenants.list_entries(tenant.id, f);
+    // Shared sys_prompt for advisor-driven memory operations.  The
+    // advisor responds as a memory-search collaborator, not a chat
+    // companion — so no preambles, no apologies, no pleasantries.
+    const std::string advisor_sys_prompt =
+        "You are an advisor consulted by another AI agent.  Answer "
+        "the question directly and concisely.  No preamble.  No "
+        "pleasantries.  No restating the question.  No offers to "
+        "help further — the executor will re-engage if it needs "
+        "more.";
+
+    // ── Optional query expansion ─────────────────────────────────────
+    // When `expand=<model>` is set, generate paraphrases and fan out
+    // the FTS query across all variants.  Each variant gets its own
+    // intent classification (so a paraphrase that changes the question
+    // shape from "what is" to "where is" still picks up an appropriate
+    // type boost).
+    std::vector<std::string> expansion_queries;
+    std::string expansion_note;
+    if (!expand_model.empty() && !f.q.empty()) {
+        auto expander = build_memory_advisor(opts.api_keys, expand_model,
+                                              advisor_sys_prompt);
+        auto exp = expand_query_with_advisor(expander, f.q);
+        expansion_queries = std::move(exp.queries);
+        expansion_note    = std::move(exp.note);
+    }
+
+    std::vector<MemoryEntry> entries;
+    if (expansion_queries.empty()) {
+        // Fast path: single search, no fusion needed.
+        entries = use_graduated
+            ? tenants.search_entries_graduated(tenant.id, f)
+            : tenants.list_entries(tenant.id, f);
+    } else {
+        // Run the original query plus each paraphrase through the
+        // same pipeline.  We weight the original at 1.0 and each
+        // paraphrase at 0.7 — paraphrases add recall but the original
+        // captured the user's intent best, so its rank should anchor
+        // the fused order.
+        std::vector<std::vector<MemoryEntry>> rankings;
+        std::vector<double> weights;
+        rankings.reserve(1 + expansion_queries.size());
+        weights.reserve(1 + expansion_queries.size());
+
+        rankings.push_back(use_graduated
+            ? tenants.search_entries_graduated(tenant.id, f)
+            : tenants.list_entries(tenant.id, f));
+        weights.push_back(1.0);
+
+        for (auto& q : expansion_queries) {
+            TenantStore::EntryFilter ef = f;
+            ef.q = q;
+            // Reclassify intent for the paraphrase.  Skip when the
+            // caller passed an explicit type filter (we mirror the
+            // original-query behavior).
+            if (ef.types.empty() && get_str("intent") != "off") {
+                ef.types = classify_question_intent(q);
+            }
+            rankings.push_back(use_graduated
+                ? tenants.search_entries_graduated(tenant.id, ef)
+                : tenants.list_entries(tenant.id, ef));
+            weights.push_back(0.7);
+        }
+
+        // Limit on RRF output: same widened pool the rerank logic
+        // expects (so reranking a fused candidate set behaves the same
+        // as reranking a single-query candidate set).
+        const int fused_limit = (f.limit > 0 && f.limit <= 200) ? f.limit : 50;
+        entries = rrf_fuse_rankings(std::move(rankings), weights,
+                                     fused_limit);
+    }
 
     std::shared_ptr<JsonValue> rerank_meta;
     if (!rerank_model.empty() && !f.q.empty() && entries.size() > 1) {
-        auto opts_keys = opts.api_keys;  // copy — captured by the lambda
-        const std::string sys_prompt =
-            "You are an advisor consulted by another AI agent.  Answer "
-            "the question directly and concisely.  No preamble.  No "
-            "pleasantries.  No restating the question.  No offers to "
-            "help further — the executor will re-engage if it needs "
-            "more.";
-        auto build_advisor = [opts_keys, sys_prompt]
-                             (const std::string& model) {
-            return [opts_keys, model, sys_prompt]
-                   (const std::string& prompt) -> std::string {
-                // Per-request ApiClient — TLS handshake amortizes
-                // inside .complete().  Building one per rerank is
-                // fine; if this becomes a hot path we can move to a
-                // shared client member on ApiServer with the same
-                // thread-safe contract the Orchestrator's client
-                // uses.
-                ApiClient client(opts_keys);
-                ApiRequest r;
-                r.model               = model;
-                r.max_tokens          = 1024;
-                r.include_temperature = false;
-                r.system_prompt       = sys_prompt;
-                r.messages            = {{"user", prompt}};
-                ApiResponse resp = client.complete(r);
-                if (!resp.ok) return "ERR: " + resp.error;
-                return resp.content;
-            };
-        };
-
-        auto coarse_advisor = build_advisor(rerank_model);
+        auto coarse_advisor = build_memory_advisor(opts.api_keys,
+                                                    rerank_model,
+                                                    advisor_sys_prompt);
         auto rr = rerank_with_advisor(coarse_advisor, f.q,
                                        std::move(entries));
         entries = std::move(rr.entries);
@@ -2257,7 +3021,9 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
                           entries.end(), std::back_inserter(tail));
                 entries.resize(kFinePoolSize);
             }
-            auto fine_advisor = build_advisor(rerank_fine_model);
+            auto fine_advisor = build_memory_advisor(opts.api_keys,
+                                                       rerank_fine_model,
+                                                       advisor_sys_prompt);
             auto rr2 = rerank_with_advisor(
                 fine_advisor, f.q, std::move(entries),
                 kFineExcerptBytes);
@@ -2301,6 +3067,21 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     m["entries"] = arr;
     m["count"]   = jnum(static_cast<double>(entries.size()));
     if (rerank_meta) m["rerank"] = rerank_meta;
+    // Surface query expansion metadata so callers can debug "why did I
+    // get back this set" when expansion is on.  Always emitted when
+    // expansion was requested, even on advisor failure (note explains).
+    if (!expand_model.empty()) {
+        auto em = jobj();
+        auto& emo = em->as_object_mut();
+        emo["model"]   = jstr(expand_model);
+        emo["applied"] = jbool(!expansion_queries.empty());
+        auto qarr = jarr();
+        auto& qa = qarr->as_array_mut();
+        for (auto& q : expansion_queries) qa.push_back(jstr(q));
+        emo["queries"] = qarr;
+        if (!expansion_note.empty()) emo["note"] = jstr(expansion_note);
+        m["expansion"] = em;
+    }
     write_json_response(fd, 200, body);
 }
 
@@ -3409,8 +4190,22 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             };
             auto fmt_entry_line = [&](const MemoryEntry& e) -> std::string {
                 std::ostringstream l;
-                l << "- #" << e.id << "  [" << e.type << "]  " << e.title
-                  << fmt_tags(e.tags_json);
+                l << "- #" << e.id << "  [" << e.type << "]";
+                // Surface the entry's authored date when present.  Lets
+                // the agent reason about recency and "what was true
+                // when" without an extra /mem entry round trip.  Same
+                // YYYY-MM-DD form the reranker sees in its prompt.
+                std::string ts = format_ts_yyyymmdd(e.created_at);
+                if (!ts.empty()) l << " (" << ts;
+                if (e.valid_to > 0) {
+                    if (ts.empty()) l << " (";
+                    else            l << " · ";
+                    l << "superseded";
+                    std::string inv = format_ts_yyyymmdd(e.valid_to);
+                    if (!inv.empty()) l << " " << inv;
+                }
+                if (!ts.empty() || e.valid_to > 0) l << ")";
+                l << "  " << e.title << fmt_tags(e.tags_json);
                 if (!e.source.empty()) l << "  (source: " << e.source << ")";
                 return l.str();
             };
@@ -3652,14 +4447,95 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 static constexpr int kAgentRerankPool   = 25;
                 static constexpr int kAgentRerankReturn = 10;
 
+                // Pull the caller's Constitution so we can consult its
+                // memory-enrichment toggles.  get_constitution throws
+                // out_of_range for unknown ids; the master "index" id
+                // is always loaded, and any caller that reached this
+                // closure was registered via Orchestrator's run loop.
+                // If somehow we get a stale id we fall through to the
+                // pre-config behavior — defensive in_try block, no
+                // user-visible error for what is at worst a missed
+                // optimization.
+                Constitution::MemoryConfig mc;
+                std::string caller_advisor_model;
+                try {
+                    const auto& cc = orch_ptr->get_constitution(caller_id);
+                    mc = cc.memory;
+                    caller_advisor_model = cc.advisor.model;
+                    if (caller_advisor_model.empty())
+                        caller_advisor_model = cc.advisor_model;
+                } catch (...) {
+                    // mc keeps defaults — search still runs, just
+                    // without the per-agent enrichment.
+                }
+
                 TenantStore::EntryFilter f;
                 f.q               = q;
                 f.conversation_id = reader_conversation_id;
                 f.limit           = rerank ? kAgentRerankPool : 50;
 
-                auto entries = (reader_conversation_id > 0)
-                    ? tenants.search_entries_graduated(reader_tenant_id, f)
-                    : tenants.list_entries(reader_tenant_id, f);
+                // Question-intent routing — heuristic, no LLM cost.
+                // Soft-boost types matching the question's intent (the
+                // existing 1.3x BM25 multiplier) so a "preference"
+                // query surfaces user/feedback rows above context
+                // rows.  Caller-supplied f.types would override, but
+                // the agent path doesn't accept type filters today —
+                // f.types is always empty here.
+                if (mc.intent_routing) {
+                    f.types = classify_question_intent(q);
+                }
+
+                // Closure that runs one query through the same FTS
+                // path, used both for the original and (when
+                // search_expand is on) for paraphrases.  Preserves the
+                // intent-routing per variant — paraphrases that shift
+                // the question shape get appropriate type boosts.
+                auto run_one = [&](const std::string& query_str)
+                    -> std::vector<MemoryEntry> {
+                    TenantStore::EntryFilter ef = f;
+                    ef.q = query_str;
+                    if (mc.intent_routing && ef.types.empty()) {
+                        ef.types = classify_question_intent(query_str);
+                    }
+                    return (reader_conversation_id > 0)
+                        ? tenants.search_entries_graduated(reader_tenant_id, ef)
+                        : tenants.list_entries(reader_tenant_id, ef);
+                };
+
+                std::vector<MemoryEntry> entries;
+                std::string expand_note;
+                std::vector<std::string> expansion_used;
+                if (mc.search_expand && !caller_advisor_model.empty()) {
+                    // Query reformulation.  Agent's advisor model
+                    // generates 2 paraphrases; we run all 3 variants
+                    // through FTS and RRF-fuse the rankings.
+                    // No-embedding alternative to dense retrieval —
+                    // closes the gap on paraphrased queries while
+                    // staying inside the lean-binary constraint.
+                    auto expander = orch_ptr->make_advisor_invoker(caller_id);
+                    auto exp = expand_query_with_advisor(expander, q);
+                    expansion_used = exp.queries;
+                    if (!exp.note.empty()) expand_note = exp.note;
+
+                    if (!expansion_used.empty()) {
+                        std::vector<std::vector<MemoryEntry>> rankings;
+                        std::vector<double> weights;
+                        rankings.push_back(run_one(q));
+                        weights.push_back(1.0);
+                        for (auto& pq : expansion_used) {
+                            rankings.push_back(run_one(pq));
+                            weights.push_back(0.7);
+                        }
+                        const int fused_limit = f.limit;
+                        entries = rrf_fuse_rankings(std::move(rankings),
+                                                     weights, fused_limit);
+                    } else {
+                        // Expansion failed — single-query fallback.
+                        entries = run_one(q);
+                    }
+                } else {
+                    entries = run_one(q);
+                }
 
                 if (entries.empty()) {
                     return "(no entries match '" + q + "')";
@@ -3683,6 +4559,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
                 std::ostringstream out;
                 if (!rerank_note.empty()) out << rerank_note;
+                if (!expand_note.empty()) out << expand_note << "\n";
+                if (!expansion_used.empty()) {
+                    // Tell the agent which paraphrases the orchestrator
+                    // also searched.  Useful for debugging "why did I
+                    // get back this set?" — and lets the agent see the
+                    // recall surface its memory config opted into.
+                    out << "(also searched: ";
+                    for (size_t i = 0; i < expansion_used.size(); ++i) {
+                        if (i) out << " | ";
+                        out << "'" << expansion_used[i] << "'";
+                    }
+                    out << ")\n";
+                }
                 out << entries.size() << " match"
                     << (entries.size() == 1 ? "" : "es")
                     << " for '" << q << "' (top by relevance):\n";
@@ -3930,10 +4819,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // the request reaches us, so by the time we see it we can trust the
     // body is meaningful synthesised text.
     orch->set_structured_memory_writer(
-        [&tenants, reader_tenant_id, reader_conversation_id]
+        [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
         (const std::string& kind,
          const std::string& args,
-         const std::string& body) -> std::string {
+         const std::string& body,
+         const std::string& caller_id) -> std::string {
             // Trim leading/trailing whitespace from a token.
             auto trim = [](std::string s) {
                 while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
@@ -4015,21 +4905,124 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                            "store holds long-form output via /write --persist";
                 }
 
+                // Read caller's memory config for auto-enrichment
+                // toggles.  Defensive try: an unknown caller id keeps
+                // pre-config behavior (no enrichment) without erroring
+                // the write itself.
+                Constitution::MemoryConfig mc_add;
+                std::string caller_advisor_model;
+                try {
+                    const auto& cc = orch_ptr->get_constitution(caller_id);
+                    mc_add = cc.memory;
+                    caller_advisor_model = cc.advisor.model;
+                    if (caller_advisor_model.empty())
+                        caller_advisor_model = cc.advisor_model;
+                } catch (...) {}
+
+                // Auto-tagging.  When enabled (and the agent has an
+                // advisor model), an advisor extracts 2-4 short
+                // topical tags from title+content.  Tags get the 8x
+                // BM25 weight on retrieval — one of the strongest
+                // ranking signals available — and most agent ingest
+                // paths leave them empty.  A failed advisor call
+                // surfaces a note in the OK output and the entry is
+                // written with empty tags as before.
+                std::string tags_json = "[]";
+                std::vector<std::string> auto_tags_added;
+                std::string auto_tag_note;
+                if (mc_add.auto_tag && !caller_advisor_model.empty()) {
+                    auto tag_advisor = orch_ptr->make_advisor_invoker(caller_id);
+                    auto extr = extract_tags_with_advisor(tag_advisor,
+                                                            title, content,
+                                                            /*existing=*/{});
+                    auto_tags_added = std::move(extr.tags);
+                    auto_tag_note   = std::move(extr.note);
+                    if (!auto_tags_added.empty()) {
+                        // Hand-build the JSON array — we know the
+                        // tags are already validated (lowercase,
+                        // hyphen, ≤32 chars) by the helper.  The
+                        // canonical_tags_json validator would also
+                        // accept this but the round trip is
+                        // unnecessary for known-good input.
+                        std::ostringstream tj;
+                        tj << "[";
+                        for (size_t i = 0; i < auto_tags_added.size(); ++i) {
+                            if (i) tj << ",";
+                            tj << "\"";
+                            for (char c : auto_tags_added[i]) {
+                                if (c == '"' || c == '\\') tj << '\\';
+                                tj << c;
+                            }
+                            tj << "\"";
+                        }
+                        tj << "]";
+                        tags_json = tj.str();
+                    }
+                }
+
                 // Pin the entry to the active conversation when one is
                 // present.  Without that link, /mem add entry inside a
                 // conversation produces tenant-wide entries that don't
                 // bias the conversation-scoped /mem search ranking.
                 auto e = tenants.create_entry(reader_tenant_id, type, title,
                                                content, /*source=*/"agent",
-                                               /*tags_json=*/"[]",
+                                               tags_json,
                                                artifact_id,
                                                reader_conversation_id);
+
+                // Auto-supersession.  After the new entry is written,
+                // if the agent opted in, ask the advisor whether any
+                // existing entries on the same title+type are now
+                // factually contradicted; invalidate those.  Bias is
+                // toward "leave alone" — false positives erase
+                // legitimate prior memory.
+                std::vector<int64_t> superseded_ids;
+                std::string supersede_note;
+                if (mc_add.auto_supersede && !caller_advisor_model.empty()) {
+                    TenantStore::EntryFilter fcand;
+                    fcand.q     = title;
+                    fcand.types = { type };
+                    fcand.limit = 6;
+                    auto cands = tenants.list_entries(reader_tenant_id, fcand);
+                    cands.erase(std::remove_if(cands.begin(), cands.end(),
+                        [&e](const MemoryEntry& x) { return x.id == e.id; }),
+                        cands.end());
+                    if (cands.size() > 5) cands.resize(5);
+
+                    if (!cands.empty()) {
+                        auto sup_advisor = orch_ptr->make_advisor_invoker(caller_id);
+                        auto sup = detect_supersession_with_advisor(
+                            sup_advisor, title, content, cands);
+                        superseded_ids = std::move(sup.invalidated_ids);
+                        supersede_note = std::move(sup.note);
+                        for (auto sid : superseded_ids) {
+                            (void)tenants.invalidate_entry(reader_tenant_id, sid);
+                        }
+                    }
+                }
+
                 std::ostringstream out;
                 out << "OK: added entry #" << e.id << " [" << e.type << "] "
                     << e.title;
                 if (artifact_id > 0) {
                     out << " (linked to artifact #" << artifact_id << ")";
                 }
+                if (!auto_tags_added.empty()) {
+                    out << "\n  auto-tagged: ";
+                    for (size_t i = 0; i < auto_tags_added.size(); ++i) {
+                        if (i) out << ", ";
+                        out << auto_tags_added[i];
+                    }
+                }
+                if (!auto_tag_note.empty()) out << "\n  " << auto_tag_note;
+                if (!superseded_ids.empty()) {
+                    out << "\n  superseded: ";
+                    for (size_t i = 0; i < superseded_ids.size(); ++i) {
+                        if (i) out << ", ";
+                        out << "#" << superseded_ids[i];
+                    }
+                }
+                if (!supersede_note.empty()) out << "\n  " << supersede_note;
                 out << ".  Use this id in subsequent /mem add link calls to "
                        "reference it.\n";
                 return out.str();
@@ -5225,7 +6218,7 @@ void ApiServer::handle_connection(int fd) {
             if (segs.size() >= 3 && segs[2] == "entries") {
                 if (segs.size() == 3) {
                     if (req.method == "POST")
-                        return handle_memory_entry_create(fd, req, tenants_, *tenant);
+                        return handle_memory_entry_create(fd, req, opts_, tenants_, *tenant);
                     if (req.method == "GET")
                         return handle_memory_entry_list(fd, req, opts_, tenants_, *tenant);
                     write_plain_response(fd, 405, "Method Not Allowed",

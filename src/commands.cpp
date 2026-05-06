@@ -1797,7 +1797,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     cache_result = false;
                 } else {
                     std::string body = structured_memory_writer(
-                        "invalidate", args, /*body=*/"");
+                        "invalidate", args, /*body=*/"", agent_id);
                     block << body;
                     if (body.empty() || body.back() != '\n') block << "\n";
                     if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
@@ -1860,7 +1860,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     cache_result = false;
                 } else {
                     std::string body = structured_memory_writer(
-                        callback_kind, args, cmd.content);
+                        callback_kind, args, cmd.content, agent_id);
                     block << body;
                     if (body.empty() || body.back() != '\n') block << "\n";
                     if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
