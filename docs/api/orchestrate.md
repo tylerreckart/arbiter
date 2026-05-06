@@ -2,9 +2,11 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Runs one agent request end-to-end and streams the result as Server-Sent Events. The full agentic loop happens inside this one call: master agent turns, delegated and parallel sub-agent calls, tool invocations (`/fetch`, `/search`, `/browse`, `/mcp`, `/write`, `/mem*`, `/agent`, `/parallel`), generated files. The stream ends with a `done` event (success or controlled failure).
+Runs one agent request end-to-end and streams the result as Server-Sent Events. The full agentic loop happens inside this one call: master agent turns, delegated and parallel sub-agent calls, tool invocations (`/fetch`, `/search`, `/browse`, `/mcp`, `/a2a`, `/write`, `/mem*`, `/agent`, `/parallel`), generated files. The stream ends with a `done` event (success or controlled failure).
 
 For a multi-turn thread that persists user / assistant messages on the server, use [`POST /v1/conversations/:id/messages`](conversations/messages-post.md) — same SSE shape, plus history replay and message persistence.
+
+Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v1/a2a/agents/:id`](a2a/dispatch.md), which translates between the arbiter event vocabulary and A2A `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent` frames. See the [A2A concept page](concepts/a2a.md) for the full mapping.
 
 ## Request
 

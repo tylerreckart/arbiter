@@ -17,7 +17,10 @@ It runs in three shapes.
   their own panes.
 - `arbiter --api` — a multi-tenant HTTP server with bearer-token auth and
   streaming responses. Each tenant gets isolated agents, memory, and
-  artifacts.
+  artifacts. Speaks both the arbiter-native HTTP+SSE protocol and the
+  Agent2Agent (A2A) v1.0 protocol — agents are reachable from any
+  A2A-compatible client and can themselves delegate to remote A2A
+  agents listed in `~/.arbiter/a2a_agents.json`.
 - `arbiter --send <agent> <message>` — a one-shot dispatch for scripts and
   cron jobs.
 
@@ -31,8 +34,8 @@ accordingly.
 - [`docs/philosophy.md`](docs/philosophy.md) — design philosophy: the six
   themes that explain why arbiter is shaped the way it is.
 - [`docs/api/`](docs/api/index.md) — full HTTP API reference: concept
-  pages (tenants, auth, SSE events, fleet streaming, MCP, artifacts,
-  structured memory, operations) and one page per endpoint.
+  pages (tenants, auth, SSE events, fleet streaming, MCP, A2A protocol,
+  artifacts, structured memory, operations) and one page per endpoint.
 - [`docs/cli/`](docs/cli/index.md) — non-interactive command-line
   reference: `--init`, `--send`, `--api`, tenant admin, environment
   variables.

@@ -18,6 +18,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [Structured memory](concepts/structured-memory.md)
 - [Artifacts](concepts/artifacts.md)
 - [MCP servers](concepts/mcp.md)
+- [A2A protocol](concepts/a2a.md)
 - [Web search](concepts/search.md)
 - [Data model](concepts/data-model.md)
 - [Operational notes](concepts/operations.md)
@@ -73,6 +74,11 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/artifacts/:aid`](artifacts/get.md)
 - [`GET /v1/artifacts/:aid/raw`](artifacts/raw.md)
 - [`DELETE /v1/artifacts/:aid`](artifacts/delete.md)
+
+### A2A protocol
+- [`GET /.well-known/agent-card.json`](a2a/well-known.md)
+- [`GET /v1/a2a/agents/:id/agent-card.json`](a2a/agent-card.md)
+- [`POST /v1/a2a/agents/:id`](a2a/dispatch.md)
 
 ### Admin
 - [`GET /v1/admin/tenants`](admin/tenants-list.md)

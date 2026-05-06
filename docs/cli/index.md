@@ -33,6 +33,7 @@ arbiter --help                             Print built-in help
 - [`--send`](send.md) — the one-shot mode for scripts, pipes, and CI hooks.
 - [`--api`](api.md) — the HTTP server mode: flags, behaviour, links to the endpoint docs.
 - [Tenant admin](tenants.md) — managing `--api` bearer tokens.
+- [A2A agents](a2a-agents.md) — outbound remote-agent registry + the `/a2a` slash command.
 - [Environment](environment.md) — every env var arbiter reads, what overrides what.
 
 ## Choosing a mode

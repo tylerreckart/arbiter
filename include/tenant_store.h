@@ -338,6 +338,48 @@ public:
 
     bool delete_agent_record(int64_t tenant_id, const std::string& agent_id);
 
+    // ── A2A task store ──────────────────────────────────────────────────
+    //
+    // Persistent record for /v1/a2a/agents/:id calls.  task_id ==
+    // the arbiter request_id, so cancellation via /v1/requests/:id/cancel
+    // and via A2A's tasks/cancel both resolve through the same handle.
+    // contextId is opaque from arbiter's perspective — threaded through
+    // the protocol verbatim, not foreign-keyed against conversations.
+    struct A2aTaskRecord {
+        std::string task_id;
+        int64_t     tenant_id  = 0;
+        std::string agent_id;
+        std::string context_id;
+        std::string state;                  // TaskState as string
+        int64_t     created_at = 0;
+        int64_t     updated_at = 0;
+        std::string final_message_json;     // empty until terminal
+        std::string error_message;
+    };
+
+    // Create the row (state usually "submitted").  Throws on PRIMARY KEY
+    // collision — task_ids are 16-hex random and effectively unique, but
+    // a forced double-create still fails loudly rather than silently
+    // overwriting a row.
+    void create_a2a_task(int64_t tenant_id,
+                          const std::string& task_id,
+                          const std::string& agent_id,
+                          const std::string& context_id,
+                          const std::string& state);
+
+    // Update state + payload columns.  No-op if the row is missing for
+    // this tenant; returns true on actual change.
+    bool update_a2a_task(int64_t tenant_id,
+                          const std::string& task_id,
+                          const std::string& state,
+                          const std::string& final_message_json,
+                          const std::string& error_message);
+
+    // Fetch a single task by id.  Tenant-scoped — a leaked id never
+    // surfaces another tenant's row.
+    std::optional<A2aTaskRecord>
+    get_a2a_task(int64_t tenant_id, const std::string& task_id) const;
+
     // ── Artifact store (per-conversation persistent files) ──────────────
     //
     // Tenant + conversation scoped, addressed by `path` within a single

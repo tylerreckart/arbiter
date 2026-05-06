@@ -888,6 +888,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               artifact_writer_cb_,
                                               artifact_reader_cb_,
                                               artifact_lister_cb_,
+                                              a2a_invoker_cb_,
                                               agent_ptr->config().capabilities);
         // Stash for the gate's tool summary on the eventual terminating turn.
         last_cmds         = cmds;
@@ -1206,6 +1207,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   artifact_writer_cb_,
                                                   artifact_reader_cb_,
                                                   artifact_lister_cb_,
+                                                  a2a_invoker_cb_,
                                                   agent_ptr->config().capabilities);
             last_cmds         = cmds;
             last_tool_results = current_msg;
@@ -1321,6 +1323,19 @@ std::string Orchestrator::global_status() const {
             if (!cfg.goal.empty())
                 ss << " — " << cfg.goal;
             ss << "\n";
+        }
+    }
+
+    // Remote A2A agents from the per-request manager.  Listed under a
+    // distinct section so the master can see — at routing time — the
+    // trust boundary between local sub-agents (share tenant memory)
+    // and remote agents (don't).  Provider is set by api_server.cpp
+    // when opts.a2a_agents_path resolves to a non-empty registry.
+    if (remote_roster_cb_) {
+        std::string remote = remote_roster_cb_();
+        if (!remote.empty()) {
+            ss << "\n" << remote;
+            if (remote.back() != '\n') ss << "\n";
         }
     }
 

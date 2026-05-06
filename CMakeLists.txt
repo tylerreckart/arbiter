@@ -98,6 +98,13 @@ set(INDEX_AI_SOURCES
     src/mcp/subprocess.cpp
     src/mcp/client.cpp
     src/mcp/manager.cpp
+    src/a2a/types.cpp
+    src/a2a/server.cpp
+    src/a2a/event_translator.cpp
+    src/a2a/sse_reader.cpp
+    src/a2a/http.cpp
+    src/a2a/client.cpp
+    src/a2a/manager.cpp
     src/readline_wrapper.cpp
     src/markdown.cpp
 )
@@ -327,6 +334,36 @@ if(INDEX_BUILD_TESTS)
     )
     target_link_libraries(unit_mcp PRIVATE CURL::libcurl)
     add_test(NAME unit_mcp COMMAND unit_mcp)
+
+    # A2A protocol layer.  Five slices exercised in-process:
+    #   • wire-type round-trips for every public struct;
+    #   • JSON-RPC envelope serialise + parse + error shaping;
+    #   • SSE parser handling chunked feeds and field syntax;
+    #   • agent-card builder (Constitution → AgentCard);
+    #   • event translator emitting JSON-RPC-wrapped status/artifact frames.
+    # Live conformance against the upstream a2a-tck suite lives outside CMake
+    # — it talks to a running `arbiter --api` and is run manually.
+    add_executable(unit_a2a
+        tests/test_a2a.cpp
+        src/a2a/types.cpp
+        src/a2a/server.cpp
+        src/a2a/event_translator.cpp
+        src/a2a/sse_reader.cpp
+        src/constitution.cpp
+        src/api_client.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_a2a PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_a2a PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+    )
+    add_test(NAME unit_a2a COMMAND unit_a2a)
 
     # Constitution / prompt composer.  Pins the capability-bundle resolution
     # and verifies that empty-capabilities still emits the legacy surface

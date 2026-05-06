@@ -19,10 +19,11 @@ arbiter --api [--port N] [--bind ADDR] [--verbose]
 3. Resolves the admin token used to authorise tenant-management endpoints (`/v1/admin/*`). See `~/.arbiter/admin_token` — created on first `--api` launch if missing.
 4. Loads agent constitutions from `~/.arbiter/agents/*.json`.
 5. Loads the optional MCP registry from `~/.arbiter/mcp_servers.json`. See [`docs/api/concepts/mcp.md`](../api/concepts/mcp.md).
-6. Reads optional web-search provider config from `ARBITER_SEARCH_PROVIDER` / `ARBITER_SEARCH_API_KEY` (or `BRAVE_SEARCH_API_KEY` as a convenience fallback).
-7. Reads optional billing-service URL from `ARBITER_BILLING_URL`. Unset = no eligibility checks, no usage record posting; provider keys go through directly with no caps.
-8. Clears the terminal (ANSI `\033[2J\033[3J\033[H`) and prints the banner + endpoint summary at row 1, so the bind address and admin-token lines anchor at the top of a clean screen instead of chasing prior shell history.
-9. Binds the listen socket and starts accepting requests.
+6. Loads the optional A2A remote-agent registry from `~/.arbiter/a2a_agents.json`. See [a2a-agents.md](a2a-agents.md).
+7. Reads optional web-search provider config from `ARBITER_SEARCH_PROVIDER` / `ARBITER_SEARCH_API_KEY` (or `BRAVE_SEARCH_API_KEY` as a convenience fallback).
+8. Reads optional billing-service URL from `ARBITER_BILLING_URL`. Unset = no eligibility checks, no usage record posting; provider keys go through directly with no caps.
+9. Clears the terminal (ANSI `\033[2J\033[3J\033[H`) and prints the banner + endpoint summary at row 1, so the bind address and admin-token lines anchor at the top of a clean screen instead of chasing prior shell history.
+10. Binds the listen socket and starts accepting requests.
 
 `SIGINT` / `SIGTERM` triggers graceful shutdown — in-flight SSE streams close cleanly, the listen socket closes, the process exits.
 
@@ -41,6 +42,7 @@ The HTTP surface is documented in detail in [`docs/api/`](../api/index.md). Quic
 - **`POST /v1/conversations`**, **`/messages`** — long-running conversations with persisted history.
 - **`/v1/memory/*`** — structured memory graph (typed nodes, relations, FTS search).
 - **`/v1/artifacts/*`** — files agents wrote.
+- **`/v1/a2a/agents/:id`** — Agent2Agent (A2A) protocol surface: per-agent cards plus JSON-RPC dispatch (`message/send`, `message/stream`, `tasks/get`, `tasks/cancel`). See [`docs/api/concepts/a2a.md`](../api/concepts/a2a.md).
 - **`/v1/admin/tenants/*`** — tenant lifecycle (admin-token gated).
 
 ## Tenant identity

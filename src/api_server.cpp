@@ -12,6 +12,9 @@
 #include "config.h"
 #include "constitution.h"
 #include "json.h"
+#include "a2a/event_translator.h"
+#include "a2a/manager.h"
+#include "a2a/server.h"
 #include "mcp/manager.h"
 #include "orchestrator.h"
 #include "billing_client.h"
@@ -216,7 +219,16 @@ constexpr const char* kCorsHeaders =
     "Access-Control-Allow-Headers: Authorization, Content-Type, Accept\r\n"
     "Access-Control-Max-Age: 86400\r\n";
 
+} // namespace (anon paused for response writers below)
+
 // ─── HTTP response writers (non-SSE) ────────────────────────────────────────
+//
+// These three are at index_ai-namespace scope (not the surrounding
+// anonymous namespace) so other TUs in arbiter — currently src/a2a/server.cpp
+// — can write directly without going through the route-dispatch loop.
+// The TU-local helpers they call (write_all, kCorsHeaders) live in the
+// anonymous namespace above; same-TU access is unaffected by the linkage
+// boundary.
 
 void write_plain_response(int fd, int code, const std::string& reason,
                           const std::string& body) {
@@ -241,6 +253,8 @@ void write_json_response(int fd, int code, std::shared_ptr<JsonValue> body) {
        << payload;
     write_all(fd, ss.str());
 }
+
+namespace {
 
 // CORS preflight response — 204 No Content + headers.  Browsers fire this
 // ahead of any non-simple request (custom headers like Authorization, or
@@ -408,25 +422,32 @@ public:
           color_(::isatty(fileno(stderr)) != 0),
           request_id_(std::move(request_id)),
           tenant_name_(std::move(tenant_name)) {
-        (void)request_id_;    // retained for future structured logging;
-        (void)tenant_name_;   // currently suppressed for demo readability.
+        (void)tenant_name_;   // retained for future structured logging.
     }
 
     // Emit one event.  `ev` is the SSE event name; `payload` mirrors the
     // JSON body about to be written to the wire.  The logger reads only
     // the fields it cares about; unknown shapes are tolerated.
+    //
+    // Layout (matches the design mock at docs):
+    //   • A two-line block header on request_received (title + subtitle +
+    //     horizontal rule).
+    //   • A "marker form" for turn boundaries (request_received,
+    //     stream_start): `event: <gap> <meta>` on one line followed by
+    //     the event name in colour on its own line.
+    //   • An "inline form" for events with a primary value (tool_call,
+    //     gate, file, done, error): `event: <name> <gap> <value>`.
+    //
+    // Streamed text content (text/thinking deltas) is intentionally
+    // suppressed: it already mirrors back to the client over SSE, and
+    // duplicating multi-thousand-token agent prose into the operator's
+    // stderr drowns out the event spine the verbose log is meant to
+    // surface.  An operator who wants the full text reads the SSE
+    // response directly.
     void log(const std::string& ev, const std::shared_ptr<JsonValue>& payload) {
         const bool always = (ev == "request_received" || ev == "done" ||
                              ev == "error");
         if (!always && !verbose_) return;
-
-        // Events suppressed entirely in the demo-friendly verbose stream:
-        //   stream_start  — pre-announces a turn before any real content;
-        //                   the first text/tool line is a sufficient cue.
-        //   agent_start   — already silent in the legacy logger; kept so.
-        if (ev == "stream_start" || ev == "agent_start") {
-            return;
-        }
 
         std::lock_guard<std::mutex> lk(mu_);
         std::ostringstream line;
@@ -434,136 +455,168 @@ public:
         if (ev == "request_received") {
             const std::string agent = payload ? payload->get_string("agent") : "";
             const std::string msg   = payload ? payload->get_string("message") : "";
-            line << color(kBoldCyan) << "POST /orchestrate" << reset()
-                 << "  agent=" << color_for_agent(agent)
-                 << display_agent(agent) << reset()
-                 << "  " << quote_short(msg, 100);
-        } else if (ev == "done") {
+            emit_header_locked("POST", "/v1/orchestrate", agent, msg);
+            // Then the request_received marker, with the short request id
+            // as its meta value.
+            std::string short_id = request_id_;
+            if (short_id.size() > 4) short_id.resize(4);
+            std::string meta = std::string("req_") + short_id;
+            emit_marker_locked(meta, "request_received", kBoldMagenta, line);
+            return;
+        }
+        if (ev == "stream_start") {
+            const std::string agent = payload ? payload->get_string("agent") : "";
+            const int depth = payload ? static_cast<int>(payload->get_number("depth")) : 0;
+            std::ostringstream meta;
+            // Display depth+1 so the master shows as "depth 1" rather than
+            // "depth 0" — matches the design's 1-indexed convention and
+            // reads more naturally to humans skimming the log.
+            meta << color_for_agent(agent) << display_agent(agent) << reset()
+                 << " " << color(kDim) << "·" << reset()
+                 << " depth " << (depth + 1);
+            emit_marker_locked(meta.str(), "stream_start", kBoldMagenta, line);
+            return;
+        }
+        if (ev == "agent_start") {
+            // Already represented by stream_start; second announce is noise.
+            return;
+        }
+        if (ev == "stream_end") {
+            // Successful ends stay quiet (a coloured success marker on
+            // its own line adds noise across many parallel streams);
+            // failures surface so an operator notices a stalled
+            // sub-agent.
+            const bool ok = payload && payload->get_bool("ok");
+            if (ok) return;
+            emit_inline_locked("stream_end", kBoldRed, "stream ended without ok", line);
+            return;
+        }
+        if (ev == "text" || ev == "thinking") {
+            // Suppressed — the SSE response already carries the agent's
+            // text to the client; mirroring it on the operator's stderr
+            // turned the verbose log into a wall of prose.  Tool /
+            // status events alone tell the operator-relevant story.
+            return;
+        }
+        if (ev == "tool_call") {
+            const std::string tool = payload ? payload->get_string("tool") : "";
+            const bool ok = payload && payload->get_bool("ok");
+            std::ostringstream value;
+            value << color_for_tool(tool) << "/" << tool << reset();
+            if (!ok) value << " " << color(kBoldRed) << "ERR" << reset();
+            emit_inline_locked("tool_call", kBoldCyan, value.str(), line);
+            return;
+        }
+        if (ev == "token_usage" || ev == "sub_agent_response") {
+            // Suppressed — the design surfaces aggregate token counts on
+            // `done`, and sub-agent text already streamed via deltas.
+            return;
+        }
+        if (ev == "file") {
+            const std::string path = payload ? payload->get_string("path") : "";
+            const double size = payload ? payload->get_number("size") : 0;
+            std::ostringstream value;
+            value << "wrote " << path
+                  << " " << color(kDim) << "("
+                  << fmt_size(static_cast<int64_t>(size)) << ")" << reset();
+            emit_inline_locked("file", kBoldMagenta, value.str(), line);
+            return;
+        }
+        if (ev == "advisor") {
+            const std::string kind    = payload ? payload->get_string("kind")  : "";
+            const std::string detail  = payload ? payload->get_string("detail") : "";
+            const std::string preview = payload ? payload->get_string("preview") : "";
+            const bool malformed      = payload && payload->get_bool("malformed");
+
+            const char* clr = kBoldYellow;
+            std::string label = "gate";
+            std::ostringstream value;
+            if (kind == "consult") {
+                clr = kBoldCyan;
+                label = "advise";
+                value << quote_short(detail.empty() ? preview : detail, 80);
+            } else if (kind == "gate_continue") {
+                clr = kBoldYellow;
+                value << "verdict: continue " << color(kGreen) << "✓" << reset();
+            } else if (kind == "gate_redirect") {
+                clr = kBoldYellow;
+                value << "verdict: redirect " << color(kYellow) << "↻" << reset();
+                if (!detail.empty()) value << "  " << quote_short(detail, 60);
+            } else if (kind == "gate_halt") {
+                clr = kBoldRed;
+                value << "verdict: halt " << color(kBoldRed) << "✗" << reset();
+                if (!detail.empty()) value << "  " << quote_short(detail, 60);
+            } else if (kind == "gate_budget") {
+                clr = kBoldRed;
+                value << "verdict: budget " << color(kBoldRed) << "⛔" << reset();
+            } else {
+                value << kind << " " << detail;
+            }
+            if (malformed) value << " " << color(kDim) << "(malformed)" << reset();
+            emit_inline_locked(label, clr, value.str(), line);
+            return;
+        }
+        if (ev == "escalation") {
+            const std::string reason = payload ? payload->get_string("reason") : "";
+            emit_inline_locked("escalation", kBoldRed,
+                                quote_short(reason, 80), line);
+            return;
+        }
+        if (ev == "done") {
             const bool ok    = payload && payload->get_bool("ok");
             const double dur = payload ? payload->get_number("duration_ms") : 0;
             const double in  = payload ? payload->get_number("input_tokens") : 0;
             const double out = payload ? payload->get_number("output_tokens") : 0;
-            line << color(ok ? kBoldGreen : kBoldRed)
-                 << (ok ? "DONE " : "FAIL ") << reset()
-                 << static_cast<int64_t>(dur) << "ms"
-                 << color(kDim)
-                 << "  in=" << static_cast<int>(in)
-                 << " out=" << static_cast<int>(out)
-                 << reset();
+            std::ostringstream value;
+            value << (ok ? "ok=true" : "ok=false")
+                  << " " << color(kDim) << "·" << reset() << " "
+                  << std::fixed << std::setprecision(1) << (dur / 1000.0) << "s";
+            const double cost = estimate_cost(in, out);
+            if (cost > 0) {
+                value << " " << color(kDim) << "·" << reset() << " "
+                      << "$" << std::fixed << std::setprecision(4) << cost;
+            } else if (in > 0 || out > 0) {
+                value << " " << color(kDim) << "·" << reset() << " "
+                      << "in=" << static_cast<int>(in)
+                      << " out=" << static_cast<int>(out);
+            }
             if (!ok && payload) {
                 const std::string err = payload->get_string("error");
-                if (!err.empty()) line << "  " << quote_short(err, 80);
+                if (!err.empty()) value << "  " << quote_short(err, 60);
             }
-            // Final flush of any text/thinking buffers that didn't end on a newline.
-            flush_all_locked(line);
-        } else if (ev == "error") {
-            const std::string m = payload ? payload->get_string("message") : "";
-            line << color(kBoldRed) << "ERROR" << reset() << "  " << quote_short(m, 100);
-        } else if (ev == "stream_end") {
-            const bool ok = payload && payload->get_bool("ok");
-            const std::string agent = payload ? payload->get_string("agent") : "";
-            // Drain that stream's buffered text so the next line isn't a
-            // mid-sentence stub.
-            if (payload) flush_buffered_locked(static_cast<int>(payload->get_number("stream_id")), line);
-            // Successful ends are quiet (a coloured success marker on its own
-            // line is more noise than signal across many parallel streams);
-            // failures still surface so an operator notices a stalled sub-agent.
-            if (ok) return;
-            line << color(kBoldRed) << "FAIL" << reset()
-                 << " " << color_for_agent(agent)
-                 << display_agent(agent) << reset()
-                 << " " << color(kDim) << "stream ended without ok" << reset();
-        } else if (ev == "text") {
-            buffer_delta_locked(payload, /*kind=*/"text", line);
-        } else if (ev == "thinking") {
-            buffer_delta_locked(payload, /*kind=*/"thinking", line);
-        } else if (ev == "tool_call") {
-            const std::string tool  = payload ? payload->get_string("tool") : "";
-            const std::string agent = payload ? payload->get_string("agent") : "";
-            const bool ok = payload && payload->get_bool("ok");
-            line << color_for_agent(agent) << display_agent(agent) << reset()
-                 << "  " << color_for_tool(tool) << tool << reset()
-                 << " " << (ok ? color(kGreen) : color(kBoldRed))
-                 << (ok ? "ok" : "ERR") << reset();
-        } else if (ev == "token_usage") {
-            // Per-turn token tally, dimmed since it's a sidebar metric.
-            const std::string agent = payload ? payload->get_string("agent") : "";
-            const double in  = payload ? payload->get_number("input_tokens") : 0;
-            const double out = payload ? payload->get_number("output_tokens") : 0;
-            line << color_for_agent(agent) << display_agent(agent) << reset()
-                 << "  " << color(kDim) << "tokens: "
-                 << "in=" << static_cast<int>(in)
-                 << " out=" << static_cast<int>(out)
-                 << reset();
-        } else if (ev == "sub_agent_response") {
-            // Boundary marker when a /agent or parallel child returns.
-            // Show the size only — the deltas already streamed the body,
-            // so a content reprint would be noise.
-            const std::string agent = payload ? payload->get_string("agent") : "";
-            const std::string content = payload ? payload->get_string("content") : "";
-            line << color_for_agent(agent) << display_agent(agent) << reset()
-                 << "  " << color(kDim) << "returned "
-                 << fmt_size(static_cast<int64_t>(content.size()))
-                 << reset();
-        } else if (ev == "file") {
-            const std::string path  = payload ? payload->get_string("path") : "";
-            const std::string agent = payload ? payload->get_string("agent") : "";
-            const double size = payload ? payload->get_number("size") : 0;
-            line << color_for_agent(agent) << display_agent(agent) << reset()
-                 << "  " << color(kBoldMagenta) << "wrote " << path << reset()
-                 << color(kDim) << " (" << fmt_size(static_cast<int64_t>(size)) << ")"
-                 << reset();
-        } else if (ev == "advisor") {
-            // Runtime gate / /advise consultation activity.  Each decision
-            // gets one stderr line so the operator can watch the gate
-            // working — colour-coded by signal type so a redirect or halt
-            // jumps out of a long stream.
-            const std::string agent  = payload ? payload->get_string("agent") : "";
-            const std::string kind   = payload ? payload->get_string("kind")  : "";
-            const std::string detail = payload ? payload->get_string("detail") : "";
-            const std::string preview = payload ? payload->get_string("preview") : "";
-            const bool malformed = payload && payload->get_bool("malformed");
-
-            const char* tag_color = kDim;
-            std::string label = kind;
-            if (kind == "consult")        { tag_color = kCyan;     label = "advise"; }
-            else if (kind == "gate_continue") { tag_color = kGreen;    label = "gate ✓"; }
-            else if (kind == "gate_redirect") { tag_color = kYellow;   label = "gate ↻"; }
-            else if (kind == "gate_halt")     { tag_color = kBoldRed;  label = "gate ✗"; }
-            else if (kind == "gate_budget")   { tag_color = kBoldRed;  label = "gate ⛔"; }
-
-            line << color_for_agent(agent) << display_agent(agent) << reset()
-                 << "  " << color(tag_color) << label << reset();
-            if (malformed)
-                line << " " << color(kDim) << "(malformed)" << reset();
-            if (!detail.empty())
-                line << "  " << quote_short(detail, 100);
-            else if (!preview.empty())
-                line << "  " << color(kDim) << "← " << quote_short(preview, 80) << reset();
-        } else {
-            // Unknown event — log the name only; useful while iterating.
-            line << color(kDim) << ev << reset();
+            emit_inline_locked("done", ok ? kBoldGreen : kBoldRed, value.str(), line);
+            return;
         }
-
-        const std::string s = line.str();
-        if (s.empty()) return;  // delta buffered, nothing to flush yet
-        std::fputs(s.c_str(), stderr);
-        std::fputc('\n', stderr);
-        std::fflush(stderr);
+        if (ev == "error") {
+            const std::string m = payload ? payload->get_string("message") : "";
+            emit_inline_locked("error", kBoldRed, quote_short(m, 100), line);
+            return;
+        }
+        // Unknown event — log the name only; useful while iterating.
+        emit_inline_locked(ev, kDim, "", line);
     }
 
 private:
     // ANSI colour codes — only emitted when stderr is a TTY.
-    static constexpr const char* kReset        = "\033[0m";
-    static constexpr const char* kDim          = "\033[2m";
-    static constexpr const char* kRed          = "\033[31m";
-    static constexpr const char* kGreen        = "\033[32m";
-    static constexpr const char* kYellow       = "\033[33m";
-    static constexpr const char* kCyan         = "\033[36m";
-    static constexpr const char* kBoldRed      = "\033[1;31m";
-    static constexpr const char* kBoldGreen    = "\033[1;32m";
-    static constexpr const char* kBoldCyan     = "\033[1;36m";
-    static constexpr const char* kBoldMagenta  = "\033[1;35m";
+    static constexpr const char* kReset         = "\033[0m";
+    static constexpr const char* kBold          = "\033[1m";
+    static constexpr const char* kDim           = "\033[2m";
+    static constexpr const char* kRed           = "\033[31m";
+    static constexpr const char* kGreen         = "\033[32m";
+    static constexpr const char* kYellow        = "\033[33m";
+    static constexpr const char* kCyan          = "\033[36m";
+    static constexpr const char* kBoldRed       = "\033[1;31m";
+    static constexpr const char* kBoldGreen     = "\033[1;32m";
+    static constexpr const char* kBoldYellow    = "\033[1;33m";
+    static constexpr const char* kBoldCyan      = "\033[1;36m";
+    static constexpr const char* kBoldMagenta   = "\033[1;35m";
+
+    // Column where event values align.  "event:" is 6 chars; "event: " + an
+    // event-name token leaves us at "event: <name> <pad> value" with the
+    // value starting at column 24 from line origin.  Tuned by eye against
+    // the design mock — wide enough that "tool_call" and "request_received"
+    // both fit comfortably without wrapping the value column off-screen.
+    static constexpr int kValueCol = 24;
     // Per-agent colour palette — muted 256-colour shades.  The previous
     // bright-only palette read uniformly garish across siblings in a
     // /parallel fan-out; these tones stay distinguishable side-by-side
@@ -628,86 +681,95 @@ private:
     const char* color(const char* c) const { return color_ ? c : ""; }
     const char* reset() const               { return color_ ? kReset : ""; }
 
-    // Per-stream rolling buffer for text / thinking deltas.  We flush a
-    // line whenever we see '\n', and on stream_end / done, so that
-    // sentence-by-sentence streaming reads naturally even when the model
-    // emits one token at a time.  Map keyed by (stream_id << 1 | kind_bit).
-    struct Buf {
-        std::string kind;   // "text" or "thinking"
-        std::string agent;
-        int         depth = 0;
-        std::string pending;
-    };
-    std::map<int, Buf> bufs_;
+// Pad an ostringstream out to `kValueCol` from line origin, given the
+    // visible character count already written.  ANSI escapes don't count
+    // toward visible width — callers pass the visible-only count.
+    static void pad_to_value_col(std::ostringstream& line, int written) {
+        int pad = kValueCol - written;
+        if (pad < 1) pad = 1;
+        for (int i = 0; i < pad; ++i) line << ' ';
+    }
 
-    static int buf_key(int sid, bool thinking) { return (sid << 1) | (thinking ? 1 : 0); }
-
-    void buffer_delta_locked(const std::shared_ptr<JsonValue>& payload,
-                             const std::string& kind,
+    // Emit a single SSE record in "marker form": one line `event: <gap>
+    // <meta>`, then the event name on its own line in `event_color`.
+    // Used for turn boundaries (request_received, stream_start) where
+    // the event itself is the salient signal and the meta value just
+    // contextualizes which agent / id the boundary applies to.
+    void emit_marker_locked(const std::string& meta_value,
+                             const std::string& event_name,
+                             const char* event_color,
                              std::ostringstream& line) {
-        if (!payload) return;
-        const int sid = static_cast<int>(payload->get_number("stream_id"));
-        const std::string agent = payload->get_string("agent");
-        const int depth = static_cast<int>(payload->get_number("depth"));
-        const std::string delta = payload->get_string("delta");
-        const bool thinking = (kind == "thinking");
+        line << color(kDim) << "event:" << reset();
+        pad_to_value_col(line, /*written=*/6);   // "event:" is 6 chars
+        line << color(kDim) << meta_value << reset();
+        std::fputs(line.str().c_str(), stderr);
+        std::fputc('\n', stderr);
+        line.str(""); line.clear();
 
-        auto& b = bufs_[buf_key(sid, thinking)];
-        if (b.kind.empty()) { b.kind = kind; b.agent = agent; b.depth = depth; }
-        b.pending += delta;
-
-        // Flush any complete lines.
-        size_t nl;
-        while ((nl = b.pending.find('\n')) != std::string::npos) {
-            std::string chunk = b.pending.substr(0, nl);
-            b.pending.erase(0, nl + 1);
-            // Skip empty lines inside the buffer — they pile up otherwise.
-            if (chunk.empty()) continue;
-            emit_text_line_locked(b.agent, thinking, chunk, line);
-        }
-    }
-
-    void flush_buffered_locked(int sid, std::ostringstream& line) {
-        for (int kindbit = 0; kindbit < 2; ++kindbit) {
-            auto it = bufs_.find(buf_key(sid, kindbit == 1));
-            if (it == bufs_.end()) continue;
-            auto& b = it->second;
-            if (!b.pending.empty()) {
-                emit_text_line_locked(b.agent, kindbit == 1, b.pending, line);
-                b.pending.clear();
-            }
-            bufs_.erase(it);
-        }
-    }
-
-    // Emit one text/thinking line in the demo format and reset `line` so
-    // the caller can either chain another emit or fall through to log()'s
-    // own stderr write with an empty line.
-    void emit_text_line_locked(const std::string& agent, bool thinking,
-                                const std::string& chunk,
-                                std::ostringstream& line) {
-        const std::string disp = display_agent(agent);
-        // Thinking blocks are rare (only some models surface them) and
-        // dim-grey so they read as side-channel reasoning, not output.
-        if (thinking) {
-            line << color(kDim) << "(" << disp << " thinking) "
-                 << quote_short(chunk, 100) << reset();
-        } else {
-            line << color_for_agent(agent) << disp << reset()
-                 << "  " << quote_short(chunk, 110);
-        }
+        line << color(event_color) << event_name << reset();
         std::fputs(line.str().c_str(), stderr);
         std::fputc('\n', stderr);
         line.str(""); line.clear();
     }
 
-    void flush_all_locked(std::ostringstream& line) {
-        // Drain any lingering deltas from streams that didn't get a
-        // proper stream_end (defensive — e.g., on cancellation paths).
-        std::vector<int> keys;
-        keys.reserve(bufs_.size());
-        for (auto& [k, _] : bufs_) keys.push_back(k);
-        for (int k : keys) flush_buffered_locked(k >> 1, line);
+    // Emit a single SSE record in "inline form": `event: <name> <gap>
+    // <value>` on one line.  Used for events with a primary value
+    // (tool_call, gate, file, done, error).  The value column lines up
+    // with the marker form's meta column so the two intermix cleanly.
+    void emit_inline_locked(const std::string& event_name,
+                             const char* event_color,
+                             const std::string& value,
+                             std::ostringstream& line) {
+        line << color(kDim) << "event: " << reset()
+             << color(event_color) << event_name << reset();
+        const int written = 7 + static_cast<int>(event_name.size());
+        pad_to_value_col(line, written);
+        line << value;
+        std::fputs(line.str().c_str(), stderr);
+        std::fputc('\n', stderr);
+        line.str(""); line.clear();
+    }
+
+    // Emit the request header — three lines anchoring the rest of the
+    // log block.  Fired exactly once per request, on request_received.
+    void emit_header_locked(const std::string& method,
+                             const std::string& path,
+                             const std::string& agent,
+                             const std::string& message) {
+        std::ostringstream line;
+        line << color(kBold) << "arbiter "
+             << color(kDim) << "↗" << reset()
+             << color(kBold) << " " << method << " " << path << reset();
+        std::fputs(line.str().c_str(), stderr);
+        std::fputc('\n', stderr);
+        line.str(""); line.clear();
+
+        line << color(kDim) << "agent: " << reset()
+             << color_for_agent(agent) << display_agent(agent) << reset()
+             << color(kDim) << " message: " << reset()
+             << quote_short(message, 70);
+        std::fputs(line.str().c_str(), stderr);
+        std::fputc('\n', stderr);
+        line.str(""); line.clear();
+
+        // Horizontal rule.  Width is screen-friendly without ever
+        // wrapping in an 80-col terminal.  Drawn dim so it recedes.
+        line << color(kDim);
+        for (int i = 0; i < 70; ++i) line << "─";
+        line << reset();
+        std::fputs(line.str().c_str(), stderr);
+        std::fputc('\n', stderr);
+    }
+
+    // Emit one text/thinking line in the column layout: streamed text
+    // Rough cost estimate in USD for the demo log.  Sonnet-equivalent
+    // pricing ($3/M input, $15/M output) — the actual ledger lives in
+    // the billing service.  Returns 0 when no tokens were used so the
+    // caller can fall back to a tokens display.
+    static double estimate_cost(double in_tokens, double out_tokens) {
+        if (in_tokens <= 0 && out_tokens <= 0) return 0.0;
+        return (in_tokens / 1'000'000.0) * 3.0
+             + (out_tokens / 1'000'000.0) * 15.0;
     }
 
     // Truncate to a screen-friendly preview and quote.  Newlines flatten to
@@ -1262,6 +1324,82 @@ void handle_agent_get(int fd, const std::string& agent_id,
     }
     write_json_response(fd, 200, agent_record_to_json(*rec));
 }
+
+// ─── A2A protocol HTTP handlers ────────────────────────────────────────────
+//
+// The pure transforms (build_agent_card, build_well_known_stub,
+// resolve_public_base_url) live in src/a2a/server.cpp.  These wrappers
+// are TU-local because they touch the orchestrator factory + tenant
+// store, both of which already live in this translation unit.
+
+void handle_a2a_well_known_card(int fd, const HttpRequest& req,
+                                 const ApiServerOptions& opts) {
+    const std::string base = a2a::resolve_public_base_url(opts, req.headers);
+    auto card = a2a::build_well_known_stub(base);
+    write_json_response(fd, 200, a2a::to_json(card));
+}
+
+void handle_a2a_agent_card_get(int fd, const std::string& agent_id,
+                                const HttpRequest& req,
+                                const ApiServerOptions& opts,
+                                TenantStore& tenants, const Tenant& tenant) {
+    const std::string base = a2a::resolve_public_base_url(opts, req.headers);
+
+    // The built-in master is tenant-agnostic and lives in the orchestrator
+    // factory — it doesn't have a row in tenant_agents, so we resolve it
+    // through the same path GET /v1/agents/index uses.
+    if (agent_id == "index") {
+        std::unique_ptr<Orchestrator> orch;
+        try { orch = make_reflect_orchestrator(opts); }
+        catch (const std::exception& e) {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr(std::string("orchestrator init failed: ") + e.what());
+            write_json_response(fd, 500, err);
+            return;
+        }
+        try {
+            auto& cons = orch->get_constitution("index");
+            auto card  = a2a::build_agent_card(cons, "index", base, "index");
+            write_json_response(fd, 200, a2a::to_json(card));
+            return;
+        } catch (const std::out_of_range&) {
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr("index master missing");
+            write_json_response(fd, 500, err);
+            return;
+        }
+    }
+
+    auto rec = tenants.get_agent_record(tenant.id, agent_id);
+    if (!rec) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("no agent '" + agent_id + "' for this tenant");
+        write_json_response(fd, 404, err);
+        return;
+    }
+
+    Constitution cons;
+    try {
+        cons = Constitution::from_json(rec->agent_def_json);
+    } catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("agent_def parse failed: ") + e.what());
+        write_json_response(fd, 500, err);
+        return;
+    }
+
+    // Version threads the catalog row's updated_at so card consumers can
+    // cheap-cache.  Clients re-fetch on a version mismatch.
+    auto card = a2a::build_agent_card(cons, agent_id, base,
+                                       std::to_string(rec->updated_at));
+    write_json_response(fd, 200, a2a::to_json(card));
+}
+
+// A2A JSON-RPC dispatch lives below `InFlightScope` (defined later in
+// this TU) — see "── A2A JSON-RPC dispatch" further down.
 
 // Validate an inbound agent_def body and pull out the (id, name, role,
 // model, canonical JSON) tuple we persist.  Wraps Constitution::from_json
@@ -3766,408 +3904,391 @@ const char* sanitised_provider_error_message(const char* code) {
     return "the upstream provider returned an error";
 }
 
-// Two entry points funnel here: /v1/orchestrate (agent_override == "", read
-// from body) and /v1/agents/:id/chat (agent_override == path :id).  Body
-// parsing + dispatch is otherwise identical.
-void handle_orchestrate(int fd, const HttpRequest& req,
-                        const ApiServerOptions& opts,
-                        TenantStore& tenants,
-                        InFlightRegistry& in_flight,
-                        // Nullable.  When non-null, drives pre-flight quota
-                        // checks and post-turn usage records — the runtime
-                        // becomes a thin gateway and the billing service owns
-                        // billing.  When null, neither call fires; the
-                        // turn runs straight through to the provider keys
-                        // configured in `opts.api_keys`.
-                        BillingClient* billing,
-                        // The billing service's workspace_id the bearer maps to
-                        // (returned from /v1/runtime/auth/validate).  Empty
-                        // when `billing` is null.
-                        const std::string& workspace_id,
-                        const Tenant& tenant_in,
-                        const std::string& agent_override = "",
-                        int64_t conversation_id = 0,
-                        // Snapshotted agent_def from the conversation row.  When
-                        // this is non-empty and the request body doesn't supply
-                        // its own `agent_def`, we install the snapshot so
-                        // follow-up messages don't have to re-send it on every
-                        // turn.  Body-supplied agent_def still wins if both
-                        // are present (lets callers update an agent mid-thread).
-                        const std::string& conversation_agent_def_json = "") {
-    Tenant tenant = tenant_in;   // mutable snapshot — MTD refreshes mid-request
-    // Parse the JSON body.
-    std::shared_ptr<JsonValue> body;
-    try {
-        body = json_parse(req.body);
-    } catch (const std::exception& e) {
-        auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr(std::string("invalid JSON: ") + e.what());
-        write_json_response(fd, 400, err);
-        return;
-    }
-    if (!body || !body->is_object()) {
-        auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr("request body must be a JSON object");
-        write_json_response(fd, 400, err);
-        return;
-    }
+// ── A2A JSON-RPC dispatch (PR-2: message/send synchronous) ─────────────────
+//
+// Writes a single JSON-RPC response envelope to the wire.  All A2A errors
+// are reported as JSON-RPC error objects (HTTP 200 with `error.code`); we
+// only emit non-200 HTTP for malformed envelopes that can't be answered
+// in JSON-RPC form.  Sits below InFlightScope (defined above) because
+// handle_a2a_message_send constructs one to receive cancel signals.
 
-    std::string message = body->get_string("message");
-    if (message.empty()) {
-        auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr("missing required field: 'message'");
-        write_json_response(fd, 400, err);
-        return;
-    }
+void write_a2a_rpc(int fd, const a2a::RpcResponse& r) {
+    write_json_response(fd, 200, a2a::to_json(r));
+}
 
-    // ── Resolve the agent identity ────────────────────────────────────────
-    //
-    // For inline `agent_def`, the caller supplies a stable `id` (typically a
-    // UUID from their own DB).  Memory for this agent is persisted at
-    // `<tenant_memory>/<id>.md`, so repeated requests carrying the same
-    // `agent_def.id` share memory across turns regardless of what other
-    // config fields change between calls.  Precedence:
-    //   1. agent_def.id                 (strongest — the memory-persistence
-    //                                     identity for dynamic agents)
-    //   2. path :id                     (/v1/agents/:id/chat)
-    //   3. body.agent                   (/v1/orchestrate fallback)
-    //   4. fallback "index"             (no agent_def, nothing else specified)
-    //
-    // When multiple of 1–3 are set, they MUST agree.  Conflicts fail fast
-    // with 400 so the caller doesn't silently write memory to the wrong key.
-    std::shared_ptr<JsonValue> agent_def;
-    if (auto v = body->get("agent_def"); v && v->is_object()) agent_def = v;
+// Resolve the inbound contextId.  When the client supplied one we echo
+// it; otherwise we mint a fresh id so they can thread future requests.
+// PR-4 will tie this back to the conversations table; for now contextId
+// is ephemeral and not persisted.
+std::string resolve_a2a_context_id(const a2a::Message& msg) {
+    if (msg.context_id && !msg.context_id->empty()) return *msg.context_id;
+    return new_request_id();
+}
 
-    // Fall back to the conversation's snapshotted agent_def when the request
-    // body didn't supply its own.  The snapshot is the source of truth for
-    // resumed threads — without this, a follow-up turn that omits agent_def
-    // would have no way to find the agent (the API does not read disk-side
-    // .json definitions).
-    if (!agent_def && !conversation_agent_def_json.empty()) {
-        try {
-            auto parsed = json_parse(conversation_agent_def_json);
-            if (parsed && parsed->is_object()) agent_def = parsed;
-        } catch (...) {
-            // A corrupted snapshot shouldn't 500 the call — surface a clear
-            // 400 instead so the caller knows to re-send agent_def or
-            // recreate the conversation.
-            auto err = jobj();
-            err->as_object_mut()["error"] =
-                jstr("conversation has a corrupted agent_def snapshot — "
-                     "send a fresh agent_def in the request body, or "
-                     "recreate the conversation.");
-            write_json_response(fd, 400, err);
-            return;
+// ── Tool-callback factories ────────────────────────────────────────────────
+//
+// Each request — whether routed through /v1/orchestrate or the A2A
+// surface (/v1/a2a/agents/:id) — needs the same tenant-scoped tool
+// callbacks installed on its per-request Orchestrator.  Keeping the
+// closure bodies here in named factories means handle_orchestrate and
+// build_a2a_orchestrator share one source of truth; without this, the
+// two paths drift the moment a callback's contract changes.
+//
+// Factories are TU-local and live in the outer anonymous namespace.
+// Helpers they reference (mem_parse_id, format_ts_yyyymmdd,
+// memory_relation_is_valid, sanitize_artifact_path, brave_search,
+// kArtifactPerConversationMaxBytes) are declared earlier in this TU.
+
+MemoryScratchpadInvoker make_memory_scratchpad_callback(int64_t tenant_id,
+                                                          TenantStore* store) {
+    return [tenant_id, store](const std::string& op,
+                                const std::string& agent_id,
+                                const std::string& args) -> std::string {
+        // Per-agent ops use the calling agent's id; shared-* use the
+        // empty scope key.  Output strings match the legacy file-based
+        // responses so the model sees the same [/mem write] OK: ...
+        // framing it always has.
+        if (op == "read") {
+            return store->read_scratchpad(tenant_id, agent_id);
         }
-    }
-
-    const std::string path_id         = agent_override;
-    const std::string body_agent      = body->get_string("agent", "");
-    const std::string agent_def_id    = agent_def ? agent_def->get_string("id", "")
-                                                  : std::string{};
-
-    auto conflict = [&](const std::string& kind_a, const std::string& a,
-                        const std::string& kind_b, const std::string& b) {
-        auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr(kind_a + " ('" + a + "') and " + kind_b + " ('" + b +
-                 "') disagree.  When both are set they must be identical — "
-                 "otherwise memory would silently persist under the wrong id.");
-        write_json_response(fd, 400, err);
+        if (op == "shared-read") {
+            return store->read_scratchpad(tenant_id, std::string{});
+        }
+        if (op == "write") {
+            int64_t sz = store->append_scratchpad(tenant_id, agent_id, args);
+            return "OK: memory written (" + std::to_string(sz) +
+                   " bytes total in scratchpad)";
+        }
+        if (op == "shared-write") {
+            int64_t sz = store->append_scratchpad(tenant_id, std::string{}, args);
+            return "OK (" + std::to_string(sz) + " bytes total)";
+        }
+        if (op == "clear") {
+            store->clear_scratchpad(tenant_id, agent_id);
+            return "OK: memory cleared";
+        }
+        if (op == "shared-clear") {
+            store->clear_scratchpad(tenant_id, std::string{});
+            return "OK";
+        }
+        return "ERR: unknown scratchpad op '" + op + "'";
     };
+}
 
-    std::string agent_id;
-    if (!agent_def_id.empty()) {
-        agent_id = agent_def_id;
-        if (!path_id.empty() && path_id != agent_id) {
-            conflict("path :id", path_id, "agent_def.id", agent_id);
-            return;
-        }
-        if (!body_agent.empty() && body_agent != agent_id) {
-            conflict("body.agent", body_agent, "agent_def.id", agent_id);
-            return;
-        }
-    } else if (!path_id.empty()) {
-        agent_id = path_id;
-    } else if (!body_agent.empty()) {
-        agent_id = body_agent;
-    } else {
-        agent_id = "index";
-    }
+// Construct a per-request MCP Manager from `opts.mcp_servers_path`.
+// Always returns a non-null Manager so callers can assume the invoker
+// has something to call into; an empty registry simply yields a Manager
+// with zero servers and the dispatcher renders a clear "no MCP servers
+// configured" message on /mcp tools.  Registry-load failures are logged
+// via `log_error` (typically the request's SSE error sink) and become
+// the empty-Manager case.
+std::shared_ptr<mcp::Manager> make_mcp_manager(
+    const ApiServerOptions& opts,
+    const std::function<void(const std::string&)>& log_error) {
 
-    // Guardrail: the resolved id becomes a filesystem path component for
-    // the memory file — reject traversal / shell metacharacters / absurd
-    // lengths up front.  Allows alphanum, underscore, dash (covers UUIDs).
-    if (!agent_id_is_safe(agent_id)) {
-        auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr("invalid agent id '" + agent_id +
-                 "'.  Allowed: 1-64 chars, [a-zA-Z0-9_-] only, "
-                 "first char not '.' or '/'.");
-        write_json_response(fd, 400, err);
-        return;
-    }
-
-    // Pre-validate agent_def early (before opening the SSE stream).  Also
-    // catches the "can't override master" case up front so the error is
-    // a clean JSON 400, not an SSE frame wedged into a half-written stream.
-    std::optional<Constitution> parsed_cfg;
-    if (agent_def) {
-        if (agent_id == "index") {
-            auto err = jobj();
-            err->as_object_mut()["error"] =
-                jstr("inline agent_def cannot override 'index' — pick a "
-                     "different id.");
-            write_json_response(fd, 400, err);
-            return;
-        }
+    std::shared_ptr<mcp::Manager> mgr;
+    if (!opts.mcp_servers_path.empty()) {
         try {
-            parsed_cfg = Constitution::from_json(json_serialize(*agent_def));
+            auto specs = mcp::load_server_registry(opts.mcp_servers_path);
+            mgr = std::make_shared<mcp::Manager>(std::move(specs));
         } catch (const std::exception& e) {
-            auto err = jobj();
-            err->as_object_mut()["error"] =
-                jstr(std::string("invalid agent_def: ") + e.what());
-            write_json_response(fd, 400, err);
-            return;
+            if (log_error) log_error(std::string("MCP registry load failed: ") + e.what());
         }
     }
+    if (!mgr) mgr = std::make_shared<mcp::Manager>(std::vector<mcp::ServerSpec>{});
+    return mgr;
+}
 
-    // Begin the SSE response.
-    SseStream sse(fd);
-    sse.write_headers();
+MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
+    return [mcp_mgr](const std::string& kind, const std::string& args) -> std::string {
+        // /mcp tools  [server]
+        // /mcp call   <server> <tool> [json_args]
+        //
+        // The /mcp slash dispatcher in commands.cpp normalises `kind`
+        // to "tools" or "call" and hands us the rest of the line as
+        // `args`.  We're responsible for parsing args and rendering
+        // the response body.
+        auto trim = [](std::string s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+            return s;
+        };
 
-    const auto start_time = std::chrono::steady_clock::now();
-
-    // Allocate request_id and the server-side event logger up front so
-    // every error path below — including orchestrator-init failure —
-    // logs to stderr alongside its SSE error frame.
-    const std::string request_id = new_request_id();
-    EventLogger logger(opts.log_verbose, request_id, tenant.name);
-
-    auto emit = [&sse, &logger](const std::string& ev,
-                                 const std::shared_ptr<JsonValue>& p) {
-        sse.emit(ev, p);
-        logger.log(ev, p);
-    };
-    auto log_error = [&emit](const std::string& msg) {
-        auto o = jobj();
-        o->as_object_mut()["message"] = jstr(msg);
-        emit("error", o);
-    };
-
-    // Per-request Orchestrator.  Concurrent API calls don't share agent
-    // history or callback state — each request is a fresh universe.  The
-    // The API path does NOT load agent .json definitions from disk.  It
-    // does install the tenant's stored agent catalog (`POST /v1/agents`)
-    // onto every per-request orchestrator so /agent and /parallel can
-    // reference siblings by id without re-sending their constitutions.
-    // Inline `agent_def` from the request body still wins on a colliding
-    // id — useful for one-off ephemeral agents and mid-thread overrides.
-    std::unique_ptr<Orchestrator> orch;
-    try {
-        orch = std::make_unique<Orchestrator>(opts.api_keys);
-    } catch (const std::exception& e) {
-        log_error(std::string("orchestrator init failed: ") + e.what());
-        return;
-    }
-    // Memory is tenant-scoped so /mem commands can never leak between
-    // accounts.  set_memory_dir is kept as a no-op fallback path for
-    // any code that still expects a filesystem location, but the
-    // canonical scratchpad storage is now the agent_scratchpad table
-    // wired below.
-    if (!opts.memory_root.empty()) {
-        orch->set_memory_dir(opts.memory_root + "/t" +
-                              std::to_string(tenant.id));
-    }
-
-    // DB-backed file-scratchpad bridge.  /mem read|write|clear and
-    // /mem shared read|write|clear all flow through here, scoped to
-    // this request's tenant.  Without this callback the dispatcher
-    // would fall back to the filesystem path — fine for the CLI/REPL
-    // (which doesn't have a tenant), but the API path always wires it.
-    {
-        const int64_t tid = tenant.id;
-        TenantStore*  store = &tenants;
-        orch->set_memory_scratchpad(
-            [tid, store](const std::string& op,
-                          const std::string& agent_id,
-                          const std::string& args) -> std::string {
-                // Per-agent ops use the calling agent's id; shared-* use
-                // the empty scope key.  Output strings match the legacy
-                // file-based responses so the model sees the same
-                // [/mem write] OK: ... framing it always has.
-                if (op == "read") {
-                    return store->read_scratchpad(tid, agent_id);
+        if (kind == "tools") {
+            std::string server = trim(args);
+            auto names = mcp_mgr->server_names();
+            if (names.empty()) {
+                return "(no MCP servers configured for this deployment — "
+                       "set mcp_servers_path in ApiServerOptions and add an entry "
+                       "in the registry JSON.  See docs/api/concepts/mcp.md.)\n";
+            }
+            std::ostringstream out;
+            std::vector<std::string> targets;
+            if (server.empty()) {
+                targets = names;
+            } else if (mcp_mgr->has(server)) {
+                targets.push_back(server);
+            } else {
+                out << "ERR: no MCP server '" << server << "' configured. "
+                    << "Available: ";
+                for (size_t i = 0; i < names.size(); ++i) {
+                    if (i) out << ", ";
+                    out << names[i];
                 }
-                if (op == "shared-read") {
-                    return store->read_scratchpad(tid, std::string{});
+                out << "\n";
+                return out.str();
+            }
+            for (auto& s : targets) {
+                out << "[" << s << "]\n";
+                try {
+                    auto& cli = mcp_mgr->client(s);
+                    auto& tools = cli.tools();
+                    if (tools.empty()) {
+                        out << "  (server returned no tools)\n";
+                    }
+                    for (auto& t : tools) {
+                        out << "  " << t.name;
+                        if (!t.description.empty()) {
+                            // First line of description only — the full
+                            // schema is verbose enough that an agent
+                            // querying tools should follow up with a
+                            // narrower /mcp tools <server> if it
+                            // already knows the namespace.
+                            std::string d = t.description;
+                            auto nl = d.find('\n');
+                            if (nl != std::string::npos) d.resize(nl);
+                            if (d.size() > 120) { d.resize(117); d += "..."; }
+                            out << " — " << d;
+                        }
+                        out << "\n";
+                    }
+                } catch (const std::exception& e) {
+                    out << "  ERR: " << e.what() << "\n";
                 }
-                if (op == "write") {
-                    int64_t sz = store->append_scratchpad(tid, agent_id, args);
-                    return "OK: memory written (" + std::to_string(sz) +
-                           " bytes total in scratchpad)";
-                }
-                if (op == "shared-write") {
-                    int64_t sz = store->append_scratchpad(tid, std::string{}, args);
-                    return "OK (" + std::to_string(sz) + " bytes total)";
-                }
-                if (op == "clear") {
-                    store->clear_scratchpad(tid, agent_id);
-                    return "OK: memory cleared";
-                }
-                if (op == "shared-clear") {
-                    store->clear_scratchpad(tid, std::string{});
-                    return "OK";
-                }
-                return "ERR: unknown scratchpad op '" + op + "'";
-            });
-    }
+            }
+            return out.str();
+        }
 
-    // Install the tenant's stored catalog first so /agent and /parallel
-    // can resolve sibling ids during this turn.  A blob whose JSON has
-    // gone bad (schema drift after an upgrade, manual DB poke) gets
-    // skipped with a log line — the rest of the catalog still loads.
-    {
-        const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
-        for (const auto& rec : records) {
+        if (kind == "call") {
+            // Parse: <server> <tool> [json_args]
+            std::istringstream iss(args);
+            std::string server, tool;
+            iss >> server >> tool;
+            std::string json_args;
+            std::getline(iss, json_args);
+            json_args = trim(json_args);
+
+            if (server.empty() || tool.empty()) {
+                return "ERR: usage: /mcp call <server> <tool> [json_args]\n";
+            }
+            if (!mcp_mgr->has(server)) {
+                auto names = mcp_mgr->server_names();
+                std::ostringstream out;
+                out << "ERR: no MCP server '" << server << "' configured.";
+                if (!names.empty()) {
+                    out << " Available: ";
+                    for (size_t i = 0; i < names.size(); ++i) {
+                        if (i) out << ", ";
+                        out << names[i];
+                    }
+                }
+                out << "\n";
+                return out.str();
+            }
+
+            std::shared_ptr<JsonValue> arg_obj;
+            if (!json_args.empty()) {
+                try { arg_obj = json_parse(json_args); }
+                catch (const std::exception& e) {
+                    return std::string("ERR: invalid JSON args: ") + e.what() + "\n";
+                }
+                if (!arg_obj || !arg_obj->is_object()) {
+                    return "ERR: tool args must be a JSON object (e.g. "
+                           "{\"url\":\"https://example.com\"})\n";
+                }
+            }
+
             try {
-                auto cfg = Constitution::from_json(rec.agent_def_json);
-                if (orch->has_agent(rec.agent_id)) orch->remove_agent(rec.agent_id);
-                orch->create_agent(rec.agent_id, std::move(cfg));
+                auto& cli = mcp_mgr->client(server);
+                auto result = cli.call_tool(tool, arg_obj);
+                return mcp::render_tool_result(result);
             } catch (const std::exception& e) {
-                log_error("skipping stored agent '" + rec.agent_id + "' for tenant "
-                           + std::to_string(tenant.id) + ": " + e.what());
+                return std::string("ERR: ") + e.what() + "\n";
             }
         }
-    }
 
-    // Install the inline agent definition (pre-validated above, so this
-    // can't throw the user-visible errors — any failure now is internal
-    // and surfaces as an SSE `error` event).  Inline wins over the stored
-    // catalog when ids collide.
-    if (parsed_cfg) {
-        if (orch->has_agent(agent_id)) orch->remove_agent(agent_id);
-        orch->create_agent(agent_id, std::move(*parsed_cfg));
-    } else if (agent_id != "index" && !orch->has_agent(agent_id)) {
-        // No inline agent_def, no snapshot, no stored catalog row, and
-        // the caller didn't ask for the master.  Surface a clean SSE
-        // error so the caller knows what to send next time.
-        log_error("agent_def required for agent '" + agent_id + "' — no "
-                  "stored agent with this id for the tenant.  Send `agent_def` "
-                  "in the request body, POST it once to /v1/agents, or address "
-                  "'index' (the master orchestrator) instead.");
-        sse.close();
-        return;
-    }
-
-    auto* orch_ptr = orch.get();
-
-    // Register this orchestration so `POST /v1/requests/:id/cancel` can
-    // reach it.  Lifetime matches the orchestrator; scope unwinds on every
-    // exit path (including exceptions), so cancels arriving after
-    // completion harmlessly miss the map.
-    InFlightScope in_flight_scope(in_flight, request_id, orch_ptr, tenant.id);
-
-    // ── Conversation thread resumption ──────────────────────────────────
-    // When this request belongs to a stored conversation, replay prior
-    // messages into the agent so the model sees the full history, then
-    // append the user's new message to the DB.  Persistence of the
-    // assistant's response happens after send_streaming returns (below).
-    if (conversation_id > 0) {
-        try {
-            // Hard-cap history replay at 100 turns to keep token usage and
-            // request payload size bounded.  If a thread is older, the
-            // tail (most recent) is what gets sent — older context falls
-            // off, which matches both Claude's and ChatGPT's default UX.
-            const int kReplayCap = 100;
-            auto prior = tenants.list_messages(tenant.id, conversation_id,
-                                                /*after_id=*/0, kReplayCap);
-            std::vector<Message> hist;
-            hist.reserve(prior.size());
-            for (auto& pm : prior) hist.push_back({pm.role, pm.content});
-            orch->set_agent_history(agent_id, std::move(hist));
-        } catch (const std::out_of_range&) {
-            // Agent isn't loaded — surface as SSE error.
-            log_error("agent '" + agent_id + "' not loaded for "
-                      "conversation resumption");
-            return;
-        } catch (const std::exception& e) {
-            log_error(std::string("history load failed: ") + e.what());
-            return;
-        }
-        try {
-            tenants.append_message(tenant.id, conversation_id,
-                                    "user", message,
-                                    /*input=*/0, /*output=*/0,
-                                    request_id);
-        } catch (const std::exception& e) {
-            log_error(std::string("could not persist user message: ") + e.what());
-            return;
-        }
-    }
-
-    // Helper: stamp every outbound event with the current turn's
-    // (agent, stream_id, depth).  Read lazily at emit time because each
-    // turn runs inside its own StreamScope; this lets the same callback
-    // serve master + delegated + parallel children without threading the
-    // ids explicitly.
-    auto stamp = [orch_ptr](std::shared_ptr<JsonValue>& p) {
-        auto& m = p->as_object_mut();
-        m["agent"]     = jstr(orch_ptr->current_stream_agent());
-        m["stream_id"] = jnum(static_cast<double>(orch_ptr->current_stream_id()));
-        m["depth"]     = jnum(static_cast<double>(orch_ptr->current_stream_depth()));
+        return "ERR: unknown /mcp subcommand";
     };
+}
 
-    // File-write interceptor — captures content to the SSE stream instead
-    // of persisting to the server's filesystem.  Enforces the per-response
-    // size cap; once exceeded, further writes are rejected with an ERR
-    // that tells the agent to stop trying (dedup cache ensures it won't
-    // retry the identical /write).
-    std::atomic<size_t> bytes_captured{0};
-    const size_t cap = opts.file_max_bytes;
-    auto write_interceptor =
-        [&emit, &bytes_captured, cap, stamp](const std::string& path,
-                                       const std::string& content) -> std::string {
-        size_t size = content.size();
-        size_t prev = bytes_captured.load();
-        if (prev + size > cap) {
-            return "ERR: per-response file-size cap (" + std::to_string(cap) +
-                   " bytes) reached — this file was NOT included in the "
-                   "response.  Reduce the file size or split across requests.";
+// Returns nullptr when the configured provider isn't supported or no
+// API key is set — the dispatcher then surfaces its own "search
+// unavailable" ERR with a more useful message than this layer can
+// generate.
+SearchInvoker make_search_invoker_callback(const ApiServerOptions& opts) {
+    const std::string provider = opts.search_provider.empty()
+                                    ? std::string("brave")
+                                    : opts.search_provider;
+    const std::string key      = opts.search_api_key;
+    if (provider == "brave" && !key.empty()) {
+        return [key](const std::string& query, int top_n) -> std::string {
+            return brave_search(query, key, top_n);
+        };
+    }
+    if (!provider.empty() && provider != "brave" && !key.empty()) {
+        return [provider](const std::string&, int) -> std::string {
+            return "ERR: search provider '" + provider +
+                   "' is configured but not implemented in this "
+                   "build.  Only 'brave' is supported in v1.";
+        };
+    }
+    return nullptr;
+}
+
+// Artifact-store callbacks — only meaningful when conversation_id > 0.
+// /v1/orchestrate without a thread (the legacy raw form) leaves these
+// null on purpose: /write --persist falls back to ephemeral SSE-only
+// capture and /read / /list return ERR with a clear "no conversation
+// context" hint.
+
+ArtifactWriter make_artifact_writer_callback(int64_t tenant_id,
+                                              int64_t conversation_id,
+                                              TenantStore* store) {
+    return [tenant_id, conversation_id, store](const std::string& raw_path,
+                                                 const std::string& content) -> std::string {
+        std::string err;
+        auto canonical = sanitize_artifact_path(raw_path, err);
+        if (!canonical) {
+            return std::string("ERR: invalid path: ") + err;
         }
-        bytes_captured.fetch_add(size);
-
-        auto p = jobj();
-        auto& m = p->as_object_mut();
-        m["path"]     = jstr(path);
-        m["size"]     = jnum(static_cast<double>(size));
-        m["encoding"] = jstr("utf-8");
-        m["content"]  = jstr(content);
-        stamp(p);
-        emit("file", p);
-
-        return "OK: captured " + std::to_string(size) +
-               " bytes for '" + path + "' (streamed to client, not persisted)";
+        // mime_type stays default ('application/octet-stream') — the
+        // agent doesn't know what to declare and we don't sniff in v1.
+        // HTTP callers can set it explicitly via the POST endpoint.
+        auto put = store->put_artifact(tenant_id, conversation_id, *canonical,
+                                         content, std::string{});
+        std::ostringstream out;
+        switch (put.status) {
+            case PutArtifactResult::Status::Created:
+            case PutArtifactResult::Status::Updated:
+                out << (put.status == PutArtifactResult::Status::Created
+                        ? "OK: persisted "
+                        : "OK: updated ")
+                    << put.record->size << " bytes (artifact #"
+                    << put.record->id << ", "
+                    << put.conversation_used_bytes << " of "
+                    << kArtifactPerConversationMaxBytes
+                    << " bytes used in this conversation)";
+                break;
+            case PutArtifactResult::Status::QuotaExceeded:
+                out << "ERR: " << put.error_msg;
+                break;
+            case PutArtifactResult::Status::PathRejected:
+                out << "ERR: " << put.error_msg;
+                break;
+        }
+        return out.str();
     };
-    orch->set_write_interceptor(write_interceptor);
-    orch->set_exec_disabled(opts.exec_disabled);
+}
 
-    // Real-time read window into structured memory.  Bound to this request's
-    // tenant so /mem entries|entry|search inside any agent turn (master or
-    // delegated) sees only that tenant's graph entries.  Subagents inherit
-    // the reader through Orchestrator's member, so depth-2 calls are scoped
-    // identically without an extra plumb-through.
-    const int64_t reader_tenant_id = tenant.id;
-    // Captured by value so /mem entry can compute whether a linked
-    // artifact lives in the active conversation (no via= needed) or
-    // elsewhere (suggest the via=mem:<mid> form).  0 ⇒ no active
-    // conversation (raw /v1/orchestrate); any artifact link is
-    // therefore cross-conversation by definition.
-    const int64_t reader_conversation_id = conversation_id;
-    orch->set_structured_memory_reader(
+ArtifactReader make_artifact_reader_callback(int64_t tenant_id,
+                                              int64_t conversation_id,
+                                              TenantStore* store) {
+    return [tenant_id, conversation_id, store](const std::string& raw_path,
+                                                 int64_t artifact_id,
+                                                 int64_t via_memory_id) -> std::string {
+        // Path-form: same-conversation lookup.  Sanitiser gates bad
+        // paths before we touch the DB.
+        if (artifact_id == 0) {
+            std::string err;
+            auto canonical = sanitize_artifact_path(raw_path, err);
+            if (!canonical) return std::string("ERR: invalid path: ") + err;
+
+            auto meta = store->get_artifact_meta_by_path(tenant_id,
+                                                          conversation_id, *canonical);
+            if (!meta) {
+                return std::string("ERR: '") + *canonical +
+                       "' not found in this conversation's artifacts";
+            }
+            auto blob = store->get_artifact_content(tenant_id, meta->id);
+            if (!blob) {
+                return std::string("ERR: artifact #") +
+                       std::to_string(meta->id) + " content missing";
+            }
+            return *blob;
+        }
+
+        // Id-form: tenant-scoped lookup.  Cross-conversation reads
+        // require a `via=mem:<id>` capability that points at this
+        // artifact_id from a memory entry the tenant owns.  Same-
+        // conversation reads are allowed without citation — same trust
+        // boundary as path-form.
+        auto art = store->get_artifact_meta(tenant_id, artifact_id);
+        if (!art) {
+            return std::string("ERR: artifact #") +
+                   std::to_string(artifact_id) +
+                   " not found for this tenant";
+        }
+        if (art->conversation_id != conversation_id) {
+            if (via_memory_id == 0) {
+                return std::string("ERR: artifact #") +
+                       std::to_string(artifact_id) +
+                       " is in a different conversation; cite the "
+                       "memory entry that links it: "
+                       "/read #" + std::to_string(artifact_id) +
+                       " via=mem:<entry_id>";
+            }
+            auto mem = store->get_entry(tenant_id, via_memory_id);
+            if (!mem) {
+                return std::string("ERR: via=mem:") +
+                       std::to_string(via_memory_id) +
+                       " — memory entry not found for this tenant";
+            }
+            if (mem->artifact_id != artifact_id) {
+                return std::string("ERR: memory entry #") +
+                       std::to_string(via_memory_id) +
+                       " does not reference artifact #" +
+                       std::to_string(artifact_id) +
+                       " (its artifact_id=" +
+                       std::to_string(mem->artifact_id) + ")";
+            }
+        }
+        auto blob = store->get_artifact_content(tenant_id, artifact_id);
+        if (!blob) {
+            return std::string("ERR: artifact #") +
+                   std::to_string(artifact_id) +
+                   " content missing";
+        }
+        return *blob;
+    };
+}
+
+ArtifactLister make_artifact_lister_callback(int64_t tenant_id,
+                                              int64_t conversation_id,
+                                              TenantStore* store) {
+    return [tenant_id, conversation_id, store]() -> std::string {
+        auto rows = store->list_artifacts_conversation(tenant_id,
+                                                         conversation_id, 200);
+        if (rows.empty()) return std::string{};
+        std::ostringstream out;
+        for (auto& r : rows) {
+            out << r.path << "  (" << r.size
+                << " bytes, mime=" << r.mime_type
+                << ", id=" << r.id << ")\n";
+        }
+        return out.str();
+    };
+}
+
+// Structured-memory reader / writer.  These two callbacks are the
+// largest in arbiter (the reader alone is ~640 lines of search /
+// formatting / ranking).  Lifted into named factories so both
+// /v1/orchestrate and the A2A handlers can install identical
+// behavior without 900 lines of duplication.
+
+StructuredMemoryReader make_structured_memory_reader_callback(
+    TenantStore& tenants, int64_t reader_tenant_id,
+    int64_t reader_conversation_id, Orchestrator* orch_ptr) {
+    return
         [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
         (const std::string& kind, const std::string& args,
          const std::string& caller_id) -> std::string {
@@ -4810,15 +4931,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             }
 
             return "ERR: unknown structured-memory subcommand";
-        });
-
-    // Structured-memory writer.  Tenant-scoped (mirrors the reader); writes
-    // land directly in the curated graph and are visible to subsequent
-    // reads on the next turn.  /mem add entry requires a non-empty body
-    // (passed in as `body`) — the dispatcher rejects empty bodies before
-    // the request reaches us, so by the time we see it we can trust the
-    // body is meaningful synthesised text.
-    orch->set_structured_memory_writer(
+        };
+}
+StructuredMemoryWriter make_structured_memory_writer_callback(
+    TenantStore& tenants, int64_t reader_tenant_id,
+    int64_t reader_conversation_id, Orchestrator* orch_ptr) {
+    return
         [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
         (const std::string& kind,
          const std::string& args,
@@ -5106,151 +5224,1218 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             }
 
             return "ERR: unknown structured-memory write subcommand";
+        };
+}
+
+// Format an a2a::Manager's configured remotes as a roster line block
+// suitable for splicing into the master orchestrator's turn preamble.
+// Empty string when no remotes are configured or no cards resolve.
+std::string format_a2a_remote_roster(a2a::Manager& mgr) {
+    auto names = mgr.agent_names();
+    if (names.empty()) return "";
+    std::ostringstream ss;
+    ss << "REMOTE A2A AGENTS — delegate with /a2a call <name> <message> "
+       << "(distinct trust boundary; no shared memory):\n";
+    bool any_resolved = false;
+    for (auto& name : names) {
+        ss << "  " << name;
+        try {
+            auto& card = mgr.client(name).card();
+            if (!card.description.empty()) ss << " — " << card.description;
+            // Tag with a few skill ids so the master can match by
+            // capability cheaply.  Cap to keep the block short.
+            if (!card.skills.empty()) {
+                ss << " (skills:";
+                int shown = 0;
+                for (auto& s : card.skills) {
+                    if (shown++ >= 5) { ss << ", …"; break; }
+                    ss << (shown == 1 ? " " : ", ") << s.id;
+                }
+                ss << ")";
+            }
+            any_resolved = true;
+        } catch (const std::exception&) {
+            ss << "  (card unavailable)";
+        }
+        ss << "\n";
+    }
+    return any_resolved ? ss.str() : "";
+}
+
+// Build the A2AInvoker callback for a request.  The lambda owns the
+// per-request a2a::Manager via shared_ptr so its lifetime is tied to
+// the orchestrator (which owns the lambda in turn).  Returns nullptr
+// when no registry is configured — the dispatcher then surfaces a
+// clean ERR explaining /a2a is unavailable.
+//
+// `roster_out` (when non-null) receives a function that formats the
+// same Manager's remote-agent roster.  Lets the caller wire both the
+// invoker and the system-prompt injection from one Manager instance,
+// which keeps card caches warm across both surfaces.
+A2AInvoker make_a2a_invoker(const ApiServerOptions& opts,
+                             Orchestrator::RemoteRosterProvider* roster_out = nullptr) {
+    if (opts.a2a_agents_path.empty()) return nullptr;
+    std::vector<a2a::RemoteAgentConfig> configs;
+    try {
+        configs = a2a::load_registry(opts.a2a_agents_path);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+            "[a2a] registry load failed at %s: %s\n",
+            opts.a2a_agents_path.c_str(), e.what());
+        return nullptr;
+    }
+    if (configs.empty()) return nullptr;
+
+    auto mgr = std::make_shared<a2a::Manager>(std::move(configs));
+
+    if (roster_out) {
+        *roster_out = [mgr]() -> std::string {
+            return format_a2a_remote_roster(*mgr);
+        };
+    }
+
+    return [mgr](const std::string& kind, const std::string& args) -> std::string {
+        if (kind == "list") {
+            auto names = mgr->agent_names();
+            if (names.empty()) return "no remote agents configured";
+            // Best-effort card fetch to surface descriptions; failures
+            // appear as `(card unavailable)` so the user knows the
+            // agent is registered but unreachable rather than missing.
+            std::ostringstream os;
+            os << "configured remote agents (" << names.size() << "):\n";
+            for (auto& name : names) {
+                os << "  " << name;
+                try {
+                    auto& card = mgr->client(name).card();
+                    if (!card.description.empty()) {
+                        os << " — " << card.description;
+                    }
+                    if (!card.skills.empty()) {
+                        os << "\n    skills:";
+                        for (auto& s : card.skills) {
+                            os << " " << s.id;
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    os << "  (card unavailable: " << e.what() << ")";
+                }
+                os << "\n";
+            }
+            return os.str();
+        }
+        if (kind == "card") {
+            const std::string name = args;
+            if (name.empty()) return "ERR: usage: /a2a card <name>";
+            if (!mgr->has(name)) {
+                return "ERR: no remote agent named '" + name + "' (try /a2a list)";
+            }
+            try {
+                auto& card = mgr->client(name).card();
+                std::ostringstream os;
+                os << "remote agent '" << card.name << "' (" << card.url << ")\n";
+                os << "  protocol: A2A " << card.protocol_version
+                   << ", version: " << card.version << "\n";
+                os << "  description: " << card.description << "\n";
+                if (!card.skills.empty()) {
+                    os << "  skills:\n";
+                    for (auto& s : card.skills) {
+                        os << "    - " << s.id;
+                        if (!s.name.empty() && s.name != s.id) os << " (" << s.name << ")";
+                        os << ": " << s.description << "\n";
+                    }
+                }
+                return os.str();
+            } catch (const std::exception& e) {
+                return std::string("ERR: card fetch failed: ") + e.what();
+            }
+        }
+        if (kind == "call") {
+            // Parse: <name> <message...>
+            auto sp = args.find(' ');
+            if (sp == std::string::npos) {
+                return "ERR: usage: /a2a call <name> <message>";
+            }
+            const std::string name    = args.substr(0, sp);
+            const std::string message = args.substr(sp + 1);
+            if (name.empty() || message.empty()) {
+                return "ERR: usage: /a2a call <name> <message>";
+            }
+            if (!mgr->has(name)) {
+                return "ERR: no remote agent named '" + name + "' (try /a2a list)";
+            }
+            a2a::Message msg;
+            msg.role       = "user";
+            msg.message_id = new_request_id();
+            a2a::Part p;
+            p.kind = "text";
+            p.text = message;
+            msg.parts.push_back(std::move(p));
+            try {
+                std::string err;
+                auto task = mgr->client(name).send_message(msg, err);
+                if (!task) {
+                    return "ERR: " + err;
+                }
+                if (task->status.message) {
+                    // Concatenate text parts of the assistant's reply.
+                    std::ostringstream os;
+                    for (auto& part : task->status.message->parts) {
+                        if (part.kind == "text") os << part.text;
+                    }
+                    std::string body = os.str();
+                    if (body.empty()) {
+                        // Spec-legal but unhelpful — surface the state
+                        // so callers can debug.
+                        return "(remote agent returned no text content; state="
+                               + a2a::task_state_to_string(task->status.state) + ")";
+                    }
+                    return body;
+                }
+                return "(remote agent returned no message; state="
+                       + a2a::task_state_to_string(task->status.state) + ")";
+            } catch (const std::exception& e) {
+                return std::string("ERR: ") + e.what();
+            }
+        }
+        return "ERR: unknown /a2a subcommand '" + kind + "'";
+    };
+}
+
+// Construct an orchestrator for a one-shot A2A turn.  Loads the tenant's
+// stored agent catalog (so /agent + /parallel resolve sibling ids during
+// the turn).  Memory bridge, MCP manager, search invoker, file
+// interceptor, and structured-memory reader are deliberately NOT wired
+// here — those depend on the SSE event sink which lands in PR-3.  The
+// agent can chat and delegate; tool slash commands degrade to ERR for
+// the v1.0 message/send synchronous path, and PR-3 lifts both surfaces
+// to full parity.
+std::unique_ptr<Orchestrator>
+build_a2a_orchestrator(const ApiServerOptions& opts,
+                        TenantStore& tenants, const Tenant& tenant,
+                        std::string& err_out) {
+    std::unique_ptr<Orchestrator> orch;
+    try {
+        orch = std::make_unique<Orchestrator>(opts.api_keys);
+    } catch (const std::exception& e) {
+        err_out = std::string("orchestrator init failed: ") + e.what();
+        return nullptr;
+    }
+    if (!opts.memory_root.empty()) {
+        orch->set_memory_dir(opts.memory_root + "/t" +
+                              std::to_string(tenant.id));
+    }
+    orch->set_exec_disabled(opts.exec_disabled);
+
+    const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+    for (const auto& rec : records) {
+        try {
+            auto cfg = Constitution::from_json(rec.agent_def_json);
+            if (orch->has_agent(rec.agent_id)) orch->remove_agent(rec.agent_id);
+            orch->create_agent(rec.agent_id, std::move(cfg));
+        } catch (const std::exception& e) {
+            std::fprintf(stderr,
+                "[a2a] skipping malformed stored agent '%s' for tenant %lld: %s\n",
+                rec.agent_id.c_str(), (long long)tenant.id, e.what());
+        }
+    }
+
+    // Tool-callback parity with /v1/orchestrate.  These factories are
+    // shared with handle_orchestrate so /mem read|write|search|entries,
+    // /mcp tools|call, /search, and /a2a all work identically inside an
+    // A2A turn.  Artifact callbacks (/write --persist, /read, /list) are
+    // intentionally NOT wired here because A2A's contextId is opaque
+    // and not foreign-keyed against a conversation; agents using /write
+    // see captured-but-not-persisted bytes flowing as A2A artifacts in
+    // the streaming path.  Logging during MCP registry load goes to
+    // stderr because there's no SSE error sink at orchestrator-build
+    // time.
+    orch->set_memory_scratchpad(
+        make_memory_scratchpad_callback(tenant.id, &tenants));
+    orch->set_structured_memory_reader(
+        make_structured_memory_reader_callback(
+            tenants, tenant.id, /*conversation_id=*/0, orch.get()));
+    orch->set_structured_memory_writer(
+        make_structured_memory_writer_callback(
+            tenants, tenant.id, /*conversation_id=*/0, orch.get()));
+    orch->set_mcp_invoker(make_mcp_invoker_callback(make_mcp_manager(opts,
+        [](const std::string& m) {
+            std::fprintf(stderr, "[a2a] %s\n", m.c_str());
+        })));
+    if (auto search_inv = make_search_invoker_callback(opts)) {
+        orch->set_search_invoker(std::move(search_inv));
+    }
+
+    // Wire the /a2a slash command so a server-side master agent can
+    // delegate to remote A2A agents — symmetric to the /v1/orchestrate
+    // wiring.  Auto-routing into the master's catalog is on by default
+    // (the user's locked-in PR-8 decision).
+    Orchestrator::RemoteRosterProvider roster_cb;
+    if (auto inv = make_a2a_invoker(opts, &roster_cb)) {
+        orch->set_a2a_invoker(std::move(inv));
+        if (roster_cb) orch->set_remote_roster_provider(std::move(roster_cb));
+    }
+    return orch;
+}
+
+void handle_a2a_message_send(int fd,
+                              const std::shared_ptr<JsonValue>& rpc_id,
+                              const std::string& agent_id,
+                              const a2a::RpcRequest& rpc,
+                              const ApiServerOptions& opts,
+                              TenantStore& tenants,
+                              InFlightRegistry& in_flight,
+                              const Tenant& tenant) {
+    a2a::Message user_msg;
+    if (!rpc.params) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params required"));
+        return;
+    }
+    try {
+        user_msg = a2a::extract_send_message(*rpc.params);
+    } catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, e.what()));
+        return;
+    }
+
+    std::string prompt;
+    try {
+        prompt = a2a::concatenate_text_parts(user_msg);
+    } catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_CONTENT_TYPE_INVALID, e.what()));
+        return;
+    }
+    if (prompt.empty()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS,
+            "message has no text parts to send"));
+        return;
+    }
+
+    const std::string task_id    = new_request_id();
+    const std::string context_id = resolve_a2a_context_id(user_msg);
+
+    std::string init_err;
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    if (!orch) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
+        return;
+    }
+    if (agent_id != "index" && !orch->has_agent(agent_id)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no agent '" + agent_id + "' for this tenant; POST it to /v1/agents first"));
+        return;
+    }
+
+    // Persistence: rows go in at submitted, transition to working, then
+    // to a terminal state.  A failure to insert is non-fatal — we log
+    // and continue (the call still completes; tasks/get just won't
+    // surface a record).
+    try {
+        tenants.create_a2a_task(tenant.id, task_id, agent_id, context_id,
+                                 a2a::task_state_to_string(a2a::TaskState::submitted));
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[a2a] create_a2a_task failed: %s\n", e.what());
+    }
+
+    InFlightScope in_flight_scope(in_flight, task_id, orch.get(), tenant.id);
+
+    tenants.update_a2a_task(tenant.id, task_id,
+                             a2a::task_state_to_string(a2a::TaskState::working),
+                             /*final_message_json=*/"",
+                             /*error_message=*/"");
+
+    ApiResponse resp;
+    try {
+        resp = orch->send(agent_id, prompt);
+    } catch (const std::exception& e) {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", e.what());
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_INVALID_AGENT_RESPONSE,
+            std::string("agent threw: ") + e.what()));
+        return;
+    }
+
+    a2a::Task task = a2a::build_terminal_task(task_id, context_id, agent_id,
+                                               user_msg, resp);
+
+    // Persist the terminal state.  We snapshot only the assistant
+    // Message — history/artifacts can be reconstructed by combining
+    // the user's input (which the client already has) with the
+    // assistant's reply.  Smaller column, simpler reads.
+    std::string final_msg_json;
+    if (task.status.message) {
+        final_msg_json = json_serialize(*a2a::to_json(*task.status.message));
+    }
+    tenants.update_a2a_task(tenant.id, task_id,
+                             a2a::task_state_to_string(task.status.state),
+                             final_msg_json,
+                             resp.ok ? "" : resp.error);
+
+    write_a2a_rpc(fd, a2a::make_result_response(rpc_id, a2a::to_json(task)));
+}
+
+// PR-3: streaming variant of message/send.  Opens an SSE response and
+// emits one JSON-RPC chunk per arbiter event, all wrapped in TaskStatus
+// or TaskArtifact updates.  Closes with a final TaskStatusUpdateEvent
+// (final=true).  Tool-side callbacks (memory, MCP, search, structured
+// memory) are NOT yet wired here — they degrade to the same ERR
+// behavior as PR-2's synchronous send_message; PR-4 lifts both paths
+// to /v1/orchestrate parity.
+void handle_a2a_message_stream(int fd,
+                                const std::shared_ptr<JsonValue>& rpc_id,
+                                const std::string& agent_id,
+                                const a2a::RpcRequest& rpc,
+                                const ApiServerOptions& opts,
+                                TenantStore& tenants,
+                                InFlightRegistry& in_flight,
+                                const Tenant& tenant) {
+    // Same up-front parsing as message/send; we send any error as a
+    // single non-streaming JSON-RPC error response (HTTP 200) BEFORE
+    // opening the SSE stream.  Once the stream is open, errors
+    // surface as final-status TaskStatusUpdateEvents.
+    a2a::Message user_msg;
+    if (!rpc.params) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params required"));
+        return;
+    }
+    try {
+        user_msg = a2a::extract_send_message(*rpc.params);
+    } catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, e.what()));
+        return;
+    }
+    std::string prompt;
+    try {
+        prompt = a2a::concatenate_text_parts(user_msg);
+    } catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_CONTENT_TYPE_INVALID, e.what()));
+        return;
+    }
+    if (prompt.empty()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS,
+            "message has no text parts to send"));
+        return;
+    }
+
+    const std::string task_id    = new_request_id();
+    const std::string context_id = resolve_a2a_context_id(user_msg);
+
+    std::string init_err;
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    if (!orch) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
+        return;
+    }
+    if (agent_id != "index" && !orch->has_agent(agent_id)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no agent '" + agent_id + "' for this tenant; POST it to /v1/agents first"));
+        return;
+    }
+
+    // Persist before opening the stream so a tasks/get racing the start
+    // sees at least the submitted row.
+    try {
+        tenants.create_a2a_task(tenant.id, task_id, agent_id, context_id,
+                                 a2a::task_state_to_string(a2a::TaskState::submitted));
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[a2a] create_a2a_task failed: %s\n", e.what());
+    }
+
+    // Begin the SSE response.  After this point every error must round-
+    // trip as an in-stream TaskStatusUpdateEvent — we can't switch back
+    // to a JSON body because the client already saw the SSE headers.
+    SseStream sse(fd);
+    sse.write_headers();
+
+    auto sink = [&sse](const std::string& ev,
+                        std::shared_ptr<JsonValue> payload) {
+        sse.emit(ev, std::move(payload));
+    };
+    a2a::A2aStreamWriter writer(sink, rpc_id, task_id, context_id, agent_id);
+
+    // Track depth-by-stream-id so callbacks that don't carry depth
+    // (agent_stream, stream_end) can decide whether to emit text into
+    // the master artifact or leave it for the sub-agent summary path.
+    std::map<int, int> depth_by_stream;
+    std::map<int, std::string> agent_by_stream;
+    std::mutex stream_meta_mu;
+
+    std::atomic<bool> working_persisted{false};
+    orch->set_stream_start_callback(
+        [&](const std::string& a, int stream_id, int depth) {
+            {
+                std::lock_guard<std::mutex> lk(stream_meta_mu);
+                depth_by_stream[stream_id] = depth;
+                agent_by_stream[stream_id] = a;
+            }
+            if (depth == 0) {
+                writer.emit_status(a2a::TaskState::working, /*final=*/false);
+                if (!working_persisted.exchange(true)) {
+                    tenants.update_a2a_task(
+                        tenant.id, task_id,
+                        a2a::task_state_to_string(a2a::TaskState::working),
+                        "", "");
+                }
+            }
         });
+
+    orch->set_agent_stream_callback(
+        [&](const std::string& /*a*/, int stream_id, const std::string& delta) {
+            int depth = 0;
+            {
+                std::lock_guard<std::mutex> lk(stream_meta_mu);
+                auto it = depth_by_stream.find(stream_id);
+                if (it != depth_by_stream.end()) depth = it->second;
+            }
+            // Only the master agent's stream feeds the primary text
+            // artifact.  Sub-agent text is summarised once at end-of-
+            // turn via the progress_callback path below — streaming
+            // it interleaved would confuse clients trying to render a
+            // single coherent response.
+            if (depth == 0) {
+                writer.emit_text_chunk(delta, /*last_chunk=*/false);
+            }
+        });
+
+    orch->set_stream_end_callback(
+        [&](const std::string& /*a*/, int stream_id, bool /*ok*/) {
+            std::lock_guard<std::mutex> lk(stream_meta_mu);
+            depth_by_stream.erase(stream_id);
+            agent_by_stream.erase(stream_id);
+            // Note: the *final* TaskStatusUpdateEvent fires after the
+            // entire send_streaming returns (below) — not here.  Per-
+            // turn ends at depth>0 are part of normal sub-agent flow
+            // and don't terminate the A2A stream.
+        });
+
+    // Per-tool observation events.  arbiter fires this for /fetch,
+    // /search, /mem, /mcp, /agent, /parallel, /write, etc.
+    orch->set_tool_status_callback(
+        [&](const std::string& tool, bool ok) {
+            writer.emit_tool_call(tool, ok);
+        });
+
+    // Sub-agent completion: emit the full text the sub-agent produced
+    // as a side artifact.  current_stream_depth() reads the depth at
+    // the time the callback fires, which is the sub-agent's turn
+    // depth (>0).
+    Orchestrator* orch_ptr = orch.get();
+    orch->set_progress_callback(
+        [&writer, orch_ptr](const std::string& a, const std::string& content) {
+            writer.emit_sub_agent(a, orch_ptr->current_stream_depth(), content);
+        });
+
+    // /write capture so the agent can emit files mid-turn and the
+    // remote client receives them as artifact-update events rather
+    // than the server filesystem absorbing them.  Mirrors handle_orchestrate's
+    // bytes-cap semantics so a runaway agent can't blow up the response.
+    std::atomic<size_t> bytes_captured{0};
+    const size_t cap = opts.file_max_bytes;
+    orch->set_write_interceptor(
+        [&writer, &bytes_captured, cap](const std::string& path,
+                                         const std::string& content) -> std::string {
+            const size_t size = content.size();
+            const size_t prev = bytes_captured.load();
+            if (prev + size > cap) {
+                return "ERR: per-response file-size cap (" +
+                       std::to_string(cap) + " bytes) reached — this file "
+                       "was NOT included in the response.";
+            }
+            bytes_captured.fetch_add(size);
+            writer.emit_file(path, content, "text/plain");
+            return "OK: captured " + std::to_string(size) +
+                   " bytes for '" + path + "' (streamed to client)";
+        });
+
+    // Cancellation hook so /v1/requests/:task_id/cancel can interrupt
+    // an in-flight stream.  Same RAII shape as /v1/orchestrate.
+    InFlightScope in_flight_scope(in_flight, task_id, orch_ptr, tenant.id);
+
+    // Drive the agentic loop.  send_streaming returns the final
+    // ApiResponse once the dispatch loop terminates (success or fail).
+    // The StreamCallback we pass is intentionally a no-op — text deltas
+    // already flow through agent_stream_callback after StreamFilter
+    // strips slash commands, so feeding the raw chunks here would
+    // double-emit and surface unfiltered command text.
+    ApiResponse resp;
+    try {
+        resp = orch->send_streaming(agent_id, prompt,
+                                     [](const std::string&) {});
+    } catch (const std::exception& e) {
+        // Catastrophic failure during the loop.  Surface as a final
+        // failed-status update so the client knows the stream is over.
+        a2a::Message err_msg;
+        err_msg.role        = "agent";
+        err_msg.message_id  = task_id + "-err";
+        err_msg.task_id     = task_id;
+        err_msg.context_id  = context_id;
+        a2a::Part p_err;
+        p_err.kind = "text";
+        p_err.text = std::string("agent threw: ") + e.what();
+        err_msg.parts.push_back(std::move(p_err));
+        writer.emit_status(a2a::TaskState::failed, /*final=*/true,
+                           std::move(err_msg));
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", e.what());
+        sse.close();
+        return;
+    }
+
+    // Compose the assistant's terminal Message and ride it on the
+    // final TaskStatusUpdateEvent so clients have the full text in
+    // one place even if they missed earlier text deltas.
+    a2a::Message reply;
+    reply.role        = "agent";
+    reply.message_id  = task_id + "-r";
+    reply.task_id     = task_id;
+    reply.context_id  = context_id;
+    a2a::Part p;
+    p.kind = "text";
+    p.text = resp.content;
+    reply.parts.push_back(std::move(p));
+
+    // Signal end-of-stream on the running text artifact so a client
+    // accumulating chunks can finalise its rendering.
+    writer.emit_text_chunk("", /*last_chunk=*/true);
+
+    const a2a::TaskState terminal = resp.ok ? a2a::TaskState::completed
+                                             : a2a::TaskState::failed;
+    writer.emit_status(terminal, /*final=*/true, reply);
+
+    std::string final_msg_json = json_serialize(*a2a::to_json(reply));
+    tenants.update_a2a_task(tenant.id, task_id,
+                             a2a::task_state_to_string(terminal),
+                             final_msg_json,
+                             resp.ok ? "" : resp.error);
+    sse.close();
+}
+
+// Build a Task object from a persisted record.  The history isn't
+// reconstructed (we don't snapshot the user's input on disk), so the
+// returned Task has only the assistant's reply on status.message when
+// the task reached a terminal state.  Clients combining tasks/get with
+// their own request log can stitch the full history back together.
+a2a::Task task_from_record(const TenantStore::A2aTaskRecord& rec) {
+    a2a::Task t;
+    t.id         = rec.task_id;
+    t.context_id = rec.context_id;
+    t.status.state = a2a::task_state_from_string(rec.state);
+    if (!rec.final_message_json.empty()) {
+        try {
+            auto v = json_parse(rec.final_message_json);
+            if (v && v->is_object()) {
+                t.status.message = a2a::message_from_json(*v);
+                t.history.push_back(*t.status.message);
+            }
+        } catch (...) { /* malformed snapshot — surface bare state */ }
+    }
+    auto md = jobj();
+    auto& mm = md->as_object_mut();
+    mm["x-arbiter.agent_id"]   = jstr(rec.agent_id);
+    mm["x-arbiter.created_at"] = jnum(static_cast<double>(rec.created_at));
+    mm["x-arbiter.updated_at"] = jnum(static_cast<double>(rec.updated_at));
+    if (!rec.error_message.empty()) {
+        mm["x-arbiter.error"] = jstr(rec.error_message);
+    }
+    t.metadata = md;
+    return t;
+}
+
+void handle_a2a_tasks_get(int fd,
+                           const std::shared_ptr<JsonValue>& rpc_id,
+                           const a2a::RpcRequest& rpc,
+                           TenantStore& tenants,
+                           const Tenant& tenant) {
+    // Params shape: { "id": "<task_id>" }.  Spec also allows
+    // historyLength to bound the returned history; we don't currently
+    // store full history so the param is accepted-and-ignored.
+    if (!rpc.params || !rpc.params->is_object()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params must be an object"));
+        return;
+    }
+    const std::string task_id = rpc.params->get_string("id", "");
+    if (task_id.empty()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params.id required"));
+        return;
+    }
+    auto rec = tenants.get_a2a_task(tenant.id, task_id);
+    if (!rec) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no task with id '" + task_id + "' for this tenant"));
+        return;
+    }
+    write_a2a_rpc(fd, a2a::make_result_response(
+        rpc_id, a2a::to_json(task_from_record(*rec))));
+}
+
+void handle_a2a_tasks_cancel(int fd,
+                              const std::shared_ptr<JsonValue>& rpc_id,
+                              const a2a::RpcRequest& rpc,
+                              InFlightRegistry& in_flight,
+                              TenantStore& tenants,
+                              const Tenant& tenant) {
+    if (!rpc.params || !rpc.params->is_object()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params must be an object"));
+        return;
+    }
+    const std::string task_id = rpc.params->get_string("id", "");
+    if (task_id.empty()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params.id required"));
+        return;
+    }
+
+    // Same lock-while-cancel discipline as handle_cancel above so a
+    // racing ~InFlightScope can't free the orchestrator under us.
+    bool cancelled_in_flight = false;
+    {
+        std::lock_guard<std::mutex> lk(in_flight.mu);
+        auto it = in_flight.by_id.find(task_id);
+        if (it != in_flight.by_id.end() && it->second.tenant_id == tenant.id) {
+            it->second.orch->cancel();
+            cancelled_in_flight = true;
+        }
+    }
+
+    if (cancelled_in_flight) {
+        // Persist canceled state so a follow-up tasks/get reflects the
+        // outcome.  The orchestrator's send may still be unwinding —
+        // its terminal-state update will run, but we want canceled to
+        // win over completed/failed for clarity.  Re-update.
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::canceled),
+                                 "", "canceled by tasks/cancel");
+        auto rec = tenants.get_a2a_task(tenant.id, task_id);
+        if (!rec) {
+            // Edge: task was never persisted (very fast race).  Synth a
+            // minimal Task for the response.
+            a2a::Task t;
+            t.id           = task_id;
+            t.status.state = a2a::TaskState::canceled;
+            write_a2a_rpc(fd, a2a::make_result_response(rpc_id, a2a::to_json(t)));
+            return;
+        }
+        write_a2a_rpc(fd, a2a::make_result_response(
+            rpc_id, a2a::to_json(task_from_record(*rec))));
+        return;
+    }
+
+    // Not in-flight.  If the task exists in the DB and is already
+    // terminal we surface NotCancelable; otherwise NotFound.
+    auto rec = tenants.get_a2a_task(tenant.id, task_id);
+    if (!rec) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no task with id '" + task_id + "' for this tenant"));
+        return;
+    }
+    write_a2a_rpc(fd, a2a::make_error_response(
+        rpc_id, a2a::ERR_TASK_NOT_CANCELABLE,
+        "task is in terminal state '" + rec->state +
+        "' and is not in-flight"));
+}
+
+void handle_a2a_rpc(int fd, const std::string& agent_id,
+                     const HttpRequest& req,
+                     const ApiServerOptions& opts,
+                     TenantStore& tenants,
+                     InFlightRegistry& in_flight,
+                     const Tenant& tenant) {
+    // Version negotiation per spec section 3.6.  Empty header is
+    // tolerated as 1.0 since every implementation in the wild today
+    // omits it; explicit 1.0 + 1 (loose major) are accepted; anything
+    // else fails with VersionNotSupportedError.
+    if (auto it = req.headers.find("a2a-version"); it != req.headers.end()) {
+        const std::string v = it->second;
+        if (!v.empty() && v != "1.0" && v != "1") {
+            write_a2a_rpc(fd, a2a::make_error_response(
+                nullptr, a2a::ERR_VERSION_NOT_SUPPORTED,
+                "arbiter speaks A2A 1.0 only; got A2A-Version: " + v));
+            return;
+        }
+    }
+
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            nullptr, a2a::RPC_PARSE_ERROR,
+            std::string("malformed JSON: ") + e.what()));
+        return;
+    }
+    if (!body) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            nullptr, a2a::RPC_PARSE_ERROR, "empty body"));
+        return;
+    }
+
+    a2a::RpcRequest rpc;
+    try { rpc = a2a::rpc_request_from_json(*body); }
+    catch (const std::exception& e) {
+        std::shared_ptr<JsonValue> id;
+        if (body->is_object()) id = body->get("id");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            id, a2a::RPC_INVALID_REQUEST, e.what()));
+        return;
+    }
+
+    if (rpc.method == "message/send") {
+        handle_a2a_message_send(fd, rpc.id, agent_id, rpc,
+                                 opts, tenants, in_flight, tenant);
+        return;
+    }
+    if (rpc.method == "message/stream") {
+        handle_a2a_message_stream(fd, rpc.id, agent_id, rpc,
+                                   opts, tenants, in_flight, tenant);
+        return;
+    }
+    if (rpc.method == "tasks/get") {
+        handle_a2a_tasks_get(fd, rpc.id, rpc, tenants, tenant);
+        return;
+    }
+    if (rpc.method == "tasks/cancel") {
+        handle_a2a_tasks_cancel(fd, rpc.id, rpc, in_flight, tenants, tenant);
+        return;
+    }
+    if (rpc.method == "tasks/resubscribe"
+        || rpc.method == "tasks/pushNotificationConfig/set"
+        || rpc.method == "tasks/pushNotificationConfig/get"
+        || rpc.method == "tasks/pushNotificationConfig/list"
+        || rpc.method == "tasks/pushNotificationConfig/delete") {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc.id, a2a::ERR_UNSUPPORTED_OPERATION,
+            "method not implemented in arbiter v1"));
+        return;
+    }
+    write_a2a_rpc(fd, a2a::make_error_response(
+        rpc.id, a2a::RPC_METHOD_NOT_FOUND,
+        "unknown method: " + rpc.method));
+}
+
+// Two entry points funnel here: /v1/orchestrate (agent_override == "", read
+// from body) and /v1/agents/:id/chat (agent_override == path :id).  Body
+// parsing + dispatch is otherwise identical.
+void handle_orchestrate(int fd, const HttpRequest& req,
+                        const ApiServerOptions& opts,
+                        TenantStore& tenants,
+                        InFlightRegistry& in_flight,
+                        // Nullable.  When non-null, drives pre-flight quota
+                        // checks and post-turn usage records — the runtime
+                        // becomes a thin gateway and the billing service owns
+                        // billing.  When null, neither call fires; the
+                        // turn runs straight through to the provider keys
+                        // configured in `opts.api_keys`.
+                        BillingClient* billing,
+                        // The billing service's workspace_id the bearer maps to
+                        // (returned from /v1/runtime/auth/validate).  Empty
+                        // when `billing` is null.
+                        const std::string& workspace_id,
+                        const Tenant& tenant_in,
+                        const std::string& agent_override = "",
+                        int64_t conversation_id = 0,
+                        // Snapshotted agent_def from the conversation row.  When
+                        // this is non-empty and the request body doesn't supply
+                        // its own `agent_def`, we install the snapshot so
+                        // follow-up messages don't have to re-send it on every
+                        // turn.  Body-supplied agent_def still wins if both
+                        // are present (lets callers update an agent mid-thread).
+                        const std::string& conversation_agent_def_json = "") {
+    Tenant tenant = tenant_in;   // mutable snapshot — MTD refreshes mid-request
+    // Parse the JSON body.
+    std::shared_ptr<JsonValue> body;
+    try {
+        body = json_parse(req.body);
+    } catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("request body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    std::string message = body->get_string("message");
+    if (message.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("missing required field: 'message'");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    // ── Resolve the agent identity ────────────────────────────────────────
+    //
+    // For inline `agent_def`, the caller supplies a stable `id` (typically a
+    // UUID from their own DB).  Memory for this agent is persisted at
+    // `<tenant_memory>/<id>.md`, so repeated requests carrying the same
+    // `agent_def.id` share memory across turns regardless of what other
+    // config fields change between calls.  Precedence:
+    //   1. agent_def.id                 (strongest — the memory-persistence
+    //                                     identity for dynamic agents)
+    //   2. path :id                     (/v1/agents/:id/chat)
+    //   3. body.agent                   (/v1/orchestrate fallback)
+    //   4. fallback "index"             (no agent_def, nothing else specified)
+    //
+    // When multiple of 1–3 are set, they MUST agree.  Conflicts fail fast
+    // with 400 so the caller doesn't silently write memory to the wrong key.
+    std::shared_ptr<JsonValue> agent_def;
+    if (auto v = body->get("agent_def"); v && v->is_object()) agent_def = v;
+
+    // Fall back to the conversation's snapshotted agent_def when the request
+    // body didn't supply its own.  The snapshot is the source of truth for
+    // resumed threads — without this, a follow-up turn that omits agent_def
+    // would have no way to find the agent (the API does not read disk-side
+    // .json definitions).
+    if (!agent_def && !conversation_agent_def_json.empty()) {
+        try {
+            auto parsed = json_parse(conversation_agent_def_json);
+            if (parsed && parsed->is_object()) agent_def = parsed;
+        } catch (...) {
+            // A corrupted snapshot shouldn't 500 the call — surface a clear
+            // 400 instead so the caller knows to re-send agent_def or
+            // recreate the conversation.
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("conversation has a corrupted agent_def snapshot — "
+                     "send a fresh agent_def in the request body, or "
+                     "recreate the conversation.");
+            write_json_response(fd, 400, err);
+            return;
+        }
+    }
+
+    const std::string path_id         = agent_override;
+    const std::string body_agent      = body->get_string("agent", "");
+    const std::string agent_def_id    = agent_def ? agent_def->get_string("id", "")
+                                                  : std::string{};
+
+    auto conflict = [&](const std::string& kind_a, const std::string& a,
+                        const std::string& kind_b, const std::string& b) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(kind_a + " ('" + a + "') and " + kind_b + " ('" + b +
+                 "') disagree.  When both are set they must be identical — "
+                 "otherwise memory would silently persist under the wrong id.");
+        write_json_response(fd, 400, err);
+    };
+
+    std::string agent_id;
+    if (!agent_def_id.empty()) {
+        agent_id = agent_def_id;
+        if (!path_id.empty() && path_id != agent_id) {
+            conflict("path :id", path_id, "agent_def.id", agent_id);
+            return;
+        }
+        if (!body_agent.empty() && body_agent != agent_id) {
+            conflict("body.agent", body_agent, "agent_def.id", agent_id);
+            return;
+        }
+    } else if (!path_id.empty()) {
+        agent_id = path_id;
+    } else if (!body_agent.empty()) {
+        agent_id = body_agent;
+    } else {
+        agent_id = "index";
+    }
+
+    // Guardrail: the resolved id becomes a filesystem path component for
+    // the memory file — reject traversal / shell metacharacters / absurd
+    // lengths up front.  Allows alphanum, underscore, dash (covers UUIDs).
+    if (!agent_id_is_safe(agent_id)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("invalid agent id '" + agent_id +
+                 "'.  Allowed: 1-64 chars, [a-zA-Z0-9_-] only, "
+                 "first char not '.' or '/'.");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    // Pre-validate agent_def early (before opening the SSE stream).  Also
+    // catches the "can't override master" case up front so the error is
+    // a clean JSON 400, not an SSE frame wedged into a half-written stream.
+    std::optional<Constitution> parsed_cfg;
+    if (agent_def) {
+        if (agent_id == "index") {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("inline agent_def cannot override 'index' — pick a "
+                     "different id.");
+            write_json_response(fd, 400, err);
+            return;
+        }
+        try {
+            parsed_cfg = Constitution::from_json(json_serialize(*agent_def));
+        } catch (const std::exception& e) {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr(std::string("invalid agent_def: ") + e.what());
+            write_json_response(fd, 400, err);
+            return;
+        }
+    }
+
+    // Begin the SSE response.
+    SseStream sse(fd);
+    sse.write_headers();
+
+    const auto start_time = std::chrono::steady_clock::now();
+
+    // Allocate request_id and the server-side event logger up front so
+    // every error path below — including orchestrator-init failure —
+    // logs to stderr alongside its SSE error frame.
+    const std::string request_id = new_request_id();
+    EventLogger logger(opts.log_verbose, request_id, tenant.name);
+
+    auto emit = [&sse, &logger](const std::string& ev,
+                                 const std::shared_ptr<JsonValue>& p) {
+        sse.emit(ev, p);
+        logger.log(ev, p);
+    };
+    auto log_error = [&emit](const std::string& msg) {
+        auto o = jobj();
+        o->as_object_mut()["message"] = jstr(msg);
+        emit("error", o);
+    };
+
+    // Per-request Orchestrator.  Concurrent API calls don't share agent
+    // history or callback state — each request is a fresh universe.  The
+    // The API path does NOT load agent .json definitions from disk.  It
+    // does install the tenant's stored agent catalog (`POST /v1/agents`)
+    // onto every per-request orchestrator so /agent and /parallel can
+    // reference siblings by id without re-sending their constitutions.
+    // Inline `agent_def` from the request body still wins on a colliding
+    // id — useful for one-off ephemeral agents and mid-thread overrides.
+    std::unique_ptr<Orchestrator> orch;
+    try {
+        orch = std::make_unique<Orchestrator>(opts.api_keys);
+    } catch (const std::exception& e) {
+        log_error(std::string("orchestrator init failed: ") + e.what());
+        return;
+    }
+    // Memory is tenant-scoped so /mem commands can never leak between
+    // accounts.  set_memory_dir is kept as a no-op fallback path for
+    // any code that still expects a filesystem location, but the
+    // canonical scratchpad storage is now the agent_scratchpad table
+    // wired below.
+    if (!opts.memory_root.empty()) {
+        orch->set_memory_dir(opts.memory_root + "/t" +
+                              std::to_string(tenant.id));
+    }
+
+    // DB-backed file-scratchpad bridge.  /mem read|write|clear and
+    // /mem shared read|write|clear all flow through here, scoped to
+    // this request's tenant.  Without this callback the dispatcher
+    // would fall back to the filesystem path — fine for the CLI/REPL
+    // (which doesn't have a tenant), but the API path always wires it.
+    orch->set_memory_scratchpad(
+        make_memory_scratchpad_callback(tenant.id, &tenants));
+
+    // Install the tenant's stored catalog first so /agent and /parallel
+    // can resolve sibling ids during this turn.  A blob whose JSON has
+    // gone bad (schema drift after an upgrade, manual DB poke) gets
+    // skipped with a log line — the rest of the catalog still loads.
+    {
+        const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+        for (const auto& rec : records) {
+            try {
+                auto cfg = Constitution::from_json(rec.agent_def_json);
+                if (orch->has_agent(rec.agent_id)) orch->remove_agent(rec.agent_id);
+                orch->create_agent(rec.agent_id, std::move(cfg));
+            } catch (const std::exception& e) {
+                log_error("skipping stored agent '" + rec.agent_id + "' for tenant "
+                           + std::to_string(tenant.id) + ": " + e.what());
+            }
+        }
+    }
+
+    // Install the inline agent definition (pre-validated above, so this
+    // can't throw the user-visible errors — any failure now is internal
+    // and surfaces as an SSE `error` event).  Inline wins over the stored
+    // catalog when ids collide.
+    if (parsed_cfg) {
+        if (orch->has_agent(agent_id)) orch->remove_agent(agent_id);
+        orch->create_agent(agent_id, std::move(*parsed_cfg));
+    } else if (agent_id != "index" && !orch->has_agent(agent_id)) {
+        // No inline agent_def, no snapshot, no stored catalog row, and
+        // the caller didn't ask for the master.  Surface a clean SSE
+        // error so the caller knows what to send next time.
+        log_error("agent_def required for agent '" + agent_id + "' — no "
+                  "stored agent with this id for the tenant.  Send `agent_def` "
+                  "in the request body, POST it once to /v1/agents, or address "
+                  "'index' (the master orchestrator) instead.");
+        sse.close();
+        return;
+    }
+
+    auto* orch_ptr = orch.get();
+
+    // Register this orchestration so `POST /v1/requests/:id/cancel` can
+    // reach it.  Lifetime matches the orchestrator; scope unwinds on every
+    // exit path (including exceptions), so cancels arriving after
+    // completion harmlessly miss the map.
+    InFlightScope in_flight_scope(in_flight, request_id, orch_ptr, tenant.id);
+
+    // ── Conversation thread resumption ──────────────────────────────────
+    // When this request belongs to a stored conversation, replay prior
+    // messages into the agent so the model sees the full history, then
+    // append the user's new message to the DB.  Persistence of the
+    // assistant's response happens after send_streaming returns (below).
+    if (conversation_id > 0) {
+        try {
+            // Hard-cap history replay at 100 turns to keep token usage and
+            // request payload size bounded.  If a thread is older, the
+            // tail (most recent) is what gets sent — older context falls
+            // off, which matches both Claude's and ChatGPT's default UX.
+            const int kReplayCap = 100;
+            auto prior = tenants.list_messages(tenant.id, conversation_id,
+                                                /*after_id=*/0, kReplayCap);
+            std::vector<Message> hist;
+            hist.reserve(prior.size());
+            for (auto& pm : prior) hist.push_back({pm.role, pm.content});
+            orch->set_agent_history(agent_id, std::move(hist));
+        } catch (const std::out_of_range&) {
+            // Agent isn't loaded — surface as SSE error.
+            log_error("agent '" + agent_id + "' not loaded for "
+                      "conversation resumption");
+            return;
+        } catch (const std::exception& e) {
+            log_error(std::string("history load failed: ") + e.what());
+            return;
+        }
+        try {
+            tenants.append_message(tenant.id, conversation_id,
+                                    "user", message,
+                                    /*input=*/0, /*output=*/0,
+                                    request_id);
+        } catch (const std::exception& e) {
+            log_error(std::string("could not persist user message: ") + e.what());
+            return;
+        }
+    }
+
+    // Helper: stamp every outbound event with the current turn's
+    // (agent, stream_id, depth).  Read lazily at emit time because each
+    // turn runs inside its own StreamScope; this lets the same callback
+    // serve master + delegated + parallel children without threading the
+    // ids explicitly.
+    auto stamp = [orch_ptr](std::shared_ptr<JsonValue>& p) {
+        auto& m = p->as_object_mut();
+        m["agent"]     = jstr(orch_ptr->current_stream_agent());
+        m["stream_id"] = jnum(static_cast<double>(orch_ptr->current_stream_id()));
+        m["depth"]     = jnum(static_cast<double>(orch_ptr->current_stream_depth()));
+    };
+
+    // File-write interceptor — captures content to the SSE stream instead
+    // of persisting to the server's filesystem.  Enforces the per-response
+    // size cap; once exceeded, further writes are rejected with an ERR
+    // that tells the agent to stop trying (dedup cache ensures it won't
+    // retry the identical /write).
+    std::atomic<size_t> bytes_captured{0};
+    const size_t cap = opts.file_max_bytes;
+    auto write_interceptor =
+        [&emit, &bytes_captured, cap, stamp](const std::string& path,
+                                       const std::string& content) -> std::string {
+        size_t size = content.size();
+        size_t prev = bytes_captured.load();
+        if (prev + size > cap) {
+            return "ERR: per-response file-size cap (" + std::to_string(cap) +
+                   " bytes) reached — this file was NOT included in the "
+                   "response.  Reduce the file size or split across requests.";
+        }
+        bytes_captured.fetch_add(size);
+
+        auto p = jobj();
+        auto& m = p->as_object_mut();
+        m["path"]     = jstr(path);
+        m["size"]     = jnum(static_cast<double>(size));
+        m["encoding"] = jstr("utf-8");
+        m["content"]  = jstr(content);
+        stamp(p);
+        emit("file", p);
+
+        return "OK: captured " + std::to_string(size) +
+               " bytes for '" + path + "' (streamed to client, not persisted)";
+    };
+    orch->set_write_interceptor(write_interceptor);
+    orch->set_exec_disabled(opts.exec_disabled);
+
+    // Real-time read window into structured memory.  Bound to this request's
+    // tenant so /mem entries|entry|search inside any agent turn (master or
+    // delegated) sees only that tenant's graph entries.  Subagents inherit
+    // the reader through Orchestrator's member, so depth-2 calls are scoped
+    // identically without an extra plumb-through.
+    const int64_t reader_tenant_id = tenant.id;
+    // Captured by value so /mem entry can compute whether a linked
+    // artifact lives in the active conversation (no via= needed) or
+    // elsewhere (suggest the via=mem:<mid> form).  0 ⇒ no active
+    // conversation (raw /v1/orchestrate); any artifact link is
+    // therefore cross-conversation by definition.
+    const int64_t reader_conversation_id = conversation_id;
+    orch->set_structured_memory_reader(
+        make_structured_memory_reader_callback(
+            tenants, reader_tenant_id, reader_conversation_id, orch_ptr));
+
+    // Structured-memory writer.  Tenant-scoped (mirrors the reader); writes
+    // land directly in the curated graph and are visible to subsequent
+    // reads on the next turn.  /mem add entry requires a non-empty body
+    // (passed in as `body`) — the dispatcher rejects empty bodies before
+    // the request reaches us, so by the time we see it we can trust the
+    // body is meaningful synthesised text.
+    orch->set_structured_memory_writer(
+        make_structured_memory_writer_callback(
+            tenants, reader_tenant_id, reader_conversation_id, orch_ptr));
 
     // ── MCP session manager ───────────────────────────────────────────
     // One Manager per request; subprocesses spawn lazily on first /mcp
     // reference and die when the orchestrator's `mcp_mgr` shared_ptr
     // falls out of scope (which happens at the end of this function or
     // when the InFlightScope unwinds on cancel).  The manager lives
-    // beyond the orchestrator only via the invoker capture below — when
-    // the lambda is destroyed, so is the manager.
-    //
-    // Registry-load failures are non-fatal at request time: we log and
-    // proceed with an empty manager so /mcp returns a clean ERR rather
-    // than failing the whole request.  Operators see the parse error in
-    // the API server log.
-    std::shared_ptr<mcp::Manager> mcp_mgr;
-    if (!opts.mcp_servers_path.empty()) {
-        try {
-            auto specs = mcp::load_server_registry(opts.mcp_servers_path);
-            mcp_mgr = std::make_shared<mcp::Manager>(std::move(specs));
-        } catch (const std::exception& e) {
-            log_error(std::string("MCP registry load failed: ") + e.what());
+    // beyond the orchestrator only via the invoker capture — when the
+    // captured lambda is destroyed, so is the manager.
+    auto mcp_mgr = make_mcp_manager(opts,
+        [&log_error](const std::string& m) { log_error(m); });
+    orch->set_mcp_invoker(make_mcp_invoker_callback(mcp_mgr));
+
+    // ── A2A remote-agent delegation ───────────────────────────────────
+    // Wire the /a2a slash command so the master orchestrator (and any
+    // delegated sub-agent) can call out to remote A2A agents listed in
+    // opts.a2a_agents_path.  See make_a2a_invoker for the subcommand
+    // surface.  The Manager's lifetime is owned by the captured lambda;
+    // it dies when the orchestrator does.  Auto-routing injects remote
+    // agents into the master's roster so /agent and /a2a call sit side
+    // by side in the routing menu.
+    {
+        Orchestrator::RemoteRosterProvider roster_cb;
+        if (auto a2a_inv = make_a2a_invoker(opts, &roster_cb)) {
+            orch->set_a2a_invoker(std::move(a2a_inv));
+            if (roster_cb) orch->set_remote_roster_provider(std::move(roster_cb));
         }
     }
-    if (!mcp_mgr) mcp_mgr = std::make_shared<mcp::Manager>(std::vector<mcp::ServerSpec>{});
-
-    orch->set_mcp_invoker(
-        [mcp_mgr](const std::string& kind, const std::string& args) -> std::string {
-            // /mcp tools  [server]
-            // /mcp call   <server> <tool> [json_args]
-            //
-            // The /mcp slash dispatcher in commands.cpp normalises `kind`
-            // to "tools" or "call" and hands us the rest of the line as
-            // `args`.  We're responsible for parsing args and rendering
-            // the response body.
-            auto trim = [](std::string s) {
-                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
-                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
-                return s;
-            };
-
-            if (kind == "tools") {
-                std::string server = trim(args);
-                auto names = mcp_mgr->server_names();
-                if (names.empty()) {
-                    return "(no MCP servers configured for this deployment — "
-                           "set mcp_servers_path in ApiServerOptions and add an entry "
-                           "in the registry JSON.  See docs/api/concepts/mcp.md.)\n";
-                }
-                std::ostringstream out;
-                std::vector<std::string> targets;
-                if (server.empty()) {
-                    targets = names;
-                } else if (mcp_mgr->has(server)) {
-                    targets.push_back(server);
-                } else {
-                    out << "ERR: no MCP server '" << server << "' configured. "
-                        << "Available: ";
-                    for (size_t i = 0; i < names.size(); ++i) {
-                        if (i) out << ", ";
-                        out << names[i];
-                    }
-                    out << "\n";
-                    return out.str();
-                }
-                for (auto& s : targets) {
-                    out << "[" << s << "]\n";
-                    try {
-                        auto& cli = mcp_mgr->client(s);
-                        auto& tools = cli.tools();
-                        if (tools.empty()) {
-                            out << "  (server returned no tools)\n";
-                        }
-                        for (auto& t : tools) {
-                            out << "  " << t.name;
-                            if (!t.description.empty()) {
-                                // First line of description only — the full
-                                // schema is verbose enough that an agent
-                                // querying tools should follow up with a
-                                // narrower /mcp tools <server> if it
-                                // already knows the namespace.
-                                std::string d = t.description;
-                                auto nl = d.find('\n');
-                                if (nl != std::string::npos) d.resize(nl);
-                                if (d.size() > 120) { d.resize(117); d += "..."; }
-                                out << " — " << d;
-                            }
-                            out << "\n";
-                        }
-                    } catch (const std::exception& e) {
-                        out << "  ERR: " << e.what() << "\n";
-                    }
-                }
-                return out.str();
-            }
-
-            if (kind == "call") {
-                // Parse: <server> <tool> [json_args]
-                std::istringstream iss(args);
-                std::string server, tool;
-                iss >> server >> tool;
-                std::string json_args;
-                std::getline(iss, json_args);
-                json_args = trim(json_args);
-
-                if (server.empty() || tool.empty()) {
-                    return "ERR: usage: /mcp call <server> <tool> [json_args]\n";
-                }
-                if (!mcp_mgr->has(server)) {
-                    auto names = mcp_mgr->server_names();
-                    std::ostringstream out;
-                    out << "ERR: no MCP server '" << server << "' configured.";
-                    if (!names.empty()) {
-                        out << " Available: ";
-                        for (size_t i = 0; i < names.size(); ++i) {
-                            if (i) out << ", ";
-                            out << names[i];
-                        }
-                    }
-                    out << "\n";
-                    return out.str();
-                }
-
-                std::shared_ptr<JsonValue> arg_obj;
-                if (!json_args.empty()) {
-                    try { arg_obj = json_parse(json_args); }
-                    catch (const std::exception& e) {
-                        return std::string("ERR: invalid JSON args: ") + e.what() + "\n";
-                    }
-                    if (!arg_obj || !arg_obj->is_object()) {
-                        return "ERR: tool args must be a JSON object (e.g. "
-                               "{\"url\":\"https://example.com\"})\n";
-                    }
-                }
-
-                try {
-                    auto& cli = mcp_mgr->client(server);
-                    auto result = cli.call_tool(tool, arg_obj);
-                    return mcp::render_tool_result(result);
-                } catch (const std::exception& e) {
-                    return std::string("ERR: ") + e.what() + "\n";
-                }
-            }
-
-            return "ERR: unknown /mcp subcommand";
-        });
 
     // ── Web search ────────────────────────────────────────────────────
     // /search <query> [top=N] dispatches against the configured provider.
@@ -5258,27 +6443,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // ERR rather than silently doing the wrong thing.  Captures the key
     // by value so a future request that reloads ApiServerOptions doesn't
     // race the in-flight lambda.
-    {
-        const std::string provider = opts.search_provider.empty()
-                                        ? std::string("brave")
-                                        : opts.search_provider;
-        const std::string key      = opts.search_api_key;
-        if (provider == "brave" && !key.empty()) {
-            orch->set_search_invoker(
-                [key](const std::string& query, int top_n) -> std::string {
-                    return brave_search(query, key, top_n);
-                });
-        } else if (!provider.empty() && provider != "brave" && !key.empty()) {
-            orch->set_search_invoker(
-                [provider](const std::string&, int) -> std::string {
-                    return "ERR: search provider '" + provider +
-                           "' is configured but not implemented in this "
-                           "build.  Only 'brave' is supported in v1.";
-                });
-        }
-        // No key ⇒ leave the invoker null; the dispatcher returns its own
-        // ERR with a more useful message ("web search unavailable…").
+    if (auto search_inv = make_search_invoker_callback(opts)) {
+        orch->set_search_invoker(std::move(search_inv));
     }
+    // No key / unsupported provider ⇒ leave the invoker null; the
+    // dispatcher returns its own ERR with a useful message.
 
     // ── Artifact store bridges ────────────────────────────────────────
     // Wire /write --persist, /read, and /list against TenantStore +
@@ -5288,127 +6457,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // surface a clear "no conversation context" warning + ephemeral
     // fallback for /write --persist.
     if (conversation_id > 0) {
-        const int64_t tid    = tenant.id;
-        const int64_t cid    = conversation_id;
-        TenantStore*  store  = &tenants;
-
         orch->set_artifact_writer(
-            [tid, cid, store](const std::string& raw_path,
-                                const std::string& content) -> std::string {
-                std::string err;
-                auto canonical = sanitize_artifact_path(raw_path, err);
-                if (!canonical) {
-                    return std::string("ERR: invalid path: ") + err;
-                }
-                // mime_type stays default ('application/octet-stream') —
-                // the agent doesn't know what to declare and we don't
-                // sniff in v1.  HTTP callers can set it explicitly via
-                // the POST endpoint.
-                auto put = store->put_artifact(tid, cid, *canonical,
-                                                 content, std::string{});
-                std::ostringstream out;
-                switch (put.status) {
-                    case PutArtifactResult::Status::Created:
-                    case PutArtifactResult::Status::Updated:
-                        out << (put.status == PutArtifactResult::Status::Created
-                                ? "OK: persisted "
-                                : "OK: updated ")
-                            << put.record->size << " bytes (artifact #"
-                            << put.record->id << ", "
-                            << put.conversation_used_bytes << " of "
-                            << kArtifactPerConversationMaxBytes
-                            << " bytes used in this conversation)";
-                        break;
-                    case PutArtifactResult::Status::QuotaExceeded:
-                        out << "ERR: " << put.error_msg;
-                        break;
-                    case PutArtifactResult::Status::PathRejected:
-                        out << "ERR: " << put.error_msg;
-                        break;
-                }
-                return out.str();
-            });
-
+            make_artifact_writer_callback(tenant.id, conversation_id, &tenants));
         orch->set_artifact_reader(
-            [tid, cid, store](const std::string& raw_path,
-                                int64_t artifact_id,
-                                int64_t via_memory_id) -> std::string {
-                // Path-form: same-conversation lookup.  Sanitiser gates
-                // bad paths before we touch the DB.
-                if (artifact_id == 0) {
-                    std::string err;
-                    auto canonical = sanitize_artifact_path(raw_path, err);
-                    if (!canonical) return std::string("ERR: invalid path: ") + err;
-
-                    auto meta = store->get_artifact_meta_by_path(tid, cid, *canonical);
-                    if (!meta) {
-                        return std::string("ERR: '") + *canonical +
-                               "' not found in this conversation's artifacts";
-                    }
-                    auto blob = store->get_artifact_content(tid, meta->id);
-                    if (!blob) {
-                        return std::string("ERR: artifact #") +
-                               std::to_string(meta->id) + " content missing";
-                    }
-                    return *blob;
-                }
-
-                // Id-form: tenant-scoped lookup.  Cross-conversation
-                // reads require a `via=mem:<id>` capability that points
-                // at this artifact_id from a memory entry the tenant
-                // owns.  Same-conversation reads are allowed without
-                // citation — same trust boundary as path-form.
-                auto art = store->get_artifact_meta(tid, artifact_id);
-                if (!art) {
-                    return std::string("ERR: artifact #") +
-                           std::to_string(artifact_id) +
-                           " not found for this tenant";
-                }
-                if (art->conversation_id != cid) {
-                    if (via_memory_id == 0) {
-                        return std::string("ERR: artifact #") +
-                               std::to_string(artifact_id) +
-                               " is in a different conversation; cite the "
-                               "memory entry that links it: "
-                               "/read #" + std::to_string(artifact_id) +
-                               " via=mem:<entry_id>";
-                    }
-                    auto mem = store->get_entry(tid, via_memory_id);
-                    if (!mem) {
-                        return std::string("ERR: via=mem:") +
-                               std::to_string(via_memory_id) +
-                               " — memory entry not found for this tenant";
-                    }
-                    if (mem->artifact_id != artifact_id) {
-                        return std::string("ERR: memory entry #") +
-                               std::to_string(via_memory_id) +
-                               " does not reference artifact #" +
-                               std::to_string(artifact_id) +
-                               " (its artifact_id=" +
-                               std::to_string(mem->artifact_id) + ")";
-                    }
-                }
-                auto blob = store->get_artifact_content(tid, artifact_id);
-                if (!blob) {
-                    return std::string("ERR: artifact #") +
-                           std::to_string(artifact_id) +
-                           " content missing";
-                }
-                return *blob;
-            });
-
+            make_artifact_reader_callback(tenant.id, conversation_id, &tenants));
         orch->set_artifact_lister(
-            [tid, cid, store]() -> std::string {
-                auto rows = store->list_artifacts_conversation(tid, cid, 200);
-                if (rows.empty()) return std::string{};
-                std::ostringstream out;
-                for (auto& r : rows) {
-                    out << r.path << "  (" << r.size
-                        << " bytes, mime=" << r.mime_type
-                        << ", id=" << r.id << ")\n";
-                }
-                return out.str();
-            });
+            make_artifact_lister_callback(tenant.id, conversation_id, &tenants));
     }
 
     // ── Fleet lifecycle ────────────────────────────────────────────────
@@ -5944,6 +6998,14 @@ void ApiServer::handle_connection(int fd) {
         return;
     }
 
+    // A2A well-known discovery — unauth, returns a top-level stub
+    // describing how to authenticate for per-agent cards.  Sits ahead of
+    // the bearer check so spec-compliant clients can dial in cold.
+    if (req.method == "GET" && req.path == "/.well-known/agent-card.json") {
+        handle_a2a_well_known_card(fd, req, opts_);
+        return;
+    }
+
     // Admin routes have their own auth (admin token, not tenant tokens).
     // Matched by prefix so /v1/admin, /v1/admin/tenants, /v1/admin/usage?…
     // all funnel into handle_admin, which sub-dispatches.
@@ -6153,6 +7215,46 @@ void ApiServer::handle_connection(int fd) {
             }
             write_plain_response(fd, 404, "Not Found",
                                   "artifact route not found\n");
+            return;
+        }
+    }
+
+    // ── A2A protocol surface ─────────────────────────────────────────────
+    // GET  /v1/a2a/agents/:id/agent-card.json   — per-agent card (PR-1)
+    // POST /v1/a2a/agents/:id                   — JSON-RPC dispatch (PR-2..)
+    {
+        const auto segs = split_path(req.path);
+        if (segs.size() >= 4 && segs[0] == "v1" && segs[1] == "a2a"
+            && segs[2] == "agents") {
+            const std::string agent_id = segs[3];
+            if (agent_id.empty()) {
+                write_plain_response(fd, 400, "Bad Request", "agent id missing\n");
+                return;
+            }
+            if (segs.size() == 5 && segs[4] == "agent-card.json") {
+                if (req.method != "GET") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                handle_a2a_agent_card_get(fd, agent_id, req, opts_,
+                                           tenants_, *tenant);
+                return;
+            }
+            // POST /v1/a2a/agents/:id → JSON-RPC dispatch.  Every method
+            // for this URL funnels through handle_a2a_rpc which writes
+            // exactly one JSON-RPC envelope (success or error) back.
+            if (segs.size() == 4) {
+                if (req.method != "POST") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                handle_a2a_rpc(fd, agent_id, req, opts_, tenants_,
+                                in_flight_, *tenant);
+                return;
+            }
+            write_plain_response(fd, 404, "Not Found", "a2a route not found\n");
             return;
         }
     }

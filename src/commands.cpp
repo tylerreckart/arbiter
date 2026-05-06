@@ -87,6 +87,20 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = line.substr(5);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
+        } else if (line.size() > 5 && line.substr(0, 5) == "/a2a ") {
+            // /a2a list                — enumerate configured remote agents
+            // /a2a card <name>         — render one agent's card
+            // /a2a call <name> <msg>   — synchronous send_message call
+            AgentCommand cmd;
+            cmd.name = "a2a";
+            cmd.args = line.substr(5);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+        } else if (line == "/a2a list") {
+            AgentCommand cmd;
+            cmd.name = "a2a";
+            cmd.args = "list";
+            result.push_back(std::move(cmd));
+
         } else if (line.size() > 14 && line.substr(0, 14) == "/mem add entry") {
             // Block form: /mem add entry <type> <title> [--artifact #<id>]
             //             <content body, multi-line>
@@ -1322,6 +1336,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ArtifactWriter artifact_writer,
                                    ArtifactReader artifact_reader,
                                    ArtifactLister artifact_lister,
+                                   A2AInvoker     a2a_invoker,
                                    const std::vector<std::string>& capabilities) {
     std::ostringstream out;
     out << "\n";
@@ -1368,6 +1383,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 allowed_bundles.insert("delegation");
             else if (cap == "/mcp")
                 allowed_bundles.insert("mcp");
+            else if (cap == "/a2a")
+                allowed_bundles.insert("a2a");
             else if (cap == "/advise")
                 allowed_bundles.insert("advise");
         }
@@ -1381,6 +1398,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         if (name == "mem")                                           return "mem";
         if (name == "agent" || name == "parallel" || name == "pane") return "delegation";
         if (name == "mcp")                                           return "mcp";
+        if (name == "a2a")                                           return "a2a";
         if (name == "advise")                                        return "advise";
         return "";   // "help" and unknowns are always allowed
     };
@@ -1665,6 +1683,52 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     cache_result = false;
             }
             block << "[END MCP]\n\n";
+
+        } else if (cmd.name == "a2a") {
+            // /a2a list                — list configured remote agents
+            // /a2a card <name>         — render one remote agent's card
+            // /a2a call <name> <msg>   — synchronous send to remote agent
+            //
+            // The body cap mirrors /mcp's because remote agent responses
+            // can be similarly chunky (long-form research summaries, tool
+            // pipelines).  Errors from the remote come back as ERR: which
+            // the dispatcher refuses to cache so a retry can succeed.
+            std::istringstream iss(cmd.args);
+            std::string subcmd;
+            iss >> subcmd;
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+
+            std::string callback_kind;
+            if      (subcmd == "list") callback_kind = "list";
+            else if (subcmd == "card") callback_kind = "card";
+            else if (subcmd == "call") callback_kind = "call";
+
+            block << "[/a2a " << subcmd
+                  << (rest.empty() ? "" : " " + rest) << "]\n";
+            if (callback_kind.empty()) {
+                block << "ERR: usage: /a2a list  OR  /a2a card <name>  OR  "
+                         "/a2a call <name> <message>\n";
+                cache_result = false;
+            } else if (!a2a_invoker) {
+                block << "ERR: A2A unavailable in this context — only the "
+                         "HTTP API spawns the per-request remote-agent "
+                         "manager.  Adapt: drop the /a2a step or run under "
+                         "/v1/orchestrate.\n";
+                cache_result = false;
+            } else {
+                std::string body = a2a_invoker(callback_kind, rest);
+                if (body.size() > kPerFetchLimit) {
+                    body.resize(kPerFetchLimit);
+                    body += "\n... [truncated]";
+                }
+                block << body;
+                if (body.empty() || body.back() != '\n') block << "\n";
+                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
+            }
+            block << "[END A2A]\n\n";
 
         } else if (cmd.name == "mem") {
             std::istringstream iss(cmd.args);

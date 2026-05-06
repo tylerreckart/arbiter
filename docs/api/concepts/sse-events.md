@@ -51,8 +51,13 @@ When the configured billing service (via `ARBITER_BILLING_URL`) rejects the requ
 
 No turns run. A transport error to the billing service fails open — the runtime proceeds rather than blocking on a billing-service blip.
 
+## A2A streaming uses a different event shape
+
+Spec-compatible A2A clients hit [`POST /v1/a2a/agents/:id`](../a2a/dispatch.md) and receive [Agent2Agent v1.0](a2a.md) `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent` frames inside JSON-RPC envelopes — not the arbiter-native events documented above. The two surfaces share the same orchestrator under the hood; the A2A handler translates internal events into spec-compliant frames at the wire boundary. See [A2A protocol → streaming event mapping](a2a.md#streaming-event-mapping) for the table.
+
 ## See also
 
+- [A2A protocol](a2a.md) — the Agent2Agent counterpart to this catalog.
 - [Fleet streaming](fleet-streaming.md)
 - [Advisor](advisor.md) — gate signal grammar, modes, redirect budget.
 - [`POST /v1/orchestrate`](../orchestrate.md)

@@ -96,6 +96,23 @@ public:
     // contexts don't spawn MCP servers.
     void set_mcp_invoker(MCPInvoker cb) { mcp_invoker_cb_ = std::move(cb); }
 
+    // Bridge to the per-request A2A remote-agent manager.  /a2a list|card|call
+    // routes through this callback; the API server owns the a2a::Manager
+    // backing it, just like MCP.  Without this set, /a2a returns ERR.
+    void set_a2a_invoker(A2AInvoker cb) { a2a_invoker_cb_ = std::move(cb); }
+
+    // Inject a roster of remote A2A agents into the master orchestrator's
+    // turn preamble.  When set, every /v1/orchestrate (and /v1/a2a)
+    // invocation against `index` sees the configured remote agents in
+    // the same place as the local agent catalog, so it can choose to
+    // delegate via /a2a call <name> alongside /agent <local>.  Empty
+    // string suppresses the section.  Wired by the API server from
+    // a2a::Manager::cards(); CLI/REPL contexts leave it null.
+    using RemoteRosterProvider = std::function<std::string()>;
+    void set_remote_roster_provider(RemoteRosterProvider cb) {
+        remote_roster_cb_ = std::move(cb);
+    }
+
     // DB-backed file-scratchpad bridge.  /mem read|write|clear and
     // /mem shared read|write|clear route through this callback when set;
     // otherwise they fall back to the filesystem (~/.arbiter/memory/...).
@@ -335,6 +352,8 @@ private:
     StructuredMemoryReader structured_memory_reader_cb_;
     StructuredMemoryWriter structured_memory_writer_cb_;
     MCPInvoker         mcp_invoker_cb_;
+    A2AInvoker         a2a_invoker_cb_;
+    RemoteRosterProvider remote_roster_cb_;
     MemoryScratchpadInvoker memory_scratchpad_cb_;
     SearchInvoker      search_invoker_cb_;
     ArtifactWriter     artifact_writer_cb_;
