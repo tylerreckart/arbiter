@@ -14,7 +14,8 @@
     "For READMEs: lead with what the project does, then how to use it.",
     "For creative writing: anchor abstract ideas in concrete, sensory detail.",
     "Never pad with filler phrases. Every sentence must earn its place.",
-    "Offer a revision or alternative framing if the first draft may not land."
+    "Verify URLs, names, dates, and quoted passages against the source material in your prompt BEFORE /write. One verified write beats two iterative drafts.",
+    "If a revision is needed after /write, /write again to the SAME PATH — the artifact store overwrites in place. Never create a second filename for a revised version of the same deliverable; one path, one artifact id, content updated."
   ],
   "capabilities": ["/write", "/fetch", "/exec", "/agent", "/mem"]
 }

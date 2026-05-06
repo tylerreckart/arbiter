@@ -8,135 +8,77 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
-- **Agent2Agent (A2A) protocol v1.0 support — both directions.**
-  Inbound: every tenant agent is reachable as an A2A endpoint via
-  `POST /v1/a2a/agents/:id` (JSON-RPC `message/send`, `message/stream`,
-  `tasks/get`, `tasks/cancel`); each agent's `AgentCard` is published at
-  `GET /v1/a2a/agents/:id/agent-card.json`, with an unauth top-level
-  discovery stub at `GET /.well-known/agent-card.json`. Outbound:
-  arbiter agents can call remote A2A agents listed in
-  `~/.arbiter/a2a_agents.json` via the new `/a2a list|card|call` slash
-  command. The master orchestrator's preamble injects a
-  `REMOTE A2A AGENTS` block alongside the local `AGENTS` roster so
-  `index` can route to either side from the same routing decision.
-  Tasks persist in a new `a2a_tasks` SQLite table; cancel hooks into
-  the existing `InFlightRegistry` so `tasks/cancel` and
-  `POST /v1/requests/:id/cancel` resolve through the same handle.
-  Spec stance: v1.0 only; other versions rejected with
-  `VersionNotSupportedError` (-32007). `tasks/resubscribe` and push
-  notifications are deferred to v2; A2A `contextId` is currently not
-  mapped to conversation rows so `/write --persist`, `/read`, and
-  `/list` are unwired for A2A sessions (files still flow as
-  `TaskArtifactUpdateEvent` frames). See
-  [`docs/api/concepts/a2a.md`](docs/api/concepts/a2a.md) and
-  [`docs/cli/a2a-agents.md`](docs/cli/a2a-agents.md).
-- **`public_base_url` server option** for TLS-fronted deploys —
-  determines the `url` field arbiter advertises in agent cards. Falls
-  back to `http://<Host header>` when unset.
-- **NEAR proximity in memory FTS queries**. For 2-to-6-token queries the
-  FTS expression now emits a `NEAR("t1" "t2" ..., 8)` clause between
-  the strict phrase and the OR fallback. Bridges the precision/recall
-  gap — rows where tokens appear within 8 word positions of each other
-  score above pure bag-of-words without a new index.
-- **Score-aware (RRF) graduated merge**. `search_entries_graduated`
-  now reciprocal-rank-fuses the conversation-scoped and tenant-wide
-  passes (conv. weight 1.5, tenant weight 1.0, k=60) instead of
-  appending-with-dedupe. A strong tenant-wide hit can outrank a weak
-  conversation-local one, fixing the multi-session retrieval case
-  where the answer lives in another conversation. Pool widened to
-  `max(3·cap, 50)` so fusion has overlap.
-- **Rerank prompt enrichment**. Each candidate row in the rerank
-  prompt now carries `(type · YYYY-MM-DD · superseded YYYY-MM-DD)`
-  metadata (when fields are set). The reranker can pick the
-  most-recent non-superseded entry on temporal/knowledge-update
-  questions, prefer a typed entry that matches the question's intent,
-  and skip explicitly invalidated rows. Mirrors the same metadata
-  surface in `fmt_entry_line` so agents see what the reranker sees.
-- **Question-intent routing** on `GET /v1/memory/entries` and the
-  agent-side `/mem search`. Heuristic regex classifier maps cue words
-  to memory-entry type boosts via the existing 1.3× BM25 multiplier.
-  Cue → type map: preference cues → `user`/`feedback`,
-  reference cues → `reference`, learning cues → `learning`,
-  temporal cues → `project`. Caller-supplied `type=` always wins.
-  Disable via `?intent=off` (HTTP) or `memory.intent_routing=false`
-  (agent). Zero LLM cost.
-- **Query expansion via `?expand=<model>`** on the HTTP entries
-  endpoint, opt-in per request. Server calls the model once to
-  generate 2 paraphrases of the query, runs all 3 variants through
-  the full FTS pipeline, and reciprocal-rank-fuses the rankings
-  (original at 1.0, paraphrases at 0.7). No-embedding alternative to
-  dense retrieval — closes the recall gap on paraphrased queries.
-  Failures (advisor unavailable, unparseable response) are benign:
-  search proceeds with the original query alone and surfaces a `note`
-  in the new `expansion` response block.
-- **Auto-tagging via `auto_tag=<model>`** in the `POST /v1/memory/entries`
-  body. Advisor extracts 2-4 lowercase hyphenated topical tags from
-  `title` + `content`; merged into caller-supplied tags. Tags carry
-  an 8× BM25 weight, so this is the single cheapest way to lift
-  retrieval signal on agent ingest paths that would otherwise leave
-  tags empty. Surfaced in the response's `auto_tag` block.
-- **Auto-supersession via `supersede=<model>`** in the entry-create
-  body. After the new entry is persisted, the advisor inspects the
-  top-5 same-type FTS hits on the new title for direct contradictions
-  and stamps `valid_to=now()` on flagged ids. Conservative prompt
-  ("when in doubt, prefer 'none'") to bias against false positives.
-  Surfaces inspected `candidates` and `invalidated` ids in the
-  response's `supersede` block.
-- **`created_at` override** in `POST /v1/memory/entries` body. Accepts
-  epoch seconds (preferred) or milliseconds (auto-detected). Sets
-  `created_at`, `updated_at`, and `valid_from` to the override.
-  Backfilling historical transcripts now produces entries with their
-  real authored timestamps so temporal queries see them at the right
-  point in time rather than ingest time.
-- **Per-agent `MemoryConfig`** in agent JSON. New `memory` block on
-  the constitution carries four toggles:
-  - `intent_routing` (default `true`) — heuristic intent boost on `/mem search`
-  - `search_expand` (default `false`) — query expansion on `/mem search`
-  - `auto_tag` (default `false`) — advisor-extracted tags on `/mem add entry`
-  - `auto_supersede` (default `false`) — advisor-driven invalidation on contradictory writes
-  Agents whose `memory.search_expand` / `auto_tag` / `auto_supersede`
-  is on get advisor-driven memory enrichment automatically on every
-  `/mem` operation, transparent to the agent's own reasoning loop.
-  All shipped agents (`backend`, `devops`, `frontend`, `marketer`,
-  `planner`, `research`, `reviewer`, `social`, `writer`) now have
-  `/mem` in capabilities; the four with advisors configured (backend,
-  devops, frontend, research) opt in to all three advisor-driven
-  toggles.
-- **Date and supersession markers in `/mem entries` and `/mem entry`
-  output**. `fmt_entry_line` now renders
-  `- #42  [project] (YYYY-MM-DD · superseded YYYY-MM-DD)  Title …`
-  when fields are set. Agents reasoning about recency or "what was
-  true when" no longer need an extra `/mem entry` round trip.
+- **Agent2Agent (A2A) v1.0 protocol — both directions.** Tenant agents are
+  reachable as A2A endpoints at `POST /v1/a2a/agents/:id`
+  (`message/send`, `message/stream`, `tasks/get`, `tasks/cancel`);
+  per-agent `AgentCard`s served at
+  `GET /v1/a2a/agents/:id/agent-card.json` with an unauth discovery stub
+  at `/.well-known/agent-card.json`. Outbound: arbiter agents call remote
+  A2A agents listed in `~/.arbiter/a2a_agents.json` via a new
+  `/a2a list|card|call` slash command, surfaced to the master orchestrator
+  alongside the local agent roster. Tasks persist in a new `a2a_tasks`
+  table; cancel reuses the in-flight registry so `tasks/cancel` and
+  `POST /v1/requests/:id/cancel` resolve through the same handle. v1.0
+  only; `tasks/resubscribe` and push notifications deferred. See
+  [`docs/api/concepts/a2a.md`](docs/api/concepts/a2a.md).
+- `public_base_url` server option for TLS-fronted deploys; falls back to
+  the `Host` header otherwise.
 
 ### Changed
-- `StructuredMemoryWriter` callback signature gained a fourth
-  parameter `caller_id` (mirrors the `StructuredMemoryReader`
-  signature). Consumers that don't need per-agent behavior can ignore
-  the parameter; the HTTP server's writer closure now reads the
-  caller's Constitution to decide whether `auto_tag` / `auto_supersede`
-  fire on the write. Test stubs updated.
-- `TenantStore::create_entry` gained an optional
-  `created_at_override` parameter (defaulted to 0 = wall-clock). All
-  existing callers continue to compile unchanged.
+- Tool callbacks (memory scratchpad, structured memory, MCP, search,
+  artifacts) factored into shared factories so `/v1/orchestrate` and the
+  new A2A handlers install identical behaviour from one source.
 
-### Bench
-- LongMemEval ingest now consumes per-session `haystack_dates` from
-  the dataset and stamps each turn at `session_date + 60·turn_idx`
-  via the new `created_at` override. Without dated entries, every
-  ingested row shared the ingest-time timestamp and temporal-reasoning
-  questions had no signal to ground against.
-- `grade.py` `format_context` now annotates each retrieved entry with
-  its session marker and authored date. `--top-k` default raised
-  5 → 10 (R@10 ≈ 92% vs R@5 ≈ 90%). Per-entry truncation 800 → 2000
-  chars (matches what the reranker fine-pass sees server-side).
-  Generator system prompt softened — abstain on "clearly does not
-  contain the answer" rather than "does not contain", with a positive
-  nudge to answer when the memory supports an inference.
-- `query.py` now plumbs `created_at`, `source`, `valid_from`,
-  `valid_to`, and `conversation_id` through to `grade.py`. New
-  `--expand-model` flag exercises the query expansion path.
-- README headline command updated to recommend Sonnet generator,
-  `--rerank-fine-model`, top-k=10, and (optionally) `--expand-model`.
+## [0.4.2] — 2026-05-06
+
+### Added
+- **Memory retrieval overhaul.** FTS scoring now reciprocal-rank-fuses
+  conversation-scoped and tenant-wide passes (conv. weight 1.5, tenant
+  1.0, k=60), adds a `NEAR(…, 8)` clause for 2–6-token queries, and
+  threads type / authored-date / supersession into the rerank prompt and
+  `/mem entries` output.
+- Advisor-driven enrichment on `/v1/memory/entries`: opt-in query
+  expansion (`?expand=<model>`), auto-tagging (`auto_tag=<model>`), and
+  auto-supersession (`supersede=<model>`). All benign on failure — search
+  and writes proceed if the advisor is unreachable or returns garbage.
+- Question-intent routing: regex classifier maps cue words to entry-type
+  boosts (1.3× BM25). Zero LLM cost. Default on; disable via
+  `?intent=off` (HTTP) or `memory.intent_routing=false` (agent).
+- `created_at` override on entry create — backfills historical transcripts
+  with their real authored timestamps so temporal queries land at the
+  right point in time.
+- Per-agent `MemoryConfig` block on the constitution
+  (`intent_routing` / `search_expand` / `auto_tag` / `auto_supersede`).
+  The four shipped agents with advisors (`backend`, `devops`, `frontend`,
+  `research`) opt in to all three advisor-driven toggles by default.
+
+### Changed
+- `StructuredMemoryWriter` callback gained a `caller_id` parameter so the
+  HTTP writer can read the caller's Constitution and decide whether
+  `auto_tag` / `auto_supersede` fire on the write.
+- LongMemEval bench: per-session `haystack_dates` ingested as real
+  timestamps; rerank top-k default 5 → 10; query / grade pipelines now
+  surface authored dates and conversation ids.
+
+## [0.4.1] — 2026-05-03
+
+### Added
+- **Advisor SSE event surface.** New `escalation` event signals
+  out-of-band advisor halts; new `advisor` event reports every gate
+  decision (`consult` / `gate_continue` / `gate_redirect` / `gate_halt` /
+  `gate_budget`) with the executor's terminating-turn preview so a
+  consumer can diagnose redirects without spelunking the transcript.
+  Orchestrator hooks: `set_escalation_callback`,
+  `set_advisor_event_callback`.
+
+### Changed
+- Tighter executor↔advisor handshake: redirect-budget plumbing,
+  malformed-signal handling (`advisor.malformed_halts` defaults closed),
+  consistent terminating-turn previews on every gate event.
+- Starter agents (`agents/*.json`) are now embedded into the binary at
+  build time via `cmake/embed_starters.cmake` instead of duplicated in
+  C++ source — single source of truth across `arbiter --init` and the
+  first-run wizard.
 
 ## [0.4.0] — 2026-04-30
 

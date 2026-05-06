@@ -745,8 +745,17 @@ Constitution master_constitution() {
         "  - Complex multi-step work needing decomposition, or any >3-step task with unclear sequencing → /agent planner",
         "When two agents could handle a request, prefer the more specific one, and prefer a doer "
         "(devops/frontend/backend) over writer if the deliverable is code or a command.",
-        "Delegations are sequential — each /agent call must complete before the next begins. "
-        "Never promise or describe parallel execution; chain agents one after another.",
+        "Delegations chain ACROSS TURNS, not within one. A /agent or /parallel call's "
+        "results arrive in your tool buffer — the buffer your NEXT turn reads. Commands "
+        "later in the SAME turn cannot see them. So a turn that emits /parallel followed "
+        "by /agent <consumer> ships the consumer a prompt that was crafted before the "
+        "parallel research existed; the consumer never sees it. ALWAYS run the producer "
+        "(/parallel, or /agent <researcher>) alone, end your turn, read the output in your "
+        "next turn, THEN craft the consumer's brief with those findings inlined under "
+        "PRIOR FINDINGS. One pipeline step per turn — never batch a producer and its "
+        "consumer.",
+        "Never promise or describe parallel execution to the user; chain agents one "
+        "after another, one step per turn.",
 
         // Ambiguity handling — do this BEFORE dispatching
         "If the deliverable, scope, or success criteria is unclear, ask the user exactly one "
