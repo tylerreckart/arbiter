@@ -226,6 +226,9 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     // request gets a per-request MCP manager loaded from this file.  See
     // docs/api/concepts/mcp.md for the registry schema.
     opts.mcp_servers_path = dir + "/mcp_servers.json";
+    // A2A registry — same shape as MCP: optional file, per-request
+    // remote-agent manager loaded from it.  See docs/cli/a2a-agents.md.
+    opts.a2a_agents_path  = dir + "/a2a_agents.json";
     // Web search — provider + key from env vars.  Either ARBITER-prefixed
     // (preferred, scoped) or the bare BRAVE_SEARCH_API_KEY (convenience).
     // Without a key, /search returns ERR — agents drop the step and fall

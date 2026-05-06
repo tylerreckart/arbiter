@@ -271,6 +271,19 @@ using SearchInvoker = std::function<std::string(const std::string& query,
 using MCPInvoker = std::function<std::string(const std::string& kind,
                                               const std::string& args)>;
 
+// Bridge to the per-request A2A remote-agent manager.  Drives the
+// agent-facing /a2a slash surface:
+//   /a2a list                — list all configured remote agents
+//   /a2a card <name>         — render one remote agent's card (skills, description)
+//   /a2a call <name> <msg>   — synchronous send_message to a remote agent
+// The callback receives (kind, rest-of-line) and returns the body for
+// the [/a2a ...] tool-result block.  Like MCPInvoker, the orchestrator
+// owns the manager whose state dies with the request.  Without the
+// callback the dispatcher returns ERR explaining /a2a is unavailable
+// in the current context.
+using A2AInvoker = std::function<std::string(const std::string& kind,
+                                              const std::string& args)>;
+
 // True if `cmd` matches a pattern we always want to confirm before exec'ing
 // (rm, rm -rf, redirects, sudo, mkfs, git force-push, find -delete, etc.).
 // Conservative — misses creative destruction, but catches the common footguns.
@@ -307,6 +320,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ArtifactWriter artifact_writer = nullptr,
                                    ArtifactReader artifact_reader = nullptr,
                                    ArtifactLister artifact_lister = nullptr,
+                                   A2AInvoker     a2a_invoker     = nullptr,
                                    // Capability allowlist matching the
                                    // calling agent's constitution.  Empty
                                    // = "all bundles" (preserves legacy

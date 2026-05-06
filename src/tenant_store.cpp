@@ -770,6 +770,36 @@ void TenantStore::open(const std::string& path) {
              WHERE artifact_id = OLD.id;
         END;
     )SQL");
+
+    // ── A2A task store (added in v9 for /v1/a2a/agents/:id) ────────────
+    // One row per A2A message/send or message/stream invocation.  task_id
+    // is the same value as the arbiter request_id stamped into the
+    // InFlightRegistry, so /v1/requests/:id/cancel and tasks/cancel
+    // both resolve through the same handle.  context_id is opaque from
+    // arbiter's perspective — it threads through the protocol verbatim
+    // and is not foreign-keyed against conversations (PR-4).
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS a2a_tasks (
+            task_id            TEXT    PRIMARY KEY,
+            tenant_id          INTEGER NOT NULL,
+            agent_id           TEXT    NOT NULL,
+            context_id         TEXT    NOT NULL DEFAULT '',
+            state              TEXT    NOT NULL,
+            created_at         INTEGER NOT NULL,
+            updated_at         INTEGER NOT NULL,
+            final_message_json TEXT    NOT NULL DEFAULT '',
+            error_message      TEXT    NOT NULL DEFAULT '',
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS a2a_tasks_tenant_updated
+            ON a2a_tasks(tenant_id, updated_at DESC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS a2a_tasks_context
+            ON a2a_tasks(tenant_id, context_id);
+    )SQL");
 }
 
 TenantStore::CreatedTenant
@@ -1794,6 +1824,78 @@ bool TenantStore::delete_agent_record(int64_t tenant_id,
     q.bind(2, agent_id);
     q.step();
     return sqlite3_changes(db_) > 0;
+}
+
+// ── A2A task store ─────────────────────────────────────────────────────
+
+void TenantStore::create_a2a_task(int64_t tenant_id,
+                                    const std::string& task_id,
+                                    const std::string& agent_id,
+                                    const std::string& context_id,
+                                    const std::string& state) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    const int64_t ts = now_epoch();
+    Stmt q(db_,
+        "INSERT INTO a2a_tasks "
+        "(task_id, tenant_id, agent_id, context_id, state, "
+        " created_at, updated_at, final_message_json, error_message) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, '', '');");
+    q.bind(1, task_id);
+    q.bind(2, tenant_id);
+    q.bind(3, agent_id);
+    q.bind(4, context_id);
+    q.bind(5, state);
+    q.bind(6, ts);
+    q.bind(7, ts);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert a2a_task");
+}
+
+bool TenantStore::update_a2a_task(int64_t tenant_id,
+                                    const std::string& task_id,
+                                    const std::string& state,
+                                    const std::string& final_message_json,
+                                    const std::string& error_message) {
+    if (!db_) return false;
+    const int64_t ts = now_epoch();
+    Stmt q(db_,
+        "UPDATE a2a_tasks "
+        "   SET state = ?, updated_at = ?, "
+        "       final_message_json = ?, error_message = ? "
+        " WHERE tenant_id = ? AND task_id = ?;");
+    q.bind(1, state);
+    q.bind(2, ts);
+    q.bind(3, final_message_json);
+    q.bind(4, error_message);
+    q.bind(5, tenant_id);
+    q.bind(6, task_id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+std::optional<TenantStore::A2aTaskRecord>
+TenantStore::get_a2a_task(int64_t tenant_id,
+                            const std::string& task_id) const {
+    if (!db_) return std::nullopt;
+    Stmt q(db_,
+        "SELECT task_id, tenant_id, agent_id, context_id, state, "
+        "       created_at, updated_at, final_message_json, error_message "
+        "  FROM a2a_tasks "
+        " WHERE tenant_id = ? AND task_id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, task_id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    A2aTaskRecord r;
+    r.task_id            = q.column_text(0);
+    r.tenant_id          = q.column_int64(1);
+    r.agent_id           = q.column_text(2);
+    r.context_id         = q.column_text(3);
+    r.state              = q.column_text(4);
+    r.created_at         = q.column_int64(5);
+    r.updated_at         = q.column_int64(6);
+    r.final_message_json = q.column_text(7);
+    r.error_message      = q.column_text(8);
+    return r;
 }
 
 // ── Agent file-scratchpad ──────────────────────────────────────────────

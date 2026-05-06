@@ -111,6 +111,13 @@ struct ApiServerOptions {
     // message).  See docs/api/concepts/mcp.md for the schema.
     std::string mcp_servers_path;
 
+    // Path to the A2A remote-agent registry JSON.  Empty (or missing
+    // file) ⇒ no remote agents configured; /a2a returns ERR with a
+    // clear message.  Schema: { "agents": { "<name>": { "url": "...",
+    // "auth": { "type": "bearer", "token_env": "..." } } } }.  See
+    // docs/cli/a2a-agents.md.
+    std::string a2a_agents_path;
+
     // Web-search provider config.  When `search_api_key` is non-empty
     // and the provider is recognized, /search <query> [top=N] dispatches
     // an HTTPS call against the provider's API.  Empty key ⇒ /search

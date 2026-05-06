@@ -162,6 +162,96 @@ AgentCard build_agent_card(const Constitution& cons,
     return c;
 }
 
+Message extract_send_message(const JsonValue& params) {
+    if (!params.is_object()) {
+        throw std::runtime_error("a2a parse: message/send.params: expected object");
+    }
+    auto m = params.get("message");
+    if (!m) {
+        throw std::runtime_error("a2a parse: message/send.params.message: required field missing");
+    }
+    return message_from_json(*m);
+}
+
+std::string concatenate_text_parts(const Message& m) {
+    // PR-2 only handles text parts.  Non-text parts (file/data) need the
+    // streaming + artifact pipeline that lands in PR-3, so for now we
+    // refuse them up front — silent drop would let a multi-modal client
+    // think arbiter saw the file when it didn't.
+    std::string out;
+    for (auto& p : m.parts) {
+        if (p.kind != "text") {
+            throw std::runtime_error("a2a: only text parts are supported in message/send "
+                                     "for v1; received kind='" + p.kind + "'");
+        }
+        if (!out.empty()) out += "\n";
+        out += p.text;
+    }
+    return out;
+}
+
+Task build_terminal_task(const std::string& task_id,
+                         const std::string& context_id,
+                         const std::string& agent_id,
+                         const Message& user_msg,
+                         const ApiResponse& response) {
+    Task t;
+    t.id         = task_id;
+    t.context_id = context_id;
+
+    // Stamp the task_id + context_id onto the user message so it threads
+    // correctly back to the client; the inbound copy may have omitted
+    // either field.  Spec allows the server to fill either in on
+    // synchronous response.
+    Message echoed = user_msg;
+    echoed.task_id    = task_id;
+    echoed.context_id = context_id;
+    t.history.push_back(std::move(echoed));
+
+    if (response.ok) {
+        // Build the assistant's reply as a single text part.  messageId is
+        // a fresh UUID-shaped token so the client can address this turn
+        // independently of the user's message id.  We don't emit a v4
+        // UUID here — task_id-derived suffixing is good enough for
+        // intra-task uniqueness.
+        Message reply;
+        reply.role        = "agent";
+        reply.message_id  = task_id + "-r";
+        reply.task_id     = task_id;
+        reply.context_id  = context_id;
+        Part p;
+        p.kind = "text";
+        p.text = response.content;
+        reply.parts.push_back(std::move(p));
+
+        t.status.state    = TaskState::completed;
+        t.status.message  = reply;
+        t.history.push_back(std::move(reply));
+    } else {
+        t.status.state = TaskState::failed;
+    }
+
+    // Thread arbiter-specific telemetry into metadata under x-arbiter.*
+    // Spec-aware clients ignore unknown keys; the metadata block is the
+    // documented escape hatch for vendor extensions.
+    auto md = jobj();
+    auto& mm = md->as_object_mut();
+    mm["x-arbiter.agent_id"]      = jstr(agent_id);
+    mm["x-arbiter.input_tokens"]  = jnum(static_cast<double>(response.input_tokens));
+    mm["x-arbiter.output_tokens"] = jnum(static_cast<double>(response.output_tokens));
+    if (!response.ok) {
+        mm["x-arbiter.error"] = jstr(response.error);
+        if (!response.error_type.empty()) {
+            mm["x-arbiter.error_type"] = jstr(response.error_type);
+        }
+    }
+    if (!response.stop_reason.empty()) {
+        mm["x-arbiter.stop_reason"] = jstr(response.stop_reason);
+    }
+    t.metadata = md;
+    return t;
+}
+
 AgentCard build_well_known_stub(const std::string& base_url) {
     AgentCard c;
     c.protocol_version = "1.0";

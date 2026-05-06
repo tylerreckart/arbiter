@@ -12,6 +12,8 @@
 #include "config.h"
 #include "constitution.h"
 #include "json.h"
+#include "a2a/event_translator.h"
+#include "a2a/manager.h"
 #include "a2a/server.h"
 #include "mcp/manager.h"
 #include "orchestrator.h"
@@ -1347,6 +1349,9 @@ void handle_a2a_agent_card_get(int fd, const std::string& agent_id,
                                        std::to_string(rec->updated_at));
     write_json_response(fd, 200, a2a::to_json(card));
 }
+
+// A2A JSON-RPC dispatch lives below `InFlightScope` (defined later in
+// this TU) — see "── A2A JSON-RPC dispatch" further down.
 
 // Validate an inbound agent_def body and pull out the (id, name, role,
 // model, canonical JSON) tuple we persist.  Wraps Constitution::from_json
@@ -3851,6 +3856,805 @@ const char* sanitised_provider_error_message(const char* code) {
     return "the upstream provider returned an error";
 }
 
+// ── A2A JSON-RPC dispatch (PR-2: message/send synchronous) ─────────────────
+//
+// Writes a single JSON-RPC response envelope to the wire.  All A2A errors
+// are reported as JSON-RPC error objects (HTTP 200 with `error.code`); we
+// only emit non-200 HTTP for malformed envelopes that can't be answered
+// in JSON-RPC form.  Sits below InFlightScope (defined above) because
+// handle_a2a_message_send constructs one to receive cancel signals.
+
+void write_a2a_rpc(int fd, const a2a::RpcResponse& r) {
+    write_json_response(fd, 200, a2a::to_json(r));
+}
+
+// Resolve the inbound contextId.  When the client supplied one we echo
+// it; otherwise we mint a fresh id so they can thread future requests.
+// PR-4 will tie this back to the conversations table; for now contextId
+// is ephemeral and not persisted.
+std::string resolve_a2a_context_id(const a2a::Message& msg) {
+    if (msg.context_id && !msg.context_id->empty()) return *msg.context_id;
+    return new_request_id();
+}
+
+// Format an a2a::Manager's configured remotes as a roster line block
+// suitable for splicing into the master orchestrator's turn preamble.
+// Empty string when no remotes are configured or no cards resolve.
+std::string format_a2a_remote_roster(a2a::Manager& mgr) {
+    auto names = mgr.agent_names();
+    if (names.empty()) return "";
+    std::ostringstream ss;
+    ss << "REMOTE A2A AGENTS — delegate with /a2a call <name> <message> "
+       << "(distinct trust boundary; no shared memory):\n";
+    bool any_resolved = false;
+    for (auto& name : names) {
+        ss << "  " << name;
+        try {
+            auto& card = mgr.client(name).card();
+            if (!card.description.empty()) ss << " — " << card.description;
+            // Tag with a few skill ids so the master can match by
+            // capability cheaply.  Cap to keep the block short.
+            if (!card.skills.empty()) {
+                ss << " (skills:";
+                int shown = 0;
+                for (auto& s : card.skills) {
+                    if (shown++ >= 5) { ss << ", …"; break; }
+                    ss << (shown == 1 ? " " : ", ") << s.id;
+                }
+                ss << ")";
+            }
+            any_resolved = true;
+        } catch (const std::exception&) {
+            ss << "  (card unavailable)";
+        }
+        ss << "\n";
+    }
+    return any_resolved ? ss.str() : "";
+}
+
+// Build the A2AInvoker callback for a request.  The lambda owns the
+// per-request a2a::Manager via shared_ptr so its lifetime is tied to
+// the orchestrator (which owns the lambda in turn).  Returns nullptr
+// when no registry is configured — the dispatcher then surfaces a
+// clean ERR explaining /a2a is unavailable.
+//
+// `roster_out` (when non-null) receives a function that formats the
+// same Manager's remote-agent roster.  Lets the caller wire both the
+// invoker and the system-prompt injection from one Manager instance,
+// which keeps card caches warm across both surfaces.
+A2AInvoker make_a2a_invoker(const ApiServerOptions& opts,
+                             Orchestrator::RemoteRosterProvider* roster_out = nullptr) {
+    if (opts.a2a_agents_path.empty()) return nullptr;
+    std::vector<a2a::RemoteAgentConfig> configs;
+    try {
+        configs = a2a::load_registry(opts.a2a_agents_path);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+            "[a2a] registry load failed at %s: %s\n",
+            opts.a2a_agents_path.c_str(), e.what());
+        return nullptr;
+    }
+    if (configs.empty()) return nullptr;
+
+    auto mgr = std::make_shared<a2a::Manager>(std::move(configs));
+
+    if (roster_out) {
+        *roster_out = [mgr]() -> std::string {
+            return format_a2a_remote_roster(*mgr);
+        };
+    }
+
+    return [mgr](const std::string& kind, const std::string& args) -> std::string {
+        if (kind == "list") {
+            auto names = mgr->agent_names();
+            if (names.empty()) return "no remote agents configured";
+            // Best-effort card fetch to surface descriptions; failures
+            // appear as `(card unavailable)` so the user knows the
+            // agent is registered but unreachable rather than missing.
+            std::ostringstream os;
+            os << "configured remote agents (" << names.size() << "):\n";
+            for (auto& name : names) {
+                os << "  " << name;
+                try {
+                    auto& card = mgr->client(name).card();
+                    if (!card.description.empty()) {
+                        os << " — " << card.description;
+                    }
+                    if (!card.skills.empty()) {
+                        os << "\n    skills:";
+                        for (auto& s : card.skills) {
+                            os << " " << s.id;
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    os << "  (card unavailable: " << e.what() << ")";
+                }
+                os << "\n";
+            }
+            return os.str();
+        }
+        if (kind == "card") {
+            const std::string name = args;
+            if (name.empty()) return "ERR: usage: /a2a card <name>";
+            if (!mgr->has(name)) {
+                return "ERR: no remote agent named '" + name + "' (try /a2a list)";
+            }
+            try {
+                auto& card = mgr->client(name).card();
+                std::ostringstream os;
+                os << "remote agent '" << card.name << "' (" << card.url << ")\n";
+                os << "  protocol: A2A " << card.protocol_version
+                   << ", version: " << card.version << "\n";
+                os << "  description: " << card.description << "\n";
+                if (!card.skills.empty()) {
+                    os << "  skills:\n";
+                    for (auto& s : card.skills) {
+                        os << "    - " << s.id;
+                        if (!s.name.empty() && s.name != s.id) os << " (" << s.name << ")";
+                        os << ": " << s.description << "\n";
+                    }
+                }
+                return os.str();
+            } catch (const std::exception& e) {
+                return std::string("ERR: card fetch failed: ") + e.what();
+            }
+        }
+        if (kind == "call") {
+            // Parse: <name> <message...>
+            auto sp = args.find(' ');
+            if (sp == std::string::npos) {
+                return "ERR: usage: /a2a call <name> <message>";
+            }
+            const std::string name    = args.substr(0, sp);
+            const std::string message = args.substr(sp + 1);
+            if (name.empty() || message.empty()) {
+                return "ERR: usage: /a2a call <name> <message>";
+            }
+            if (!mgr->has(name)) {
+                return "ERR: no remote agent named '" + name + "' (try /a2a list)";
+            }
+            a2a::Message msg;
+            msg.role       = "user";
+            msg.message_id = new_request_id();
+            a2a::Part p;
+            p.kind = "text";
+            p.text = message;
+            msg.parts.push_back(std::move(p));
+            try {
+                std::string err;
+                auto task = mgr->client(name).send_message(msg, err);
+                if (!task) {
+                    return "ERR: " + err;
+                }
+                if (task->status.message) {
+                    // Concatenate text parts of the assistant's reply.
+                    std::ostringstream os;
+                    for (auto& part : task->status.message->parts) {
+                        if (part.kind == "text") os << part.text;
+                    }
+                    std::string body = os.str();
+                    if (body.empty()) {
+                        // Spec-legal but unhelpful — surface the state
+                        // so callers can debug.
+                        return "(remote agent returned no text content; state="
+                               + a2a::task_state_to_string(task->status.state) + ")";
+                    }
+                    return body;
+                }
+                return "(remote agent returned no message; state="
+                       + a2a::task_state_to_string(task->status.state) + ")";
+            } catch (const std::exception& e) {
+                return std::string("ERR: ") + e.what();
+            }
+        }
+        return "ERR: unknown /a2a subcommand '" + kind + "'";
+    };
+}
+
+// Construct an orchestrator for a one-shot A2A turn.  Loads the tenant's
+// stored agent catalog (so /agent + /parallel resolve sibling ids during
+// the turn).  Memory bridge, MCP manager, search invoker, file
+// interceptor, and structured-memory reader are deliberately NOT wired
+// here — those depend on the SSE event sink which lands in PR-3.  The
+// agent can chat and delegate; tool slash commands degrade to ERR for
+// the v1.0 message/send synchronous path, and PR-3 lifts both surfaces
+// to full parity.
+std::unique_ptr<Orchestrator>
+build_a2a_orchestrator(const ApiServerOptions& opts,
+                        TenantStore& tenants, const Tenant& tenant,
+                        std::string& err_out) {
+    std::unique_ptr<Orchestrator> orch;
+    try {
+        orch = std::make_unique<Orchestrator>(opts.api_keys);
+    } catch (const std::exception& e) {
+        err_out = std::string("orchestrator init failed: ") + e.what();
+        return nullptr;
+    }
+    if (!opts.memory_root.empty()) {
+        orch->set_memory_dir(opts.memory_root + "/t" +
+                              std::to_string(tenant.id));
+    }
+    orch->set_exec_disabled(opts.exec_disabled);
+
+    const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+    for (const auto& rec : records) {
+        try {
+            auto cfg = Constitution::from_json(rec.agent_def_json);
+            if (orch->has_agent(rec.agent_id)) orch->remove_agent(rec.agent_id);
+            orch->create_agent(rec.agent_id, std::move(cfg));
+        } catch (const std::exception& e) {
+            std::fprintf(stderr,
+                "[a2a] skipping malformed stored agent '%s' for tenant %lld: %s\n",
+                rec.agent_id.c_str(), (long long)tenant.id, e.what());
+        }
+    }
+
+    // Wire the /a2a slash command so a server-side master agent can
+    // delegate to remote A2A agents — symmetric to the /v1/orchestrate
+    // wiring further down.  Auto-routing into the master's catalog is
+    // on by default (the user's locked-in PR-8 decision); operators
+    // wanting opt-in behavior wrap make_a2a_invoker themselves.
+    Orchestrator::RemoteRosterProvider roster_cb;
+    if (auto inv = make_a2a_invoker(opts, &roster_cb)) {
+        orch->set_a2a_invoker(std::move(inv));
+        if (roster_cb) orch->set_remote_roster_provider(std::move(roster_cb));
+    }
+    return orch;
+}
+
+void handle_a2a_message_send(int fd,
+                              const std::shared_ptr<JsonValue>& rpc_id,
+                              const std::string& agent_id,
+                              const a2a::RpcRequest& rpc,
+                              const ApiServerOptions& opts,
+                              TenantStore& tenants,
+                              InFlightRegistry& in_flight,
+                              const Tenant& tenant) {
+    a2a::Message user_msg;
+    if (!rpc.params) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params required"));
+        return;
+    }
+    try {
+        user_msg = a2a::extract_send_message(*rpc.params);
+    } catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, e.what()));
+        return;
+    }
+
+    std::string prompt;
+    try {
+        prompt = a2a::concatenate_text_parts(user_msg);
+    } catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_CONTENT_TYPE_INVALID, e.what()));
+        return;
+    }
+    if (prompt.empty()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS,
+            "message has no text parts to send"));
+        return;
+    }
+
+    const std::string task_id    = new_request_id();
+    const std::string context_id = resolve_a2a_context_id(user_msg);
+
+    std::string init_err;
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    if (!orch) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
+        return;
+    }
+    if (agent_id != "index" && !orch->has_agent(agent_id)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no agent '" + agent_id + "' for this tenant; POST it to /v1/agents first"));
+        return;
+    }
+
+    // Persistence: rows go in at submitted, transition to working, then
+    // to a terminal state.  A failure to insert is non-fatal — we log
+    // and continue (the call still completes; tasks/get just won't
+    // surface a record).
+    try {
+        tenants.create_a2a_task(tenant.id, task_id, agent_id, context_id,
+                                 a2a::task_state_to_string(a2a::TaskState::submitted));
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[a2a] create_a2a_task failed: %s\n", e.what());
+    }
+
+    InFlightScope in_flight_scope(in_flight, task_id, orch.get(), tenant.id);
+
+    tenants.update_a2a_task(tenant.id, task_id,
+                             a2a::task_state_to_string(a2a::TaskState::working),
+                             /*final_message_json=*/"",
+                             /*error_message=*/"");
+
+    ApiResponse resp;
+    try {
+        resp = orch->send(agent_id, prompt);
+    } catch (const std::exception& e) {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", e.what());
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_INVALID_AGENT_RESPONSE,
+            std::string("agent threw: ") + e.what()));
+        return;
+    }
+
+    a2a::Task task = a2a::build_terminal_task(task_id, context_id, agent_id,
+                                               user_msg, resp);
+
+    // Persist the terminal state.  We snapshot only the assistant
+    // Message — history/artifacts can be reconstructed by combining
+    // the user's input (which the client already has) with the
+    // assistant's reply.  Smaller column, simpler reads.
+    std::string final_msg_json;
+    if (task.status.message) {
+        final_msg_json = json_serialize(*a2a::to_json(*task.status.message));
+    }
+    tenants.update_a2a_task(tenant.id, task_id,
+                             a2a::task_state_to_string(task.status.state),
+                             final_msg_json,
+                             resp.ok ? "" : resp.error);
+
+    write_a2a_rpc(fd, a2a::make_result_response(rpc_id, a2a::to_json(task)));
+}
+
+// PR-3: streaming variant of message/send.  Opens an SSE response and
+// emits one JSON-RPC chunk per arbiter event, all wrapped in TaskStatus
+// or TaskArtifact updates.  Closes with a final TaskStatusUpdateEvent
+// (final=true).  Tool-side callbacks (memory, MCP, search, structured
+// memory) are NOT yet wired here — they degrade to the same ERR
+// behavior as PR-2's synchronous send_message; PR-4 lifts both paths
+// to /v1/orchestrate parity.
+void handle_a2a_message_stream(int fd,
+                                const std::shared_ptr<JsonValue>& rpc_id,
+                                const std::string& agent_id,
+                                const a2a::RpcRequest& rpc,
+                                const ApiServerOptions& opts,
+                                TenantStore& tenants,
+                                InFlightRegistry& in_flight,
+                                const Tenant& tenant) {
+    // Same up-front parsing as message/send; we send any error as a
+    // single non-streaming JSON-RPC error response (HTTP 200) BEFORE
+    // opening the SSE stream.  Once the stream is open, errors
+    // surface as final-status TaskStatusUpdateEvents.
+    a2a::Message user_msg;
+    if (!rpc.params) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params required"));
+        return;
+    }
+    try {
+        user_msg = a2a::extract_send_message(*rpc.params);
+    } catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, e.what()));
+        return;
+    }
+    std::string prompt;
+    try {
+        prompt = a2a::concatenate_text_parts(user_msg);
+    } catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_CONTENT_TYPE_INVALID, e.what()));
+        return;
+    }
+    if (prompt.empty()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS,
+            "message has no text parts to send"));
+        return;
+    }
+
+    const std::string task_id    = new_request_id();
+    const std::string context_id = resolve_a2a_context_id(user_msg);
+
+    std::string init_err;
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    if (!orch) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
+        return;
+    }
+    if (agent_id != "index" && !orch->has_agent(agent_id)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no agent '" + agent_id + "' for this tenant; POST it to /v1/agents first"));
+        return;
+    }
+
+    // Persist before opening the stream so a tasks/get racing the start
+    // sees at least the submitted row.
+    try {
+        tenants.create_a2a_task(tenant.id, task_id, agent_id, context_id,
+                                 a2a::task_state_to_string(a2a::TaskState::submitted));
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[a2a] create_a2a_task failed: %s\n", e.what());
+    }
+
+    // Begin the SSE response.  After this point every error must round-
+    // trip as an in-stream TaskStatusUpdateEvent — we can't switch back
+    // to a JSON body because the client already saw the SSE headers.
+    SseStream sse(fd);
+    sse.write_headers();
+
+    auto sink = [&sse](const std::string& ev,
+                        std::shared_ptr<JsonValue> payload) {
+        sse.emit(ev, std::move(payload));
+    };
+    a2a::A2aStreamWriter writer(sink, rpc_id, task_id, context_id, agent_id);
+
+    // Track depth-by-stream-id so callbacks that don't carry depth
+    // (agent_stream, stream_end) can decide whether to emit text into
+    // the master artifact or leave it for the sub-agent summary path.
+    std::map<int, int> depth_by_stream;
+    std::map<int, std::string> agent_by_stream;
+    std::mutex stream_meta_mu;
+
+    std::atomic<bool> working_persisted{false};
+    orch->set_stream_start_callback(
+        [&](const std::string& a, int stream_id, int depth) {
+            {
+                std::lock_guard<std::mutex> lk(stream_meta_mu);
+                depth_by_stream[stream_id] = depth;
+                agent_by_stream[stream_id] = a;
+            }
+            if (depth == 0) {
+                writer.emit_status(a2a::TaskState::working, /*final=*/false);
+                if (!working_persisted.exchange(true)) {
+                    tenants.update_a2a_task(
+                        tenant.id, task_id,
+                        a2a::task_state_to_string(a2a::TaskState::working),
+                        "", "");
+                }
+            }
+        });
+
+    orch->set_agent_stream_callback(
+        [&](const std::string& /*a*/, int stream_id, const std::string& delta) {
+            int depth = 0;
+            {
+                std::lock_guard<std::mutex> lk(stream_meta_mu);
+                auto it = depth_by_stream.find(stream_id);
+                if (it != depth_by_stream.end()) depth = it->second;
+            }
+            // Only the master agent's stream feeds the primary text
+            // artifact.  Sub-agent text is summarised once at end-of-
+            // turn via the progress_callback path below — streaming
+            // it interleaved would confuse clients trying to render a
+            // single coherent response.
+            if (depth == 0) {
+                writer.emit_text_chunk(delta, /*last_chunk=*/false);
+            }
+        });
+
+    orch->set_stream_end_callback(
+        [&](const std::string& /*a*/, int stream_id, bool /*ok*/) {
+            std::lock_guard<std::mutex> lk(stream_meta_mu);
+            depth_by_stream.erase(stream_id);
+            agent_by_stream.erase(stream_id);
+            // Note: the *final* TaskStatusUpdateEvent fires after the
+            // entire send_streaming returns (below) — not here.  Per-
+            // turn ends at depth>0 are part of normal sub-agent flow
+            // and don't terminate the A2A stream.
+        });
+
+    // Per-tool observation events.  arbiter fires this for /fetch,
+    // /search, /mem, /mcp, /agent, /parallel, /write, etc.
+    orch->set_tool_status_callback(
+        [&](const std::string& tool, bool ok) {
+            writer.emit_tool_call(tool, ok);
+        });
+
+    // Sub-agent completion: emit the full text the sub-agent produced
+    // as a side artifact.  current_stream_depth() reads the depth at
+    // the time the callback fires, which is the sub-agent's turn
+    // depth (>0).
+    Orchestrator* orch_ptr = orch.get();
+    orch->set_progress_callback(
+        [&writer, orch_ptr](const std::string& a, const std::string& content) {
+            writer.emit_sub_agent(a, orch_ptr->current_stream_depth(), content);
+        });
+
+    // /write capture so the agent can emit files mid-turn and the
+    // remote client receives them as artifact-update events rather
+    // than the server filesystem absorbing them.  Mirrors handle_orchestrate's
+    // bytes-cap semantics so a runaway agent can't blow up the response.
+    std::atomic<size_t> bytes_captured{0};
+    const size_t cap = opts.file_max_bytes;
+    orch->set_write_interceptor(
+        [&writer, &bytes_captured, cap](const std::string& path,
+                                         const std::string& content) -> std::string {
+            const size_t size = content.size();
+            const size_t prev = bytes_captured.load();
+            if (prev + size > cap) {
+                return "ERR: per-response file-size cap (" +
+                       std::to_string(cap) + " bytes) reached — this file "
+                       "was NOT included in the response.";
+            }
+            bytes_captured.fetch_add(size);
+            writer.emit_file(path, content, "text/plain");
+            return "OK: captured " + std::to_string(size) +
+                   " bytes for '" + path + "' (streamed to client)";
+        });
+
+    // Cancellation hook so /v1/requests/:task_id/cancel can interrupt
+    // an in-flight stream.  Same RAII shape as /v1/orchestrate.
+    InFlightScope in_flight_scope(in_flight, task_id, orch_ptr, tenant.id);
+
+    // Drive the agentic loop.  send_streaming returns the final
+    // ApiResponse once the dispatch loop terminates (success or fail).
+    // The StreamCallback we pass is intentionally a no-op — text deltas
+    // already flow through agent_stream_callback after StreamFilter
+    // strips slash commands, so feeding the raw chunks here would
+    // double-emit and surface unfiltered command text.
+    ApiResponse resp;
+    try {
+        resp = orch->send_streaming(agent_id, prompt,
+                                     [](const std::string&) {});
+    } catch (const std::exception& e) {
+        // Catastrophic failure during the loop.  Surface as a final
+        // failed-status update so the client knows the stream is over.
+        a2a::Message err_msg;
+        err_msg.role        = "agent";
+        err_msg.message_id  = task_id + "-err";
+        err_msg.task_id     = task_id;
+        err_msg.context_id  = context_id;
+        a2a::Part p_err;
+        p_err.kind = "text";
+        p_err.text = std::string("agent threw: ") + e.what();
+        err_msg.parts.push_back(std::move(p_err));
+        writer.emit_status(a2a::TaskState::failed, /*final=*/true,
+                           std::move(err_msg));
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", e.what());
+        sse.close();
+        return;
+    }
+
+    // Compose the assistant's terminal Message and ride it on the
+    // final TaskStatusUpdateEvent so clients have the full text in
+    // one place even if they missed earlier text deltas.
+    a2a::Message reply;
+    reply.role        = "agent";
+    reply.message_id  = task_id + "-r";
+    reply.task_id     = task_id;
+    reply.context_id  = context_id;
+    a2a::Part p;
+    p.kind = "text";
+    p.text = resp.content;
+    reply.parts.push_back(std::move(p));
+
+    // Signal end-of-stream on the running text artifact so a client
+    // accumulating chunks can finalise its rendering.
+    writer.emit_text_chunk("", /*last_chunk=*/true);
+
+    const a2a::TaskState terminal = resp.ok ? a2a::TaskState::completed
+                                             : a2a::TaskState::failed;
+    writer.emit_status(terminal, /*final=*/true, reply);
+
+    std::string final_msg_json = json_serialize(*a2a::to_json(reply));
+    tenants.update_a2a_task(tenant.id, task_id,
+                             a2a::task_state_to_string(terminal),
+                             final_msg_json,
+                             resp.ok ? "" : resp.error);
+    sse.close();
+}
+
+// Build a Task object from a persisted record.  The history isn't
+// reconstructed (we don't snapshot the user's input on disk), so the
+// returned Task has only the assistant's reply on status.message when
+// the task reached a terminal state.  Clients combining tasks/get with
+// their own request log can stitch the full history back together.
+a2a::Task task_from_record(const TenantStore::A2aTaskRecord& rec) {
+    a2a::Task t;
+    t.id         = rec.task_id;
+    t.context_id = rec.context_id;
+    t.status.state = a2a::task_state_from_string(rec.state);
+    if (!rec.final_message_json.empty()) {
+        try {
+            auto v = json_parse(rec.final_message_json);
+            if (v && v->is_object()) {
+                t.status.message = a2a::message_from_json(*v);
+                t.history.push_back(*t.status.message);
+            }
+        } catch (...) { /* malformed snapshot — surface bare state */ }
+    }
+    auto md = jobj();
+    auto& mm = md->as_object_mut();
+    mm["x-arbiter.agent_id"]   = jstr(rec.agent_id);
+    mm["x-arbiter.created_at"] = jnum(static_cast<double>(rec.created_at));
+    mm["x-arbiter.updated_at"] = jnum(static_cast<double>(rec.updated_at));
+    if (!rec.error_message.empty()) {
+        mm["x-arbiter.error"] = jstr(rec.error_message);
+    }
+    t.metadata = md;
+    return t;
+}
+
+void handle_a2a_tasks_get(int fd,
+                           const std::shared_ptr<JsonValue>& rpc_id,
+                           const a2a::RpcRequest& rpc,
+                           TenantStore& tenants,
+                           const Tenant& tenant) {
+    // Params shape: { "id": "<task_id>" }.  Spec also allows
+    // historyLength to bound the returned history; we don't currently
+    // store full history so the param is accepted-and-ignored.
+    if (!rpc.params || !rpc.params->is_object()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params must be an object"));
+        return;
+    }
+    const std::string task_id = rpc.params->get_string("id", "");
+    if (task_id.empty()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params.id required"));
+        return;
+    }
+    auto rec = tenants.get_a2a_task(tenant.id, task_id);
+    if (!rec) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no task with id '" + task_id + "' for this tenant"));
+        return;
+    }
+    write_a2a_rpc(fd, a2a::make_result_response(
+        rpc_id, a2a::to_json(task_from_record(*rec))));
+}
+
+void handle_a2a_tasks_cancel(int fd,
+                              const std::shared_ptr<JsonValue>& rpc_id,
+                              const a2a::RpcRequest& rpc,
+                              InFlightRegistry& in_flight,
+                              TenantStore& tenants,
+                              const Tenant& tenant) {
+    if (!rpc.params || !rpc.params->is_object()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params must be an object"));
+        return;
+    }
+    const std::string task_id = rpc.params->get_string("id", "");
+    if (task_id.empty()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params.id required"));
+        return;
+    }
+
+    // Same lock-while-cancel discipline as handle_cancel above so a
+    // racing ~InFlightScope can't free the orchestrator under us.
+    bool cancelled_in_flight = false;
+    {
+        std::lock_guard<std::mutex> lk(in_flight.mu);
+        auto it = in_flight.by_id.find(task_id);
+        if (it != in_flight.by_id.end() && it->second.tenant_id == tenant.id) {
+            it->second.orch->cancel();
+            cancelled_in_flight = true;
+        }
+    }
+
+    if (cancelled_in_flight) {
+        // Persist canceled state so a follow-up tasks/get reflects the
+        // outcome.  The orchestrator's send may still be unwinding —
+        // its terminal-state update will run, but we want canceled to
+        // win over completed/failed for clarity.  Re-update.
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::canceled),
+                                 "", "canceled by tasks/cancel");
+        auto rec = tenants.get_a2a_task(tenant.id, task_id);
+        if (!rec) {
+            // Edge: task was never persisted (very fast race).  Synth a
+            // minimal Task for the response.
+            a2a::Task t;
+            t.id           = task_id;
+            t.status.state = a2a::TaskState::canceled;
+            write_a2a_rpc(fd, a2a::make_result_response(rpc_id, a2a::to_json(t)));
+            return;
+        }
+        write_a2a_rpc(fd, a2a::make_result_response(
+            rpc_id, a2a::to_json(task_from_record(*rec))));
+        return;
+    }
+
+    // Not in-flight.  If the task exists in the DB and is already
+    // terminal we surface NotCancelable; otherwise NotFound.
+    auto rec = tenants.get_a2a_task(tenant.id, task_id);
+    if (!rec) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no task with id '" + task_id + "' for this tenant"));
+        return;
+    }
+    write_a2a_rpc(fd, a2a::make_error_response(
+        rpc_id, a2a::ERR_TASK_NOT_CANCELABLE,
+        "task is in terminal state '" + rec->state +
+        "' and is not in-flight"));
+}
+
+void handle_a2a_rpc(int fd, const std::string& agent_id,
+                     const HttpRequest& req,
+                     const ApiServerOptions& opts,
+                     TenantStore& tenants,
+                     InFlightRegistry& in_flight,
+                     const Tenant& tenant) {
+    // Version negotiation per spec section 3.6.  Empty header is
+    // tolerated as 1.0 since every implementation in the wild today
+    // omits it; explicit 1.0 + 1 (loose major) are accepted; anything
+    // else fails with VersionNotSupportedError.
+    if (auto it = req.headers.find("a2a-version"); it != req.headers.end()) {
+        const std::string v = it->second;
+        if (!v.empty() && v != "1.0" && v != "1") {
+            write_a2a_rpc(fd, a2a::make_error_response(
+                nullptr, a2a::ERR_VERSION_NOT_SUPPORTED,
+                "arbiter speaks A2A 1.0 only; got A2A-Version: " + v));
+            return;
+        }
+    }
+
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            nullptr, a2a::RPC_PARSE_ERROR,
+            std::string("malformed JSON: ") + e.what()));
+        return;
+    }
+    if (!body) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            nullptr, a2a::RPC_PARSE_ERROR, "empty body"));
+        return;
+    }
+
+    a2a::RpcRequest rpc;
+    try { rpc = a2a::rpc_request_from_json(*body); }
+    catch (const std::exception& e) {
+        std::shared_ptr<JsonValue> id;
+        if (body->is_object()) id = body->get("id");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            id, a2a::RPC_INVALID_REQUEST, e.what()));
+        return;
+    }
+
+    if (rpc.method == "message/send") {
+        handle_a2a_message_send(fd, rpc.id, agent_id, rpc,
+                                 opts, tenants, in_flight, tenant);
+        return;
+    }
+    if (rpc.method == "message/stream") {
+        handle_a2a_message_stream(fd, rpc.id, agent_id, rpc,
+                                   opts, tenants, in_flight, tenant);
+        return;
+    }
+    if (rpc.method == "tasks/get") {
+        handle_a2a_tasks_get(fd, rpc.id, rpc, tenants, tenant);
+        return;
+    }
+    if (rpc.method == "tasks/cancel") {
+        handle_a2a_tasks_cancel(fd, rpc.id, rpc, in_flight, tenants, tenant);
+        return;
+    }
+    if (rpc.method == "tasks/resubscribe"
+        || rpc.method == "tasks/pushNotificationConfig/set"
+        || rpc.method == "tasks/pushNotificationConfig/get"
+        || rpc.method == "tasks/pushNotificationConfig/list"
+        || rpc.method == "tasks/pushNotificationConfig/delete") {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc.id, a2a::ERR_UNSUPPORTED_OPERATION,
+            "method not implemented in arbiter v1"));
+        return;
+    }
+    write_a2a_rpc(fd, a2a::make_error_response(
+        rpc.id, a2a::RPC_METHOD_NOT_FOUND,
+        "unknown method: " + rpc.method));
+}
+
 // Two entry points funnel here: /v1/orchestrate (agent_override == "", read
 // from body) and /v1/agents/:id/chat (agent_override == path :id).  Body
 // parsing + dispatch is otherwise identical.
@@ -5337,6 +6141,22 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             return "ERR: unknown /mcp subcommand";
         });
 
+    // ── A2A remote-agent delegation ───────────────────────────────────
+    // Wire the /a2a slash command so the master orchestrator (and any
+    // delegated sub-agent) can call out to remote A2A agents listed in
+    // opts.a2a_agents_path.  See make_a2a_invoker for the subcommand
+    // surface.  The Manager's lifetime is owned by the captured lambda;
+    // it dies when the orchestrator does.  Auto-routing injects remote
+    // agents into the master's roster so /agent and /a2a call sit side
+    // by side in the routing menu.
+    {
+        Orchestrator::RemoteRosterProvider roster_cb;
+        if (auto a2a_inv = make_a2a_invoker(opts, &roster_cb)) {
+            orch->set_a2a_invoker(std::move(a2a_inv));
+            if (roster_cb) orch->set_remote_roster_provider(std::move(roster_cb));
+        }
+    }
+
     // ── Web search ────────────────────────────────────────────────────
     // /search <query> [top=N] dispatches against the configured provider.
     // Only "brave" is implemented in v1; an unrecognised provider returns
@@ -6272,16 +7092,17 @@ void ApiServer::handle_connection(int fd) {
                                            tenants_, *tenant);
                 return;
             }
-            // POST /v1/a2a/agents/:id → JSON-RPC dispatch lands in PR-2.
-            // For now the route exists but rejects with a clean error.
+            // POST /v1/a2a/agents/:id → JSON-RPC dispatch.  Every method
+            // for this URL funnels through handle_a2a_rpc which writes
+            // exactly one JSON-RPC envelope (success or error) back.
             if (segs.size() == 4) {
                 if (req.method != "POST") {
                     write_plain_response(fd, 405, "Method Not Allowed",
                                          "method not allowed\n");
                     return;
                 }
-                write_plain_response(fd, 501, "Not Implemented",
-                                     "A2A JSON-RPC dispatch not yet implemented\n");
+                handle_a2a_rpc(fd, agent_id, req, opts_, tenants_,
+                                in_flight_, *tenant);
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "a2a route not found\n");

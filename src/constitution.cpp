@@ -45,6 +45,8 @@ static std::set<std::string> resolve_bundles(
             out.insert("delegation");
         else if (cap == "/mcp")
             out.insert("mcp");
+        else if (cap == "/a2a")
+            out.insert("a2a");
         // Unknown capability strings are silently dropped — they're routing
         // hints from older agent_defs and may not map to any bundle today.
     }
