@@ -18,7 +18,7 @@ The structured-memory layer answers each:
 
 - **Typed nodes + directed edges** give the graph enough shape to support retrieval that follows relations (`/mem expand`, `/mem density`) without becoming a free-form note pile.
 - **Temporal validity windows** (`valid_from` / `valid_to`) let facts retire without erasing them. Invalidation is one-directional and reversible only by hard delete + recreate.
-- **FTS5 + BM25 + metadata boosts + conversation-scoped graduated search + optional advisor reranker** give retrieval the layered behavior agents actually need: lexical first, then locality, then semantic when the lexical scores are too close to call.
+- **FTS5 + BM25 + NEAR proximity + metadata boosts + intent routing + RRF graduated search + optional query expansion + optional advisor reranker** give retrieval the layered behavior agents actually need: lexical first with proximity-aware scoring, then locality fused with tenant-wide candidates, then semantic reformulation and rerank when lexical scores are too close to call. Per-agent `MemoryConfig` toggles which advisor-driven layers fire — see [Memory enrichment](#memory-enrichment).
 
 ## What lives where
 
@@ -123,43 +123,125 @@ The window is half-open `[valid_from, valid_to)` — at the exact invalidation m
 
 ## Retrieval
 
-The retrieval layer is built on five signals, applied in this order:
+The retrieval pipeline is layered. Each layer is independent and the cheaper layers fire universally; the LLM-cost layers are opt-in per request (HTTP) or per agent (slash surface).
 
-1. **Lexical** — Okapi-BM25 over an FTS5 index on `(title, content, tags, source)` with per-field weights. SQLite ships FTS5; no external service needed.
-2. **Metadata boost** — when the caller passes `types=[…]` or a `tag`, matching rows have their score multiplied (rather than non-matching rows being filtered out).
-3. **Locality** — when the call is part of a conversation, conversation-pinned hits surface above tenant-wide hits via `search_entries_graduated`. Two-pass: scoped first, broad-fill if scoped didn't reach the cap.
-4. **Semantic** — optional `--rerank` flag on `/mem search` routes the top-10 candidates through the calling agent's [advisor model](advisor.md) for a final reorder. Costs one LLM call; only worth it when BM25 produces close-scored ambiguous candidates.
-5. **Validity** — invalidated rows are excluded by default. `as_of` swaps in a historical-window check.
+| Layer | Cost | Where it lives |
+|-------|------|----------------|
+| **Lexical (BM25 + Porter stemmer + stopwords)** | free | FTS5 index, always on |
+| **NEAR proximity** | free | FTS query construction, always on |
+| **Metadata boost** | free | `list_entries` SQL, always on |
+| **Intent routing** | free (regex) | HTTP `intent=auto` (default) / agent `MemoryConfig::intent_routing` |
+| **RRF graduated merge** | free | `search_entries_graduated`, always on when conv. scoped |
+| **Query expansion** | 1 advisor call | HTTP `expand=<model>` / agent `MemoryConfig::search_expand` |
+| **Rerank (single-stage)** | 1 advisor call | HTTP `rerank=<model>` / agent `--rerank` flag |
+| **Rerank (two-stage fine)** | 2 advisor calls | HTTP `rerank=…` + `rerank_fine=…` |
+| **Validity filter** | free | `valid_to IS NULL` (default) or `as_of` window |
+
+### Lexical (always on)
+
+Okapi-BM25 over an FTS5 index on `(title, content, tags, source)` with per-field weights `(10, 4, 8, 2)`. The tokenizer is `porter unicode61 remove_diacritics 2` — case-folding, English stemming, accent-stripping. Stopwords are stripped at query time before quoting; common conversational filler ("what", "the", "is") doesn't dilute scoring across hundreds of thousands of irrelevant rows.
+
+### NEAR proximity (always on)
+
+For 2-to-6-token queries, the FTS expression is `"phrase" OR NEAR("t1" "t2" ..., 8) OR ("t1" OR "t2" OR ...)`. The NEAR clause matches rows where every token appears within 8 word positions of any other — bridges the gap between strict phrase (high precision, low recall) and bag-of-words (high recall, low precision) without an extra index.
+
+### Metadata boost (always on)
+
+When the caller passes `types=[…]` or a `tag`, matching rows have their BM25 score multiplied (1.3× for type, 1.2× for tag). Mismatched rows still appear, just lower in the order. This is what makes `/mem entries type=project` a hard filter (no `q`, type acts as `WHERE`) but `/mem search query type=project` a soft boost.
+
+### Intent routing (heuristic, free)
+
+A regex-based question classifier detects cue words in `q` and adds a soft type boost when the caller didn't supply one explicitly. The cue map:
+
+| Cue words | Boosted types |
+|-----------|---------------|
+| `favorite`, `prefer`, `love`, `hate`, `enjoy`, `dislike`, `wants`, `liked` | `user`, `feedback` |
+| `what is`, `where is`, `who is`, `how many`, `url`, `address`, `endpoint` | `reference` |
+| `how to`, `how do`, `why is`, `explain`, `tutorial`, `guide` | `learning` |
+| `when`, `before`, `after`, `since`, `first`, `recent`, `ago`, `did` | `project` |
+
+Caller-supplied `type=…` always wins; intent only fires when `type` is absent. Disable per-request with HTTP `intent=off` or per-agent with `memory.intent_routing=false`.
+
+### RRF graduated merge (free, fires when conversation-scoped)
+
+When the request includes `graduated=true` (HTTP) or runs inside a conversation (agent), `search_entries_graduated` runs **two** passes and reciprocal-rank-fuses the rankings:
+
+- **Pass 1** — conversation-scoped: `WHERE conversation_id = ? OR conversation_id IS NULL`, weighted **1.5×** in fusion.
+- **Pass 2** — tenant-wide: drops the conversation filter, weighted **1.0×** in fusion.
+
+Each entry's fused score is `Σ_p weight_p / (60 + rank_p)`. Conversation-local hits keep their locality bias on close calls (1.5× factor), but a *strong* tenant-wide hit can outrank a *weak* conversation-local one. This fixes the multi-session case where the answer lives in another conversation; the previous "skip pass 2 if pass 1 returned cap hits" sandbagged tenant-wide candidates whenever the local pass saturated.
+
+### Query expansion (1 advisor call, opt-in)
+
+When `expand=<model>` is set on the HTTP request — or the calling agent has `memory.search_expand=true` — the server calls the model once to generate **2 paraphrases** of `q`, runs all three variants (original + 2 paraphrases) through the full FTS pipeline, and reciprocal-rank-fuses the rankings (original at weight 1.0, paraphrases at 0.7). Each variant gets its own intent classification, so a paraphrase that shifts the question shape from "what is" to "where is" picks up an appropriate type boost.
+
+This is the no-embedding alternative to dense retrieval. It catches paraphrased queries — "when did the user travel to Japan?" finds an entry that says "I just got back from Tokyo" — without any new index, table, or external dependency. ~150 ms + ~$0.0001 per request at Haiku speeds. Failures (advisor unavailable, unparseable output) are benign: search proceeds with the original query alone and a `note` is surfaced in the response's `expansion` block (or in the agent's reply).
+
+### Rerank (1 or 2 advisor calls, opt-in)
+
+When `rerank=<model>` is set — or the agent appends `--rerank` — the top-N candidates after fusion go through an LLM for a final reorder. The reranker prompt enriches each candidate with `(type · YYYY-MM-DD · superseded)` metadata so the model can pick the most-recent non-superseded entry on temporal/knowledge-update questions. Without that metadata the reranker would be reordering by title + excerpt only — it can't pick the most-recent preference, prefer a `type=preference` row over a `type=research` row that mentions the same topic, or skip an explicitly invalidated entry.
+
+Adding `rerank_fine=<stronger-model>` engages two-stage rerank: pass 1 with the cheap `rerank` model coarse-orders the wide pool; the top 8 advance to pass 2 with the stronger model and 1500-byte excerpts. The remaining tail is preserved after pass 2 so R@K beyond 8 doesn't collapse below the single-stage baseline.
+
+The reranker uses `make_advisor_invoker(caller_id)` so the model is the calling agent's `advisor.model` — one-shot, history-less, attributed to the caller via `cost_cb_`. Failures fall back to FTS order with a populated `note`.
 
 ### How `/mem search` works under the hood
 
 When an agent emits `/mem search deployment notes`, the reader callback inside the request handler:
 
-1. Tokenises and quotes the query for FTS5 (`"deployment" "notes"`, implicit AND).
-2. Runs `search_entries_graduated(tenant_id, EntryFilter{q="...", conversation_id=<active>, limit=50})`.
-   - Pass 1: conversation-scoped via `WHERE conversation_id = ? OR conversation_id IS NULL`, ranked by `bm25(memory_entries_fts, 10, 4, 8, 2)` (title, content, tags, source weights).
-   - Pass 2: if pass 1 returned fewer than 50 hits, retries tenant-wide. Conversation hits keep their order at the front; tenant-wide hits fill from the back, deduped by id.
-3. Renders top-3 with content excerpts inline; remaining hits are one-line summaries.
-4. Marks conversation-pinned hits with `[conversation]` so the agent can tell local context from broader tenant memory at a glance.
+1. Reads the calling agent's `MemoryConfig` (search_expand, intent_routing).
+2. Classifies question intent if enabled (free), boosting matching types.
+3. If `search_expand` is on and the agent has an advisor model, generates 2 paraphrases and fans out the FTS query across all three variants.
+4. Runs `search_entries_graduated(...)` per variant: conversation pass + tenant-wide pass, RRF-fused.
+5. RRF-fuses across query variants if expansion fired.
+6. If `--rerank` was on the command, reranks the top-N through the agent's advisor model.
+7. Renders top-3 with content excerpts inline; remaining hits are one-line summaries with `(YYYY-MM-DD · superseded)` metadata in the line.
+8. Marks conversation-pinned hits with `[conversation]` so the agent can tell local context from broader tenant memory at a glance.
 
-### `/mem search --rerank`
-
-When the agent appends `--rerank`:
-
-1. Pulls a tighter candidate set (top-10 instead of top-50).
-2. Builds a structured prompt — query plus each candidate's id, title, and ~200-byte content excerpt.
-3. Calls the calling agent's `advisor_model` via `make_advisor_invoker(caller_id)` — one-shot, history-less, with the standard advisor system prompt.
-4. Parses the response leniently: extracts digit-runs that match candidate ids, dedupes, takes them as the new top.
-5. Reorders: picked ids first (in advisor order), then everything else in original FTS order. Top-3 still get content excerpts.
-6. On any failure (no `advisor_model`, transport error, unparseable response), falls back to the FTS order with a one-line note explaining why.
-
-Cost attribution flows through the existing `cost_cb_` so rerank LLM tokens show up in the SSE `token_usage` stream attributed to the calling agent, identical to a direct `/advise` call.
+When expansion fires, the rendered output prefixes `(also searched: '<paraphrase 1>' | '<paraphrase 2>')` so the agent can audit what recall surface ran.
 
 ### Why metadata is a signal, not a gate
 
 `/mem entries type=project` is a hard filter — the caller is browsing a category, and rows of other types are explicitly excluded. But `/mem search query` is a different shape: the caller is trying to *find* something, and aggressive filtering loses recall. If they passed `types=[project]` because they expect the answer to be a project entry, but the answer is actually a `reference` or `learning` entry that mentions the same query terms, a hard filter would hide it.
 
 The layer treats type and tag matches in *search* mode as score multipliers (~30% for type, ~20% for tag) rather than `WHERE` clauses. Project entries rank higher when the caller passed `types=[project]`, but the reference and learning matches still appear — the agent gets the answer it needed even when it over-specified the filter. Hard-filtering remains the default in *browse* mode (no `q`).
+
+## Memory enrichment
+
+Three of the retrieval and ingest layers use one LLM call apiece. They're opt-in per-request on the HTTP surface and per-agent on the slash surface, so an agent's call to `/mem search` or `/mem add entry` can pick up the right enrichment automatically without the agent having to pass any flag.
+
+The `Constitution::MemoryConfig` block in an agent's JSON controls which advisor-driven layers fire on its `/mem` operations. All four toggles default conservatively — agents that haven't opted in keep the pre-config behavior:
+
+| Toggle | Default | What it controls |
+|--------|---------|------------------|
+| `intent_routing` | `true` | Heuristic question classifier on `/mem search`. Free; defaults on because the worst case is "no boost applied" — monotonic vs. off. |
+| `search_expand` | `false` | Query expansion on `/mem search`. Costs one advisor call per search. Closes the recall gap on paraphrased queries. |
+| `auto_tag` | `false` | Auto-tagging on `/mem add entry`. Advisor extracts 2-4 topical tags from title+content; merged into caller-supplied tags. Tags get an 8× BM25 weight, so this is the single cheapest way to boost retrieval signal on agent ingest paths. |
+| `auto_supersede` | `false` | Auto-supersession on `/mem add entry`. After the new entry is created, the advisor inspects the top-5 same-type FTS hits on the title for direct contradictions and stamps `valid_to=now()` on flagged ids. Use only when the agent's writes typically replace prior facts (research, engineering decisions). The prompt biases toward "leave alone" — false positives erase legitimate prior memory. |
+
+Configure via the `memory` block in agent JSON:
+
+```json
+{
+  "name": "research",
+  "advisor": { "model": "claude-opus-4-7", "mode": "consult" },
+  "memory": {
+    "search_expand": true,
+    "auto_tag": true,
+    "auto_supersede": true
+  },
+  "capabilities": ["/fetch", "/mem", "/agent"]
+}
+```
+
+`search_expand`, `auto_tag`, and `auto_supersede` need an `advisor.model` configured — they invoke the agent's advisor, attributed via `cost_cb_` like a direct `/advise` call. Without an advisor model the toggles silently no-op (the helpers return `(advisor unavailable)` notes; the search/write proceeds without enrichment). For agents that don't have an advisor, leave the `memory` block out — `intent_routing` is on by default and runs without LLM cost.
+
+When an advisor-driven layer fires, the result surfaces in the operation's output:
+
+- `/mem search` prefix: `(also searched: '<paraphrase 1>' | '<paraphrase 2>')`
+- `/mem add entry` trailing lines: `auto-tagged: tag1, tag2, ...` and `superseded: #38, #22`
+
+This makes per-agent enrichment auditable in the agent's own transcript without instrumenting the LLM call separately.
 
 ## Traversal
 
@@ -277,11 +359,11 @@ Agents running inside `/v1/orchestrate` (or `/v1/conversations/:id/messages`) ca
 | `/mem entries project,reference` | Same, filtered by type. Hard filter in browse mode. |
 | `/mem entries tag=<name>` | Same, filtered by tag. Hard filter in browse mode. |
 | `/mem entry 42` | One entry with neighbour titles inlined on each edge. |
-| `/mem search <query>` | FTS5 + BM25 ranking; conversation-scoped first, tenant-wide fill. Top 3 hits get content excerpts. |
-| `/mem search <query> --rerank` | Same, then advisor-model rerank of top-10. Costs one LLM call. |
+| `/mem search <query>` | FTS5 + BM25 ranking with NEAR proximity, RRF graduated fusion (conv. + tenant-wide), and (when `memory.intent_routing`) heuristic type-boost. Top 3 hits get content excerpts; entries render with `(YYYY-MM-DD)` and `(superseded)` markers when present. With `memory.search_expand` on, also runs query reformulation and prefixes the output with `(also searched: …)`. |
+| `/mem search <query> --rerank` | Same, then advisor-model rerank of the top-N. Reranker prompt enriches each candidate with `(type · YYYY-MM-DD · superseded)` so it can pick the most-recent non-superseded entry on temporal/knowledge-update questions. Costs one LLM call. |
 | `/mem expand 42 [depth=N]` | BFS subgraph (depth max 2, ≤ 50 nodes). |
 | `/mem density 42` | Degree summary: in/out edges, relation kinds, 2-hop reach. |
-| `/mem add entry <type> <title> [--artifact #<id>]` … `/endmem` | Create a new entry. Body required. Pinned to the active conversation automatically. |
+| `/mem add entry <type> <title> [--artifact #<id>]` … `/endmem` | Create a new entry. Body required. Pinned to the active conversation automatically. With `memory.auto_tag` on, surfaces `auto-tagged: tag1, tag2, …` in the OK response. With `memory.auto_supersede` on, surfaces `superseded: #N, #M` for entries the advisor flagged as factually replaced. |
 | `/mem add link <src_id> <relation> <dst_id>` | Create a directed edge. |
 | `/mem invalidate 42` | Soft-delete: set `valid_to = now()`. Row stays for `as_of` reads. |
 

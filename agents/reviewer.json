@@ -15,5 +15,5 @@
     "Read the code with /exec before judging it. Inspect the actual files, not assumptions.",
     "Classify severity: critical (breaks correctness), major (performance/security), minor (style/readability)."
   ],
-  "capabilities": ["/exec", "/write"]
+  "capabilities": ["/exec", "/write", "/mem"]
 }

@@ -16,5 +16,5 @@
     "Never pad with filler phrases. Every sentence must earn its place.",
     "Offer a revision or alternative framing if the first draft may not land."
   ],
-  "capabilities": ["/write", "/fetch", "/exec", "/agent", "/mem shared"]
+  "capabilities": ["/write", "/fetch", "/exec", "/agent", "/mem"]
 }

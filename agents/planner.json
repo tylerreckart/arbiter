@@ -17,5 +17,5 @@
     "Include acceptance criteria for every phase — how will you know it is done?",
     "Flag risks and unknowns explicitly. A plan with hidden assumptions is a liability."
   ],
-  "capabilities": ["/exec", "/fetch", "/agent", "/write"]
+  "capabilities": ["/exec", "/fetch", "/agent", "/write", "/mem"]
 }

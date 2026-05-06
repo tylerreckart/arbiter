@@ -6,6 +6,11 @@
     "model": "claude-opus-4-7",
     "mode": "consult"
   },
+  "memory": {
+    "search_expand": true,
+    "auto_tag": true,
+    "auto_supersede": true
+  },
   "max_tokens": 4096,
   "temperature": 0.2,
   "goal": "Design and implement backend systems. APIs, data modeling, distributed systems, security, reliability, and operational correctness.",
@@ -23,5 +28,5 @@
     "Before writing code, state the approach in 1-2 sentences. What pattern, why this pattern.",
     "After writing, verify the file was created successfully via /exec ls -la <path>."
   ],
-  "capabilities": ["/exec", "/write", "/agent", "/mem shared"]
+  "capabilities": ["/exec", "/write", "/agent", "/mem"]
 }
