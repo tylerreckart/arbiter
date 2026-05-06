@@ -8,6 +8,31 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Agent2Agent (A2A) protocol v1.0 support — both directions.**
+  Inbound: every tenant agent is reachable as an A2A endpoint via
+  `POST /v1/a2a/agents/:id` (JSON-RPC `message/send`, `message/stream`,
+  `tasks/get`, `tasks/cancel`); each agent's `AgentCard` is published at
+  `GET /v1/a2a/agents/:id/agent-card.json`, with an unauth top-level
+  discovery stub at `GET /.well-known/agent-card.json`. Outbound:
+  arbiter agents can call remote A2A agents listed in
+  `~/.arbiter/a2a_agents.json` via the new `/a2a list|card|call` slash
+  command. The master orchestrator's preamble injects a
+  `REMOTE A2A AGENTS` block alongside the local `AGENTS` roster so
+  `index` can route to either side from the same routing decision.
+  Tasks persist in a new `a2a_tasks` SQLite table; cancel hooks into
+  the existing `InFlightRegistry` so `tasks/cancel` and
+  `POST /v1/requests/:id/cancel` resolve through the same handle.
+  Spec stance: v1.0 only; other versions rejected with
+  `VersionNotSupportedError` (-32007). `tasks/resubscribe` and push
+  notifications are deferred to v2; A2A `contextId` is currently not
+  mapped to conversation rows so `/write --persist`, `/read`, and
+  `/list` are unwired for A2A sessions (files still flow as
+  `TaskArtifactUpdateEvent` frames). See
+  [`docs/api/concepts/a2a.md`](docs/api/concepts/a2a.md) and
+  [`docs/cli/a2a-agents.md`](docs/cli/a2a-agents.md).
+- **`public_base_url` server option** for TLS-fronted deploys —
+  determines the `url` field arbiter advertises in agent cards. Falls
+  back to `http://<Host header>` when unset.
 - **NEAR proximity in memory FTS queries**. For 2-to-6-token queries the
   FTS expression now emits a `NEAR("t1" "t2" ..., 8)` clause between
   the strict phrase and the OR fallback. Bridges the precision/recall

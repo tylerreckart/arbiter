@@ -3877,6 +3877,1308 @@ std::string resolve_a2a_context_id(const a2a::Message& msg) {
     return new_request_id();
 }
 
+// ── Tool-callback factories ────────────────────────────────────────────────
+//
+// Each request — whether routed through /v1/orchestrate or the A2A
+// surface (/v1/a2a/agents/:id) — needs the same tenant-scoped tool
+// callbacks installed on its per-request Orchestrator.  Keeping the
+// closure bodies here in named factories means handle_orchestrate and
+// build_a2a_orchestrator share one source of truth; without this, the
+// two paths drift the moment a callback's contract changes.
+//
+// Factories are TU-local and live in the outer anonymous namespace.
+// Helpers they reference (mem_parse_id, format_ts_yyyymmdd,
+// memory_relation_is_valid, sanitize_artifact_path, brave_search,
+// kArtifactPerConversationMaxBytes) are declared earlier in this TU.
+
+MemoryScratchpadInvoker make_memory_scratchpad_callback(int64_t tenant_id,
+                                                          TenantStore* store) {
+    return [tenant_id, store](const std::string& op,
+                                const std::string& agent_id,
+                                const std::string& args) -> std::string {
+        // Per-agent ops use the calling agent's id; shared-* use the
+        // empty scope key.  Output strings match the legacy file-based
+        // responses so the model sees the same [/mem write] OK: ...
+        // framing it always has.
+        if (op == "read") {
+            return store->read_scratchpad(tenant_id, agent_id);
+        }
+        if (op == "shared-read") {
+            return store->read_scratchpad(tenant_id, std::string{});
+        }
+        if (op == "write") {
+            int64_t sz = store->append_scratchpad(tenant_id, agent_id, args);
+            return "OK: memory written (" + std::to_string(sz) +
+                   " bytes total in scratchpad)";
+        }
+        if (op == "shared-write") {
+            int64_t sz = store->append_scratchpad(tenant_id, std::string{}, args);
+            return "OK (" + std::to_string(sz) + " bytes total)";
+        }
+        if (op == "clear") {
+            store->clear_scratchpad(tenant_id, agent_id);
+            return "OK: memory cleared";
+        }
+        if (op == "shared-clear") {
+            store->clear_scratchpad(tenant_id, std::string{});
+            return "OK";
+        }
+        return "ERR: unknown scratchpad op '" + op + "'";
+    };
+}
+
+// Construct a per-request MCP Manager from `opts.mcp_servers_path`.
+// Always returns a non-null Manager so callers can assume the invoker
+// has something to call into; an empty registry simply yields a Manager
+// with zero servers and the dispatcher renders a clear "no MCP servers
+// configured" message on /mcp tools.  Registry-load failures are logged
+// via `log_error` (typically the request's SSE error sink) and become
+// the empty-Manager case.
+std::shared_ptr<mcp::Manager> make_mcp_manager(
+    const ApiServerOptions& opts,
+    const std::function<void(const std::string&)>& log_error) {
+
+    std::shared_ptr<mcp::Manager> mgr;
+    if (!opts.mcp_servers_path.empty()) {
+        try {
+            auto specs = mcp::load_server_registry(opts.mcp_servers_path);
+            mgr = std::make_shared<mcp::Manager>(std::move(specs));
+        } catch (const std::exception& e) {
+            if (log_error) log_error(std::string("MCP registry load failed: ") + e.what());
+        }
+    }
+    if (!mgr) mgr = std::make_shared<mcp::Manager>(std::vector<mcp::ServerSpec>{});
+    return mgr;
+}
+
+MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
+    return [mcp_mgr](const std::string& kind, const std::string& args) -> std::string {
+        // /mcp tools  [server]
+        // /mcp call   <server> <tool> [json_args]
+        //
+        // The /mcp slash dispatcher in commands.cpp normalises `kind`
+        // to "tools" or "call" and hands us the rest of the line as
+        // `args`.  We're responsible for parsing args and rendering
+        // the response body.
+        auto trim = [](std::string s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+            return s;
+        };
+
+        if (kind == "tools") {
+            std::string server = trim(args);
+            auto names = mcp_mgr->server_names();
+            if (names.empty()) {
+                return "(no MCP servers configured for this deployment — "
+                       "set mcp_servers_path in ApiServerOptions and add an entry "
+                       "in the registry JSON.  See docs/api/concepts/mcp.md.)\n";
+            }
+            std::ostringstream out;
+            std::vector<std::string> targets;
+            if (server.empty()) {
+                targets = names;
+            } else if (mcp_mgr->has(server)) {
+                targets.push_back(server);
+            } else {
+                out << "ERR: no MCP server '" << server << "' configured. "
+                    << "Available: ";
+                for (size_t i = 0; i < names.size(); ++i) {
+                    if (i) out << ", ";
+                    out << names[i];
+                }
+                out << "\n";
+                return out.str();
+            }
+            for (auto& s : targets) {
+                out << "[" << s << "]\n";
+                try {
+                    auto& cli = mcp_mgr->client(s);
+                    auto& tools = cli.tools();
+                    if (tools.empty()) {
+                        out << "  (server returned no tools)\n";
+                    }
+                    for (auto& t : tools) {
+                        out << "  " << t.name;
+                        if (!t.description.empty()) {
+                            // First line of description only — the full
+                            // schema is verbose enough that an agent
+                            // querying tools should follow up with a
+                            // narrower /mcp tools <server> if it
+                            // already knows the namespace.
+                            std::string d = t.description;
+                            auto nl = d.find('\n');
+                            if (nl != std::string::npos) d.resize(nl);
+                            if (d.size() > 120) { d.resize(117); d += "..."; }
+                            out << " — " << d;
+                        }
+                        out << "\n";
+                    }
+                } catch (const std::exception& e) {
+                    out << "  ERR: " << e.what() << "\n";
+                }
+            }
+            return out.str();
+        }
+
+        if (kind == "call") {
+            // Parse: <server> <tool> [json_args]
+            std::istringstream iss(args);
+            std::string server, tool;
+            iss >> server >> tool;
+            std::string json_args;
+            std::getline(iss, json_args);
+            json_args = trim(json_args);
+
+            if (server.empty() || tool.empty()) {
+                return "ERR: usage: /mcp call <server> <tool> [json_args]\n";
+            }
+            if (!mcp_mgr->has(server)) {
+                auto names = mcp_mgr->server_names();
+                std::ostringstream out;
+                out << "ERR: no MCP server '" << server << "' configured.";
+                if (!names.empty()) {
+                    out << " Available: ";
+                    for (size_t i = 0; i < names.size(); ++i) {
+                        if (i) out << ", ";
+                        out << names[i];
+                    }
+                }
+                out << "\n";
+                return out.str();
+            }
+
+            std::shared_ptr<JsonValue> arg_obj;
+            if (!json_args.empty()) {
+                try { arg_obj = json_parse(json_args); }
+                catch (const std::exception& e) {
+                    return std::string("ERR: invalid JSON args: ") + e.what() + "\n";
+                }
+                if (!arg_obj || !arg_obj->is_object()) {
+                    return "ERR: tool args must be a JSON object (e.g. "
+                           "{\"url\":\"https://example.com\"})\n";
+                }
+            }
+
+            try {
+                auto& cli = mcp_mgr->client(server);
+                auto result = cli.call_tool(tool, arg_obj);
+                return mcp::render_tool_result(result);
+            } catch (const std::exception& e) {
+                return std::string("ERR: ") + e.what() + "\n";
+            }
+        }
+
+        return "ERR: unknown /mcp subcommand";
+    };
+}
+
+// Returns nullptr when the configured provider isn't supported or no
+// API key is set — the dispatcher then surfaces its own "search
+// unavailable" ERR with a more useful message than this layer can
+// generate.
+SearchInvoker make_search_invoker_callback(const ApiServerOptions& opts) {
+    const std::string provider = opts.search_provider.empty()
+                                    ? std::string("brave")
+                                    : opts.search_provider;
+    const std::string key      = opts.search_api_key;
+    if (provider == "brave" && !key.empty()) {
+        return [key](const std::string& query, int top_n) -> std::string {
+            return brave_search(query, key, top_n);
+        };
+    }
+    if (!provider.empty() && provider != "brave" && !key.empty()) {
+        return [provider](const std::string&, int) -> std::string {
+            return "ERR: search provider '" + provider +
+                   "' is configured but not implemented in this "
+                   "build.  Only 'brave' is supported in v1.";
+        };
+    }
+    return nullptr;
+}
+
+// Artifact-store callbacks — only meaningful when conversation_id > 0.
+// /v1/orchestrate without a thread (the legacy raw form) leaves these
+// null on purpose: /write --persist falls back to ephemeral SSE-only
+// capture and /read / /list return ERR with a clear "no conversation
+// context" hint.
+
+ArtifactWriter make_artifact_writer_callback(int64_t tenant_id,
+                                              int64_t conversation_id,
+                                              TenantStore* store) {
+    return [tenant_id, conversation_id, store](const std::string& raw_path,
+                                                 const std::string& content) -> std::string {
+        std::string err;
+        auto canonical = sanitize_artifact_path(raw_path, err);
+        if (!canonical) {
+            return std::string("ERR: invalid path: ") + err;
+        }
+        // mime_type stays default ('application/octet-stream') — the
+        // agent doesn't know what to declare and we don't sniff in v1.
+        // HTTP callers can set it explicitly via the POST endpoint.
+        auto put = store->put_artifact(tenant_id, conversation_id, *canonical,
+                                         content, std::string{});
+        std::ostringstream out;
+        switch (put.status) {
+            case PutArtifactResult::Status::Created:
+            case PutArtifactResult::Status::Updated:
+                out << (put.status == PutArtifactResult::Status::Created
+                        ? "OK: persisted "
+                        : "OK: updated ")
+                    << put.record->size << " bytes (artifact #"
+                    << put.record->id << ", "
+                    << put.conversation_used_bytes << " of "
+                    << kArtifactPerConversationMaxBytes
+                    << " bytes used in this conversation)";
+                break;
+            case PutArtifactResult::Status::QuotaExceeded:
+                out << "ERR: " << put.error_msg;
+                break;
+            case PutArtifactResult::Status::PathRejected:
+                out << "ERR: " << put.error_msg;
+                break;
+        }
+        return out.str();
+    };
+}
+
+ArtifactReader make_artifact_reader_callback(int64_t tenant_id,
+                                              int64_t conversation_id,
+                                              TenantStore* store) {
+    return [tenant_id, conversation_id, store](const std::string& raw_path,
+                                                 int64_t artifact_id,
+                                                 int64_t via_memory_id) -> std::string {
+        // Path-form: same-conversation lookup.  Sanitiser gates bad
+        // paths before we touch the DB.
+        if (artifact_id == 0) {
+            std::string err;
+            auto canonical = sanitize_artifact_path(raw_path, err);
+            if (!canonical) return std::string("ERR: invalid path: ") + err;
+
+            auto meta = store->get_artifact_meta_by_path(tenant_id,
+                                                          conversation_id, *canonical);
+            if (!meta) {
+                return std::string("ERR: '") + *canonical +
+                       "' not found in this conversation's artifacts";
+            }
+            auto blob = store->get_artifact_content(tenant_id, meta->id);
+            if (!blob) {
+                return std::string("ERR: artifact #") +
+                       std::to_string(meta->id) + " content missing";
+            }
+            return *blob;
+        }
+
+        // Id-form: tenant-scoped lookup.  Cross-conversation reads
+        // require a `via=mem:<id>` capability that points at this
+        // artifact_id from a memory entry the tenant owns.  Same-
+        // conversation reads are allowed without citation — same trust
+        // boundary as path-form.
+        auto art = store->get_artifact_meta(tenant_id, artifact_id);
+        if (!art) {
+            return std::string("ERR: artifact #") +
+                   std::to_string(artifact_id) +
+                   " not found for this tenant";
+        }
+        if (art->conversation_id != conversation_id) {
+            if (via_memory_id == 0) {
+                return std::string("ERR: artifact #") +
+                       std::to_string(artifact_id) +
+                       " is in a different conversation; cite the "
+                       "memory entry that links it: "
+                       "/read #" + std::to_string(artifact_id) +
+                       " via=mem:<entry_id>";
+            }
+            auto mem = store->get_entry(tenant_id, via_memory_id);
+            if (!mem) {
+                return std::string("ERR: via=mem:") +
+                       std::to_string(via_memory_id) +
+                       " — memory entry not found for this tenant";
+            }
+            if (mem->artifact_id != artifact_id) {
+                return std::string("ERR: memory entry #") +
+                       std::to_string(via_memory_id) +
+                       " does not reference artifact #" +
+                       std::to_string(artifact_id) +
+                       " (its artifact_id=" +
+                       std::to_string(mem->artifact_id) + ")";
+            }
+        }
+        auto blob = store->get_artifact_content(tenant_id, artifact_id);
+        if (!blob) {
+            return std::string("ERR: artifact #") +
+                   std::to_string(artifact_id) +
+                   " content missing";
+        }
+        return *blob;
+    };
+}
+
+ArtifactLister make_artifact_lister_callback(int64_t tenant_id,
+                                              int64_t conversation_id,
+                                              TenantStore* store) {
+    return [tenant_id, conversation_id, store]() -> std::string {
+        auto rows = store->list_artifacts_conversation(tenant_id,
+                                                         conversation_id, 200);
+        if (rows.empty()) return std::string{};
+        std::ostringstream out;
+        for (auto& r : rows) {
+            out << r.path << "  (" << r.size
+                << " bytes, mime=" << r.mime_type
+                << ", id=" << r.id << ")\n";
+        }
+        return out.str();
+    };
+}
+
+// Structured-memory reader / writer.  These two callbacks are the
+// largest in arbiter (the reader alone is ~640 lines of search /
+// formatting / ranking).  Lifted into named factories so both
+// /v1/orchestrate and the A2A handlers can install identical
+// behavior without 900 lines of duplication.
+
+StructuredMemoryReader make_structured_memory_reader_callback(
+    TenantStore& tenants, int64_t reader_tenant_id,
+    int64_t reader_conversation_id, Orchestrator* orch_ptr) {
+    return
+        [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
+        (const std::string& kind, const std::string& args,
+         const std::string& caller_id) -> std::string {
+            // Helper formatters reused across kinds.
+            auto fmt_tags = [](const std::string& tags_json) -> std::string {
+                try {
+                    auto v = json_parse(tags_json);
+                    if (!v || !v->is_array() || v->as_array().empty()) return "";
+                    std::string out = " [";
+                    bool first = true;
+                    for (auto& t : v->as_array()) {
+                        if (!t || !t->is_string()) continue;
+                        if (!first) out += ", ";
+                        out += t->as_string();
+                        first = false;
+                    }
+                    out += "]";
+                    return out;
+                } catch (...) { return ""; }
+            };
+            auto fmt_entry_line = [&](const MemoryEntry& e) -> std::string {
+                std::ostringstream l;
+                l << "- #" << e.id << "  [" << e.type << "]";
+                // Surface the entry's authored date when present.  Lets
+                // the agent reason about recency and "what was true
+                // when" without an extra /mem entry round trip.  Same
+                // YYYY-MM-DD form the reranker sees in its prompt.
+                std::string ts = format_ts_yyyymmdd(e.created_at);
+                if (!ts.empty()) l << " (" << ts;
+                if (e.valid_to > 0) {
+                    if (ts.empty()) l << " (";
+                    else            l << " · ";
+                    l << "superseded";
+                    std::string inv = format_ts_yyyymmdd(e.valid_to);
+                    if (!inv.empty()) l << " " << inv;
+                }
+                if (!ts.empty() || e.valid_to > 0) l << ")";
+                l << "  " << e.title << fmt_tags(e.tags_json);
+                if (!e.source.empty()) l << "  (source: " << e.source << ")";
+                return l.str();
+            };
+
+            // Helper: case-insensitive substring count for ranking.
+            auto ci_count = [](const std::string& hay, const std::string& needle) -> int {
+                if (needle.empty() || hay.empty() || needle.size() > hay.size()) return 0;
+                int n = 0;
+                for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+                    bool match = true;
+                    for (size_t j = 0; j < needle.size(); ++j) {
+                        char a = hay[i + j], b = needle[j];
+                        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+                        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+                        if (a != b) { match = false; break; }
+                    }
+                    if (match) ++n;
+                }
+                return n;
+            };
+            // Helper: split a query into whitespace-separated terms; used by
+            // /mem search so multi-word queries score by the sum of per-term
+            // hits, giving "more terms matched" a higher rank than a single
+            // long substring match.
+            auto split_terms = [](const std::string& q) -> std::vector<std::string> {
+                std::vector<std::string> out;
+                size_t i = 0;
+                while (i < q.size()) {
+                    while (i < q.size() && (q[i] == ' ' || q[i] == '\t')) ++i;
+                    size_t j = i;
+                    while (j < q.size() && q[j] != ' ' && q[j] != '\t') ++j;
+                    if (j > i) out.push_back(q.substr(i, j - i));
+                    i = j;
+                }
+                return out;
+            };
+
+            if (kind == "pipeline-entries") {
+                // Internal probe used by the orchestrator's delegation
+                // path to seed sub-agents with a "what did siblings just
+                // write?" snapshot.  Distinct from agent-facing /mem
+                // entries (which is unscoped tenant-wide) because:
+                //   • Tenant-wide bleed exposes residue from PRIOR runs
+                //     of the same scenario, encouraging the sub-agent
+                //     to paraphrase old entries as if they were fresh
+                //     siblings' output.
+                //   • Pipeline memory needs to be cheap (one DB call
+                //     per /agent invocation), so the cap is small.
+                // Conversation-scoped + recent-N keeps the snapshot
+                // tight: only what *this* turn's siblings produced.
+                if (reader_conversation_id <= 0) {
+                    // No conversation context (raw /v1/orchestrate, CLI).
+                    // Without a conversation we can't isolate "this run"
+                    // entries, so return empty rather than dumping the
+                    // tenant-wide history into delegation context.
+                    return "(no entries)";
+                }
+                TenantStore::EntryFilter f;
+                f.limit = 15;
+                f.conversation_id = reader_conversation_id;
+                auto entries = tenants.list_entries(reader_tenant_id, f);
+                if (entries.empty()) return "(no entries)";
+                std::ostringstream out;
+                out << entries.size() << " entries (newest first):\n";
+                for (auto& e : entries) out << fmt_entry_line(e) << "\n";
+                return out.str();
+            }
+
+            if (kind == "entries") {
+                // /mem entries [<type>[,<type>...]]
+                // /mem entries tag=<tagname>
+                // The bare-arg comma list is preserved for backward compat;
+                // the `tag=` form lets agents pull a curated subset by the
+                // facet they're most likely to organise around.
+                TenantStore::EntryFilter f;
+                f.limit  = 100;
+
+                std::string a = args;
+                while (!a.empty() && a.front() == ' ') a.erase(0, 1);
+                while (!a.empty() && a.back()  == ' ') a.pop_back();
+
+                if (a.size() > 4 && a.compare(0, 4, "tag=") == 0) {
+                    f.tag = a.substr(4);
+                    while (!f.tag.empty() && f.tag.front() == ' ') f.tag.erase(0, 1);
+                    while (!f.tag.empty() && f.tag.back()  == ' ') f.tag.pop_back();
+                    if (f.tag.empty()) return "ERR: usage: /mem entries tag=<tagname>";
+                } else if (!a.empty()) {
+                    // Comma-sep type filter.
+                    size_t start = 0;
+                    while (start <= a.size()) {
+                        size_t comma = a.find(',', start);
+                        std::string tok = a.substr(
+                            start, comma == std::string::npos ? std::string::npos
+                                                              : comma - start);
+                        while (!tok.empty() && tok.front() == ' ') tok.erase(0, 1);
+                        while (!tok.empty() && tok.back()  == ' ') tok.pop_back();
+                        if (!tok.empty()) f.types.push_back(tok);
+                        if (comma == std::string::npos) break;
+                        start = comma + 1;
+                    }
+                }
+                auto entries = tenants.list_entries(reader_tenant_id, f);
+                if (entries.empty()) {
+                    if (!f.tag.empty())
+                        return "(no entries tagged '" + f.tag + "')";
+                    return "(no entries)";
+                }
+                std::ostringstream out;
+                out << entries.size() << " entries (newest first):\n";
+                for (auto& e : entries) out << fmt_entry_line(e) << "\n";
+                return out.str();
+            }
+
+            if (kind == "entry") {
+                int64_t id = mem_parse_id(args);
+                if (id <= 0) return "ERR: usage: /mem entry <id>";
+                auto e = tenants.get_entry(reader_tenant_id, id);
+                if (!e)
+                    return "ERR: entry " + std::to_string(id) + " not found";
+                std::ostringstream out;
+                out << fmt_entry_line(*e) << "\n";
+                if (!e->content.empty()) out << "\n" << e->content << "\n";
+                // Linked artifact: surface metadata and the literal
+                // /read command that grants access.  Same-conversation
+                // artifacts can be read by path or by id without a via=
+                // clause; cross-conversation artifacts require the
+                // memory citation, and the suggested command bakes it
+                // in so the agent can copy verbatim.
+                if (e->artifact_id > 0) {
+                    auto art = tenants.get_artifact_meta(reader_tenant_id,
+                                                          e->artifact_id);
+                    if (art) {
+                        out << "\nlinked artifact:\n";
+                        out << "  #" << art->id << "  " << art->path
+                            << "  (" << art->size << " bytes, mime="
+                            << art->mime_type << ")\n";
+                        if (art->conversation_id == reader_conversation_id) {
+                            out << "  fetch with: /read " << art->path
+                                << "   (or /read #" << art->id << ")\n";
+                        } else {
+                            out << "  cross-conversation — fetch with: "
+                                << "/read #" << art->id
+                                << " via=mem:" << e->id << "\n";
+                        }
+                    } else {
+                        out << "\nlinked artifact:\n"
+                            << "  (link expired — artifact #"
+                            << e->artifact_id << " no longer exists)\n";
+                    }
+                }
+                // Edges: relations where this entry is source OR target.
+                // Resolve neighbour titles in a small ad-hoc cache so an
+                // entry with N edges to the same neighbour doesn't
+                // N-times-fetch the same row.
+                auto out_edges = tenants.list_relations(reader_tenant_id, id, 0,
+                                                        std::string{}, 200);
+                auto in_edges  = tenants.list_relations(reader_tenant_id, 0, id,
+                                                        std::string{}, 200);
+                std::map<int64_t, std::pair<std::string, std::string>> title_cache;
+                auto resolve = [&](int64_t nid) -> std::pair<std::string, std::string> {
+                    auto it = title_cache.find(nid);
+                    if (it != title_cache.end()) return it->second;
+                    auto neighbour = tenants.get_entry(reader_tenant_id, nid);
+                    if (!neighbour) {
+                        title_cache[nid] = {"(unavailable)", ""};
+                    } else {
+                        title_cache[nid] = {neighbour->title, neighbour->type};
+                    }
+                    return title_cache[nid];
+                };
+                if (!out_edges.empty()) {
+                    out << "\noutgoing:\n";
+                    for (auto& r : out_edges) {
+                        auto [title, type] = resolve(r.target_id);
+                        out << "  --[" << r.relation << "]--> #" << r.target_id
+                            << "  " << title;
+                        if (!type.empty()) out << " (" << type << ")";
+                        out << "\n";
+                    }
+                }
+                if (!in_edges.empty()) {
+                    out << "\nincoming:\n";
+                    for (auto& r : in_edges) {
+                        auto [title, type] = resolve(r.source_id);
+                        out << "  #" << r.source_id << "  " << title;
+                        if (!type.empty()) out << " (" << type << ")";
+                        out << "  --[" << r.relation << "]-->\n";
+                    }
+                }
+                return out.str();
+            }
+
+            if (kind == "search") {
+                // FTS5 + Okapi-BM25 ranking via TenantStore.  When the
+                // request is part of a conversation, search runs through
+                // search_entries_graduated: conversation-scoped hits
+                // come first (locality bias), tenant-wide hits fill out
+                // the page if conversation-scoped didn't reach the cap.
+                // Top 3 by rank get their content excerpted inline so a
+                // single /mem search resolves into something the agent
+                // can actually read without follow-up /mem entry calls.
+                //
+                // Optional `--rerank` flag routes the top-10 candidates
+                // through the calling agent's advisor_model for a final
+                // reorder.  Costs one LLM call; only worth it on
+                // ambiguous queries where BM25 produces close-scored
+                // candidates that need semantic disambiguation.
+
+                // Strip --rerank from anywhere in the args; remaining
+                // text is the query.  Multiple instances are tolerated
+                // (rare, but someone'll do it).
+                std::string q = args;
+                bool rerank = false;
+                {
+                    const std::string flag = "--rerank";
+                    size_t p;
+                    while ((p = q.find(flag)) != std::string::npos) {
+                        rerank = true;
+                        size_t end = p + flag.size();
+                        // Eat one trailing space so we don't leave a
+                        // double-space in the middle.
+                        if (end < q.size() && q[end] == ' ') ++end;
+                        size_t begin = p;
+                        if (begin > 0 && q[begin - 1] == ' ') --begin;
+                        q.erase(begin, end - begin);
+                    }
+                }
+                while (!q.empty() && q.front() == ' ') q.erase(0, 1);
+                while (!q.empty() && q.back()  == ' ') q.pop_back();
+                if (q.empty()) return "ERR: usage: /mem search <query> [--rerank]";
+
+                // Rerank widens the candidate pool internally (25)
+                // and trims to a smaller visible cap (10) after the
+                // advisor reorders.  The pool gives the reranker
+                // headroom to promote real matches from positions
+                // 11..25; the visible cap keeps the agent's reply
+                // tractable.  Non-rerank path stays at 50 (the
+                // renderer's natural cap).
+                static constexpr int kAgentRerankPool   = 25;
+                static constexpr int kAgentRerankReturn = 10;
+
+                // Pull the caller's Constitution so we can consult its
+                // memory-enrichment toggles.  get_constitution throws
+                // out_of_range for unknown ids; the master "index" id
+                // is always loaded, and any caller that reached this
+                // closure was registered via Orchestrator's run loop.
+                // If somehow we get a stale id we fall through to the
+                // pre-config behavior — defensive in_try block, no
+                // user-visible error for what is at worst a missed
+                // optimization.
+                Constitution::MemoryConfig mc;
+                std::string caller_advisor_model;
+                try {
+                    const auto& cc = orch_ptr->get_constitution(caller_id);
+                    mc = cc.memory;
+                    caller_advisor_model = cc.advisor.model;
+                    if (caller_advisor_model.empty())
+                        caller_advisor_model = cc.advisor_model;
+                } catch (...) {
+                    // mc keeps defaults — search still runs, just
+                    // without the per-agent enrichment.
+                }
+
+                TenantStore::EntryFilter f;
+                f.q               = q;
+                f.conversation_id = reader_conversation_id;
+                f.limit           = rerank ? kAgentRerankPool : 50;
+
+                // Question-intent routing — heuristic, no LLM cost.
+                // Soft-boost types matching the question's intent (the
+                // existing 1.3x BM25 multiplier) so a "preference"
+                // query surfaces user/feedback rows above context
+                // rows.  Caller-supplied f.types would override, but
+                // the agent path doesn't accept type filters today —
+                // f.types is always empty here.
+                if (mc.intent_routing) {
+                    f.types = classify_question_intent(q);
+                }
+
+                // Closure that runs one query through the same FTS
+                // path, used both for the original and (when
+                // search_expand is on) for paraphrases.  Preserves the
+                // intent-routing per variant — paraphrases that shift
+                // the question shape get appropriate type boosts.
+                auto run_one = [&](const std::string& query_str)
+                    -> std::vector<MemoryEntry> {
+                    TenantStore::EntryFilter ef = f;
+                    ef.q = query_str;
+                    if (mc.intent_routing && ef.types.empty()) {
+                        ef.types = classify_question_intent(query_str);
+                    }
+                    return (reader_conversation_id > 0)
+                        ? tenants.search_entries_graduated(reader_tenant_id, ef)
+                        : tenants.list_entries(reader_tenant_id, ef);
+                };
+
+                std::vector<MemoryEntry> entries;
+                std::string expand_note;
+                std::vector<std::string> expansion_used;
+                if (mc.search_expand && !caller_advisor_model.empty()) {
+                    // Query reformulation.  Agent's advisor model
+                    // generates 2 paraphrases; we run all 3 variants
+                    // through FTS and RRF-fuse the rankings.
+                    // No-embedding alternative to dense retrieval —
+                    // closes the gap on paraphrased queries while
+                    // staying inside the lean-binary constraint.
+                    auto expander = orch_ptr->make_advisor_invoker(caller_id);
+                    auto exp = expand_query_with_advisor(expander, q);
+                    expansion_used = exp.queries;
+                    if (!exp.note.empty()) expand_note = exp.note;
+
+                    if (!expansion_used.empty()) {
+                        std::vector<std::vector<MemoryEntry>> rankings;
+                        std::vector<double> weights;
+                        rankings.push_back(run_one(q));
+                        weights.push_back(1.0);
+                        for (auto& pq : expansion_used) {
+                            rankings.push_back(run_one(pq));
+                            weights.push_back(0.7);
+                        }
+                        const int fused_limit = f.limit;
+                        entries = rrf_fuse_rankings(std::move(rankings),
+                                                     weights, fused_limit);
+                    } else {
+                        // Expansion failed — single-query fallback.
+                        entries = run_one(q);
+                    }
+                } else {
+                    entries = run_one(q);
+                }
+
+                if (entries.empty()) {
+                    return "(no entries match '" + q + "')";
+                }
+
+                std::string rerank_note;
+                if (rerank && entries.size() > 1) {
+                    auto advisor = orch_ptr->make_advisor_invoker(caller_id);
+                    auto rr = rerank_with_advisor(advisor, q, std::move(entries));
+                    entries = std::move(rr.entries);
+                    if (!rr.note.empty()) rerank_note = rr.note + "\n";
+                }
+                // Trim the wider pool back to the visible cap, whether
+                // rerank applied or not — caller asked for the rerank
+                // path, the pool was internal to that.
+                if (rerank && entries.size() >
+                              static_cast<size_t>(kAgentRerankReturn)) {
+                    entries.resize(
+                        static_cast<size_t>(kAgentRerankReturn));
+                }
+
+                std::ostringstream out;
+                if (!rerank_note.empty()) out << rerank_note;
+                if (!expand_note.empty()) out << expand_note << "\n";
+                if (!expansion_used.empty()) {
+                    // Tell the agent which paraphrases the orchestrator
+                    // also searched.  Useful for debugging "why did I
+                    // get back this set?" — and lets the agent see the
+                    // recall surface its memory config opted into.
+                    out << "(also searched: ";
+                    for (size_t i = 0; i < expansion_used.size(); ++i) {
+                        if (i) out << " | ";
+                        out << "'" << expansion_used[i] << "'";
+                    }
+                    out << ")\n";
+                }
+                out << entries.size() << " match"
+                    << (entries.size() == 1 ? "" : "es")
+                    << " for '" << q << "' (top by relevance):\n";
+
+                static constexpr size_t kInlineTopN  = 3;
+                static constexpr size_t kExcerptBytes = 480;
+                for (size_t i = 0; i < entries.size(); ++i) {
+                    const auto& e = entries[i];
+                    out << fmt_entry_line(e);
+                    // Mark conversation-scoped hits so the agent can tell
+                    // local context from broader tenant memory at a glance.
+                    if (reader_conversation_id > 0 &&
+                        e.conversation_id == reader_conversation_id) {
+                        out << "  [conversation]";
+                    }
+                    out << "\n";
+                    if (i < kInlineTopN && !e.content.empty()) {
+                        std::string excerpt = e.content;
+                        if (excerpt.size() > kExcerptBytes) {
+                            excerpt.resize(kExcerptBytes);
+                            excerpt += " ...";
+                        }
+                        std::ostringstream indented;
+                        size_t start = 0;
+                        while (start < excerpt.size()) {
+                            size_t nl = excerpt.find('\n', start);
+                            indented << "    | "
+                                     << excerpt.substr(start,
+                                          nl == std::string::npos
+                                              ? std::string::npos
+                                              : nl - start)
+                                     << "\n";
+                            if (nl == std::string::npos) break;
+                            start = nl + 1;
+                        }
+                        out << indented.str();
+                    }
+                }
+                return out.str();
+            }
+
+            if (kind == "expand") {
+                // /mem expand <id> [depth=N]
+                // BFS the subgraph around <id> up to depth N (max 2,
+                // default 1), capped at 50 nodes total.  One round trip
+                // for what would otherwise be N+1 sequential /mem entry
+                // calls.  Renders a tree-ish structure: seed → 1-hop →
+                // 2-hop, with the relation labels on each edge.
+                std::string a = args;
+                while (!a.empty() && a.front() == ' ') a.erase(0, 1);
+                while (!a.empty() && a.back()  == ' ') a.pop_back();
+                if (a.empty()) {
+                    return "ERR: usage: /mem expand <id> [depth=N]";
+                }
+                int64_t seed_id = 0;
+                int depth = 1;
+                {
+                    // Split on whitespace so the first token can be
+                    // run through mem_parse_id (which tolerates a leading '#').
+                    // Any subsequent tokens can carry depth=N.
+                    std::istringstream iss(a);
+                    std::string id_tok;
+                    iss >> id_tok;
+                    seed_id = mem_parse_id(id_tok);
+                    std::string flag;
+                    if (iss >> flag) {
+                        const std::string p = "depth=";
+                        if (flag.compare(0, p.size(), p) == 0) {
+                            try { depth = std::stoi(flag.substr(p.size())); }
+                            catch (...) { depth = 1; }
+                        }
+                    }
+                }
+                if (seed_id <= 0) return "ERR: bad seed id";
+                if (depth < 1) depth = 1;
+                if (depth > 2) depth = 2;
+
+                auto seed = tenants.get_entry(reader_tenant_id, seed_id);
+                if (!seed)
+                    return "ERR: entry " + std::to_string(seed_id) + " not found";
+
+                // BFS with a 50-node cap; node order tracks discovery so
+                // deduped neighbours render under the closer hop.
+                static constexpr size_t kMaxNodes = 50;
+                std::map<int64_t, MemoryEntry> nodes;       // id → entry
+                std::map<int64_t, int> hop_of;              // id → 0/1/2
+                std::vector<MemoryRelation> all_edges;
+                std::vector<int64_t> frontier{seed_id};
+                nodes[seed_id] = *seed;
+                hop_of[seed_id] = 0;
+
+                for (int d = 0; d < depth && nodes.size() < kMaxNodes; ++d) {
+                    std::vector<int64_t> next_frontier;
+                    for (int64_t nid : frontier) {
+                        if (nodes.size() >= kMaxNodes) break;
+                        auto outs = tenants.list_relations(reader_tenant_id,
+                                                           nid, 0, std::string{},
+                                                           50);
+                        auto ins  = tenants.list_relations(reader_tenant_id,
+                                                           0, nid, std::string{},
+                                                           50);
+                        auto add_edge_target = [&](int64_t target) {
+                            if (nodes.size() >= kMaxNodes) return;
+                            if (nodes.count(target)) return;
+                            auto neighbour = tenants.get_entry(reader_tenant_id, target);
+                            if (!neighbour) return;
+                            nodes[target] = *neighbour;
+                            hop_of[target] = d + 1;
+                            next_frontier.push_back(target);
+                        };
+                        for (auto& r : outs) {
+                            add_edge_target(r.target_id);
+                            all_edges.push_back(r);
+                        }
+                        for (auto& r : ins) {
+                            add_edge_target(r.source_id);
+                            all_edges.push_back(r);
+                        }
+                    }
+                    frontier = std::move(next_frontier);
+                }
+
+                // Render: by hop, with nodes and edges grouped per hop.
+                // Each edge appears once even if both endpoints are in
+                // the subgraph; we pick the lower-hop endpoint as the
+                // anchor for display.
+                std::ostringstream out;
+                out << "Subgraph around #" << seed_id << " (depth=" << depth
+                    << ", " << nodes.size() << " nodes):\n";
+                out << "  hop 0: " << fmt_entry_line(*seed).substr(2) << "\n";
+
+                for (int d = 1; d <= depth; ++d) {
+                    bool first = true;
+                    for (auto& [id, e] : nodes) {
+                        if (hop_of[id] != d) continue;
+                        if (first) {
+                            out << "\n  hop " << d << ":\n";
+                            first = false;
+                        }
+                        out << "    " << fmt_entry_line(e).substr(2) << "\n";
+                    }
+                }
+                if (!all_edges.empty()) {
+                    out << "\n  edges:\n";
+                    // Dedupe by id (list_relations may return overlaps when
+                    // a node is queried as both source and target on
+                    // different hops).
+                    std::set<int64_t> seen_edges;
+                    for (auto& r : all_edges) {
+                        if (!seen_edges.insert(r.id).second) continue;
+                        if (!nodes.count(r.source_id) || !nodes.count(r.target_id)) continue;
+                        out << "    #" << r.source_id << " --["
+                            << r.relation << "]--> #" << r.target_id << "\n";
+                    }
+                }
+                if (nodes.size() >= kMaxNodes) {
+                    out << "\n  (subgraph capped at " << kMaxNodes
+                        << " nodes — narrow with /mem entry <id> to dig further)\n";
+                }
+                return out.str();
+            }
+
+            if (kind == "density") {
+                // /mem density <id>
+                // Quick "is this part of the graph dense or sparse?"
+                // probe — out-degree, in-degree, distinct relation kinds,
+                // and 2-hop reach.  Cheap follow-up before doing redundant
+                // research on a topic the graph already covers.
+                int64_t id = mem_parse_id(args);
+                if (id <= 0) return "ERR: usage: /mem density <id>";
+                auto e = tenants.get_entry(reader_tenant_id, id);
+                if (!e)
+                    return "ERR: entry " + std::to_string(id) + " not found";
+
+                auto outs = tenants.list_relations(reader_tenant_id, id, 0,
+                                                    std::string{}, 200);
+                auto ins  = tenants.list_relations(reader_tenant_id, 0, id,
+                                                    std::string{}, 200);
+
+                std::set<std::string> relation_kinds;
+                std::set<int64_t> hop1_nodes;
+                for (auto& r : outs) {
+                    relation_kinds.insert(r.relation);
+                    hop1_nodes.insert(r.target_id);
+                }
+                for (auto& r : ins) {
+                    relation_kinds.insert(r.relation);
+                    hop1_nodes.insert(r.source_id);
+                }
+
+                // 2-hop reach: count unique nodes (not equal to seed) that
+                // any 1-hop neighbour edges touch.  Caps walk at 50
+                // 1-hop nodes to keep the probe cheap.
+                std::set<int64_t> hop2_nodes;
+                int probed = 0;
+                for (int64_t n : hop1_nodes) {
+                    if (++probed > 50) break;
+                    auto o = tenants.list_relations(reader_tenant_id, n, 0,
+                                                     std::string{}, 50);
+                    auto i = tenants.list_relations(reader_tenant_id, 0, n,
+                                                     std::string{}, 50);
+                    for (auto& r : o) if (r.target_id != id) hop2_nodes.insert(r.target_id);
+                    for (auto& r : i) if (r.source_id != id) hop2_nodes.insert(r.source_id);
+                }
+                // Don't double-count 1-hop nodes in the 2-hop set.
+                for (int64_t n : hop1_nodes) hop2_nodes.erase(n);
+
+                std::ostringstream out;
+                out << fmt_entry_line(*e) << "\n";
+                out << "  out-edges:    " << outs.size() << "\n";
+                out << "  in-edges:     " << ins.size()  << "\n";
+                out << "  distinct relations: ";
+                {
+                    bool first = true;
+                    for (auto& r : relation_kinds) {
+                        if (!first) out << ", ";
+                        out << r;
+                        first = false;
+                    }
+                    if (relation_kinds.empty()) out << "(none)";
+                }
+                out << "\n";
+                out << "  1-hop nodes:  " << hop1_nodes.size() << "\n";
+                out << "  2-hop reach:  " << hop2_nodes.size()
+                    << " new nodes (beyond direct neighbours)\n";
+                if (outs.empty() && ins.empty()) {
+                    out << "  → isolated node — no relations yet.  "
+                           "Consider /mem add link to connect it.\n";
+                } else if (hop1_nodes.size() + hop2_nodes.size() < 4) {
+                    out << "  → sparse neighbourhood.  Likely worth research / linking.\n";
+                } else {
+                    out << "  → dense neighbourhood.  Existing graph "
+                           "structure may already cover the topic.\n";
+                }
+                return out.str();
+            }
+
+            return "ERR: unknown structured-memory subcommand";
+        };
+}
+StructuredMemoryWriter make_structured_memory_writer_callback(
+    TenantStore& tenants, int64_t reader_tenant_id,
+    int64_t reader_conversation_id, Orchestrator* orch_ptr) {
+    return
+        [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
+        (const std::string& kind,
+         const std::string& args,
+         const std::string& body,
+         const std::string& caller_id) -> std::string {
+            // Trim leading/trailing whitespace from a token.
+            auto trim = [](std::string s) {
+                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+                return s;
+            };
+
+            if (kind == "add-entry") {
+                // /mem add entry <type> <title> [--artifact #<id>]
+                // Trailing --artifact links a /write --persist'd file
+                // straight into the new entry.
+                std::istringstream iss(args);
+                std::string type;
+                iss >> type;
+                std::string title;
+                std::getline(iss, title);
+                title = trim(title);
+                if (type.empty() || title.empty()) {
+                    return "ERR: usage: /mem add entry <type> <title> "
+                           "[--artifact #<id>]";
+                }
+
+                int64_t artifact_id = 0;
+                {
+                    // Strip trailing `--artifact #<id>` off the title
+                    // before we length-check it.
+                    const std::string flag = "--artifact";
+                    auto pos = title.rfind(flag);
+                    if (pos != std::string::npos &&
+                        (pos == 0 || title[pos - 1] == ' ' || title[pos - 1] == '\t')) {
+                        std::string tail = title.substr(pos + flag.size());
+                        while (!tail.empty() && (tail.front() == ' ' || tail.front() == '\t'))
+                            tail.erase(0, 1);
+                        if (!tail.empty() && tail.front() == '#') tail.erase(0, 1);
+                        try { artifact_id = std::stoll(tail); }
+                        catch (...) { artifact_id = 0; }
+                        if (artifact_id <= 0) {
+                            return "ERR: --artifact requires a positive id, "
+                                   "e.g. --artifact #42";
+                        }
+                        if (pos > 0 && (title[pos - 1] == ' ' || title[pos - 1] == '\t'))
+                            --pos;
+                        title.resize(pos);
+                        title = trim(title);
+                    }
+                }
+
+                if (!memory_entry_type_is_valid(type)) {
+                    return "ERR: invalid type '" + type + "' — must be one of: "
+                           "user, feedback, project, reference, learning, context";
+                }
+                if (title.empty()) {
+                    return "ERR: title is required (got only the --artifact flag)";
+                }
+                if (title.size() > 200) {
+                    return "ERR: title length must be 1..200 chars (got " +
+                           std::to_string(title.size()) + ")";
+                }
+                if (artifact_id > 0 &&
+                    !tenants.get_artifact_meta(reader_tenant_id, artifact_id)) {
+                    return "ERR: artifact #" + std::to_string(artifact_id) +
+                           " does not exist for this tenant";
+                }
+
+                // Defense in depth: the dispatcher already rejects empty
+                // bodies, but if one slips through (older caller path or
+                // future regression), refuse the write here too — a
+                // title-only entry has no value to /mem search.
+                std::string content = trim(body);
+                if (content.empty()) {
+                    return "ERR: /mem add entry requires a content body "
+                           "(synthesised retrievable text between the "
+                           "header line and /endmem)";
+                }
+                if (content.size() > 32 * 1024) {
+                    return "ERR: content body too large (limit 32KB; got " +
+                           std::to_string(content.size()) + " bytes).  "
+                           "Trim to the load-bearing facts; the artifact "
+                           "store holds long-form output via /write --persist";
+                }
+
+                // Read caller's memory config for auto-enrichment
+                // toggles.  Defensive try: an unknown caller id keeps
+                // pre-config behavior (no enrichment) without erroring
+                // the write itself.
+                Constitution::MemoryConfig mc_add;
+                std::string caller_advisor_model;
+                try {
+                    const auto& cc = orch_ptr->get_constitution(caller_id);
+                    mc_add = cc.memory;
+                    caller_advisor_model = cc.advisor.model;
+                    if (caller_advisor_model.empty())
+                        caller_advisor_model = cc.advisor_model;
+                } catch (...) {}
+
+                // Auto-tagging.  When enabled (and the agent has an
+                // advisor model), an advisor extracts 2-4 short
+                // topical tags from title+content.  Tags get the 8x
+                // BM25 weight on retrieval — one of the strongest
+                // ranking signals available — and most agent ingest
+                // paths leave them empty.  A failed advisor call
+                // surfaces a note in the OK output and the entry is
+                // written with empty tags as before.
+                std::string tags_json = "[]";
+                std::vector<std::string> auto_tags_added;
+                std::string auto_tag_note;
+                if (mc_add.auto_tag && !caller_advisor_model.empty()) {
+                    auto tag_advisor = orch_ptr->make_advisor_invoker(caller_id);
+                    auto extr = extract_tags_with_advisor(tag_advisor,
+                                                            title, content,
+                                                            /*existing=*/{});
+                    auto_tags_added = std::move(extr.tags);
+                    auto_tag_note   = std::move(extr.note);
+                    if (!auto_tags_added.empty()) {
+                        // Hand-build the JSON array — we know the
+                        // tags are already validated (lowercase,
+                        // hyphen, ≤32 chars) by the helper.  The
+                        // canonical_tags_json validator would also
+                        // accept this but the round trip is
+                        // unnecessary for known-good input.
+                        std::ostringstream tj;
+                        tj << "[";
+                        for (size_t i = 0; i < auto_tags_added.size(); ++i) {
+                            if (i) tj << ",";
+                            tj << "\"";
+                            for (char c : auto_tags_added[i]) {
+                                if (c == '"' || c == '\\') tj << '\\';
+                                tj << c;
+                            }
+                            tj << "\"";
+                        }
+                        tj << "]";
+                        tags_json = tj.str();
+                    }
+                }
+
+                // Pin the entry to the active conversation when one is
+                // present.  Without that link, /mem add entry inside a
+                // conversation produces tenant-wide entries that don't
+                // bias the conversation-scoped /mem search ranking.
+                auto e = tenants.create_entry(reader_tenant_id, type, title,
+                                               content, /*source=*/"agent",
+                                               tags_json,
+                                               artifact_id,
+                                               reader_conversation_id);
+
+                // Auto-supersession.  After the new entry is written,
+                // if the agent opted in, ask the advisor whether any
+                // existing entries on the same title+type are now
+                // factually contradicted; invalidate those.  Bias is
+                // toward "leave alone" — false positives erase
+                // legitimate prior memory.
+                std::vector<int64_t> superseded_ids;
+                std::string supersede_note;
+                if (mc_add.auto_supersede && !caller_advisor_model.empty()) {
+                    TenantStore::EntryFilter fcand;
+                    fcand.q     = title;
+                    fcand.types = { type };
+                    fcand.limit = 6;
+                    auto cands = tenants.list_entries(reader_tenant_id, fcand);
+                    cands.erase(std::remove_if(cands.begin(), cands.end(),
+                        [&e](const MemoryEntry& x) { return x.id == e.id; }),
+                        cands.end());
+                    if (cands.size() > 5) cands.resize(5);
+
+                    if (!cands.empty()) {
+                        auto sup_advisor = orch_ptr->make_advisor_invoker(caller_id);
+                        auto sup = detect_supersession_with_advisor(
+                            sup_advisor, title, content, cands);
+                        superseded_ids = std::move(sup.invalidated_ids);
+                        supersede_note = std::move(sup.note);
+                        for (auto sid : superseded_ids) {
+                            (void)tenants.invalidate_entry(reader_tenant_id, sid);
+                        }
+                    }
+                }
+
+                std::ostringstream out;
+                out << "OK: added entry #" << e.id << " [" << e.type << "] "
+                    << e.title;
+                if (artifact_id > 0) {
+                    out << " (linked to artifact #" << artifact_id << ")";
+                }
+                if (!auto_tags_added.empty()) {
+                    out << "\n  auto-tagged: ";
+                    for (size_t i = 0; i < auto_tags_added.size(); ++i) {
+                        if (i) out << ", ";
+                        out << auto_tags_added[i];
+                    }
+                }
+                if (!auto_tag_note.empty()) out << "\n  " << auto_tag_note;
+                if (!superseded_ids.empty()) {
+                    out << "\n  superseded: ";
+                    for (size_t i = 0; i < superseded_ids.size(); ++i) {
+                        if (i) out << ", ";
+                        out << "#" << superseded_ids[i];
+                    }
+                }
+                if (!supersede_note.empty()) out << "\n  " << supersede_note;
+                out << ".  Use this id in subsequent /mem add link calls to "
+                       "reference it.\n";
+                return out.str();
+            }
+
+            if (kind == "invalidate") {
+                // /mem invalidate <id>
+                // Args is just the id token.  Anything past the first
+                // whitespace is ignored — keeps the grammar tight.
+                // Tolerate a leading '#' so the displayed and accepted
+                // id forms agree (entries-list output uses #<n>).
+                std::istringstream iss(args);
+                std::string id_tok;
+                iss >> id_tok;
+                int64_t id = mem_parse_id(id_tok);
+                if (id <= 0) {
+                    return "ERR: usage: /mem invalidate <id>";
+                }
+                if (!tenants.invalidate_entry(reader_tenant_id, id)) {
+                    // Same false-collapse the HTTP handler navigates: the
+                    // row is missing, cross-tenant, or already invalid.
+                    // From the agent's perspective the after-state is the
+                    // same ("the row is no longer active"), so the wording
+                    // here merges those cases.
+                    std::ostringstream out;
+                    out << "ERR: entry #" << id
+                        << " not found or already invalidated";
+                    return out.str();
+                }
+                std::ostringstream out;
+                out << "OK: invalidated entry #" << id
+                    << " (still reachable through historical reads, "
+                    << "hidden from default queries).\n";
+                return out.str();
+            }
+
+            if (kind == "add-link") {
+                // /mem add link <src_id> <relation> <dst_id>
+                // Both ids tolerate a leading '#' so an agent can copy
+                // the displayed `#<n>` form straight from /mem entries
+                // or pipeline-memory output without manual stripping.
+                std::istringstream iss(args);
+                std::string src_tok, dst_tok;
+                std::string relation;
+                iss >> src_tok >> relation >> dst_tok;
+                int64_t src = mem_parse_id(src_tok);
+                int64_t dst = mem_parse_id(dst_tok);
+                if (src <= 0 || dst <= 0 || relation.empty()) {
+                    return "ERR: usage: /mem add link <src_id> <relation> <dst_id>";
+                }
+                if (src == dst) {
+                    return "ERR: self-loops not allowed";
+                }
+                if (!memory_relation_is_valid(relation)) {
+                    return "ERR: invalid relation '" + relation + "' — must be "
+                           "one of: relates_to, refines, contradicts, "
+                           "supersedes, supports";
+                }
+                auto src_entry = tenants.get_entry(reader_tenant_id, src);
+                auto dst_entry = tenants.get_entry(reader_tenant_id, dst);
+                if (!src_entry || !dst_entry) {
+                    return "ERR: one or both endpoint ids do not exist for "
+                           "this tenant";
+                }
+                auto created = tenants.create_relation(reader_tenant_id,
+                                                        src, dst, relation);
+                if (!created) {
+                    auto existing = tenants.find_relation(reader_tenant_id,
+                                                           src, dst, relation);
+                    std::ostringstream out;
+                    out << "ERR: a " << relation << " relation from #" << src
+                        << " to #" << dst << " already exists";
+                    if (existing) out << " (id=" << existing->id << ")";
+                    out << "\n";
+                    return out.str();
+                }
+                std::ostringstream out;
+                out << "OK: added relation #" << created->id << ": #" << src
+                    << " --[" << relation << "]--> #" << dst << ".\n";
+                return out.str();
+            }
+
+            return "ERR: unknown structured-memory write subcommand";
+        };
+}
+
 // Format an a2a::Manager's configured remotes as a roster line block
 // suitable for splicing into the master orchestrator's turn preamble.
 // Empty string when no remotes are configured or no cards resolve.
@@ -4089,11 +5391,36 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
         }
     }
 
+    // Tool-callback parity with /v1/orchestrate.  These factories are
+    // shared with handle_orchestrate so /mem read|write|search|entries,
+    // /mcp tools|call, /search, and /a2a all work identically inside an
+    // A2A turn.  Artifact callbacks (/write --persist, /read, /list) are
+    // intentionally NOT wired here because A2A's contextId is opaque
+    // and not foreign-keyed against a conversation; agents using /write
+    // see captured-but-not-persisted bytes flowing as A2A artifacts in
+    // the streaming path.  Logging during MCP registry load goes to
+    // stderr because there's no SSE error sink at orchestrator-build
+    // time.
+    orch->set_memory_scratchpad(
+        make_memory_scratchpad_callback(tenant.id, &tenants));
+    orch->set_structured_memory_reader(
+        make_structured_memory_reader_callback(
+            tenants, tenant.id, /*conversation_id=*/0, orch.get()));
+    orch->set_structured_memory_writer(
+        make_structured_memory_writer_callback(
+            tenants, tenant.id, /*conversation_id=*/0, orch.get()));
+    orch->set_mcp_invoker(make_mcp_invoker_callback(make_mcp_manager(opts,
+        [](const std::string& m) {
+            std::fprintf(stderr, "[a2a] %s\n", m.c_str());
+        })));
+    if (auto search_inv = make_search_invoker_callback(opts)) {
+        orch->set_search_invoker(std::move(search_inv));
+    }
+
     // Wire the /a2a slash command so a server-side master agent can
     // delegate to remote A2A agents — symmetric to the /v1/orchestrate
-    // wiring further down.  Auto-routing into the master's catalog is
-    // on by default (the user's locked-in PR-8 decision); operators
-    // wanting opt-in behavior wrap make_a2a_invoker themselves.
+    // wiring.  Auto-routing into the master's catalog is on by default
+    // (the user's locked-in PR-8 decision).
     Orchestrator::RemoteRosterProvider roster_cb;
     if (auto inv = make_a2a_invoker(opts, &roster_cb)) {
         orch->set_a2a_invoker(std::move(inv));
@@ -4877,43 +6204,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // this request's tenant.  Without this callback the dispatcher
     // would fall back to the filesystem path — fine for the CLI/REPL
     // (which doesn't have a tenant), but the API path always wires it.
-    {
-        const int64_t tid = tenant.id;
-        TenantStore*  store = &tenants;
-        orch->set_memory_scratchpad(
-            [tid, store](const std::string& op,
-                          const std::string& agent_id,
-                          const std::string& args) -> std::string {
-                // Per-agent ops use the calling agent's id; shared-* use
-                // the empty scope key.  Output strings match the legacy
-                // file-based responses so the model sees the same
-                // [/mem write] OK: ... framing it always has.
-                if (op == "read") {
-                    return store->read_scratchpad(tid, agent_id);
-                }
-                if (op == "shared-read") {
-                    return store->read_scratchpad(tid, std::string{});
-                }
-                if (op == "write") {
-                    int64_t sz = store->append_scratchpad(tid, agent_id, args);
-                    return "OK: memory written (" + std::to_string(sz) +
-                           " bytes total in scratchpad)";
-                }
-                if (op == "shared-write") {
-                    int64_t sz = store->append_scratchpad(tid, std::string{}, args);
-                    return "OK (" + std::to_string(sz) + " bytes total)";
-                }
-                if (op == "clear") {
-                    store->clear_scratchpad(tid, agent_id);
-                    return "OK: memory cleared";
-                }
-                if (op == "shared-clear") {
-                    store->clear_scratchpad(tid, std::string{});
-                    return "OK";
-                }
-                return "ERR: unknown scratchpad op '" + op + "'";
-            });
-    }
+    orch->set_memory_scratchpad(
+        make_memory_scratchpad_callback(tenant.id, &tenants));
 
     // Install the tenant's stored catalog first so /agent and /parallel
     // can resolve sibling ids during this turn.  A blob whose JSON has
@@ -5057,649 +6349,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // therefore cross-conversation by definition.
     const int64_t reader_conversation_id = conversation_id;
     orch->set_structured_memory_reader(
-        [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
-        (const std::string& kind, const std::string& args,
-         const std::string& caller_id) -> std::string {
-            // Helper formatters reused across kinds.
-            auto fmt_tags = [](const std::string& tags_json) -> std::string {
-                try {
-                    auto v = json_parse(tags_json);
-                    if (!v || !v->is_array() || v->as_array().empty()) return "";
-                    std::string out = " [";
-                    bool first = true;
-                    for (auto& t : v->as_array()) {
-                        if (!t || !t->is_string()) continue;
-                        if (!first) out += ", ";
-                        out += t->as_string();
-                        first = false;
-                    }
-                    out += "]";
-                    return out;
-                } catch (...) { return ""; }
-            };
-            auto fmt_entry_line = [&](const MemoryEntry& e) -> std::string {
-                std::ostringstream l;
-                l << "- #" << e.id << "  [" << e.type << "]";
-                // Surface the entry's authored date when present.  Lets
-                // the agent reason about recency and "what was true
-                // when" without an extra /mem entry round trip.  Same
-                // YYYY-MM-DD form the reranker sees in its prompt.
-                std::string ts = format_ts_yyyymmdd(e.created_at);
-                if (!ts.empty()) l << " (" << ts;
-                if (e.valid_to > 0) {
-                    if (ts.empty()) l << " (";
-                    else            l << " · ";
-                    l << "superseded";
-                    std::string inv = format_ts_yyyymmdd(e.valid_to);
-                    if (!inv.empty()) l << " " << inv;
-                }
-                if (!ts.empty() || e.valid_to > 0) l << ")";
-                l << "  " << e.title << fmt_tags(e.tags_json);
-                if (!e.source.empty()) l << "  (source: " << e.source << ")";
-                return l.str();
-            };
-
-            // Helper: case-insensitive substring count for ranking.
-            auto ci_count = [](const std::string& hay, const std::string& needle) -> int {
-                if (needle.empty() || hay.empty() || needle.size() > hay.size()) return 0;
-                int n = 0;
-                for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
-                    bool match = true;
-                    for (size_t j = 0; j < needle.size(); ++j) {
-                        char a = hay[i + j], b = needle[j];
-                        if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
-                        if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
-                        if (a != b) { match = false; break; }
-                    }
-                    if (match) ++n;
-                }
-                return n;
-            };
-            // Helper: split a query into whitespace-separated terms; used by
-            // /mem search so multi-word queries score by the sum of per-term
-            // hits, giving "more terms matched" a higher rank than a single
-            // long substring match.
-            auto split_terms = [](const std::string& q) -> std::vector<std::string> {
-                std::vector<std::string> out;
-                size_t i = 0;
-                while (i < q.size()) {
-                    while (i < q.size() && (q[i] == ' ' || q[i] == '\t')) ++i;
-                    size_t j = i;
-                    while (j < q.size() && q[j] != ' ' && q[j] != '\t') ++j;
-                    if (j > i) out.push_back(q.substr(i, j - i));
-                    i = j;
-                }
-                return out;
-            };
-
-            if (kind == "pipeline-entries") {
-                // Internal probe used by the orchestrator's delegation
-                // path to seed sub-agents with a "what did siblings just
-                // write?" snapshot.  Distinct from agent-facing /mem
-                // entries (which is unscoped tenant-wide) because:
-                //   • Tenant-wide bleed exposes residue from PRIOR runs
-                //     of the same scenario, encouraging the sub-agent
-                //     to paraphrase old entries as if they were fresh
-                //     siblings' output.
-                //   • Pipeline memory needs to be cheap (one DB call
-                //     per /agent invocation), so the cap is small.
-                // Conversation-scoped + recent-N keeps the snapshot
-                // tight: only what *this* turn's siblings produced.
-                if (reader_conversation_id <= 0) {
-                    // No conversation context (raw /v1/orchestrate, CLI).
-                    // Without a conversation we can't isolate "this run"
-                    // entries, so return empty rather than dumping the
-                    // tenant-wide history into delegation context.
-                    return "(no entries)";
-                }
-                TenantStore::EntryFilter f;
-                f.limit = 15;
-                f.conversation_id = reader_conversation_id;
-                auto entries = tenants.list_entries(reader_tenant_id, f);
-                if (entries.empty()) return "(no entries)";
-                std::ostringstream out;
-                out << entries.size() << " entries (newest first):\n";
-                for (auto& e : entries) out << fmt_entry_line(e) << "\n";
-                return out.str();
-            }
-
-            if (kind == "entries") {
-                // /mem entries [<type>[,<type>...]]
-                // /mem entries tag=<tagname>
-                // The bare-arg comma list is preserved for backward compat;
-                // the `tag=` form lets agents pull a curated subset by the
-                // facet they're most likely to organise around.
-                TenantStore::EntryFilter f;
-                f.limit  = 100;
-
-                std::string a = args;
-                while (!a.empty() && a.front() == ' ') a.erase(0, 1);
-                while (!a.empty() && a.back()  == ' ') a.pop_back();
-
-                if (a.size() > 4 && a.compare(0, 4, "tag=") == 0) {
-                    f.tag = a.substr(4);
-                    while (!f.tag.empty() && f.tag.front() == ' ') f.tag.erase(0, 1);
-                    while (!f.tag.empty() && f.tag.back()  == ' ') f.tag.pop_back();
-                    if (f.tag.empty()) return "ERR: usage: /mem entries tag=<tagname>";
-                } else if (!a.empty()) {
-                    // Comma-sep type filter.
-                    size_t start = 0;
-                    while (start <= a.size()) {
-                        size_t comma = a.find(',', start);
-                        std::string tok = a.substr(
-                            start, comma == std::string::npos ? std::string::npos
-                                                              : comma - start);
-                        while (!tok.empty() && tok.front() == ' ') tok.erase(0, 1);
-                        while (!tok.empty() && tok.back()  == ' ') tok.pop_back();
-                        if (!tok.empty()) f.types.push_back(tok);
-                        if (comma == std::string::npos) break;
-                        start = comma + 1;
-                    }
-                }
-                auto entries = tenants.list_entries(reader_tenant_id, f);
-                if (entries.empty()) {
-                    if (!f.tag.empty())
-                        return "(no entries tagged '" + f.tag + "')";
-                    return "(no entries)";
-                }
-                std::ostringstream out;
-                out << entries.size() << " entries (newest first):\n";
-                for (auto& e : entries) out << fmt_entry_line(e) << "\n";
-                return out.str();
-            }
-
-            if (kind == "entry") {
-                int64_t id = mem_parse_id(args);
-                if (id <= 0) return "ERR: usage: /mem entry <id>";
-                auto e = tenants.get_entry(reader_tenant_id, id);
-                if (!e)
-                    return "ERR: entry " + std::to_string(id) + " not found";
-                std::ostringstream out;
-                out << fmt_entry_line(*e) << "\n";
-                if (!e->content.empty()) out << "\n" << e->content << "\n";
-                // Linked artifact: surface metadata and the literal
-                // /read command that grants access.  Same-conversation
-                // artifacts can be read by path or by id without a via=
-                // clause; cross-conversation artifacts require the
-                // memory citation, and the suggested command bakes it
-                // in so the agent can copy verbatim.
-                if (e->artifact_id > 0) {
-                    auto art = tenants.get_artifact_meta(reader_tenant_id,
-                                                          e->artifact_id);
-                    if (art) {
-                        out << "\nlinked artifact:\n";
-                        out << "  #" << art->id << "  " << art->path
-                            << "  (" << art->size << " bytes, mime="
-                            << art->mime_type << ")\n";
-                        if (art->conversation_id == reader_conversation_id) {
-                            out << "  fetch with: /read " << art->path
-                                << "   (or /read #" << art->id << ")\n";
-                        } else {
-                            out << "  cross-conversation — fetch with: "
-                                << "/read #" << art->id
-                                << " via=mem:" << e->id << "\n";
-                        }
-                    } else {
-                        out << "\nlinked artifact:\n"
-                            << "  (link expired — artifact #"
-                            << e->artifact_id << " no longer exists)\n";
-                    }
-                }
-                // Edges: relations where this entry is source OR target.
-                // Resolve neighbour titles in a small ad-hoc cache so an
-                // entry with N edges to the same neighbour doesn't
-                // N-times-fetch the same row.
-                auto out_edges = tenants.list_relations(reader_tenant_id, id, 0,
-                                                        std::string{}, 200);
-                auto in_edges  = tenants.list_relations(reader_tenant_id, 0, id,
-                                                        std::string{}, 200);
-                std::map<int64_t, std::pair<std::string, std::string>> title_cache;
-                auto resolve = [&](int64_t nid) -> std::pair<std::string, std::string> {
-                    auto it = title_cache.find(nid);
-                    if (it != title_cache.end()) return it->second;
-                    auto neighbour = tenants.get_entry(reader_tenant_id, nid);
-                    if (!neighbour) {
-                        title_cache[nid] = {"(unavailable)", ""};
-                    } else {
-                        title_cache[nid] = {neighbour->title, neighbour->type};
-                    }
-                    return title_cache[nid];
-                };
-                if (!out_edges.empty()) {
-                    out << "\noutgoing:\n";
-                    for (auto& r : out_edges) {
-                        auto [title, type] = resolve(r.target_id);
-                        out << "  --[" << r.relation << "]--> #" << r.target_id
-                            << "  " << title;
-                        if (!type.empty()) out << " (" << type << ")";
-                        out << "\n";
-                    }
-                }
-                if (!in_edges.empty()) {
-                    out << "\nincoming:\n";
-                    for (auto& r : in_edges) {
-                        auto [title, type] = resolve(r.source_id);
-                        out << "  #" << r.source_id << "  " << title;
-                        if (!type.empty()) out << " (" << type << ")";
-                        out << "  --[" << r.relation << "]-->\n";
-                    }
-                }
-                return out.str();
-            }
-
-            if (kind == "search") {
-                // FTS5 + Okapi-BM25 ranking via TenantStore.  When the
-                // request is part of a conversation, search runs through
-                // search_entries_graduated: conversation-scoped hits
-                // come first (locality bias), tenant-wide hits fill out
-                // the page if conversation-scoped didn't reach the cap.
-                // Top 3 by rank get their content excerpted inline so a
-                // single /mem search resolves into something the agent
-                // can actually read without follow-up /mem entry calls.
-                //
-                // Optional `--rerank` flag routes the top-10 candidates
-                // through the calling agent's advisor_model for a final
-                // reorder.  Costs one LLM call; only worth it on
-                // ambiguous queries where BM25 produces close-scored
-                // candidates that need semantic disambiguation.
-
-                // Strip --rerank from anywhere in the args; remaining
-                // text is the query.  Multiple instances are tolerated
-                // (rare, but someone'll do it).
-                std::string q = args;
-                bool rerank = false;
-                {
-                    const std::string flag = "--rerank";
-                    size_t p;
-                    while ((p = q.find(flag)) != std::string::npos) {
-                        rerank = true;
-                        size_t end = p + flag.size();
-                        // Eat one trailing space so we don't leave a
-                        // double-space in the middle.
-                        if (end < q.size() && q[end] == ' ') ++end;
-                        size_t begin = p;
-                        if (begin > 0 && q[begin - 1] == ' ') --begin;
-                        q.erase(begin, end - begin);
-                    }
-                }
-                while (!q.empty() && q.front() == ' ') q.erase(0, 1);
-                while (!q.empty() && q.back()  == ' ') q.pop_back();
-                if (q.empty()) return "ERR: usage: /mem search <query> [--rerank]";
-
-                // Rerank widens the candidate pool internally (25)
-                // and trims to a smaller visible cap (10) after the
-                // advisor reorders.  The pool gives the reranker
-                // headroom to promote real matches from positions
-                // 11..25; the visible cap keeps the agent's reply
-                // tractable.  Non-rerank path stays at 50 (the
-                // renderer's natural cap).
-                static constexpr int kAgentRerankPool   = 25;
-                static constexpr int kAgentRerankReturn = 10;
-
-                // Pull the caller's Constitution so we can consult its
-                // memory-enrichment toggles.  get_constitution throws
-                // out_of_range for unknown ids; the master "index" id
-                // is always loaded, and any caller that reached this
-                // closure was registered via Orchestrator's run loop.
-                // If somehow we get a stale id we fall through to the
-                // pre-config behavior — defensive in_try block, no
-                // user-visible error for what is at worst a missed
-                // optimization.
-                Constitution::MemoryConfig mc;
-                std::string caller_advisor_model;
-                try {
-                    const auto& cc = orch_ptr->get_constitution(caller_id);
-                    mc = cc.memory;
-                    caller_advisor_model = cc.advisor.model;
-                    if (caller_advisor_model.empty())
-                        caller_advisor_model = cc.advisor_model;
-                } catch (...) {
-                    // mc keeps defaults — search still runs, just
-                    // without the per-agent enrichment.
-                }
-
-                TenantStore::EntryFilter f;
-                f.q               = q;
-                f.conversation_id = reader_conversation_id;
-                f.limit           = rerank ? kAgentRerankPool : 50;
-
-                // Question-intent routing — heuristic, no LLM cost.
-                // Soft-boost types matching the question's intent (the
-                // existing 1.3x BM25 multiplier) so a "preference"
-                // query surfaces user/feedback rows above context
-                // rows.  Caller-supplied f.types would override, but
-                // the agent path doesn't accept type filters today —
-                // f.types is always empty here.
-                if (mc.intent_routing) {
-                    f.types = classify_question_intent(q);
-                }
-
-                // Closure that runs one query through the same FTS
-                // path, used both for the original and (when
-                // search_expand is on) for paraphrases.  Preserves the
-                // intent-routing per variant — paraphrases that shift
-                // the question shape get appropriate type boosts.
-                auto run_one = [&](const std::string& query_str)
-                    -> std::vector<MemoryEntry> {
-                    TenantStore::EntryFilter ef = f;
-                    ef.q = query_str;
-                    if (mc.intent_routing && ef.types.empty()) {
-                        ef.types = classify_question_intent(query_str);
-                    }
-                    return (reader_conversation_id > 0)
-                        ? tenants.search_entries_graduated(reader_tenant_id, ef)
-                        : tenants.list_entries(reader_tenant_id, ef);
-                };
-
-                std::vector<MemoryEntry> entries;
-                std::string expand_note;
-                std::vector<std::string> expansion_used;
-                if (mc.search_expand && !caller_advisor_model.empty()) {
-                    // Query reformulation.  Agent's advisor model
-                    // generates 2 paraphrases; we run all 3 variants
-                    // through FTS and RRF-fuse the rankings.
-                    // No-embedding alternative to dense retrieval —
-                    // closes the gap on paraphrased queries while
-                    // staying inside the lean-binary constraint.
-                    auto expander = orch_ptr->make_advisor_invoker(caller_id);
-                    auto exp = expand_query_with_advisor(expander, q);
-                    expansion_used = exp.queries;
-                    if (!exp.note.empty()) expand_note = exp.note;
-
-                    if (!expansion_used.empty()) {
-                        std::vector<std::vector<MemoryEntry>> rankings;
-                        std::vector<double> weights;
-                        rankings.push_back(run_one(q));
-                        weights.push_back(1.0);
-                        for (auto& pq : expansion_used) {
-                            rankings.push_back(run_one(pq));
-                            weights.push_back(0.7);
-                        }
-                        const int fused_limit = f.limit;
-                        entries = rrf_fuse_rankings(std::move(rankings),
-                                                     weights, fused_limit);
-                    } else {
-                        // Expansion failed — single-query fallback.
-                        entries = run_one(q);
-                    }
-                } else {
-                    entries = run_one(q);
-                }
-
-                if (entries.empty()) {
-                    return "(no entries match '" + q + "')";
-                }
-
-                std::string rerank_note;
-                if (rerank && entries.size() > 1) {
-                    auto advisor = orch_ptr->make_advisor_invoker(caller_id);
-                    auto rr = rerank_with_advisor(advisor, q, std::move(entries));
-                    entries = std::move(rr.entries);
-                    if (!rr.note.empty()) rerank_note = rr.note + "\n";
-                }
-                // Trim the wider pool back to the visible cap, whether
-                // rerank applied or not — caller asked for the rerank
-                // path, the pool was internal to that.
-                if (rerank && entries.size() >
-                              static_cast<size_t>(kAgentRerankReturn)) {
-                    entries.resize(
-                        static_cast<size_t>(kAgentRerankReturn));
-                }
-
-                std::ostringstream out;
-                if (!rerank_note.empty()) out << rerank_note;
-                if (!expand_note.empty()) out << expand_note << "\n";
-                if (!expansion_used.empty()) {
-                    // Tell the agent which paraphrases the orchestrator
-                    // also searched.  Useful for debugging "why did I
-                    // get back this set?" — and lets the agent see the
-                    // recall surface its memory config opted into.
-                    out << "(also searched: ";
-                    for (size_t i = 0; i < expansion_used.size(); ++i) {
-                        if (i) out << " | ";
-                        out << "'" << expansion_used[i] << "'";
-                    }
-                    out << ")\n";
-                }
-                out << entries.size() << " match"
-                    << (entries.size() == 1 ? "" : "es")
-                    << " for '" << q << "' (top by relevance):\n";
-
-                static constexpr size_t kInlineTopN  = 3;
-                static constexpr size_t kExcerptBytes = 480;
-                for (size_t i = 0; i < entries.size(); ++i) {
-                    const auto& e = entries[i];
-                    out << fmt_entry_line(e);
-                    // Mark conversation-scoped hits so the agent can tell
-                    // local context from broader tenant memory at a glance.
-                    if (reader_conversation_id > 0 &&
-                        e.conversation_id == reader_conversation_id) {
-                        out << "  [conversation]";
-                    }
-                    out << "\n";
-                    if (i < kInlineTopN && !e.content.empty()) {
-                        std::string excerpt = e.content;
-                        if (excerpt.size() > kExcerptBytes) {
-                            excerpt.resize(kExcerptBytes);
-                            excerpt += " ...";
-                        }
-                        std::ostringstream indented;
-                        size_t start = 0;
-                        while (start < excerpt.size()) {
-                            size_t nl = excerpt.find('\n', start);
-                            indented << "    | "
-                                     << excerpt.substr(start,
-                                          nl == std::string::npos
-                                              ? std::string::npos
-                                              : nl - start)
-                                     << "\n";
-                            if (nl == std::string::npos) break;
-                            start = nl + 1;
-                        }
-                        out << indented.str();
-                    }
-                }
-                return out.str();
-            }
-
-            if (kind == "expand") {
-                // /mem expand <id> [depth=N]
-                // BFS the subgraph around <id> up to depth N (max 2,
-                // default 1), capped at 50 nodes total.  One round trip
-                // for what would otherwise be N+1 sequential /mem entry
-                // calls.  Renders a tree-ish structure: seed → 1-hop →
-                // 2-hop, with the relation labels on each edge.
-                std::string a = args;
-                while (!a.empty() && a.front() == ' ') a.erase(0, 1);
-                while (!a.empty() && a.back()  == ' ') a.pop_back();
-                if (a.empty()) {
-                    return "ERR: usage: /mem expand <id> [depth=N]";
-                }
-                int64_t seed_id = 0;
-                int depth = 1;
-                {
-                    // Split on whitespace so the first token can be
-                    // run through mem_parse_id (which tolerates a leading '#').
-                    // Any subsequent tokens can carry depth=N.
-                    std::istringstream iss(a);
-                    std::string id_tok;
-                    iss >> id_tok;
-                    seed_id = mem_parse_id(id_tok);
-                    std::string flag;
-                    if (iss >> flag) {
-                        const std::string p = "depth=";
-                        if (flag.compare(0, p.size(), p) == 0) {
-                            try { depth = std::stoi(flag.substr(p.size())); }
-                            catch (...) { depth = 1; }
-                        }
-                    }
-                }
-                if (seed_id <= 0) return "ERR: bad seed id";
-                if (depth < 1) depth = 1;
-                if (depth > 2) depth = 2;
-
-                auto seed = tenants.get_entry(reader_tenant_id, seed_id);
-                if (!seed)
-                    return "ERR: entry " + std::to_string(seed_id) + " not found";
-
-                // BFS with a 50-node cap; node order tracks discovery so
-                // deduped neighbours render under the closer hop.
-                static constexpr size_t kMaxNodes = 50;
-                std::map<int64_t, MemoryEntry> nodes;       // id → entry
-                std::map<int64_t, int> hop_of;              // id → 0/1/2
-                std::vector<MemoryRelation> all_edges;
-                std::vector<int64_t> frontier{seed_id};
-                nodes[seed_id] = *seed;
-                hop_of[seed_id] = 0;
-
-                for (int d = 0; d < depth && nodes.size() < kMaxNodes; ++d) {
-                    std::vector<int64_t> next_frontier;
-                    for (int64_t nid : frontier) {
-                        if (nodes.size() >= kMaxNodes) break;
-                        auto outs = tenants.list_relations(reader_tenant_id,
-                                                           nid, 0, std::string{},
-                                                           50);
-                        auto ins  = tenants.list_relations(reader_tenant_id,
-                                                           0, nid, std::string{},
-                                                           50);
-                        auto add_edge_target = [&](int64_t target) {
-                            if (nodes.size() >= kMaxNodes) return;
-                            if (nodes.count(target)) return;
-                            auto neighbour = tenants.get_entry(reader_tenant_id, target);
-                            if (!neighbour) return;
-                            nodes[target] = *neighbour;
-                            hop_of[target] = d + 1;
-                            next_frontier.push_back(target);
-                        };
-                        for (auto& r : outs) {
-                            add_edge_target(r.target_id);
-                            all_edges.push_back(r);
-                        }
-                        for (auto& r : ins) {
-                            add_edge_target(r.source_id);
-                            all_edges.push_back(r);
-                        }
-                    }
-                    frontier = std::move(next_frontier);
-                }
-
-                // Render: by hop, with nodes and edges grouped per hop.
-                // Each edge appears once even if both endpoints are in
-                // the subgraph; we pick the lower-hop endpoint as the
-                // anchor for display.
-                std::ostringstream out;
-                out << "Subgraph around #" << seed_id << " (depth=" << depth
-                    << ", " << nodes.size() << " nodes):\n";
-                out << "  hop 0: " << fmt_entry_line(*seed).substr(2) << "\n";
-
-                for (int d = 1; d <= depth; ++d) {
-                    bool first = true;
-                    for (auto& [id, e] : nodes) {
-                        if (hop_of[id] != d) continue;
-                        if (first) {
-                            out << "\n  hop " << d << ":\n";
-                            first = false;
-                        }
-                        out << "    " << fmt_entry_line(e).substr(2) << "\n";
-                    }
-                }
-                if (!all_edges.empty()) {
-                    out << "\n  edges:\n";
-                    // Dedupe by id (list_relations may return overlaps when
-                    // a node is queried as both source and target on
-                    // different hops).
-                    std::set<int64_t> seen_edges;
-                    for (auto& r : all_edges) {
-                        if (!seen_edges.insert(r.id).second) continue;
-                        if (!nodes.count(r.source_id) || !nodes.count(r.target_id)) continue;
-                        out << "    #" << r.source_id << " --["
-                            << r.relation << "]--> #" << r.target_id << "\n";
-                    }
-                }
-                if (nodes.size() >= kMaxNodes) {
-                    out << "\n  (subgraph capped at " << kMaxNodes
-                        << " nodes — narrow with /mem entry <id> to dig further)\n";
-                }
-                return out.str();
-            }
-
-            if (kind == "density") {
-                // /mem density <id>
-                // Quick "is this part of the graph dense or sparse?"
-                // probe — out-degree, in-degree, distinct relation kinds,
-                // and 2-hop reach.  Cheap follow-up before doing redundant
-                // research on a topic the graph already covers.
-                int64_t id = mem_parse_id(args);
-                if (id <= 0) return "ERR: usage: /mem density <id>";
-                auto e = tenants.get_entry(reader_tenant_id, id);
-                if (!e)
-                    return "ERR: entry " + std::to_string(id) + " not found";
-
-                auto outs = tenants.list_relations(reader_tenant_id, id, 0,
-                                                    std::string{}, 200);
-                auto ins  = tenants.list_relations(reader_tenant_id, 0, id,
-                                                    std::string{}, 200);
-
-                std::set<std::string> relation_kinds;
-                std::set<int64_t> hop1_nodes;
-                for (auto& r : outs) {
-                    relation_kinds.insert(r.relation);
-                    hop1_nodes.insert(r.target_id);
-                }
-                for (auto& r : ins) {
-                    relation_kinds.insert(r.relation);
-                    hop1_nodes.insert(r.source_id);
-                }
-
-                // 2-hop reach: count unique nodes (not equal to seed) that
-                // any 1-hop neighbour edges touch.  Caps walk at 50
-                // 1-hop nodes to keep the probe cheap.
-                std::set<int64_t> hop2_nodes;
-                int probed = 0;
-                for (int64_t n : hop1_nodes) {
-                    if (++probed > 50) break;
-                    auto o = tenants.list_relations(reader_tenant_id, n, 0,
-                                                     std::string{}, 50);
-                    auto i = tenants.list_relations(reader_tenant_id, 0, n,
-                                                     std::string{}, 50);
-                    for (auto& r : o) if (r.target_id != id) hop2_nodes.insert(r.target_id);
-                    for (auto& r : i) if (r.source_id != id) hop2_nodes.insert(r.source_id);
-                }
-                // Don't double-count 1-hop nodes in the 2-hop set.
-                for (int64_t n : hop1_nodes) hop2_nodes.erase(n);
-
-                std::ostringstream out;
-                out << fmt_entry_line(*e) << "\n";
-                out << "  out-edges:    " << outs.size() << "\n";
-                out << "  in-edges:     " << ins.size()  << "\n";
-                out << "  distinct relations: ";
-                {
-                    bool first = true;
-                    for (auto& r : relation_kinds) {
-                        if (!first) out << ", ";
-                        out << r;
-                        first = false;
-                    }
-                    if (relation_kinds.empty()) out << "(none)";
-                }
-                out << "\n";
-                out << "  1-hop nodes:  " << hop1_nodes.size() << "\n";
-                out << "  2-hop reach:  " << hop2_nodes.size()
-                    << " new nodes (beyond direct neighbours)\n";
-                if (outs.empty() && ins.empty()) {
-                    out << "  → isolated node — no relations yet.  "
-                           "Consider /mem add link to connect it.\n";
-                } else if (hop1_nodes.size() + hop2_nodes.size() < 4) {
-                    out << "  → sparse neighbourhood.  Likely worth research / linking.\n";
-                } else {
-                    out << "  → dense neighbourhood.  Existing graph "
-                           "structure may already cover the topic.\n";
-                }
-                return out.str();
-            }
-
-            return "ERR: unknown structured-memory subcommand";
-        });
+        make_structured_memory_reader_callback(
+            tenants, reader_tenant_id, reader_conversation_id, orch_ptr));
 
     // Structured-memory writer.  Tenant-scoped (mirrors the reader); writes
     // land directly in the curated graph and are visible to subsequent
@@ -5708,438 +6359,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // the request reaches us, so by the time we see it we can trust the
     // body is meaningful synthesised text.
     orch->set_structured_memory_writer(
-        [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
-        (const std::string& kind,
-         const std::string& args,
-         const std::string& body,
-         const std::string& caller_id) -> std::string {
-            // Trim leading/trailing whitespace from a token.
-            auto trim = [](std::string s) {
-                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
-                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
-                return s;
-            };
-
-            if (kind == "add-entry") {
-                // /mem add entry <type> <title> [--artifact #<id>]
-                // Trailing --artifact links a /write --persist'd file
-                // straight into the new entry.
-                std::istringstream iss(args);
-                std::string type;
-                iss >> type;
-                std::string title;
-                std::getline(iss, title);
-                title = trim(title);
-                if (type.empty() || title.empty()) {
-                    return "ERR: usage: /mem add entry <type> <title> "
-                           "[--artifact #<id>]";
-                }
-
-                int64_t artifact_id = 0;
-                {
-                    // Strip trailing `--artifact #<id>` off the title
-                    // before we length-check it.
-                    const std::string flag = "--artifact";
-                    auto pos = title.rfind(flag);
-                    if (pos != std::string::npos &&
-                        (pos == 0 || title[pos - 1] == ' ' || title[pos - 1] == '\t')) {
-                        std::string tail = title.substr(pos + flag.size());
-                        while (!tail.empty() && (tail.front() == ' ' || tail.front() == '\t'))
-                            tail.erase(0, 1);
-                        if (!tail.empty() && tail.front() == '#') tail.erase(0, 1);
-                        try { artifact_id = std::stoll(tail); }
-                        catch (...) { artifact_id = 0; }
-                        if (artifact_id <= 0) {
-                            return "ERR: --artifact requires a positive id, "
-                                   "e.g. --artifact #42";
-                        }
-                        if (pos > 0 && (title[pos - 1] == ' ' || title[pos - 1] == '\t'))
-                            --pos;
-                        title.resize(pos);
-                        title = trim(title);
-                    }
-                }
-
-                if (!memory_entry_type_is_valid(type)) {
-                    return "ERR: invalid type '" + type + "' — must be one of: "
-                           "user, feedback, project, reference, learning, context";
-                }
-                if (title.empty()) {
-                    return "ERR: title is required (got only the --artifact flag)";
-                }
-                if (title.size() > 200) {
-                    return "ERR: title length must be 1..200 chars (got " +
-                           std::to_string(title.size()) + ")";
-                }
-                if (artifact_id > 0 &&
-                    !tenants.get_artifact_meta(reader_tenant_id, artifact_id)) {
-                    return "ERR: artifact #" + std::to_string(artifact_id) +
-                           " does not exist for this tenant";
-                }
-
-                // Defense in depth: the dispatcher already rejects empty
-                // bodies, but if one slips through (older caller path or
-                // future regression), refuse the write here too — a
-                // title-only entry has no value to /mem search.
-                std::string content = trim(body);
-                if (content.empty()) {
-                    return "ERR: /mem add entry requires a content body "
-                           "(synthesised retrievable text between the "
-                           "header line and /endmem)";
-                }
-                if (content.size() > 32 * 1024) {
-                    return "ERR: content body too large (limit 32KB; got " +
-                           std::to_string(content.size()) + " bytes).  "
-                           "Trim to the load-bearing facts; the artifact "
-                           "store holds long-form output via /write --persist";
-                }
-
-                // Read caller's memory config for auto-enrichment
-                // toggles.  Defensive try: an unknown caller id keeps
-                // pre-config behavior (no enrichment) without erroring
-                // the write itself.
-                Constitution::MemoryConfig mc_add;
-                std::string caller_advisor_model;
-                try {
-                    const auto& cc = orch_ptr->get_constitution(caller_id);
-                    mc_add = cc.memory;
-                    caller_advisor_model = cc.advisor.model;
-                    if (caller_advisor_model.empty())
-                        caller_advisor_model = cc.advisor_model;
-                } catch (...) {}
-
-                // Auto-tagging.  When enabled (and the agent has an
-                // advisor model), an advisor extracts 2-4 short
-                // topical tags from title+content.  Tags get the 8x
-                // BM25 weight on retrieval — one of the strongest
-                // ranking signals available — and most agent ingest
-                // paths leave them empty.  A failed advisor call
-                // surfaces a note in the OK output and the entry is
-                // written with empty tags as before.
-                std::string tags_json = "[]";
-                std::vector<std::string> auto_tags_added;
-                std::string auto_tag_note;
-                if (mc_add.auto_tag && !caller_advisor_model.empty()) {
-                    auto tag_advisor = orch_ptr->make_advisor_invoker(caller_id);
-                    auto extr = extract_tags_with_advisor(tag_advisor,
-                                                            title, content,
-                                                            /*existing=*/{});
-                    auto_tags_added = std::move(extr.tags);
-                    auto_tag_note   = std::move(extr.note);
-                    if (!auto_tags_added.empty()) {
-                        // Hand-build the JSON array — we know the
-                        // tags are already validated (lowercase,
-                        // hyphen, ≤32 chars) by the helper.  The
-                        // canonical_tags_json validator would also
-                        // accept this but the round trip is
-                        // unnecessary for known-good input.
-                        std::ostringstream tj;
-                        tj << "[";
-                        for (size_t i = 0; i < auto_tags_added.size(); ++i) {
-                            if (i) tj << ",";
-                            tj << "\"";
-                            for (char c : auto_tags_added[i]) {
-                                if (c == '"' || c == '\\') tj << '\\';
-                                tj << c;
-                            }
-                            tj << "\"";
-                        }
-                        tj << "]";
-                        tags_json = tj.str();
-                    }
-                }
-
-                // Pin the entry to the active conversation when one is
-                // present.  Without that link, /mem add entry inside a
-                // conversation produces tenant-wide entries that don't
-                // bias the conversation-scoped /mem search ranking.
-                auto e = tenants.create_entry(reader_tenant_id, type, title,
-                                               content, /*source=*/"agent",
-                                               tags_json,
-                                               artifact_id,
-                                               reader_conversation_id);
-
-                // Auto-supersession.  After the new entry is written,
-                // if the agent opted in, ask the advisor whether any
-                // existing entries on the same title+type are now
-                // factually contradicted; invalidate those.  Bias is
-                // toward "leave alone" — false positives erase
-                // legitimate prior memory.
-                std::vector<int64_t> superseded_ids;
-                std::string supersede_note;
-                if (mc_add.auto_supersede && !caller_advisor_model.empty()) {
-                    TenantStore::EntryFilter fcand;
-                    fcand.q     = title;
-                    fcand.types = { type };
-                    fcand.limit = 6;
-                    auto cands = tenants.list_entries(reader_tenant_id, fcand);
-                    cands.erase(std::remove_if(cands.begin(), cands.end(),
-                        [&e](const MemoryEntry& x) { return x.id == e.id; }),
-                        cands.end());
-                    if (cands.size() > 5) cands.resize(5);
-
-                    if (!cands.empty()) {
-                        auto sup_advisor = orch_ptr->make_advisor_invoker(caller_id);
-                        auto sup = detect_supersession_with_advisor(
-                            sup_advisor, title, content, cands);
-                        superseded_ids = std::move(sup.invalidated_ids);
-                        supersede_note = std::move(sup.note);
-                        for (auto sid : superseded_ids) {
-                            (void)tenants.invalidate_entry(reader_tenant_id, sid);
-                        }
-                    }
-                }
-
-                std::ostringstream out;
-                out << "OK: added entry #" << e.id << " [" << e.type << "] "
-                    << e.title;
-                if (artifact_id > 0) {
-                    out << " (linked to artifact #" << artifact_id << ")";
-                }
-                if (!auto_tags_added.empty()) {
-                    out << "\n  auto-tagged: ";
-                    for (size_t i = 0; i < auto_tags_added.size(); ++i) {
-                        if (i) out << ", ";
-                        out << auto_tags_added[i];
-                    }
-                }
-                if (!auto_tag_note.empty()) out << "\n  " << auto_tag_note;
-                if (!superseded_ids.empty()) {
-                    out << "\n  superseded: ";
-                    for (size_t i = 0; i < superseded_ids.size(); ++i) {
-                        if (i) out << ", ";
-                        out << "#" << superseded_ids[i];
-                    }
-                }
-                if (!supersede_note.empty()) out << "\n  " << supersede_note;
-                out << ".  Use this id in subsequent /mem add link calls to "
-                       "reference it.\n";
-                return out.str();
-            }
-
-            if (kind == "invalidate") {
-                // /mem invalidate <id>
-                // Args is just the id token.  Anything past the first
-                // whitespace is ignored — keeps the grammar tight.
-                // Tolerate a leading '#' so the displayed and accepted
-                // id forms agree (entries-list output uses #<n>).
-                std::istringstream iss(args);
-                std::string id_tok;
-                iss >> id_tok;
-                int64_t id = mem_parse_id(id_tok);
-                if (id <= 0) {
-                    return "ERR: usage: /mem invalidate <id>";
-                }
-                if (!tenants.invalidate_entry(reader_tenant_id, id)) {
-                    // Same false-collapse the HTTP handler navigates: the
-                    // row is missing, cross-tenant, or already invalid.
-                    // From the agent's perspective the after-state is the
-                    // same ("the row is no longer active"), so the wording
-                    // here merges those cases.
-                    std::ostringstream out;
-                    out << "ERR: entry #" << id
-                        << " not found or already invalidated";
-                    return out.str();
-                }
-                std::ostringstream out;
-                out << "OK: invalidated entry #" << id
-                    << " (still reachable through historical reads, "
-                    << "hidden from default queries).\n";
-                return out.str();
-            }
-
-            if (kind == "add-link") {
-                // /mem add link <src_id> <relation> <dst_id>
-                // Both ids tolerate a leading '#' so an agent can copy
-                // the displayed `#<n>` form straight from /mem entries
-                // or pipeline-memory output without manual stripping.
-                std::istringstream iss(args);
-                std::string src_tok, dst_tok;
-                std::string relation;
-                iss >> src_tok >> relation >> dst_tok;
-                int64_t src = mem_parse_id(src_tok);
-                int64_t dst = mem_parse_id(dst_tok);
-                if (src <= 0 || dst <= 0 || relation.empty()) {
-                    return "ERR: usage: /mem add link <src_id> <relation> <dst_id>";
-                }
-                if (src == dst) {
-                    return "ERR: self-loops not allowed";
-                }
-                if (!memory_relation_is_valid(relation)) {
-                    return "ERR: invalid relation '" + relation + "' — must be "
-                           "one of: relates_to, refines, contradicts, "
-                           "supersedes, supports";
-                }
-                auto src_entry = tenants.get_entry(reader_tenant_id, src);
-                auto dst_entry = tenants.get_entry(reader_tenant_id, dst);
-                if (!src_entry || !dst_entry) {
-                    return "ERR: one or both endpoint ids do not exist for "
-                           "this tenant";
-                }
-                auto created = tenants.create_relation(reader_tenant_id,
-                                                        src, dst, relation);
-                if (!created) {
-                    auto existing = tenants.find_relation(reader_tenant_id,
-                                                           src, dst, relation);
-                    std::ostringstream out;
-                    out << "ERR: a " << relation << " relation from #" << src
-                        << " to #" << dst << " already exists";
-                    if (existing) out << " (id=" << existing->id << ")";
-                    out << "\n";
-                    return out.str();
-                }
-                std::ostringstream out;
-                out << "OK: added relation #" << created->id << ": #" << src
-                    << " --[" << relation << "]--> #" << dst << ".\n";
-                return out.str();
-            }
-
-            return "ERR: unknown structured-memory write subcommand";
-        });
+        make_structured_memory_writer_callback(
+            tenants, reader_tenant_id, reader_conversation_id, orch_ptr));
 
     // ── MCP session manager ───────────────────────────────────────────
     // One Manager per request; subprocesses spawn lazily on first /mcp
     // reference and die when the orchestrator's `mcp_mgr` shared_ptr
     // falls out of scope (which happens at the end of this function or
     // when the InFlightScope unwinds on cancel).  The manager lives
-    // beyond the orchestrator only via the invoker capture below — when
-    // the lambda is destroyed, so is the manager.
-    //
-    // Registry-load failures are non-fatal at request time: we log and
-    // proceed with an empty manager so /mcp returns a clean ERR rather
-    // than failing the whole request.  Operators see the parse error in
-    // the API server log.
-    std::shared_ptr<mcp::Manager> mcp_mgr;
-    if (!opts.mcp_servers_path.empty()) {
-        try {
-            auto specs = mcp::load_server_registry(opts.mcp_servers_path);
-            mcp_mgr = std::make_shared<mcp::Manager>(std::move(specs));
-        } catch (const std::exception& e) {
-            log_error(std::string("MCP registry load failed: ") + e.what());
-        }
-    }
-    if (!mcp_mgr) mcp_mgr = std::make_shared<mcp::Manager>(std::vector<mcp::ServerSpec>{});
-
-    orch->set_mcp_invoker(
-        [mcp_mgr](const std::string& kind, const std::string& args) -> std::string {
-            // /mcp tools  [server]
-            // /mcp call   <server> <tool> [json_args]
-            //
-            // The /mcp slash dispatcher in commands.cpp normalises `kind`
-            // to "tools" or "call" and hands us the rest of the line as
-            // `args`.  We're responsible for parsing args and rendering
-            // the response body.
-            auto trim = [](std::string s) {
-                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
-                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
-                return s;
-            };
-
-            if (kind == "tools") {
-                std::string server = trim(args);
-                auto names = mcp_mgr->server_names();
-                if (names.empty()) {
-                    return "(no MCP servers configured for this deployment — "
-                           "set mcp_servers_path in ApiServerOptions and add an entry "
-                           "in the registry JSON.  See docs/api/concepts/mcp.md.)\n";
-                }
-                std::ostringstream out;
-                std::vector<std::string> targets;
-                if (server.empty()) {
-                    targets = names;
-                } else if (mcp_mgr->has(server)) {
-                    targets.push_back(server);
-                } else {
-                    out << "ERR: no MCP server '" << server << "' configured. "
-                        << "Available: ";
-                    for (size_t i = 0; i < names.size(); ++i) {
-                        if (i) out << ", ";
-                        out << names[i];
-                    }
-                    out << "\n";
-                    return out.str();
-                }
-                for (auto& s : targets) {
-                    out << "[" << s << "]\n";
-                    try {
-                        auto& cli = mcp_mgr->client(s);
-                        auto& tools = cli.tools();
-                        if (tools.empty()) {
-                            out << "  (server returned no tools)\n";
-                        }
-                        for (auto& t : tools) {
-                            out << "  " << t.name;
-                            if (!t.description.empty()) {
-                                // First line of description only — the full
-                                // schema is verbose enough that an agent
-                                // querying tools should follow up with a
-                                // narrower /mcp tools <server> if it
-                                // already knows the namespace.
-                                std::string d = t.description;
-                                auto nl = d.find('\n');
-                                if (nl != std::string::npos) d.resize(nl);
-                                if (d.size() > 120) { d.resize(117); d += "..."; }
-                                out << " — " << d;
-                            }
-                            out << "\n";
-                        }
-                    } catch (const std::exception& e) {
-                        out << "  ERR: " << e.what() << "\n";
-                    }
-                }
-                return out.str();
-            }
-
-            if (kind == "call") {
-                // Parse: <server> <tool> [json_args]
-                std::istringstream iss(args);
-                std::string server, tool;
-                iss >> server >> tool;
-                std::string json_args;
-                std::getline(iss, json_args);
-                json_args = trim(json_args);
-
-                if (server.empty() || tool.empty()) {
-                    return "ERR: usage: /mcp call <server> <tool> [json_args]\n";
-                }
-                if (!mcp_mgr->has(server)) {
-                    auto names = mcp_mgr->server_names();
-                    std::ostringstream out;
-                    out << "ERR: no MCP server '" << server << "' configured.";
-                    if (!names.empty()) {
-                        out << " Available: ";
-                        for (size_t i = 0; i < names.size(); ++i) {
-                            if (i) out << ", ";
-                            out << names[i];
-                        }
-                    }
-                    out << "\n";
-                    return out.str();
-                }
-
-                std::shared_ptr<JsonValue> arg_obj;
-                if (!json_args.empty()) {
-                    try { arg_obj = json_parse(json_args); }
-                    catch (const std::exception& e) {
-                        return std::string("ERR: invalid JSON args: ") + e.what() + "\n";
-                    }
-                    if (!arg_obj || !arg_obj->is_object()) {
-                        return "ERR: tool args must be a JSON object (e.g. "
-                               "{\"url\":\"https://example.com\"})\n";
-                    }
-                }
-
-                try {
-                    auto& cli = mcp_mgr->client(server);
-                    auto result = cli.call_tool(tool, arg_obj);
-                    return mcp::render_tool_result(result);
-                } catch (const std::exception& e) {
-                    return std::string("ERR: ") + e.what() + "\n";
-                }
-            }
-
-            return "ERR: unknown /mcp subcommand";
-        });
+    // beyond the orchestrator only via the invoker capture — when the
+    // captured lambda is destroyed, so is the manager.
+    auto mcp_mgr = make_mcp_manager(opts,
+        [&log_error](const std::string& m) { log_error(m); });
+    orch->set_mcp_invoker(make_mcp_invoker_callback(mcp_mgr));
 
     // ── A2A remote-agent delegation ───────────────────────────────────
     // Wire the /a2a slash command so the master orchestrator (and any
@@ -6163,27 +6395,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // ERR rather than silently doing the wrong thing.  Captures the key
     // by value so a future request that reloads ApiServerOptions doesn't
     // race the in-flight lambda.
-    {
-        const std::string provider = opts.search_provider.empty()
-                                        ? std::string("brave")
-                                        : opts.search_provider;
-        const std::string key      = opts.search_api_key;
-        if (provider == "brave" && !key.empty()) {
-            orch->set_search_invoker(
-                [key](const std::string& query, int top_n) -> std::string {
-                    return brave_search(query, key, top_n);
-                });
-        } else if (!provider.empty() && provider != "brave" && !key.empty()) {
-            orch->set_search_invoker(
-                [provider](const std::string&, int) -> std::string {
-                    return "ERR: search provider '" + provider +
-                           "' is configured but not implemented in this "
-                           "build.  Only 'brave' is supported in v1.";
-                });
-        }
-        // No key ⇒ leave the invoker null; the dispatcher returns its own
-        // ERR with a more useful message ("web search unavailable…").
+    if (auto search_inv = make_search_invoker_callback(opts)) {
+        orch->set_search_invoker(std::move(search_inv));
     }
+    // No key / unsupported provider ⇒ leave the invoker null; the
+    // dispatcher returns its own ERR with a useful message.
 
     // ── Artifact store bridges ────────────────────────────────────────
     // Wire /write --persist, /read, and /list against TenantStore +
@@ -6193,127 +6409,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // surface a clear "no conversation context" warning + ephemeral
     // fallback for /write --persist.
     if (conversation_id > 0) {
-        const int64_t tid    = tenant.id;
-        const int64_t cid    = conversation_id;
-        TenantStore*  store  = &tenants;
-
         orch->set_artifact_writer(
-            [tid, cid, store](const std::string& raw_path,
-                                const std::string& content) -> std::string {
-                std::string err;
-                auto canonical = sanitize_artifact_path(raw_path, err);
-                if (!canonical) {
-                    return std::string("ERR: invalid path: ") + err;
-                }
-                // mime_type stays default ('application/octet-stream') —
-                // the agent doesn't know what to declare and we don't
-                // sniff in v1.  HTTP callers can set it explicitly via
-                // the POST endpoint.
-                auto put = store->put_artifact(tid, cid, *canonical,
-                                                 content, std::string{});
-                std::ostringstream out;
-                switch (put.status) {
-                    case PutArtifactResult::Status::Created:
-                    case PutArtifactResult::Status::Updated:
-                        out << (put.status == PutArtifactResult::Status::Created
-                                ? "OK: persisted "
-                                : "OK: updated ")
-                            << put.record->size << " bytes (artifact #"
-                            << put.record->id << ", "
-                            << put.conversation_used_bytes << " of "
-                            << kArtifactPerConversationMaxBytes
-                            << " bytes used in this conversation)";
-                        break;
-                    case PutArtifactResult::Status::QuotaExceeded:
-                        out << "ERR: " << put.error_msg;
-                        break;
-                    case PutArtifactResult::Status::PathRejected:
-                        out << "ERR: " << put.error_msg;
-                        break;
-                }
-                return out.str();
-            });
-
+            make_artifact_writer_callback(tenant.id, conversation_id, &tenants));
         orch->set_artifact_reader(
-            [tid, cid, store](const std::string& raw_path,
-                                int64_t artifact_id,
-                                int64_t via_memory_id) -> std::string {
-                // Path-form: same-conversation lookup.  Sanitiser gates
-                // bad paths before we touch the DB.
-                if (artifact_id == 0) {
-                    std::string err;
-                    auto canonical = sanitize_artifact_path(raw_path, err);
-                    if (!canonical) return std::string("ERR: invalid path: ") + err;
-
-                    auto meta = store->get_artifact_meta_by_path(tid, cid, *canonical);
-                    if (!meta) {
-                        return std::string("ERR: '") + *canonical +
-                               "' not found in this conversation's artifacts";
-                    }
-                    auto blob = store->get_artifact_content(tid, meta->id);
-                    if (!blob) {
-                        return std::string("ERR: artifact #") +
-                               std::to_string(meta->id) + " content missing";
-                    }
-                    return *blob;
-                }
-
-                // Id-form: tenant-scoped lookup.  Cross-conversation
-                // reads require a `via=mem:<id>` capability that points
-                // at this artifact_id from a memory entry the tenant
-                // owns.  Same-conversation reads are allowed without
-                // citation — same trust boundary as path-form.
-                auto art = store->get_artifact_meta(tid, artifact_id);
-                if (!art) {
-                    return std::string("ERR: artifact #") +
-                           std::to_string(artifact_id) +
-                           " not found for this tenant";
-                }
-                if (art->conversation_id != cid) {
-                    if (via_memory_id == 0) {
-                        return std::string("ERR: artifact #") +
-                               std::to_string(artifact_id) +
-                               " is in a different conversation; cite the "
-                               "memory entry that links it: "
-                               "/read #" + std::to_string(artifact_id) +
-                               " via=mem:<entry_id>";
-                    }
-                    auto mem = store->get_entry(tid, via_memory_id);
-                    if (!mem) {
-                        return std::string("ERR: via=mem:") +
-                               std::to_string(via_memory_id) +
-                               " — memory entry not found for this tenant";
-                    }
-                    if (mem->artifact_id != artifact_id) {
-                        return std::string("ERR: memory entry #") +
-                               std::to_string(via_memory_id) +
-                               " does not reference artifact #" +
-                               std::to_string(artifact_id) +
-                               " (its artifact_id=" +
-                               std::to_string(mem->artifact_id) + ")";
-                    }
-                }
-                auto blob = store->get_artifact_content(tid, artifact_id);
-                if (!blob) {
-                    return std::string("ERR: artifact #") +
-                           std::to_string(artifact_id) +
-                           " content missing";
-                }
-                return *blob;
-            });
-
+            make_artifact_reader_callback(tenant.id, conversation_id, &tenants));
         orch->set_artifact_lister(
-            [tid, cid, store]() -> std::string {
-                auto rows = store->list_artifacts_conversation(tid, cid, 200);
-                if (rows.empty()) return std::string{};
-                std::ostringstream out;
-                for (auto& r : rows) {
-                    out << r.path << "  (" << r.size
-                        << " bytes, mime=" << r.mime_type
-                        << ", id=" << r.id << ")\n";
-                }
-                return out.str();
-            });
+            make_artifact_lister_callback(tenant.id, conversation_id, &tenants));
     }
 
     // ── Fleet lifecycle ────────────────────────────────────────────────
