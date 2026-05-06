@@ -98,6 +98,8 @@ set(INDEX_AI_SOURCES
     src/mcp/subprocess.cpp
     src/mcp/client.cpp
     src/mcp/manager.cpp
+    src/a2a/types.cpp
+    src/a2a/server.cpp
     src/readline_wrapper.cpp
     src/markdown.cpp
 )

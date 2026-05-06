@@ -12,6 +12,7 @@
 #include "config.h"
 #include "constitution.h"
 #include "json.h"
+#include "a2a/server.h"
 #include "mcp/manager.h"
 #include "orchestrator.h"
 #include "billing_client.h"
@@ -216,7 +217,16 @@ constexpr const char* kCorsHeaders =
     "Access-Control-Allow-Headers: Authorization, Content-Type, Accept\r\n"
     "Access-Control-Max-Age: 86400\r\n";
 
+} // namespace (anon paused for response writers below)
+
 // ─── HTTP response writers (non-SSE) ────────────────────────────────────────
+//
+// These three are at index_ai-namespace scope (not the surrounding
+// anonymous namespace) so other TUs in arbiter — currently src/a2a/server.cpp
+// — can write directly without going through the route-dispatch loop.
+// The TU-local helpers they call (write_all, kCorsHeaders) live in the
+// anonymous namespace above; same-TU access is unaffected by the linkage
+// boundary.
 
 void write_plain_response(int fd, int code, const std::string& reason,
                           const std::string& body) {
@@ -241,6 +251,8 @@ void write_json_response(int fd, int code, std::shared_ptr<JsonValue> body) {
        << payload;
     write_all(fd, ss.str());
 }
+
+namespace {
 
 // CORS preflight response — 204 No Content + headers.  Browsers fire this
 // ahead of any non-simple request (custom headers like Authorization, or
@@ -1261,6 +1273,79 @@ void handle_agent_get(int fd, const std::string& agent_id,
         return;
     }
     write_json_response(fd, 200, agent_record_to_json(*rec));
+}
+
+// ─── A2A protocol HTTP handlers ────────────────────────────────────────────
+//
+// The pure transforms (build_agent_card, build_well_known_stub,
+// resolve_public_base_url) live in src/a2a/server.cpp.  These wrappers
+// are TU-local because they touch the orchestrator factory + tenant
+// store, both of which already live in this translation unit.
+
+void handle_a2a_well_known_card(int fd, const HttpRequest& req,
+                                 const ApiServerOptions& opts) {
+    const std::string base = a2a::resolve_public_base_url(opts, req.headers);
+    auto card = a2a::build_well_known_stub(base);
+    write_json_response(fd, 200, a2a::to_json(card));
+}
+
+void handle_a2a_agent_card_get(int fd, const std::string& agent_id,
+                                const HttpRequest& req,
+                                const ApiServerOptions& opts,
+                                TenantStore& tenants, const Tenant& tenant) {
+    const std::string base = a2a::resolve_public_base_url(opts, req.headers);
+
+    // The built-in master is tenant-agnostic and lives in the orchestrator
+    // factory — it doesn't have a row in tenant_agents, so we resolve it
+    // through the same path GET /v1/agents/index uses.
+    if (agent_id == "index") {
+        std::unique_ptr<Orchestrator> orch;
+        try { orch = make_reflect_orchestrator(opts); }
+        catch (const std::exception& e) {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr(std::string("orchestrator init failed: ") + e.what());
+            write_json_response(fd, 500, err);
+            return;
+        }
+        try {
+            auto& cons = orch->get_constitution("index");
+            auto card  = a2a::build_agent_card(cons, "index", base, "index");
+            write_json_response(fd, 200, a2a::to_json(card));
+            return;
+        } catch (const std::out_of_range&) {
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr("index master missing");
+            write_json_response(fd, 500, err);
+            return;
+        }
+    }
+
+    auto rec = tenants.get_agent_record(tenant.id, agent_id);
+    if (!rec) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("no agent '" + agent_id + "' for this tenant");
+        write_json_response(fd, 404, err);
+        return;
+    }
+
+    Constitution cons;
+    try {
+        cons = Constitution::from_json(rec->agent_def_json);
+    } catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("agent_def parse failed: ") + e.what());
+        write_json_response(fd, 500, err);
+        return;
+    }
+
+    // Version threads the catalog row's updated_at so card consumers can
+    // cheap-cache.  Clients re-fetch on a version mismatch.
+    auto card = a2a::build_agent_card(cons, agent_id, base,
+                                       std::to_string(rec->updated_at));
+    write_json_response(fd, 200, a2a::to_json(card));
 }
 
 // Validate an inbound agent_def body and pull out the (id, name, role,
@@ -5944,6 +6029,14 @@ void ApiServer::handle_connection(int fd) {
         return;
     }
 
+    // A2A well-known discovery — unauth, returns a top-level stub
+    // describing how to authenticate for per-agent cards.  Sits ahead of
+    // the bearer check so spec-compliant clients can dial in cold.
+    if (req.method == "GET" && req.path == "/.well-known/agent-card.json") {
+        handle_a2a_well_known_card(fd, req, opts_);
+        return;
+    }
+
     // Admin routes have their own auth (admin token, not tenant tokens).
     // Matched by prefix so /v1/admin, /v1/admin/tenants, /v1/admin/usage?…
     // all funnel into handle_admin, which sub-dispatches.
@@ -6153,6 +6246,45 @@ void ApiServer::handle_connection(int fd) {
             }
             write_plain_response(fd, 404, "Not Found",
                                   "artifact route not found\n");
+            return;
+        }
+    }
+
+    // ── A2A protocol surface ─────────────────────────────────────────────
+    // GET  /v1/a2a/agents/:id/agent-card.json   — per-agent card (PR-1)
+    // POST /v1/a2a/agents/:id                   — JSON-RPC dispatch (PR-2..)
+    {
+        const auto segs = split_path(req.path);
+        if (segs.size() >= 4 && segs[0] == "v1" && segs[1] == "a2a"
+            && segs[2] == "agents") {
+            const std::string agent_id = segs[3];
+            if (agent_id.empty()) {
+                write_plain_response(fd, 400, "Bad Request", "agent id missing\n");
+                return;
+            }
+            if (segs.size() == 5 && segs[4] == "agent-card.json") {
+                if (req.method != "GET") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                handle_a2a_agent_card_get(fd, agent_id, req, opts_,
+                                           tenants_, *tenant);
+                return;
+            }
+            // POST /v1/a2a/agents/:id → JSON-RPC dispatch lands in PR-2.
+            // For now the route exists but rejects with a clean error.
+            if (segs.size() == 4) {
+                if (req.method != "POST") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                write_plain_response(fd, 501, "Not Implemented",
+                                     "A2A JSON-RPC dispatch not yet implemented\n");
+                return;
+            }
+            write_plain_response(fd, 404, "Not Found", "a2a route not found\n");
             return;
         }
     }

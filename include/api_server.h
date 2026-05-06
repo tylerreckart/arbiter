@@ -119,6 +119,14 @@ struct ApiServerOptions {
     std::string search_provider = "brave";
     std::string search_api_key;
 
+    // Public-facing base URL the server is reachable at (e.g.
+    // "https://arbiter.example.com").  Used to populate `url` fields in
+    // A2A agent cards so remote clients dial the right endpoint.  Empty ⇒
+    // derive per-request from the inbound Host header with scheme http://;
+    // operators terminating TLS in front of arbiter should set this
+    // explicitly so cards advertise the public https:// origin.
+    std::string public_base_url;
+
     // External billing service base URL (e.g. "http://localhost:4000").
     // When set, every /v1/orchestrate call:
     //   • exchanges the bearer for a workspace_id via /v1/runtime/auth/validate
