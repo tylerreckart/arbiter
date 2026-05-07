@@ -68,4 +68,4 @@ The session file is per-conversation continuity. The **structured memory graph**
 - Session: "what did we just talk about, in this directory" — restored automatically.
 - Memory graph: "what facts has the agent recorded over time" — queried explicitly via `/v1/memory/entries?q=…`.
 
-The TUI's `/mem write` writes to the per-agent scratchpad (a flat file), not the memory graph. The graph is the API surface for richer retrieval; see [`docs/api/concepts/structured-memory.md`](../api/concepts/structured-memory.md).
+The TUI's `/mem write` writes to the per-agent scratchpad (a flat file), not the memory graph. The graph is the API surface for richer retrieval; see [`docs/concepts/structured-memory.md`](../concepts/structured-memory.md).

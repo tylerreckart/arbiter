@@ -72,7 +72,7 @@ arbiter --add-tenant me                       # prints the bearer token — save
 arbiter --api --port 8080                     # bind 127.0.0.1 by default
 ```
 
-Authenticate with `Authorization: Bearer <token>`. The endpoint catalogue is at [`api/`](../api/index.md). Production deployments belong behind a reverse proxy for TLS and rate limiting — see [`api/concepts/operations.md`](../api/concepts/operations.md).
+Authenticate with `Authorization: Bearer <token>`. The endpoint catalogue is at [`api/`](../api/index.md). Production deployments belong behind a reverse proxy for TLS and rate limiting — see [`concepts/operations.md`](../concepts/operations.md).
 
 ## Where things live
 
@@ -92,6 +92,6 @@ Full reference: [`cli/environment.md`](../cli/environment.md).
 
 ## Next steps
 
-- **Author your own agent.** Drop a JSON into `~/.arbiter/agents/<id>.json`. Schema: [`api/agents/create.md`](../api/agents/create.md). Concepts: [Writ](../api/concepts/writ.md), [Advisor](../api/concepts/advisor.md).
+- **Author your own agent.** Drop a JSON into `~/.arbiter/agents/<id>.json`. Schema: [`api/agents/create.md`](../api/agents/create.md). Concepts: [Writ](../concepts/writ.md), [Advisor](../concepts/advisor.md).
 - **Read the design philosophy.** [`philosophy.md`](../philosophy.md).
-- **Wire up integrations.** [MCP servers](../api/concepts/mcp.md) for external tools, [A2A](../api/concepts/a2a.md) for remote agents.
+- **Wire up integrations.** [MCP servers](../concepts/mcp.md) for external tools, [A2A](../concepts/a2a.md) for remote agents.

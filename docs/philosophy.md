@@ -6,7 +6,7 @@ Six themes carry most of the weight. Each one shows up in concrete decisions acr
 
 ## 1. Agents drive a small runtime
 
-The runtime exposes a small set of slash-command handlers — `/fetch`, `/search`, `/browse`, `/exec`, `/write`, `/mem*`, `/agent`, `/parallel`, `/mcp`, `/advise` — collectively called [**writ**](api/concepts/writ.md), the DSL agents emit inline in their replies. A line-buffered filter on the streaming path catches each writ, runs the handler, and feeds the result back as a tool-result block on the next turn. There is no JSON tool-use schema. No function-calling layer. The agent's *system prompt* is where behaviour lives; the runtime is small on purpose.
+The runtime exposes a small set of slash-command handlers — `/fetch`, `/search`, `/browse`, `/exec`, `/write`, `/mem*`, `/agent`, `/parallel`, `/mcp`, `/advise` — collectively called [**writ**](concepts/writ.md), the DSL agents emit inline in their replies. A line-buffered filter on the streaming path catches each writ, runs the handler, and feeds the result back as a tool-result block on the next turn. There is no JSON tool-use schema. No function-calling layer. The agent's *system prompt* is where behaviour lives; the runtime is small on purpose.
 
 ## 2. One binary, three shapes; local-first, network-optional
 
@@ -14,7 +14,7 @@ The codebase ships as a single executable with three modes — [interactive TUI]
 
 ## 3. Streaming is the wire format
 
-The HTTP API is built around [Server-Sent Events](api/concepts/sse-events.md), not request/response. The orchestration loop emits events as the agent and its sub-agents work — `text` deltas as the model streams, `tool_call` after each `/cmd` finishes, `file` when an agent writes content, `token_usage` per turn, `sub_agent_response` after delegated turns, `stream_end` per turn, `done` once at the end. The consumer reassembles the picture from events.
+The HTTP API is built around [Server-Sent Events](concepts/sse-events.md), not request/response. The orchestration loop emits events as the agent and its sub-agents work — `text` deltas as the model streams, `tool_call` after each `/cmd` finishes, `file` when an agent writes content, `token_usage` per turn, `sub_agent_response` after delegated turns, `stream_end` per turn, `done` once at the end. The consumer reassembles the picture from events.
 
 The protocol cares about ordering only where it has to: `request_received` is always first, `done` is always last, per-stream events are causally ordered. Cross-stream events interleave by wall-clock — and that's the *correct* behaviour, because the underlying work is concurrent.
 
@@ -26,7 +26,7 @@ When `--api` is running, every request authenticates with a bearer token tied to
 
 ## 5. Memory: soft over hard, search wants recall, browse wants precision
 
-The [structured memory layer](api/concepts/structured-memory.md) makes three choices that compound into its overall shape:
+The [structured memory layer](concepts/structured-memory.md) makes three choices that compound into its overall shape:
 
 `/mem invalidate <id>` sets `valid_to` rather than deleting the row. Hard-delete still exists (`DELETE /v1/memory/entries/:id`) but the *common* lifecycle is "fact retired, not erased."
 
@@ -38,4 +38,4 @@ The same reversibility principle shows up in artifacts (PUT-on-conflict replaces
 
 ## 6. Operational scope: do the distinctive thing well; let the proxy do the rest
 
-Arbiter binds `127.0.0.1` by default and speaks plain HTTP. There is no built-in TLS, no built-in rate limiter, no built-in DDoS protection, no built-in WAF. [Operational notes](api/concepts/operations.md) makes this explicit: deploy behind a reverse proxy (nginx, caddy, cloudflare).
+Arbiter binds `127.0.0.1` by default and speaks plain HTTP. There is no built-in TLS, no built-in rate limiter, no built-in DDoS protection, no built-in WAF. [Operational notes](concepts/operations.md) makes this explicit: deploy behind a reverse proxy (nginx, caddy, cloudflare).

@@ -39,12 +39,12 @@ curl -N -H "Authorization: Bearer atr_..." \
      https://<your-endpoint>/v1/orchestrate
 ```
 
-The response is a Server-Sent Events stream. Event shapes are documented in [`api/concepts/sse-events.md`](../api/concepts/sse-events.md); the full request/response contract for the orchestrate call is at [`api/orchestrate.md`](../api/orchestrate.md).
+The response is a Server-Sent Events stream. Event shapes are documented in [`concepts/sse-events.md`](../concepts/sse-events.md); the full request/response contract for the orchestrate call is at [`api/orchestrate.md`](../api/orchestrate.md).
 
 From there, the rest of the API works the same as a local `--api` server — the hosted endpoint is just a `--api` server somewhere else.
 
 ## Next steps
 
-- **Author your own agent.** Schema reference: [`api/agents/create.md`](../api/agents/create.md). Concepts: [Writ](../api/concepts/writ.md), [Advisor](../api/concepts/advisor.md).
+- **Author your own agent.** Schema reference: [`api/agents/create.md`](../api/agents/create.md). Concepts: [Writ](../concepts/writ.md), [Advisor](../concepts/advisor.md).
 - **Read the design philosophy.** [`philosophy.md`](../philosophy.md).
-- **Wire up integrations.** [MCP servers](../api/concepts/mcp.md) for external tools, [A2A](../api/concepts/a2a.md) for remote agents.
+- **Wire up integrations.** [MCP servers](../concepts/mcp.md) for external tools, [A2A](../concepts/a2a.md) for remote agents.

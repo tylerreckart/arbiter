@@ -10,7 +10,7 @@ Both paths speak the same writ DSL, expose the same SSE protocol, and use the sa
 ## See also
 
 - [`philosophy.md`](../philosophy.md) — why arbiter is shaped the way it is.
-- [`api/concepts/writ.md`](../api/concepts/writ.md) — the slash-command DSL agents emit.
+- [`concepts/writ.md`](../concepts/writ.md) — the slash-command DSL agents emit.
 - [`api/`](../api/index.md) — HTTP API reference.
 - [`cli/`](../cli/index.md) — non-interactive command-line reference.
 - [`tui/`](../tui/index.md) — interactive terminal client.

@@ -56,7 +56,7 @@ Distinct from env vars but listed here for completeness, since the env-vs-file p
 | `agents/*.json`            | Agent constitutions.                                                 |
 | `sessions/*.json`          | Per-cwd interactive session snapshots.                               |
 | `memory/<agent>/notes.md`  | Per-agent persistent scratchpad (`/mem write`).                      |
-| `mcp_servers.json`         | Optional MCP server registry. See [`docs/api/concepts/mcp.md`](../api/concepts/mcp.md). |
+| `mcp_servers.json`         | Optional MCP server registry. See [`docs/concepts/mcp.md`](../concepts/mcp.md). |
 | `history`                  | Merged TUI editor history across panes.                              |
 
 Files are read on demand by the relevant subsystem. None of them are watched for changes — restart the process to pick up edits to `agents/*.json` or `mcp_servers.json` while `--api` is running.
