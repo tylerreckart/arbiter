@@ -1,6 +1,6 @@
 # Outbound A2A
 
-Configure remote [Agent2Agent (A2A)](../api/concepts/a2a.md) agents that arbiter's own agents can delegate to via the `/a2a` slash command. Symmetric to `~/.arbiter/mcp_servers.json`: optional file, per-request lifecycle, no long-lived state. Inbound A2A — exposing arbiter agents as A2A endpoints — is documented separately under [`docs/api/concepts/a2a.md`](../api/concepts/a2a.md).
+Configure remote [Agent2Agent (A2A)](../concepts/a2a.md) agents that arbiter's own agents can delegate to via the `/a2a` slash command. Symmetric to `~/.arbiter/mcp_servers.json`: optional file, per-request lifecycle, no long-lived state. Inbound A2A — exposing arbiter agents as A2A endpoints — is documented separately under [`docs/concepts/a2a.md`](../concepts/a2a.md).
 
 ## Registry file
 
@@ -73,8 +73,6 @@ REMOTE A2A AGENTS — delegate with /a2a call <name> <message> (distinct trust b
 
 `index` sees both lists at routing time and chooses between local sub-agents (which share tenant memory) and remote A2A agents (which don't). The "distinct trust boundary; no shared memory" caveat is rendered verbatim so the agent's reasoning is informed by the constraint.
 
-This auto-injection is on by default (per the v0.4.3 product decision). Operators wanting opt-in behavior can wrap `make_a2a_invoker()` themselves in a fork.
-
 ## Trust posture
 
 Calls to a remote A2A agent send only the message text. The remote does **not** see:
@@ -106,6 +104,6 @@ For remotes whose card path differs from `<url>/agent-card.json` (the v1.0 defau
 
 ## See also
 
-- [A2A protocol concept](../api/concepts/a2a.md) — the inbound surface and the wire-shape reference.
+- [A2A protocol concept](../concepts/a2a.md) — the inbound surface and the wire-shape reference.
 - [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.md) — what arbiter exposes to remote A2A clients.
-- [MCP servers](../api/concepts/mcp.md) — sister registry pattern for the MCP toolchain.
+- [MCP servers](../concepts/mcp.md) — sister registry pattern for the MCP toolchain.

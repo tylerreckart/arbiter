@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-05-07
+
 ### Added
 - **Agent2Agent (A2A) v1.0 protocol — both directions.** Tenant agents are
   reachable as A2A endpoints at `POST /v1/a2a/agents/:id`
@@ -20,7 +22,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   table; cancel reuses the in-flight registry so `tasks/cancel` and
   `POST /v1/requests/:id/cancel` resolve through the same handle. v1.0
   only; `tasks/resubscribe` and push notifications deferred. See
-  [`docs/api/concepts/a2a.md`](docs/api/concepts/a2a.md).
+  [`docs/concepts/a2a.md`](docs/concepts/a2a.md).
 - `public_base_url` server option for TLS-fronted deploys; falls back to
   the `Host` header otherwise.
 - **Example MCP server registry** at `examples/mcp_servers.json` covering
@@ -29,11 +31,50 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `reviewer`, `planner`, `research`) now declare `/mcp` in their
   capabilities and carry per-agent rules naming which servers to call
   for which work.
+- **Writ — the slash-command DSL is now a named concept.** New
+  [`docs/concepts/writ.md`](docs/concepts/writ.md) defines the language
+  agents emit inline (verbs, block forms, agent-as-first-class-value,
+  per-agent dialects via the capability allowlist). README, philosophy
+  doc, and concept index reference it by name.
+- **Getting-started documentation** at
+  [`docs/getting-started/`](docs/getting-started/index.md) with two
+  paths: `hosted.md` (managed endpoint, limited-preview waitlist) and
+  `local.md` (install + first run). Index page leads with the hosted
+  option for evaluators; local for self-hosters who want `/exec` and
+  filesystem access.
+- README rewrite: new "Why arbiter" section surfacing the four
+  differentiators (writ vs. JSON tool-use, multi-agent composition as a
+  language primitive, structural advisor gating, single binary /
+  local-first); a worked example session showing writs in flight; a
+  hosted-preview pointer in the lead. Install/Setup/Running collapsed
+  into a single Quick start block that defers to getting-started.
 
 ### Changed
 - Tool callbacks (memory scratchpad, structured memory, MCP, search,
   artifacts) factored into shared factories so `/v1/orchestrate` and the
   new A2A handlers install identical behaviour from one source.
+- **`--api` verbose log overhauled.** Replaces the prior
+  `POST /orchestrate … DONE` one-liner with a two-form layout: marker
+  events (`request_received`, `stream_start`) on dedicated lines, inline
+  events (`tool_call`, `advisor`, `file`, `done`, `error`) as
+  `event: <name> · <value>`. Streamed text and thinking deltas are
+  suppressed (they already mirror over SSE; duplicating multi-thousand-
+  token prose drowned out the event spine). Successful `stream_end`
+  stays quiet so parallel fan-outs don't flood; failures still surface.
+  Token totals on `done` switch to a wall-clock seconds + USD-cost
+  format when pricing is available, falling back to in/out token
+  counts otherwise.
+- **Concept docs moved out of `docs/api/`.** All twelve files relocated
+  from `docs/api/concepts/*` to `docs/concepts/*` so concepts are
+  reachable from CLI / TUI / getting-started without crossing into the
+  HTTP API tree. Inbound links across `docs/`, the README, and
+  `docs/philosophy.md` updated. External bookmarks pointing at the old
+  paths will 404 — there is no redirect layer in the markdown.
+- Documentation expanded for the A2A surface: new `docs/api/a2a/`
+  endpoint pages (`well-known.md`, `agent-card.md`, `dispatch.md`),
+  `docs/concepts/a2a.md` concept doc, and `docs/cli/a2a-agents.md` for
+  the local registry + slash command. `docs/api/concepts/sse-events.md`
+  documents the new A2A-aware event shapes.
 
 ## [0.4.2] — 2026-05-06
 

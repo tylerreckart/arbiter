@@ -18,7 +18,7 @@ arbiter --api [--port N] [--bind ADDR] [--verbose]
 2. Reads provider API keys from env or `~/.arbiter/`. See [environment.md](environment.md).
 3. Resolves the admin token used to authorise tenant-management endpoints (`/v1/admin/*`). See `~/.arbiter/admin_token` — created on first `--api` launch if missing.
 4. Loads agent constitutions from `~/.arbiter/agents/*.json`.
-5. Loads the optional MCP registry from `~/.arbiter/mcp_servers.json`. See [`docs/api/concepts/mcp.md`](../api/concepts/mcp.md).
+5. Loads the optional MCP registry from `~/.arbiter/mcp_servers.json`. See [`docs/concepts/mcp.md`](../concepts/mcp.md).
 6. Loads the optional A2A remote-agent registry from `~/.arbiter/a2a_agents.json`. See [a2a-agents.md](a2a-agents.md).
 7. Reads optional web-search provider config from `ARBITER_SEARCH_PROVIDER` / `ARBITER_SEARCH_API_KEY` (or `BRAVE_SEARCH_API_KEY` as a convenience fallback).
 8. Reads optional billing-service URL from `ARBITER_BILLING_URL`. Unset = no eligibility checks, no usage record posting; provider keys go through directly with no caps.
@@ -42,7 +42,7 @@ The HTTP surface is documented in detail in [`docs/api/`](../api/index.md). Quic
 - **`POST /v1/conversations`**, **`/messages`** — long-running conversations with persisted history.
 - **`/v1/memory/*`** — structured memory graph (typed nodes, relations, FTS search).
 - **`/v1/artifacts/*`** — files agents wrote.
-- **`/v1/a2a/agents/:id`** — Agent2Agent (A2A) protocol surface: per-agent cards plus JSON-RPC dispatch (`message/send`, `message/stream`, `tasks/get`, `tasks/cancel`). See [`docs/api/concepts/a2a.md`](../api/concepts/a2a.md).
+- **`/v1/a2a/agents/:id`** — Agent2Agent (A2A) protocol surface: per-agent cards plus JSON-RPC dispatch (`message/send`, `message/stream`, `tasks/get`, `tasks/cancel`). See [`docs/concepts/a2a.md`](../concepts/a2a.md).
 - **`/v1/admin/tenants/*`** — tenant lifecycle (admin-token gated).
 
 ## Tenant identity
@@ -59,7 +59,7 @@ By default the server logs only structured events (request received, request com
 
 - text deltas (line-buffered, flushed on newline)
 - `tool_call` — slash-command execution with ✓/✗ status
-- `advisor` — runtime advisor activity: `advise` (executor `/advise` consult), `gate ✓` (continue), `gate ↻` (redirect with guidance), `gate ✗` (halt with reason), `gate ⛔` (redirect budget exhausted). See [`docs/api/concepts/sse-events.md`](../api/concepts/sse-events.md) and [`docs/api/concepts/advisor.md`](../api/concepts/advisor.md).
+- `advisor` — runtime advisor activity: `advise` (executor `/advise` consult), `gate ✓` (continue), `gate ↻` (redirect with guidance), `gate ✗` (halt with reason), `gate ⛔` (redirect budget exhausted). See [`docs/concepts/sse-events.md`](../concepts/sse-events.md) and [`docs/concepts/advisor.md`](../concepts/advisor.md).
 - `escalation` — out-of-band advisor halt notification (sibling of `stream_end`)
 - `file` — `/write` writes streamed to the client
 
@@ -82,6 +82,6 @@ Returns `{"ok": true}` once the server has finished startup. Useful as a Kuberne
 ## See also
 
 - [`docs/api/index.md`](../api/index.md) — endpoint reference.
-- [`docs/api/concepts/authentication.md`](../api/concepts/authentication.md) — bearer-token semantics.
-- [`docs/api/concepts/operations.md`](../api/concepts/operations.md) — operational notes.
+- [`docs/concepts/authentication.md`](../concepts/authentication.md) — bearer-token semantics.
+- [`docs/concepts/operations.md`](../concepts/operations.md) — operational notes.
 - [tenants.md](tenants.md) — provisioning the bearer tokens this server validates.

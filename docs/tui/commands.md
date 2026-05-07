@@ -66,7 +66,7 @@ A loop runs an agent repeatedly with its own buffered output, decoupled from any
 | `/mem shared read`             | Read the shared scratchpad.                                         |
 | `/mem shared clear`            | Clear the shared scratchpad.                                        |
 
-The structured memory graph (typed nodes + relations, FTS-ranked search) is exposed via the HTTP API only — see [`docs/api/concepts/structured-memory.md`](../api/concepts/structured-memory.md). The TUI's `/mem` operates on the simpler per-agent scratchpad files.
+The structured memory graph (typed nodes + relations, FTS-ranked search) is exposed via the HTTP API only — see [`docs/concepts/structured-memory.md`](../concepts/structured-memory.md). The TUI's `/mem` operates on the simpler per-agent scratchpad files.
 
 ## Plans
 

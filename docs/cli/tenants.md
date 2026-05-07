@@ -85,6 +85,6 @@ Names are matched exactly (case-sensitive). Two tenants with the same name produ
 
 ## See also
 
-- [`docs/api/concepts/authentication.md`](../api/concepts/authentication.md) — how the server validates the token on the request path.
+- [`docs/concepts/authentication.md`](../concepts/authentication.md) — how the server validates the token on the request path.
 - [`docs/api/admin/tenants-create.md`](../api/admin/tenants-create.md) and friends — the same operations exposed over HTTP, gated by the admin token.
 - [api.md](api.md) — the server that consumes these tokens.

@@ -22,17 +22,17 @@ It runs in three shapes.
 
 ## Why arbiter
 
-- **Writ Agentic DSL** Agents emit slash commands inline
+- **Writ agentic DSL.** Agents emit slash commands inline
   with their prose. No function-calling schema, no tool-use turn
   boundary. The runtime line-buffers the stream and dispatches as the
-  model writes. See [writ](docs/api/concepts/writ.md).
+  model writes. See [writ](docs/concepts/writ.md).
 - **Multi-agent composition as a language primitive.** `/agent` calls a
   sub-agent synchronously, `/parallel` fans out, `/pane` spawns
   detached. Agents are first-class verbs in the same DSL as tools.
 - **Structural advisor gating.** A higher-capability model can supervise
   the executor's terminating turn at the runtime level, signalling
   `CONTINUE` / `REDIRECT` / `HALT`. Execution and judgment are separate
-  loops. See [advisor](docs/api/concepts/advisor.md).
+  loops. See [advisor](docs/concepts/advisor.md).
 - **Single binary, local-first.** <2 MB C++ runtime, no Python or Node
   dependency. SQLite-backed local state under `~/.arbiter/`. The HTTP
   server is opt-in, not the default.
