@@ -6,7 +6,7 @@ Six themes carry most of the weight. Each one shows up in concrete decisions acr
 
 ## 1. Agents drive a small runtime
 
-The runtime exposes a small set of slash-command handlers — `/fetch`, `/search`, `/browse`, `/exec`, `/write`, `/mem*`, `/agent`, `/parallel`, `/mcp`, `/advise`. Agents emit these inline in their replies. A line-buffered filter on the streaming path catches them, runs the handler, and feeds the result back as a tool-result block on the next turn. There is no JSON tool-use schema. No function-calling layer. The agent's *system prompt* is where behaviour lives; the runtime is small on purpose.
+The runtime exposes a small set of slash-command handlers — `/fetch`, `/search`, `/browse`, `/exec`, `/write`, `/mem*`, `/agent`, `/parallel`, `/mcp`, `/advise` — collectively called [**writ**](api/concepts/writ.md), the DSL agents emit inline in their replies. A line-buffered filter on the streaming path catches each writ, runs the handler, and feeds the result back as a tool-result block on the next turn. There is no JSON tool-use schema. No function-calling layer. The agent's *system prompt* is where behaviour lives; the runtime is small on purpose.
 
 ## 2. One binary, three shapes; local-first, network-optional
 

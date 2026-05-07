@@ -5,32 +5,103 @@ A multi-agent orchestration runtime for the terminal and the network.
 Arbiter runs a master agent named `index` that decides whether to answer a
 request directly or delegate it to a specialist, streams the work back
 live, and persists the durable output — files, structured memory, agent
-definitions — across sessions. Agents drive the runtime with a small set
-of slash commands they emit inline in their replies: fetch a URL, run a
-shell command, write a file, record a memory, call each other.
+definitions — across sessions. Agents drive the runtime with **writ**, a
+small slash-command DSL they emit inline in their replies: fetch a URL,
+run a shell command, write a file, record a memory, call each other.
 
 It runs in three shapes.
 
-- `arbiter` — an interactive terminal client. A persistent header shows
-  the current agent and model. Commands you type while agents are
-  working queue up and dispatch in order. Parallel sub-agents render in
-  their own panes.
-- `arbiter --api` — a multi-tenant HTTP server with bearer-token auth and
-  streaming responses. Each tenant gets isolated agents, memory, and
-  artifacts. Speaks both the arbiter-native HTTP+SSE protocol and the
-  Agent2Agent (A2A) v1.0 protocol — agents are reachable from any
-  A2A-compatible client and can themselves delegate to remote A2A
-  agents listed in `~/.arbiter/a2a_agents.json`.
-- `arbiter --send <agent> <message>` — a one-shot dispatch for scripts and
+- `arbiter` — interactive terminal client. Multi-pane TUI, persistent
+  per-cwd session.
+- `arbiter --api` — multi-tenant HTTP+SSE server with bearer-token auth.
+  Speaks the arbiter-native protocol and the Agent2Agent (A2A) v1.0
+  protocol — agents are reachable from any A2A-compatible client and
+  can delegate to remote A2A agents.
+- `arbiter --send <agent> <message>` — one-shot dispatch for scripts and
   cron jobs.
 
-Arbiter is experimental. The slash-command surface, agent constitutions,
-and HTTP shape are subject to change. `/exec` is unsandboxed; treat it
-accordingly.
+## Why arbiter
+
+- **Writ Agentic DSL** Agents emit slash commands inline
+  with their prose. No function-calling schema, no tool-use turn
+  boundary. The runtime line-buffers the stream and dispatches as the
+  model writes. See [writ](docs/api/concepts/writ.md).
+- **Multi-agent composition as a language primitive.** `/agent` calls a
+  sub-agent synchronously, `/parallel` fans out, `/pane` spawns
+  detached. Agents are first-class verbs in the same DSL as tools.
+- **Structural advisor gating.** A higher-capability model can supervise
+  the executor's terminating turn at the runtime level, signalling
+  `CONTINUE` / `REDIRECT` / `HALT`. Execution and judgment are separate
+  loops. See [advisor](docs/api/concepts/advisor.md).
+- **Single binary, local-first.** <2 MB C++ runtime, no Python or Node
+  dependency. SQLite-backed local state under `~/.arbiter/`. The HTTP
+  server is opt-in, not the default.
+
+## Example session
+
+What an agent's reply actually looks like — writs interleaved with the prose, the runtime intercepting them as they're emitted:
+
+```
+> What's the canonical paper on Bayesian neural networks?
+
+arbiter ↗ POST /v1/orchestrate
+agent:                  index
+message:                "What's the canonical paper on Bayesian neural networks?"
+─────────────────────────────────────────────────────────────────────────────────
+event:                  req_9c59
+request_received
+event:                  index · depth 1
+
+[index → research]
+I'll find the foundational reference.
+
+stream_start
+event:                  scout · depth 2
+stream_start
+event: tool_call        /mem
+event: tool_call        /mem
+event: tool_call        /mem
+
+/search Bayesian neural networks foundational paper
+
+event: tool_call        /search ✓
+event: tool_call        /search ✓
+event: tool_call        /search ✓
+
+[search returned 5 results]
+
+The most-cited candidate is MacKay 1992. Confirming.
+
+/fetch https://authors.library.caltech.edu/13793/
+
+event: tool_call        /fetch
+event: tool_call        /fetch
+
+MacKay 1992, "A Practical Bayesian Framework for Backpropagation
+Networks." First application of Laplace approximation to NN
+posteriors; ~3,600 citations on Google Scholar.
+
+event: advise           verdict: continue ✓
+event: stream_end       stream ended
+
+[research → index]
+MacKay 1992. "A Practical Bayesian Framework for Backpropagation
+Networks." Foundational; introduces Laplace approximation to NN
+posteriors.
+
+event: done             ok=true · 112.1s · $0.0185
+```
+
+In the TUI, the `/search` and `/fetch` lines are intercepted, executed by the runtime, and their output fed back into the next turn. Verbose mode shows the raw stream above; normal mode shows the synthesised reply with a spinner for tool activity.
+
+Arbiter is experimental. The writ surface, agent constitutions, and HTTP
+shape are subject to change. `/exec` is unsandboxed; treat it accordingly.
 
 
 ## Documentation
 
+- [`docs/getting-started/`](docs/getting-started/index.md) — quickstart paths
+  to first agent reply.
 - [`docs/philosophy.md`](docs/philosophy.md) — design philosophy: the six
   themes that explain why arbiter is shaped the way it is.
 - [`docs/api/`](docs/api/index.md) — full HTTP API reference: concept
@@ -49,72 +120,31 @@ accordingly.
   vulnerabilities and operator hardening notes.
 
 
-## Install
+## Quick start
 
-Prebuilt binaries.
+Full guide: [`docs/getting-started/`](docs/getting-started/index.md). Bare minimum for a local install:
 
-MacOS arm64:
+```bash
+# Install (macOS arm64)
+curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
+  | tar xz -C /usr/local/bin
 
-    curl -L https://github.com/arbitercorp/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
-      | tar xz -C /usr/local/bin
+# Configure (one provider key minimum)
+export ANTHROPIC_API_KEY="sk-ant-..."
 
-Linux x86_64:
+# Run
+arbiter --init   # seed ~/.arbiter/ with starter agents
+arbiter          # launch the terminal client
+```
 
-    curl -L https://github.com/arbitercorp/arbiter/releases/latest/download/arbiter-linux-x86_64.tar.gz \
-      | tar xz -C /usr/local/bin
-
-Build from source:
-
-    cmake -B build -DCMAKE_BUILD_TYPE=Release
-    cmake --build build
-    sudo cmake --install build
-
-Requires OpenSSL, libcurl, SQLite3, and a C++20 compiler. libedit or GNU
-readline is optional but recommended for the terminal client.
-
-## Setup
-
-Set whichever provider keys you plan to use — only one is required.
-
-    export ANTHROPIC_API_KEY="sk-ant-..."
-    export OPENAI_API_KEY="sk-..."
-
-Keys can also live at `~/.arbiter/api_key` (Anthropic) or
-`~/.arbiter/openai_api_key` (OpenAI).
-
-Then:
-
-    arbiter --init      # generate auth token, create starter agents
-    arbiter             # launch the terminal client
+Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md). For a managed endpoint instead of installing locally, see [getting-started/hosted](docs/getting-started/hosted.md).
 
 
-## Running
+## Memory benchmarks
 
-### Terminal client
-
-    arbiter
-
-Type a message to send it to the current agent. Switch agents with
-`/use <name>`. Send to a specific agent with `/send <name> <message>`.
-Common control commands: `/agents`, `/status`, `/tokens`, `/reset`.
-
-### API server
-
-    arbiter --add-tenant acme                   # prints the tenant's bearer token
-    arbiter --api --port 8080 --bind 0.0.0.0
-
-Authenticate with `Authorization: Bearer <token>`.
-
-### One-shot
-
-    arbiter --send reviewer "review: if (arr.length = 0) return;"
-
-
-## Benchmarks
-
-Retrieval quality on [LongMemEval](https://github.com/xiaowu0162/LongMemEval). 500 questions, ~247K conversational turns. **R@K** is the fraction of
-questions where at least one ground-truth turn appears in the top K
-results from `GET /v1/memory/entries`.
+Arbiter ships a structured-memory layer — typed entries, FTS retrieval, optional LLM rerank — that agents query through `/mem` and that operators can drive directly via `/v1/memory/entries`. Retrieval quality on [LongMemEval](https://github.com/xiaowu0162/LongMemEval) (500 questions, ~247K conversational turns), where **R@K** is the fraction of
+questions with at least one ground-truth turn in the top K
+results:
 
 | Variant      | R@1   | R@5   | R@10  | p50      | p95     |
 |--------------|------:|------:|------:|---------:|--------:|

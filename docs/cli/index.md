@@ -29,6 +29,9 @@ arbiter --help                             Print built-in help
 
 ## Pages
 
+- [Getting started](../getting-started/index.md) — pick a path:
+  - [Hosted preview](../getting-started/hosted.md) — managed endpoint, limited-preview waitlist.
+  - [Local install](../getting-started/local.md) — install + first run on your own machine.
 - [`--init`](init.md) — what gets created, the `~/.arbiter/` layout.
 - [`--send`](send.md) — the one-shot mode for scripts, pipes, and CI hooks.
 - [`--api`](api.md) — the HTTP server mode: flags, behaviour, links to the endpoint docs.

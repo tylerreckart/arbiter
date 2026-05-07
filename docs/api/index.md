@@ -10,6 +10,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 
 ## Concepts
 
+- [Writ](concepts/writ.md) — the slash-command DSL agents emit inline
 - [Tenants](concepts/tenants.md)
 - [Authentication](concepts/authentication.md)
 - [Fleet streaming](concepts/fleet-streaming.md)
