@@ -114,7 +114,32 @@ void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
     }
 }
 
+// Concatenate the TEXT parts of a multipart message into a single string.
+// Used for the legacy text-only fields on Message that downstream code
+// still inspects (tombstoning, [TOOL RESULTS] detection, history bytes).
+// Image parts contribute nothing to the concatenation — they're carried
+// alongside in `parts` for the wire path and for re-entry forwarding.
+static std::string concatenate_text(const std::vector<ContentPart>& parts) {
+    std::string out;
+    for (auto& p : parts) {
+        if (p.kind == ContentPart::TEXT) {
+            if (!out.empty() && out.back() != '\n') out += '\n';
+            out += p.text;
+        }
+    }
+    return out;
+}
+
 ApiResponse Agent::send(const std::string& user_message) {
+    std::vector<ContentPart> parts;
+    ContentPart p;
+    p.kind = ContentPart::TEXT;
+    p.text = user_message;
+    parts.push_back(std::move(p));
+    return send(std::move(parts));
+}
+
+ApiResponse Agent::send(std::vector<ContentPart> parts) {
     // Auto-compact before adding the new message so the summary reflects the
     // complete prior conversation, not a half-appended state.  Fires on
     // message-count OR byte-size — tool-result injections can blow past the
@@ -125,8 +150,23 @@ ApiResponse Agent::send(const std::string& user_message) {
         compact();
     }
 
-    // Add user message to history
-    history_.push_back(Message{"user", user_message});
+    // Add user message to history.  Invariant: `parts` is populated only
+    // when the message is genuinely multipart (image-bearing or multi-text).
+    // A single text part collapses back to the legacy `content`-only shape
+    // so downstream inspection (tombstoning, [TOOL RESULTS] detection,
+    // history_bytes) and the body builders' fast path keep working.  Images
+    // contribute zero bytes to `content` regardless.
+    Message user_msg;
+    user_msg.role = "user";
+    const bool is_single_text =
+        parts.size() == 1 && parts.front().kind == ContentPart::TEXT;
+    if (is_single_text) {
+        user_msg.content = std::move(parts.front().text);
+    } else {
+        user_msg.content = concatenate_text(parts);
+        user_msg.parts   = std::move(parts);
+    }
+    history_.push_back(std::move(user_msg));
 
     // Hard-trim safety net: if compact() was skipped (e.g. it failed) or
     // history grew very large via tool-result injections, drop the oldest pairs.
@@ -178,13 +218,34 @@ ApiResponse Agent::send(const std::string& user_message) {
 }
 
 ApiResponse Agent::stream(const std::string& user_message, StreamCallback cb) {
+    std::vector<ContentPart> parts;
+    ContentPart p;
+    p.kind = ContentPart::TEXT;
+    p.text = user_message;
+    parts.push_back(std::move(p));
+    return stream(std::move(parts), std::move(cb));
+}
+
+ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
     if (history_.size() >= kAutoCompactAt ||
         history_bytes(history_) >= kCompactAtBytes) {
         if (compact_cb_) compact_cb_(id_, history_.size());
         compact();
     }
 
-    history_.push_back(Message{"user", user_message});
+    // Same invariant as Agent::send — collapse single-text parts back to the
+    // legacy content shape so we don't bloat text-only messages.
+    Message user_msg;
+    user_msg.role = "user";
+    const bool is_single_text =
+        parts.size() == 1 && parts.front().kind == ContentPart::TEXT;
+    if (is_single_text) {
+        user_msg.content = std::move(parts.front().text);
+    } else {
+        user_msg.content = concatenate_text(parts);
+        user_msg.parts   = std::move(parts);
+    }
+    history_.push_back(std::move(user_msg));
 
     if (history_.size() > kHardTrimAt) {
         size_t before = history_.size();

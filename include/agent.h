@@ -21,10 +21,16 @@ class Agent {
 public:
     Agent(const std::string& id, Constitution config, ApiClient& client);
 
-    // Send a message and get response (blocking)
+    // Send a message and get response (blocking).
     ApiResponse send(const std::string& user_message);
-    // Send with streaming — chunks delivered via callback as they arrive
+    // Multipart variant.  Used by vision input and by tool-result re-entry
+    // when one or more tool results returned image content.  The text-only
+    // overload above wraps in a single text part and calls this one.
+    ApiResponse send(std::vector<ContentPart> parts);
+
+    // Send with streaming — chunks delivered via callback as they arrive.
     ApiResponse stream(const std::string& user_message, StreamCallback cb);
+    ApiResponse stream(std::vector<ContentPart> parts, StreamCallback cb);
     // Clear conversation history (keep constitution)
     void reset_history();
     // Replace history (used for session restore)

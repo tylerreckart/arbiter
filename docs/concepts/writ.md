@@ -53,6 +53,15 @@ Every agent's [Constitution](../agents/create.md) declares a `capabilities` arra
 
 You can't social-engineer a `/exec` out of an agent that doesn't have it in its warrant. A research agent emits the same writ syntax as a backend agent; only the dispatched subset differs.
 
+## Image content in tool results
+
+When a writ retrieves an image, the bytes flow back as image content on the next user-role tool-result message rather than as a textified body. Two writs participate today:
+
+- `/fetch <image-url>` — when the response Content-Type is `image/*`, the body is base64-encoded and attached as an image part. The text envelope reads `[fetched as image #N — <mime>, <bytes>; see image content attached to this turn]` so the model correlates the image to the writ that produced it.
+- `/read #<artifact-id>` (or `/read <path>`) — same shape when the artifact's stored mime is `image/*`.
+
+Vision-capable models (Claude, GPT-4o, Gemini 2.x) see the image natively on the next turn. Models without vision support see only the envelope text — agents authored against a vision-incapable model should avoid retrieving images they can't actually consume.
+
 ## What writ does not have
 
 - **No expressions, no piping.** You can't write `/fetch | /write`; everything is a string and composition happens across turns or via `/exec`.

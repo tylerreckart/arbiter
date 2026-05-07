@@ -8,6 +8,12 @@
 
 namespace index_ai {
 
+// Forward decl — the full type lives in api_client.h.  Used as a pointer
+// out-param on execute_agent_commands so callers that don't care about
+// vision (TUI, --send, all the unit tests) don't have to drag in the
+// OpenSSL headers transitively.
+struct ContentPart;
+
 struct AgentCommand {
     std::string name;    // "fetch", "mem", "exec", "agent", "write", "advise"
     std::string args;    // rest of the command line
@@ -24,6 +30,29 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response);
 
 // Fetch a URL via curl. Returns content or "ERR: ..." on failure.
 std::string cmd_fetch(const std::string& url);
+
+// Bytes-returning sibling of cmd_fetch.  No HTML→text transform; callers see
+// the raw response body verbatim with the upstream Content-Type so they can
+// dispatch on it (text → string envelope, image/* → base64 inline, …).
+// Same SSRF guards and protocol allowlist as cmd_fetch.  max_bytes caps
+// declared response size via CURLOPT_MAXFILESIZE_LARGE — servers without
+// Content-Length can in principle blow past the cap, but image hosts and
+// CDNs reliably set it.
+struct FetchedResource {
+    bool        ok = false;
+    std::string error;          // populated when ok=false
+    std::string body;           // raw bytes (not necessarily UTF-8)
+    std::string content_type;   // verbatim Content-Type header (lowercased
+                                // up to the first ';' so callers can string-
+                                // compare without re-parsing)
+    int64_t     byte_count = 0; // body.size() at completion
+};
+FetchedResource cmd_fetch_bytes(const std::string& url, int64_t max_bytes);
+
+// Base64-encode raw bytes (no line breaks, no padding stripped).  Used to
+// pack image bytes for the inline-data wire form on every supported
+// provider.  Empty input → empty output.
+std::string base64_encode(const std::string& bytes);
 
 // Execute a shell command. Returns stdout+stderr, or "ERR: ..." on failure.
 // Output is capped at 32 KB. Exit status appended if non-zero.
@@ -232,9 +261,13 @@ using ArtifactWriter = std::function<std::string(const std::string& path,
 // cross-conversation reads require a valid via= memory citation that
 // references the artifact_id.  Without this callback wired the
 // dispatcher returns ERR; CLI/REPL contexts leave it null.
-using ArtifactReader = std::function<std::string(const std::string& path,
-                                                   int64_t artifact_id,
-                                                   int64_t via_memory_id)>;
+struct ArtifactReadResult {
+    std::string body;        // bytes (or an "ERR: …" string on failure)
+    std::string media_type;  // verbatim stored mime (e.g. "image/png", "text/plain")
+};
+using ArtifactReader = std::function<ArtifactReadResult(const std::string& path,
+                                                          int64_t artifact_id,
+                                                          int64_t via_memory_id)>;
 
 // Persistent artifact listing.  When set, /list returns one path per
 // line with size + updated_at metadata so the agent can plan
@@ -333,7 +366,19 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    // selection hint into an enforcement
                                    // boundary, so a prompt-injected agent
                                    // can't escape its declared toolbelt.
-                                   const std::vector<std::string>& capabilities = {});
+                                   const std::vector<std::string>& capabilities = {},
+                                   // Out-channel for image parts surfaced
+                                   // during dispatch.  /fetch on an image/*
+                                   // URL and /read on an image/* artifact
+                                   // append into this vector while writing
+                                   // a placeholder envelope into the text
+                                   // return; callers (the orchestrator) then
+                                   // build a parts-shaped re-entry message
+                                   // from text-envelope + collected images.
+                                   // Null skips image-aware dispatch — the
+                                   // /fetch and /read paths fall back to
+                                   // their text-only behaviour.
+                                   std::vector<ContentPart>* out_image_parts = nullptr);
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

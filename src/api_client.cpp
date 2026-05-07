@@ -385,35 +385,84 @@ std::string ApiClient::build_body_anthropic(const ApiRequest& req, bool streamin
     }
 
     // Anthropic prompt caching: we put a cache breakpoint on the system block
-    // (above) and one on the LAST message of the history.  This makes the
+    // (above) and one on the LAST block of the LAST message.  This makes the
     // entire prompt through that final message a cacheable prefix — the next
     // turn appends new messages and hits the cache for everything before its
     // own tail, paying only for the delta tokens.
     //
     // cache_control requires block-form content (the string form doesn't
-    // accept the key), so only the tail message is restructured.  All other
-    // messages stay as plain strings to keep the request body small.
+    // accept the key), so the tail message is always restructured.  Earlier
+    // text-only messages stay as plain strings to keep the request body
+    // small; messages with image parts are always restructured into a block
+    // array regardless of position.
     auto msgs = jarr();
     const size_t count = req.messages.size();
     for (size_t i = 0; i < count; ++i) {
         const auto& msg = req.messages[i];
         auto mo = jobj();
         mo->as_object_mut()["role"] = jstr(msg.role);
-        if (i + 1 == count) {
-            auto cc = jobj();
-            cc->as_object_mut()["type"] = jstr("ephemeral");
 
-            auto block = jobj();
-            auto& bm = block->as_object_mut();
-            bm["type"]          = jstr("text");
-            bm["text"]          = jstr(msg.content);
-            bm["cache_control"] = cc;
+        const bool is_tail   = (i + 1 == count);
+        const bool has_parts = !msg.parts.empty();
 
-            auto arr = jarr();
-            arr->as_array_mut().push_back(block);
-            mo->as_object_mut()["content"] = arr;
-        } else {
+        if (!has_parts && !is_tail) {
+            // Fast path: text-only middle message, emitted as a string.
             mo->as_object_mut()["content"] = jstr(msg.content);
+        } else {
+            // Build a block array.  When parts is empty we synthesise a single
+            // text block from `content`.  Cache breakpoint goes on the LAST
+            // block of the tail message.
+            auto arr = jarr();
+            auto emit_text = [&](const std::string& text, bool with_cache) {
+                auto block = jobj();
+                auto& bm = block->as_object_mut();
+                bm["type"] = jstr("text");
+                bm["text"] = jstr(text);
+                if (with_cache) {
+                    auto cc = jobj();
+                    cc->as_object_mut()["type"] = jstr("ephemeral");
+                    bm["cache_control"] = cc;
+                }
+                arr->as_array_mut().push_back(block);
+            };
+            auto emit_image = [&](const ContentPart& part, bool with_cache) {
+                auto block = jobj();
+                auto& bm = block->as_object_mut();
+                bm["type"] = jstr("image");
+                auto src = jobj();
+                auto& sm = src->as_object_mut();
+                if (!part.image_url.empty()) {
+                    sm["type"] = jstr("url");
+                    sm["url"]  = jstr(part.image_url);
+                } else {
+                    sm["type"]       = jstr("base64");
+                    sm["media_type"] = jstr(part.media_type);
+                    sm["data"]       = jstr(part.image_data);
+                }
+                bm["source"] = src;
+                if (with_cache) {
+                    auto cc = jobj();
+                    cc->as_object_mut()["type"] = jstr("ephemeral");
+                    bm["cache_control"] = cc;
+                }
+                arr->as_array_mut().push_back(block);
+            };
+
+            if (!has_parts) {
+                emit_text(msg.content, /*with_cache=*/is_tail);
+            } else {
+                const size_t pcount = msg.parts.size();
+                for (size_t pi = 0; pi < pcount; ++pi) {
+                    const bool last_block = is_tail && (pi + 1 == pcount);
+                    const auto& part = msg.parts[pi];
+                    if (part.kind == ContentPart::TEXT) {
+                        emit_text(part.text, last_block);
+                    } else {
+                        emit_image(part, last_block);
+                    }
+                }
+            }
+            mo->as_object_mut()["content"] = arr;
         }
         msgs->as_array_mut().push_back(mo);
     }
@@ -471,7 +520,43 @@ std::string ApiClient::build_body_openai(const Provider& prov,
     for (auto& msg : req.messages) {
         auto mo = jobj();
         mo->as_object_mut()["role"] = jstr(msg.role);
-        mo->as_object_mut()["content"] = jstr(msg.content);
+        if (msg.parts.empty()) {
+            // Fast path: text-only message, emit as a string.
+            mo->as_object_mut()["content"] = jstr(msg.content);
+        } else {
+            // OpenAI Chat Completions multipart shape:
+            //   content: [
+            //     {type:"text",     text:"..."},
+            //     {type:"image_url", image_url:{url:"..."}}
+            //   ]
+            // Both inline base64 and hosted URLs ride on `image_url.url`;
+            // base64 goes as a `data:` URL.  Ollama's OpenAI-compatible
+            // /v1/chat/completions accepts the same shape on llama-3.2-vision
+            // and friends, so this code path doubles for ollama.
+            auto arr = jarr();
+            for (auto& part : msg.parts) {
+                auto block = jobj();
+                auto& bm = block->as_object_mut();
+                if (part.kind == ContentPart::TEXT) {
+                    bm["type"] = jstr("text");
+                    bm["text"] = jstr(part.text);
+                } else {
+                    bm["type"] = jstr("image_url");
+                    auto iu = jobj();
+                    if (!part.image_url.empty()) {
+                        iu->as_object_mut()["url"] = jstr(part.image_url);
+                    } else {
+                        std::string data_url =
+                            "data:" + part.media_type +
+                            ";base64," + part.image_data;
+                        iu->as_object_mut()["url"] = jstr(data_url);
+                    }
+                    bm["image_url"] = iu;
+                }
+                arr->as_array_mut().push_back(block);
+            }
+            mo->as_object_mut()["content"] = arr;
+        }
         msgs->as_array_mut().push_back(mo);
     }
     m["messages"] = msgs;
@@ -518,10 +603,35 @@ std::string ApiClient::build_body_gemini(const ApiRequest& req) {
         const std::string role = (msg.role == "assistant") ? "model" : msg.role;
         entry->as_object_mut()["role"] = jstr(role);
 
-        auto part = jobj();
-        part->as_object_mut()["text"] = jstr(msg.content);
         auto parts = jarr();
-        parts->as_array_mut().push_back(part);
+        if (msg.parts.empty()) {
+            // Text-only path — single {text} part.
+            auto part = jobj();
+            part->as_object_mut()["text"] = jstr(msg.content);
+            parts->as_array_mut().push_back(part);
+        } else {
+            // Gemini parts shape: {text} for prose, {inlineData:{mimeType,
+            // data}} for base64 images, {fileData:{mimeType, fileUri}} for
+            // hosted-URL images.  fileData accepts http(s) URLs and
+            // gs:// URIs; the model fetches the bytes itself.
+            for (auto& part : msg.parts) {
+                auto p = jobj();
+                if (part.kind == ContentPart::TEXT) {
+                    p->as_object_mut()["text"] = jstr(part.text);
+                } else if (!part.image_url.empty()) {
+                    auto fd = jobj();
+                    fd->as_object_mut()["mimeType"] = jstr(part.media_type);
+                    fd->as_object_mut()["fileUri"]  = jstr(part.image_url);
+                    p->as_object_mut()["fileData"] = fd;
+                } else {
+                    auto inl = jobj();
+                    inl->as_object_mut()["mimeType"] = jstr(part.media_type);
+                    inl->as_object_mut()["data"]     = jstr(part.image_data);
+                    p->as_object_mut()["inlineData"] = inl;
+                }
+                parts->as_array_mut().push_back(p);
+            }
+        }
         entry->as_object_mut()["parts"] = parts;
 
         contents->as_array_mut().push_back(entry);

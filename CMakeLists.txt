@@ -238,16 +238,33 @@ if(INDEX_BUILD_TESTS)
     target_include_directories(unit_commands PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
     )
-    target_link_libraries(unit_commands PRIVATE CURL::libcurl)
+    target_link_libraries(unit_commands PRIVATE
+        CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
     add_test(NAME unit_commands COMMAND unit_commands)
 
     # --- Unit tests for API client parsing logic ---
+    # Links the real ApiClient + json so the new vision-related tests exercise
+    # the actual build_body_* static methods (rather than mirroring the logic
+    # like parse_host has to, since it's file-static in api_client.cpp).
     add_executable(unit_api_client
         tests/test_api_client.cpp
+        src/api_client.cpp
+        src/json.cpp
     )
     target_include_directories(unit_api_client PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_api_client PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
     )
     add_test(NAME unit_api_client COMMAND unit_api_client)
 
@@ -331,8 +348,13 @@ if(INDEX_BUILD_TESTS)
     target_include_directories(unit_mcp PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
     )
-    target_link_libraries(unit_mcp PRIVATE CURL::libcurl)
+    target_link_libraries(unit_mcp PRIVATE
+        CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
     add_test(NAME unit_mcp COMMAND unit_mcp)
 
     # A2A protocol layer.  Five slices exercised in-process:

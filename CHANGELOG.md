@@ -8,6 +8,21 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Vision input.** `Message::content` extends to a parts array
+  (`ContentPart` — `TEXT` or `IMAGE`); body builders for all four
+  providers emit each provider's native multipart shape (Anthropic
+  content blocks, OpenAI `image_url` parts, Gemini `inlineData` /
+  `fileData`). `POST /v1/orchestrate` accepts `message` as either a
+  string (legacy) or an array of parts; URL-form image references are
+  fetched server-side with a 20 MB cap and `image/*` content-type
+  validation. Tool results carry images: `/fetch` on an image
+  Content-Type and `/read` on an image artifact attach the bytes to the
+  next turn as an image part instead of a textified body, so vision-
+  capable agents can act on images they retrieve. `Agent::send` and
+  `Orchestrator::send_streaming` gain parts overloads; the legacy string
+  versions wrap a single text part. See
+  [`docs/concepts/writ.md`](docs/concepts/writ.md#image-content-in-tool-results)
+  and [`docs/api/orchestrate.md`](docs/api/orchestrate.md#vision-input).
 - **Google Gemini provider.** Models prefixed `gemini/<id>` route to
   Google's `generativelanguage.googleapis.com` endpoint
   (`/v1beta/models/<id>:streamGenerateContent` for streaming,
