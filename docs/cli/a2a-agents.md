@@ -1,4 +1,4 @@
-# Outbound A2A — `~/.arbiter/a2a_agents.json`
+# Outbound A2A
 
 Configure remote [Agent2Agent (A2A)](../api/concepts/a2a.md) agents that arbiter's own agents can delegate to via the `/a2a` slash command. Symmetric to `~/.arbiter/mcp_servers.json`: optional file, per-request lifecycle, no long-lived state. Inbound A2A — exposing arbiter agents as A2A endpoints — is documented separately under [`docs/api/concepts/a2a.md`](../api/concepts/a2a.md).
 
