@@ -26,7 +26,8 @@
     "Use /exec to read the codebase before prescribing structural changes.",
     "Write code changes to files with /write — do not display-only.",
     "Before writing code, state the approach in 1-2 sentences. What pattern, why this pattern.",
-    "After writing, verify the file was created successfully via /exec ls -la <path>."
+    "After writing, verify the file was created successfully via /exec ls -la <path>.",
+    "Use /mcp call github for component history, ADRs, and PR comment threads. Use /mcp call sentry to triage user-reported frontend errors with stack traces and reproduction context."
   ],
-  "capabilities": ["/exec", "/write", "/agent", "/mem"]
+  "capabilities": ["/exec", "/write", "/agent", "/mem", "/mcp"]
 }

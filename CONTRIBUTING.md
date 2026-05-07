@@ -7,7 +7,7 @@ moving. PRs are welcome; please read this first.
 ## Quick start
 
 ```bash
-git clone https://github.com/arbitercorp/arbiter-core.git
+git clone https://github.com/tylerreckart/arbiter.git
 cd arbiter-core
 cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j

@@ -40,6 +40,26 @@ Configure available servers via `~/.arbiter/mcp_servers.json` (path comes from `
 
 Missing file = no MCP servers configured (clean ERR from `/mcp` rather than a startup failure). Malformed file throws at registry-load time so the operator sees the error in the API server log immediately. The arbiter binary itself does not install any server — operators bring their own (`npm install -g @playwright/mcp`, etc.).
 
+### Hosted MCP servers (Sentry, Linear, Slack, GitHub Copilot, …)
+
+Arbiter speaks **stdio MCP only**. Hosted services that publish HTTP/SSE MCP endpoints are reachable via [`mcp-remote`](https://www.npmjs.com/package/mcp-remote), an stdio child that proxies JSON-RPC to the HTTP endpoint and handles browser-based OAuth on first connect. The same pattern Claude Desktop, Cursor, and Continue use.
+
+```json
+{
+  "servers": {
+    "sentry": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.sentry.dev/mcp"],
+      "init_timeout_ms": 90000
+    }
+  }
+}
+```
+
+OAuth lifecycle: the first call to a hosted server triggers `mcp-remote` to print a login URL to stderr and wait for the browser callback. Tokens land at `~/.mcp-auth/` and persist across runs. For a daemonised `arbiter --api`, run `npx mcp-remote <url>` once interactively from a shell to seed the cache before launching the daemon.
+
+A ready-to-use registry covering GitHub, Sentry, Linear, and Slack ships at [`examples/mcp_servers.json`](../../../examples/mcp_servers.json) — copy to `~/.arbiter/mcp_servers.json` and edit. The shipped `backend`, `devops`, `frontend`, `reviewer`, `planner`, and `research` agents declare `/mcp` in their capabilities and carry per-agent rules describing which servers to call for which work.
+
 ## Slash commands
 
 Agents drive the catalog via three subcommands. Both `/mcp tools` and `/mcp call` are gated to the request's `mcp::Manager` — agents in CLI/REPL contexts get `ERR: MCP unavailable` and adapt.

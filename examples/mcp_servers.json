@@ -1,0 +1,52 @@
+{
+  "_doc": [
+    "Example MCP server registry. Copy to ~/.arbiter/mcp_servers.json and",
+    "edit to taste. Arbiter speaks stdio MCP only, so each entry below uses",
+    "`mcp-remote` (npm) as a stdio<->HTTP bridge for the hosted services.",
+    "Requires Node.js + npx on the host running `arbiter --api`.",
+    "",
+    "OAuth: Sentry, Linear, and Slack trigger an OAuth flow on first",
+    "connect — mcp-remote prints a login URL to stderr and waits. Pre-",
+    "authenticate from a shell once (`npx mcp-remote <url>` and complete",
+    "the browser flow) so the token caches at ~/.mcp-auth/ before",
+    "launching arbiter as a daemon.",
+    "",
+    "GitHub: api.githubcopilot.com requires a Copilot subscription. If",
+    "you don't have Copilot, swap the entry for the stdio package:",
+    "  \"github\": {",
+    "    \"command\": \"npx\",",
+    "    \"args\": [\"-y\", \"@modelcontextprotocol/server-github\"]",
+    "  }",
+    "and export GITHUB_PERSONAL_ACCESS_TOKEN in the launcher's environment.",
+    "",
+    "Arbiter ignores top-level keys other than `servers`, so this _doc",
+    "block is harmless and survives JSON parse."
+  ],
+
+  "servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://api.githubcopilot.com/mcp/"],
+      "init_timeout_ms": 90000,
+      "call_timeout_ms": 30000
+    },
+    "sentry": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.sentry.dev/mcp"],
+      "init_timeout_ms": 90000,
+      "call_timeout_ms": 30000
+    },
+    "linear": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      "init_timeout_ms": 90000,
+      "call_timeout_ms": 30000
+    },
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.slack.com/mcp"],
+      "init_timeout_ms": 90000,
+      "call_timeout_ms": 30000
+    }
+  }
+}
