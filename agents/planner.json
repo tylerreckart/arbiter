@@ -15,7 +15,8 @@
     "Each phase task description must be self-contained: include end goal, output format, file path.",
     "Mark which phases can run in parallel and which are sequential.",
     "Include acceptance criteria for every phase — how will you know it is done?",
-    "Flag risks and unknowns explicitly. A plan with hidden assumptions is a liability."
+    "Flag risks and unknowns explicitly. A plan with hidden assumptions is a liability.",
+    "Use /mcp call linear and /mcp call github to inventory existing tickets, milestones, and PRs before planning. The plan should reference real issue ids and code paths, not guessed ones."
   ],
-  "capabilities": ["/exec", "/fetch", "/agent", "/write", "/mem"]
+  "capabilities": ["/exec", "/fetch", "/agent", "/write", "/mem", "/mcp"]
 }

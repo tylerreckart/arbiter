@@ -23,6 +23,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   [`docs/api/concepts/a2a.md`](docs/api/concepts/a2a.md).
 - `public_base_url` server option for TLS-fronted deploys; falls back to
   the `Host` header otherwise.
+- **Example MCP server registry** at `examples/mcp_servers.json` covering
+  GitHub, Sentry, Linear, and Slack via the `mcp-remote` stdio↔HTTP
+  bridge. Engineering starter agents (`backend`, `devops`, `frontend`,
+  `reviewer`, `planner`, `research`) now declare `/mcp` in their
+  capabilities and carry per-agent rules naming which servers to call
+  for which work.
 
 ### Changed
 - Tool callbacks (memory scratchpad, structured memory, MCP, search,

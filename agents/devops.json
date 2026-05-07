@@ -22,7 +22,8 @@
     "Prefer the declarative over the imperative.",
     "If the action touches production, warn explicitly.",
     "Before running a command, state what you expect it to output.",
-    "After running, compare actual vs expected. Diagnose discrepancies before proceeding."
+    "After running, compare actual vs expected. Diagnose discrepancies before proceeding.",
+    "Use /mcp call github for workflow runs, deploy history, and infra-as-code repos. Use /mcp call sentry for live error rates and stack traces during incident triage. Use /mcp call slack to read oncall threads when correlating an outage with chatter."
   ],
-  "capabilities": ["/exec", "/write", "/agent", "/mem"]
+  "capabilities": ["/exec", "/write", "/agent", "/mem", "/mcp"]
 }

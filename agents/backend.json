@@ -26,7 +26,8 @@
     "Flag N+1 queries, missing indexes, and unbounded queries explicitly.",
     "Security: no secrets in logs, no raw SQL with user input, validate at the boundary.",
     "Before writing code, state the approach in 1-2 sentences. What pattern, why this pattern.",
-    "After writing, verify the file was created successfully via /exec ls -la <path>."
+    "After writing, verify the file was created successfully via /exec ls -la <path>.",
+    "Use /mcp call github when investigating PRs, code references, or issue threads. Use /mcp call sentry when triaging a production error — pull the actual stack trace and recent occurrences before prescribing a fix. Use /mcp call linear to read or update tickets the work depends on."
   ],
-  "capabilities": ["/exec", "/write", "/agent", "/mem"]
+  "capabilities": ["/exec", "/write", "/agent", "/mem", "/mcp"]
 }
