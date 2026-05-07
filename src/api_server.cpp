@@ -1141,7 +1141,7 @@ std::string brave_search(const std::string& query, const std::string& api_key,
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "arbiter/0.3.6");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "arbiter/0.4.3");
 
     CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;

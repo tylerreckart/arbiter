@@ -8,25 +8,17 @@ namespace index_ai::mcp {
 
 namespace {
 
-// MCP spec versions.  The server may negotiate down; we accept whatever
-// it sends back.  Bumping this needs a corresponding capability survey
-// of every server arbiter integrates with.
 constexpr const char* kProtocolVersion = "2025-06-18";
 
 std::shared_ptr<JsonValue> make_initialize_params() {
     auto params = jobj();
     auto& m = params->as_object_mut();
     m["protocolVersion"] = jstr(kProtocolVersion);
-
-    // We declare zero client capabilities: no roots, no sampling, no
-    // elicitation.  Servers infer "this client only consumes tools" and
-    // skip optional features they'd otherwise advertise.
     m["capabilities"] = jobj();
-
     auto info = jobj();
     auto& im = info->as_object_mut();
     im["name"]    = jstr("arbiter");
-    im["version"] = jstr("0.3.6");
+    im["version"] = jstr("0.4.3");
     m["clientInfo"] = info;
     return params;
 }
@@ -92,17 +84,10 @@ Response Client::rpc(const std::string& method,
         Response resp;
         try { resp = parse_response(*line); }
         catch (const std::exception& e) {
-            // Skip lines that don't parse as JSON-RPC — some servers
-            // (looking at you, npm install warnings on cold start)
-            // accidentally emit non-protocol bytes on stdout despite
-            // the spec.  Rather than failing the whole handshake we
-            // tolerate them up to the deadline.
             (void)e;
             continue;
         }
-        // Notifications carry no id; let them pass.  Mismatched ids
-        // (e.g. a response to a previous request that timed out and
-        // arrived late) are also skipped.
+        // Notifications carry no id; let them pass.
         if (resp.id == req.id) return resp;
     }
 }
@@ -120,9 +105,6 @@ ToolResult Client::call_tool(const std::string& name,
     auto params = jobj();
     auto& m = params->as_object_mut();
     m["name"]      = jstr(name);
-    // Spec: arguments must be an object (or omitted for no-arg tools).
-    // Normalise null/absent to an empty object so the server never sees
-    // a malformed param shape.
     m["arguments"] = (arguments && arguments->is_object()) ? arguments : jobj();
     auto resp = rpc("tools/call", params, cfg_.call_timeout);
     return parse_tool_result(resp);

@@ -73,8 +73,6 @@ REMOTE A2A AGENTS — delegate with /a2a call <name> <message> (distinct trust b
 
 `index` sees both lists at routing time and chooses between local sub-agents (which share tenant memory) and remote A2A agents (which don't). The "distinct trust boundary; no shared memory" caveat is rendered verbatim so the agent's reasoning is informed by the constraint.
 
-This auto-injection is on by default (per the v0.4.3 product decision). Operators wanting opt-in behavior can wrap `make_a2a_invoker()` themselves in a fork.
-
 ## Trust posture
 
 Calls to a remote A2A agent send only the message text. The remote does **not** see:
