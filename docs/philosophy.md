@@ -1,16 +1,14 @@
 # Philosophy
 
-This is the design doc, not the user manual. It explains *why* arbiter is shaped the way it is — what was prioritised, what was deliberately left out, and the tradeoffs behind the decisions you'll run into when reading the rest of the documentation. The other doc trees (`api/`, `cli/`, `tui/`) describe the surface; this page describes the choices underneath it.
-
-Six themes carry most of the weight. Each one shows up in concrete decisions across the codebase.
+This is the design doc, not the user manual. It explains *why* arbiter is shaped the way it is — what was prioritised, what was deliberately left out, and the tradeoffs behind the decisions you'll run into when reading the rest of the documentation.
 
 ## 1. Agents drive a small runtime
 
-The runtime exposes a small set of slash-command handlers — `/fetch`, `/search`, `/browse`, `/exec`, `/write`, `/mem*`, `/agent`, `/parallel`, `/mcp`, `/advise` — collectively called [**writ**](concepts/writ.md), the DSL agents emit inline in their replies. A line-buffered filter on the streaming path catches each writ, runs the handler, and feeds the result back as a tool-result block on the next turn. There is no JSON tool-use schema. No function-calling layer. The agent's *system prompt* is where behaviour lives; the runtime is small on purpose.
+The runtime exposes a small set of commands called [**writs**](concepts/writ.md), the DSL agents emit inline in their replies. A line-buffered filter on the streaming path catches each writ, runs the handler, and feeds the result back as a tool-result block on the next turn. There is no JSON tool-use schema. No function-calling layer. The agent's *system prompt* is where behaviour lives; the runtime is small on purpose.
 
 ## 2. One binary, three shapes; local-first, network-optional
 
-The codebase ships as a single executable with three modes — [interactive TUI](tui/index.md), [one-shot `--send`](cli/send.md), [HTTP+SSE `--api`](cli/api.md) — that share storage, agents, and configuration. Per-user state lives under `~/.arbiter/`: agent constitutions, API keys, session snapshots, scratchpad memory. The interactive mode works offline-of-itself (it still talks to provider APIs); `--api` is opt-in for when other clients need to call arbiter.
+The codebase ships as a single executable with three modes — [interactive TUI](tui/index.md), [one-shot CLI](cli/send.md), [HTTP+SSE](cli/api.md) — that share storage, agents, and configuration. Per-user state lives under `~/.arbiter/`.
 
 ## 3. Streaming is the wire format
 

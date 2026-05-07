@@ -107,20 +107,6 @@ When `mode: "consult"` (or the legacy `advisor_model` is set), the executor can 
 
 The consult path doesn't constrain the executor — it's an affordance, not a gate. Use `mode: "gate"` when you want structural enforcement.
 
-## Verbose logging
-
-In `arbiter --api --verbose` mode, every advisor interaction renders one stderr line. Coloured by signal so a `gate_redirect` or `gate_halt` jumps out of a long stream:
-
-| Tag       | Kind            | Colour       |
-|-----------|-----------------|--------------|
-| `advise`  | `consult`       | cyan         |
-| `gate ✓`  | `gate_continue` | green        |
-| `gate ↻`  | `gate_redirect` | yellow       |
-| `gate ✗`  | `gate_halt`     | bold red     |
-| `gate ⛔` | `gate_budget`   | bold red     |
-
-The `(malformed)` annotation appears when the parser fell back. See [SSE events](sse-events.md#advisor-event-kinds) for the wire shape consumers should reproduce in their own UIs.
-
 ## See also
 
 - [Philosophy](../../philosophy.md) — the structural-separation argument.

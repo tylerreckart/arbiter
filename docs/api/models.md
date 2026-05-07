@@ -21,11 +21,13 @@ curl -H "Authorization: Bearer atr_…" \
 
 ```json
 {
-  "count": 11,
+  "count": 15,
   "models": [
-    { "id": "claude-opus-4-7",   "provider": "anthropic" },
-    { "id": "claude-sonnet-4-6", "provider": "anthropic" },
-    { "id": "openai/gpt-5.4",    "provider": "openai" }
+    { "id": "claude-opus-4-7",          "provider": "anthropic" },
+    { "id": "claude-sonnet-4-6",        "provider": "anthropic" },
+    { "id": "openai/gpt-5.4",           "provider": "openai" },
+    { "id": "gemini/gemini-2.5-pro",    "provider": "gemini" },
+    { "id": "gemini/gemini-2.5-flash",  "provider": "gemini" }
   ]
 }
 ```
@@ -33,7 +35,7 @@ curl -H "Authorization: Bearer atr_…" \
 | Field      | Type   | Description |
 |------------|--------|-------------|
 | `id`       | string | Matches what you pass in `agent_def.model` (or as the model on a stored agent). |
-| `provider` | string | `anthropic`, `openai`, or `ollama`. |
+| `provider` | string | `anthropic`, `openai`, `gemini`, or `ollama`. |
 
 ## Failure modes
 

@@ -1,5 +1,6 @@
 // index_ai/src/commands.cpp — Agent-invocable command execution
 #include "commands.h"
+#include "api_client.h"  // ContentPart full type — forward-declared in commands.h.
 
 #include <algorithm>
 #include <cctype>
@@ -609,13 +610,16 @@ static std::string html_to_text(const std::string& html) {
 namespace {
 struct FetchBuffer {
     std::string data;
-    static constexpr size_t kMaxSize = 512 * 1024;
+    // Per-instance cap so the same buffer struct serves both cmd_fetch
+    // (text-only HTML, 512 KB cap) and cmd_fetch_bytes (raw bytes, larger
+    // cap for images / binary).  Default keeps the legacy text behaviour.
+    size_t      max_size = 512 * 1024;
 };
 
 static size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* buf = static_cast<FetchBuffer*>(userdata);
     size_t bytes = size * nmemb;
-    if (buf->data.size() + bytes > FetchBuffer::kMaxSize) return 0;
+    if (buf->data.size() + bytes > buf->max_size) return 0;
     buf->data.append(ptr, bytes);
     return bytes;
 }
@@ -840,6 +844,143 @@ static std::string preflight_ssrf_check(const std::string& url) {
     return {};
 }
 } // namespace
+
+// Bytes-returning fetch.  Shares all the SSRF / protocol / TLS hardening
+// of cmd_fetch but skips the HTML→text transform and surfaces the upstream
+// Content-Type so callers can dispatch by media type (text vs image vs …).
+FetchedResource cmd_fetch_bytes(const std::string& url, int64_t max_bytes) {
+    FetchedResource r;
+
+    const bool is_http  = url.size() >= 7 && url.compare(0, 7, "http://")  == 0;
+    const bool is_https = url.size() >= 8 && url.compare(0, 8, "https://") == 0;
+    if (!is_http && !is_https) {
+        r.error = "URL must start with http:// or https://";
+        return r;
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) { r.error = "failed to initialize curl"; return r; }
+
+    // Capture both body bytes and the Content-Type header.  libcurl's
+    // header callback fires once per header line; we sniff for the
+    // Content-Type prefix and stash the value's first segment (everything
+    // before any `;` parameter) lowercased so callers can string-compare.
+    auto header_cb = +[](char* buf, size_t sz, size_t n, void* ud) -> size_t {
+        size_t total = sz * n;
+        auto* out = static_cast<std::string*>(ud);
+        if (total >= 14 && (
+                strncasecmp(buf, "Content-Type:", 13) == 0)) {
+            const char* v = buf + 13;
+            size_t vl = total - 13;
+            // Trim leading SP/TAB.
+            while (vl > 0 && (*v == ' ' || *v == '\t')) { ++v; --vl; }
+            // Stop at ';' (parameters) or end-of-line.
+            size_t end = 0;
+            while (end < vl && v[end] != ';' && v[end] != '\r' &&
+                   v[end] != '\n') ++end;
+            out->assign(v, end);
+            // Lowercase ASCII for stable matching.
+            for (auto& c : *out)
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        }
+        return total;
+    };
+
+    FetchBuffer buf;
+    buf.max_size = static_cast<size_t>(max_bytes);
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &r.content_type);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE,
+                     static_cast<curl_off_t>(max_bytes));
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, safe_opensocket_cb);
+#if CURL_AT_LEAST_VERSION(7, 85, 0)
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+#endif
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(curl);
+
+    if (res == CURLE_COULDNT_CONNECT) {
+        r.error = "refused — target resolved to a private, loopback, or "
+                  "link-local address (SSRF guard)";
+        return r;
+    }
+    if (res == CURLE_FILESIZE_EXCEEDED) {
+        r.error = "response exceeds size cap of " +
+                  std::to_string(max_bytes) + " bytes";
+        return r;
+    }
+    if (res != CURLE_OK) {
+        r.error = curl_easy_strerror(res);
+        return r;
+    }
+    if (http_code < 200 || http_code >= 300) {
+        r.error = "HTTP " + std::to_string(http_code);
+        return r;
+    }
+
+    r.ok         = true;
+    r.body       = std::move(buf.data);
+    r.byte_count = static_cast<int64_t>(r.body.size());
+    return r;
+}
+
+// Standard base64 alphabet, RFC 4648 §4.  We hand-roll instead of pulling
+// EVP_EncodeBlock because the OpenSSL header pulls in a lot of state and
+// the alphabet is six lines.  Pads to a multiple of 4 with '=' as the
+// providers' wire shapes all expect.
+std::string base64_encode(const std::string& bytes) {
+    static constexpr char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    std::string out;
+    if (bytes.empty()) return out;
+    out.reserve(((bytes.size() + 2) / 3) * 4);
+
+    size_t i = 0;
+    const auto* p = reinterpret_cast<const unsigned char*>(bytes.data());
+    const size_t n = bytes.size();
+
+    while (i + 3 <= n) {
+        uint32_t v = (uint32_t(p[i]) << 16) | (uint32_t(p[i + 1]) << 8) |
+                     uint32_t(p[i + 2]);
+        out.push_back(kAlphabet[(v >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(v >> 12) & 0x3F]);
+        out.push_back(kAlphabet[(v >> 6)  & 0x3F]);
+        out.push_back(kAlphabet[ v        & 0x3F]);
+        i += 3;
+    }
+    if (i < n) {
+        uint32_t v = uint32_t(p[i]) << 16;
+        if (i + 1 < n) v |= uint32_t(p[i + 1]) << 8;
+        out.push_back(kAlphabet[(v >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(v >> 12) & 0x3F]);
+        if (i + 1 < n) {
+            out.push_back(kAlphabet[(v >> 6) & 0x3F]);
+            out.push_back('=');
+        } else {
+            out.push_back('=');
+            out.push_back('=');
+        }
+    }
+    return out;
+}
 
 std::string cmd_fetch(const std::string& url) {
     // Allocation-free prefix check — substr() would build two temporaries
@@ -1337,7 +1478,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ArtifactReader artifact_reader,
                                    ArtifactLister artifact_lister,
                                    A2AInvoker     a2a_invoker,
-                                   const std::vector<std::string>& capabilities) {
+                                   const std::vector<std::string>& capabilities,
+                                   std::vector<ContentPart>* out_image_parts) {
     std::ostringstream out;
     out << "\n";
 
@@ -1470,12 +1612,36 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             } else {
                 ++fetch_count;
                 block << "[/fetch " << cmd.args << "]\n";
-                std::string fetched = cmd_fetch(cmd.args);
-                if (fetched.size() > kPerFetchLimit) {
-                    fetched.resize(kPerFetchLimit);
-                    fetched += "\n... [truncated]";
+
+                // Image-aware path: when the caller wires `out_image_parts`
+                // and the response is image/*, the body lands as an image
+                // ContentPart on the next user turn rather than a textified
+                // body in this envelope.  Otherwise fall back to the legacy
+                // text behaviour (html_to_text, truncated to kPerFetchLimit).
+                static constexpr int64_t kFetchImageCap = 8LL * 1024 * 1024;
+                FetchedResource fr = cmd_fetch_bytes(cmd.args, kFetchImageCap);
+                if (!fr.ok) {
+                    block << "ERR: " << fr.error << "\n";
+                } else if (out_image_parts != nullptr &&
+                           fr.content_type.compare(0, 6, "image/") == 0) {
+                    ContentPart p;
+                    p.kind       = ContentPart::IMAGE;
+                    p.media_type = fr.content_type;
+                    p.image_data = base64_encode(fr.body);
+                    int idx = static_cast<int>(out_image_parts->size()) + 1;
+                    out_image_parts->push_back(std::move(p));
+                    block << "[fetched as image #" << idx << " — "
+                          << fr.content_type << ", "
+                          << fr.byte_count << " bytes; "
+                          << "see image content attached to this turn]\n";
+                } else {
+                    std::string text = html_to_text(fr.body);
+                    if (text.size() > kPerFetchLimit) {
+                        text.resize(kPerFetchLimit);
+                        text += "\n... [truncated]";
+                    }
+                    block << text << "\n";
                 }
-                block << fetched << "\n";
                 block << "[END FETCH]\n\n";
             }
 
@@ -2305,15 +2471,36 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                          "Adapt: drop the /read step.\n";
                 cache_result = false;
             } else {
-                std::string body = artifact_reader(path, artifact_id, via_memory_id);
-                if (body.size() > kPerFetchLimit) {
-                    body.resize(kPerFetchLimit);
-                    body += "\n... [truncated]";
+                ArtifactReadResult ar = artifact_reader(path, artifact_id, via_memory_id);
+                const bool is_err = ar.body.size() >= 4 &&
+                                    ar.body.compare(0, 4, "ERR:") == 0;
+                if (!is_err && out_image_parts != nullptr &&
+                    ar.media_type.compare(0, 6, "image/") == 0) {
+                    // Image artifact — push as image part, write placeholder
+                    // envelope identical in shape to /fetch's image branch
+                    // so the model sees a uniform "[fetched|read as image #N
+                    // — <mime>, <bytes>]" cue regardless of source.
+                    ContentPart p;
+                    p.kind       = ContentPart::IMAGE;
+                    p.media_type = ar.media_type;
+                    p.image_data = base64_encode(ar.body);
+                    int idx = static_cast<int>(out_image_parts->size()) + 1;
+                    int64_t bytes = static_cast<int64_t>(ar.body.size());
+                    out_image_parts->push_back(std::move(p));
+                    block << "[read as image #" << idx << " — "
+                          << ar.media_type << ", "
+                          << bytes << " bytes; "
+                          << "see image content attached to this turn]\n";
+                } else {
+                    std::string body = std::move(ar.body);
+                    if (body.size() > kPerFetchLimit) {
+                        body.resize(kPerFetchLimit);
+                        body += "\n... [truncated]";
+                    }
+                    block << body;
+                    if (body.empty() || body.back() != '\n') block << "\n";
+                    if (is_err) cache_result = false;
                 }
-                block << body;
-                if (body.empty() || body.back() != '\n') block << "\n";
-                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
-                    cache_result = false;
             }
             block << "[END READ]\n\n";
 

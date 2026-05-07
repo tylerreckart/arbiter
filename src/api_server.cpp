@@ -1822,18 +1822,23 @@ void handle_models_list(int fd) {
     struct ModelEntry { const char* id; const char* provider; };
     static constexpr ModelEntry kModels[] = {
         // Anthropic Claude
-        {"claude-opus-4-7",    "anthropic"},
-        {"claude-opus-4-6",    "anthropic"},
-        {"claude-opus-4-5",    "anthropic"},
-        {"claude-sonnet-4-6",  "anthropic"},
-        {"claude-sonnet-4-5",  "anthropic"},
-        {"claude-haiku-4-5",   "anthropic"},
+        {"claude-opus-4-7",          "anthropic"},
+        {"claude-opus-4-6",          "anthropic"},
+        {"claude-opus-4-5",          "anthropic"},
+        {"claude-sonnet-4-6",        "anthropic"},
+        {"claude-sonnet-4-5",        "anthropic"},
+        {"claude-haiku-4-5",         "anthropic"},
         // OpenAI
-        {"openai/gpt-5.4",     "openai"},
-        {"openai/gpt-4.1",     "openai"},
-        {"openai/gpt-4o",      "openai"},
-        {"openai/gpt-4o-mini", "openai"},
-        {"openai/o4-mini",     "openai"},
+        {"openai/gpt-5.4",           "openai"},
+        {"openai/gpt-4.1",           "openai"},
+        {"openai/gpt-4o",            "openai"},
+        {"openai/gpt-4o-mini",       "openai"},
+        {"openai/o4-mini",           "openai"},
+        // Google Gemini
+        {"gemini/gemini-2.5-pro",        "gemini"},
+        {"gemini/gemini-2.5-flash",      "gemini"},
+        {"gemini/gemini-2.5-flash-lite", "gemini"},
+        {"gemini/gemini-2.0-flash",      "gemini"},
     };
 
     auto arr = jarr();
@@ -4193,28 +4198,37 @@ ArtifactWriter make_artifact_writer_callback(int64_t tenant_id,
 ArtifactReader make_artifact_reader_callback(int64_t tenant_id,
                                               int64_t conversation_id,
                                               TenantStore* store) {
-    return [tenant_id, conversation_id, store](const std::string& raw_path,
-                                                 int64_t artifact_id,
-                                                 int64_t via_memory_id) -> std::string {
+    auto err = [](std::string msg) {
+        ArtifactReadResult r;
+        r.body = std::move(msg);
+        return r;
+    };
+    return [tenant_id, conversation_id, store, err](
+               const std::string& raw_path,
+               int64_t artifact_id,
+               int64_t via_memory_id) -> ArtifactReadResult {
         // Path-form: same-conversation lookup.  Sanitiser gates bad
         // paths before we touch the DB.
         if (artifact_id == 0) {
-            std::string err;
-            auto canonical = sanitize_artifact_path(raw_path, err);
-            if (!canonical) return std::string("ERR: invalid path: ") + err;
+            std::string perr;
+            auto canonical = sanitize_artifact_path(raw_path, perr);
+            if (!canonical) return err("ERR: invalid path: " + perr);
 
             auto meta = store->get_artifact_meta_by_path(tenant_id,
                                                           conversation_id, *canonical);
             if (!meta) {
-                return std::string("ERR: '") + *canonical +
-                       "' not found in this conversation's artifacts";
+                return err("ERR: '" + *canonical +
+                           "' not found in this conversation's artifacts");
             }
             auto blob = store->get_artifact_content(tenant_id, meta->id);
             if (!blob) {
-                return std::string("ERR: artifact #") +
-                       std::to_string(meta->id) + " content missing";
+                return err("ERR: artifact #" + std::to_string(meta->id) +
+                           " content missing");
             }
-            return *blob;
+            ArtifactReadResult r;
+            r.body       = std::move(*blob);
+            r.media_type = meta->mime_type;
+            return r;
         }
 
         // Id-form: tenant-scoped lookup.  Cross-conversation reads
@@ -4224,41 +4238,40 @@ ArtifactReader make_artifact_reader_callback(int64_t tenant_id,
         // boundary as path-form.
         auto art = store->get_artifact_meta(tenant_id, artifact_id);
         if (!art) {
-            return std::string("ERR: artifact #") +
-                   std::to_string(artifact_id) +
-                   " not found for this tenant";
+            return err("ERR: artifact #" + std::to_string(artifact_id) +
+                       " not found for this tenant");
         }
         if (art->conversation_id != conversation_id) {
             if (via_memory_id == 0) {
-                return std::string("ERR: artifact #") +
-                       std::to_string(artifact_id) +
-                       " is in a different conversation; cite the "
-                       "memory entry that links it: "
-                       "/read #" + std::to_string(artifact_id) +
-                       " via=mem:<entry_id>";
+                return err("ERR: artifact #" + std::to_string(artifact_id) +
+                           " is in a different conversation; cite the "
+                           "memory entry that links it: "
+                           "/read #" + std::to_string(artifact_id) +
+                           " via=mem:<entry_id>");
             }
             auto mem = store->get_entry(tenant_id, via_memory_id);
             if (!mem) {
-                return std::string("ERR: via=mem:") +
-                       std::to_string(via_memory_id) +
-                       " — memory entry not found for this tenant";
+                return err("ERR: via=mem:" + std::to_string(via_memory_id) +
+                           " — memory entry not found for this tenant");
             }
             if (mem->artifact_id != artifact_id) {
-                return std::string("ERR: memory entry #") +
-                       std::to_string(via_memory_id) +
-                       " does not reference artifact #" +
-                       std::to_string(artifact_id) +
-                       " (its artifact_id=" +
-                       std::to_string(mem->artifact_id) + ")";
+                return err("ERR: memory entry #" +
+                           std::to_string(via_memory_id) +
+                           " does not reference artifact #" +
+                           std::to_string(artifact_id) +
+                           " (its artifact_id=" +
+                           std::to_string(mem->artifact_id) + ")");
             }
         }
         auto blob = store->get_artifact_content(tenant_id, artifact_id);
         if (!blob) {
-            return std::string("ERR: artifact #") +
-                   std::to_string(artifact_id) +
-                   " content missing";
+            return err("ERR: artifact #" + std::to_string(artifact_id) +
+                       " content missing");
         }
-        return *blob;
+        ArtifactReadResult r;
+        r.body       = std::move(*blob);
+        r.media_type = art->mime_type;
+        return r;
     };
 }
 
@@ -6030,6 +6043,146 @@ void handle_a2a_rpc(int fd, const std::string& agent_id,
         "unknown method: " + rpc.method));
 }
 
+// Parse the inbound `message` field into a parts vector + text view.
+// Accepts either:
+//   • a plain string  → single TEXT part, message_text == the string;
+//   • an array of part objects (mirroring Anthropic's content shape):
+//       [{"type":"text","text":"..."},
+//        {"type":"image","source":{"type":"base64","media_type":"image/png",
+//                                  "data":"<base64 bytes>"}},
+//        {"type":"image","source":{"type":"url","url":"https://..."}} ]
+//
+// URL-form image parts are resolved server-side against `cmd_fetch_bytes`
+// so the bytes flow inline into the provider call alongside any base64 the
+// caller supplied directly.  Caps each fetched image at `kImageMaxBytes`.
+//
+// `out_text` carries the flattened text view used everywhere the runtime
+// still expects a string (history persistence, billing pre-flight,
+// invoker context).  Image parts contribute zero bytes to it.
+//
+// On success, returns true and populates out_parts + out_text.
+// On failure, returns false and writes a clear, caller-safe message into
+// `error_msg`.  The caller is responsible for the HTTP response.
+namespace {
+constexpr int64_t kImageMaxBytes = 20LL * 1024 * 1024;  // 20 MB
+
+bool parse_message_field(const std::shared_ptr<JsonValue>& msg_val,
+                          std::vector<ContentPart>& out_parts,
+                          std::string& out_text,
+                          std::string& error_msg) {
+    out_parts.clear();
+    out_text.clear();
+    error_msg.clear();
+
+    if (!msg_val) {
+        error_msg = "missing required field: 'message'";
+        return false;
+    }
+
+    // Legacy: bare string.
+    if (msg_val->is_string()) {
+        const std::string s = msg_val->as_string();
+        if (s.empty()) {
+            error_msg = "missing required field: 'message'";
+            return false;
+        }
+        ContentPart p;
+        p.kind = ContentPart::TEXT;
+        p.text = s;
+        out_parts.push_back(std::move(p));
+        out_text = s;
+        return true;
+    }
+
+    if (!msg_val->is_array()) {
+        error_msg = "'message' must be a string or an array of parts";
+        return false;
+    }
+
+    for (auto& entry : msg_val->as_array()) {
+        if (!entry || !entry->is_object()) {
+            error_msg = "'message' parts must be objects";
+            return false;
+        }
+        const std::string type = entry->get_string("type");
+        if (type == "text") {
+            ContentPart p;
+            p.kind = ContentPart::TEXT;
+            p.text = entry->get_string("text");
+            if (p.text.empty()) {
+                error_msg = "text part has empty 'text'";
+                return false;
+            }
+            if (!out_text.empty() && out_text.back() != '\n') out_text += '\n';
+            out_text += p.text;
+            out_parts.push_back(std::move(p));
+        } else if (type == "image") {
+            auto src = entry->get("source");
+            if (!src || !src->is_object()) {
+                error_msg = "image part missing 'source' object";
+                return false;
+            }
+            const std::string src_type = src->get_string("type");
+            ContentPart p;
+            p.kind = ContentPart::IMAGE;
+            if (src_type == "base64") {
+                p.media_type = src->get_string("media_type");
+                p.image_data = src->get_string("data");
+                if (p.media_type.empty() || p.image_data.empty()) {
+                    error_msg = "base64 image source needs both 'media_type' "
+                                "and 'data'";
+                    return false;
+                }
+                if (p.media_type.compare(0, 6, "image/") != 0) {
+                    error_msg = "image media_type must start with 'image/'";
+                    return false;
+                }
+            } else if (src_type == "url") {
+                const std::string url = src->get_string("url");
+                if (url.empty()) {
+                    error_msg = "url image source needs 'url'";
+                    return false;
+                }
+                // Server-side resolution.  Validates the response is
+                // image/* and bounded — clients can't smuggle non-image
+                // payloads through this path.
+                FetchedResource fr = cmd_fetch_bytes(url, kImageMaxBytes);
+                if (!fr.ok) {
+                    error_msg = "image url fetch failed: " + fr.error;
+                    return false;
+                }
+                if (fr.content_type.compare(0, 6, "image/") != 0) {
+                    error_msg = "image url returned non-image content-type: " +
+                                fr.content_type;
+                    return false;
+                }
+                p.media_type = fr.content_type;
+                p.image_data = base64_encode(fr.body);
+            } else {
+                error_msg = "image source.type must be 'base64' or 'url'";
+                return false;
+            }
+            out_parts.push_back(std::move(p));
+        } else {
+            error_msg = "unknown part type: '" + type + "'";
+            return false;
+        }
+    }
+
+    if (out_parts.empty()) {
+        error_msg = "'message' array is empty";
+        return false;
+    }
+    if (out_text.empty()) {
+        // Image-only messages get a synthetic text view so legacy paths
+        // (history persistence, advisor original_task) have something to
+        // hold.  The model still sees the full parts vector.
+        out_text = "(image input)";
+    }
+    return true;
+}
+}  // namespace
+
 // Two entry points funnel here: /v1/orchestrate (agent_override == "", read
 // from body) and /v1/agents/:id/chat (agent_override == path :id).  Body
 // parsing + dispatch is otherwise identical.
@@ -6078,13 +6231,17 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         return;
     }
 
-    std::string message = body->get_string("message");
-    if (message.empty()) {
-        auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr("missing required field: 'message'");
-        write_json_response(fd, 400, err);
-        return;
+    std::vector<ContentPart> message_parts;
+    std::string              message;
+    {
+        std::string parse_err;
+        if (!parse_message_field(body->get("message"),
+                                  message_parts, message, parse_err)) {
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr(parse_err);
+            write_json_response(fd, 400, err);
+            return;
+        }
     }
 
     // ── Resolve the agent identity ────────────────────────────────────────
@@ -6749,7 +6906,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         });
 
     try {
-        auto resp = orch->send_streaming(agent_id, message,
+        auto resp = orch->send_streaming(agent_id, std::move(message_parts),
             [&filter](const std::string& chunk) { filter.feed(chunk); });
         filter.flush();
 

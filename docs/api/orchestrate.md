@@ -14,13 +14,48 @@ Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v
 
 | Field        | Type     | Required | Default   | Description |
 |--------------|----------|----------|-----------|-------------|
-| `message`    | string   | yes      | —         | The prompt to send to the agent. |
+| `message`    | string \| array | yes | —      | The prompt to send to the agent. Either a plain string (text-only) or an array of content parts (text + image, see [Vision input](#vision-input) below). |
 | `agent`      | string   | no       | `"index"` | Which agent to address. Any stored agent id, the built-in `"index"` master, or (with `agent_def`) a caller-supplied UUID. |
 | `agent_def`  | object   | no       | —         | Inline agent definition. See [Inline agents](#inline-agents) below. When set, overrides any stored agent at this id for this one request. |
 
 ### Headers
 
 `Content-Type: application/json`. Tenant bearer token in `Authorization`.
+
+### Vision input
+
+`message` accepts either a string (the legacy text-only path) or an array of content parts. The parts shape mirrors Anthropic's content blocks so vision-capable models on every supported provider receive the image natively.
+
+```jsonc
+{
+  "agent": "index",
+  "message": [
+    { "type": "text",  "text": "What's in this image?" },
+    { "type": "image",
+      "source": {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": "iVBORw0KGgoAAAANSUhEUgAA..."
+      }
+    }
+  ]
+}
+```
+
+Image sources accept two shapes:
+
+- **`base64`** — `media_type` (must start with `image/`) plus `data` carrying the raw base64 bytes (no `data:` prefix).
+- **`url`** — `url` pointing at a publicly fetchable image. The runtime fetches the URL server-side, validates the response is `image/*`, caps the body at **20 MB**, and inlines the bytes for the provider call. The same SSRF guards that cover `/fetch` apply: private, loopback, and link-local addresses are rejected.
+
+Image-bearing parts are translated per-provider before the wire call:
+
+| Provider | Wire shape |
+|---|---|
+| Anthropic | `{type:"image", source:{type:"base64"\|"url", …}}` |
+| OpenAI / Ollama | `{type:"image_url", image_url:{url:"data:…;base64,…"}}` (inline) or `{url:"https://…"}` (URL form) |
+| Gemini | `{inlineData:{mimeType, data}}` (inline) or `{fileData:{mimeType, fileUri}}` (URL form) |
+
+Tool results carry images too: when an agent emits `/fetch <image-url>` and the response is `image/*`, the bytes flow into the next turn as an image part on the user-role tool-result message. Same shape for `/read` against an image artifact. The text envelope (`[/fetch …] [END FETCH]`) names the image with an index — `[fetched as image #1 — image/png, 12345 bytes; see image content attached to this turn]` — so the model correlates the image to the writ that produced it.
 
 ### Inline agents
 

@@ -101,11 +101,29 @@ static Provider make_openai_provider() {
     return p;
 }
 
+static Provider make_gemini_provider() {
+    Provider p;
+    p.name = "gemini";
+    p.prefix = "gemini/";
+    p.host = "generativelanguage.googleapis.com";
+    p.port = 443;
+    // The static `path` field is unused for Gemini — the model id is part
+    // of the URL (`/v1beta/models/<model>:generateContent`), so the actual
+    // path is computed per-request in path_for() and passed to send_request
+    // by complete() / stream().
+    p.path = "/v1beta/models";
+    p.tls = true;
+    p.uses_api_key = true;
+    p.format = Provider::FORMAT_GEMINI;
+    return p;
+}
+
 // NOTE: order matters — longest/most-specific prefix first, fallback last.
 static const std::vector<Provider>& registry() {
     static const std::vector<Provider> kProviders = {
         make_openai_provider(),
         make_ollama_provider(),
+        make_gemini_provider(),
         make_anthropic_provider(),
     };
     return kProviders;
@@ -139,6 +157,20 @@ std::string strip_model_prefix(const std::string& model) {
     if (!p.prefix.empty() && model.compare(0, p.prefix.size(), p.prefix) == 0)
         return model.substr(p.prefix.size());
     return model;
+}
+
+// Compute the per-request HTTP path.  Anthropic and OpenAI route every model
+// through the same fixed path (`/v1/messages`, `/v1/chat/completions`) — for
+// those, we just return the static Provider::path.  Gemini puts the model id
+// in the URL itself, with a different action token for streaming vs not, so
+// the path is built per-request and varies by both model and streaming flag.
+static std::string path_for(const Provider& p, const ApiRequest& req,
+                             bool streaming) {
+    if (p.format != Provider::FORMAT_GEMINI) return p.path;
+    const std::string model = strip_model_prefix(req.model);
+    return std::string("/v1beta/models/") + model +
+           (streaming ? ":streamGenerateContent?alt=sse"
+                      : ":generateContent");
 }
 
 // ─── ApiClient lifecycle ─────────────────────────────────────────────────────
@@ -353,35 +385,84 @@ std::string ApiClient::build_body_anthropic(const ApiRequest& req, bool streamin
     }
 
     // Anthropic prompt caching: we put a cache breakpoint on the system block
-    // (above) and one on the LAST message of the history.  This makes the
+    // (above) and one on the LAST block of the LAST message.  This makes the
     // entire prompt through that final message a cacheable prefix — the next
     // turn appends new messages and hits the cache for everything before its
     // own tail, paying only for the delta tokens.
     //
     // cache_control requires block-form content (the string form doesn't
-    // accept the key), so only the tail message is restructured.  All other
-    // messages stay as plain strings to keep the request body small.
+    // accept the key), so the tail message is always restructured.  Earlier
+    // text-only messages stay as plain strings to keep the request body
+    // small; messages with image parts are always restructured into a block
+    // array regardless of position.
     auto msgs = jarr();
     const size_t count = req.messages.size();
     for (size_t i = 0; i < count; ++i) {
         const auto& msg = req.messages[i];
         auto mo = jobj();
         mo->as_object_mut()["role"] = jstr(msg.role);
-        if (i + 1 == count) {
-            auto cc = jobj();
-            cc->as_object_mut()["type"] = jstr("ephemeral");
 
-            auto block = jobj();
-            auto& bm = block->as_object_mut();
-            bm["type"]          = jstr("text");
-            bm["text"]          = jstr(msg.content);
-            bm["cache_control"] = cc;
+        const bool is_tail   = (i + 1 == count);
+        const bool has_parts = !msg.parts.empty();
 
-            auto arr = jarr();
-            arr->as_array_mut().push_back(block);
-            mo->as_object_mut()["content"] = arr;
-        } else {
+        if (!has_parts && !is_tail) {
+            // Fast path: text-only middle message, emitted as a string.
             mo->as_object_mut()["content"] = jstr(msg.content);
+        } else {
+            // Build a block array.  When parts is empty we synthesise a single
+            // text block from `content`.  Cache breakpoint goes on the LAST
+            // block of the tail message.
+            auto arr = jarr();
+            auto emit_text = [&](const std::string& text, bool with_cache) {
+                auto block = jobj();
+                auto& bm = block->as_object_mut();
+                bm["type"] = jstr("text");
+                bm["text"] = jstr(text);
+                if (with_cache) {
+                    auto cc = jobj();
+                    cc->as_object_mut()["type"] = jstr("ephemeral");
+                    bm["cache_control"] = cc;
+                }
+                arr->as_array_mut().push_back(block);
+            };
+            auto emit_image = [&](const ContentPart& part, bool with_cache) {
+                auto block = jobj();
+                auto& bm = block->as_object_mut();
+                bm["type"] = jstr("image");
+                auto src = jobj();
+                auto& sm = src->as_object_mut();
+                if (!part.image_url.empty()) {
+                    sm["type"] = jstr("url");
+                    sm["url"]  = jstr(part.image_url);
+                } else {
+                    sm["type"]       = jstr("base64");
+                    sm["media_type"] = jstr(part.media_type);
+                    sm["data"]       = jstr(part.image_data);
+                }
+                bm["source"] = src;
+                if (with_cache) {
+                    auto cc = jobj();
+                    cc->as_object_mut()["type"] = jstr("ephemeral");
+                    bm["cache_control"] = cc;
+                }
+                arr->as_array_mut().push_back(block);
+            };
+
+            if (!has_parts) {
+                emit_text(msg.content, /*with_cache=*/is_tail);
+            } else {
+                const size_t pcount = msg.parts.size();
+                for (size_t pi = 0; pi < pcount; ++pi) {
+                    const bool last_block = is_tail && (pi + 1 == pcount);
+                    const auto& part = msg.parts[pi];
+                    if (part.kind == ContentPart::TEXT) {
+                        emit_text(part.text, last_block);
+                    } else {
+                        emit_image(part, last_block);
+                    }
+                }
+            }
+            mo->as_object_mut()["content"] = arr;
         }
         msgs->as_array_mut().push_back(mo);
     }
@@ -439,7 +520,43 @@ std::string ApiClient::build_body_openai(const Provider& prov,
     for (auto& msg : req.messages) {
         auto mo = jobj();
         mo->as_object_mut()["role"] = jstr(msg.role);
-        mo->as_object_mut()["content"] = jstr(msg.content);
+        if (msg.parts.empty()) {
+            // Fast path: text-only message, emit as a string.
+            mo->as_object_mut()["content"] = jstr(msg.content);
+        } else {
+            // OpenAI Chat Completions multipart shape:
+            //   content: [
+            //     {type:"text",     text:"..."},
+            //     {type:"image_url", image_url:{url:"..."}}
+            //   ]
+            // Both inline base64 and hosted URLs ride on `image_url.url`;
+            // base64 goes as a `data:` URL.  Ollama's OpenAI-compatible
+            // /v1/chat/completions accepts the same shape on llama-3.2-vision
+            // and friends, so this code path doubles for ollama.
+            auto arr = jarr();
+            for (auto& part : msg.parts) {
+                auto block = jobj();
+                auto& bm = block->as_object_mut();
+                if (part.kind == ContentPart::TEXT) {
+                    bm["type"] = jstr("text");
+                    bm["text"] = jstr(part.text);
+                } else {
+                    bm["type"] = jstr("image_url");
+                    auto iu = jobj();
+                    if (!part.image_url.empty()) {
+                        iu->as_object_mut()["url"] = jstr(part.image_url);
+                    } else {
+                        std::string data_url =
+                            "data:" + part.media_type +
+                            ";base64," + part.image_data;
+                        iu->as_object_mut()["url"] = jstr(data_url);
+                    }
+                    bm["image_url"] = iu;
+                }
+                arr->as_array_mut().push_back(block);
+            }
+            mo->as_object_mut()["content"] = arr;
+        }
         msgs->as_array_mut().push_back(mo);
     }
     m["messages"] = msgs;
@@ -447,12 +564,96 @@ std::string ApiClient::build_body_openai(const Provider& prov,
     return json_serialize(*obj);
 }
 
+std::string ApiClient::build_body_gemini(const ApiRequest& req) {
+    // Gemini's generateContent shape:
+    //   {
+    //     "contents": [{ "role": "user"|"model",
+    //                    "parts": [{"text": "..."}] }, ...],
+    //     "systemInstruction": { "parts": [{"text": "..."}] },
+    //     "generationConfig": { "temperature": ..., "maxOutputTokens": ... }
+    //   }
+    //
+    // Roles diverge from the rest of the codebase: Gemini calls the assistant
+    // turn "model".  We translate "assistant" → "model" on the way out and
+    // leave "user" as-is.  System prompt is hoisted to a top-level field
+    // rather than living as a synthetic message at index 0.
+    //
+    // The model id itself is *not* in the body — it's in the URL path,
+    // built by path_for() and passed straight through send_request.
+    //
+    // Streaming is requested via the URL action token (`:streamGenerateContent`),
+    // not via a `stream:true` body field, so this builder ignores the
+    // streaming flag entirely — both code paths use the same body.
+    auto obj = jobj();
+    auto& m = obj->as_object_mut();
+
+    if (!req.system_prompt.empty()) {
+        auto part = jobj();
+        part->as_object_mut()["text"] = jstr(req.system_prompt);
+        auto parts = jarr();
+        parts->as_array_mut().push_back(part);
+        auto sys = jobj();
+        sys->as_object_mut()["parts"] = parts;
+        m["systemInstruction"] = sys;
+    }
+
+    auto contents = jarr();
+    for (auto& msg : req.messages) {
+        auto entry = jobj();
+        const std::string role = (msg.role == "assistant") ? "model" : msg.role;
+        entry->as_object_mut()["role"] = jstr(role);
+
+        auto parts = jarr();
+        if (msg.parts.empty()) {
+            // Text-only path — single {text} part.
+            auto part = jobj();
+            part->as_object_mut()["text"] = jstr(msg.content);
+            parts->as_array_mut().push_back(part);
+        } else {
+            // Gemini parts shape: {text} for prose, {inlineData:{mimeType,
+            // data}} for base64 images, {fileData:{mimeType, fileUri}} for
+            // hosted-URL images.  fileData accepts http(s) URLs and
+            // gs:// URIs; the model fetches the bytes itself.
+            for (auto& part : msg.parts) {
+                auto p = jobj();
+                if (part.kind == ContentPart::TEXT) {
+                    p->as_object_mut()["text"] = jstr(part.text);
+                } else if (!part.image_url.empty()) {
+                    auto fd = jobj();
+                    fd->as_object_mut()["mimeType"] = jstr(part.media_type);
+                    fd->as_object_mut()["fileUri"]  = jstr(part.image_url);
+                    p->as_object_mut()["fileData"] = fd;
+                } else {
+                    auto inl = jobj();
+                    inl->as_object_mut()["mimeType"] = jstr(part.media_type);
+                    inl->as_object_mut()["data"]     = jstr(part.image_data);
+                    p->as_object_mut()["inlineData"] = inl;
+                }
+                parts->as_array_mut().push_back(p);
+            }
+        }
+        entry->as_object_mut()["parts"] = parts;
+
+        contents->as_array_mut().push_back(entry);
+    }
+    m["contents"] = contents;
+
+    auto gen = jobj();
+    auto& g = gen->as_object_mut();
+    g["maxOutputTokens"] = jnum(static_cast<double>(req.max_tokens));
+    if (req.include_temperature) g["temperature"] = jnum(req.temperature);
+    m["generationConfig"] = gen;
+
+    return json_serialize(*obj);
+}
+
 // ─── Outgoing HTTP request ───────────────────────────────────────────────────
 
 void ApiClient::send_request(const Provider& p, Conn& c,
+                              const std::string& path,
                               const std::string& body, bool streaming) {
     std::ostringstream http;
-    http << "POST " << p.path << " HTTP/1.1\r\n";
+    http << "POST " << path << " HTTP/1.1\r\n";
     http << "Host: " << p.host;
     // Ollama + typical non-443 local servers want the port in the Host header
     // even for http; harmless for Anthropic (servers ignore a :443 there).
@@ -481,6 +682,10 @@ void ApiClient::send_request(const Provider& p, Conn& c,
             http << "x-api-key: " << key_plain << "\r\n";
             http << "anthropic-version: 2023-06-01\r\n";
             http << "anthropic-beta: prompt-caching-2024-07-31\r\n";
+        } else if (p.format == Provider::FORMAT_GEMINI) {
+            // Gemini supports both `?key=…` and `x-goog-api-key`; the header
+            // form keeps the token out of URLs and proxy access logs.
+            http << "x-goog-api-key: " << key_plain << "\r\n";
         } else {
             http << "Authorization: Bearer " << key_plain << "\r\n";
         }
@@ -716,10 +921,59 @@ ApiResponse ApiClient::parse_body_openai(const std::string& body) {
     return resp;
 }
 
+ApiResponse ApiClient::parse_body_gemini(const std::string& body) {
+    ApiResponse resp;
+    resp.raw_body = body;
+    try {
+        auto root = json_parse(body);
+        auto err = root->get("error");
+        if (err && err->is_object()) {
+            resp.ok         = false;
+            resp.error_type = err->get_string("status");
+            resp.error      = err->get_string("message", "Unknown API error");
+            return resp;
+        }
+        auto candidates = root->get("candidates");
+        if (candidates && candidates->is_array() && !candidates->as_array().empty()) {
+            auto& c0 = candidates->as_array().front();
+            if (c0) {
+                auto cont = c0->get("content");
+                if (cont) {
+                    auto parts = cont->get("parts");
+                    if (parts && parts->is_array()) {
+                        for (auto& part : parts->as_array()) {
+                            if (!part) continue;
+                            resp.content += part->get_string("text");
+                        }
+                    }
+                }
+                resp.stop_reason = c0->get_string("finishReason");
+            }
+        }
+        auto usage = root->get("usageMetadata");
+        if (usage && usage->is_object()) {
+            resp.input_tokens      = usage->get_int("promptTokenCount");
+            resp.output_tokens     = usage->get_int("candidatesTokenCount");
+            resp.cache_read_tokens = usage->get_int("cachedContentTokenCount");
+        }
+        resp.ok = true;
+    } catch (const std::exception& e) {
+        resp.ok    = false;
+        resp.error = std::string("Parse error: ") + e.what();
+    }
+    return resp;
+}
+
 // ─── Retry policy ────────────────────────────────────────────────────────────
 
 static bool is_retryable(const std::string& error_type) {
-    return error_type == "rate_limit_error" || error_type == "overloaded_error";
+    // Anthropic uses "rate_limit_error" / "overloaded_error"; Gemini uses
+    // "RESOURCE_EXHAUSTED" / "UNAVAILABLE" in its `status` field.  OpenAI's
+    // shape collides with Anthropic's, so the union below covers all three.
+    return error_type == "rate_limit_error" ||
+           error_type == "overloaded_error" ||
+           error_type == "RESOURCE_EXHAUSTED" ||
+           error_type == "UNAVAILABLE";
 }
 
 // ─── Blocking complete() ─────────────────────────────────────────────────────
@@ -744,14 +998,26 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
                     r.error = c.last_error.empty() ? "Connection failed" : c.last_error;
                     return r;
                 }
-                std::string body = (prov.format == Provider::FORMAT_ANTHROPIC)
-                                   ? build_body_anthropic(req, false)
-                                   : build_body_openai(prov, req, false);
-                send_request(prov, c, body, false);
+                std::string body;
+                switch (prov.format) {
+                    case Provider::FORMAT_ANTHROPIC:
+                        body = build_body_anthropic(req, false); break;
+                    case Provider::FORMAT_GEMINI:
+                        body = build_body_gemini(req); break;
+                    case Provider::FORMAT_OPENAI_CHAT: default:
+                        body = build_body_openai(prov, req, false); break;
+                }
+                std::string path = path_for(prov, req, false);
+                send_request(prov, c, path, body, false);
                 std::string raw = read_response(c);
-                resp = (prov.format == Provider::FORMAT_ANTHROPIC)
-                       ? parse_body_anthropic(raw)
-                       : parse_body_openai(raw);
+                switch (prov.format) {
+                    case Provider::FORMAT_ANTHROPIC:
+                        resp = parse_body_anthropic(raw); break;
+                    case Provider::FORMAT_GEMINI:
+                        resp = parse_body_gemini(raw); break;
+                    case Provider::FORMAT_OPENAI_CHAT: default:
+                        resp = parse_body_openai(raw); break;
+                }
             } catch (...) {
                 close_connection(c);
                 threw = true;
@@ -875,6 +1141,63 @@ static void process_openai_event(const std::string& data,
     }
 }
 
+// Gemini SSE chunk: `data: {"candidates":[{"content":{"parts":[{"text":"…"}],
+// "role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{...}}`.
+// No `[DONE]` marker — the stream just ends.  Each chunk's candidates[0]
+// content.parts may carry one or more text fragments; the final chunk also
+// carries `finishReason` and `usageMetadata`.  Errors land as a top-level
+// `error` object identical in shape to the non-streaming response.
+static void process_gemini_event(const std::string& data,
+                                  std::string& content,
+                                  ApiResponse& resp,
+                                  StreamCallback cb) {
+    if (data.empty()) return;
+    try {
+        auto root = json_parse(data);
+        auto err = root->get("error");
+        if (err && err->is_object()) {
+            resp.ok         = false;
+            resp.error_type = err->get_string("status");
+            resp.error      = err->get_string("message", "Stream error");
+            return;
+        }
+        auto candidates = root->get("candidates");
+        if (candidates && candidates->is_array() && !candidates->as_array().empty()) {
+            auto& c0 = candidates->as_array().front();
+            if (c0) {
+                auto cont = c0->get("content");
+                if (cont) {
+                    auto parts = cont->get("parts");
+                    if (parts && parts->is_array()) {
+                        for (auto& part : parts->as_array()) {
+                            if (!part) continue;
+                            std::string text = part->get_string("text");
+                            if (!text.empty()) {
+                                content += text;
+                                if (cb) cb(text);
+                            }
+                        }
+                    }
+                }
+                std::string finish = c0->get_string("finishReason");
+                if (!finish.empty()) resp.stop_reason = finish;
+            }
+        }
+        auto usage = root->get("usageMetadata");
+        if (usage && usage->is_object()) {
+            resp.input_tokens  = usage->get_int("promptTokenCount");
+            resp.output_tokens = usage->get_int("candidatesTokenCount");
+            // Implicit context caching shows up as `cachedContentTokenCount`
+            // on usageMetadata (not always present); surface it under the
+            // same field the billing service uses for Anthropic / OpenAI
+            // cache hits.
+            resp.cache_read_tokens = usage->get_int("cachedContentTokenCount");
+        }
+    } catch (...) {
+        // Ignore malformed chunk.
+    }
+}
+
 ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
                                                  Provider::Format fmt) {
     ApiResponse resp;
@@ -895,9 +1218,12 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
         if (body.empty())
             body = "{\"error\":{\"type\":\"http_error\",\"message\":\"HTTP "
                    + std::to_string(http_status) + "\"}}";
-        return (fmt == Provider::FORMAT_ANTHROPIC)
-               ? parse_body_anthropic(body)
-               : parse_body_openai(body);
+        switch (fmt) {
+            case Provider::FORMAT_ANTHROPIC:   return parse_body_anthropic(body);
+            case Provider::FORMAT_GEMINI:      return parse_body_gemini(body);
+            case Provider::FORMAT_OPENAI_CHAT: default:
+                                                return parse_body_openai(body);
+        }
     }
 
     bool chunked = headers.find("Transfer-Encoding: chunked") != std::string::npos;
@@ -929,10 +1255,14 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
         if (line.size() > 6 && line.compare(0, 6, "data: ") == 0) {
             std::string data = line.substr(6);
             if (!data.empty() && data.back() == '\r') data.pop_back();
-            if (fmt == Provider::FORMAT_ANTHROPIC)
-                process_anthropic_event(data, content, resp, cb);
-            else
-                process_openai_event(data, content, resp, cb);
+            switch (fmt) {
+                case Provider::FORMAT_ANTHROPIC:
+                    process_anthropic_event(data, content, resp, cb); break;
+                case Provider::FORMAT_GEMINI:
+                    process_gemini_event(data, content, resp, cb); break;
+                case Provider::FORMAT_OPENAI_CHAT: default:
+                    process_openai_event(data, content, resp, cb); break;
+            }
         }
     };
 
@@ -1027,10 +1357,17 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
                     resp.ok    = false;
                     resp.error = c.last_error.empty() ? "Connection failed" : c.last_error;
                 } else {
-                    std::string body = (prov.format == Provider::FORMAT_ANTHROPIC)
-                                       ? build_body_anthropic(req, true)
-                                       : build_body_openai(prov, req, true);
-                    send_request(prov, c, body, true);
+                    std::string body;
+                    switch (prov.format) {
+                        case Provider::FORMAT_ANTHROPIC:
+                            body = build_body_anthropic(req, true); break;
+                        case Provider::FORMAT_GEMINI:
+                            body = build_body_gemini(req); break;
+                        case Provider::FORMAT_OPENAI_CHAT: default:
+                            body = build_body_openai(prov, req, true); break;
+                    }
+                    std::string path = path_for(prov, req, true);
+                    send_request(prov, c, path, body, true);
                     resp = read_streaming_response(c, cb, prov.format);
                 }
             } catch (const std::exception& e) {

@@ -958,16 +958,62 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
 ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                          const std::string& message,
                                          StreamCallback cb) {
+    // Thin wrapper — delegate to the parts-aware overload with a single
+    // text part.  Keeps every call site that builds a plain-text user
+    // message untouched while letting vision callers reach the same
+    // dispatch loop with image parts attached.
+    std::vector<ContentPart> parts;
+    ContentPart p;
+    p.kind = ContentPart::TEXT;
+    p.text = message;
+    parts.push_back(std::move(p));
+    return send_streaming(agent_id, std::move(parts), std::move(cb));
+}
+
+ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
+                                         std::vector<ContentPart> parts,
+                                         StreamCallback cb) {
     Agent* agent_ptr;
-    std::string current_msg;
+    std::vector<ContentPart> current_parts;
+
+    // Flatten the inbound parts to a single text string for sites that need
+    // the user's request as a string — invoker construction (sub-agent
+    // delegation seed), parallel-invoker context, advisor original_task.
+    // Image parts contribute nothing to this text view; the model still sees
+    // them via the parts vector on the wire.
+    std::string message;
+    for (auto& p : parts) {
+        if (p.kind == ContentPart::TEXT) {
+            if (!message.empty() && message.back() != '\n') message += '\n';
+            message += p.text;
+        }
+    }
 
     if (agent_id == "index") {
-        agent_ptr   = index_master_.get();
-        current_msg = global_status() + "\n\nQUERY: " + message;
+        agent_ptr = index_master_.get();
+        // Master prepends global_status() + "QUERY: " as a leading text
+        // part; remaining parts (text + any image inputs) follow.
+        ContentPart prefix;
+        prefix.kind = ContentPart::TEXT;
+        prefix.text = global_status() + "\n\nQUERY: ";
+        current_parts.push_back(std::move(prefix));
+        for (auto& p : parts) current_parts.push_back(std::move(p));
     } else {
-        agent_ptr   = &get_agent(agent_id);
-        current_msg = message;
+        agent_ptr = &get_agent(agent_id);
+        current_parts = std::move(parts);
     }
+
+    // Helper: reset current_parts to a single text part.  Used for re-entry
+    // turns whose content is pure text (advisor redirect synthesis, plain
+    // tool results without image bytes).  Image-bearing tool results
+    // populate current_parts directly via execute_agent_commands.
+    auto set_current_text = [&](std::string text) {
+        current_parts.clear();
+        ContentPart p;
+        p.kind = ContentPart::TEXT;
+        p.text = std::move(text);
+        current_parts.push_back(std::move(p));
+    };
 
     // Top-level turn gets stream_id 0 (or the next available, if the caller
     // has already minted some via a prior call).  Fleet consumers watch
@@ -1053,7 +1099,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     };
 
     // First turn: stream into the gate (not directly to cb).
-    ApiResponse resp = agent_ptr->stream(current_msg, gated_cb);
+    ApiResponse resp = agent_ptr->stream(std::move(current_parts), gated_cb);
     if (!resp.ok) {
         // On failure, flush whatever the model produced so the user sees
         // the partial — the gate's contract is to never silently swallow
@@ -1184,15 +1230,22 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
 
             // REDIRECT — synthesise a user turn and stream the redirect.
             ++redirects_used;
-            current_msg =
+            set_current_text(
                 "[advisor redirect — synthetic user turn]\n" +
                 sig.text +
-                "\n[end advisor redirect]";
+                "\n[end advisor redirect]");
             if (cb) cb("\n");
         } else {
             // Tool-call iteration — assemble tool results and re-enter.
             if (cb) cb("\n");
-            current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
+            // Image-bearing tool results (/fetch on image/*, /read on image
+            // artifacts) land in `image_parts` while the textual envelope
+            // returns through the result string.  We then build the next
+            // user-message as [text envelope, ...images], so the model sees
+            // both the structured `[/fetch ...] [END FETCH]` framing and the
+            // image content in the same turn.
+            std::vector<ContentPart> image_parts;
+            std::string tool_envelope = execute_agent_commands(cmds, agent_id, memory_dir_,
                                                   invoker, confirm_cb_, &shared_cache,
                                                   advisor_invoker, tool_status_cb_,
                                                   pane_spawner_cb_,
@@ -1208,12 +1261,24 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   artifact_reader_cb_,
                                                   artifact_lister_cb_,
                                                   a2a_invoker_cb_,
-                                                  agent_ptr->config().capabilities);
+                                                  agent_ptr->config().capabilities,
+                                                  &image_parts);
             last_cmds         = cmds;
-            last_tool_results = current_msg;
+            last_tool_results = tool_envelope;
+            if (image_parts.empty()) {
+                set_current_text(std::move(tool_envelope));
+            } else {
+                current_parts.clear();
+                ContentPart head;
+                head.kind = ContentPart::TEXT;
+                head.text = std::move(tool_envelope);
+                current_parts.push_back(std::move(head));
+                for (auto& img : image_parts)
+                    current_parts.push_back(std::move(img));
+            }
         }
 
-        resp = agent_ptr->stream(current_msg, gated_cb);
+        resp = agent_ptr->stream(std::move(current_parts), gated_cb);
         if (!resp.ok) {
             if (!iter_buffer.empty() && cb) cb(iter_buffer);
             iter_buffer.clear();

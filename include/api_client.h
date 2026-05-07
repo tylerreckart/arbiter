@@ -2,8 +2,9 @@
 // index/include/api_client.h — Multi-provider LLM API client over raw TLS / TCP.
 // Routes requests by model-string prefix: bare "claude-*" → Anthropic Messages
 // API, "openai/<model>" → OpenAI Chat Completions, "ollama/<model>" → Ollama
-// (OpenAI-compatible /v1/chat/completions).  Adding a new provider is a prefix
-// + one row in the provider table in api_client.cpp.
+// (OpenAI-compatible /v1/chat/completions), "gemini/<model>" → Google Gemini
+// generateContent.  Adding a new provider is a prefix + one row in the provider
+// table in api_client.cpp.
 
 #include "json.h"
 #include <string>
@@ -18,9 +19,41 @@
 
 namespace index_ai {
 
+// Multipart content block.  Vision input requires interleaved text and
+// image parts; this carries either, with image data either inlined as base64
+// or referenced by URL.  The runtime never holds image bytes raw — they are
+// always base64 by the time they reach this struct, both because the wire
+// formats are base64 anyway and because keeping a single representation
+// simplifies the body builders.
+struct ContentPart {
+    enum Kind { TEXT, IMAGE };
+    Kind kind = TEXT;
+
+    // TEXT
+    std::string text;
+
+    // IMAGE — exactly one of {image_data, image_url} is populated.
+    // image_data is the raw base64 (no `data:` prefix); media_type is the
+    // MIME type ("image/png", "image/jpeg", "image/webp", "image/gif").
+    // image_url is a hosted URL the provider will fetch — passed through
+    // unchanged on the OpenAI and Anthropic paths, expressed as fileData
+    // on Gemini.
+    std::string image_data;
+    std::string media_type;
+    std::string image_url;
+};
+
 struct Message {
-    std::string role;    // "user" | "assistant"
+    std::string role;                // "user" | "assistant"
+
+    // Two representations.  When `parts` is non-empty, it is authoritative
+    // and `content` is ignored — body builders walk parts to emit each
+    // provider's multipart content shape.  When `parts` is empty, `content`
+    // is treated as a single text part (the legacy text-only path).  This
+    // keeps every existing call site (which only writes `content`) working
+    // unchanged while allowing new code to attach images.
     std::string content;
+    std::vector<ContentPart> parts;
 };
 
 struct ApiRequest {
@@ -53,7 +86,7 @@ using StreamCallback = std::function<void(const std::string& chunk)>;
 // provider owns its host/port/path, whether TLS is required, which request
 // and response formats to use, and whether an API key is needed.
 struct Provider {
-    enum Format { FORMAT_ANTHROPIC, FORMAT_OPENAI_CHAT };
+    enum Format { FORMAT_ANTHROPIC, FORMAT_OPENAI_CHAT, FORMAT_GEMINI };
 
     std::string name;            // "anthropic", "ollama", …
     std::string prefix;          // match against req.model ("" = fallback)
@@ -105,6 +138,17 @@ public:
     // so an in-flight SSL_read / read returns immediately.  Thread-safe.
     void cancel();
 
+    // Pure helpers — request body builders.  Public so unit tests can verify
+    // each provider's wire shape directly without spinning up a mock server.
+    // The openai builder needs the Provider to branch on name (OpenAI proper
+    // vs Ollama) — they share a wire format but differ on a handful of
+    // fields (max_completion_tokens, stream_options, reasoning-model
+    // temperature handling).
+    static std::string build_body_anthropic(const ApiRequest& req, bool streaming);
+    static std::string build_body_openai   (const Provider& prov,
+                                            const ApiRequest& req, bool streaming);
+    static std::string build_body_gemini   (const ApiRequest& req);
+
     // Connection slot — one per active provider.  Public so free-function
     // wire helpers (conn_send / conn_recv in api_client.cpp) can operate on
     // it without a friend declaration; treat as an implementation detail.
@@ -144,22 +188,22 @@ private:
     bool ensure_connection(const Provider& p, Conn& c);
     void close_connection(Conn& c);
 
-    // Wire I/O — `c` is assumed connected.
+    // Wire I/O — `c` is assumed connected.  Gemini puts the model id in the
+    // URL path (`/v1beta/models/<model>:generateContent`), so the path is
+    // computed per-request in complete()/stream() and passed in here rather
+    // than read off the static Provider record.
     void send_request(const Provider& p, Conn& c,
+                      const std::string& path,
                       const std::string& body, bool streaming);
     std::string read_response(Conn& c);
     ApiResponse read_streaming_response(Conn& c, StreamCallback cb,
                                          Provider::Format fmt);
 
-    // Format-specific helpers.  The openai builder needs the Provider to
-    // branch on name (OpenAI proper vs Ollama) — they share a wire format
-    // but differ on a handful of fields (max_completion_tokens,
-    // stream_options, reasoning-model temperature handling).
-    static std::string build_body_anthropic(const ApiRequest& req, bool streaming);
-    static std::string build_body_openai   (const Provider& prov,
-                                            const ApiRequest& req, bool streaming);
+    // Format-specific response parsers (kept private — they own the
+    // ApiResponse construction and aren't used outside the wire path).
     static ApiResponse parse_body_anthropic(const std::string& body);
     static ApiResponse parse_body_openai   (const std::string& body);
+    static ApiResponse parse_body_gemini   (const std::string& body);
 };
 
 } // namespace index_ai

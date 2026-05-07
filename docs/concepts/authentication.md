@@ -1,6 +1,6 @@
 # Authentication
 
-Two token kinds, both presented as `Authorization: Bearer …`:
+Two token kinds, both presented as `Authorization: Bearer TOKEN`:
 
 | Prefix  | Purpose | Endpoints |
 |---------|---------|-----------|
