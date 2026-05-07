@@ -10,6 +10,7 @@ Arbiter routes model calls through whichever provider key is set. At least one i
 |-------------------------|--------------------------------------|-----------------------------------|
 | `ANTHROPIC_API_KEY`     | Any agent whose `model` is a Claude id | `~/.arbiter/api_key` file       |
 | `OPENAI_API_KEY`        | Any agent whose `model` is an OpenAI id | `~/.arbiter/openai_api_key` file |
+| `GEMINI_API_KEY`        | Any agent whose `model` is a `gemini/<…>` id | `~/.arbiter/gemini_api_key` file |
 | `OLLAMA_HOST`           | Any agent whose `model` resolves to Ollama | `http://localhost:11434`     |
 
 Env-var values take precedence over the file values. The file is read once at process start; changes during a long-running `--api` session require a restart.
@@ -51,6 +52,7 @@ Distinct from env vars but listed here for completeness, since the env-vs-file p
 |----------------------------|----------------------------------------------------------------------|
 | `api_key`                  | Anthropic API key (one line, no whitespace).                         |
 | `openai_api_key`           | OpenAI API key.                                                      |
+| `gemini_api_key`           | Google Gemini API key.                                               |
 | `admin_token`              | Admin token used by `/v1/admin/*`. Generated automatically on first `--api` launch if missing. |
 | `tenants.db`               | Tenant identity store (SQLite).                                      |
 | `agents/*.json`            | Agent constitutions.                                                 |

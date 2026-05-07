@@ -1822,18 +1822,23 @@ void handle_models_list(int fd) {
     struct ModelEntry { const char* id; const char* provider; };
     static constexpr ModelEntry kModels[] = {
         // Anthropic Claude
-        {"claude-opus-4-7",    "anthropic"},
-        {"claude-opus-4-6",    "anthropic"},
-        {"claude-opus-4-5",    "anthropic"},
-        {"claude-sonnet-4-6",  "anthropic"},
-        {"claude-sonnet-4-5",  "anthropic"},
-        {"claude-haiku-4-5",   "anthropic"},
+        {"claude-opus-4-7",          "anthropic"},
+        {"claude-opus-4-6",          "anthropic"},
+        {"claude-opus-4-5",          "anthropic"},
+        {"claude-sonnet-4-6",        "anthropic"},
+        {"claude-sonnet-4-5",        "anthropic"},
+        {"claude-haiku-4-5",         "anthropic"},
         // OpenAI
-        {"openai/gpt-5.4",     "openai"},
-        {"openai/gpt-4.1",     "openai"},
-        {"openai/gpt-4o",      "openai"},
-        {"openai/gpt-4o-mini", "openai"},
-        {"openai/o4-mini",     "openai"},
+        {"openai/gpt-5.4",           "openai"},
+        {"openai/gpt-4.1",           "openai"},
+        {"openai/gpt-4o",            "openai"},
+        {"openai/gpt-4o-mini",       "openai"},
+        {"openai/o4-mini",           "openai"},
+        // Google Gemini
+        {"gemini/gemini-2.5-pro",        "gemini"},
+        {"gemini/gemini-2.5-flash",      "gemini"},
+        {"gemini/gemini-2.5-flash-lite", "gemini"},
+        {"gemini/gemini-2.0-flash",      "gemini"},
     };
 
     auto arr = jarr();

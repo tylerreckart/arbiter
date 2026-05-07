@@ -9,6 +9,7 @@ If you'd rather call arbiter without operating it, see the [hosted preview](host
 - A provider key for whichever model family you want agents to use:
   - **Anthropic** — `ANTHROPIC_API_KEY` (or save to `~/.arbiter/api_key`).
   - **OpenAI** — `OPENAI_API_KEY` (or save to `~/.arbiter/openai_api_key`).
+  - **Google Gemini** — `GEMINI_API_KEY` (or save to `~/.arbiter/gemini_api_key`).
   - **Ollama** — set `OLLAMA_HOST` if not at `http://localhost:11434`.
 - Only one is required. Multiple can coexist; different agents can target different providers.
 - Optional: a Brave Search key (`ARBITER_SEARCH_API_KEY`) if you want `/search` to resolve. Without it, agents fall back to `/fetch` on URLs they already know.
@@ -44,7 +45,7 @@ Build deps: OpenSSL, libcurl, SQLite3, a C++20 compiler. `libedit` or GNU readli
 ## First run
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."   # or OPENAI_API_KEY
+export ANTHROPIC_API_KEY="sk-ant-..."   # or OPENAI_API_KEY / GEMINI_API_KEY
 arbiter --init                          # seed ~/.arbiter/ with starter agents
 arbiter                                 # launch the terminal client
 ```
@@ -81,6 +82,7 @@ Authenticate with `Authorization: Bearer <token>`. The endpoint catalogue is at 
 ├── agents/*.json          agent constitutions (edit these)
 ├── api_key                Anthropic key (alternative to env var)
 ├── openai_api_key         OpenAI key
+├── gemini_api_key         Google Gemini key
 ├── tenants.db             tenant identities for --api
 ├── sessions/              per-cwd TUI session snapshots
 ├── memory/                per-agent persistent scratchpads

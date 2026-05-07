@@ -7,6 +7,21 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Google Gemini provider.** Models prefixed `gemini/<id>` route to
+  Google's `generativelanguage.googleapis.com` endpoint
+  (`/v1beta/models/<id>:streamGenerateContent` for streaming,
+  `:generateContent` otherwise). Authentication via `x-goog-api-key`
+  header. Key discovery follows the existing pattern: `GEMINI_API_KEY`
+  env var, falling back to `~/.arbiter/gemini_api_key`. Initial catalog
+  in `/v1/models` includes `gemini-2.5-pro`, `gemini-2.5-flash`,
+  `gemini-2.5-flash-lite`, and `gemini-2.0-flash`. Translates the
+  codebase's `assistant` role to Gemini's `model`, hoists the system
+  prompt into `systemInstruction`, and surfaces `cachedContentTokenCount`
+  on `cache_read_tokens` so the billing service can discount implicit
+  context-cache hits the same way it does for Anthropic / OpenAI.
+  `RESOURCE_EXHAUSTED` and `UNAVAILABLE` are treated as retryable.
+
 ## [0.4.3] — 2026-05-07
 
 ### Added

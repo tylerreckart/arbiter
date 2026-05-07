@@ -503,6 +503,9 @@ std::map<std::string, std::string> get_api_keys() {
     auto openai = load_key("OPENAI_API_KEY", dir + "/openai_api_key");
     if (!openai.empty()) out["openai"] = std::move(openai);
 
+    auto gemini = load_key("GEMINI_API_KEY", dir + "/gemini_api_key");
+    if (!gemini.empty()) out["gemini"] = std::move(gemini);
+
     if (out.empty()) {
         // First-run path: interactive wizard when stdin is a TTY.  Scripted
         // callers (pipes, CI, --send from a cronjob) still error-exit so
@@ -512,7 +515,8 @@ std::map<std::string, std::string> get_api_keys() {
         } else {
             std::cerr << "ERR: No provider API keys configured. Set one of:\n"
                       << "  ANTHROPIC_API_KEY  (or write to ~/.arbiter/api_key)\n"
-                      << "  OPENAI_API_KEY     (or write to ~/.arbiter/openai_api_key)\n";
+                      << "  OPENAI_API_KEY     (or write to ~/.arbiter/openai_api_key)\n"
+                      << "  GEMINI_API_KEY     (or write to ~/.arbiter/gemini_api_key)\n";
             std::exit(1);
         }
     }

@@ -8,6 +8,7 @@ Everything arbiter persists lives under `~/.arbiter/`:
 |--------------------------|---------|
 | `api_key`                | Anthropic API key (mode 0600). Read if `$ANTHROPIC_API_KEY` is unset. |
 | `openai_api_key`         | OpenAI API key (mode 0600). Read if `$OPENAI_API_KEY` is unset. |
+| `gemini_api_key`         | Google Gemini API key (mode 0600). Read if `$GEMINI_API_KEY` is unset. |
 | `admin_token`            | Admin bearer token (mode 0600). Read if `$ARBITER_ADMIN_TOKEN` is unset. |
 | `tenants.db`             | SQLite ledger. WAL mode + `SQLITE_OPEN_FULLMUTEX` (serialised threading), foreign keys enforced. Schema migrates on open. |
 | `agents/*.json`          | Local example agent constitutions (CLI-mode only — the API path doesn't read these). |

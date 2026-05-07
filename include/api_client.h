@@ -2,8 +2,9 @@
 // index/include/api_client.h — Multi-provider LLM API client over raw TLS / TCP.
 // Routes requests by model-string prefix: bare "claude-*" → Anthropic Messages
 // API, "openai/<model>" → OpenAI Chat Completions, "ollama/<model>" → Ollama
-// (OpenAI-compatible /v1/chat/completions).  Adding a new provider is a prefix
-// + one row in the provider table in api_client.cpp.
+// (OpenAI-compatible /v1/chat/completions), "gemini/<model>" → Google Gemini
+// generateContent.  Adding a new provider is a prefix + one row in the provider
+// table in api_client.cpp.
 
 #include "json.h"
 #include <string>
@@ -53,7 +54,7 @@ using StreamCallback = std::function<void(const std::string& chunk)>;
 // provider owns its host/port/path, whether TLS is required, which request
 // and response formats to use, and whether an API key is needed.
 struct Provider {
-    enum Format { FORMAT_ANTHROPIC, FORMAT_OPENAI_CHAT };
+    enum Format { FORMAT_ANTHROPIC, FORMAT_OPENAI_CHAT, FORMAT_GEMINI };
 
     std::string name;            // "anthropic", "ollama", …
     std::string prefix;          // match against req.model ("" = fallback)
@@ -144,8 +145,12 @@ private:
     bool ensure_connection(const Provider& p, Conn& c);
     void close_connection(Conn& c);
 
-    // Wire I/O — `c` is assumed connected.
+    // Wire I/O — `c` is assumed connected.  Gemini puts the model id in the
+    // URL path (`/v1beta/models/<model>:generateContent`), so the path is
+    // computed per-request in complete()/stream() and passed in here rather
+    // than read off the static Provider record.
     void send_request(const Provider& p, Conn& c,
+                      const std::string& path,
                       const std::string& body, bool streaming);
     std::string read_response(Conn& c);
     ApiResponse read_streaming_response(Conn& c, StreamCallback cb,
@@ -158,8 +163,10 @@ private:
     static std::string build_body_anthropic(const ApiRequest& req, bool streaming);
     static std::string build_body_openai   (const Provider& prov,
                                             const ApiRequest& req, bool streaming);
+    static std::string build_body_gemini   (const ApiRequest& req);
     static ApiResponse parse_body_anthropic(const std::string& body);
     static ApiResponse parse_body_openai   (const std::string& body);
+    static ApiResponse parse_body_gemini   (const std::string& body);
 };
 
 } // namespace index_ai

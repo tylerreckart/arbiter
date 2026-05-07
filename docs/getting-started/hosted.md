@@ -17,17 +17,6 @@ A managed arbiter endpoint. Same binary, same writ DSL, same SSE protocol — we
 - A persistent local working directory — agent file output streams as `file` SSE events to your client.
 - Direct filesystem access. All persistent state lives behind the API: artifacts, structured memory, scratchpads.
 
-## Request access
-
-<!-- TODO(hosted): replace with the live signup destination once decided.
-     Pick one of: email address (e.g. hello@arbiter.dev), waitlist URL,
-     or GitHub issue template. The surrounding language is written
-     against a "limited preview / waitlist" framing. -->
-
-Join the waitlist: **\<TODO: hosted contact\>**
-
-Tell us: rough use case (research agent, code review bot, embedded assistant, …), expected request volume, and whether you have provider keys you'd like the workspace to use directly. We reply within a few business days during preview.
-
 ## Once provisioned
 
 You'll receive a bearer token and an endpoint URL. Smoke-test it:

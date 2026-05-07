@@ -34,11 +34,11 @@ Backslashes are normalised to forward slashes before validation; repeated separa
 
 Hard ceilings, enforced inside `put_artifact` for every entry point:
 
-| Scope            | Default |
-|------------------|---------|
-| Per file         | **1 MB** |
+| Scope | Default |
+|-------|---------|
+| Per file | **1 MB** |
 | Per conversation | **50 MB** |
-| Per tenant       | **500 MB** |
+| Per tenant | **500 MB** |
 
 PUT-on-conflict semantics: writing to an existing path **replaces** the row (same `id`, bumped `updated_at`), and quota math subtracts the existing size before checking the cap. Overwriting a 100 KB file with 200 KB only "costs" 100 KB against the conversation quota.
 
