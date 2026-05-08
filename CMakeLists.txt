@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.4.3 LANGUAGES CXX)
+project(arbiter VERSION 0.4.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,22 +26,22 @@ check_ipo_supported(RESULT HAVE_IPO OUTPUT IPO_ERROR)
 
 # --- Platform detection ---
 if(APPLE)
-    add_compile_definitions(INDEX_AI_MACOS)
+    add_compile_definitions(ARBITER_MACOS)
 elseif(UNIX)
-    add_compile_definitions(INDEX_AI_LINUX)
+    add_compile_definitions(ARBITER_LINUX)
 endif()
 
 # --- Sanitizer options (debug builds) ---
-option(INDEX_AI_ASAN "Enable AddressSanitizer" OFF)
-option(INDEX_AI_TSAN "Enable ThreadSanitizer" OFF)
-if(INDEX_AI_ASAN AND INDEX_AI_TSAN)
+option(ARBITER_ASAN "Enable AddressSanitizer" OFF)
+option(ARBITER_TSAN "Enable ThreadSanitizer" OFF)
+if(ARBITER_ASAN AND ARBITER_TSAN)
     message(FATAL_ERROR "ASAN and TSAN cannot be enabled simultaneously")
 endif()
-if(INDEX_AI_ASAN)
+if(ARBITER_ASAN)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address)
 endif()
-if(INDEX_AI_TSAN)
+if(ARBITER_TSAN)
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_link_options(-fsanitize=thread)
 endif()
@@ -70,7 +70,7 @@ if(NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
 endif()
 
 # --- Source files ---
-set(INDEX_AI_SOURCES
+set(ARBITER_SOURCES
     src/main.cpp
     src/cli_helpers.cpp
     src/repl/queues.cpp
@@ -136,7 +136,7 @@ add_custom_command(
 # Phony target so anything that needs the embedded header can depend on it.
 add_custom_target(starters_data_header DEPENDS ${STARTERS_GENERATED_HEADER})
 
-add_executable(arbiter ${INDEX_AI_SOURCES})
+add_executable(arbiter ${ARBITER_SOURCES})
 add_dependencies(arbiter starters_data_header)
 target_include_directories(arbiter PRIVATE ${STARTERS_GENERATED_DIR})
 
@@ -148,7 +148,7 @@ target_compile_definitions(arbiter PRIVATE INDEX_VERSION="${PROJECT_VERSION}")
 # Enable IPO/LTO on Release-ish configs when the toolchain supports it and
 # no sanitizer is active.  Guarded here (not globally) so tests and dev
 # builds don't pay the extra link cost.
-if(HAVE_IPO AND NOT INDEX_AI_ASAN AND NOT INDEX_AI_TSAN)
+if(HAVE_IPO AND NOT ARBITER_ASAN AND NOT ARBITER_TSAN)
     if(CMAKE_BUILD_TYPE STREQUAL "Release" OR
        CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR
        CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
@@ -184,9 +184,9 @@ endif()
 
 if(EDITLINE_LIB AND EDITLINE_INCLUDE)
     message(STATUS "Found readline/libedit: ${EDITLINE_LIB}")
-    target_compile_definitions(arbiter PRIVATE INDEX_AI_HAS_READLINE)
+    target_compile_definitions(arbiter PRIVATE ARBITER_HAS_READLINE)
     if(NOT READLINE_GNU)
-        target_compile_definitions(arbiter PRIVATE INDEX_AI_USE_EDITLINE)
+        target_compile_definitions(arbiter PRIVATE ARBITER_USE_EDITLINE)
     endif()
     target_include_directories(arbiter PRIVATE ${EDITLINE_INCLUDE})
     target_link_libraries(arbiter PRIVATE ${EDITLINE_LIB})

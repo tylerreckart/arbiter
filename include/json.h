@@ -1,5 +1,5 @@
 #pragma once
-// index/include/json.h — Minimal JSON parser/writer. No deps.
+// arbiter/include/json.h — Minimal JSON parser/writer. No deps.
 // Supports: string, number, bool, null, object, array.
 // Not exhaustive — built for API request/response marshaling.
 
@@ -13,7 +13,7 @@
 #include <stdexcept>
 #include <cmath>
 
-namespace index_ai {
+namespace arbiter {
 
 struct JsonValue;
 using JsonObject = std::unordered_map<std::string, std::shared_ptr<JsonValue>>;
@@ -102,4 +102,4 @@ std::string json_serialize(const JsonValue& val);
 // --- Parser ---
 std::shared_ptr<JsonValue> json_parse(std::string_view input);
 
-} // namespace index_ai
+} // namespace arbiter

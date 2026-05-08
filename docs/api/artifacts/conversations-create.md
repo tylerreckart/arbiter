@@ -17,7 +17,7 @@ Same path validator as the agent's `/write --persist` slash command; HTTP and ag
 | Field       | Type   | Required | Description |
 |-------------|--------|----------|-------------|
 | `path`      | string | yes | Will be sanitized — caller may pass user-supplied paths. See [Artifacts → Path safety](../concepts/artifacts.md#path-safety) for rules. |
-| `content`   | string | yes | UTF-8 string. Binary blobs over the JSON path is awkward; for binary content use a future direct-upload endpoint. |
+| `content`   | string | yes | UTF-8 string. Binary content should be base64-encoded by the caller. |
 | `mime_type` | string | no  | Defaults to `application/octet-stream`. Free-form; not sniffed. |
 
 ```bash

@@ -1,11 +1,11 @@
-// index_ai/src/tui/scroll_buffer.cpp — see tui/scroll_buffer.h
+// arbiter/src/tui/scroll_buffer.cpp — see tui/scroll_buffer.h
 
 #include "tui/scroll_buffer.h"
 
 #include <algorithm>
 #include <cstdio>
 
-namespace index_ai {
+namespace arbiter {
 
 ScrollBuffer::ScrollBuffer(size_t max_lines) : max_lines_(max_lines) {}
 
@@ -183,4 +183,4 @@ void ScrollBuffer::render(int left_col, int top_row, int width,
     std::fflush(stdout);
 }
 
-} // namespace index_ai
+} // namespace arbiter

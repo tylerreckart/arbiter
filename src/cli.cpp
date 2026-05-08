@@ -1,4 +1,4 @@
-// index_ai/src/cli.cpp — see cli.h
+// arbiter/src/cli.cpp — see cli.h
 
 #include "cli.h"
 #include "cli_helpers.h"
@@ -33,7 +33,7 @@
 
 namespace fs = std::filesystem;
 
-namespace index_ai {
+namespace arbiter {
 
 // Shared SIGINT/SIGTERM flag used by cmd_api for graceful shutdown.
 namespace {
@@ -418,4 +418,4 @@ void cmd_enable_tenant(const std::string& key) {
         std::cerr << "No tenant matched '" << key << "'.\n", std::exit(1);
 }
 
-} // namespace index_ai
+} // namespace arbiter

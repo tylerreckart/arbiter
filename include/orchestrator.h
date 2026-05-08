@@ -1,5 +1,5 @@
 #pragma once
-// index/include/orchestrator.h — Multi-agent orchestrator
+// arbiter/include/orchestrator.h — Multi-agent orchestrator
 
 #include "agent.h"
 #include "api_client.h"
@@ -12,7 +12,7 @@
 #include <mutex>
 #include <vector>
 
-namespace index_ai {
+namespace arbiter {
 
 class Orchestrator {
 public:
@@ -247,7 +247,7 @@ public:
                                StreamCallback cb);
 
     // Ask index (master) about system state — used by the TCP server.
-    ApiResponse ask_index_ai(const std::string& query);
+    ApiResponse ask_arbiter(const std::string& query);
 
     // Return the model string for a given agent (or master if id == "index")
     std::string get_agent_model(const std::string& id) const;
@@ -434,4 +434,4 @@ private:
                                   StreamCallback cb);
 };
 
-} // namespace index_ai
+} // namespace arbiter

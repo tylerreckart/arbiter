@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <sys/stat.h>
 
-namespace index_ai::mcp {
+namespace arbiter::mcp {
 
 namespace {
 
@@ -131,4 +131,4 @@ Client& Manager::client(const std::string& name) {
     return ref;
 }
 
-} // namespace index_ai::mcp
+} // namespace arbiter::mcp

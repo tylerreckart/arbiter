@@ -44,15 +44,15 @@
 
 namespace fs = std::filesystem;
 
-using index_ai::BANNER;
-using index_ai::agent_color;
-using index_ai::get_config_dir;
-using index_ai::get_memory_dir;
-using index_ai::get_api_keys;
-using index_ai::write_memory;
-using index_ai::read_memory;
-using index_ai::fetch_url;
-using index_ai::theme;
+using arbiter::BANNER;
+using arbiter::agent_color;
+using arbiter::get_config_dir;
+using arbiter::get_memory_dir;
+using arbiter::get_api_keys;
+using arbiter::write_memory;
+using arbiter::read_memory;
+using arbiter::fetch_url;
+using arbiter::theme;
 
 
 // ─── Terminal / TUI ──────────────────────────────────────────────────────────
@@ -61,16 +61,16 @@ static volatile sig_atomic_t g_winch = 0;
 static void sigwinch_handler(int) { g_winch = 1; }
 
 
-using index_ai::TUI;
-using index_ai::ThinkingIndicator;
-using index_ai::ToolCallIndicator;
-using index_ai::StreamFilter;
-using index_ai::CommandQueue;
-using index_ai::OutputQueue;
-using index_ai::LoopManager;
-using index_ai::Pane;
-using index_ai::LayoutTree;
-using index_ai::Rect;
+using arbiter::TUI;
+using arbiter::ThinkingIndicator;
+using arbiter::ToolCallIndicator;
+using arbiter::StreamFilter;
+using arbiter::CommandQueue;
+using arbiter::OutputQueue;
+using arbiter::LoopManager;
+using arbiter::Pane;
+using arbiter::LayoutTree;
+using arbiter::Rect;
 
 // State the output-pump thread needs.  Points into cmd_interactive()'s stack
 // frame — lifetime is the REPL call.  Pane* is the only per-pane hook; the
@@ -118,7 +118,7 @@ static void cmd_interactive() {
     std::string dir = get_config_dir();
     auto api_keys = get_api_keys();
 
-    index_ai::Orchestrator orch(std::move(api_keys));
+    arbiter::Orchestrator orch(std::move(api_keys));
     orch.set_memory_dir(get_memory_dir());
     orch.load_agents(dir + "/agents");
 
@@ -126,7 +126,7 @@ static void cmd_interactive() {
     // /verbose flips cfg.verbose and the StreamFilter wrapping each agent
     // turn checks it on the fly — no need to rebuild the filter when the
     // flag changes.  Not persisted across sessions by design.
-    index_ai::Config cfg;
+    arbiter::Config cfg;
     LoopManager loops;
 
     // Each pane's exec thread sets ::g_active_pane (file-scope thread_local)
@@ -224,7 +224,7 @@ static void cmd_interactive() {
         Pane* target = g_active_pane;
         if (!target) return;
         TUI* target_tui = &target->tui;
-        index_ai::generate_title_async(orch.client(), user_msg, response_snippet,
+        arbiter::generate_title_async(orch.client(), user_msg, response_snippet,
             [target_tui](const std::string& t){ target_tui->set_title(t); });
     };
 
@@ -368,7 +368,7 @@ static void cmd_interactive() {
     // agent's actual output.  Continue events are silent (they're the
     // common case and wouldn't add information); only redirects, halts,
     // budget exhaustion, and explicit /advise consultations surface here.
-    orch.set_advisor_event_callback([&](const index_ai::Orchestrator::AdvisorEvent& ev) {
+    orch.set_advisor_event_callback([&](const arbiter::Orchestrator::AdvisorEvent& ev) {
         Pane* p = g_active_pane;
         if (!p) return;
         if (ev.kind == "gate_continue") return;  // quiet success
@@ -407,7 +407,7 @@ static void cmd_interactive() {
     });
 
     // ── Layout + initial pane ──────────────────────────────────────────────
-    Rect full_rect{0, 0, index_ai::term_cols(), index_ai::term_rows()};
+    Rect full_rect{0, 0, arbiter::term_cols(), arbiter::term_rows()};
     LayoutTree layout(make_pane(), full_rect);
     layout_ptr = &layout;
 
@@ -482,7 +482,7 @@ static void cmd_interactive() {
                 std::getline(iss, msg);
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 try {
-                    index_ai::MarkdownRenderer md;
+                    arbiter::MarkdownRenderer md;
                     if (!cfg.verbose) tool_indicator.begin();
                     StreamFilter filter(cfg,
                         [&md, &output_queue](const std::string& chunk) {
@@ -539,7 +539,7 @@ static void cmd_interactive() {
                 std::getline(iss, query);
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
                 try {
-                    index_ai::MarkdownRenderer md;
+                    arbiter::MarkdownRenderer md;
                     if (!cfg.verbose) tool_indicator.begin();
                     StreamFilter filter(cfg,
                         [&md, &output_queue](const std::string& chunk) {
@@ -570,7 +570,7 @@ static void cmd_interactive() {
                 std::string id;
                 iss >> id;
                 try {
-                    auto config = index_ai::master_constitution();
+                    auto config = arbiter::master_constitution();
                     config.name = id;
                     orch.create_agent(id, std::move(config));
                     output_queue.push_msg("Created: " + id + " (default config)\n"
@@ -759,7 +759,7 @@ static void cmd_interactive() {
                     auto resp = orch.send(current_agent, msg);
                     thinking.stop();
                     if (resp.ok) {
-                        output_queue.push_msg(index_ai::render_markdown(resp.content));
+                        output_queue.push_msg(arbiter::render_markdown(resp.content));
                         tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                     } else {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
@@ -784,16 +784,16 @@ static void cmd_interactive() {
                             output_queue.push_msg("Usage: /mem shared write <text>");
                             return;
                         }
-                        std::string wr = index_ai::cmd_mem_shared_write(text, get_memory_dir());
+                        std::string wr = arbiter::cmd_mem_shared_write(text, get_memory_dir());
                         output_queue.push_msg(wr.substr(0, 3) == "ERR" ? wr : "Written to shared scratchpad");
                     } else if (action == "read" || action == "show") {
-                        std::string mem = index_ai::cmd_mem_shared_read(get_memory_dir());
+                        std::string mem = arbiter::cmd_mem_shared_read(get_memory_dir());
                         if (mem.empty())
                             output_queue.push_msg("Shared scratchpad is empty");
                         else
                             output_queue.push_msg(mem);
                     } else if (action == "clear") {
-                        std::string cr = index_ai::cmd_mem_shared_clear(get_memory_dir());
+                        std::string cr = arbiter::cmd_mem_shared_clear(get_memory_dir());
                         output_queue.push_msg(cr.substr(0, 3) == "ERR" ? cr : "Shared scratchpad cleared");
                     } else {
                         output_queue.push_msg("Usage: /mem shared write <text> | /mem shared read | /mem shared clear");
@@ -824,7 +824,7 @@ static void cmd_interactive() {
                         auto resp = orch.send(current_agent, msg);
                         thinking.stop();
                         if (resp.ok) {
-                            output_queue.push_msg(index_ai::render_markdown(resp.content));
+                            output_queue.push_msg(arbiter::render_markdown(resp.content));
                             tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                         } else {
                             output_queue.push_msg("ERR: " + resp.error);
@@ -893,7 +893,7 @@ static void cmd_interactive() {
                     // Print final phase output (the deliverable)
                     if (!result.phases.empty()) {
                         auto& [num, name, out] = result.phases.back();
-                        output_queue.push_msg(index_ai::render_markdown(out));
+                        output_queue.push_msg(arbiter::render_markdown(out));
                     }
                 }
                 return;
@@ -977,7 +977,7 @@ static void cmd_interactive() {
 
         // Plain text → stream to current agent
         try {
-            index_ai::MarkdownRenderer md;
+            arbiter::MarkdownRenderer md;
             tool_indicator.begin();
             StreamFilter filter(cfg,
                 [&md, &output_queue](const std::string& chunk) {
@@ -1219,7 +1219,7 @@ static void cmd_interactive() {
             std::unique_lock<std::recursive_mutex> lk(layout_mu);
             if (g_winch) {
                 g_winch = 0;
-                Rect r{0, 0, index_ai::term_cols(), index_ai::term_rows()};
+                Rect r{0, 0, arbiter::term_cols(), arbiter::term_rows()};
                 layout.resize(r);
                 layout.for_each_pane([&](Pane& p) {
                     p.history.set_cols(p.tui.cols());
@@ -1526,7 +1526,7 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
             }
-            index_ai::cmd_init(force);
+            arbiter::cmd_init(force);
             return 0;
         }
         if (arg1 == "--api" || arg1 == "api") {
@@ -1554,7 +1554,7 @@ int main(int argc, char* argv[]) {
                 }
                 i += 2;
             }
-            index_ai::cmd_api(port, bind, verbose);
+            arbiter::cmd_api(port, bind, verbose);
             return 0;
         }
         if (arg1 == "--send" || arg1 == "send") {
@@ -1568,7 +1568,7 @@ int main(int argc, char* argv[]) {
                 if (i > 3) msg += " ";
                 msg += argv[i];
             }
-            index_ai::cmd_oneshot(agent, msg);
+            arbiter::cmd_oneshot(agent, msg);
             return 0;
         }
         // Tenant identity admin — `arbiter --api` uses the resulting
@@ -1580,11 +1580,11 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Usage: arbiter --add-tenant <name>\n";
                 return 1;
             }
-            index_ai::cmd_add_tenant(argv[2]);
+            arbiter::cmd_add_tenant(argv[2]);
             return 0;
         }
         if (arg1 == "--list-tenants") {
-            index_ai::cmd_list_tenants();
+            arbiter::cmd_list_tenants();
             return 0;
         }
         if (arg1 == "--disable-tenant") {
@@ -1592,7 +1592,7 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Usage: arbiter --disable-tenant <id|name>\n";
                 return 1;
             }
-            index_ai::cmd_disable_tenant(argv[2]);
+            arbiter::cmd_disable_tenant(argv[2]);
             return 0;
         }
         if (arg1 == "--enable-tenant") {
@@ -1600,7 +1600,7 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Usage: arbiter --enable-tenant <id|name>\n";
                 return 1;
             }
-            index_ai::cmd_enable_tenant(argv[2]);
+            arbiter::cmd_enable_tenant(argv[2]);
             return 0;
         }
         if (arg1 == "--help" || arg1 == "-h" || arg1 == "help") {

@@ -4,7 +4,7 @@
 
 #include <stdexcept>
 
-namespace index_ai::mcp {
+namespace arbiter::mcp {
 
 namespace {
 
@@ -18,7 +18,7 @@ std::shared_ptr<JsonValue> make_initialize_params() {
     auto info = jobj();
     auto& im = info->as_object_mut();
     im["name"]    = jstr("arbiter");
-    im["version"] = jstr("0.4.3");
+    im["version"] = jstr("0.4.4");
     m["clientInfo"] = info;
     return params;
 }
@@ -110,4 +110,4 @@ ToolResult Client::call_tool(const std::string& name,
     return parse_tool_result(resp);
 }
 
-} // namespace index_ai::mcp
+} // namespace arbiter::mcp

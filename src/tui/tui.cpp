@@ -1,4 +1,4 @@
-// index_ai/src/tui/tui.cpp — see tui/tui.h
+// arbiter/src/tui/tui.cpp — see tui/tui.h
 
 #include "tui/tui.h"
 #include "cli_helpers.h"   // term_cols / term_rows
@@ -8,7 +8,7 @@
 #include <chrono>
 #include <cstdio>
 
-namespace index_ai {
+namespace arbiter {
 
 // ─── TUI ─────────────────────────────────────────────────────────────────────
 
@@ -723,4 +723,4 @@ std::string ToolCallIndicator::finalize() {
     return out;
 }
 
-} // namespace index_ai
+} // namespace arbiter

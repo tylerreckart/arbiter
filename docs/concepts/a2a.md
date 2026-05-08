@@ -13,7 +13,7 @@ A2A rides JSON-RPC 2.0 over HTTPS, with Server-Sent Events for streaming. Wire t
 |-----------|-----|
 | Drive arbiter from a JavaScript / Python / etc. arbiter-native client | [`POST /v1/orchestrate`](../orchestrate.md) — richer SSE event vocabulary, native to the runtime. |
 | Plug arbiter into a multi-vendor agent fabric (anything else that speaks A2A) | [`POST /v1/a2a/agents/:id`](../a2a/dispatch.md) — spec-compatible JSON-RPC. |
-| Persist a multi-turn thread on the server | `/v1/conversations/:id/messages` — A2A's `contextId` is opaque and not currently mapped to conversations. |
+| Persist a multi-turn thread on the server | `/v1/conversations/:id/messages` — A2A's `contextId` is opaque and is not mapped to conversations. |
 
 The two surfaces share the same per-request orchestrator setup, so an agent invoked through A2A has the same tool access (`/mem`, `/mcp`, `/search`, `/a2a`, sub-agent delegation) as one called via `/v1/orchestrate`.
 
@@ -33,8 +33,8 @@ The two surfaces share the same per-request orchestrator setup, so an agent invo
 | `message/stream` | implemented | Streams `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames over SSE; final event has `final: true`. |
 | `tasks/get` | implemented | Reads from the `a2a_tasks` table; tenant-scoped. |
 | `tasks/cancel` | implemented | Cancels in-flight tasks via the existing `InFlightRegistry`; terminal tasks return `TaskNotCancelable`. |
-| `tasks/resubscribe` | rejected | `UnsupportedOperation` (-32004). v1 doesn't store the per-event log needed to resubscribe. |
-| `tasks/pushNotificationConfig/{set,get,list,delete}` | rejected | `UnsupportedOperation`. Push notifications are a v2 item. |
+| `tasks/resubscribe` | rejected | `UnsupportedOperation` (-32004). |
+| `tasks/pushNotificationConfig/{set,get,list,delete}` | rejected | `UnsupportedOperation` (-32004). |
 
 Unknown methods land at `MethodNotFound` (-32601). Malformed envelopes land at `ParseError` (-32700) or `InvalidRequest` (-32600). See the [`POST /v1/a2a/agents/:id`](../a2a/dispatch.md) endpoint page for the full error code table.
 
@@ -73,7 +73,7 @@ Wire form is the lowercase hyphenated string from the v1.0 enum:
 
 `submitted` → `working` → terminal (`completed` | `failed` | `canceled` | `rejected`)
 
-Plus two interrupted states: `input-required` and `auth-required`. Arbiter's current handlers don't transition through `input-required` — a `message/send` either completes or fails outright. `auth-required` is reserved for future OAuth2-based remote-tool flows.
+Plus two interrupted states: `input-required` and `auth-required`. Arbiter does not transition through these states — a `message/send` either completes or fails outright.
 
 `completed`, `failed`, `canceled`, `rejected` are terminal. `tasks/cancel` against a terminal task returns `TaskNotCancelable` (-32002).
 
@@ -86,7 +86,7 @@ Plus two interrupted states: `input-required` and `auth-required`. Arbiter's cur
 | `stream_start` (depth=0) | `TaskStatusUpdateEvent { state: working, final: false }` | Master agent starts. |
 | `text` delta (depth=0) | `TaskArtifactUpdateEvent` (text part, `append: true`) | All chunks land on a single `<task_id>-text-0` artifact named `response`. |
 | `tool_call` | `TaskArtifactUpdateEvent` (data part `{tool, ok}`) | One artifact per tool call. Metadata `x-arbiter.tool_call: true`. |
-| `file` (`/write` capture) | `TaskArtifactUpdateEvent` (file part, inline bytes) | Filename in `artifact.name`. Bytes are utf-8 source code in v1; binary captures need base64 encoding (not yet wired). |
+| `file` (`/write` capture) | `TaskArtifactUpdateEvent` (file part, inline bytes) | Filename in `artifact.name`. Bytes are UTF-8 text. |
 | `sub_agent_response` | `TaskArtifactUpdateEvent` (data part `{agent, depth, content}`) | Sub-agent text isn't streamed; it lands as one summary artifact per delegated turn. |
 | `done(ok)` | `TaskStatusUpdateEvent { state: completed, final: true, message: <reply> }` | Final assistant message rides on the terminal status update. |
 | `done(!ok)` / `error` | `TaskStatusUpdateEvent { state: failed, final: true }` | The error string lives on the persisted `a2a_tasks.error_message` column for `tasks/get`. |
@@ -128,7 +128,7 @@ CREATE TABLE a2a_tasks (
 
 `task_id` reuses the arbiter `request_id` so [`/v1/requests/:id/cancel`](../requests-cancel.md) and `tasks/cancel` cancel the same in-flight orchestrator. Rows are written at three points: on submission (`submitted`), when streaming starts (`working`), and at terminal state (`completed | failed | canceled`).
 
-`context_id` is opaque from arbiter's perspective in v1 — it threads through the protocol verbatim and is **not** foreign-keyed against `conversations`. A future revision may map A2A context to a conversation row so `/write --persist`, `/read`, and `/list` work in A2A-driven sessions; right now those callbacks are deliberately not wired. Files written via `/write` still flow as A2A `TaskArtifactUpdateEvent` frames in the streaming path.
+`context_id` is opaque to arbiter — it threads through the protocol verbatim and is **not** foreign-keyed against `conversations`. Persistence-oriented slash commands (`/write --persist`, `/read`, `/list`) are inert in A2A-driven sessions; files written via `/write` still flow as A2A `TaskArtifactUpdateEvent` frames in the streaming path.
 
 ## Tenancy and trust posture
 
@@ -143,16 +143,9 @@ The remote agent's reply flows back as a tool result; the calling agent decides 
 
 When a remote A2A client calls into arbiter (inbound), it gets exactly one tenant's slice of the world: the agents in that tenant's catalog, the master orchestrator, and the tenant-scoped tools (memory, MCP, search, sub-agent delegation, /a2a outbound). Every tool callback is rebound on each request — no cross-request state.
 
-## Known gaps
+## Scope
 
-| Gap | Tracked under |
-|-----|---------------|
-| No `tasks/resubscribe` | v2 — needs a per-task event log table to replay missed events. |
-| No push notifications | v2 — the spec is still moving on auth handshake details. |
-| No `auth-required` flow | future — applies once arbiter agents call OAuth2-protected remotes. |
-| `contextId` ↛ conversation mapping | a follow-up will let `/write --persist`, `/read`, and `/list` work for A2A sessions. |
-| Inline `agent_def` via A2A metadata | not in v1 — locked-in product decision. Agents must come from the URL or the tenant catalog. |
-| Spec versions other than v1.0 | by design — any other version is rejected with `VersionNotSupportedError` (-32007). |
+A2A in arbiter targets the v1.0 spec exclusively. The implementation supports `message/send`, `message/stream`, `tasks/get`, and `tasks/cancel`; `tasks/resubscribe` and `tasks/pushNotificationConfig/*` return `UnsupportedOperation` (-32004). Inline agent definitions are not accepted via A2A metadata — agents are resolved from the URL `:id` against the tenant's catalog.
 
 ## See also
 

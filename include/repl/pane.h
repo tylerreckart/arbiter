@@ -1,5 +1,5 @@
 #pragma once
-// index/include/repl/pane.h
+// arbiter/include/repl/pane.h
 //
 // A Pane is a rectangular region of the terminal that hosts its own agent
 // conversation view.  It owns the visual chrome (TUI), the input surface
@@ -26,7 +26,7 @@
 #include <string>
 #include <thread>
 
-namespace index_ai {
+namespace arbiter {
 
 struct Pane {
     // Declaration order matters: TUI must come first because LineEditor,
@@ -75,4 +75,4 @@ struct Pane {
     std::atomic<bool> spawn_flowed{false};                   // guards single-shot flow
 };
 
-} // namespace index_ai
+} // namespace arbiter

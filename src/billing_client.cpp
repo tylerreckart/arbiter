@@ -1,4 +1,4 @@
-// index/src/billing_client.cpp — see billing_client.h
+// arbiter/src/billing_client.cpp — see billing_client.h
 #include "billing_client.h"
 
 #include "json.h"
@@ -11,7 +11,7 @@
 #include <sstream>
 #include <thread>
 
-namespace index_ai {
+namespace arbiter {
 
 namespace {
 
@@ -288,4 +288,4 @@ void BillingClient::record_usage(const UsageRecord& rec) {
     }).detach();
 }
 
-} // namespace index_ai
+} // namespace arbiter

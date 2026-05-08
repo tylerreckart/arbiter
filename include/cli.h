@@ -1,5 +1,5 @@
 #pragma once
-// index/include/cli.h
+// arbiter/include/cli.h
 //
 // Non-REPL entry points.  Each function corresponds to one command-line mode:
 //
@@ -22,7 +22,7 @@
 #include <cstdint>
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 // `force` overwrites existing agent JSON files in ~/.arbiter/agents/.  By
 // default cmd_init preserves files the user may have edited and only
@@ -39,4 +39,4 @@ void cmd_list_tenants();
 void cmd_disable_tenant(const std::string& key);
 void cmd_enable_tenant(const std::string& key);
 
-} // namespace index_ai
+} // namespace arbiter

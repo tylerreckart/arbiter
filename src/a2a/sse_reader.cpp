@@ -4,7 +4,7 @@
 
 #include <utility>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 SseReader::SseReader(EventCallback cb) : cb_(std::move(cb)) {}
 
@@ -89,4 +89,4 @@ void SseReader::dispatch() {
     if (cb_) cb_(ev, data);
 }
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

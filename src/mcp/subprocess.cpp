@@ -13,7 +13,7 @@
 
 extern char** environ;
 
-namespace index_ai::mcp {
+namespace arbiter::mcp {
 
 namespace {
 
@@ -241,4 +241,4 @@ void Subprocess::terminate(std::chrono::milliseconds grace) {
     exit_status_ = status;
 }
 
-} // namespace index_ai::mcp
+} // namespace arbiter::mcp

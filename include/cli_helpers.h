@@ -1,19 +1,19 @@
 #pragma once
-// index/include/cli_helpers.h — Shared helpers for CLI entry points and the REPL.
+// arbiter/include/cli_helpers.h — Shared helpers for CLI entry points and the REPL.
 //
 // Covers:
 //   • BANNER — ASCII startup banner
 //   • agent_color — stable per-agent ANSI color
 //   • Config path helpers (~/.arbiter for config, $PWD/.arbiter/memory for memory,
 //     API key resolution)
-//   • Thin wrappers around index_ai::cmd_mem_* and cmd_fetch so the REPL
+//   • Thin wrappers around arbiter::cmd_mem_* and cmd_fetch so the REPL
 //     doesn't have to thread memory_dir through every call site
 //   • term_cols / term_rows — terminal dimensions via TIOCGWINSZ
 
 #include <map>
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 extern const char* BANNER;
 
@@ -49,4 +49,4 @@ std::string fetch_url   (const std::string& url);
 int term_cols();
 int term_rows();
 
-} // namespace index_ai
+} // namespace arbiter

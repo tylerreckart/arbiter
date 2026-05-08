@@ -17,7 +17,7 @@
 #include <sys/types.h>
 #include <vector>
 
-namespace index_ai::mcp {
+namespace arbiter::mcp {
 
 class Subprocess {
 public:
@@ -71,4 +71,4 @@ private:
     bool drain_into_buf(std::chrono::milliseconds timeout);
 };
 
-} // namespace index_ai::mcp
+} // namespace arbiter::mcp

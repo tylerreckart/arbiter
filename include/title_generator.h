@@ -1,5 +1,5 @@
 #pragma once
-// index/include/title_generator.h
+// arbiter/include/title_generator.h
 //
 // Session-title generation and the turn-rule separator helper — both pulled
 // out of main.cpp so the REPL doesn't have to host every one-off formatting
@@ -19,7 +19,7 @@
 #include <functional>
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 void print_turn_rule(const std::string& label,
                      const std::string& color,
@@ -31,4 +31,4 @@ void generate_title_async(ApiClient& client,
                           const std::string& assistant_snippet,
                           std::function<void(const std::string&)> on_title);
 
-} // namespace index_ai
+} // namespace arbiter

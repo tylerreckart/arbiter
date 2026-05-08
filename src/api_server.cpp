@@ -1,4 +1,4 @@
-// index/src/api_server.cpp — see api_server.h
+// arbiter/src/api_server.cpp — see api_server.h
 //
 // Minimal HTTP/1.1 server that exposes the Orchestrator as a streaming SSE
 // endpoint.  Purpose-built (no external HTTP library) — just enough parser
@@ -57,7 +57,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace index_ai {
+namespace arbiter {
 
 namespace {
 
@@ -223,7 +223,7 @@ constexpr const char* kCorsHeaders =
 
 // ─── HTTP response writers (non-SSE) ────────────────────────────────────────
 //
-// These three are at index_ai-namespace scope (not the surrounding
+// These three are at arbiter-namespace scope (not the surrounding
 // anonymous namespace) so other TUs in arbiter — currently src/a2a/server.cpp
 // — can write directly without going through the route-dispatch loop.
 // The TU-local helpers they call (write_all, kCorsHeaders) live in the
@@ -1141,7 +1141,7 @@ std::string brave_search(const std::string& query, const std::string& api_key,
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "arbiter/0.4.3");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "arbiter/0.4.4");
 
     CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;
@@ -7589,4 +7589,4 @@ void ApiServer::handle_connection(int fd) {
     }
 }
 
-} // namespace index_ai
+} // namespace arbiter

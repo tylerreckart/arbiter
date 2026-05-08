@@ -1,12 +1,12 @@
 #pragma once
-// index/include/constitution.h — Constitution system
+// arbiter/include/constitution.h — Constitution system
 // Master constitution (caveman-derived) + per-agent personality overlays.
 
 #include <string>
 #include <vector>
 #include <optional>
 
-namespace index_ai {
+namespace arbiter {
 
 // Caveman compression level
 enum class Brevity { Lite, Full, Ultra };
@@ -126,4 +126,4 @@ Constitution master_constitution();
 std::string brevity_to_string(Brevity b);
 Brevity brevity_from_string(const std::string& s);
 
-} // namespace index_ai
+} // namespace arbiter

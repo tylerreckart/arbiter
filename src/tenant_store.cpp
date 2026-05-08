@@ -1,4 +1,4 @@
-// index/src/tenant_store.cpp — see tenant_store.h
+// arbiter/src/tenant_store.cpp — see tenant_store.h
 //
 // SQLite is linked in as the only new dependency (system sqlite3, linked
 // via find_package(SQLite3)).  The embedded DB file is single-writer
@@ -26,7 +26,7 @@
 #include <openssl/sha.h>
 #include <sqlite3.h>
 
-namespace index_ai {
+namespace arbiter {
 
 namespace {
 
@@ -2399,4 +2399,4 @@ int64_t TenantStore::bytes_used_conversation(int64_t tenant_id,
     return q.column_int64(0);
 }
 
-} // namespace index_ai
+} // namespace arbiter

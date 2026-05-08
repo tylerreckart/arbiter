@@ -12,7 +12,7 @@
 #include "doctest.h"
 #include "commands.h"
 
-using namespace index_ai;
+using namespace arbiter;
 
 TEST_CASE("parse: bare CONTINUE") {
     auto out = parse_advisor_signal("<signal>CONTINUE</signal>");

@@ -6,7 +6,7 @@
 
 #include <utility>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 namespace {
 
@@ -224,4 +224,4 @@ std::optional<Task> Client::cancel_task(const std::string& task_id,
     }
 }
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

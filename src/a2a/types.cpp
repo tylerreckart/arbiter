@@ -16,7 +16,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 // ---------------------------------------------------------------------------
 // Local parse helpers.  Wrapped in an anonymous namespace so they don't
@@ -627,4 +627,4 @@ RpcResponse make_result_response(const std::shared_ptr<JsonValue>& request_id,
     return r;
 }
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

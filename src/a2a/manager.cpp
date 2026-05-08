@@ -10,7 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 namespace {
 
@@ -151,4 +151,4 @@ std::vector<AgentCard> Manager::cards() {
     return out;
 }
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

@@ -33,7 +33,7 @@
 #include <memory>
 #include <string>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 // SSE event sink.  Receives (event_name, payload).  api_server.cpp's
 // adapter writes them to the SseStream as `event: <event_name>\ndata:
@@ -121,4 +121,4 @@ private:
     std::atomic<int>  metadata_counter_{0};
 };
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

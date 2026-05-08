@@ -1,5 +1,5 @@
 #pragma once
-// index/include/tui/scroll_buffer.h
+// arbiter/include/tui/scroll_buffer.h
 //
 // Bounded, ANSI-preserving, visual-row-aware history of model output.  Replaces
 // the naive std::vector<std::string> the REPL used to hoard, which counted one
@@ -23,7 +23,7 @@
 #include <string>
 #include <string_view>
 
-namespace index_ai {
+namespace arbiter {
 
 class ScrollBuffer {
 public:
@@ -80,4 +80,4 @@ private:
     int              cols_ = 80;
 };
 
-} // namespace index_ai
+} // namespace arbiter

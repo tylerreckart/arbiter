@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-05-07
+
 ### Added
 - **Vision input.** `Message::content` extends to a parts array
   (`ContentPart` — `TEXT` or `IMAGE`); body builders for all four

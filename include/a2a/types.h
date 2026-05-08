@@ -31,7 +31,7 @@
 #include <string>
 #include <vector>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 error codes
@@ -309,4 +309,4 @@ RpcResponse make_error_response(const std::shared_ptr<JsonValue>& request_id,
 RpcResponse make_result_response(const std::shared_ptr<JsonValue>& request_id,
                                  std::shared_ptr<JsonValue> result);
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

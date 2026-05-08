@@ -128,7 +128,7 @@ TEST_CASE("parse_host port 65536 overflows to default") {
 
 namespace {
 
-using namespace index_ai;
+using namespace arbiter;
 
 // Build a user message containing one text part followed by one image part.
 // The image is a 1×1 PNG inlined as base64 (the smallest valid PNG that

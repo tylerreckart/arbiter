@@ -1,11 +1,11 @@
 #pragma once
-// index/include/readline_wrapper.h — Line editing abstraction (readline / libedit)
+// arbiter/include/readline_wrapper.h — Line editing abstraction (readline / libedit)
 
 #include <string>
 #include <vector>
 #include <functional>
 
-namespace index_ai {
+namespace arbiter {
 
 // Completion provider: given current buffer and token being completed,
 // return a list of candidate strings.
@@ -91,4 +91,4 @@ private:
     int         max_history_ = 1000;
 };
 
-} // namespace index_ai
+} // namespace arbiter

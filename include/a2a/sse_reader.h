@@ -20,7 +20,7 @@
 #include <functional>
 #include <string>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 class SseReader {
 public:
@@ -53,4 +53,4 @@ private:
     bool          have_event_ = false;
 };
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

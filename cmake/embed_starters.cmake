@@ -31,7 +31,7 @@ set(OUT_CONTENT
 #include <string>
 #include <unordered_map>
 
-namespace index_ai {
+namespace arbiter {
 
 ")
 
@@ -63,7 +63,7 @@ ${TABLE_ENTRIES}    };
     return kTable;
 }
 
-} // namespace index_ai
+} // namespace arbiter
 ")
 
 # Only rewrite when the content changed — preserves mtime when nothing did,

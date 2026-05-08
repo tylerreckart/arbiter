@@ -1,4 +1,4 @@
-// index_ai/src/title_generator.cpp — see title_generator.h
+// arbiter/src/title_generator.cpp — see title_generator.h
 
 #include "title_generator.h"
 #include "theme.h"
@@ -8,7 +8,7 @@
 #include <string>
 #include <thread>
 
-namespace index_ai {
+namespace arbiter {
 
 void print_turn_rule(const std::string& label,
                      const std::string& color,
@@ -84,4 +84,4 @@ void generate_title_async(ApiClient& client,
     }).detach();
 }
 
-} // namespace index_ai
+} // namespace arbiter

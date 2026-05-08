@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 // One remote agent's static config.  `endpoint_url` is the JSON-RPC
 // POST URL (the .well-known card lives at <endpoint_url>/agent-card.json).
@@ -72,4 +72,4 @@ private:
     mutable std::mutex                              mu_;
 };
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

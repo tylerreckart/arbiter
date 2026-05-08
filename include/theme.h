@@ -1,5 +1,5 @@
 #pragma once
-// index/include/theme.h
+// arbiter/include/theme.h
 //
 // Global color / style palette.  Every ANSI SGR sequence painted anywhere
 // in the app should come from a named field on the active Theme, so
@@ -21,7 +21,7 @@
 #include <array>
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 struct Theme {
     // Attribute-only escapes — color-agnostic, shared across themes.
@@ -69,4 +69,4 @@ struct Theme {
 // setting or env var and return whichever theme the user picked.
 const Theme& theme();
 
-} // namespace index_ai
+} // namespace arbiter
