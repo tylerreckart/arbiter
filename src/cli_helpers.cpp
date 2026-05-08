@@ -1,4 +1,4 @@
-// index/src/cli_helpers.cpp — see cli_helpers.h
+// arbiter/src/cli_helpers.cpp — see cli_helpers.h
 
 #include "cli_helpers.h"
 #include "commands.h"
@@ -28,7 +28,7 @@
 
 namespace fs = std::filesystem;
 
-namespace index_ai {
+namespace arbiter {
 
 const char* BANNER =
     "\n"
@@ -87,15 +87,15 @@ std::string get_memory_dir() {
 }
 
 std::string write_memory(const std::string& agent_id, const std::string& text) {
-    return index_ai::cmd_mem_write(agent_id, text, get_memory_dir());
+    return arbiter::cmd_mem_write(agent_id, text, get_memory_dir());
 }
 
 std::string read_memory(const std::string& agent_id) {
-    return index_ai::cmd_mem_read(agent_id, get_memory_dir());
+    return arbiter::cmd_mem_read(agent_id, get_memory_dir());
 }
 
 std::string fetch_url(const std::string& url) {
-    return index_ai::cmd_fetch(url);
+    return arbiter::cmd_fetch(url);
 }
 
 namespace {
@@ -537,4 +537,4 @@ int term_rows() {
     return 24;
 }
 
-} // namespace index_ai
+} // namespace arbiter

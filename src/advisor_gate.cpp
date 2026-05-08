@@ -9,7 +9,7 @@
 #include <cctype>
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 namespace {
 
@@ -65,4 +65,4 @@ AdvisorGateOutput parse_advisor_signal(const std::string& reply) {
     return out;
 }
 
-}  // namespace index_ai
+}  // namespace arbiter

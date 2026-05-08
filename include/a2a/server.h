@@ -15,7 +15,7 @@
 #include <map>
 #include <string>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 // Resolve the public base URL the agent card should advertise.  Looks at
 // opts.public_base_url first; falls back to "http://" + Host header.  The
@@ -76,4 +76,4 @@ Task build_terminal_task(const std::string& task_id,
                          const Message& user_msg,
                          const ApiResponse& response);
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

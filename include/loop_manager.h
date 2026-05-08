@@ -1,5 +1,5 @@
 #pragma once
-// index/include/loop_manager.h
+// arbiter/include/loop_manager.h
 //
 // LoopManager owns autonomous agent "loops": an agent is invoked repeatedly in
 // a dedicated thread, each iteration running until the agent stops producing
@@ -36,7 +36,7 @@
 #include <thread>
 #include <vector>
 
-namespace index_ai {
+namespace arbiter {
 
 enum class LoopState { Running, Suspended, Stopped };
 const char* loop_state_str(LoopState s);
@@ -106,4 +106,4 @@ private:
     int next_id_ = 0;
 };
 
-} // namespace index_ai
+} // namespace arbiter

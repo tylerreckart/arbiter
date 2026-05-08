@@ -5,7 +5,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace index_ai::mcp {
+namespace arbiter::mcp {
 
 namespace {
 
@@ -159,4 +159,4 @@ std::string render_tool_result(const ToolResult& r) {
     return out.str();
 }
 
-} // namespace index_ai::mcp
+} // namespace arbiter::mcp

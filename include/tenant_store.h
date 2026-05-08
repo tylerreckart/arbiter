@@ -1,5 +1,5 @@
 #pragma once
-// index/include/tenant_store.h
+// arbiter/include/tenant_store.h
 //
 // SQLite-backed tenant identity store for the HTTP API.
 //
@@ -23,7 +23,7 @@
 
 struct sqlite3;
 
-namespace index_ai {
+namespace arbiter {
 
 struct Tenant {
     int64_t     id                 = 0;
@@ -600,4 +600,4 @@ private:
     bool reload_tenant(int64_t id, Tenant& t) const;
 };
 
-} // namespace index_ai
+} // namespace arbiter

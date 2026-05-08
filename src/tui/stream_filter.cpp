@@ -1,11 +1,11 @@
-// index/src/tui/stream_filter.cpp
+// arbiter/src/tui/stream_filter.cpp
 #include "tui/stream_filter.h"
 
 #include <algorithm>
 #include <cstring>
 #include <string_view>
 
-namespace index_ai {
+namespace arbiter {
 
 namespace {
 
@@ -136,4 +136,4 @@ void StreamFilter::flush() {
     buf_.clear();
 }
 
-} // namespace index_ai
+} // namespace arbiter

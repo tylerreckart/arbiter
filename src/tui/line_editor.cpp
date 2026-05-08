@@ -1,4 +1,4 @@
-// index_ai/src/tui/line_editor.cpp — see tui/line_editor.h
+// arbiter/src/tui/line_editor.cpp — see tui/line_editor.h
 
 #include "tui/line_editor.h"
 
@@ -9,7 +9,7 @@
 #include <sys/select.h>
 #include <unistd.h>
 
-namespace index_ai {
+namespace arbiter {
 
 LineEditor::LineEditor(TUI& tui) : tui_(tui) {}
 
@@ -428,4 +428,4 @@ bool LineEditor::read_line(const std::string& prompt, std::string& out) {
     }
 }
 
-} // namespace index_ai
+} // namespace arbiter

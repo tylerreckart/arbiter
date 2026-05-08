@@ -7,7 +7,7 @@
 
 #include <utility>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 namespace {
 
@@ -182,4 +182,4 @@ void A2aStreamWriter::emit_metadata(const std::string& kind,
     write_jsonrpc_result(to_json(e));
 }
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

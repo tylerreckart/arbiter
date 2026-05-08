@@ -1,5 +1,5 @@
 #pragma once
-// index/include/api_server.h
+// arbiter/include/api_server.h
 //
 // HTTP API surface for multi-agent orchestration.  Exposes the Orchestrator
 // as a streaming SSE endpoint so external clients send a prompt in one POST
@@ -55,7 +55,7 @@
 #include <thread>
 #include <unordered_map>
 
-namespace index_ai {
+namespace arbiter {
 
 class BillingClient;
 class Orchestrator;
@@ -181,4 +181,4 @@ private:
     std::thread       accept_thread_;
 };
 
-} // namespace index_ai
+} // namespace arbiter

@@ -1,5 +1,5 @@
 #pragma once
-// index/include/billing_client.h
+// arbiter/include/billing_client.h
 //
 // Thin client for the external billing service that arbiter delegates
 // eligibility checks and per-turn usage tracking to.  Wraps three
@@ -32,7 +32,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace index_ai {
+namespace arbiter {
 
 class BillingClient {
 public:
@@ -115,4 +115,4 @@ private:
     std::unordered_map<std::string, AuthEntry>  auth_cache_;   // key = sha256(token)
 };
 
-} // namespace index_ai
+} // namespace arbiter

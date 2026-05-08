@@ -1,4 +1,4 @@
-// index_ai/src/api_client.cpp — Multi-provider LLM client.
+// arbiter/src/api_client.cpp — Multi-provider LLM client.
 // See api_client.h for the routing model.
 #include "api_client.h"
 
@@ -16,7 +16,7 @@
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 
-namespace index_ai {
+namespace arbiter {
 
 // ─── Provider registry ────────────────────────────────────────────────────────
 //
@@ -350,12 +350,12 @@ void ApiClient::cancel() {
 // ─── I/O helpers (format-agnostic) ───────────────────────────────────────────
 
 // Internal helpers — non-namespace-anon so they can friend into ApiClient::Conn.
-static int conn_send(index_ai::ApiClient::Conn& c, const char* data, int n) {
+static int conn_send(arbiter::ApiClient::Conn& c, const char* data, int n) {
     if (c.ssl) return SSL_write(c.ssl, data, n);
     return (int)::send(c.sock, data, n, 0);
 }
 
-static int conn_recv(index_ai::ApiClient::Conn& c, char* data, int n) {
+static int conn_recv(arbiter::ApiClient::Conn& c, char* data, int n) {
     if (c.ssl) return SSL_read(c.ssl, data, n);
     return (int)::recv(c.sock, data, n, 0);
 }
@@ -736,7 +736,7 @@ static int parse_http_status(const std::string& headers) {
 // last 3 bytes of the prior buffer.  Bytes past the sentinel belong to the
 // response body and are returned via `leftover` for the body reader to
 // consume before touching the socket again.
-static bool read_http_headers(index_ai::ApiClient::Conn& c,
+static bool read_http_headers(arbiter::ApiClient::Conn& c,
                               std::string& headers,
                               std::string& leftover) {
     static constexpr size_t kMaxHeaderSize = 65536;
@@ -769,7 +769,7 @@ static bool read_http_headers(index_ai::ApiClient::Conn& c,
 // consume-then-recv pattern tidy.
 namespace { struct PrefixCursor { const std::string& s; size_t pos = 0; }; }
 
-static std::string read_response_body(index_ai::ApiClient::Conn& c,
+static std::string read_response_body(arbiter::ApiClient::Conn& c,
                                        const std::string& headers,
                                        const std::string& prefix) {
     bool chunked = headers.find("Transfer-Encoding: chunked") != std::string::npos;
@@ -1400,4 +1400,4 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     return r;
 }
 
-} // namespace index_ai
+} // namespace arbiter

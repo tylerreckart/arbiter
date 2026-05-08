@@ -14,7 +14,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 namespace {
 
@@ -223,4 +223,4 @@ HttpResponse rpc_stream(const std::string& url,
     return out;
 }
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

@@ -23,8 +23,8 @@
 #include <chrono>
 #include <thread>
 
-using namespace index_ai;
-using namespace index_ai::mcp;
+using namespace arbiter;
+using namespace arbiter::mcp;
 using namespace std::chrono_literals;
 
 // ── 1. JSON-RPC framing ─────────────────────────────────────────────

@@ -25,22 +25,22 @@
 #include <string>
 #include <vector>
 
-// Pull only the A2A namespace into scope.  index_ai::Message (chat
-// history struct) and index_ai::a2a::Message (protocol struct) collide
+// Pull only the A2A namespace into scope.  arbiter::Message (chat
+// history struct) and arbiter::a2a::Message (protocol struct) collide
 // when both are unqualified; we want the protocol one in this file.
-using namespace index_ai::a2a;
-using index_ai::Constitution;
-using index_ai::JsonValue;
-using index_ai::JsonArray;
-using index_ai::JsonObject;
-using index_ai::jbool;
-using index_ai::jnum;
-using index_ai::jstr;
-using index_ai::jobj;
-using index_ai::jarr;
-using index_ai::jnull;
-using index_ai::json_parse;
-using index_ai::json_serialize;
+using namespace arbiter::a2a;
+using arbiter::Constitution;
+using arbiter::JsonValue;
+using arbiter::JsonArray;
+using arbiter::JsonObject;
+using arbiter::jbool;
+using arbiter::jnum;
+using arbiter::jstr;
+using arbiter::jobj;
+using arbiter::jarr;
+using arbiter::jnull;
+using arbiter::json_parse;
+using arbiter::json_serialize;
 
 // ── 1. Wire types round-trip ────────────────────────────────────────
 

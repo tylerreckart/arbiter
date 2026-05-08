@@ -1,5 +1,5 @@
 #pragma once
-// index/include/tui/line_editor.h
+// arbiter/include/tui/line_editor.h
 //
 // Minimal in-house line editor.  We do this ourselves because libedit's
 // interactive machinery is essentially undocumented — rl_getc_function is not
@@ -23,7 +23,7 @@
 #include <string_view>
 #include <vector>
 
-namespace index_ai {
+namespace arbiter {
 
 class LineEditor {
 public:
@@ -125,4 +125,4 @@ private:
     std::atomic<bool> interrupt_flag_{false};
 };
 
-} // namespace index_ai
+} // namespace arbiter

@@ -12,7 +12,7 @@
 #include <map>
 #include <string>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 namespace {
 
@@ -279,4 +279,4 @@ AgentCard build_well_known_stub(const std::string& base_url) {
     return c;
 }
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

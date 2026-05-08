@@ -1,5 +1,5 @@
 #pragma once
-// index/include/repl/queues.h
+// arbiter/include/repl/queues.h
 //
 // Two thread-safe queues used to decouple the REPL's readline-owning main
 // thread from the background execution thread(s):
@@ -19,7 +19,7 @@
 #include <queue>
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 class CommandQueue {
 public:
@@ -82,4 +82,4 @@ private:
     bool        need_sep_ = false;
 };
 
-} // namespace index_ai
+} // namespace arbiter

@@ -5,7 +5,7 @@
 
 #include <string>
 
-using namespace index_ai;
+using namespace arbiter;
 
 // Helper: feed a sequence of chunks, return everything that made it to the
 // sink.  Mirrors the real pipeline — markdown renderer, output queue, etc.

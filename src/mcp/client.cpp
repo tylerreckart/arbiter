@@ -4,7 +4,7 @@
 
 #include <stdexcept>
 
-namespace index_ai::mcp {
+namespace arbiter::mcp {
 
 namespace {
 
@@ -110,4 +110,4 @@ ToolResult Client::call_tool(const std::string& name,
     return parse_tool_result(resp);
 }
 
-} // namespace index_ai::mcp
+} // namespace arbiter::mcp

@@ -1,11 +1,11 @@
 #pragma once
-// index/include/config.h — Per-session runtime configuration
+// arbiter/include/config.h — Per-session runtime configuration
 //
 // Lives in cmd_interactive() and is referenced (by pointer/reference) by the
 // stream filter and the /verbose command handler.  Not persisted — toggles
 // reset on restart by design.
 
-namespace index_ai {
+namespace arbiter {
 
 struct Config {
     // When true, the agent's raw /cmd lines stream through to scrollback as
@@ -15,4 +15,4 @@ struct Config {
     bool verbose = false;
 };
 
-} // namespace index_ai
+} // namespace arbiter

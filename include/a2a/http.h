@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 struct HttpHeader {
     std::string name;
@@ -68,4 +68,4 @@ HttpResponse rpc_stream(const std::string& url,
                          std::atomic<bool>& cancel,
                          long timeout_secs = 600);
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

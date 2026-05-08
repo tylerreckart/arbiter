@@ -1,4 +1,4 @@
-// index_ai/src/json.cpp — Minimal JSON parser + serializer
+// arbiter/src/json.cpp — Minimal JSON parser + serializer
 #include "json.h"
 #include <cctype>
 #include <cerrno>
@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace index_ai {
+namespace arbiter {
 
 // ============================================================
 // Serializer
@@ -327,4 +327,4 @@ std::shared_ptr<JsonValue> json_parse(std::string_view input) {
     return val;
 }
 
-} // namespace index_ai
+} // namespace arbiter

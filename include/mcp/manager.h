@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-namespace index_ai::mcp {
+namespace arbiter::mcp {
 
 // One server's static config — name, how to launch it.  Loaded from
 // the registry file at startup.
@@ -74,4 +74,4 @@ private:
     mutable std::mutex                                 mu_;
 };
 
-} // namespace index_ai::mcp
+} // namespace arbiter::mcp

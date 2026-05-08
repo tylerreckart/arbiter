@@ -1,4 +1,4 @@
-// index/src/theme.cpp — see theme.h
+// arbiter/src/theme.cpp — see theme.h
 //
 // Default theme: OneDark, matched to the canonical palette from
 // joshdick/onedark.vim.  Values are hex triplets emitted as 24-bit
@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 namespace {
 
@@ -104,4 +104,4 @@ const Theme& theme() {
     return kOneDark;
 }
 
-} // namespace index_ai
+} // namespace arbiter

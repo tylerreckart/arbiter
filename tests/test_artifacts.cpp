@@ -21,7 +21,7 @@
 #include <thread>
 
 namespace fs = std::filesystem;
-using namespace index_ai;
+using namespace arbiter;
 
 namespace {
 

@@ -1,4 +1,4 @@
-// index/src/repl/layout.cpp — see repl/layout.h
+// arbiter/src/repl/layout.cpp — see repl/layout.h
 
 #include "repl/layout.h"
 #include "theme.h"
@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 
-namespace index_ai {
+namespace arbiter {
 
 namespace {
 
@@ -340,4 +340,4 @@ bool LayoutTree::close_pane(Pane* target,
     return true;
 }
 
-} // namespace index_ai
+} // namespace arbiter

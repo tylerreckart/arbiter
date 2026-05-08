@@ -1,4 +1,4 @@
-// index_ai/src/constitution.cpp
+// arbiter/src/constitution.cpp
 #include "constitution.h"
 #include "api_client.h"   // is_weak_executor
 #include "json.h"
@@ -7,7 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace index_ai {
+namespace arbiter {
 
 // Capability bundles — opt-in groups of slash commands and the rules that
 // govern them.  An agent's `capabilities` vector (e.g. {"/search", "/mem"})
@@ -360,12 +360,12 @@ static std::string compose_help_inventory(const std::set<std::string>& b) {
 
 // ─── Composer ─────────────────────────────────────────────────────────────────
 //
-// Builds the index_ai system prompt by emitting always-on sections plus
+// Builds the arbiter system prompt by emitting always-on sections plus
 // only the bundles requested.  Bundle order matches the legacy monolithic
 // prompt (web → exec → delegation → write → read → mem → mcp) so the cache
 // breakpoints stay aligned for agents that previously had the full prompt.
 
-static std::string index_ai_prompt(Brevity level,
+static std::string arbiter_prompt(Brevity level,
                                    const std::set<std::string>& bundles) {
     std::string s = prompt_core_voice(level);
 
@@ -470,7 +470,7 @@ static std::string planner_prompt() {
         "  What you found in the environment. Relevant constraints, existing state.\n\n"
         "  ## Phases\n"
         "  ### Phase N: <name>\n"
-        "  **Agent:** <agent_id> (or 'direct' if index_ai handles it)\n"
+        "  **Agent:** <agent_id> (or 'direct' if arbiter handles it)\n"
         "  **Depends on:** <phase numbers, or 'none'>\n"
         "  **Task:** Precise instruction for the agent. Full context, expected output, format.\n"
         "  **Output:** What this phase produces (file path, command result, etc.)\n"
@@ -485,7 +485,7 @@ static std::string planner_prompt() {
         "  reviewer    — code review, defect analysis, PR feedback\n"
         "  writer      — essays, READMEs, docs, PRDs, reports (always produces a file)\n"
         "  devops      — shell, git, Docker, CI/CD, build systems, infra\n"
-        "  direct      — simple commands index_ai handles without delegation\n"
+        "  direct      — simple commands arbiter handles without delegation\n"
         "  planner     — do not recurse into planner from a plan\n\n"
 
         "TASK INSTRUCTIONS — write these so each agent can execute independently:\n"
@@ -652,7 +652,7 @@ std::string Constitution::build_system_prompt() const {
         // Empty `capabilities` resolves to all bundles — back-compat for
         // agents (like the master) that pre-date the bundle split or
         // intentionally want the full surface.
-        ss << index_ai_prompt(brevity, resolve_bundles(capabilities));
+        ss << arbiter_prompt(brevity, resolve_bundles(capabilities));
     }
 
     // Layer 2: agent identity
@@ -1005,4 +1005,4 @@ void Constitution::save(const std::string& path) const {
     f << to_json();
 }
 
-} // namespace index_ai
+} // namespace arbiter

@@ -1,4 +1,4 @@
-// index_ai/src/markdown.cpp — Markdown-to-ANSI terminal renderer
+// arbiter/src/markdown.cpp — Markdown-to-ANSI terminal renderer
 
 #include "markdown.h"
 #include "theme.h"
@@ -6,7 +6,7 @@
 #include <cstring>
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 // ─── ANSI primitives ─────────────────────────────────────────────────────────
 // Attribute-only escapes stay hard-coded — they're theme-agnostic (dim /
@@ -298,4 +298,4 @@ std::string render_markdown(const std::string& text) {
     return result;
 }
 
-} // namespace index_ai
+} // namespace arbiter

@@ -1,10 +1,10 @@
-// index_ai/src/agent.cpp
+// arbiter/src/agent.cpp
 #include "agent.h"
 #include "json.h"
 #include <cstring>
 #include <sstream>
 
-namespace index_ai {
+namespace arbiter {
 
 Agent::Agent(const std::string& id, Constitution config, ApiClient& client)
     : id_(id), config_(std::move(config)), client_(client)
@@ -393,4 +393,4 @@ std::string Agent::to_json() const {
     return json_serialize(*obj);
 }
 
-} // namespace index_ai
+} // namespace arbiter

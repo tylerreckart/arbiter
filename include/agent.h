@@ -1,5 +1,5 @@
 #pragma once
-// index/include/agent.h — Individual agent with conversation history + constitution
+// arbiter/include/agent.h — Individual agent with conversation history + constitution
 
 #include "constitution.h"
 #include "api_client.h"
@@ -8,7 +8,7 @@
 #include <vector>
 #include <chrono>
 
-namespace index_ai {
+namespace arbiter {
 
 struct AgentStats {
     int total_input_tokens  = 0;
@@ -74,4 +74,4 @@ private:
     void continue_until_done(ApiResponse& resp, StreamCallback cb);
 };
 
-} // namespace index_ai
+} // namespace arbiter

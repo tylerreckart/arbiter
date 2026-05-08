@@ -1,4 +1,4 @@
-// index/src/orchestrator.cpp
+// arbiter/src/orchestrator.cpp
 #include "orchestrator.h"
 #include "commands.h"
 #include "config.h"
@@ -20,7 +20,7 @@
 
 namespace fs = std::filesystem;
 
-namespace index_ai {
+namespace arbiter {
 
 namespace {
 
@@ -607,7 +607,7 @@ static std::string summarize_tool_calls(const std::vector<AgentCommand>& cmds,
     return out.str();
 }
 
-ApiResponse Orchestrator::ask_index_ai(const std::string& query) {
+ApiResponse Orchestrator::ask_arbiter(const std::string& query) {
     return send("index", query);
 }
 
@@ -1723,4 +1723,4 @@ bool Orchestrator::load_session(const std::string& path) {
     }
 }
 
-} // namespace index_ai
+} // namespace arbiter

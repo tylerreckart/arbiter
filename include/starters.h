@@ -1,5 +1,5 @@
 #pragma once
-// index/include/starters.h
+// arbiter/include/starters.h
 //
 // Registry of starter example agents shared between `arbiter --init` and the
 // first-run wizard.  Each entry carries a default Constitution plus a short
@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace index_ai {
+namespace arbiter {
 
 struct StarterAgent {
     std::string  id;       // "reviewer", "research", …
@@ -33,4 +33,4 @@ std::vector<StarterAgent> starter_agents();
 // to_json() would introduce on `temperature` and other doubles.
 std::string starter_json(const std::string& id);
 
-} // namespace index_ai
+} // namespace arbiter

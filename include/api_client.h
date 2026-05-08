@@ -1,5 +1,5 @@
 #pragma once
-// index/include/api_client.h — Multi-provider LLM API client over raw TLS / TCP.
+// arbiter/include/api_client.h — Multi-provider LLM API client over raw TLS / TCP.
 // Routes requests by model-string prefix: bare "claude-*" → Anthropic Messages
 // API, "openai/<model>" → OpenAI Chat Completions, "ollama/<model>" → Ollama
 // (OpenAI-compatible /v1/chat/completions), "gemini/<model>" → Google Gemini
@@ -17,7 +17,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-namespace index_ai {
+namespace arbiter {
 
 // Multipart content block.  Vision input requires interleaved text and
 // image parts; this carries either, with image data either inlined as base64
@@ -206,4 +206,4 @@ private:
     static ApiResponse parse_body_gemini   (const std::string& body);
 };
 
-} // namespace index_ai
+} // namespace arbiter

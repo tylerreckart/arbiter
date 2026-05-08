@@ -1,12 +1,12 @@
 #pragma once
-// index/include/commands.h — Agent-invocable command execution
+// arbiter/include/commands.h — Agent-invocable command execution
 
 #include <string>
 #include <vector>
 #include <functional>
 #include <map>
 
-namespace index_ai {
+namespace arbiter {
 
 // Forward decl — the full type lives in api_client.h.  Used as a pointer
 // out-param on execute_agent_commands so callers that don't care about
@@ -386,4 +386,4 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
 // execute_agent_commands invoke it.
 bool is_tool_result_failure(const std::string& block);
 
-} // namespace index_ai
+} // namespace arbiter

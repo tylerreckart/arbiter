@@ -1,4 +1,4 @@
-// index/src/starters.cpp — see starters.h
+// arbiter/src/starters.cpp — see starters.h
 //
 // The full Constitution for each starter lives in agents/<id>.json — that
 // directory is the single source of truth for example agents.  At build
@@ -18,7 +18,7 @@
 #include <stdexcept>
 #include <string_view>
 
-namespace index_ai {
+namespace arbiter {
 
 namespace {
 
@@ -118,4 +118,4 @@ std::string starter_json(const std::string& id) {
     return std::string(it->second);
 }
 
-}  // namespace index_ai
+}  // namespace arbiter

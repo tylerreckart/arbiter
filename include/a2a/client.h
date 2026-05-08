@@ -20,7 +20,7 @@
 #include <optional>
 #include <string>
 
-namespace index_ai::a2a {
+namespace arbiter::a2a {
 
 // A2A server-sent event handed to the streaming consumer.  The caller
 // dispatches on `kind` ("task" | "message" | "status-update" |
@@ -102,4 +102,4 @@ private:
     std::atomic<int64_t>         rpc_id_counter_{1};
 };
 
-} // namespace index_ai::a2a
+} // namespace arbiter::a2a

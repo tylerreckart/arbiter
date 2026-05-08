@@ -1,9 +1,9 @@
 #pragma once
-// index/include/markdown.h — Markdown-to-ANSI terminal renderer
+// arbiter/include/markdown.h — Markdown-to-ANSI terminal renderer
 
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 // Incremental renderer for streaming output.
 // Feed chunks as they arrive; complete styled lines are returned immediately.
@@ -33,4 +33,4 @@ private:
 // Render a complete markdown string to ANSI-styled output.
 std::string render_markdown(const std::string& text);
 
-} // namespace index_ai
+} // namespace arbiter

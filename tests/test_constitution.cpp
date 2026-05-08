@@ -11,10 +11,10 @@
 #include "doctest.h"
 #include "constitution.h"
 
-using namespace index_ai;
+using namespace arbiter;
 
 // Helper: construct a minimal Constitution and run the composer.  Anchored
-// to claude-sonnet-4-6 so we hit the index_ai_prompt path, not the weak-
+// to claude-sonnet-4-6 so we hit the arbiter_prompt path, not the weak-
 // executor profile (which has its own structure and is not the subject of
 // this refactor).
 static Constitution make_agent(std::vector<std::string> caps = {}) {

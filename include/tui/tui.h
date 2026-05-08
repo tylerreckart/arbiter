@@ -1,5 +1,5 @@
 #pragma once
-// index/include/tui/tui.h
+// arbiter/include/tui/tui.h
 //
 // Terminal UI — owns a rectangular region (a "pane") of the alternate-screen
 // buffer.  Today the REPL uses one TUI instance whose rect spans the full
@@ -49,7 +49,7 @@
 #include <string>
 #include <thread>
 
-namespace index_ai {
+namespace arbiter {
 
 // A rectangular region of the terminal owned by one TUI instance.  Coordinates
 // are 0-indexed: (x, y) is the top-left corner, w / h the interior size.  In
@@ -335,4 +335,4 @@ private:
     std::thread       thread_;
 };
 
-} // namespace index_ai
+} // namespace arbiter

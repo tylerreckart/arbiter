@@ -1,5 +1,5 @@
 #pragma once
-// index/include/repl/layout.h
+// arbiter/include/repl/layout.h
 //
 // N-ary tree of Pane leaves with Split internal nodes.  Manages every Pane's
 // rect and is the sole mutator of them.  All ops (resize/split/close/focus)
@@ -41,7 +41,7 @@
 #include <memory>
 #include <vector>
 
-namespace index_ai {
+namespace arbiter {
 
 class LayoutTree {
 public:
@@ -128,4 +128,4 @@ private:
     Rect                  bounds_{};
 };
 
-} // namespace index_ai
+} // namespace arbiter

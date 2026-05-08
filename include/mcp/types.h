@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-namespace index_ai::mcp {
+namespace arbiter::mcp {
 
 // JSON-RPC 2.0 error codes.  -32700..-32600 are reserved by the spec; the
 // MCP-level errors live in the same envelope but use different codes
@@ -104,4 +104,4 @@ ToolResult parse_tool_result(const Response& r);
 // responsible for the [/mcp call ...] header and [END MCP] footer.
 std::string render_tool_result(const ToolResult& r);
 
-} // namespace index_ai::mcp
+} // namespace arbiter::mcp

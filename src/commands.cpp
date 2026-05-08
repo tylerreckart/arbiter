@@ -1,4 +1,4 @@
-// index_ai/src/commands.cpp — Agent-invocable command execution
+// arbiter/src/commands.cpp — Agent-invocable command execution
 #include "commands.h"
 #include "api_client.h"  // ContentPart full type — forward-declared in commands.h.
 
@@ -25,7 +25,7 @@
 
 namespace fs = std::filesystem;
 
-namespace index_ai {
+namespace arbiter {
 
 // ---------------------------------------------------------------------------
 // parse_agent_commands
@@ -2535,4 +2535,4 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
     return out.str();
 }
 
-} // namespace index_ai
+} // namespace arbiter

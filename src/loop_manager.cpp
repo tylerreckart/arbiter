@@ -1,4 +1,4 @@
-// index_ai/src/loop_manager.cpp — see loop_manager.h
+// arbiter/src/loop_manager.cpp — see loop_manager.h
 
 #include "loop_manager.h"
 #include "markdown.h"
@@ -8,7 +8,7 @@
 #include <sstream>
 #include <vector>
 
-namespace index_ai {
+namespace arbiter {
 
 // Per-entry truncation so a single iteration with a huge agent response can't
 // dominate memory; combined with a total-bytes cap applied by trim_log_bytes()
@@ -346,4 +346,4 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
     e->state = LoopState::Stopped;
 }
 
-} // namespace index_ai
+} // namespace arbiter

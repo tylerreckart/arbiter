@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace index_ai::mcp {
+namespace arbiter::mcp {
 
 struct ClientConfig {
     std::string              name;        // logical name ("playwright")
@@ -74,4 +74,4 @@ private:
                   std::chrono::milliseconds timeout);
 };
 
-} // namespace index_ai::mcp
+} // namespace arbiter::mcp

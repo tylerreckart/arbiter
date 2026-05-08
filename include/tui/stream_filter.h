@@ -1,5 +1,5 @@
 #pragma once
-// index/include/tui/stream_filter.h — Tool-call line swallow for the streaming REPL
+// arbiter/include/tui/stream_filter.h — Tool-call line swallow for the streaming REPL
 //
 // The agent emits /fetch, /exec, /write … /endwrite, /agent, /mem, /advise
 // lines directly in its streaming response.  When Config::verbose is false
@@ -23,7 +23,7 @@
 #include <functional>
 #include <string>
 
-namespace index_ai {
+namespace arbiter {
 
 class StreamFilter {
 public:
@@ -58,4 +58,4 @@ private:
     bool          in_write_block_ = false;
 };
 
-} // namespace index_ai
+} // namespace arbiter
