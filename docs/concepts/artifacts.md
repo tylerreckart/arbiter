@@ -99,12 +99,12 @@ linked artifact:
 
 The path string lands on the client as a UTF-8 display field — it's untrusted. **The frontend must NOT pass it directly to `fs.writeFile` or any other path-sensitive API** without its own client-side sanitizer (same rules as the server's, plus your platform's specifics). If you let the user save the artifact to disk, build the destination path from the basename and a vetted directory of your choosing — never from the agent-supplied path.
 
-## Non-goals (v1)
+## Scope
 
-- No object-storage backend yet (S3/MinIO). The same interface fronts a future tier when tenants push past the SQLite ceiling.
-- No artifact versioning beyond PUT-overwrites. `git`-style history is a separate feature.
-- No public / cross-tenant sharing.
-- No mime sniffing; agents declare or accept the default. Frontends should validate the type field they trust before rendering inline.
+- Storage is backed by SQLite BLOBs in the same database as conversations and memory.
+- Versioning is PUT-on-conflict only — writing to an existing path replaces the row.
+- Artifacts never cross tenant or conversation boundaries except via the explicit memory-citation read path described above.
+- MIME types are agent-declared, not sniffed. Frontends should validate the type before rendering inline.
 
 ## See also
 

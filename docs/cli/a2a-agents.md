@@ -98,9 +98,9 @@ A remote that crashes mid-call leaves the calling task untouched; the next `/a2a
 
 ## Discovery — caching the card
 
-`a2a::Client::card()` lazy-fetches and caches the card. `refresh_card()` forces a re-fetch. Cards aren't time-expired in v1; if a remote bumps its declared `version`, a follow-up call still uses the cached card until the request ends. Per-request lifecycle means the next request fetches fresh.
+`a2a::Client::card()` lazy-fetches and caches the card. `refresh_card()` forces a re-fetch. Cards are not time-expired; if a remote bumps its declared `version`, an in-flight call still uses the cached card until the request ends. Per-request lifecycle means the next request fetches fresh.
 
-For remotes whose card path differs from `<url>/agent-card.json` (the v1.0 default), set `url` to the directory and arbiter appends `agent-card.json`. Pre-v1.0 servers using `agent.json` are not supported — arbiter speaks v1.0 only.
+For remotes whose card path differs from `<url>/agent-card.json` (the v1.0 default), set `url` to the directory and arbiter appends `agent-card.json`. Arbiter speaks A2A v1.0 only; remotes serving the pre-v1.0 `agent.json` path are not supported.
 
 ## See also
 

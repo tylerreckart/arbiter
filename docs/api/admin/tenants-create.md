@@ -2,7 +2,7 @@
 
 **Auth:** admin — _Status:_ stable
 
-Create a tenant. **Returns the plaintext bearer token exactly once** — save it on creation; the database keeps only a SHA-256 digest. If a token is lost, issue a new one (delete-and-recreate, or via a future rotate endpoint).
+Create a tenant. **Returns the plaintext bearer token exactly once** — save it on creation; the database keeps only a SHA-256 digest. If a token is lost, delete and recreate the tenant to issue a new one.
 
 ## Request
 

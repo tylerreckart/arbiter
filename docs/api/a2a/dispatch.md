@@ -50,7 +50,7 @@ Block until the agent reaches a terminal state, return the resulting `Task`.
 }
 ```
 
-`messageId` is required. `contextId` is optional and threaded through verbatim — pass the same value across requests to group them logically. v1 doesn't persist the context-thread relationship; future revisions may. Only `text` parts are accepted in v1; `file` and `data` parts trigger `ContentTypeNotSupported` (-32005).
+`messageId` is required. `contextId` is optional and threaded through verbatim — pass the same value across requests to group them logically. The context-thread relationship is not persisted server-side. Only `text` parts are accepted; `file` and `data` parts trigger `ContentTypeNotSupported` (-32005).
 
 **Result:** a `Task` object.
 
@@ -114,7 +114,7 @@ A task that doesn't exist for the calling tenant returns `TaskNotFound` (-32001)
 
 ### Unsupported
 
-`tasks/resubscribe` and `tasks/pushNotificationConfig/{set,get,list,delete}` return `UnsupportedOperation` (-32004) with a stable error message. Both land in v2.
+`tasks/resubscribe` and `tasks/pushNotificationConfig/{set,get,list,delete}` return `UnsupportedOperation` (-32004) with a stable error message.
 
 ## Error codes
 
@@ -129,8 +129,8 @@ A2A-specific codes follow the v1.0 spec; standard JSON-RPC codes ride alongside.
 | -32603 | `InternalError` | Orchestrator init failure or other server-side fault. |
 | -32001 | `TaskNotFound` | `tasks/get` / `tasks/cancel` against an unknown id, or `message/send` against an unknown agent for the tenant. |
 | -32002 | `TaskNotCancelable` | `tasks/cancel` against a task in a terminal state. |
-| -32004 | `UnsupportedOperation` | Method not implemented in arbiter v1. |
-| -32005 | `ContentTypeNotSupported` | A `Part` had `kind != "text"` (file / data parts not yet handled). |
+| -32004 | `UnsupportedOperation` | Method is not handled by arbiter (`tasks/resubscribe`, `tasks/pushNotificationConfig/*`). |
+| -32005 | `ContentTypeNotSupported` | A `Part` had `kind != "text"`. |
 | -32006 | `InvalidAgentResponse` | Agent threw mid-turn (provider transport failure surfaces as a failed `Task` instead — this is for unrecoverable execution faults). |
 | -32007 | `VersionNotSupportedError` | `A2A-Version` header was set to anything other than `1.0` or `1`. |
 
