@@ -8,6 +8,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Agent-facing todo tracker.** New `todos` table on `TenantStore` plus
+  `/todo` writ with `add` (single-line and `/endtodo` block forms),
+  `list`, `start`, `done`, `cancel`, `delete`, `describe <id>: <text>`,
+  and `subject <id>: <text>` subcommands.  Conversation-scoped by
+  default with tenant-wide as the unscoped fallback (same OR-NULL
+  visibility structured memory uses).  Pipeline-memory injection
+  surfaces a calling conversation's open todos to delegated sub-agents
+  (both `/agent` and `/parallel`) inside the `[DELEGATION CONTEXT]`
+  envelope so they can mark progress without re-discovering the list.
+  HTTP surface: `POST/GET /v1/todos`, `GET/PATCH/DELETE /v1/todos/:id`.
+  See [`docs/concepts/todos.md`](docs/concepts/todos.md).
 - **Background scheduler.** New `/schedule "<phrase>": <message>` writ that
   defers or recurs agent work; the API server's tick thread fires due
   tasks through the same orchestrator path that `/v1/orchestrate` uses,

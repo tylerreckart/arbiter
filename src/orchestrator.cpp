@@ -212,6 +212,21 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
             } catch (...) { /* never let memory probe break delegation */ }
         }
 
+        // Open-todo probe — same lifecycle as the structured-memory probe
+        // above.  Skips empty + ERR results so the delegation context only
+        // grows when there's something for the sub-agent to act on.
+        std::string open_todos;
+        if (todo_invoker_cb_) {
+            try {
+                std::string body = todo_invoker_cb_("list", "", caller_id);
+                if (!body.empty() &&
+                    body.compare(0, 4, "ERR:") != 0 &&
+                    body.compare(0, 10, "(no todos)") != 0) {
+                    open_todos = body;
+                }
+            } catch (...) { /* never let todo probe break delegation */ }
+        }
+
         std::string enriched_msg;
         if (!original_query.empty()) {
             std::string truncated_query = original_query.substr(
@@ -228,6 +243,12 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
                     "before searching or restating from training):\n" +
                     pipeline_memory;
                 if (pipeline_memory.back() != '\n') enriched_msg += '\n';
+            }
+            if (!open_todos.empty()) {
+                enriched_msg +=
+                    "Open todos (mark progress as you go — /todo start <id>, "
+                    "/todo done <id>):\n" + open_todos;
+                if (open_todos.back() != '\n') enriched_msg += '\n';
             }
             enriched_msg +=
                 "[END DELEGATION CONTEXT]\n\n" + sub_msg;
@@ -325,6 +346,21 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                         }
                     } catch (...) { /* never break delegation on probe */ }
                 }
+                // Open-todo probe — symmetric with sequential delegation.
+                // todo_invoker_cb_ is set once at request setup and never
+                // mutated, so concurrent reads from /parallel children are
+                // safe.
+                std::string open_todos;
+                if (todo_invoker_cb_) {
+                    try {
+                        std::string body = todo_invoker_cb_("list", "", caller_id);
+                        if (!body.empty() &&
+                            body.compare(0, 4, "ERR:") != 0 &&
+                            body.compare(0, 10, "(no todos)") != 0) {
+                            open_todos = body;
+                        }
+                    } catch (...) { /* never break delegation on probe */ }
+                }
                 std::string enriched_msg;
                 if (!original_query.empty()) {
                     std::string truncated_query = original_query.substr(
@@ -342,6 +378,12 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                             "training):\n" +
                             pipeline_memory;
                         if (pipeline_memory.back() != '\n') enriched_msg += '\n';
+                    }
+                    if (!open_todos.empty()) {
+                        enriched_msg +=
+                            "Open todos (mark progress as you go — /todo "
+                            "start <id>, /todo done <id>):\n" + open_todos;
+                        if (open_todos.back() != '\n') enriched_msg += '\n';
                     }
                     enriched_msg +=
                         "[END DELEGATION CONTEXT]\n\n" + sub_msg;
@@ -890,6 +932,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               artifact_lister_cb_,
                                               a2a_invoker_cb_,
                                               scheduler_invoker_cb_,
+                                              todo_invoker_cb_,
                                               agent_ptr->config().capabilities);
         // Stash for the gate's tool summary on the eventual terminating turn.
         last_cmds         = cmds;
@@ -1263,6 +1306,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   artifact_lister_cb_,
                                                   a2a_invoker_cb_,
                                                   scheduler_invoker_cb_,
+                                                  todo_invoker_cb_,
                                                   agent_ptr->config().capabilities,
                                                   &image_parts);
             last_cmds         = cmds;

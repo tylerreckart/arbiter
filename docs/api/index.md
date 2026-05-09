@@ -24,6 +24,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [Data model](concepts/data-model.md)
 - [Operational notes](concepts/operations.md)
 - [Scheduler](concepts/scheduler.md)
+- [Todos](concepts/todos.md)
 
 ## Endpoints
 
@@ -76,6 +77,13 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/artifacts/:aid`](artifacts/get.md)
 - [`GET /v1/artifacts/:aid/raw`](artifacts/raw.md)
 - [`DELETE /v1/artifacts/:aid`](artifacts/delete.md)
+
+### Todos
+- [`POST /v1/todos`](todos/create.md)
+- [`GET /v1/todos`](todos/list.md)
+- [`GET /v1/todos/:id`](todos/get.md)
+- [`PATCH /v1/todos/:id`](todos/patch.md)
+- [`DELETE /v1/todos/:id`](todos/delete.md)
 
 ### Schedules + runs + notifications
 - [`POST /v1/schedules`](schedules/create.md)

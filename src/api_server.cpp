@@ -3880,6 +3880,181 @@ void handle_cancel(int fd, const HttpRequest& req,
     }
 }
 
+// ── Todos ──────────────────────────────────────────────────────────────
+
+std::shared_ptr<JsonValue> todo_to_json(const TenantStore::Todo& t) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["id"]              = jnum(t.id);
+    m["conversation_id"] = jnum(t.conversation_id);
+    m["agent_id"]        = jstr(t.agent_id);
+    m["subject"]         = jstr(t.subject);
+    m["description"]     = jstr(t.description);
+    m["status"]          = jstr(t.status);
+    m["position"]        = jnum(t.position);
+    m["created_at"]      = jnum(t.created_at);
+    m["updated_at"]      = jnum(t.updated_at);
+    m["completed_at"]    = jnum(t.completed_at);
+    return o;
+}
+
+void handle_todo_create(int fd, const HttpRequest& req,
+                         TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    auto get_str = [&](const char* k) -> std::string {
+        auto v = body->get(k);
+        return (v && v->is_string()) ? v->as_string() : std::string{};
+    };
+    auto get_int = [&](const char* k) -> int64_t {
+        auto v = body->get(k);
+        return (v && v->is_number()) ? static_cast<int64_t>(v->as_number()) : 0;
+    };
+    std::string subject     = get_str("subject");
+    std::string description = get_str("description");
+    std::string agent_id    = get_str("agent_id");
+    int64_t conv_id         = get_int("conversation_id");
+    if (subject.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("required field: subject");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (agent_id.empty()) agent_id = "index";
+    auto row = tenants.create_todo(tenant.id, conv_id, agent_id, subject, description);
+    auto out = jobj();
+    out->as_object_mut()["todo"] = todo_to_json(row);
+    write_json_response(fd, 201, out);
+}
+
+void handle_todo_list(int fd, const HttpRequest& req,
+                       TenantStore& tenants, const Tenant& tenant) {
+    TenantStore::TodoFilter f;
+    f.limit = 200;
+    auto qpos = req.path.find('?');
+    if (qpos != std::string::npos) {
+        std::string qs = req.path.substr(qpos + 1);
+        size_t i = 0;
+        while (i < qs.size()) {
+            size_t amp = qs.find('&', i);
+            std::string pair = qs.substr(i, amp - i);
+            auto eq = pair.find('=');
+            if (eq != std::string::npos) {
+                std::string k = pair.substr(0, eq);
+                std::string v = pair.substr(eq + 1);
+                if (k == "conversation_id")
+                    try { f.conversation_id = std::stoll(v); } catch (...) {}
+                else if (k == "status")   f.status_filter   = v;
+                else if (k == "agent_id") f.agent_id_filter = v;
+                else if (k == "limit")
+                    try { f.limit = std::stoi(v); } catch (...) {}
+            }
+            if (amp == std::string::npos) break;
+            i = amp + 1;
+        }
+    }
+    auto rows = tenants.list_todos(tenant.id, f);
+    auto arr = jarr();
+    for (const auto& r : rows) arr->as_array_mut().push_back(todo_to_json(r));
+    auto out = jobj();
+    out->as_object_mut()["todos"] = arr;
+    write_json_response(fd, 200, out);
+}
+
+void handle_todo_get(int fd, int64_t id,
+                      TenantStore& tenants, const Tenant& tenant) {
+    auto row = tenants.get_todo(tenant.id, id);
+    if (!row) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("todo not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["todo"] = todo_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+void handle_todo_patch(int fd, int64_t id, const HttpRequest& req,
+                        TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    auto opt_str = [&](const char* k) -> std::optional<std::string> {
+        auto v = body->get(k);
+        if (v && v->is_string()) return v->as_string();
+        return std::nullopt;
+    };
+    auto opt_int = [&](const char* k) -> std::optional<int64_t> {
+        auto v = body->get(k);
+        if (v && v->is_number()) return static_cast<int64_t>(v->as_number());
+        return std::nullopt;
+    };
+    auto subj_opt = opt_str("subject");
+    auto desc_opt = opt_str("description");
+    auto stat_opt = opt_str("status");
+    auto pos_opt  = opt_int("position");
+    if (stat_opt) {
+        const std::string& s = *stat_opt;
+        if (s != "pending" && s != "in_progress" &&
+            s != "completed" && s != "canceled") {
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr(
+                "status must be one of: pending, in_progress, completed, canceled");
+            write_json_response(fd, 400, err);
+            return;
+        }
+    }
+    bool ok = tenants.update_todo(tenant.id, id,
+        subj_opt, desc_opt, stat_opt, pos_opt, std::nullopt);
+    if (!ok) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("todo not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto row = tenants.get_todo(tenant.id, id);
+    auto out = jobj();
+    if (row) out->as_object_mut()["todo"] = todo_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+void handle_todo_delete(int fd, int64_t id,
+                         TenantStore& tenants, const Tenant& tenant) {
+    if (!tenants.delete_todo(tenant.id, id)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("todo not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["deleted"] = jbool(true);
+    write_json_response(fd, 200, out);
+}
+
 // ── Schedules + runs + notifications ───────────────────────────────────
 
 std::shared_ptr<JsonValue> scheduled_task_to_json(
@@ -4501,6 +4676,136 @@ SchedulerInvoker make_scheduler_invoker_callback(
         out << "\n";
         out << "  message: " << message << "\n";
         return out.str();
+    };
+}
+
+// Build a TodoInvoker bound to the calling tenant + (optional) conversation.
+// Captures by value/reference like the scheduler factory.  Returns
+// user-facing tool-result bodies that the dispatcher wraps in
+// [/todo …] / [END TODO] framing.
+//
+// "add" args shape:
+//   "<subject>"                       — single-line, no body
+//   "<subject>\n\n<body>"             — block-form with description
+// (the writ dispatcher packs the body in for us when /endtodo is seen.)
+TodoInvoker make_todo_invoker_callback(
+        TenantStore& tenants, int64_t tenant_id, int64_t conversation_id) {
+    return [&tenants, tenant_id, conversation_id](
+            const std::string& kind,
+            const std::string& args,
+            const std::string& caller_agent_id) -> std::string {
+        auto trim = [](std::string s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+            return s;
+        };
+
+        auto parse_id = [&](const std::string& s, int64_t& out) -> bool {
+            std::string t = trim(s);
+            if (!t.empty() && t.front() == '#') t.erase(0, 1);
+            try { out = std::stoll(t); } catch (...) { return false; }
+            return out > 0;
+        };
+
+        // Format a list block.  Pending + in_progress sit at the top in
+        // append order; terminal rows are suppressed (use the HTTP
+        // surface to browse the archive).
+        auto render_list = [&](const std::vector<TenantStore::Todo>& rows) {
+            if (rows.empty()) return std::string("(no todos)");
+            std::ostringstream out;
+            // Counts for the header line — quick at-a-glance status.
+            int pending = 0, in_prog = 0;
+            for (const auto& r : rows) {
+                if (r.status == "pending")     ++pending;
+                if (r.status == "in_progress") ++in_prog;
+            }
+            out << pending + in_prog << " open ("
+                << in_prog << " in progress, " << pending << " pending):\n";
+            for (const auto& r : rows) {
+                if (r.status == "completed" || r.status == "canceled") continue;
+                const char* mark = (r.status == "in_progress") ? "▶ " : "  ";
+                out << mark << "#" << r.id << "  [" << r.status << "]  "
+                    << r.subject;
+                if (r.conversation_id == 0) out << "  (tenant-wide)";
+                out << "\n";
+            }
+            return out.str();
+        };
+
+        if (kind == "list") {
+            TenantStore::TodoFilter f;
+            f.conversation_id = conversation_id;
+            f.limit = 100;
+            auto rows = tenants.list_todos(tenant_id, f);
+            return render_list(rows);
+        }
+
+        if (kind == "add") {
+            // Split subject (first segment) from body (after \n\n).
+            std::string subject, description;
+            auto sep = args.find("\n\n");
+            if (sep == std::string::npos) {
+                subject = trim(args);
+            } else {
+                subject     = trim(args.substr(0, sep));
+                description = args.substr(sep + 2);
+                while (!description.empty() && description.back() == '\n')
+                    description.pop_back();
+            }
+            if (subject.empty()) return "ERR: /todo add requires a subject";
+            std::string owner = caller_agent_id.empty() ? "index" : caller_agent_id;
+            auto row = tenants.create_todo(tenant_id, conversation_id,
+                                            owner, subject, description);
+            std::ostringstream out;
+            out << "OK: added #" << row.id << " — " << row.subject;
+            if (!description.empty()) out << "\n  description: " << description;
+            return out.str();
+        }
+
+        if (kind == "start" || kind == "done" || kind == "cancel") {
+            int64_t id = 0;
+            if (!parse_id(args, id)) return "ERR: usage: /todo " + kind + " <id>";
+            std::string new_status =
+                kind == "start"  ? "in_progress" :
+                kind == "done"   ? "completed"   :
+                                   "canceled";
+            bool ok = tenants.update_todo(tenant_id, id,
+                std::nullopt, std::nullopt,
+                std::optional<std::string>(new_status),
+                std::nullopt, std::nullopt);
+            if (!ok) return "ERR: todo #" + std::to_string(id) + " not found";
+            return "OK: " + new_status + " #" + std::to_string(id);
+        }
+
+        if (kind == "delete") {
+            int64_t id = 0;
+            if (!parse_id(args, id)) return "ERR: usage: /todo delete <id>";
+            if (!tenants.delete_todo(tenant_id, id))
+                return "ERR: todo #" + std::to_string(id) + " not found";
+            return "OK: deleted #" + std::to_string(id);
+        }
+
+        if (kind == "describe" || kind == "subject") {
+            // Both share the shape "<id>: <text>".  Parse the colon
+            // and dispatch to the matching column.
+            auto colon = args.find(':');
+            if (colon == std::string::npos)
+                return "ERR: usage: /todo " + kind + " <id>: <text>";
+            int64_t id = 0;
+            if (!parse_id(args.substr(0, colon), id))
+                return "ERR: bad todo id";
+            std::string text = trim(args.substr(colon + 1));
+            std::optional<std::string> subj_opt;
+            std::optional<std::string> desc_opt;
+            if (kind == "subject")  subj_opt = text;
+            if (kind == "describe") desc_opt = text;
+            bool ok = tenants.update_todo(tenant_id, id,
+                subj_opt, desc_opt, std::nullopt, std::nullopt, std::nullopt);
+            if (!ok) return "ERR: todo #" + std::to_string(id) + " not found";
+            return "OK: updated #" + std::to_string(id);
+        }
+
+        return "ERR: unknown /todo subcommand '" + kind + "'";
     };
 }
 
@@ -5989,6 +6294,8 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
     }
     orch->set_scheduler_invoker(
         make_scheduler_invoker_callback(tenants, tenant.id, /*conversation_id=*/0));
+    orch->set_todo_invoker(
+        make_todo_invoker_callback(tenants, tenant.id, /*conversation_id=*/0));
     return orch;
 }
 
@@ -7104,6 +7411,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     orch->set_scheduler_invoker(
         make_scheduler_invoker_callback(tenants, tenant.id, conversation_id));
 
+    // ── Todo bridge ──────────────────────────────────────────────────
+    // /todo resolves through this callback.  Pinned to the request's
+    // conversation_id (or 0 = unscoped for raw /v1/orchestrate) so
+    // /todo list scopes to the active thread by default.
+    orch->set_todo_invoker(
+        make_todo_invoker_callback(tenants, tenant.id, conversation_id));
+
     // ── Web search ────────────────────────────────────────────────────
     // /search <query> [top=N] dispatches against the configured provider.
     // Only "brave" is implemented in v1; an unrecognised provider returns
@@ -8101,6 +8415,43 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "memory route not found\n");
+            return;
+        }
+
+        // ── Todos ─────────────────────────────────────────────────────────
+        // POST   /v1/todos                — create
+        // GET    /v1/todos                — list (?conversation_id=&status=&agent_id=)
+        // GET    /v1/todos/:id            — fetch one
+        // PATCH  /v1/todos/:id            — update subject/description/status/position
+        // DELETE /v1/todos/:id            — hard remove
+        if (segs.size() >= 2 && segs[0] == "v1" && segs[1] == "todos") {
+            if (segs.size() == 2) {
+                if (req.method == "POST")
+                    return handle_todo_create(fd, req, tenants_, *tenant);
+                if (req.method == "GET")
+                    return handle_todo_list(fd, req, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (segs.size() == 3) {
+                int64_t id = 0;
+                try { id = std::stoll(segs[2]); } catch (...) { id = 0; }
+                if (id <= 0) {
+                    write_plain_response(fd, 400, "Bad Request", "bad todo id\n");
+                    return;
+                }
+                if (req.method == "GET")
+                    return handle_todo_get(fd, id, tenants_, *tenant);
+                if (req.method == "PATCH")
+                    return handle_todo_patch(fd, id, req, tenants_, *tenant);
+                if (req.method == "DELETE")
+                    return handle_todo_delete(fd, id, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            write_plain_response(fd, 404, "Not Found", "todo route not found\n");
             return;
         }
 

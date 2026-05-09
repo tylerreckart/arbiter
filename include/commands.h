@@ -317,6 +317,29 @@ using MCPInvoker = std::function<std::string(const std::string& kind,
 using A2AInvoker = std::function<std::string(const std::string& kind,
                                               const std::string& args)>;
 
+// Bridge to the agent-facing todo tracker.  Drives /todo:
+//   /todo add <subject>             — single-line: subject only, no body
+//   /todo add <subject>             — block form with body:
+//   <multi-line description>
+//   /endtodo
+//   /todo list                       — render the active list (caller's conversation scope)
+//   /todo describe <id>: <text>      — set/replace description
+//   /todo subject <id>: <text>       — rename
+//   /todo start <id>                 — status=in_progress
+//   /todo done <id>                  — status=completed
+//   /todo cancel <id>                — status=canceled
+//   /todo delete <id>                — hard remove
+//
+// The callback receives (kind, args, caller_agent_id) where kind is the
+// subcommand ("add" | "list" | "start" | "done" | "cancel" | "delete" |
+// "describe" | "subject") and args is everything after it.  For the
+// block-form add, args carries the subject on the first line followed
+// by `\n` and the body.  Without this callback the dispatcher returns
+// ERR — same pattern as /schedule and /a2a.
+using TodoInvoker = std::function<std::string(const std::string& kind,
+                                                const std::string& args,
+                                                const std::string& caller_agent_id)>;
+
 // Bridge to the per-tenant scheduling subsystem.  Drives /schedule:
 //   /schedule <phrase>: <message>   — create a scheduled task
 //   /schedule list                  — render the active schedules
@@ -372,6 +395,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ArtifactLister artifact_lister = nullptr,
                                    A2AInvoker     a2a_invoker     = nullptr,
                                    SchedulerInvoker scheduler_invoker = nullptr,
+                                   TodoInvoker      todo_invoker      = nullptr,
                                    // Capability allowlist matching the
                                    // calling agent's constitution.  Empty
                                    // = "all bundles" (preserves legacy

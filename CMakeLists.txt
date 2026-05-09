@@ -295,6 +295,23 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_schedule_parser COMMAND unit_schedule_parser)
 
+    # --- Unit tests for the agent-facing todo store ---
+    add_executable(unit_todos
+        tests/test_todos.cpp
+        src/tenant_store.cpp
+    )
+    target_include_directories(unit_todos PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_todos PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_todos COMMAND unit_todos)
+
     # --- Unit tests for the structured-memory store ---
     # Pins the tenant_store CRUD contract that backs both /v1/memory/entries
     # and the agent-side /mem entries|entry|search reader.

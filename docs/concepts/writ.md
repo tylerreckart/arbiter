@@ -26,6 +26,7 @@ Writs factor into a small number of orthogonal axes. Each axis has one primary v
 | Persistence | `/mem` | Structured memory across turns and conversations. See [Structured memory](structured-memory.md). |
 | Federation | `/mcp`, `/a2a` | External tool ecosystems and remote agents. See [MCP](mcp.md) and [A2A](a2a.md). |
 | Scheduling | `/schedule` | Defer or recur agent work; runs fire under the API server's tick thread and surface as runs + notifications. See [Scheduler](scheduler.md). |
+| Progress tracking | `/todo` | Capture and mark progress on the steps of a request. Tenant-scoped; survives across conversations and pipeline-injects into delegated sub-agents. See [Todos](todos.md). |
 
 Most writs are single-line. Three are blocks with explicit terminators:
 

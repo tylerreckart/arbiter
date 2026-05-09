@@ -338,6 +338,73 @@ public:
 
     bool delete_agent_record(int64_t tenant_id, const std::string& agent_id);
 
+    // ── Todos ────────────────────────────────────────────────────────────
+    //
+    // Agent-facing work tracker.  An agent emits /todo add … to capture
+    // the next concrete step, /todo start <id> when it begins, /todo done
+    // <id> when it finishes.  Rows are tenant-scoped; conversation_id is
+    // optional (0 = unscoped, visible from every conversation in the
+    // tenant) and defaults to the active conversation when the writ
+    // fires inside one.  Pipeline-memory injection surfaces open todos
+    // to delegated sub-agents so they can mark progress without
+    // re-discovering the list.
+    //
+    // Status flow: pending → in_progress → completed (terminal); cancel
+    // is an alternate terminal.  position orders todos within the same
+    // (status, conversation_id) bucket — newest todos sit at the bottom
+    // of "pending" by default; agents can renumber via update.
+    struct Todo {
+        int64_t     id              = 0;
+        int64_t     tenant_id       = 0;
+        int64_t     conversation_id = 0;        // 0 ⇒ tenant-wide
+        std::string agent_id;                    // owner (caller) at create time
+        std::string subject;                     // short title; required
+        std::string description;                 // optional details
+        std::string status;                      // "pending" | "in_progress" | "completed" | "canceled"
+        int64_t     position        = 0;
+        int64_t     created_at      = 0;
+        int64_t     updated_at      = 0;
+        int64_t     completed_at    = 0;         // 0 until terminal
+    };
+
+    // Insert at the end of the (status='pending', conversation_id) bucket
+    // by default — the row's position is set to max(position)+1 within
+    // the bucket, so /todo list renders in creation order without ties.
+    Todo create_todo(int64_t tenant_id, int64_t conversation_id,
+                      const std::string& agent_id,
+                      const std::string& subject,
+                      const std::string& description);
+
+    std::optional<Todo> get_todo(int64_t tenant_id, int64_t id) const;
+
+    struct TodoFilter {
+        // 0 = no filter (tenant-wide, every conversation).  Negative
+        // is reserved for "unscoped only" if we ever need that surface.
+        // Positive: include todos pinned to this conversation OR rows
+        // with conversation_id=0 (unscoped, visible everywhere) — same
+        // OR-NULL fallback structured memory uses, so a fresh
+        // conversation still sees tenant-wide todos.
+        int64_t     conversation_id = 0;
+        std::string status_filter;               // empty = all statuses
+        std::string agent_id_filter;             // empty = all owners
+        int         limit           = 200;
+    };
+    std::vector<Todo>
+    list_todos(int64_t tenant_id, const TodoFilter& f) const;
+
+    // PATCH-style: any std::nullopt argument leaves the field
+    // untouched.  Setting status to a terminal value stamps
+    // completed_at automatically (caller can override by passing a
+    // value through completed_at).
+    bool update_todo(int64_t tenant_id, int64_t id,
+                      const std::optional<std::string>& subject,
+                      const std::optional<std::string>& description,
+                      const std::optional<std::string>& status,
+                      const std::optional<int64_t>& position,
+                      const std::optional<int64_t>& completed_at = std::nullopt);
+
+    bool delete_todo(int64_t tenant_id, int64_t id);
+
     // ── Scheduled tasks ─────────────────────────────────────────────────
     //
     // Tenant-scoped background work: an agent emits /schedule "<phrase>"
