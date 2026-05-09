@@ -58,8 +58,11 @@
 namespace arbiter {
 
 class BillingClient;
+class NotificationBus;
 class Orchestrator;
+class Scheduler;
 class TenantStore;
+struct Tenant;
 
 // Tracks in-flight orchestrations so a cancel request on thread Y can
 // reach into the Orchestrator created on thread X and hit cancel().  Keyed
@@ -146,6 +149,19 @@ struct ApiServerOptions {
     std::string billing_url;
 };
 
+// Build a synchronous-friendly Orchestrator wired with the same memory,
+// MCP, search, and A2A bridges that /v1/orchestrate uses, but without the
+// SSE / file-interceptor plumbing that depends on a per-request streaming
+// sink.  Used by the A2A `message/send` (synchronous) path and by the
+// background Scheduler.  The returned Orchestrator is fully self-contained
+// and tenant-scoped; the caller invokes `orch->send(agent_id, prompt)` to
+// run one turn.  On failure, returns null and populates `err_out`.
+std::unique_ptr<Orchestrator>
+build_blocking_orchestrator(const ApiServerOptions& opts,
+                             TenantStore& tenants,
+                             const Tenant& tenant,
+                             std::string& err_out);
+
 class ApiServer {
 public:
     ApiServer(ApiServerOptions opts, TenantStore& tenants);
@@ -175,6 +191,13 @@ private:
     // mode the pointer stays null and every billing-touching helper
     // short-circuits, so the runtime keeps routing to provider keys.
     std::unique_ptr<BillingClient> billing_;
+
+    // Scheduling subsystem.  The bus is created up front so request handlers
+    // can subscribe (the SSE notifications endpoint) before the scheduler is
+    // ticking; the scheduler thread starts in start() and joins in stop().
+    std::unique_ptr<NotificationBus> notifications_;
+    std::unique_ptr<Scheduler>       scheduler_;
+
     int               listen_fd_  = -1;
     int               bound_port_ = 0;
     std::atomic<bool> running_{false};

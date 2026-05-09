@@ -23,6 +23,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [Web search](concepts/search.md)
 - [Data model](concepts/data-model.md)
 - [Operational notes](concepts/operations.md)
+- [Scheduler](concepts/scheduler.md)
 
 ## Endpoints
 
@@ -75,6 +76,17 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/artifacts/:aid`](artifacts/get.md)
 - [`GET /v1/artifacts/:aid/raw`](artifacts/raw.md)
 - [`DELETE /v1/artifacts/:aid`](artifacts/delete.md)
+
+### Schedules + runs + notifications
+- [`POST /v1/schedules`](schedules/create.md)
+- [`GET /v1/schedules`](schedules/list.md)
+- [`GET /v1/schedules/:id`](schedules/get.md)
+- [`PATCH /v1/schedules/:id`](schedules/patch.md)
+- [`DELETE /v1/schedules/:id`](schedules/delete.md)
+- [`GET /v1/schedules/:id/runs`](schedules/runs.md)
+- [`GET /v1/runs`](runs/list.md)
+- [`GET /v1/runs/:id`](runs/get.md)
+- [`GET /v1/notifications/stream`](notifications/stream.md)
 
 ### A2A protocol
 - [`GET /.well-known/agent-card.json`](a2a/well-known.md)

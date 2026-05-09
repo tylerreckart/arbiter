@@ -889,6 +889,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               artifact_reader_cb_,
                                               artifact_lister_cb_,
                                               a2a_invoker_cb_,
+                                              scheduler_invoker_cb_,
                                               agent_ptr->config().capabilities);
         // Stash for the gate's tool summary on the eventual terminating turn.
         last_cmds         = cmds;
@@ -1261,6 +1262,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   artifact_reader_cb_,
                                                   artifact_lister_cb_,
                                                   a2a_invoker_cb_,
+                                                  scheduler_invoker_cb_,
                                                   agent_ptr->config().capabilities,
                                                   &image_parts);
             last_cmds         = cmds;

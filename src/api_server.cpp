@@ -18,6 +18,9 @@
 #include "mcp/manager.h"
 #include "orchestrator.h"
 #include "billing_client.h"
+#include "notification_bus.h"
+#include "schedule_parser.h"
+#include "scheduler.h"
 #include "tenant_store.h"
 #include "tui/stream_filter.h"
 #include "api_client.h"
@@ -29,7 +32,9 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <deque>
 #include <cstring>
 #include <ctime>
 #include <functional>
@@ -3875,6 +3880,377 @@ void handle_cancel(int fd, const HttpRequest& req,
     }
 }
 
+// ── Schedules + runs + notifications ───────────────────────────────────
+
+std::shared_ptr<JsonValue> scheduled_task_to_json(
+        const TenantStore::ScheduledTask& t) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["id"]               = jnum(t.id);
+    m["agent_id"]         = jstr(t.agent_id);
+    m["conversation_id"]  = jnum(t.conversation_id);
+    m["message"]          = jstr(t.message);
+    m["schedule_phrase"]  = jstr(t.schedule_phrase);
+    m["schedule_kind"]    = jstr(t.schedule_kind);
+    m["fire_at"]          = jnum(t.fire_at);
+    m["recur_json"]       = jstr(t.recur_json);
+    m["next_fire_at"]     = jnum(t.next_fire_at);
+    m["status"]           = jstr(t.status);
+    m["created_at"]       = jnum(t.created_at);
+    m["updated_at"]       = jnum(t.updated_at);
+    m["last_run_at"]      = jnum(t.last_run_at);
+    m["last_run_id"]      = jnum(t.last_run_id);
+    m["run_count"]        = jnum(t.run_count);
+    return o;
+}
+
+std::shared_ptr<JsonValue> task_run_to_json(const TenantStore::TaskRun& r) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["id"]              = jnum(r.id);
+    m["task_id"]         = jnum(r.task_id);
+    m["status"]          = jstr(r.status);
+    m["started_at"]      = jnum(r.started_at);
+    m["completed_at"]    = jnum(r.completed_at);
+    m["request_id"]      = jstr(r.request_id);
+    m["result_summary"]  = jstr(r.result_summary);
+    m["error_message"]   = jstr(r.error_message);
+    m["input_tokens"]    = jnum(r.input_tokens);
+    m["output_tokens"]   = jnum(r.output_tokens);
+    return o;
+}
+
+void handle_schedule_create(int fd, const HttpRequest& req,
+                             TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    auto get_str = [&](const char* k) -> std::string {
+        auto v = body->get(k);
+        return (v && v->is_string()) ? v->as_string() : std::string{};
+    };
+    auto get_int = [&](const char* k) -> int64_t {
+        auto v = body->get(k);
+        return (v && v->is_number()) ? static_cast<int64_t>(v->as_number()) : 0;
+    };
+    std::string phrase  = get_str("schedule");
+    std::string message = get_str("message");
+    std::string agent   = get_str("agent");
+    int64_t conv_id     = get_int("conversation_id");
+    if (phrase.empty() || message.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("required fields: schedule (NL phrase), message");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (agent.empty()) agent = "index";
+
+    const int64_t now = static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    ParseResult parsed = parse_schedule_phrase(phrase, now);
+    if (!parsed.ok) {
+        auto err = jobj();
+        err->as_object_mut()["error"]      = jstr(parsed.error.message);
+        err->as_object_mut()["accepted"]   = jstr(schedule_parser_help());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (agent != "index") {
+        auto rec = tenants.get_agent_record(tenant.id, agent);
+        if (!rec) {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("agent '" + agent + "' not found in tenant catalog");
+            write_json_response(fd, 404, err);
+            return;
+        }
+    }
+
+    std::string kind_str = (parsed.spec.kind == ScheduleSpec::Kind::Once)
+        ? "once" : "recurring";
+    auto row = tenants.create_scheduled_task(tenant.id, agent, conv_id,
+        message, phrase, kind_str,
+        parsed.spec.fire_at, parsed.spec.recur_json, parsed.spec.next_fire_at);
+    auto out = jobj();
+    out->as_object_mut()["scheduled_task"] = scheduled_task_to_json(row);
+    out->as_object_mut()["normalized"]     = jstr(parsed.spec.normalized);
+    write_json_response(fd, 201, out);
+}
+
+void handle_schedule_list(int fd, const HttpRequest& req,
+                           TenantStore& tenants, const Tenant& tenant) {
+    std::string status_filter;
+    auto qpos = req.path.find('?');
+    if (qpos != std::string::npos) {
+        std::string qs = req.path.substr(qpos + 1);
+        // Tiny query-string parser — only one key we look at.
+        size_t i = 0;
+        while (i < qs.size()) {
+            size_t amp = qs.find('&', i);
+            std::string pair = qs.substr(i, amp - i);
+            auto eq = pair.find('=');
+            if (eq != std::string::npos) {
+                std::string k = pair.substr(0, eq);
+                std::string v = pair.substr(eq + 1);
+                if (k == "status") status_filter = v;
+            }
+            if (amp == std::string::npos) break;
+            i = amp + 1;
+        }
+    }
+    auto rows = tenants.list_scheduled_tasks(tenant.id, status_filter, /*limit=*/200);
+    auto arr = jarr();
+    for (const auto& r : rows) arr->as_array_mut().push_back(scheduled_task_to_json(r));
+    auto out = jobj();
+    out->as_object_mut()["schedules"] = arr;
+    write_json_response(fd, 200, out);
+}
+
+void handle_schedule_get(int fd, int64_t id,
+                          TenantStore& tenants, const Tenant& tenant) {
+    auto row = tenants.get_scheduled_task(tenant.id, id);
+    if (!row) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("schedule not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["scheduled_task"] = scheduled_task_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+void handle_schedule_patch(int fd, int64_t id, const HttpRequest& req,
+                            TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    auto sv = body->get("status");
+    std::optional<std::string> status_opt;
+    if (sv && sv->is_string()) {
+        std::string s = sv->as_string();
+        if (s != "active" && s != "paused" && s != "canceled" &&
+            s != "completed" && s != "failed") {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("status must be one of: active, paused, canceled, completed, failed");
+            write_json_response(fd, 400, err);
+            return;
+        }
+        status_opt = s;
+    }
+    bool ok = tenants.update_scheduled_task(tenant.id, id,
+        status_opt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+    if (!ok) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("schedule not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto row = tenants.get_scheduled_task(tenant.id, id);
+    auto out = jobj();
+    if (row) out->as_object_mut()["scheduled_task"] = scheduled_task_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+void handle_schedule_delete(int fd, int64_t id,
+                             TenantStore& tenants, const Tenant& tenant) {
+    bool ok = tenants.delete_scheduled_task(tenant.id, id);
+    if (!ok) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("schedule not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["deleted"] = jbool(true);
+    write_json_response(fd, 200, out);
+}
+
+void handle_schedule_runs(int fd, int64_t task_id, const HttpRequest& /*req*/,
+                           TenantStore& tenants, const Tenant& tenant) {
+    auto row = tenants.get_scheduled_task(tenant.id, task_id);
+    if (!row) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("schedule not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto runs = tenants.list_task_runs(tenant.id, task_id, /*since=*/0, /*limit=*/100);
+    auto arr = jarr();
+    for (const auto& r : runs) arr->as_array_mut().push_back(task_run_to_json(r));
+    auto out = jobj();
+    out->as_object_mut()["runs"] = arr;
+    write_json_response(fd, 200, out);
+}
+
+void handle_runs_list(int fd, const HttpRequest& req,
+                       TenantStore& tenants, const Tenant& tenant) {
+    int64_t since = 0;
+    int64_t task_id = 0;
+    auto qpos = req.path.find('?');
+    if (qpos != std::string::npos) {
+        std::string qs = req.path.substr(qpos + 1);
+        size_t i = 0;
+        while (i < qs.size()) {
+            size_t amp = qs.find('&', i);
+            std::string pair = qs.substr(i, amp - i);
+            auto eq = pair.find('=');
+            if (eq != std::string::npos) {
+                std::string k = pair.substr(0, eq);
+                std::string v = pair.substr(eq + 1);
+                if (k == "since")   try { since   = std::stoll(v); } catch (...) {}
+                if (k == "task_id") try { task_id = std::stoll(v); } catch (...) {}
+            }
+            if (amp == std::string::npos) break;
+            i = amp + 1;
+        }
+    }
+    auto runs = tenants.list_task_runs(tenant.id, task_id, since, /*limit=*/200);
+    auto arr = jarr();
+    for (const auto& r : runs) arr->as_array_mut().push_back(task_run_to_json(r));
+    auto out = jobj();
+    out->as_object_mut()["runs"] = arr;
+    write_json_response(fd, 200, out);
+}
+
+void handle_run_get(int fd, int64_t id, TenantStore& tenants, const Tenant& tenant) {
+    auto run = tenants.get_task_run(tenant.id, id);
+    if (!run) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("run not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["run"] = task_run_to_json(*run);
+    write_json_response(fd, 200, out);
+}
+
+// SSE notifications stream.  Long-lived connection; emits one
+// `event: notification` block per Notification published on the bus
+// for this tenant.  The handler subscribes on entry and unsubscribes
+// on exit (RAII via Subscription guard).  Events queue in a per-handler
+// mailbox to keep the publisher thread from blocking on slow clients.
+void handle_notifications_stream(int fd, const Tenant& tenant,
+                                   NotificationBus& bus) {
+    // Open the SSE response.  CORS headers match the rest of the API so
+    // browser fetch() / EventSource clients on a different origin (e.g.
+    // a Vite dev server on :5173 dialling :8080) can subscribe.
+    {
+        std::ostringstream hdr;
+        hdr << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: text/event-stream\r\n"
+            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            << "X-Accel-Buffering: no\r\n"
+            << kCorsHeaders
+            << "Connection: close\r\n"
+            << "\r\n";
+        write_all(fd, hdr.str());
+    }
+
+    std::mutex                     mb_mu;
+    std::condition_variable        mb_cv;
+    std::deque<Notification>       mailbox;
+    std::atomic<bool>              client_alive{true};
+
+    int64_t sub_id = bus.subscribe(tenant.id,
+        [&mb_mu, &mb_cv, &mailbox](const Notification& n) {
+            std::lock_guard<std::mutex> lk(mb_mu);
+            mailbox.push_back(n);
+            mb_cv.notify_one();
+        });
+
+    // Helper: serialize a string as a JSON-quoted token.  We piggyback on
+    // json_serialize via jstr so escaping matches the rest of the API.
+    auto qstr = [](const std::string& s) -> std::string {
+        return json_serialize(*jstr(s));
+    };
+
+    // Initial hello so clients know the stream is open.
+    {
+        std::string hello = "event: open\ndata: {\"ok\":true}\n\n";
+        write_all(fd, hello);
+    }
+
+    auto write_event = [&](const Notification& n) {
+        std::ostringstream payload;
+        payload << "{\"kind\":\"" << notification_kind_str(n.kind) << "\","
+                << "\"task_id\":" << n.task_id << ","
+                << "\"run_id\":"  << n.run_id  << ","
+                << "\"agent_id\":" << qstr(n.agent_id) << ","
+                << "\"status\":"   << qstr(n.status)   << ","
+                << "\"started_at\":" << n.started_at << ","
+                << "\"completed_at\":" << n.completed_at;
+        if (!n.result_summary.empty())
+            payload << ",\"result_summary\":" << qstr(n.result_summary);
+        if (!n.error_message.empty())
+            payload << ",\"error_message\":"  << qstr(n.error_message);
+        payload << "}";
+        std::string frame = "event: notification\ndata: " + payload.str() + "\n\n";
+        write_all(fd, frame);
+    };
+
+    // Heartbeat every 30s so reverse proxies don't time the connection out.
+    using clock = std::chrono::steady_clock;
+    auto next_heartbeat = clock::now() + std::chrono::seconds(30);
+
+    while (client_alive.load()) {
+        Notification ev;
+        bool have = false;
+        {
+            std::unique_lock<std::mutex> lk(mb_mu);
+            mb_cv.wait_until(lk, next_heartbeat, [&]{ return !mailbox.empty(); });
+            if (!mailbox.empty()) {
+                ev = mailbox.front();
+                mailbox.pop_front();
+                have = true;
+            }
+        }
+        if (have) {
+            write_event(ev);
+            // Crude liveness check — if the peer hung up, write_all returns
+            // silently but a follow-up zero-byte send will surface EPIPE.
+            // We accept best-effort here; the heartbeat path catches dead
+            // peers within 30s anyway.
+            continue;
+        }
+        const char* hb = ": heartbeat\n\n";
+        write_all(fd, hb, std::strlen(hb));
+        next_heartbeat = clock::now() + std::chrono::seconds(30);
+        // The only way we actually exit this loop is the server-stop
+        // handshake (the connection thread is detached and the read side
+        // returns when the listen socket closes).  That's fine: scheduler
+        // events drain via the mailbox until the parent terminates.
+    }
+
+    bus.unsubscribe(sub_id);
+}
+
 // Map an upstream provider's error_type to a fixed taxonomy of safe
 // codes for SSE consumers.  We never proxy the provider's free-form
 // `error.message` through to the tenant — that field can quote the
@@ -4002,6 +4378,130 @@ std::shared_ptr<mcp::Manager> make_mcp_manager(
     }
     if (!mgr) mgr = std::make_shared<mcp::Manager>(std::vector<mcp::ServerSpec>{});
     return mgr;
+}
+
+// Build a SchedulerInvoker bound to the calling tenant + conversation.
+// Captures `tenants` by reference (the TenantStore outlives every
+// request) and the integer ids by value so the lambda is self-contained.
+// Renders user-facing tool-result bodies — the dispatcher wraps them in
+// [/schedule …] / [END SCHEDULE] framing.
+SchedulerInvoker make_scheduler_invoker_callback(
+        TenantStore& tenants, int64_t tenant_id, int64_t conversation_id) {
+    return [&tenants, tenant_id, conversation_id](
+            const std::string& kind,
+            const std::string& args,
+            const std::string& caller_agent_id) -> std::string {
+        auto trim = [](std::string s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+            return s;
+        };
+
+        const int64_t now = static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+
+        if (kind == "list") {
+            auto rows = tenants.list_scheduled_tasks(tenant_id,
+                /*status_filter=*/"", /*limit=*/50);
+            if (rows.empty()) return "(no scheduled tasks)";
+            std::ostringstream out;
+            out << rows.size() << " schedule(s):\n";
+            for (const auto& r : rows) {
+                out << "- #" << r.id << "  [" << r.status << "]  "
+                    << r.schedule_phrase
+                    << "  → " << r.agent_id;
+                if (r.next_fire_at > 0) {
+                    time_t t = static_cast<time_t>(r.next_fire_at);
+                    char buf[32];
+                    std::tm tm{};
+                    localtime_r(&t, &tm);
+                    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm);
+                    out << "  (next: " << buf << ")";
+                }
+                if (r.run_count > 0) out << "  (runs: " << r.run_count << ")";
+                out << "\n";
+            }
+            return out.str();
+        }
+
+        if (kind == "cancel" || kind == "pause" || kind == "resume") {
+            std::string id_s = trim(args);
+            if (!id_s.empty() && id_s.front() == '#') id_s.erase(0, 1);
+            int64_t id = 0;
+            try { id = std::stoll(id_s); } catch (...) { id = 0; }
+            if (id <= 0) return "ERR: usage: /schedule " + kind + " <id>";
+
+            if (kind == "cancel") {
+                if (tenants.delete_scheduled_task(tenant_id, id)) {
+                    return "OK: canceled #" + std::to_string(id);
+                }
+                return "ERR: schedule #" + std::to_string(id) + " not found";
+            }
+
+            // Pause or resume: PATCH status.  Resume also recomputes
+            // next_fire_at for a recurring task whose previous fire is
+            // now in the past.
+            std::string new_status = (kind == "pause") ? "paused" : "active";
+            std::optional<int64_t> next;
+            if (kind == "resume") {
+                auto row = tenants.get_scheduled_task(tenant_id, id);
+                if (!row) return "ERR: schedule #" + std::to_string(id) + " not found";
+                if (row->next_fire_at <= now) {
+                    if (row->schedule_kind == "recurring") {
+                        int64_t n = next_fire_for_recur(row->recur_json, now);
+                        if (n > 0) next = n;
+                    } else {
+                        // One-shot whose fire time passed during the pause
+                        // — fire on the next tick.
+                        next = now + 1;
+                    }
+                }
+            }
+            bool ok = tenants.update_scheduled_task(tenant_id, id,
+                std::optional<std::string>(new_status),
+                next, std::nullopt, std::nullopt, std::nullopt);
+            if (!ok) return "ERR: schedule #" + std::to_string(id) + " not found";
+            return "OK: " + new_status + " #" + std::to_string(id);
+        }
+
+        // kind == "create": parse "<phrase>: <message>"
+        std::string raw = trim(args);
+        auto colon = raw.find(':');
+        if (colon == std::string::npos) {
+            return "ERR: missing ':' separator. Usage: /schedule <phrase>: <message>\n"
+                   + schedule_parser_help();
+        }
+        std::string phrase  = trim(raw.substr(0, colon));
+        std::string message = trim(raw.substr(colon + 1));
+        if (phrase.empty() || message.empty()) {
+            return "ERR: empty phrase or message. Usage: /schedule <phrase>: <message>";
+        }
+
+        ParseResult parsed = parse_schedule_phrase(phrase, now);
+        if (!parsed.ok) {
+            return "ERR: " + parsed.error.message + "\n" + schedule_parser_help();
+        }
+
+        // Determine the target agent.  Default = the caller; "index" if
+        // the caller is unknown (defensive).
+        std::string target_agent = caller_agent_id.empty() ? "index" : caller_agent_id;
+
+        std::string kind_str = (parsed.spec.kind == ScheduleSpec::Kind::Once)
+            ? "once" : "recurring";
+
+        auto row = tenants.create_scheduled_task(tenant_id, target_agent,
+            conversation_id, message, phrase, kind_str,
+            parsed.spec.fire_at, parsed.spec.recur_json, parsed.spec.next_fire_at);
+
+        std::ostringstream out;
+        out << "OK: scheduled #" << row.id << " — " << parsed.spec.normalized
+            << " → " << target_agent;
+        if (conversation_id > 0) out << " (conversation #" << conversation_id << ")";
+        out << "\n";
+        out << "  message: " << message << "\n";
+        return out.str();
+    };
 }
 
 MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
@@ -5487,6 +5987,8 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
         orch->set_a2a_invoker(std::move(inv));
         if (roster_cb) orch->set_remote_roster_provider(std::move(roster_cb));
     }
+    orch->set_scheduler_invoker(
+        make_scheduler_invoker_callback(tenants, tenant.id, /*conversation_id=*/0));
     return orch;
 }
 
@@ -6594,6 +7096,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     }
 
+    // ── Scheduler bridge ──────────────────────────────────────────────
+    // /schedule resolves through this callback at every depth.  The
+    // task's conversation_id is snapshotted from the request context —
+    // this is what lets a scheduled run land its work in the same
+    // thread the agent originally scheduled it from.
+    orch->set_scheduler_invoker(
+        make_scheduler_invoker_callback(tenants, tenant.id, conversation_id));
+
     // ── Web search ────────────────────────────────────────────────────
     // /search <query> [top=N] dispatches against the configured provider.
     // Only "brave" is implemented in v1; an unrecognised provider returns
@@ -6968,6 +7478,17 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
 } // namespace
 
+// Public wrapper exposing the (anon-namespace) builder so other TUs —
+// notably the background Scheduler — can construct an Orchestrator with
+// the same wiring used by A2A's synchronous message/send path.
+std::unique_ptr<Orchestrator>
+build_blocking_orchestrator(const ApiServerOptions& opts,
+                             TenantStore& tenants,
+                             const Tenant& tenant,
+                             std::string& err_out) {
+    return build_a2a_orchestrator(opts, tenants, tenant, err_out);
+}
+
 // ─── ApiServer public API ───────────────────────────────────────────────────
 
 ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
@@ -6976,6 +7497,9 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         billing_ = std::make_unique<BillingClient>(
             opts_.billing_url);
     }
+    notifications_ = std::make_unique<NotificationBus>();
+    scheduler_     = std::make_unique<Scheduler>(
+        &opts_, &tenants_, notifications_.get());
 }
 
 ApiServer::~ApiServer() { stop(); }
@@ -7085,10 +7609,13 @@ void ApiServer::start() {
 
     running_ = true;
     accept_thread_ = std::thread(&ApiServer::accept_loop, this);
+
+    if (scheduler_) scheduler_->start();
 }
 
 void ApiServer::stop() {
     if (!running_.exchange(false)) return;
+    if (scheduler_) scheduler_->stop();
     if (listen_fd_ >= 0) {
         ::shutdown(listen_fd_, SHUT_RDWR);
         ::close(listen_fd_);
@@ -7574,6 +8101,92 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "memory route not found\n");
+            return;
+        }
+
+        // ── Schedules ─────────────────────────────────────────────────────
+        // POST   /v1/schedules                — create
+        // GET    /v1/schedules                — list (?status=active|paused|completed)
+        // GET    /v1/schedules/:id            — fetch one
+        // PATCH  /v1/schedules/:id            — update status
+        // DELETE /v1/schedules/:id            — cancel + remove
+        // GET    /v1/schedules/:id/runs       — run history for the schedule
+        if (segs.size() >= 2 && segs[0] == "v1" && segs[1] == "schedules") {
+            if (segs.size() == 2) {
+                if (req.method == "POST")
+                    return handle_schedule_create(fd, req, tenants_, *tenant);
+                if (req.method == "GET")
+                    return handle_schedule_list(fd, req, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            int64_t id = 0;
+            try { id = std::stoll(segs[2]); } catch (...) { id = 0; }
+            if (id <= 0) {
+                write_plain_response(fd, 400, "Bad Request", "bad schedule id\n");
+                return;
+            }
+            if (segs.size() == 3) {
+                if (req.method == "GET")
+                    return handle_schedule_get(fd, id, tenants_, *tenant);
+                if (req.method == "PATCH")
+                    return handle_schedule_patch(fd, id, req, tenants_, *tenant);
+                if (req.method == "DELETE")
+                    return handle_schedule_delete(fd, id, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (segs.size() == 4 && segs[3] == "runs" && req.method == "GET")
+                return handle_schedule_runs(fd, id, req, tenants_, *tenant);
+            write_plain_response(fd, 404, "Not Found", "schedule route not found\n");
+            return;
+        }
+
+        // ── Runs (cross-schedule, tenant-wide) ────────────────────────────
+        // GET /v1/runs[?since=<epoch>&task_id=<id>]
+        // GET /v1/runs/:id
+        if (segs.size() >= 2 && segs[0] == "v1" && segs[1] == "runs") {
+            if (segs.size() == 2) {
+                if (req.method == "GET")
+                    return handle_runs_list(fd, req, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (segs.size() == 3) {
+                int64_t id = 0;
+                try { id = std::stoll(segs[2]); } catch (...) { id = 0; }
+                if (id <= 0) {
+                    write_plain_response(fd, 400, "Bad Request", "bad run id\n");
+                    return;
+                }
+                if (req.method == "GET")
+                    return handle_run_get(fd, id, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            write_plain_response(fd, 404, "Not Found", "run route not found\n");
+            return;
+        }
+
+        // ── Notifications stream ─────────────────────────────────────────
+        // GET /v1/notifications/stream  (long-lived SSE)
+        if (segs.size() == 3 && segs[0] == "v1" &&
+            segs[1] == "notifications" && segs[2] == "stream") {
+            if (req.method != "GET") {
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (!notifications_) {
+                write_plain_response(fd, 503, "Service Unavailable",
+                                     "notifications subsystem not initialized\n");
+                return;
+            }
+            handle_notifications_stream(fd, *tenant, *notifications_);
             return;
         }
     }

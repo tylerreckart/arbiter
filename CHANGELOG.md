@@ -7,6 +7,20 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Background scheduler.** New `/schedule "<phrase>": <message>` writ that
+  defers or recurs agent work; the API server's tick thread fires due
+  tasks through the same orchestrator path that `/v1/orchestrate` uses,
+  persists the result as a `task_runs` row, and publishes a notification
+  on a long-lived SSE stream.  Strict NL parser covers `in N (min/h/day/
+  week)`, `at HH:MM`, `tomorrow [at HH:MM]`, `on YYYY-MM-DD [at HH:MM]`,
+  `every (hour|hourly)`, `every N (min|hour)s`, `every (day|daily) [at
+  HH:MM]`, `every (week|weekly|<weekday>) [at HH:MM]`.  HTTP surface:
+  `POST/GET /v1/schedules`, `GET/PATCH/DELETE /v1/schedules/:id`,
+  `GET /v1/schedules/:id/runs`, `GET /v1/runs[?since=&task_id=]`,
+  `GET /v1/runs/:id`, `GET /v1/notifications/stream`.  See
+  [`docs/concepts/scheduler.md`](docs/concepts/scheduler.md).
+
 ## [0.4.4] — 2026-05-07
 
 ### Added

@@ -102,6 +102,22 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = "list";
             result.push_back(std::move(cmd));
 
+        } else if (line == "/schedule list") {
+            AgentCommand cmd;
+            cmd.name = "schedule";
+            cmd.args = "list";
+            result.push_back(std::move(cmd));
+        } else if (line.size() > 10 && line.substr(0, 10) == "/schedule ") {
+            // /schedule <phrase>: <message>   — create
+            // /schedule list                   — list active schedules
+            // /schedule cancel <id>            — delete
+            // /schedule pause  <id>            — set status='paused'
+            // /schedule resume <id>            — set status='active'
+            AgentCommand cmd;
+            cmd.name = "schedule";
+            cmd.args = line.substr(10);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+
         } else if (line.size() > 14 && line.substr(0, 14) == "/mem add entry") {
             // Block form: /mem add entry <type> <title> [--artifact #<id>]
             //             <content body, multi-line>
@@ -1478,6 +1494,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ArtifactReader artifact_reader,
                                    ArtifactLister artifact_lister,
                                    A2AInvoker     a2a_invoker,
+                                   SchedulerInvoker scheduler_invoker,
                                    const std::vector<std::string>& capabilities,
                                    std::vector<ContentPart>* out_image_parts) {
     std::ostringstream out;
@@ -1895,6 +1912,55 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     cache_result = false;
             }
             block << "[END A2A]\n\n";
+
+        } else if (cmd.name == "schedule") {
+            // /schedule list
+            // /schedule cancel <id>
+            // /schedule pause  <id>
+            // /schedule resume <id>
+            // /schedule <phrase>: <message>           ← implicit "create"
+            //
+            // The callback receives ("list"|"cancel"|"pause"|"resume", args)
+            // for the explicit subcommands and ("create", full-line) for the
+            // phrase-and-message form, mirroring the /a2a / /mcp shape.
+            std::istringstream iss(cmd.args);
+            std::string subcmd;
+            iss >> subcmd;
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+
+            std::string callback_kind;
+            std::string callback_args;
+            if (subcmd == "list" || subcmd == "cancel" ||
+                subcmd == "pause" || subcmd == "resume") {
+                callback_kind = subcmd;
+                callback_args = rest;
+            } else {
+                callback_kind = "create";
+                callback_args = cmd.args;
+            }
+
+            block << "[/schedule " << callback_kind
+                  << (callback_args.empty() ? "" : " " + callback_args)
+                  << "]\n";
+            if (!scheduler_invoker) {
+                block << "ERR: scheduling unavailable in this context — "
+                         "the /schedule writ requires the HTTP API's "
+                         "scheduler subsystem.  Run under /v1/orchestrate.\n";
+                cache_result = false;
+            } else {
+                std::string body = scheduler_invoker(callback_kind, callback_args, agent_id);
+                if (body.size() > kPerFetchLimit) {
+                    body.resize(kPerFetchLimit);
+                    body += "\n... [truncated]";
+                }
+                block << body;
+                if (body.empty() || body.back() != '\n') block << "\n";
+                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
+            }
+            block << "[END SCHEDULE]\n\n";
 
         } else if (cmd.name == "mem") {
             std::istringstream iss(cmd.args);

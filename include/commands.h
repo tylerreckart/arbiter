@@ -317,6 +317,23 @@ using MCPInvoker = std::function<std::string(const std::string& kind,
 using A2AInvoker = std::function<std::string(const std::string& kind,
                                               const std::string& args)>;
 
+// Bridge to the per-tenant scheduling subsystem.  Drives /schedule:
+//   /schedule <phrase>: <message>   — create a scheduled task
+//   /schedule list                  — render the active schedules
+//   /schedule cancel <id>           — delete a scheduled task
+//   /schedule pause <id>            — set status='paused'
+//   /schedule resume <id>           — set status='active' and recompute next_fire_at
+// The callback receives (kind, rest-of-line, caller_agent_id) where kind
+// is the leading subcommand keyword and rest-of-line is everything after
+// it.  For the implicit "create" form (no recognised subcommand), kind
+// == "create" and args == the full line; the scheduled task targets
+// `caller_agent_id` by default.  Without this callback the dispatcher
+// returns ERR — the writ only works under the HTTP API where the
+// scheduler subsystem is wired in.
+using SchedulerInvoker = std::function<std::string(const std::string& kind,
+                                                    const std::string& args,
+                                                    const std::string& caller_agent_id)>;
+
 // True if `cmd` matches a pattern we always want to confirm before exec'ing
 // (rm, rm -rf, redirects, sudo, mkfs, git force-push, find -delete, etc.).
 // Conservative — misses creative destruction, but catches the common footguns.
@@ -354,6 +371,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ArtifactReader artifact_reader = nullptr,
                                    ArtifactLister artifact_lister = nullptr,
                                    A2AInvoker     a2a_invoker     = nullptr,
+                                   SchedulerInvoker scheduler_invoker = nullptr,
                                    // Capability allowlist matching the
                                    // calling agent's constitution.  Empty
                                    // = "all bundles" (preserves legacy
