@@ -8,6 +8,26 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Self-reflection / learned-from-failure.**  New `lessons` table on
+  `TenantStore`, agent-scoped (`tenant_id`, `agent_id`).  Three
+  integrated mechanisms:
+  - **`/lesson` writ** with `<signature>: <text>` single-line and
+    `/endlesson`-terminated block forms; subcommands `list`, `search
+    <query>`, `delete <id>`.  Backed by a `LessonInvoker` callback
+    threaded through `Orchestrator` and `execute_agent_commands`.
+  - **Intra-turn loop detection.**  The dispatch loop tracks
+    `(tool, args)` signatures that produced `ERR:`; when the same
+    signature ERRs twice in a row a `[LOOP DETECTED]` block is
+    prepended to the next user-role tool-result block, naming the
+    offending call so the agent breaks out instead of grinding.
+  - **Pre-turn lesson injection.**  At the top of each top-level
+    `run_dispatch`, the runtime probes the agent's lessons against
+    the user's prompt (substring match on signature + lesson_text),
+    bumps `hit_count` on surfaced rows, and prepends a `KNOWN
+    PITFALLS` block before the message.
+  HTTP surface: `POST/GET /v1/lessons`, `GET/PATCH/DELETE
+  /v1/lessons/:id`.  See
+  [`docs/concepts/lessons.md`](docs/concepts/lessons.md).
 - **Memory consolidation + age decay.**  `/mem add entry --supersedes
   #N,#M` (and `POST /v1/memory/entries` `supersedes_ids: [N, M]`)
   creates a synthesis entry that supersedes the listed prior entries

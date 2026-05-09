@@ -3989,6 +3989,179 @@ void handle_cancel(int fd, const HttpRequest& req,
     }
 }
 
+// ── Lessons ────────────────────────────────────────────────────────────
+
+std::shared_ptr<JsonValue> lesson_to_json(const TenantStore::Lesson& l) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["id"]            = jnum(l.id);
+    m["agent_id"]      = jstr(l.agent_id);
+    m["signature"]     = jstr(l.signature);
+    m["lesson_text"]   = jstr(l.lesson_text);
+    m["hit_count"]     = jnum(l.hit_count);
+    m["created_at"]    = jnum(l.created_at);
+    m["updated_at"]    = jnum(l.updated_at);
+    m["last_seen_at"]  = jnum(l.last_seen_at);
+    return o;
+}
+
+void handle_lesson_create(int fd, const HttpRequest& req,
+                           TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    auto get_str = [&](const char* k) -> std::string {
+        auto v = body->get(k);
+        return (v && v->is_string()) ? v->as_string() : std::string{};
+    };
+    std::string signature   = get_str("signature");
+    std::string lesson_text = get_str("lesson_text");
+    std::string agent_id    = get_str("agent_id");
+    if (signature.empty() || lesson_text.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("required fields: signature, lesson_text");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (signature.size() > 200) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("signature must be ≤ 200 chars");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (lesson_text.size() > 4096) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson_text must be ≤ 4096 chars");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (agent_id.empty()) agent_id = "index";
+    auto l = tenants.create_lesson(tenant.id, agent_id, signature, lesson_text);
+    auto out = jobj();
+    out->as_object_mut()["lesson"] = lesson_to_json(l);
+    write_json_response(fd, 201, out);
+}
+
+void handle_lesson_list(int fd, const HttpRequest& req,
+                         TenantStore& tenants, const Tenant& tenant) {
+    std::string agent_id;
+    std::string query;
+    int limit = 100;
+    auto qpos = req.path.find('?');
+    if (qpos != std::string::npos) {
+        std::string qs = req.path.substr(qpos + 1);
+        size_t i = 0;
+        while (i < qs.size()) {
+            size_t amp = qs.find('&', i);
+            std::string pair = qs.substr(i, amp - i);
+            auto eq = pair.find('=');
+            if (eq != std::string::npos) {
+                std::string k = pair.substr(0, eq);
+                std::string v = pair.substr(eq + 1);
+                if      (k == "agent_id") agent_id = v;
+                else if (k == "q")        query    = v;
+                else if (k == "limit") try { limit = std::stoi(v); } catch (...) {}
+            }
+            if (amp == std::string::npos) break;
+            i = amp + 1;
+        }
+    }
+    auto rows = query.empty()
+        ? tenants.list_lessons(tenant.id, agent_id, limit)
+        : tenants.search_lessons(tenant.id, agent_id, query, limit);
+    auto arr = jarr();
+    for (auto& r : rows) arr->as_array_mut().push_back(lesson_to_json(r));
+    auto out = jobj();
+    out->as_object_mut()["lessons"] = arr;
+    write_json_response(fd, 200, out);
+}
+
+void handle_lesson_get(int fd, int64_t id,
+                        TenantStore& tenants, const Tenant& tenant) {
+    auto row = tenants.get_lesson(tenant.id, id);
+    if (!row) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["lesson"] = lesson_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+void handle_lesson_patch(int fd, int64_t id, const HttpRequest& req,
+                          TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    auto opt_str = [&](const char* k) -> std::optional<std::string> {
+        auto v = body->get(k);
+        if (v && v->is_string()) return v->as_string();
+        return std::nullopt;
+    };
+    auto sig = opt_str("signature");
+    auto txt = opt_str("lesson_text");
+    if (sig && sig->size() > 200) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("signature must be ≤ 200 chars");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (txt && txt->size() > 4096) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson_text must be ≤ 4096 chars");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!tenants.update_lesson(tenant.id, id, sig, txt)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto row = tenants.get_lesson(tenant.id, id);
+    auto out = jobj();
+    if (row) out->as_object_mut()["lesson"] = lesson_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+void handle_lesson_delete(int fd, int64_t id,
+                           TenantStore& tenants, const Tenant& tenant) {
+    if (!tenants.delete_lesson(tenant.id, id)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["deleted"] = jbool(true);
+    write_json_response(fd, 200, out);
+}
+
 // ── Todos ──────────────────────────────────────────────────────────────
 
 std::shared_ptr<JsonValue> todo_to_json(const TenantStore::Todo& t) {
@@ -4785,6 +4958,168 @@ SchedulerInvoker make_scheduler_invoker_callback(
         out << "\n";
         out << "  message: " << message << "\n";
         return out.str();
+    };
+}
+
+// Build a LessonInvoker bound to the calling tenant.  Lessons are
+// scoped to (tenant, agent_id) — the calling agent's id captured at
+// dispatch time is the owner of any newly-created lesson and the
+// filter on read.  Same render style as /todo and /schedule.
+LessonInvoker make_lesson_invoker_callback(
+        TenantStore& tenants, int64_t tenant_id) {
+    return [&tenants, tenant_id](
+            const std::string& kind,
+            const std::string& args,
+            const std::string& caller_agent_id) -> std::string {
+        auto trim = [](std::string s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+            return s;
+        };
+
+        const std::string owner =
+            caller_agent_id.empty() ? "index" : caller_agent_id;
+
+        auto render_one = [](const TenantStore::Lesson& l) {
+            std::ostringstream out;
+            out << "#" << l.id << "  ";
+            if (!l.signature.empty()) out << "[" << l.signature << "]  ";
+            out << l.lesson_text;
+            if (l.hit_count > 0) out << "  (hits: " << l.hit_count << ")";
+            return out.str();
+        };
+
+        if (kind == "list") {
+            auto rows = tenants.list_lessons(tenant_id, owner, 25);
+            if (rows.empty()) return "(no lessons recorded)";
+            std::ostringstream out;
+            out << rows.size() << " lesson(s):\n";
+            for (auto& l : rows) out << "  " << render_one(l) << "\n";
+            return out.str();
+        }
+
+        if (kind == "search") {
+            std::string q = trim(args);
+            if (q.empty()) return "ERR: usage: /lesson search <query>";
+            auto rows = tenants.search_lessons(tenant_id, owner, q, 10);
+            if (rows.empty()) return "(no matches)";
+            std::ostringstream out;
+            out << rows.size() << " match(es):\n";
+            for (auto& l : rows) out << "  " << render_one(l) << "\n";
+            return out.str();
+        }
+
+        if (kind == "delete") {
+            std::string id_s = trim(args);
+            if (!id_s.empty() && id_s.front() == '#') id_s.erase(0, 1);
+            int64_t id = 0;
+            try { id = std::stoll(id_s); } catch (...) { id = 0; }
+            if (id <= 0) return "ERR: usage: /lesson delete <id>";
+            if (!tenants.delete_lesson(tenant_id, id))
+                return "ERR: lesson #" + std::to_string(id) + " not found";
+            return "OK: deleted #" + std::to_string(id);
+        }
+
+        // Internal: preamble injection.  Looks up lessons that match
+        // the upcoming user message heuristically (substring search on
+        // signature + lesson_text), bumps `last_seen_at` for surfaced
+        // rows so frequently-applicable lessons rise to the top, and
+        // returns a renderable block.  Returns "(no lessons recorded)"
+        // when the agent has none — the orchestrator skips injection.
+        if (kind == "preamble") {
+            // Cheap keyword extraction: grab unique alpha words >= 4 chars
+            // from the first 400 chars of the prompt.  Search each one
+            // and union the results, deduped by id.
+            std::string prompt = args;
+            if (prompt.size() > 400) prompt.resize(400);
+            std::vector<std::string> keywords;
+            {
+                std::string cur;
+                auto flush = [&]() {
+                    if (cur.size() >= 4) {
+                        bool dup = false;
+                        for (auto& k : keywords) if (k == cur) { dup = true; break; }
+                        if (!dup) keywords.push_back(cur);
+                    }
+                    cur.clear();
+                };
+                for (char c : prompt) {
+                    if (std::isalpha(static_cast<unsigned char>(c))) {
+                        cur.push_back(static_cast<char>(std::tolower(
+                            static_cast<unsigned char>(c))));
+                    } else {
+                        flush();
+                    }
+                    if (keywords.size() >= 12) break;
+                }
+                flush();
+            }
+            std::map<int64_t, TenantStore::Lesson> hits;
+            for (auto& kw : keywords) {
+                auto rows = tenants.search_lessons(tenant_id, owner, kw, 5);
+                for (auto& r : rows) hits.emplace(r.id, r);
+                if (hits.size() >= 8) break;
+            }
+            if (hits.empty()) return "(no lessons recorded)";
+
+            // Sort by hit_count desc, last_seen_at desc; cap at 3.
+            std::vector<TenantStore::Lesson> ranked;
+            for (auto& [_, l] : hits) ranked.push_back(l);
+            std::sort(ranked.begin(), ranked.end(),
+                [](const TenantStore::Lesson& a, const TenantStore::Lesson& b){
+                    if (a.hit_count != b.hit_count) return a.hit_count > b.hit_count;
+                    return a.last_seen_at > b.last_seen_at;
+                });
+            if (ranked.size() > 3) ranked.resize(3);
+
+            std::ostringstream out;
+            out << "[KNOWN PITFALLS — your prior lessons]\n";
+            for (auto& l : ranked) {
+                out << "  - [" << l.signature << "] " << l.lesson_text
+                    << " (#" << l.id << ")\n";
+                tenants.bump_lesson_hit(tenant_id, l.id);
+            }
+            out << "[END KNOWN PITFALLS]";
+            return out.str();
+        }
+
+        if (kind == "create") {
+            // args carries either:
+            //   "<signature>: <text>"           (single-line)
+            //   "<signature>\n\n<body>"         (block form)
+            std::string signature, lesson_text;
+            auto blockSep = args.find("\n\n");
+            if (blockSep != std::string::npos) {
+                signature = trim(args.substr(0, blockSep));
+                lesson_text = args.substr(blockSep + 2);
+                while (!lesson_text.empty() && lesson_text.back() == '\n')
+                    lesson_text.pop_back();
+            } else {
+                auto colon = args.find(':');
+                if (colon == std::string::npos) {
+                    return "ERR: /lesson <signature>: <text>  OR  block "
+                           "form ending with /endlesson";
+                }
+                signature   = trim(args.substr(0, colon));
+                lesson_text = trim(args.substr(colon + 1));
+            }
+            if (signature.empty() || lesson_text.empty()) {
+                return "ERR: signature and lesson text are both required";
+            }
+            if (signature.size() > 200) {
+                return "ERR: signature must be ≤ 200 chars";
+            }
+            if (lesson_text.size() > 4096) {
+                return "ERR: lesson text must be ≤ 4096 chars";
+            }
+            auto l = tenants.create_lesson(tenant_id, owner, signature,
+                                            lesson_text);
+            std::ostringstream out;
+            out << "OK: recorded lesson #" << l.id << " — " << render_one(l);
+            return out.str();
+        }
+
+        return "ERR: unknown /lesson subcommand '" + kind + "'";
     };
 }
 
@@ -6527,6 +6862,8 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
         make_scheduler_invoker_callback(tenants, tenant.id, /*conversation_id=*/0));
     orch->set_todo_invoker(
         make_todo_invoker_callback(tenants, tenant.id, /*conversation_id=*/0));
+    orch->set_lesson_invoker(
+        make_lesson_invoker_callback(tenants, tenant.id));
     return orch;
 }
 
@@ -7649,6 +7986,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     orch->set_todo_invoker(
         make_todo_invoker_callback(tenants, tenant.id, conversation_id));
 
+    // ── Lesson bridge ────────────────────────────────────────────────
+    // /lesson resolves through this callback.  Lessons are agent-scoped
+    // (not conversation-scoped) — they follow the agent's identity
+    // across every conversation in the tenant.
+    orch->set_lesson_invoker(
+        make_lesson_invoker_callback(tenants, tenant.id));
+
     // ── Web search ────────────────────────────────────────────────────
     // /search <query> [top=N] dispatches against the configured provider.
     // Only "brave" is implemented in v1; an unrecognised provider returns
@@ -8683,6 +9027,43 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "memory route not found\n");
+            return;
+        }
+
+        // ── Lessons ───────────────────────────────────────────────────────
+        // POST   /v1/lessons              — create
+        // GET    /v1/lessons              — list (?agent_id=&q=&limit=)
+        // GET    /v1/lessons/:id          — fetch one
+        // PATCH  /v1/lessons/:id          — update signature/lesson_text
+        // DELETE /v1/lessons/:id          — hard remove
+        if (segs.size() >= 2 && segs[0] == "v1" && segs[1] == "lessons") {
+            if (segs.size() == 2) {
+                if (req.method == "POST")
+                    return handle_lesson_create(fd, req, tenants_, *tenant);
+                if (req.method == "GET")
+                    return handle_lesson_list(fd, req, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (segs.size() == 3) {
+                int64_t id = 0;
+                try { id = std::stoll(segs[2]); } catch (...) { id = 0; }
+                if (id <= 0) {
+                    write_plain_response(fd, 400, "Bad Request", "bad lesson id\n");
+                    return;
+                }
+                if (req.method == "GET")
+                    return handle_lesson_get(fd, id, tenants_, *tenant);
+                if (req.method == "PATCH")
+                    return handle_lesson_patch(fd, id, req, tenants_, *tenant);
+                if (req.method == "DELETE")
+                    return handle_lesson_delete(fd, id, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            write_plain_response(fd, 404, "Not Found", "lesson route not found\n");
             return;
         }
 

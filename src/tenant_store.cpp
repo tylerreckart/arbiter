@@ -802,6 +802,35 @@ void TenantStore::open(const std::string& path) {
             ON a2a_tasks(tenant_id, context_id);
     )SQL");
 
+    // Lessons: agent-scoped "learned-from-failure" record.  Indexed by
+    // (tenant, agent, last_seen_at DESC) for the agent's at-a-glance
+    // list and (tenant, agent, signature) for the loop detector's
+    // dedupe lookup.  No FTS5 — substring search on lesson_text is
+    // fine at expected tenant scale (tens to low hundreds of rows
+    // per agent).
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS lessons (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id       INTEGER NOT NULL,
+            agent_id        TEXT    NOT NULL,
+            signature       TEXT    NOT NULL,
+            lesson_text     TEXT    NOT NULL,
+            hit_count       INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            last_seen_at    INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS lessons_agent_recent
+            ON lessons(tenant_id, agent_id, last_seen_at DESC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS lessons_agent_signature
+            ON lessons(tenant_id, agent_id, signature);
+    )SQL");
+
     // Todos: agent-facing work tracker.  Tenant-scoped; conversation_id=0
     // means tenant-wide (visible from every conversation).  Indexed for
     // the common queries: per-conversation list, per-tenant cross-thread
@@ -2527,6 +2556,166 @@ int64_t TenantStore::bytes_used_conversation(int64_t tenant_id,
     q.bind(2, conversation_id);
     if (q.step() != SQLITE_ROW) return 0;
     return q.column_int64(0);
+}
+
+// ── Lessons ─────────────────────────────────────────────────────────────
+
+namespace {
+
+constexpr const char* kLessonCols =
+    "id, tenant_id, agent_id, signature, lesson_text, "
+    "hit_count, created_at, updated_at, last_seen_at";
+
+TenantStore::Lesson row_to_lesson(Stmt& q) {
+    TenantStore::Lesson l;
+    l.id           = q.column_int64(0);
+    l.tenant_id    = q.column_int64(1);
+    l.agent_id     = q.column_text(2);
+    l.signature    = q.column_text(3);
+    l.lesson_text  = q.column_text(4);
+    l.hit_count    = q.column_int64(5);
+    l.created_at   = q.column_int64(6);
+    l.updated_at   = q.column_int64(7);
+    l.last_seen_at = q.column_int64(8);
+    return l;
+}
+
+} // namespace
+
+TenantStore::Lesson
+TenantStore::create_lesson(int64_t tenant_id,
+                            const std::string& agent_id,
+                            const std::string& signature,
+                            const std::string& lesson_text) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    const int64_t ts = now_epoch();
+    Stmt q(db_,
+        "INSERT INTO lessons "
+        "(tenant_id, agent_id, signature, lesson_text, "
+        " hit_count, created_at, updated_at, last_seen_at) "
+        "VALUES (?, ?, ?, ?, 0, ?, ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, agent_id);
+    q.bind(3, signature);
+    q.bind(4, lesson_text);
+    q.bind(5, ts);
+    q.bind(6, ts);
+    q.bind(7, ts);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert lesson");
+
+    Lesson l;
+    l.id           = sqlite3_last_insert_rowid(db_);
+    l.tenant_id    = tenant_id;
+    l.agent_id     = agent_id;
+    l.signature    = signature;
+    l.lesson_text  = lesson_text;
+    l.created_at   = ts;
+    l.updated_at   = ts;
+    l.last_seen_at = ts;
+    return l;
+}
+
+std::optional<TenantStore::Lesson>
+TenantStore::get_lesson(int64_t tenant_id, int64_t id) const {
+    if (!db_) return std::nullopt;
+    std::string sql = std::string("SELECT ") + kLessonCols +
+        " FROM lessons WHERE tenant_id = ? AND id = ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_lesson(q);
+}
+
+std::vector<TenantStore::Lesson>
+TenantStore::list_lessons(int64_t tenant_id,
+                           const std::string& agent_id, int limit) const {
+    std::vector<Lesson> out;
+    if (!db_) return out;
+    if (limit <= 0 || limit > 200) limit = 100;
+    std::string sql = std::string("SELECT ") + kLessonCols +
+        " FROM lessons WHERE tenant_id = ?";
+    if (!agent_id.empty()) sql += " AND agent_id = ?";
+    sql += " ORDER BY last_seen_at DESC, created_at DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    if (!agent_id.empty()) q.bind(idx++, agent_id);
+    q.bind(idx, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_lesson(q));
+    return out;
+}
+
+std::vector<TenantStore::Lesson>
+TenantStore::search_lessons(int64_t tenant_id,
+                             const std::string& agent_id,
+                             const std::string& query, int limit) const {
+    std::vector<Lesson> out;
+    if (!db_ || query.empty()) return out;
+    if (limit <= 0 || limit > 50) limit = 20;
+    // Substring match — case-insensitive on lesson_text + signature.  At
+    // tens-to-hundreds of rows per agent this is fine; an FTS index
+    // would be premature.
+    std::string sql = std::string("SELECT ") + kLessonCols +
+        " FROM lessons WHERE tenant_id = ?";
+    if (!agent_id.empty()) sql += " AND agent_id = ?";
+    sql += " AND (lower(signature) LIKE ? OR lower(lesson_text) LIKE ?)"
+           " ORDER BY hit_count DESC, last_seen_at DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    if (!agent_id.empty()) q.bind(idx++, agent_id);
+    std::string pat = "%";
+    for (char c : query) pat.push_back(static_cast<char>(std::tolower(
+        static_cast<unsigned char>(c))));
+    pat.push_back('%');
+    q.bind(idx++, pat);
+    q.bind(idx++, pat);
+    q.bind(idx, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_lesson(q));
+    return out;
+}
+
+bool TenantStore::update_lesson(int64_t tenant_id, int64_t id,
+                                 const std::optional<std::string>& signature,
+                                 const std::optional<std::string>& lesson_text) {
+    if (!db_) return false;
+    if (!signature && !lesson_text) return false;
+    std::string sql = "UPDATE lessons SET updated_at = ?";
+    if (signature)   sql += ", signature = ?";
+    if (lesson_text) sql += ", lesson_text = ?";
+    sql += " WHERE tenant_id = ? AND id = ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, now_epoch());
+    if (signature)   q.bind(idx++, *signature);
+    if (lesson_text) q.bind(idx++, *lesson_text);
+    q.bind(idx++, tenant_id);
+    q.bind(idx,   id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::delete_lesson(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    Stmt q(db_, "DELETE FROM lessons WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::bump_lesson_hit(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    Stmt q(db_,
+        "UPDATE lessons SET hit_count = hit_count + 1, last_seen_at = ? "
+        " WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, now_epoch());
+    q.bind(2, tenant_id);
+    q.bind(3, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
 }
 
 // ── Todos ───────────────────────────────────────────────────────────────

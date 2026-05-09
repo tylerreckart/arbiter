@@ -338,6 +338,59 @@ public:
 
     bool delete_agent_record(int64_t tenant_id, const std::string& agent_id);
 
+    // ── Lessons (self-reflection / learned-from-failure) ─────────────────
+    //
+    // Agent-scoped record of "this approach failed, try this instead."
+    // Distinct from memory entries: scoped to (tenant_id, agent_id), no
+    // temporal validity window (lessons compound; they don't retire),
+    // signature-keyed for retrieval rather than free-text title-keyed.
+    //
+    // Created by an agent emitting /lesson <sig>: <text> (or the block
+    // form), or by the runtime's intra-turn loop detector after a tool
+    // call repeats with the same failure.  Surfaced back to the agent
+    // (a) by the pre-turn KNOWN PITFALLS injection that matches lessons
+    // against the user's prompt, and (b) by /lesson list / search.
+    struct Lesson {
+        int64_t     id              = 0;
+        int64_t     tenant_id       = 0;
+        std::string agent_id;                    // owner; lessons follow the agent
+        std::string signature;                   // tool / pattern that triggers it
+        std::string lesson_text;                 // "do this instead"
+        int64_t     hit_count       = 0;         // bumped each time the lesson is consulted
+        int64_t     created_at      = 0;
+        int64_t     updated_at      = 0;
+        int64_t     last_seen_at    = 0;
+    };
+
+    Lesson create_lesson(int64_t tenant_id,
+                          const std::string& agent_id,
+                          const std::string& signature,
+                          const std::string& lesson_text);
+
+    std::optional<Lesson> get_lesson(int64_t tenant_id, int64_t id) const;
+
+    // List the agent's lessons.  Most recently `last_seen_at` first
+    // (so frequently-consulted ones rise to the top), then by `created_at`.
+    // `agent_id` empty ⇒ no agent filter (tenant-wide view).
+    std::vector<Lesson>
+    list_lessons(int64_t tenant_id, const std::string& agent_id, int limit) const;
+
+    // Substring match on signature OR lesson_text.  Used by the pre-turn
+    // injector and /lesson search.  `agent_id` empty ⇒ no agent filter.
+    std::vector<Lesson>
+    search_lessons(int64_t tenant_id, const std::string& agent_id,
+                    const std::string& query, int limit) const;
+
+    bool update_lesson(int64_t tenant_id, int64_t id,
+                       const std::optional<std::string>& signature,
+                       const std::optional<std::string>& lesson_text);
+
+    bool delete_lesson(int64_t tenant_id, int64_t id);
+
+    // Bump hit_count and stamp last_seen_at = now().  Idempotent — safe
+    // to call from the loop detector and the pre-turn injector both.
+    bool bump_lesson_hit(int64_t tenant_id, int64_t id);
+
     // ── Todos ────────────────────────────────────────────────────────────
     //
     // Agent-facing work tracker.  An agent emits /todo add … to capture

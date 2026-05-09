@@ -25,6 +25,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [Operational notes](concepts/operations.md)
 - [Scheduler](concepts/scheduler.md)
 - [Todos](concepts/todos.md)
+- [Lessons (self-reflection)](concepts/lessons.md)
 
 ## Endpoints
 
@@ -84,6 +85,13 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/todos/:id`](todos/get.md)
 - [`PATCH /v1/todos/:id`](todos/patch.md)
 - [`DELETE /v1/todos/:id`](todos/delete.md)
+
+### Lessons (self-reflection)
+- [`POST /v1/lessons`](lessons/create.md)
+- [`GET /v1/lessons`](lessons/list.md)
+- [`GET /v1/lessons/:id`](lessons/get.md)
+- [`PATCH /v1/lessons/:id`](lessons/patch.md)
+- [`DELETE /v1/lessons/:id`](lessons/delete.md)
 
 ### Schedules + runs + notifications
 - [`POST /v1/schedules`](schedules/create.md)

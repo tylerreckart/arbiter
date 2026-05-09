@@ -118,6 +118,13 @@ public:
         todo_invoker_cb_ = std::move(cb);
     }
 
+    // Bridge to the agent-scoped lesson store.  /lesson resolves through
+    // this callback at every depth.  Wired by the API server against
+    // the per-tenant TenantStore.  Without this set, /lesson returns ERR.
+    void set_lesson_invoker(LessonInvoker cb) {
+        lesson_invoker_cb_ = std::move(cb);
+    }
+
     // Inject a roster of remote A2A agents into the master orchestrator's
     // turn preamble.  When set, every /v1/orchestrate (and /v1/a2a)
     // invocation against `index` sees the configured remote agents in
@@ -380,6 +387,7 @@ private:
     A2AInvoker         a2a_invoker_cb_;
     SchedulerInvoker   scheduler_invoker_cb_;
     TodoInvoker        todo_invoker_cb_;
+    LessonInvoker      lesson_invoker_cb_;
     RemoteRosterProvider remote_roster_cb_;
     MemoryScratchpadInvoker memory_scratchpad_cb_;
     SearchInvoker      search_invoker_cb_;

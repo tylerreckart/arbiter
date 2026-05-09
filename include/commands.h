@@ -317,6 +317,23 @@ using MCPInvoker = std::function<std::string(const std::string& kind,
 using A2AInvoker = std::function<std::string(const std::string& kind,
                                               const std::string& args)>;
 
+// Bridge to the agent-scoped lesson store.  Drives /lesson:
+//   /lesson <signature>: <text>           — single-line capture
+//   /lesson <signature>                    — block form for multi-line:
+//   <body…>
+//   /endlesson
+//   /lesson list                           — agent's lessons, newest-consulted first
+//   /lesson search <query>                 — substring match
+//   /lesson delete <id>                    — hard remove
+//
+// The callback receives (kind, args, caller_agent_id).  For the
+// implicit "create" form, kind == "create" and args carries
+// "<signature>: <text>" (or block form).  Without this callback the
+// dispatcher returns ERR — same pattern as /todo and /schedule.
+using LessonInvoker = std::function<std::string(const std::string& kind,
+                                                  const std::string& args,
+                                                  const std::string& caller_agent_id)>;
+
 // Bridge to the agent-facing todo tracker.  Drives /todo:
 //   /todo add <subject>             — single-line: subject only, no body
 //   /todo add <subject>             — block form with body:
@@ -396,6 +413,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    A2AInvoker     a2a_invoker     = nullptr,
                                    SchedulerInvoker scheduler_invoker = nullptr,
                                    TodoInvoker      todo_invoker      = nullptr,
+                                   LessonInvoker    lesson_invoker    = nullptr,
                                    // Capability allowlist matching the
                                    // calling agent's constitution.  Empty
                                    // = "all bundles" (preserves legacy

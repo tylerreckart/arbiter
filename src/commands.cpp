@@ -161,6 +161,65 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.name = "todo";
             cmd.args = line.substr(6);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
+        } else if (line == "/lesson list") {
+            AgentCommand cmd;
+            cmd.name = "lesson";
+            cmd.args = "list";
+            result.push_back(std::move(cmd));
+        } else if (line.size() > 8 && line.substr(0, 8) == "/lesson ") {
+            // /lesson list                       — caller's lessons
+            // /lesson search <query>             — substring match
+            // /lesson delete <id>                — hard remove
+            // /lesson <signature>: <text>        — single-line create
+            // /lesson <signature>\n<body>\n/endlesson — block-form create
+            //
+            // The dispatcher decides between these by inspecting the
+            // first whitespace-delimited subtoken.
+            AgentCommand cmd;
+            cmd.name = "lesson";
+            std::string head = line.substr(8);
+            cmd.args = head;
+
+            // Block-form detection: if the head doesn't contain a `:`
+            // (single-line marker) AND doesn't begin with a recognised
+            // verb (list / search / delete), peek ahead for a body
+            // terminated by /endlesson.
+            std::string first;
+            {
+                std::istringstream iss(head);
+                iss >> first;
+            }
+            bool is_subverb = (first == "list" || first == "search" ||
+                                first == "delete");
+            bool has_colon  = head.find(':') != std::string::npos;
+            if (!is_subverb && !has_colon) {
+                std::streampos pos = ss.tellg();
+                std::string next;
+                std::ostringstream body;
+                bool any_body = false;
+                bool closed   = false;
+                while (std::getline(ss, next)) {
+                    if (!next.empty() && next.back() == '\r') next.pop_back();
+                    if (!any_body) {
+                        if (next.empty() ||
+                            (!next.empty() && next.front() == '/')) {
+                            ss.clear();
+                            ss.seekg(pos);
+                            break;
+                        }
+                        any_body = true;
+                    }
+                    if (next == "/endlesson") { closed = true; break; }
+                    body << next << "\n";
+                }
+                if (any_body) {
+                    cmd.content = body.str();
+                    if (!cmd.content.empty() && cmd.content.back() == '\n')
+                        cmd.content.pop_back();
+                    cmd.truncated = !closed;
+                }
+            }
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
         } else if (line == "/schedule list") {
             AgentCommand cmd;
             cmd.name = "schedule";
@@ -1555,6 +1614,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    A2AInvoker     a2a_invoker,
                                    SchedulerInvoker scheduler_invoker,
                                    TodoInvoker      todo_invoker,
+                                   LessonInvoker    lesson_invoker,
                                    const std::vector<std::string>& capabilities,
                                    std::vector<ContentPart>* out_image_parts) {
     std::ostringstream out;
@@ -2077,6 +2137,60 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     cache_result = false;
             }
             block << "[END TODO]\n\n";
+
+        } else if (cmd.name == "lesson") {
+            // First-token dispatch — the verbs (list/search/delete) are
+            // mutually exclusive with the implicit "create" form.  Body
+            // (when present, from block form) gets packed into args
+            // after a `\n\n` so the callback can split it back out.
+            std::istringstream iss(cmd.args);
+            std::string subcmd;
+            iss >> subcmd;
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+
+            std::string callback_kind;
+            std::string callback_args;
+            if (subcmd == "list") {
+                callback_kind = "list";
+                callback_args = rest;
+            } else if (subcmd == "search") {
+                callback_kind = "search";
+                callback_args = rest;
+            } else if (subcmd == "delete") {
+                callback_kind = "delete";
+                callback_args = rest;
+            } else {
+                callback_kind = "create";
+                callback_args = cmd.args;
+                if (!cmd.content.empty()) {
+                    callback_args += "\n\n" + cmd.content;
+                }
+            }
+
+            block << "[/lesson " << callback_kind
+                  << (callback_args.empty() ? "" : " " + callback_args) << "]\n";
+            if (callback_kind == "create" && cmd.truncated) {
+                block << "ERR: missing /endlesson terminator on block-form lesson\n";
+                cache_result = false;
+            } else if (!lesson_invoker) {
+                block << "ERR: lesson store unavailable in this context — "
+                         "the /lesson writ requires the HTTP API.  Run under "
+                         "/v1/orchestrate.\n";
+                cache_result = false;
+            } else {
+                std::string body = lesson_invoker(callback_kind, callback_args, agent_id);
+                if (body.size() > kPerFetchLimit) {
+                    body.resize(kPerFetchLimit);
+                    body += "\n... [truncated]";
+                }
+                block << body;
+                if (body.empty() || body.back() != '\n') block << "\n";
+                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
+            }
+            block << "[END LESSON]\n\n";
 
         } else if (cmd.name == "mem") {
             std::istringstream iss(cmd.args);
