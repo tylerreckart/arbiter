@@ -102,6 +102,81 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = "list";
             result.push_back(std::move(cmd));
 
+        } else if (line == "/todo list") {
+            AgentCommand cmd;
+            cmd.name = "todo";
+            cmd.args = "list";
+            result.push_back(std::move(cmd));
+        } else if (line.size() > 9 && line.substr(0, 9) == "/todo add") {
+            // Two shapes:
+            //   /todo add <subject>                   — single-line, no body
+            //   /todo add <subject>\n<body>\n/endtodo — block form
+            // The trailing "/endtodo" is the sentinel; if it never arrives
+            // before stream-end we mark truncated so the orchestrator can
+            // request continuation rather than committing partial text.
+            AgentCommand cmd;
+            cmd.name = "todo";
+            std::string head = line.substr(5);   // "add <subject>"
+            cmd.args = head;
+
+            // Peek ahead: only enter block mode if the next line isn't
+            // another /-prefixed writ.  This way "/todo add foo\n/agent …"
+            // emits two separate commands, not one with `/agent …` as body.
+            std::streampos pos = ss.tellg();
+            std::string next;
+            std::ostringstream body;
+            bool any_body = false;
+            bool closed   = false;
+            while (std::getline(ss, next)) {
+                if (!next.empty() && next.back() == '\r') next.pop_back();
+                if (!any_body) {
+                    // First peeked line — bail back to single-line mode if
+                    // it looks like another writ or is empty.
+                    if (next.empty() || (!next.empty() && next.front() == '/')) {
+                        ss.clear();
+                        ss.seekg(pos);
+                        break;
+                    }
+                    any_body = true;
+                }
+                if (next == "/endtodo") { closed = true; break; }
+                body << next << "\n";
+            }
+            if (any_body) {
+                cmd.content = body.str();
+                if (!cmd.content.empty() && cmd.content.back() == '\n')
+                    cmd.content.pop_back();
+                cmd.truncated = !closed;
+            }
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+        } else if (line.size() > 6 && line.substr(0, 6) == "/todo ") {
+            // /todo list                  — caller's conversation scope
+            // /todo describe <id>: <text> — set/replace description
+            // /todo subject  <id>: <text> — rename
+            // /todo start    <id>         — status=in_progress
+            // /todo done     <id>         — status=completed
+            // /todo cancel   <id>         — status=canceled
+            // /todo delete   <id>         — hard remove
+            AgentCommand cmd;
+            cmd.name = "todo";
+            cmd.args = line.substr(6);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+        } else if (line == "/schedule list") {
+            AgentCommand cmd;
+            cmd.name = "schedule";
+            cmd.args = "list";
+            result.push_back(std::move(cmd));
+        } else if (line.size() > 10 && line.substr(0, 10) == "/schedule ") {
+            // /schedule <phrase>: <message>   — create
+            // /schedule list                   — list active schedules
+            // /schedule cancel <id>            — delete
+            // /schedule pause  <id>            — set status='paused'
+            // /schedule resume <id>            — set status='active'
+            AgentCommand cmd;
+            cmd.name = "schedule";
+            cmd.args = line.substr(10);
+            if (!cmd.args.empty()) result.push_back(std::move(cmd));
+
         } else if (line.size() > 14 && line.substr(0, 14) == "/mem add entry") {
             // Block form: /mem add entry <type> <title> [--artifact #<id>]
             //             <content body, multi-line>
@@ -1478,6 +1553,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    ArtifactReader artifact_reader,
                                    ArtifactLister artifact_lister,
                                    A2AInvoker     a2a_invoker,
+                                   SchedulerInvoker scheduler_invoker,
+                                   TodoInvoker      todo_invoker,
                                    const std::vector<std::string>& capabilities,
                                    std::vector<ContentPart>* out_image_parts) {
     std::ostringstream out;
@@ -1895,6 +1972,111 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     cache_result = false;
             }
             block << "[END A2A]\n\n";
+
+        } else if (cmd.name == "schedule") {
+            // /schedule list
+            // /schedule cancel <id>
+            // /schedule pause  <id>
+            // /schedule resume <id>
+            // /schedule <phrase>: <message>           ← implicit "create"
+            //
+            // The callback receives ("list"|"cancel"|"pause"|"resume", args)
+            // for the explicit subcommands and ("create", full-line) for the
+            // phrase-and-message form, mirroring the /a2a / /mcp shape.
+            std::istringstream iss(cmd.args);
+            std::string subcmd;
+            iss >> subcmd;
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+
+            std::string callback_kind;
+            std::string callback_args;
+            if (subcmd == "list" || subcmd == "cancel" ||
+                subcmd == "pause" || subcmd == "resume") {
+                callback_kind = subcmd;
+                callback_args = rest;
+            } else {
+                callback_kind = "create";
+                callback_args = cmd.args;
+            }
+
+            block << "[/schedule " << callback_kind
+                  << (callback_args.empty() ? "" : " " + callback_args)
+                  << "]\n";
+            if (!scheduler_invoker) {
+                block << "ERR: scheduling unavailable in this context — "
+                         "the /schedule writ requires the HTTP API's "
+                         "scheduler subsystem.  Run under /v1/orchestrate.\n";
+                cache_result = false;
+            } else {
+                std::string body = scheduler_invoker(callback_kind, callback_args, agent_id);
+                if (body.size() > kPerFetchLimit) {
+                    body.resize(kPerFetchLimit);
+                    body += "\n... [truncated]";
+                }
+                block << body;
+                if (body.empty() || body.back() != '\n') block << "\n";
+                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
+            }
+            block << "[END SCHEDULE]\n\n";
+
+        } else if (cmd.name == "todo") {
+            // Subcommand parse — first token is the verb.  For "add" we
+            // also carry a multi-line body (cmd.content) that we append
+            // to the args after a `\n` separator so the callback gets
+            // both halves with one parameter.  Other verbs ignore body.
+            std::istringstream iss(cmd.args);
+            std::string subcmd;
+            iss >> subcmd;
+            std::string rest;
+            std::getline(iss, rest);
+            if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+
+            std::string callback_kind;
+            if      (subcmd == "add")      callback_kind = "add";
+            else if (subcmd == "list")     callback_kind = "list";
+            else if (subcmd == "start")    callback_kind = "start";
+            else if (subcmd == "done")     callback_kind = "done";
+            else if (subcmd == "cancel")   callback_kind = "cancel";
+            else if (subcmd == "delete")   callback_kind = "delete";
+            else if (subcmd == "describe") callback_kind = "describe";
+            else if (subcmd == "subject")  callback_kind = "subject";
+
+            std::string callback_args = rest;
+            if (callback_kind == "add" && !cmd.content.empty()) {
+                // Pack: "<subject>\n\n<body>" so the callback can split.
+                callback_args += "\n\n" + cmd.content;
+            }
+
+            block << "[/todo " << subcmd
+                  << (rest.empty() ? "" : " " + rest) << "]\n";
+            if (callback_kind.empty()) {
+                block << "ERR: usage: /todo (add|list|start|done|cancel|"
+                         "delete|describe|subject) [args]\n";
+                cache_result = false;
+            } else if (cmd.name == "todo" && cmd.args.substr(0, 3) == "add"
+                        && cmd.truncated) {
+                block << "ERR: missing /endtodo terminator on block-form add\n";
+                cache_result = false;
+            } else if (!todo_invoker) {
+                block << "ERR: todos unavailable in this context — only the "
+                         "HTTP API wires the per-tenant todo store.  Run "
+                         "under /v1/orchestrate.\n";
+                cache_result = false;
+            } else {
+                std::string body = todo_invoker(callback_kind, callback_args, agent_id);
+                if (body.size() > kPerFetchLimit) {
+                    body.resize(kPerFetchLimit);
+                    body += "\n... [truncated]";
+                }
+                block << body;
+                if (body.empty() || body.back() != '\n') block << "\n";
+                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
+            }
+            block << "[END TODO]\n\n";
 
         } else if (cmd.name == "mem") {
             std::istringstream iss(cmd.args);

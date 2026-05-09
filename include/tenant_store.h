@@ -338,6 +338,185 @@ public:
 
     bool delete_agent_record(int64_t tenant_id, const std::string& agent_id);
 
+    // ── Todos ────────────────────────────────────────────────────────────
+    //
+    // Agent-facing work tracker.  An agent emits /todo add … to capture
+    // the next concrete step, /todo start <id> when it begins, /todo done
+    // <id> when it finishes.  Rows are tenant-scoped; conversation_id is
+    // optional (0 = unscoped, visible from every conversation in the
+    // tenant) and defaults to the active conversation when the writ
+    // fires inside one.  Pipeline-memory injection surfaces open todos
+    // to delegated sub-agents so they can mark progress without
+    // re-discovering the list.
+    //
+    // Status flow: pending → in_progress → completed (terminal); cancel
+    // is an alternate terminal.  position orders todos within the same
+    // (status, conversation_id) bucket — newest todos sit at the bottom
+    // of "pending" by default; agents can renumber via update.
+    struct Todo {
+        int64_t     id              = 0;
+        int64_t     tenant_id       = 0;
+        int64_t     conversation_id = 0;        // 0 ⇒ tenant-wide
+        std::string agent_id;                    // owner (caller) at create time
+        std::string subject;                     // short title; required
+        std::string description;                 // optional details
+        std::string status;                      // "pending" | "in_progress" | "completed" | "canceled"
+        int64_t     position        = 0;
+        int64_t     created_at      = 0;
+        int64_t     updated_at      = 0;
+        int64_t     completed_at    = 0;         // 0 until terminal
+    };
+
+    // Insert at the end of the (status='pending', conversation_id) bucket
+    // by default — the row's position is set to max(position)+1 within
+    // the bucket, so /todo list renders in creation order without ties.
+    Todo create_todo(int64_t tenant_id, int64_t conversation_id,
+                      const std::string& agent_id,
+                      const std::string& subject,
+                      const std::string& description);
+
+    std::optional<Todo> get_todo(int64_t tenant_id, int64_t id) const;
+
+    struct TodoFilter {
+        // 0 = no filter (tenant-wide, every conversation).  Negative
+        // is reserved for "unscoped only" if we ever need that surface.
+        // Positive: include todos pinned to this conversation OR rows
+        // with conversation_id=0 (unscoped, visible everywhere) — same
+        // OR-NULL fallback structured memory uses, so a fresh
+        // conversation still sees tenant-wide todos.
+        int64_t     conversation_id = 0;
+        std::string status_filter;               // empty = all statuses
+        std::string agent_id_filter;             // empty = all owners
+        int         limit           = 200;
+    };
+    std::vector<Todo>
+    list_todos(int64_t tenant_id, const TodoFilter& f) const;
+
+    // PATCH-style: any std::nullopt argument leaves the field
+    // untouched.  Setting status to a terminal value stamps
+    // completed_at automatically (caller can override by passing a
+    // value through completed_at).
+    bool update_todo(int64_t tenant_id, int64_t id,
+                      const std::optional<std::string>& subject,
+                      const std::optional<std::string>& description,
+                      const std::optional<std::string>& status,
+                      const std::optional<int64_t>& position,
+                      const std::optional<int64_t>& completed_at = std::nullopt);
+
+    bool delete_todo(int64_t tenant_id, int64_t id);
+
+    // ── Scheduled tasks ─────────────────────────────────────────────────
+    //
+    // Tenant-scoped background work: an agent emits /schedule "<phrase>"
+    // <message> and the row lives until the scheduler fires (one-shot)
+    // or until canceled (recurring).  The scheduler tick thread polls
+    // by (status='active', next_fire_at <= now), runs the agent, writes
+    // a TaskRun row with the result, and either advances next_fire_at
+    // (recurring) or marks the task 'completed' (one-shot).
+    struct ScheduledTask {
+        int64_t     id              = 0;
+        int64_t     tenant_id       = 0;
+        std::string agent_id;                   // which agent the run targets
+        int64_t     conversation_id = 0;        // 0 ⇒ unscoped (raw orchestrate)
+        std::string message;                    // prompt sent at fire time
+        std::string schedule_phrase;            // verbatim NL ("every monday at 9am")
+        std::string schedule_kind;              // "once" | "recurring"
+        int64_t     fire_at         = 0;        // for kind=once
+        std::string recur_json;                 // for kind=recurring (compact JSON)
+        int64_t     next_fire_at    = 0;        // when scheduler picks it up
+        std::string status;                     // "active" | "paused" | "completed" | "canceled"
+        int64_t     created_at      = 0;
+        int64_t     updated_at      = 0;
+        int64_t     last_run_at     = 0;
+        int64_t     last_run_id     = 0;
+        int64_t     run_count       = 0;
+    };
+
+    // One row per fired execution of a ScheduledTask.  Append-only after
+    // creation; the scheduler PATCHes status/result_summary/completed_at
+    // when the run finishes.  `notified=0` rows haven't been pushed onto
+    // the SSE notification stream yet; the bus marks them =1 after fan-out
+    // (best-effort — re-notification on restart is acceptable, it's idempotent
+    // for a polling client that filters by run id).
+    struct TaskRun {
+        int64_t     id              = 0;
+        int64_t     tenant_id       = 0;
+        int64_t     task_id         = 0;
+        std::string status;                     // "running" | "succeeded" | "failed" | "canceled"
+        int64_t     started_at      = 0;
+        int64_t     completed_at    = 0;
+        std::string request_id;                 // correlates with InFlightRegistry
+        std::string result_summary;             // final assistant message (truncated)
+        std::string error_message;
+        int64_t     input_tokens    = 0;
+        int64_t     output_tokens   = 0;
+        bool        notified        = false;
+    };
+
+    // Insert.  next_fire_at is what the scheduler indexes on; the caller
+    // (typically schedule_parser) computes it from the parsed spec.
+    ScheduledTask create_scheduled_task(int64_t tenant_id,
+                                         const std::string& agent_id,
+                                         int64_t conversation_id,
+                                         const std::string& message,
+                                         const std::string& schedule_phrase,
+                                         const std::string& schedule_kind,
+                                         int64_t fire_at,
+                                         const std::string& recur_json,
+                                         int64_t next_fire_at);
+
+    std::optional<ScheduledTask>
+    get_scheduled_task(int64_t tenant_id, int64_t id) const;
+
+    // Browse.  status_filter empty ⇒ all statuses; otherwise hard filter.
+    // Newest updated_at first.  Hard-capped at 200.
+    std::vector<ScheduledTask>
+    list_scheduled_tasks(int64_t tenant_id,
+                          const std::string& status_filter,
+                          int limit) const;
+
+    // Scheduler tick: tasks with status='active' AND next_fire_at <= cutoff.
+    // Cross-tenant — the scheduler runs at process scope.  Hard-capped.
+    std::vector<ScheduledTask>
+    list_due_scheduled_tasks(int64_t cutoff_epoch, int limit) const;
+
+    // PATCH: any std::nullopt argument leaves the field untouched.  Bumps
+    // updated_at on a successful change.  Returns false if the row is
+    // missing or belongs to another tenant.
+    bool update_scheduled_task(int64_t tenant_id, int64_t id,
+                                const std::optional<std::string>& status,
+                                const std::optional<int64_t>& next_fire_at,
+                                const std::optional<int64_t>& last_run_at,
+                                const std::optional<int64_t>& last_run_id,
+                                const std::optional<int64_t>& run_count_delta);
+
+    bool delete_scheduled_task(int64_t tenant_id, int64_t id);
+
+    // Run records.  create_task_run returns the inserted row with id set.
+    // tenant_id stamped from the caller (scheduler resolves it from the task).
+    TaskRun create_task_run(int64_t tenant_id, int64_t task_id,
+                             const std::string& status,
+                             int64_t started_at,
+                             const std::string& request_id);
+
+    bool update_task_run(int64_t tenant_id, int64_t id,
+                          const std::optional<std::string>& status,
+                          const std::optional<int64_t>& completed_at,
+                          const std::optional<std::string>& result_summary,
+                          const std::optional<std::string>& error_message,
+                          const std::optional<int64_t>& input_tokens,
+                          const std::optional<int64_t>& output_tokens,
+                          const std::optional<bool>& notified);
+
+    std::optional<TaskRun>
+    get_task_run(int64_t tenant_id, int64_t id) const;
+
+    // Newest started_at first.  `task_id == 0` ⇒ tenant-wide.
+    // `since_epoch == 0` ⇒ no time filter.  Hard-capped at 200.
+    std::vector<TaskRun>
+    list_task_runs(int64_t tenant_id, int64_t task_id,
+                    int64_t since_epoch, int limit) const;
+
     // ── A2A task store ──────────────────────────────────────────────────
     //
     // Persistent record for /v1/a2a/agents/:id calls.  task_id ==

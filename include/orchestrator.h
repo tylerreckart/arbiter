@@ -101,6 +101,23 @@ public:
     // backing it, just like MCP.  Without this set, /a2a returns ERR.
     void set_a2a_invoker(A2AInvoker cb) { a2a_invoker_cb_ = std::move(cb); }
 
+    // Bridge to the scheduling subsystem.  When set, /schedule resolves
+    // through this callback at every turn and depth.  The HTTP API wires
+    // this against the per-tenant scheduler created at server start.
+    // Without this set, /schedule returns ERR.
+    void set_scheduler_invoker(SchedulerInvoker cb) {
+        scheduler_invoker_cb_ = std::move(cb);
+    }
+
+    // Bridge to the agent-facing todo tracker.  When set, /todo resolves
+    // through this callback at every depth and the open-todo block is
+    // injected into [DELEGATION CONTEXT] for sub-agents.  The HTTP API
+    // wires this against the per-tenant todo store.  Without this set,
+    // /todo returns ERR.
+    void set_todo_invoker(TodoInvoker cb) {
+        todo_invoker_cb_ = std::move(cb);
+    }
+
     // Inject a roster of remote A2A agents into the master orchestrator's
     // turn preamble.  When set, every /v1/orchestrate (and /v1/a2a)
     // invocation against `index` sees the configured remote agents in
@@ -361,6 +378,8 @@ private:
     StructuredMemoryWriter structured_memory_writer_cb_;
     MCPInvoker         mcp_invoker_cb_;
     A2AInvoker         a2a_invoker_cb_;
+    SchedulerInvoker   scheduler_invoker_cb_;
+    TodoInvoker        todo_invoker_cb_;
     RemoteRosterProvider remote_roster_cb_;
     MemoryScratchpadInvoker memory_scratchpad_cb_;
     SearchInvoker      search_invoker_cb_;

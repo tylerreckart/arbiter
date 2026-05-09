@@ -92,6 +92,9 @@ set(ARBITER_SOURCES
     src/api_server.cpp
     src/billing_client.cpp
     src/tenant_store.cpp
+    src/schedule_parser.cpp
+    src/notification_bus.cpp
+    src/scheduler.cpp
     src/json.cpp
     src/commands.cpp
     src/mcp/types.cpp
@@ -280,6 +283,34 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_stream_filter COMMAND unit_stream_filter)
+
+    # --- Unit tests for the natural-language schedule parser ---
+    add_executable(unit_schedule_parser
+        tests/test_schedule_parser.cpp
+        src/schedule_parser.cpp
+    )
+    target_include_directories(unit_schedule_parser PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_schedule_parser COMMAND unit_schedule_parser)
+
+    # --- Unit tests for the agent-facing todo store ---
+    add_executable(unit_todos
+        tests/test_todos.cpp
+        src/tenant_store.cpp
+    )
+    target_include_directories(unit_todos PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_todos PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_todos COMMAND unit_todos)
 
     # --- Unit tests for the structured-memory store ---
     # Pins the tenant_store CRUD contract that backs both /v1/memory/entries

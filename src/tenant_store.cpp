@@ -800,6 +800,100 @@ void TenantStore::open(const std::string& path) {
         CREATE INDEX IF NOT EXISTS a2a_tasks_context
             ON a2a_tasks(tenant_id, context_id);
     )SQL");
+
+    // Todos: agent-facing work tracker.  Tenant-scoped; conversation_id=0
+    // means tenant-wide (visible from every conversation).  Indexed for
+    // the common queries: per-conversation list, per-tenant cross-thread
+    // list, terminal-status archive, and the subject-search FTS path
+    // (skipped for v1 — `subject` LIKE %query% is fine at expected
+    // tenant scale; switch to FTS5 if a tenant pushes thousands of rows).
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS todos (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id       INTEGER NOT NULL,
+            conversation_id INTEGER NOT NULL DEFAULT 0,
+            agent_id        TEXT    NOT NULL,
+            subject         TEXT    NOT NULL,
+            description     TEXT    NOT NULL DEFAULT '',
+            status          TEXT    NOT NULL DEFAULT 'pending',
+            position        INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            completed_at    INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS todos_tenant_conv_status
+            ON todos(tenant_id, conversation_id, status, position);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS todos_tenant_status
+            ON todos(tenant_id, status, updated_at DESC);
+    )SQL");
+
+    // Scheduled tasks: persistent agent-scheduled background work, fired
+    // by the Scheduler tick thread.  Status-indexed for the tick query
+    // (which scans `status='active' AND next_fire_at <= now`); tenant-
+    // indexed for /v1/schedules listing.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS scheduled_tasks (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id       INTEGER NOT NULL,
+            agent_id        TEXT    NOT NULL,
+            conversation_id INTEGER NOT NULL DEFAULT 0,
+            message         TEXT    NOT NULL,
+            schedule_phrase TEXT    NOT NULL,
+            schedule_kind   TEXT    NOT NULL,
+            fire_at         INTEGER NOT NULL DEFAULT 0,
+            recur_json      TEXT    NOT NULL DEFAULT '',
+            next_fire_at    INTEGER NOT NULL,
+            status          TEXT    NOT NULL,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            last_run_at     INTEGER NOT NULL DEFAULT 0,
+            last_run_id     INTEGER NOT NULL DEFAULT 0,
+            run_count       INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS scheduled_tasks_due
+            ON scheduled_tasks(status, next_fire_at);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS scheduled_tasks_tenant
+            ON scheduled_tasks(tenant_id, status, updated_at DESC);
+    )SQL");
+
+    // Task runs: one row per fired execution.  Tenant + task indexed for
+    // listing; cascade-delete with the parent task row and the tenant.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS task_runs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id       INTEGER NOT NULL,
+            task_id         INTEGER NOT NULL,
+            status          TEXT    NOT NULL,
+            started_at      INTEGER NOT NULL,
+            completed_at    INTEGER NOT NULL DEFAULT 0,
+            request_id      TEXT    NOT NULL DEFAULT '',
+            result_summary  TEXT    NOT NULL DEFAULT '',
+            error_message   TEXT    NOT NULL DEFAULT '',
+            input_tokens    INTEGER NOT NULL DEFAULT 0,
+            output_tokens   INTEGER NOT NULL DEFAULT 0,
+            notified        INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+            FOREIGN KEY (task_id)   REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS task_runs_task
+            ON task_runs(task_id, started_at DESC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS task_runs_tenant
+            ON task_runs(tenant_id, started_at DESC);
+    )SQL");
 }
 
 TenantStore::CreatedTenant
@@ -2397,6 +2491,472 @@ int64_t TenantStore::bytes_used_conversation(int64_t tenant_id,
     q.bind(2, conversation_id);
     if (q.step() != SQLITE_ROW) return 0;
     return q.column_int64(0);
+}
+
+// ── Todos ───────────────────────────────────────────────────────────────
+
+namespace {
+
+constexpr const char* kTodoCols =
+    "id, tenant_id, conversation_id, agent_id, subject, description, "
+    "status, position, created_at, updated_at, completed_at";
+
+TenantStore::Todo row_to_todo(Stmt& q) {
+    TenantStore::Todo t;
+    t.id              = q.column_int64(0);
+    t.tenant_id       = q.column_int64(1);
+    t.conversation_id = q.column_int64(2);
+    t.agent_id        = q.column_text(3);
+    t.subject         = q.column_text(4);
+    t.description     = q.column_text(5);
+    t.status          = q.column_text(6);
+    t.position        = q.column_int64(7);
+    t.created_at      = q.column_int64(8);
+    t.updated_at      = q.column_int64(9);
+    t.completed_at    = q.column_int64(10);
+    return t;
+}
+
+bool is_terminal_todo_status(const std::string& s) {
+    return s == "completed" || s == "canceled";
+}
+
+} // namespace
+
+TenantStore::Todo
+TenantStore::create_todo(int64_t tenant_id, int64_t conversation_id,
+                          const std::string& agent_id,
+                          const std::string& subject,
+                          const std::string& description) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    const int64_t ts = now_epoch();
+
+    // Position = MAX(position)+1 within the same (tenant, conversation,
+    // status='pending') bucket so /todo list renders in append order.
+    int64_t pos = 1;
+    {
+        Stmt p(db_,
+            "SELECT COALESCE(MAX(position), 0) + 1 "
+            "  FROM todos "
+            " WHERE tenant_id = ? AND conversation_id = ? AND status = 'pending';");
+        p.bind(1, tenant_id);
+        p.bind(2, conversation_id);
+        if (p.step() == SQLITE_ROW) pos = p.column_int64(0);
+    }
+
+    Stmt q(db_,
+        "INSERT INTO todos "
+        "(tenant_id, conversation_id, agent_id, subject, description, "
+        " status, position, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, conversation_id);
+    q.bind(3, agent_id);
+    q.bind(4, subject);
+    q.bind(5, description);
+    q.bind(6, pos);
+    q.bind(7, ts);
+    q.bind(8, ts);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert todo");
+
+    Todo t;
+    t.id              = sqlite3_last_insert_rowid(db_);
+    t.tenant_id       = tenant_id;
+    t.conversation_id = conversation_id;
+    t.agent_id        = agent_id;
+    t.subject         = subject;
+    t.description     = description;
+    t.status          = "pending";
+    t.position        = pos;
+    t.created_at      = ts;
+    t.updated_at      = ts;
+    return t;
+}
+
+std::optional<TenantStore::Todo>
+TenantStore::get_todo(int64_t tenant_id, int64_t id) const {
+    if (!db_) return std::nullopt;
+    std::string sql = std::string("SELECT ") + kTodoCols +
+        " FROM todos WHERE tenant_id = ? AND id = ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_todo(q);
+}
+
+std::vector<TenantStore::Todo>
+TenantStore::list_todos(int64_t tenant_id, const TodoFilter& f) const {
+    std::vector<Todo> out;
+    if (!db_) return out;
+    int limit = f.limit;
+    if (limit <= 0 || limit > 500) limit = 200;
+
+    // Conversation scope: positive = include conversation_id match OR
+    // unscoped (=0) rows.  Zero = no filter (tenant-wide, every row).
+    std::string sql = std::string("SELECT ") + kTodoCols +
+        " FROM todos WHERE tenant_id = ?";
+    if (f.conversation_id > 0)
+        sql += " AND (conversation_id = ? OR conversation_id = 0)";
+    if (!f.status_filter.empty())
+        sql += " AND status = ?";
+    if (!f.agent_id_filter.empty())
+        sql += " AND agent_id = ?";
+    // Order: pending+in_progress first (ascending position), then
+    // terminal (newest completed/canceled at the top of the archive).
+    sql += " ORDER BY "
+           " CASE status WHEN 'in_progress' THEN 0 "
+           "             WHEN 'pending'     THEN 1 "
+           "             WHEN 'completed'   THEN 2 "
+           "             WHEN 'canceled'    THEN 3 "
+           "             ELSE 4 END, "
+           " position ASC, updated_at DESC "
+           " LIMIT ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    if (f.conversation_id > 0) q.bind(idx++, f.conversation_id);
+    if (!f.status_filter.empty())   q.bind(idx++, f.status_filter);
+    if (!f.agent_id_filter.empty()) q.bind(idx++, f.agent_id_filter);
+    q.bind(idx, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_todo(q));
+    return out;
+}
+
+bool TenantStore::update_todo(int64_t tenant_id, int64_t id,
+                               const std::optional<std::string>& subject,
+                               const std::optional<std::string>& description,
+                               const std::optional<std::string>& status,
+                               const std::optional<int64_t>& position,
+                               const std::optional<int64_t>& completed_at) {
+    if (!db_) return false;
+    const int64_t ts = now_epoch();
+
+    // Auto-stamp completed_at when transitioning to a terminal status,
+    // unless the caller passed completed_at explicitly.
+    std::optional<int64_t> ca = completed_at;
+    if (status && is_terminal_todo_status(*status) && !ca) ca = ts;
+
+    std::string sql = "UPDATE todos SET updated_at = ?";
+    if (subject)     sql += ", subject = ?";
+    if (description) sql += ", description = ?";
+    if (status)      sql += ", status = ?";
+    if (position)    sql += ", position = ?";
+    if (ca)          sql += ", completed_at = ?";
+    sql += " WHERE tenant_id = ? AND id = ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, ts);
+    if (subject)     q.bind(idx++, *subject);
+    if (description) q.bind(idx++, *description);
+    if (status)      q.bind(idx++, *status);
+    if (position)    q.bind(idx++, *position);
+    if (ca)          q.bind(idx++, *ca);
+    q.bind(idx++, tenant_id);
+    q.bind(idx,   id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::delete_todo(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    Stmt q(db_, "DELETE FROM todos WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+// ── Scheduled tasks ────────────────────────────────────────────────────
+
+namespace {
+
+constexpr const char* kScheduledTaskCols =
+    "id, tenant_id, agent_id, conversation_id, message, schedule_phrase, "
+    "schedule_kind, fire_at, recur_json, next_fire_at, status, "
+    "created_at, updated_at, last_run_at, last_run_id, run_count";
+
+TenantStore::ScheduledTask row_to_scheduled_task(Stmt& q) {
+    TenantStore::ScheduledTask t;
+    t.id              = q.column_int64(0);
+    t.tenant_id       = q.column_int64(1);
+    t.agent_id        = q.column_text(2);
+    t.conversation_id = q.column_int64(3);
+    t.message         = q.column_text(4);
+    t.schedule_phrase = q.column_text(5);
+    t.schedule_kind   = q.column_text(6);
+    t.fire_at         = q.column_int64(7);
+    t.recur_json      = q.column_text(8);
+    t.next_fire_at    = q.column_int64(9);
+    t.status          = q.column_text(10);
+    t.created_at      = q.column_int64(11);
+    t.updated_at      = q.column_int64(12);
+    t.last_run_at     = q.column_int64(13);
+    t.last_run_id     = q.column_int64(14);
+    t.run_count       = q.column_int64(15);
+    return t;
+}
+
+constexpr const char* kTaskRunCols =
+    "id, tenant_id, task_id, status, started_at, completed_at, "
+    "request_id, result_summary, error_message, "
+    "input_tokens, output_tokens, notified";
+
+TenantStore::TaskRun row_to_task_run(Stmt& q) {
+    TenantStore::TaskRun r;
+    r.id             = q.column_int64(0);
+    r.tenant_id      = q.column_int64(1);
+    r.task_id        = q.column_int64(2);
+    r.status         = q.column_text(3);
+    r.started_at     = q.column_int64(4);
+    r.completed_at   = q.column_int64(5);
+    r.request_id     = q.column_text(6);
+    r.result_summary = q.column_text(7);
+    r.error_message  = q.column_text(8);
+    r.input_tokens   = q.column_int64(9);
+    r.output_tokens  = q.column_int64(10);
+    r.notified       = q.column_int64(11) != 0;
+    return r;
+}
+
+} // namespace
+
+TenantStore::ScheduledTask
+TenantStore::create_scheduled_task(int64_t tenant_id,
+                                    const std::string& agent_id,
+                                    int64_t conversation_id,
+                                    const std::string& message,
+                                    const std::string& schedule_phrase,
+                                    const std::string& schedule_kind,
+                                    int64_t fire_at,
+                                    const std::string& recur_json,
+                                    int64_t next_fire_at) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    const int64_t ts = now_epoch();
+    Stmt q(db_,
+        "INSERT INTO scheduled_tasks "
+        "(tenant_id, agent_id, conversation_id, message, schedule_phrase, "
+        " schedule_kind, fire_at, recur_json, next_fire_at, status, "
+        " created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, agent_id);
+    q.bind(3, conversation_id);
+    q.bind(4, message);
+    q.bind(5, schedule_phrase);
+    q.bind(6, schedule_kind);
+    q.bind(7, fire_at);
+    q.bind(8, recur_json);
+    q.bind(9, next_fire_at);
+    q.bind(10, ts);
+    q.bind(11, ts);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert scheduled_task");
+
+    ScheduledTask t;
+    t.id              = sqlite3_last_insert_rowid(db_);
+    t.tenant_id       = tenant_id;
+    t.agent_id        = agent_id;
+    t.conversation_id = conversation_id;
+    t.message         = message;
+    t.schedule_phrase = schedule_phrase;
+    t.schedule_kind   = schedule_kind;
+    t.fire_at         = fire_at;
+    t.recur_json      = recur_json;
+    t.next_fire_at    = next_fire_at;
+    t.status          = "active";
+    t.created_at      = ts;
+    t.updated_at      = ts;
+    return t;
+}
+
+std::optional<TenantStore::ScheduledTask>
+TenantStore::get_scheduled_task(int64_t tenant_id, int64_t id) const {
+    if (!db_) return std::nullopt;
+    std::string sql = std::string("SELECT ") + kScheduledTaskCols +
+        " FROM scheduled_tasks WHERE tenant_id = ? AND id = ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_scheduled_task(q);
+}
+
+std::vector<TenantStore::ScheduledTask>
+TenantStore::list_scheduled_tasks(int64_t tenant_id,
+                                    const std::string& status_filter,
+                                    int limit) const {
+    std::vector<ScheduledTask> out;
+    if (!db_) return out;
+    if (limit <= 0 || limit > 200) limit = 200;
+    std::string sql = std::string("SELECT ") + kScheduledTaskCols +
+        " FROM scheduled_tasks WHERE tenant_id = ?";
+    if (!status_filter.empty()) sql += " AND status = ?";
+    sql += " ORDER BY updated_at DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    if (!status_filter.empty()) q.bind(idx++, status_filter);
+    q.bind(idx, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_scheduled_task(q));
+    return out;
+}
+
+std::vector<TenantStore::ScheduledTask>
+TenantStore::list_due_scheduled_tasks(int64_t cutoff_epoch, int limit) const {
+    std::vector<ScheduledTask> out;
+    if (!db_) return out;
+    if (limit <= 0 || limit > 200) limit = 200;
+    std::string sql = std::string("SELECT ") + kScheduledTaskCols +
+        " FROM scheduled_tasks "
+        " WHERE status = 'active' AND next_fire_at <= ?"
+        " ORDER BY next_fire_at ASC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, cutoff_epoch);
+    q.bind(2, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_scheduled_task(q));
+    return out;
+}
+
+bool TenantStore::update_scheduled_task(
+        int64_t tenant_id, int64_t id,
+        const std::optional<std::string>& status,
+        const std::optional<int64_t>& next_fire_at,
+        const std::optional<int64_t>& last_run_at,
+        const std::optional<int64_t>& last_run_id,
+        const std::optional<int64_t>& run_count_delta) {
+    if (!db_) return false;
+    std::string sql = "UPDATE scheduled_tasks SET updated_at = ?";
+    if (status)        sql += ", status = ?";
+    if (next_fire_at)  sql += ", next_fire_at = ?";
+    if (last_run_at)   sql += ", last_run_at = ?";
+    if (last_run_id)   sql += ", last_run_id = ?";
+    if (run_count_delta) sql += ", run_count = run_count + ?";
+    sql += " WHERE tenant_id = ? AND id = ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, now_epoch());
+    if (status)          q.bind(idx++, *status);
+    if (next_fire_at)    q.bind(idx++, *next_fire_at);
+    if (last_run_at)     q.bind(idx++, *last_run_at);
+    if (last_run_id)     q.bind(idx++, *last_run_id);
+    if (run_count_delta) q.bind(idx++, *run_count_delta);
+    q.bind(idx++, tenant_id);
+    q.bind(idx,   id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::delete_scheduled_task(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    Stmt q(db_, "DELETE FROM scheduled_tasks WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+TenantStore::TaskRun
+TenantStore::create_task_run(int64_t tenant_id, int64_t task_id,
+                              const std::string& status,
+                              int64_t started_at,
+                              const std::string& request_id) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    Stmt q(db_,
+        "INSERT INTO task_runs "
+        "(tenant_id, task_id, status, started_at, request_id) "
+        "VALUES (?, ?, ?, ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, task_id);
+    q.bind(3, status);
+    q.bind(4, started_at);
+    q.bind(5, request_id);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert task_run");
+
+    TaskRun r;
+    r.id         = sqlite3_last_insert_rowid(db_);
+    r.tenant_id  = tenant_id;
+    r.task_id    = task_id;
+    r.status     = status;
+    r.started_at = started_at;
+    r.request_id = request_id;
+    return r;
+}
+
+bool TenantStore::update_task_run(
+        int64_t tenant_id, int64_t id,
+        const std::optional<std::string>& status,
+        const std::optional<int64_t>& completed_at,
+        const std::optional<std::string>& result_summary,
+        const std::optional<std::string>& error_message,
+        const std::optional<int64_t>& input_tokens,
+        const std::optional<int64_t>& output_tokens,
+        const std::optional<bool>& notified) {
+    if (!db_) return false;
+    std::string sql = "UPDATE task_runs SET ";
+    bool any = false;
+    auto comma = [&]() { if (any) sql += ", "; any = true; };
+    if (status)         { comma(); sql += "status = ?"; }
+    if (completed_at)   { comma(); sql += "completed_at = ?"; }
+    if (result_summary) { comma(); sql += "result_summary = ?"; }
+    if (error_message)  { comma(); sql += "error_message = ?"; }
+    if (input_tokens)   { comma(); sql += "input_tokens = ?"; }
+    if (output_tokens)  { comma(); sql += "output_tokens = ?"; }
+    if (notified)       { comma(); sql += "notified = ?"; }
+    if (!any) return false;
+    sql += " WHERE tenant_id = ? AND id = ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    if (status)         q.bind(idx++, *status);
+    if (completed_at)   q.bind(idx++, *completed_at);
+    if (result_summary) q.bind(idx++, *result_summary);
+    if (error_message)  q.bind(idx++, *error_message);
+    if (input_tokens)   q.bind(idx++, *input_tokens);
+    if (output_tokens)  q.bind(idx++, *output_tokens);
+    if (notified)       q.bind(idx++, static_cast<int64_t>(*notified ? 1 : 0));
+    q.bind(idx++, tenant_id);
+    q.bind(idx,   id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+std::optional<TenantStore::TaskRun>
+TenantStore::get_task_run(int64_t tenant_id, int64_t id) const {
+    if (!db_) return std::nullopt;
+    std::string sql = std::string("SELECT ") + kTaskRunCols +
+        " FROM task_runs WHERE tenant_id = ? AND id = ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_task_run(q);
+}
+
+std::vector<TenantStore::TaskRun>
+TenantStore::list_task_runs(int64_t tenant_id, int64_t task_id,
+                              int64_t since_epoch, int limit) const {
+    std::vector<TaskRun> out;
+    if (!db_) return out;
+    if (limit <= 0 || limit > 200) limit = 200;
+    std::string sql = std::string("SELECT ") + kTaskRunCols +
+        " FROM task_runs WHERE tenant_id = ?";
+    if (task_id    > 0) sql += " AND task_id = ?";
+    if (since_epoch > 0) sql += " AND started_at >= ?";
+    sql += " ORDER BY started_at DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    if (task_id     > 0) q.bind(idx++, task_id);
+    if (since_epoch > 0) q.bind(idx++, since_epoch);
+    q.bind(idx, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_task_run(q));
+    return out;
 }
 
 } // namespace arbiter
