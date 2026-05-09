@@ -8,6 +8,24 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Memory consolidation + age decay.**  `/mem add entry --supersedes
+  #N,#M` (and `POST /v1/memory/entries` `supersedes_ids: [N, M]`)
+  creates a synthesis entry that supersedes the listed prior entries
+  in one transaction: a `supersedes` relation lands per pair, the
+  prior entries are invalidated (`valid_to=now()`).  Manual
+  supersession overrides the existing advisor-driven auto-supersede
+  pass.  Also: BM25 search now multiplies scores by a piecewise
+  recency factor when `MemoryConfig.age_decay` is on (default on; 90d
+  half-life, 0.5 floor) — old entries rank lower without
+  disappearing.  HTTP path opt-in via `decay=true` query param.
+- **Per-tenant rate / concurrency limiter.**  Bounded in-flight LLM
+  requests per tenant (`ARBITER_TENANT_MAX_CONCURRENT`) plus a
+  token-bucket rate limit (`ARBITER_TENANT_RATE_PER_MIN`,
+  `ARBITER_TENANT_RATE_BURST`); both default to 0 = unlimited.
+  Surplus requests on the expensive routes (`/v1/orchestrate`,
+  conversation messages, agent chat, A2A dispatch) get `429 Too Many
+  Requests` with `Retry-After`.  Cheap reads unaffected.  See
+  [`docs/concepts/operations.md`](docs/concepts/operations.md#per-tenant-rate--concurrency-limiting).
 - **Agent-facing todo tracker.** New `todos` table on `TenantStore` plus
   `/todo` writ with `add` (single-line and `/endtodo` block forms),
   `list`, `start`, `done`, `cancel`, `delete`, `describe <id>: <text>`,

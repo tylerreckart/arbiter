@@ -708,6 +708,17 @@ public:
         // unscoped (`conversation_id IS NULL`); the OR-NULL fallback
         // keeps pre-migration entries visible everywhere.
         int64_t                  conversation_id       = 0;
+        // Age-decay multiplier on BM25 scores.  When `age_now_epoch`
+        // is non-zero, the search SQL multiplies each row's score by
+        // a piecewise factor that drops from 1.0 at `valid_from = now`
+        // to `age_floor` once the entry is older than 4× half-life.
+        // Floor stays > 0 so old entries still surface for queries
+        // that have no fresher match — recall doesn't collapse, but
+        // ranking biases toward fresh evidence.  Browse mode (no `q`)
+        // ignores these — chronological order already does the work.
+        int64_t                  age_now_epoch         = 0;
+        int                      age_half_life_days    = 90;
+        double                   age_floor             = 0.5;
     };
     std::vector<MemoryEntry> list_entries(int64_t tenant_id,
                                            const EntryFilter& f) const;

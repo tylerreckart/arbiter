@@ -21,6 +21,7 @@
 #include "notification_bus.h"
 #include "schedule_parser.h"
 #include "scheduler.h"
+#include "tenant_limiter.h"
 #include "tenant_store.h"
 #include "tui/stream_filter.h"
 #include "api_client.h"
@@ -253,6 +254,29 @@ void write_json_response(int fd, int code, std::shared_ptr<JsonValue> body) {
     ss << "HTTP/1.1 " << code << " " << (code == 200 ? "OK" : "Error") << "\r\n"
        << "Content-Type: application/json; charset=utf-8\r\n"
        << "Content-Length: " << payload.size() << "\r\n"
+       << kCorsHeaders
+       << "Connection: close\r\n\r\n"
+       << payload;
+    write_all(fd, ss.str());
+}
+
+// 429 Too Many Requests with Retry-After.  Used by the per-tenant
+// limiter when an expensive route (orchestrate, conversation messages,
+// agent chat, A2A dispatch) is denied.  `reason` distinguishes
+// concurrency exhaustion from rate-bucket exhaustion in the body —
+// callers can branch on it without parsing the human string.
+void write_429_response(int fd, int retry_after_seconds, const char* reason) {
+    auto body = jobj();
+    auto& m = body->as_object_mut();
+    m["error"]              = jstr("rate limit exceeded");
+    m["reason"]             = jstr(reason);
+    m["retry_after_seconds"] = jnum(retry_after_seconds);
+    std::string payload = json_serialize(*body);
+    std::ostringstream ss;
+    ss << "HTTP/1.1 429 Too Many Requests\r\n"
+       << "Content-Type: application/json; charset=utf-8\r\n"
+       << "Content-Length: " << payload.size() << "\r\n"
+       << "Retry-After: " << retry_after_seconds << "\r\n"
        << kCorsHeaders
        << "Connection: close\r\n\r\n"
        << payload;
@@ -2834,6 +2858,29 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
         created_at_override = cand;
     }
 
+    // Manual consolidation: an explicit list of ids the new entry
+    // should supersede.  Each id gets a `supersedes` relation from
+    // the new entry to the old one, and the old entry is invalidated.
+    // Validated against the tenant before we create anything so a
+    // bad id fails closed instead of leaving a dangling synthesis.
+    std::vector<int64_t> manual_supersedes;
+    if (auto v = body->get("supersedes_ids"); v && v->is_array()) {
+        for (auto& item : v->as_array()) {
+            if (!item || !item->is_number())
+                return write_memory_error(fd, 400,
+                    "supersedes_ids must be an array of positive ids");
+            int64_t sid = static_cast<int64_t>(item->as_number());
+            if (sid <= 0)
+                return write_memory_error(fd, 400,
+                    "supersedes_ids must contain only positive ids");
+            if (!tenants.get_entry(tenant.id, sid))
+                return write_memory_error(fd, 400,
+                    "supersedes_ids: #" + std::to_string(sid) +
+                    " does not exist for this tenant");
+            manual_supersedes.push_back(sid);
+        }
+    }
+
     // Optional auto-supersession.  When `supersede=<model>` is in the
     // body, after creating the new entry we ask the advisor whether
     // the new entry contradicts any existing top-K FTS hits on the
@@ -2843,6 +2890,9 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
     // invalidating the old entry — and it's where the
     // knowledge-update accuracy gap mostly lives.  Strictly opt-in;
     // the prompt biases toward "none" so false positives are rare.
+    // Manual `supersedes_ids` wins: when the caller supplies an
+    // explicit list, the auto pass is skipped (the caller already
+    // knows which prior facts are stale).
     std::string supersede_model;
     if (auto v = body->get("supersede"); v && v->is_string()) {
         supersede_model = v->as_string();
@@ -2852,12 +2902,24 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
                                     *tags, artifact_id, conversation_id,
                                     created_at_override);
 
+    // Apply the manual consolidation immediately after create — any
+    // invalidations land before the response goes out.
+    std::vector<int64_t> manual_superseded_applied;
+    for (auto sid : manual_supersedes) {
+        (void)tenants.create_relation(tenant.id, e.id, sid, "supersedes");
+        if (tenants.invalidate_entry(tenant.id, sid)) {
+            manual_superseded_applied.push_back(sid);
+        }
+    }
+
     // Run supersession detection AFTER create.  We always want the new
-    // entry to be persisted; the advisor pass is auxiliary.
+    // entry to be persisted; the advisor pass is auxiliary.  When the
+    // caller already supplied a manual `supersedes_ids` list, skip the
+    // auto pass — explicit intent wins over inferred intent.
     std::vector<int64_t> superseded_ids;
     std::string supersede_note;
     std::vector<int64_t> supersede_candidates;
-    if (!supersede_model.empty()) {
+    if (!supersede_model.empty() && manual_supersedes.empty()) {
         // Find existing candidates: FTS on the new title, type-matched
         // (so 'preference' contradicts 'preference', not 'context').
         // Top 6 — keep the prompt bounded; -1 in the budget to leave
@@ -2899,6 +2961,23 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
     }
 
     auto resp = memory_entry_to_json_hydrated(e, tenants);
+    // Manual-supersession metadata block.  Echoes the ids the caller
+    // requested so they can confirm which were applied (vs. silently
+    // skipped because the row was already invalid by the time we
+    // tried).  Always emitted when the caller supplied the field.
+    if (!manual_supersedes.empty()) {
+        auto ms = jobj();
+        auto& mso = ms->as_object_mut();
+        auto req_arr = jarr();
+        for (auto sid : manual_supersedes)
+            req_arr->as_array_mut().push_back(jnum(static_cast<double>(sid)));
+        mso["requested"] = req_arr;
+        auto inv_arr = jarr();
+        for (auto sid : manual_superseded_applied)
+            inv_arr->as_array_mut().push_back(jnum(static_cast<double>(sid)));
+        mso["invalidated"] = inv_arr;
+        resp->as_object_mut()["supersedes_manual"] = ms;
+    }
     // Auto-supersession metadata block.  Always emitted when requested
     // so the caller can verify what the advisor decided, even on
     // empty / no-op runs.
@@ -2997,6 +3076,36 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     // when q is empty (browse path) — types are hard filters there.
     if (f.types.empty() && !f.q.empty() && get_str("intent") != "off") {
         f.types = classify_question_intent(f.q);
+    }
+
+    // Age decay.  Off by default on the HTTP path so callers that build
+    // their own ranking on top get raw BM25.  Enable per-request with
+    // `decay=true|on|1` (or `decay=<half_life_days>`).  `decay_floor` /
+    // `decay_half_life_days` override the bucket and floor when set.
+    {
+        std::string dec = get_str("decay");
+        bool decay_on = (dec == "1" || dec == "true" || dec == "on" ||
+                         dec == "yes");
+        int hl = 0;
+        try { hl = std::stoi(dec); } catch (...) { hl = 0; }
+        if (hl > 0) decay_on = true;
+        if (decay_on && !f.q.empty()) {
+            f.age_now_epoch = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()
+                ).count());
+            int hlv = hl;
+            try {
+                int s = std::stoi(get_str("decay_half_life_days"));
+                if (s > 0) hlv = s;
+            } catch (...) {}
+            if (hlv <= 0) hlv = 90;
+            f.age_half_life_days = hlv;
+            try {
+                double fr = std::stod(get_str("decay_floor"));
+                if (fr > 0.0 && fr < 1.0) f.age_floor = fr;
+            } catch (...) {}
+        }
     }
 
     // `graduated=true` (only meaningful with q + conversation_id) runs
@@ -5413,6 +5522,23 @@ StructuredMemoryReader make_structured_memory_reader_callback(
                 f.conversation_id = reader_conversation_id;
                 f.limit           = rerank ? kAgentRerankPool : 50;
 
+                // Age-decay ranking factor.  When the agent has
+                // `memory.age_decay` on (default), pass a `now` epoch
+                // to the storage layer so the search SQL multiplies
+                // BM25 scores by a piecewise factor of (now -
+                // valid_from).  Half-life and floor come from
+                // MemoryConfig.  Disabling decay means the agent gets
+                // pre-decay ranking (older entries score the same as
+                // fresh ones on identical query matches).
+                if (mc.age_decay) {
+                    f.age_now_epoch = static_cast<int64_t>(
+                        std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch()
+                        ).count());
+                    f.age_half_life_days = mc.age_half_life_days;
+                    f.age_floor          = mc.age_floor;
+                }
+
                 // Question-intent routing — heuristic, no LLM cost.
                 // Soft-boost types matching the question's intent (the
                 // existing 1.3x BM25 multiplier) so a "preference"
@@ -5782,6 +5908,78 @@ StructuredMemoryWriter make_structured_memory_writer_callback(
                            "[--artifact #<id>]";
                 }
 
+                // Manual consolidation: --supersedes #1,#2,#3 — strip
+                // first because we want it before the --artifact strip
+                // (so the artifact pos-search doesn't get confused by a
+                // preceding --supersedes) and validate the ids exist
+                // for the tenant before we commit anything.
+                std::vector<int64_t> supersedes_ids;
+                {
+                    const std::string flag = "--supersedes";
+                    auto pos = title.rfind(flag);
+                    if (pos != std::string::npos &&
+                        (pos == 0 || title[pos - 1] == ' ' || title[pos - 1] == '\t')) {
+                        std::string tail = title.substr(pos + flag.size());
+                        while (!tail.empty() && (tail.front() == ' ' || tail.front() == '\t'))
+                            tail.erase(0, 1);
+                        // Tail runs to the next " --" flag boundary or EOL.
+                        std::string token;
+                        size_t cut = std::string::npos;
+                        size_t scan = 0;
+                        while (scan + 2 < tail.size()) {
+                            if (tail[scan] == ' ' && tail[scan + 1] == '-' && tail[scan + 2] == '-') {
+                                cut = scan;
+                                break;
+                            }
+                            ++scan;
+                        }
+                        if (cut == std::string::npos) {
+                            token = tail;
+                            tail.clear();
+                        } else {
+                            token = tail.substr(0, cut);
+                            tail = tail.substr(cut + 1);   // keep " --next-flag …" for re-attach
+                        }
+                        // token = "#1,#2,#3" — split on comma.
+                        size_t i = 0;
+                        while (i < token.size()) {
+                            size_t comma = token.find(',', i);
+                            std::string piece = token.substr(i,
+                                comma == std::string::npos ? std::string::npos : comma - i);
+                            // trim
+                            while (!piece.empty() && (piece.front() == ' ' || piece.front() == '\t'))
+                                piece.erase(0, 1);
+                            while (!piece.empty() && (piece.back()  == ' ' || piece.back()  == '\t'))
+                                piece.pop_back();
+                            if (!piece.empty() && piece.front() == '#') piece.erase(0, 1);
+                            if (!piece.empty()) {
+                                int64_t id = 0;
+                                try { id = std::stoll(piece); } catch (...) { id = 0; }
+                                if (id <= 0) {
+                                    return "ERR: --supersedes accepts a "
+                                           "comma-separated list of ids, "
+                                           "e.g. --supersedes #41,#42";
+                                }
+                                supersedes_ids.push_back(id);
+                            }
+                            if (comma == std::string::npos) break;
+                            i = comma + 1;
+                        }
+                        if (supersedes_ids.empty()) {
+                            return "ERR: --supersedes accepts a "
+                                   "comma-separated list of ids, "
+                                   "e.g. --supersedes #41,#42";
+                        }
+                        // Reattach any flags that came after --supersedes
+                        // back onto the title chunk for downstream parsing.
+                        if (pos > 0 && (title[pos - 1] == ' ' || title[pos - 1] == '\t'))
+                            --pos;
+                        title.resize(pos);
+                        if (!tail.empty()) title += " " + tail;
+                        title = trim(title);
+                    }
+                }
+
                 int64_t artifact_id = 0;
                 {
                     // Strip trailing `--artifact #<id>` off the title
@@ -5804,6 +6002,18 @@ StructuredMemoryWriter make_structured_memory_writer_callback(
                             --pos;
                         title.resize(pos);
                         title = trim(title);
+                    }
+                }
+
+                // Validate every manual supersedes id belongs to this
+                // tenant BEFORE we create the synthesis entry.  Catching
+                // a bad id here means we don't leave a dangling entry
+                // partway through commit — fail closed instead.
+                for (auto sid : supersedes_ids) {
+                    if (!tenants.get_entry(reader_tenant_id, sid)) {
+                        return "ERR: --supersedes #" + std::to_string(sid) +
+                               " does not exist for this tenant (or is "
+                               "already invalidated; pass active ids only)";
                     }
                 }
 
@@ -5906,15 +6116,35 @@ StructuredMemoryWriter make_structured_memory_writer_callback(
                                                artifact_id,
                                                reader_conversation_id);
 
-                // Auto-supersession.  After the new entry is written,
-                // if the agent opted in, ask the advisor whether any
-                // existing entries on the same title+type are now
-                // factually contradicted; invalidate those.  Bias is
-                // toward "leave alone" — false positives erase
-                // legitimate prior memory.
+                // Manual consolidation: every --supersedes id gets a
+                // `supersedes` relation FROM the new entry TO the old
+                // one, and the old entry is invalidated.  A relation
+                // collision (the link already exists from a prior
+                // attempt) is a no-op — caller's intent still satisfied.
                 std::vector<int64_t> superseded_ids;
                 std::string supersede_note;
-                if (mc_add.auto_supersede && !caller_advisor_model.empty()) {
+                bool manual_supersede = !supersedes_ids.empty();
+                if (manual_supersede) {
+                    for (auto sid : supersedes_ids) {
+                        (void)tenants.create_relation(reader_tenant_id,
+                            e.id, sid, "supersedes");
+                        if (tenants.invalidate_entry(reader_tenant_id, sid)) {
+                            superseded_ids.push_back(sid);
+                        }
+                    }
+                }
+
+                // Auto-supersession.  After the new entry is written,
+                // if the agent opted in (and didn't already supply a
+                // manual --supersedes list), ask the advisor whether
+                // any existing entries on the same title+type are now
+                // factually contradicted; invalidate those.  Bias is
+                // toward "leave alone" — false positives erase
+                // legitimate prior memory.  Manual --supersedes wins:
+                // an explicit list signals the agent already knows
+                // which prior facts are stale.
+                if (!manual_supersede &&
+                    mc_add.auto_supersede && !caller_advisor_model.empty()) {
                     TenantStore::EntryFilter fcand;
                     fcand.q     = title;
                     fcand.types = { type };
@@ -5952,7 +6182,8 @@ StructuredMemoryWriter make_structured_memory_writer_callback(
                 }
                 if (!auto_tag_note.empty()) out << "\n  " << auto_tag_note;
                 if (!superseded_ids.empty()) {
-                    out << "\n  superseded: ";
+                    out << "\n  superseded";
+                    out << (manual_supersede ? " (manual): " : ": ");
                     for (size_t i = 0; i < superseded_ids.size(); ++i) {
                         if (i) out << ", ";
                         out << "#" << superseded_ids[i];
@@ -7814,6 +8045,10 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     notifications_ = std::make_unique<NotificationBus>();
     scheduler_     = std::make_unique<Scheduler>(
         &opts_, &tenants_, notifications_.get());
+    // Per-tenant limiter: defaults from env (ARBITER_TENANT_MAX_CONCURRENT
+    // / RATE_PER_MIN / BURST).  Zeroed defaults ⇒ unlimited; the limiter
+    // grants every acquire without taking the lock.
+    limiter_ = std::make_unique<TenantLimiter>(load_tenant_limits_from_env());
 }
 
 ApiServer::~ApiServer() { stop(); }
@@ -8049,6 +8284,15 @@ void ApiServer::handle_connection(int fd) {
     }
 
     if (req.method == "POST" && req.path == "/v1/orchestrate") {
+        auto lim = limiter_->acquire(tenant->id);
+        if (!lim.granted()) {
+            write_429_response(fd, lim.retry_after_seconds,
+                lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                    ? "concurrent_request_limit"
+                    : "rate_limit");
+            return;
+        }
+        // lim.guard releases the in-flight slot when this scope exits.
         handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
                            billing_.get(), workspace_id, *tenant);
         return;
@@ -8114,6 +8358,14 @@ void ApiServer::handle_connection(int fd) {
                         auto err = jobj();
                         err->as_object_mut()["error"] = jstr("conversation not found");
                         write_json_response(fd, 404, err);
+                        return;
+                    }
+                    auto lim = limiter_->acquire(tenant->id);
+                    if (!lim.granted()) {
+                        write_429_response(fd, lim.retry_after_seconds,
+                            lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                                ? "concurrent_request_limit"
+                                : "rate_limit");
                         return;
                     }
                     handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
@@ -8248,6 +8500,14 @@ void ApiServer::handle_connection(int fd) {
                                          "method not allowed\n");
                     return;
                 }
+                auto lim = limiter_->acquire(tenant->id);
+                if (!lim.granted()) {
+                    write_429_response(fd, lim.retry_after_seconds,
+                        lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                            ? "concurrent_request_limit"
+                            : "rate_limit");
+                    return;
+                }
                 handle_a2a_rpc(fd, agent_id, req, opts_, tenants_,
                                 in_flight_, *tenant);
                 return;
@@ -8288,6 +8548,14 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             if (req.method == "POST" && segs.size() == 4 && segs[3] == "chat") {
+                auto lim = limiter_->acquire(tenant->id);
+                if (!lim.granted()) {
+                    write_429_response(fd, lim.retry_after_seconds,
+                        lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                            ? "concurrent_request_limit"
+                            : "rate_limit");
+                    return;
+                }
                 handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
                                     billing_.get(), workspace_id,
                                     *tenant, segs[2]);

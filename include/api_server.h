@@ -61,6 +61,7 @@ class BillingClient;
 class NotificationBus;
 class Orchestrator;
 class Scheduler;
+class TenantLimiter;
 class TenantStore;
 struct Tenant;
 
@@ -197,6 +198,10 @@ private:
     // ticking; the scheduler thread starts in start() and joins in stop().
     std::unique_ptr<NotificationBus> notifications_;
     std::unique_ptr<Scheduler>       scheduler_;
+    // Per-tenant rate / concurrency limiter.  Always constructed (defaults
+    // come from env at startup); a zeroed config means "unlimited" so
+    // operators not using this surface pay no cost.
+    std::unique_ptr<TenantLimiter>   limiter_;
 
     int               listen_fd_  = -1;
     int               bound_port_ = 0;

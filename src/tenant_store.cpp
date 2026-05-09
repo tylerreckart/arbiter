@@ -273,6 +273,7 @@ public:
     Stmt& operator=(const Stmt&) = delete;
 
     void bind(int idx, int64_t v)              { sqlite3_bind_int64(stmt_, idx, v); }
+    void bind(int idx, double v)                { sqlite3_bind_double(stmt_, idx, v); }
     void bind(int idx, const std::string& v)   {
         sqlite3_bind_text(stmt_, idx, v.c_str(), -1, SQLITE_TRANSIENT);
     }
@@ -1426,6 +1427,22 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
             sql += " * CASE WHEN e.tags LIKE ? THEN " +
                    std::to_string(kTagBoost) + " ELSE 1.0 END";
         }
+        // Age-decay multiplier.  Multiplying by a fraction <1 makes a
+        // negative BM25 score *less* negative, suppressing the row in
+        // an ASC-ordered ranking.  Piecewise instead of exp() so the
+        // expression stays in vanilla SQLite.  Applied only when the
+        // caller supplies `age_now_epoch` — keeps the existing test
+        // fixtures and historical-snapshot queries deterministic.
+        bool apply_decay = (f.age_now_epoch > 0);
+        if (apply_decay) {
+            sql +=
+                " * CASE "
+                " WHEN (? - e.valid_from) <= 30 * 86400 THEN 1.0 "
+                " WHEN (? - e.valid_from) <= ? * 86400  THEN 0.9 "
+                " WHEN (? - e.valid_from) <= 2 * ? * 86400 THEN 0.75 "
+                " WHEN (? - e.valid_from) <= 4 * ? * 86400 THEN 0.6 "
+                " ELSE ? END";
+        }
         sql += ") AS score "
                "FROM memory_entries e "
                "JOIN memory_entries_fts fts ON fts.rowid = e.id "
@@ -1457,6 +1474,25 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         if (!f.tag.empty()) {
             tag_pat = "%\"" + f.tag + "\"%";
             q.bind(idx++, tag_pat);
+        }
+        if (apply_decay) {
+            // Five binds matching the CASE branches above:
+            //   ? - e.valid_from <= 30*86400          (now)
+            //   ? - e.valid_from <= ? * 86400         (now, half_life)
+            //   ? - e.valid_from <= 2 * ? * 86400     (now, half_life)
+            //   ? - e.valid_from <= 4 * ? * 86400     (now, half_life)
+            //   ELSE ?                                 (floor)
+            int hl = f.age_half_life_days > 0 ? f.age_half_life_days : 90;
+            double floor = (f.age_floor > 0.0 && f.age_floor < 1.0)
+                ? f.age_floor : 0.5;
+            q.bind(idx++, f.age_now_epoch);     // 30-day branch
+            q.bind(idx++, f.age_now_epoch);     // half-life branch
+            q.bind(idx++, static_cast<int64_t>(hl));
+            q.bind(idx++, f.age_now_epoch);     // 2× half-life branch
+            q.bind(idx++, static_cast<int64_t>(hl));
+            q.bind(idx++, f.age_now_epoch);     // 4× half-life branch
+            q.bind(idx++, static_cast<int64_t>(hl));
+            q.bind(idx++, floor);
         }
         q.bind(idx++, tenant_id);
         q.bind(idx++, fts_query);
