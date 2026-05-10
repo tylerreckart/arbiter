@@ -95,6 +95,7 @@ set(ARBITER_SOURCES
     src/tenant_store.cpp
     src/schedule_parser.cpp
     src/notification_bus.cpp
+    src/request_event_bus.cpp
     src/scheduler.cpp
     src/json.cpp
     src/commands.cpp
@@ -329,6 +330,23 @@ if(INDEX_BUILD_TESTS)
         SQLite3::SQLite3
     )
     add_test(NAME unit_lessons COMMAND unit_lessons)
+
+    # --- Unit tests for the durable request log (resubscribe surface) ---
+    add_executable(unit_request_log
+        tests/test_request_log.cpp
+        src/tenant_store.cpp
+    )
+    target_include_directories(unit_request_log PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_request_log PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_request_log COMMAND unit_request_log)
 
     # --- Unit tests for the per-tenant rate / concurrency limiter ---
     add_executable(unit_tenant_limiter

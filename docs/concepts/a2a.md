@@ -33,7 +33,7 @@ The two surfaces share the same per-request orchestrator setup, so an agent invo
 | `message/stream` | implemented | Streams `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames over SSE; final event has `final: true`. |
 | `tasks/get` | implemented | Reads from the `a2a_tasks` table; tenant-scoped. |
 | `tasks/cancel` | implemented | Cancels in-flight tasks via the existing `InFlightRegistry`; terminal tasks return `TaskNotCancelable`. |
-| `tasks/resubscribe` | rejected | `UnsupportedOperation` (-32004). |
+| `tasks/resubscribe` | implemented | Replays the persisted event log for the task, then live-tails until terminal. Backed by the same store as [`GET /v1/requests/:id/events`](../requests/events.md); see [Durable in-flight execution](durable-execution.md). |
 | `tasks/pushNotificationConfig/{set,get,list,delete}` | rejected | `UnsupportedOperation` (-32004). |
 
 Unknown methods land at `MethodNotFound` (-32601). Malformed envelopes land at `ParseError` (-32700) or `InvalidRequest` (-32600). See the [`POST /v1/a2a/agents/:id`](../a2a/dispatch.md) endpoint page for the full error code table.
@@ -145,7 +145,7 @@ When a remote A2A client calls into arbiter (inbound), it gets exactly one tenan
 
 ## Scope
 
-A2A in arbiter targets the v1.0 spec exclusively. The implementation supports `message/send`, `message/stream`, `tasks/get`, and `tasks/cancel`; `tasks/resubscribe` and `tasks/pushNotificationConfig/*` return `UnsupportedOperation` (-32004). Inline agent definitions are not accepted via A2A metadata — agents are resolved from the URL `:id` against the tenant's catalog.
+A2A in arbiter targets the v1.0 spec exclusively. The implementation supports `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, and `tasks/resubscribe`; `tasks/pushNotificationConfig/*` return `UnsupportedOperation` (-32004). Inline agent definitions are not accepted via A2A metadata — agents are resolved from the URL `:id` against the tenant's catalog.
 
 ## See also
 

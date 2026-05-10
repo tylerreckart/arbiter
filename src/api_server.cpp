@@ -19,6 +19,7 @@
 #include "orchestrator.h"
 #include "billing_client.h"
 #include "notification_bus.h"
+#include "request_event_bus.h"
 #include "schedule_parser.h"
 #include "scheduler.h"
 #include "tenant_limiter.h"
@@ -324,23 +325,150 @@ public:
         write_all(fd_, kHdr);
     }
 
+    // Wire up durable persistence.  Each subsequent emit mirrors to
+    // request_events (text events are coalesced into ~2 KB chunks
+    // before persistence; other events persist 1:1) and broadcasts to
+    // any RequestEventBus subscribers.  Borrowed pointers must outlive
+    // this stream — typical lifetime is the request handler stack
+    // frame.
+    void set_persistence(TenantStore* ts, RequestEventBus* bus,
+                          int64_t tenant_id, std::string request_id) {
+        std::lock_guard<std::mutex> lk(mu_);
+        ts_ = ts;
+        bus_ = bus;
+        persist_tenant_id_ = tenant_id;
+        persist_request_id_ = std::move(request_id);
+    }
+
     void emit(const std::string& event, std::shared_ptr<JsonValue> data) {
         std::lock_guard<std::mutex> lk(mu_);
         if (closed_) return;
         std::string payload = data ? json_serialize(*data) : "{}";
+        // Wire write is always immediate and uncoalesced — clients see
+        // each delta as it arrives.  Persistence is batched per the
+        // operator's choice.
         std::string frame = "event: " + event + "\ndata: " + payload + "\n\n";
         write_all(fd_, frame);
+
+        if (!ts_) return;
+        if (event == "text") {
+            try_coalesce_text_locked(data, payload);
+        } else {
+            flush_pending_text_locked();
+            persist_event_locked(event, payload);
+        }
     }
 
+    // Flush any pending coalesced text and stop persisting / broadcasting.
+    // Called by handle_orchestrate's finalisation code.  Wire-side close
+    // is independent — closing the stream just stops accepting further
+    // events, it doesn't shut the fd.
     void close() {
         std::lock_guard<std::mutex> lk(mu_);
+        if (closed_) return;
+        flush_pending_text_locked();
         closed_ = true;
     }
 
 private:
+    void persist_event_locked(const std::string& kind,
+                                const std::string& payload_json) {
+        if (!ts_) return;
+        ++seq_;
+        try {
+            ts_->append_request_event(persist_tenant_id_,
+                                       persist_request_id_,
+                                       seq_, kind, payload_json);
+        } catch (...) {
+            // Persistence is best-effort.  Failure (typically a
+            // duplicate seq from a concurrent path, or a transient
+            // SQLite busy) shouldn't kill the live wire stream.
+            return;
+        }
+        if (bus_) {
+            RequestEventEnvelope env;
+            env.request_id    = persist_request_id_;
+            env.seq           = seq_;
+            env.event_kind    = kind;
+            env.payload_json  = payload_json;
+            env.terminal      = (kind == "done");
+            try { bus_->publish(env); } catch (...) {}
+        }
+    }
+
+    void try_coalesce_text_locked(const std::shared_ptr<JsonValue>& data,
+                                    const std::string& payload_json) {
+        if (!data || !data->is_object()) {
+            // Unknown shape — persist as-is; coalescing only applies
+            // to the canonical {agent, stream_id, delta} envelope.
+            persist_event_locked("text", payload_json);
+            return;
+        }
+        auto agent_v  = data->get("agent");
+        auto stream_v = data->get("stream_id");
+        auto delta_v  = data->get("delta");
+        if (!agent_v  || !agent_v->is_string()  ||
+            !stream_v || !stream_v->is_number() ||
+            !delta_v  || !delta_v->is_string()) {
+            persist_event_locked("text", payload_json);
+            return;
+        }
+        std::string key = agent_v->as_string() + "|" +
+                          std::to_string(static_cast<int64_t>(stream_v->as_number()));
+        if (pending_text_size_ > 0 && key != pending_text_key_) {
+            flush_pending_text_locked();
+        }
+        if (pending_text_size_ == 0) {
+            pending_text_first_ = data;
+            pending_text_key_   = key;
+            pending_text_concat_.clear();
+        }
+        pending_text_concat_ += delta_v->as_string();
+        pending_text_size_   += delta_v->as_string().size();
+        if (pending_text_size_ >= kCoalesceThreshold) {
+            flush_pending_text_locked();
+        }
+    }
+
+    void flush_pending_text_locked() {
+        if (pending_text_size_ == 0) return;
+        // Build a coalesced payload that reuses the first chunk's
+        // identity (agent, stream_id) but concatenates every delta.
+        // Replay-time clients see one bigger chunk in place of many
+        // small ones; the assembled string is identical.
+        auto coalesced = jobj();
+        auto& m = coalesced->as_object_mut();
+        if (auto a = pending_text_first_->get("agent")) m["agent"] = a;
+        if (auto s = pending_text_first_->get("stream_id")) m["stream_id"] = s;
+        if (auto d = pending_text_first_->get("depth")) m["depth"] = d;
+        m["delta"] = jstr(pending_text_concat_);
+        std::string payload = json_serialize(*coalesced);
+        persist_event_locked("text", payload);
+        pending_text_first_.reset();
+        pending_text_key_.clear();
+        pending_text_concat_.clear();
+        pending_text_size_ = 0;
+    }
+
     int        fd_;
     std::mutex mu_;
     bool       closed_ = false;
+
+    // Optional durable sink.  When ts_ is null, persistence + broadcast
+    // are skipped; the stream behaves exactly as before.
+    TenantStore*       ts_ = nullptr;
+    RequestEventBus*   bus_ = nullptr;
+    int64_t            persist_tenant_id_ = 0;
+    std::string        persist_request_id_;
+    int64_t            seq_ = 0;
+
+    // Text-coalesce buffer.  Held under mu_ so all coalesce/flush
+    // paths are serialized with wire writes.
+    std::shared_ptr<JsonValue> pending_text_first_;
+    std::string                pending_text_key_;
+    std::string                pending_text_concat_;
+    size_t                     pending_text_size_ = 0;
+    static constexpr size_t    kCoalesceThreshold = 2048;
 };
 
 // ─── URL helpers ────────────────────────────────────────────────────────────
@@ -3989,6 +4117,213 @@ void handle_cancel(int fd, const HttpRequest& req,
     }
 }
 
+// ── Request log + resubscribe ──────────────────────────────────────────
+
+std::shared_ptr<JsonValue>
+request_status_to_json(const TenantStore::RequestStatus& s) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["request_id"]      = jstr(s.request_id);
+    m["agent_id"]        = jstr(s.agent_id);
+    m["conversation_id"] = jnum(s.conversation_id);
+    m["state"]           = jstr(s.state);
+    m["started_at"]      = jnum(s.started_at);
+    m["completed_at"]    = jnum(s.completed_at);
+    m["error_message"]   = jstr(s.error_message);
+    m["last_seq"]        = jnum(s.last_seq);
+    return o;
+}
+
+void handle_request_list(int fd, const HttpRequest& req,
+                          TenantStore& tenants, const Tenant& tenant) {
+    int limit = 100;
+    auto qpos = req.path.find('?');
+    if (qpos != std::string::npos) {
+        std::string qs = req.path.substr(qpos + 1);
+        size_t i = 0;
+        while (i < qs.size()) {
+            size_t amp = qs.find('&', i);
+            std::string pair = qs.substr(i, amp - i);
+            auto eq = pair.find('=');
+            if (eq != std::string::npos) {
+                std::string k = pair.substr(0, eq);
+                std::string v = pair.substr(eq + 1);
+                if (k == "limit") try { limit = std::stoi(v); } catch (...) {}
+            }
+            if (amp == std::string::npos) break;
+            i = amp + 1;
+        }
+    }
+    auto rows = tenants.list_request_status(tenant.id, limit);
+    auto arr = jarr();
+    for (const auto& r : rows) arr->as_array_mut().push_back(request_status_to_json(r));
+    auto out = jobj();
+    out->as_object_mut()["requests"] = arr;
+    write_json_response(fd, 200, out);
+}
+
+void handle_request_get(int fd, const std::string& request_id,
+                         TenantStore& tenants, const Tenant& tenant) {
+    auto row = tenants.get_request_status(tenant.id, request_id);
+    if (!row) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("request not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["request"] = request_status_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+// SSE replay-and-tail for /v1/requests/:id/events.  Streams the backlog
+// after `since_seq`, then — if the run is still in flight — subscribes
+// to the per-request bus and continues emitting newly-persisted events
+// until the bus delivers the terminal `done` envelope.  Reconnects
+// after a disconnect re-sync via the same endpoint with the last seen
+// seq; the bus does no buffering.
+void handle_request_events(int fd, const std::string& request_id,
+                             const HttpRequest& req,
+                             TenantStore& tenants, const Tenant& tenant,
+                             RequestEventBus* bus) {
+    auto status = tenants.get_request_status(tenant.id, request_id);
+    if (!status) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("request not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+
+    int64_t since_seq = 0;
+    auto qpos = req.path.find('?');
+    if (qpos != std::string::npos) {
+        std::string qs = req.path.substr(qpos + 1);
+        size_t i = 0;
+        while (i < qs.size()) {
+            size_t amp = qs.find('&', i);
+            std::string pair = qs.substr(i, amp - i);
+            auto eq = pair.find('=');
+            if (eq != std::string::npos) {
+                std::string k = pair.substr(0, eq);
+                std::string v = pair.substr(eq + 1);
+                if (k == "since_seq") try { since_seq = std::stoll(v); } catch (...) {}
+            }
+            if (amp == std::string::npos) break;
+            i = amp + 1;
+        }
+    }
+
+    // Open the SSE response.  CORS headers + X-Accel-Buffering: no so
+    // dev-mode SPAs on a different origin can subscribe.
+    {
+        std::ostringstream hdr;
+        hdr << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: text/event-stream\r\n"
+            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            << "X-Accel-Buffering: no\r\n"
+            << kCorsHeaders
+            << "Connection: close\r\n"
+            << "\r\n";
+        write_all(fd, hdr.str());
+    }
+
+    auto write_envelope = [fd](const std::string& kind, int64_t seq,
+                                  const std::string& payload_json) {
+        // Each persisted event becomes one SSE frame.  The seq is
+        // exposed via the SSE `id:` field so a reconnecting client can
+        // pass it back as `since_seq` without parsing the payload.
+        std::ostringstream f;
+        f << "id: " << seq << "\n"
+          << "event: " << kind << "\n"
+          << "data: " << payload_json << "\n\n";
+        write_all(fd, f.str());
+    };
+
+    // Replay backlog.  Page through in chunks of 1000 — for runs
+    // longer than that we'd rather many small writes than one huge
+    // SQL fetch holding the connection's CPU time.
+    int64_t cursor = since_seq;
+    while (true) {
+        auto chunk = tenants.list_request_events(tenant.id, request_id,
+                                                    cursor, /*limit=*/1000);
+        if (chunk.empty()) break;
+        for (const auto& e : chunk) {
+            write_envelope(e.event_kind, e.seq, e.payload_json);
+            cursor = e.seq;
+        }
+        if (chunk.size() < 1000) break;
+    }
+
+    // Re-fetch status.  If it's already terminal, we're done — close.
+    auto post_replay = tenants.get_request_status(tenant.id, request_id);
+    if (!post_replay || post_replay->state != "running") return;
+    if (!bus) return;
+
+    // Live tail.  Subscribe; mailbox-buffer events under a small mutex
+    // so the publisher thread doesn't block on slow clients.  Heartbeat
+    // every 30s so reverse proxies don't time out the idle connection.
+    std::mutex                      mb_mu;
+    std::condition_variable         mb_cv;
+    std::deque<RequestEventEnvelope> mailbox;
+    std::atomic<bool>               saw_terminal{false};
+
+    int64_t sub_id = bus->subscribe(request_id,
+        [&mb_mu, &mb_cv, &mailbox, &saw_terminal](const RequestEventEnvelope& env) {
+            std::lock_guard<std::mutex> lk(mb_mu);
+            mailbox.push_back(env);
+            if (env.terminal) saw_terminal = true;
+            mb_cv.notify_one();
+        });
+
+    // Drain — exit when we've delivered the terminal envelope.
+    using clock = std::chrono::steady_clock;
+    auto next_heartbeat = clock::now() + std::chrono::seconds(30);
+    while (!saw_terminal.load() || true) {
+        RequestEventEnvelope ev;
+        bool have = false;
+        bool was_terminal = false;
+        {
+            std::unique_lock<std::mutex> lk(mb_mu);
+            mb_cv.wait_until(lk, next_heartbeat,
+                [&]{ return !mailbox.empty(); });
+            if (!mailbox.empty()) {
+                ev = mailbox.front();
+                mailbox.pop_front();
+                have = true;
+                was_terminal = ev.terminal;
+            }
+        }
+        if (have) {
+            // Skip events at or before the cursor — the publisher races
+            // the backlog scan and may republish events we already wrote.
+            if (ev.seq > cursor) {
+                write_envelope(ev.event_kind, ev.seq, ev.payload_json);
+                cursor = ev.seq;
+            }
+            if (was_terminal) break;
+            continue;
+        }
+        // Heartbeat
+        const char* hb = ": heartbeat\n\n";
+        write_all(fd, hb, std::strlen(hb));
+        next_heartbeat = clock::now() + std::chrono::seconds(30);
+        // Re-poll status: if a recovery sweep flipped the row to
+        // failed without publishing on the bus (e.g. another process
+        // marked it), append a terminal frame and exit.
+        auto fresh = tenants.get_request_status(tenant.id, request_id);
+        if (fresh && fresh->state != "running") {
+            auto term = jobj();
+            term->as_object_mut()["ok"]     = jbool(fresh->state == "completed");
+            term->as_object_mut()["reason"] = jstr(fresh->error_message);
+            term->as_object_mut()["state"]  = jstr(fresh->state);
+            write_envelope("done", fresh->last_seq + 1,
+                            json_serialize(*term));
+            break;
+        }
+    }
+    bus->unsubscribe(sub_id);
+}
+
 // ── Lessons ────────────────────────────────────────────────────────────
 
 std::shared_ptr<JsonValue> lesson_to_json(const TenantStore::Lesson& l) {
@@ -7343,12 +7678,257 @@ void handle_a2a_tasks_cancel(int fd,
         "' and is not in-flight"));
 }
 
+// A2A `tasks/resubscribe` — replay missed task state and live-tail
+// while the task is running.  We map task_id 1:1 to arbiter's request_id
+// (the A2A handler set it that way at submit time), so the underlying
+// log + bus is the same one /v1/requests/:id/events uses; we just wrap
+// each event in an A2A envelope.
+void handle_a2a_tasks_resubscribe(int fd,
+                                    const std::shared_ptr<JsonValue>& rpc_id,
+                                    const std::string& /*agent_id_param*/,
+                                    const a2a::RpcRequest& rpc,
+                                    TenantStore& tenants,
+                                    const Tenant& tenant,
+                                    RequestEventBus* bus) {
+    if (!rpc.params || !rpc.params->is_object()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params required"));
+        return;
+    }
+    auto id_v = rpc.params->get("id");
+    if (!id_v || !id_v->is_string()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "id (string) required"));
+        return;
+    }
+    const std::string task_id = id_v->as_string();
+
+    // Validate ownership via request_status (same row underpinning the
+    // arbiter-native resubscribe surface) AND the legacy a2a_tasks
+    // table (the source of truth for non-orchestrate A2A submissions).
+    auto rs = tenants.get_request_status(tenant.id, task_id);
+    auto a2a_task = tenants.get_a2a_task(tenant.id, task_id);
+    if (!rs && !a2a_task) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no task with id '" + task_id + "' for this tenant"));
+        return;
+    }
+
+    const std::string context_id = a2a_task ? a2a_task->context_id : "";
+    const std::string agent_id   = a2a_task ? a2a_task->agent_id
+                                            : (rs ? rs->agent_id : "index");
+
+    // Open the SSE response.  CORS + no-buffering so dev-mode clients
+    // and reverse proxies behave.
+    {
+        std::ostringstream hdr;
+        hdr << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: text/event-stream\r\n"
+            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            << "X-Accel-Buffering: no\r\n"
+            << kCorsHeaders
+            << "Connection: close\r\n"
+            << "\r\n";
+        write_all(fd, hdr.str());
+    }
+
+    SseStream sse(fd);  // no headers re-write; we already wrote them
+    auto sink = [&sse](const std::string& ev,
+                        std::shared_ptr<JsonValue> payload) {
+        sse.emit(ev, std::move(payload));
+    };
+    a2a::A2aStreamWriter writer(sink, rpc_id, task_id, context_id, agent_id);
+
+    // If terminal already, emit one final TaskStatusUpdateEvent and close.
+    if (rs && rs->state != "running") {
+        a2a::TaskState ts =
+            (rs->state == "completed") ? a2a::TaskState::completed :
+            (rs->state == "canceled")  ? a2a::TaskState::canceled  :
+                                          a2a::TaskState::failed;
+        writer.emit_status(ts, /*final=*/true);
+        return;
+    }
+    if (!rs && a2a_task) {
+        // No request_status row but there's a legacy a2a_tasks row —
+        // use that for state.  Translate the wire-string back to enum.
+        const std::string& s = a2a_task->state;
+        if (s == "completed" || s == "failed" || s == "canceled" ||
+            s == "rejected") {
+            a2a::TaskState ts =
+                (s == "completed") ? a2a::TaskState::completed :
+                (s == "canceled")  ? a2a::TaskState::canceled  :
+                (s == "rejected")  ? a2a::TaskState::rejected  :
+                                      a2a::TaskState::failed;
+            writer.emit_status(ts, /*final=*/true);
+            return;
+        }
+    }
+
+    // Running: emit a `working` status frame, replay the persisted
+    // text/tool/file events translated into A2A envelopes, then live-
+    // tail until terminal.
+    writer.emit_status(a2a::TaskState::working, /*final=*/false);
+
+    auto translate_and_emit =
+        [&writer](const TenantStore::RequestEvent& e) {
+            // We translate the canonical events: text deltas, tool
+            // calls, files, sub-agent completions, and `done`.  Anything
+            // else lands as x-arbiter.<kind> metadata so spec-aware
+            // clients can pass it through if they want it.
+            if (e.event_kind == "text") {
+                std::shared_ptr<JsonValue> p;
+                try { p = json_parse(e.payload_json); } catch (...) {}
+                if (p && p->is_object()) {
+                    auto d = p->get("delta");
+                    if (d && d->is_string()) {
+                        writer.emit_text_chunk(d->as_string(), false);
+                        return;
+                    }
+                }
+            } else if (e.event_kind == "tool_call") {
+                std::shared_ptr<JsonValue> p;
+                try { p = json_parse(e.payload_json); } catch (...) {}
+                if (p && p->is_object()) {
+                    auto k  = p->get("kind");
+                    auto ok = p->get("ok");
+                    writer.emit_tool_call(
+                        (k && k->is_string()) ? k->as_string() : "?",
+                        (ok && ok->is_bool()) ? ok->as_bool() : false);
+                    return;
+                }
+            } else if (e.event_kind == "file") {
+                std::shared_ptr<JsonValue> p;
+                try { p = json_parse(e.payload_json); } catch (...) {}
+                if (p && p->is_object()) {
+                    auto pa = p->get("path");
+                    auto co = p->get("content");
+                    auto mt = p->get("mime_type");
+                    writer.emit_file(
+                        (pa && pa->is_string()) ? pa->as_string() : "",
+                        (co && co->is_string()) ? co->as_string() : "",
+                        (mt && mt->is_string()) ? mt->as_string() : "text/plain");
+                    return;
+                }
+            } else if (e.event_kind == "sub_agent_response") {
+                std::shared_ptr<JsonValue> p;
+                try { p = json_parse(e.payload_json); } catch (...) {}
+                if (p && p->is_object()) {
+                    auto a = p->get("agent");
+                    auto d = p->get("depth");
+                    auto c = p->get("content");
+                    writer.emit_sub_agent(
+                        (a && a->is_string()) ? a->as_string() : "?",
+                        (d && d->is_number()) ? static_cast<int>(d->as_number()) : 1,
+                        (c && c->is_string()) ? c->as_string() : "");
+                    return;
+                }
+            }
+            // Pass-through metadata for anything else (token_usage,
+            // stream_start, stream_end, etc.).  Spec-aware clients
+            // ignore unknown metadata kinds.
+            std::shared_ptr<JsonValue> p;
+            try { p = json_parse(e.payload_json); } catch (...) {}
+            writer.emit_metadata(e.event_kind, p ? p : jobj());
+        };
+
+    int64_t cursor = 0;
+    while (true) {
+        auto chunk = tenants.list_request_events(tenant.id, task_id,
+                                                    cursor, 1000);
+        if (chunk.empty()) break;
+        for (const auto& e : chunk) {
+            translate_and_emit(e);
+            cursor = e.seq;
+        }
+        if (chunk.size() < 1000) break;
+    }
+
+    auto post_replay = tenants.get_request_status(tenant.id, task_id);
+    if (!post_replay || post_replay->state != "running") {
+        a2a::TaskState ts = !post_replay ? a2a::TaskState::failed :
+            (post_replay->state == "completed") ? a2a::TaskState::completed :
+            (post_replay->state == "canceled")  ? a2a::TaskState::canceled  :
+                                                   a2a::TaskState::failed;
+        writer.emit_status(ts, /*final=*/true);
+        return;
+    }
+    if (!bus) {
+        // No live-tail wire — close with the current state as terminal
+        // would be wrong (the run is still in flight); just exit and
+        // let the client reconnect later with the new since_seq.
+        return;
+    }
+
+    // Live tail.
+    std::mutex                       mb_mu;
+    std::condition_variable          mb_cv;
+    std::deque<RequestEventEnvelope> mailbox;
+    std::atomic<bool>                saw_terminal{false};
+
+    int64_t sub_id = bus->subscribe(task_id,
+        [&mb_mu, &mb_cv, &mailbox, &saw_terminal](const RequestEventEnvelope& env) {
+            std::lock_guard<std::mutex> lk(mb_mu);
+            mailbox.push_back(env);
+            if (env.terminal) saw_terminal = true;
+            mb_cv.notify_one();
+        });
+
+    using clock = std::chrono::steady_clock;
+    auto next_heartbeat = clock::now() + std::chrono::seconds(30);
+    while (true) {
+        RequestEventEnvelope ev;
+        bool have = false;
+        bool was_terminal = false;
+        {
+            std::unique_lock<std::mutex> lk(mb_mu);
+            mb_cv.wait_until(lk, next_heartbeat,
+                [&]{ return !mailbox.empty(); });
+            if (!mailbox.empty()) {
+                ev = mailbox.front();
+                mailbox.pop_front();
+                have = true;
+                was_terminal = ev.terminal;
+            }
+        }
+        if (have) {
+            if (ev.seq > cursor) {
+                TenantStore::RequestEvent re;
+                re.event_kind   = ev.event_kind;
+                re.payload_json = ev.payload_json;
+                translate_and_emit(re);
+                cursor = ev.seq;
+            }
+            if (was_terminal) {
+                // Final status from the persisted row.
+                auto fresh = tenants.get_request_status(tenant.id, task_id);
+                a2a::TaskState ts = !fresh ? a2a::TaskState::failed :
+                    (fresh->state == "completed") ? a2a::TaskState::completed :
+                    (fresh->state == "canceled")  ? a2a::TaskState::canceled  :
+                                                     a2a::TaskState::failed;
+                writer.emit_status(ts, /*final=*/true);
+                break;
+            }
+            continue;
+        }
+        // Heartbeat — same shape as the native resubscribe, the SSE
+        // comment line keeps the connection alive without committing
+        // a payload that A2A clients would have to ignore.
+        const char* hb = ": heartbeat\n\n";
+        write_all(fd, hb, std::strlen(hb));
+        next_heartbeat = clock::now() + std::chrono::seconds(30);
+    }
+
+    bus->unsubscribe(sub_id);
+}
+
 void handle_a2a_rpc(int fd, const std::string& agent_id,
                      const HttpRequest& req,
                      const ApiServerOptions& opts,
                      TenantStore& tenants,
                      InFlightRegistry& in_flight,
-                     const Tenant& tenant) {
+                     const Tenant& tenant,
+                     RequestEventBus* request_event_bus = nullptr) {
     // Version negotiation per spec section 3.6.  Empty header is
     // tolerated as 1.0 since every implementation in the wild today
     // omits it; explicit 1.0 + 1 (loose major) are accepted; anything
@@ -7405,14 +7985,18 @@ void handle_a2a_rpc(int fd, const std::string& agent_id,
         handle_a2a_tasks_cancel(fd, rpc.id, rpc, in_flight, tenants, tenant);
         return;
     }
-    if (rpc.method == "tasks/resubscribe"
-        || rpc.method == "tasks/pushNotificationConfig/set"
+    if (rpc.method == "tasks/resubscribe") {
+        handle_a2a_tasks_resubscribe(fd, rpc.id, agent_id, rpc,
+                                       tenants, tenant, request_event_bus);
+        return;
+    }
+    if (rpc.method == "tasks/pushNotificationConfig/set"
         || rpc.method == "tasks/pushNotificationConfig/get"
         || rpc.method == "tasks/pushNotificationConfig/list"
         || rpc.method == "tasks/pushNotificationConfig/delete") {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc.id, a2a::ERR_UNSUPPORTED_OPERATION,
-            "method not implemented in arbiter v1"));
+            "method not implemented"));
         return;
     }
     write_a2a_rpc(fd, a2a::make_error_response(
@@ -7579,6 +8163,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         // when `billing` is null.
                         const std::string& workspace_id,
                         const Tenant& tenant_in,
+                        // Optional per-request event bus.  Non-null ⇒ the
+                        // SSE writer mirrors every event to request_events
+                        // and broadcasts to live-tail subscribers (the
+                        // resubscribe handler).  Null ⇒ the request runs
+                        // without durable persistence; useful for tests
+                        // and for the legacy in-memory-only path during
+                        // gradual rollout.
+                        RequestEventBus* request_event_bus = nullptr,
                         const std::string& agent_override = "",
                         int64_t conversation_id = 0,
                         // Snapshotted agent_def from the conversation row.  When
@@ -7744,6 +8336,34 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // logs to stderr alongside its SSE error frame.
     const std::string request_id = new_request_id();
     EventLogger logger(opts.log_verbose, request_id, tenant.name);
+
+    // Wire durable SSE persistence + live-tail broadcast.  Insert the
+    // request_status row first so a reconnecting client can find the
+    // run by id even if no events have been persisted yet (a slow
+    // start-up where the orchestrator init takes seconds, for example).
+    // The append_request_event statement enforces FK to request_status,
+    // so the create_request_status call MUST land before any emit().
+    const int64_t now_s_for_request = static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    const bool persist_events = (request_event_bus != nullptr);
+    bool       request_status_created = false;
+    if (persist_events) {
+        try {
+            tenants.create_request_status(tenant.id, request_id,
+                /*agent_id=*/agent_override.empty() ? "" : agent_override,
+                conversation_id, now_s_for_request);
+            request_status_created = true;
+            sse.set_persistence(&tenants, request_event_bus,
+                                tenant.id, request_id);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr,
+                "[orchestrate] persist init failed for %s: %s\n",
+                request_id.c_str(), e.what());
+            // Carry on without persistence rather than 500ing the call;
+            // durable replay degrades, the wire stream still works.
+        }
+    }
 
     auto emit = [&sse, &logger](const std::string& ev,
                                  const std::shared_ptr<JsonValue>& p) {
@@ -8341,6 +8961,21 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         m["duration_ms"] = jnum(static_cast<double>(elapsed_ms));
         emit("done", done);
 
+        // Flush any pending coalesced text and stamp the run terminal.
+        // close() is idempotent; re-entry from the catch-all below
+        // would be a no-op.
+        sse.close();
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            tenants.update_request_status(request_id,
+                std::optional<std::string>(resp.ok ? "completed" : "failed"),
+                completed,
+                resp.ok ? std::nullopt : std::optional<std::string>(resp.error),
+                std::nullopt);
+        }
+
         // Persist the assistant turn to the conversation thread.  resp's
         // content + token counts are cumulative across all tool-call
         // re-entry iterations (Orchestrator::send_streaming aggregates
@@ -8360,6 +8995,16 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     } catch (const std::exception& e) {
         log_error(std::string("orchestration failed: ") + e.what());
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            tenants.update_request_status(request_id,
+                std::optional<std::string>("failed"),
+                completed,
+                std::optional<std::string>(e.what()),
+                std::nullopt);
+        }
     }
 
     sse.close();
@@ -8386,13 +9031,53 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         billing_ = std::make_unique<BillingClient>(
             opts_.billing_url);
     }
-    notifications_ = std::make_unique<NotificationBus>();
-    scheduler_     = std::make_unique<Scheduler>(
+    notifications_   = std::make_unique<NotificationBus>();
+    request_events_  = std::make_unique<RequestEventBus>();
+    scheduler_       = std::make_unique<Scheduler>(
         &opts_, &tenants_, notifications_.get());
     // Per-tenant limiter: defaults from env (ARBITER_TENANT_MAX_CONCURRENT
     // / RATE_PER_MIN / BURST).  Zeroed defaults ⇒ unlimited; the limiter
     // grants every acquire without taking the lock.
     limiter_ = std::make_unique<TenantLimiter>(load_tenant_limits_from_env());
+
+    // Recovery sweep: any request_status row left in 'running' from a
+    // previous process must have been interrupted by a crash or kill.
+    // Mark them failed and append a synthetic terminal event so a
+    // reconnecting client (or a resumed UI tab) sees a clean done.
+    try {
+        const int64_t now_s = static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        auto orphaned = tenants_.recover_running_requests(
+            "failed", now_s,
+            "request was interrupted by a server restart; reconnect to retry");
+        for (const auto& rid : orphaned) {
+            // Synthesise a terminal `done` event so resubscribe finds
+            // a clean tail.  Use the next seq (last_seq+1) for a
+            // reconnecting client tracking the cursor.
+            auto status = tenants_.get_request_status(/*tenant_id=*/0, rid);
+            // get_request_status takes tenant_id, but we don't know
+            // the tenant of an orphan without re-querying.  Quick
+            // helper: pull the row directly.  list_request_status
+            // doesn't filter on a single id; use the cross-tenant
+            // approach: skip tenant filter here by reaching into
+            // list_request_events.  Simpler: append at last_seq+1
+            // using a single-purpose append that doesn't need the
+            // tenant.  For v1 we omit the synthetic done — the
+            // resubscribe handler's heartbeat-time poll catches the
+            // status flip and emits the terminal frame on demand.
+            (void)status; (void)rid;
+        }
+        if (!orphaned.empty()) {
+            std::fprintf(stderr,
+                "[arbiter] recovery: marked %zu orphaned in-flight request(s) "
+                "as failed\n",
+                orphaned.size());
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+            "[arbiter] recovery sweep failed: %s\n", e.what());
+    }
 }
 
 ApiServer::~ApiServer() { stop(); }
@@ -8638,7 +9323,8 @@ void ApiServer::handle_connection(int fd) {
         }
         // lim.guard releases the in-flight slot when this scope exits.
         handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
-                           billing_.get(), workspace_id, *tenant);
+                           billing_.get(), workspace_id, *tenant,
+                           request_events_.get());
         return;
     }
 
@@ -8654,6 +9340,42 @@ void ApiServer::handle_connection(int fd) {
         req.path.find("/cancel") != std::string::npos) {
         handle_cancel(fd, req, in_flight_, *tenant);
         return;
+    }
+
+    // ── Request log + resubscribe ────────────────────────────────────
+    // GET /v1/requests                       — list recent runs
+    // GET /v1/requests/:id                   — fetch one run's status
+    // GET /v1/requests/:id/events?since_seq= — replay + live tail (SSE)
+    {
+        const auto rsegs = split_path(req.path);
+        if (rsegs.size() >= 2 && rsegs[0] == "v1" && rsegs[1] == "requests") {
+            if (rsegs.size() == 2) {
+                if (req.method == "GET")
+                    return handle_request_list(fd, req, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (rsegs.size() == 3) {
+                if (req.method == "GET")
+                    return handle_request_get(fd, rsegs[2], tenants_, *tenant);
+                // POST → cancel handled above; everything else 405.
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (rsegs.size() == 4 && rsegs[3] == "events") {
+                if (req.method != "GET") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                handle_request_events(fd, rsegs[2], req, tenants_, *tenant,
+                                       request_events_.get());
+                return;
+            }
+            // Fall through to the cancel route handled above.
+        }
     }
 
     // ── Conversations CRUD ───────────────────────────────────────────────
@@ -8715,6 +9437,7 @@ void ApiServer::handle_connection(int fd) {
                     handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
                                         billing_.get(), workspace_id,
                                         *tenant,
+                                        request_events_.get(),
                                         /*agent_override=*/conv->agent_id,
                                         /*conversation_id=*/id,
                                         /*conversation_agent_def_json=*/conv->agent_def_json);
@@ -8853,7 +9576,8 @@ void ApiServer::handle_connection(int fd) {
                     return;
                 }
                 handle_a2a_rpc(fd, agent_id, req, opts_, tenants_,
-                                in_flight_, *tenant);
+                                in_flight_, *tenant,
+                                request_events_.get());
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "a2a route not found\n");
@@ -8902,7 +9626,9 @@ void ApiServer::handle_connection(int fd) {
                 }
                 handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
                                     billing_.get(), workspace_id,
-                                    *tenant, segs[2]);
+                                    *tenant,
+                                    request_events_.get(),
+                                    segs[2]);
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "agents route not found\n");

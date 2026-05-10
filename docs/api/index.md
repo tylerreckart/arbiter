@@ -26,6 +26,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [Scheduler](concepts/scheduler.md)
 - [Todos](concepts/todos.md)
 - [Lessons (self-reflection)](concepts/lessons.md)
+- [Durable in-flight execution](concepts/durable-execution.md)
 
 ## Endpoints
 
@@ -34,6 +35,9 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/models`](models.md)
 - [`POST /v1/orchestrate`](orchestrate.md)
 - [`POST /v1/requests/:id/cancel`](requests-cancel.md)
+- [`GET /v1/requests`](requests/list.md)
+- [`GET /v1/requests/:id`](requests/get.md)
+- [`GET /v1/requests/:id/events`](requests/events.md)
 
 ### Agents
 - [`GET /v1/agents`](agents/list.md)

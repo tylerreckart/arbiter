@@ -8,6 +8,28 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Durable in-flight execution.**  Every `/v1/orchestrate` (and
+  conversation message, agent chat, A2A dispatch) call now mirrors
+  its SSE event stream into two new tables on `TenantStore`:
+  `request_status` (one row per run; state, agent, timestamps,
+  last_seq) and `request_events` (append-only log indexed
+  `(request_id, seq)`).  `text` deltas coalesce into ~2 KiB chunks
+  before persistence; other events persist 1:1.
+  - **`GET /v1/requests/:id/events?since_seq=N`** replays the
+    persisted backlog as SSE frames, then live-tails via a per-
+    request in-process bus (`RequestEventBus`) until the run hits
+    `done`.  Each frame carries the seq as the SSE `id:` field so
+    re-reconnects need not parse payloads.
+  - **`GET /v1/requests`** + **`GET /v1/requests/:id`** expose the
+    run-level metadata for listing / discovery.
+  - **A2A `tasks/resubscribe`** translates each persisted event into
+    the appropriate `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent`
+    envelope, replacing the prior `UnsupportedOperation` rejection.
+    Backed by the same store + bus.
+  - **Recovery sweep** at `ApiServer::start()` marks every
+    `state='running'` row from a previous process as `failed` so
+    reconnecting clients see a clean terminal signal.
+  See [`docs/concepts/durable-execution.md`](docs/concepts/durable-execution.md).
 - **Self-reflection / learned-from-failure.**  New `lessons` table on
   `TenantStore`, agent-scoped (`tenant_id`, `agent_id`).  Three
   integrated mechanisms:

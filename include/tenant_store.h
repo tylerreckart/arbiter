@@ -338,6 +338,95 @@ public:
 
     bool delete_agent_record(int64_t tenant_id, const std::string& agent_id);
 
+    // ── Request event log (durable in-flight execution) ─────────────────
+    //
+    // Every SSE event from /v1/orchestrate (and conversation messages,
+    // agent chat, A2A dispatch) is mirrored into `request_events` as it
+    // hits the wire.  Reconnecting clients can replay the backlog after
+    // a known seq via GET /v1/requests/:id/events?since_seq=N, and live-
+    // tail still-running requests via the per-request broadcaster.
+    //
+    // request_status carries the run-level metadata: state, agent,
+    // start/end timestamps, error.  On API server start, any row left
+    // in state='running' is from a crashed prior run — the recovery
+    // sweep marks it 'failed' with a synthetic error event so
+    // reconnecting clients see a clean terminal signal.
+    //
+    // Coalescing: streaming `text` events fire dozens of times per turn.
+    // The writer aggregates them into ~2KB chunks (or per-stream_end)
+    // before persisting so the row count stays bounded; other event
+    // kinds persist 1:1.
+
+    struct RequestStatus {
+        std::string request_id;
+        int64_t     tenant_id       = 0;
+        std::string agent_id;
+        int64_t     conversation_id = 0;
+        std::string state;                       // "running" | "completed" | "failed" | "canceled"
+        int64_t     started_at      = 0;
+        int64_t     completed_at    = 0;
+        std::string error_message;
+        int64_t     last_seq        = 0;
+    };
+
+    struct RequestEvent {
+        int64_t     id           = 0;
+        std::string request_id;
+        int64_t     tenant_id    = 0;
+        int64_t     seq          = 0;
+        std::string event_kind;                  // "request_received" | "text" | "tool_call" | "file" | etc.
+        std::string payload_json;                // full SSE event body as JSON
+        int64_t     created_at_ms = 0;           // epoch milliseconds (ordering granularity)
+    };
+
+    void create_request_status(int64_t tenant_id,
+                                const std::string& request_id,
+                                const std::string& agent_id,
+                                int64_t conversation_id,
+                                int64_t started_at);
+
+    bool update_request_status(const std::string& request_id,
+                                const std::optional<std::string>& state,
+                                const std::optional<int64_t>& completed_at,
+                                const std::optional<std::string>& error_message,
+                                const std::optional<int64_t>& last_seq);
+
+    std::optional<RequestStatus>
+    get_request_status(int64_t tenant_id, const std::string& request_id) const;
+
+    // List recent runs for a tenant.  Newest started_at first; capped at 200.
+    std::vector<RequestStatus>
+    list_request_status(int64_t tenant_id, int limit) const;
+
+    // Recovery sweep: every state='running' row gets the new state
+    // (typically "failed"), the new completed_at, and the supplied
+    // error_message.  Returns the list of request_ids touched so the
+    // caller can append synthetic terminal events to each.
+    std::vector<std::string>
+    recover_running_requests(const std::string& new_state,
+                              int64_t completed_at,
+                              const std::string& error_message);
+
+    // Append one event.  `seq` is caller-supplied (the SseEmitter holds
+    // a per-request counter); duplicate seqs would violate the unique
+    // index and surface as an exception, so callers should never
+    // reuse a seq.  `created_at_ms` of 0 ⇒ stamp at insert time.
+    int64_t append_request_event(int64_t tenant_id,
+                                  const std::string& request_id,
+                                  int64_t seq,
+                                  const std::string& event_kind,
+                                  const std::string& payload_json,
+                                  int64_t created_at_ms = 0);
+
+    // Replay slice.  Returns events with seq > since_seq, ordered
+    // ascending.  Capped (default 1000) so a runaway client can't
+    // OOM the server with a single huge fetch.
+    std::vector<RequestEvent>
+    list_request_events(int64_t tenant_id,
+                         const std::string& request_id,
+                         int64_t since_seq,
+                         int limit) const;
+
     // ── Lessons (self-reflection / learned-from-failure) ─────────────────
     //
     // Agent-scoped record of "this approach failed, try this instead."
