@@ -25,6 +25,8 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [Operational notes](concepts/operations.md)
 - [Scheduler](concepts/scheduler.md)
 - [Todos](concepts/todos.md)
+- [Lessons (self-reflection)](concepts/lessons.md)
+- [Durable in-flight execution](concepts/durable-execution.md)
 
 ## Endpoints
 
@@ -33,6 +35,9 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/models`](models.md)
 - [`POST /v1/orchestrate`](orchestrate.md)
 - [`POST /v1/requests/:id/cancel`](requests-cancel.md)
+- [`GET /v1/requests`](requests/list.md)
+- [`GET /v1/requests/:id`](requests/get.md)
+- [`GET /v1/requests/:id/events`](requests/events.md)
 
 ### Agents
 - [`GET /v1/agents`](agents/list.md)
@@ -84,6 +89,13 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/todos/:id`](todos/get.md)
 - [`PATCH /v1/todos/:id`](todos/patch.md)
 - [`DELETE /v1/todos/:id`](todos/delete.md)
+
+### Lessons (self-reflection)
+- [`POST /v1/lessons`](lessons/create.md)
+- [`GET /v1/lessons`](lessons/list.md)
+- [`GET /v1/lessons/:id`](lessons/get.md)
+- [`PATCH /v1/lessons/:id`](lessons/patch.md)
+- [`DELETE /v1/lessons/:id`](lessons/delete.md)
 
 ### Schedules + runs + notifications
 - [`POST /v1/schedules`](schedules/create.md)

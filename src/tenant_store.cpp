@@ -273,6 +273,7 @@ public:
     Stmt& operator=(const Stmt&) = delete;
 
     void bind(int idx, int64_t v)              { sqlite3_bind_int64(stmt_, idx, v); }
+    void bind(int idx, double v)                { sqlite3_bind_double(stmt_, idx, v); }
     void bind(int idx, const std::string& v)   {
         sqlite3_bind_text(stmt_, idx, v.c_str(), -1, SQLITE_TRANSIENT);
     }
@@ -799,6 +800,85 @@ void TenantStore::open(const std::string& path) {
     exec_sql(db_, R"SQL(
         CREATE INDEX IF NOT EXISTS a2a_tasks_context
             ON a2a_tasks(tenant_id, context_id);
+    )SQL");
+
+    // Request event log: durable mirror of every SSE event emitted by
+    // /v1/orchestrate (and conversation messages, agent chat, A2A
+    // dispatch).  Reconnecting clients replay via GET
+    // /v1/requests/:id/events?since_seq=N.  request_status carries the
+    // run-level metadata so the resubscribe handler can decide whether
+    // to also live-tail (state='running') or close after backlog
+    // (terminal).  Indexed (request_id, seq) for the replay query and
+    // (tenant_id, started_at DESC) for the listing endpoint.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS request_status (
+            request_id      TEXT    PRIMARY KEY,
+            tenant_id       INTEGER NOT NULL,
+            agent_id        TEXT    NOT NULL,
+            conversation_id INTEGER NOT NULL DEFAULT 0,
+            state           TEXT    NOT NULL,
+            started_at      INTEGER NOT NULL,
+            completed_at    INTEGER NOT NULL DEFAULT 0,
+            error_message   TEXT    NOT NULL DEFAULT '',
+            last_seq        INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS request_status_tenant_recent
+            ON request_status(tenant_id, started_at DESC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS request_status_state
+            ON request_status(state, started_at);
+    )SQL");
+
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS request_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id      TEXT    NOT NULL,
+            tenant_id       INTEGER NOT NULL,
+            seq             INTEGER NOT NULL,
+            event_kind      TEXT    NOT NULL,
+            payload_json    TEXT    NOT NULL,
+            created_at_ms   INTEGER NOT NULL,
+            UNIQUE (request_id, seq),
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+            FOREIGN KEY (request_id) REFERENCES request_status(request_id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS request_events_request_seq
+            ON request_events(request_id, seq);
+    )SQL");
+
+    // Lessons: agent-scoped "learned-from-failure" record.  Indexed by
+    // (tenant, agent, last_seen_at DESC) for the agent's at-a-glance
+    // list and (tenant, agent, signature) for the loop detector's
+    // dedupe lookup.  No FTS5 — substring search on lesson_text is
+    // fine at expected tenant scale (tens to low hundreds of rows
+    // per agent).
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS lessons (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id       INTEGER NOT NULL,
+            agent_id        TEXT    NOT NULL,
+            signature       TEXT    NOT NULL,
+            lesson_text     TEXT    NOT NULL,
+            hit_count       INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            last_seen_at    INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS lessons_agent_recent
+            ON lessons(tenant_id, agent_id, last_seen_at DESC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS lessons_agent_signature
+            ON lessons(tenant_id, agent_id, signature);
     )SQL");
 
     // Todos: agent-facing work tracker.  Tenant-scoped; conversation_id=0
@@ -1426,6 +1506,22 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
             sql += " * CASE WHEN e.tags LIKE ? THEN " +
                    std::to_string(kTagBoost) + " ELSE 1.0 END";
         }
+        // Age-decay multiplier.  Multiplying by a fraction <1 makes a
+        // negative BM25 score *less* negative, suppressing the row in
+        // an ASC-ordered ranking.  Piecewise instead of exp() so the
+        // expression stays in vanilla SQLite.  Applied only when the
+        // caller supplies `age_now_epoch` — keeps the existing test
+        // fixtures and historical-snapshot queries deterministic.
+        bool apply_decay = (f.age_now_epoch > 0);
+        if (apply_decay) {
+            sql +=
+                " * CASE "
+                " WHEN (? - e.valid_from) <= 30 * 86400 THEN 1.0 "
+                " WHEN (? - e.valid_from) <= ? * 86400  THEN 0.9 "
+                " WHEN (? - e.valid_from) <= 2 * ? * 86400 THEN 0.75 "
+                " WHEN (? - e.valid_from) <= 4 * ? * 86400 THEN 0.6 "
+                " ELSE ? END";
+        }
         sql += ") AS score "
                "FROM memory_entries e "
                "JOIN memory_entries_fts fts ON fts.rowid = e.id "
@@ -1457,6 +1553,25 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         if (!f.tag.empty()) {
             tag_pat = "%\"" + f.tag + "\"%";
             q.bind(idx++, tag_pat);
+        }
+        if (apply_decay) {
+            // Five binds matching the CASE branches above:
+            //   ? - e.valid_from <= 30*86400          (now)
+            //   ? - e.valid_from <= ? * 86400         (now, half_life)
+            //   ? - e.valid_from <= 2 * ? * 86400     (now, half_life)
+            //   ? - e.valid_from <= 4 * ? * 86400     (now, half_life)
+            //   ELSE ?                                 (floor)
+            int hl = f.age_half_life_days > 0 ? f.age_half_life_days : 90;
+            double floor = (f.age_floor > 0.0 && f.age_floor < 1.0)
+                ? f.age_floor : 0.5;
+            q.bind(idx++, f.age_now_epoch);     // 30-day branch
+            q.bind(idx++, f.age_now_epoch);     // half-life branch
+            q.bind(idx++, static_cast<int64_t>(hl));
+            q.bind(idx++, f.age_now_epoch);     // 2× half-life branch
+            q.bind(idx++, static_cast<int64_t>(hl));
+            q.bind(idx++, f.age_now_epoch);     // 4× half-life branch
+            q.bind(idx++, static_cast<int64_t>(hl));
+            q.bind(idx++, floor);
         }
         q.bind(idx++, tenant_id);
         q.bind(idx++, fts_query);
@@ -2491,6 +2606,356 @@ int64_t TenantStore::bytes_used_conversation(int64_t tenant_id,
     q.bind(2, conversation_id);
     if (q.step() != SQLITE_ROW) return 0;
     return q.column_int64(0);
+}
+
+// ── Request event log ──────────────────────────────────────────────────
+
+namespace {
+
+constexpr const char* kRequestStatusCols =
+    "request_id, tenant_id, agent_id, conversation_id, state, "
+    "started_at, completed_at, error_message, last_seq";
+
+TenantStore::RequestStatus row_to_request_status(Stmt& q) {
+    TenantStore::RequestStatus r;
+    r.request_id      = q.column_text(0);
+    r.tenant_id       = q.column_int64(1);
+    r.agent_id        = q.column_text(2);
+    r.conversation_id = q.column_int64(3);
+    r.state           = q.column_text(4);
+    r.started_at      = q.column_int64(5);
+    r.completed_at    = q.column_int64(6);
+    r.error_message   = q.column_text(7);
+    r.last_seq        = q.column_int64(8);
+    return r;
+}
+
+constexpr const char* kRequestEventCols =
+    "id, request_id, tenant_id, seq, event_kind, payload_json, created_at_ms";
+
+TenantStore::RequestEvent row_to_request_event(Stmt& q) {
+    TenantStore::RequestEvent e;
+    e.id            = q.column_int64(0);
+    e.request_id    = q.column_text(1);
+    e.tenant_id     = q.column_int64(2);
+    e.seq           = q.column_int64(3);
+    e.event_kind    = q.column_text(4);
+    e.payload_json  = q.column_text(5);
+    e.created_at_ms = q.column_int64(6);
+    return e;
+}
+
+int64_t now_epoch_ms() {
+    return static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+} // namespace
+
+void TenantStore::create_request_status(int64_t tenant_id,
+                                         const std::string& request_id,
+                                         const std::string& agent_id,
+                                         int64_t conversation_id,
+                                         int64_t started_at) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    Stmt q(db_,
+        "INSERT INTO request_status "
+        "(request_id, tenant_id, agent_id, conversation_id, state, "
+        " started_at, completed_at, error_message, last_seq) "
+        "VALUES (?, ?, ?, ?, 'running', ?, 0, '', 0);");
+    q.bind(1, request_id);
+    q.bind(2, tenant_id);
+    q.bind(3, agent_id);
+    q.bind(4, conversation_id);
+    q.bind(5, started_at);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert request_status");
+}
+
+bool TenantStore::update_request_status(
+        const std::string& request_id,
+        const std::optional<std::string>& state,
+        const std::optional<int64_t>& completed_at,
+        const std::optional<std::string>& error_message,
+        const std::optional<int64_t>& last_seq) {
+    if (!db_) return false;
+    if (!state && !completed_at && !error_message && !last_seq) return false;
+    std::string sql = "UPDATE request_status SET ";
+    bool any = false;
+    auto comma = [&]() { if (any) sql += ", "; any = true; };
+    if (state)         { comma(); sql += "state = ?"; }
+    if (completed_at)  { comma(); sql += "completed_at = ?"; }
+    if (error_message) { comma(); sql += "error_message = ?"; }
+    if (last_seq)      { comma(); sql += "last_seq = ?"; }
+    sql += " WHERE request_id = ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    if (state)         q.bind(idx++, *state);
+    if (completed_at)  q.bind(idx++, *completed_at);
+    if (error_message) q.bind(idx++, *error_message);
+    if (last_seq)      q.bind(idx++, *last_seq);
+    q.bind(idx, request_id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+std::optional<TenantStore::RequestStatus>
+TenantStore::get_request_status(int64_t tenant_id,
+                                 const std::string& request_id) const {
+    if (!db_) return std::nullopt;
+    std::string sql = std::string("SELECT ") + kRequestStatusCols +
+        " FROM request_status WHERE tenant_id = ? AND request_id = ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, request_id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_request_status(q);
+}
+
+std::vector<TenantStore::RequestStatus>
+TenantStore::list_request_status(int64_t tenant_id, int limit) const {
+    std::vector<RequestStatus> out;
+    if (!db_) return out;
+    if (limit <= 0 || limit > 200) limit = 100;
+    std::string sql = std::string("SELECT ") + kRequestStatusCols +
+        " FROM request_status WHERE tenant_id = ? "
+        " ORDER BY started_at DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_request_status(q));
+    return out;
+}
+
+std::vector<std::string>
+TenantStore::recover_running_requests(const std::string& new_state,
+                                       int64_t completed_at,
+                                       const std::string& error_message) {
+    std::vector<std::string> out;
+    if (!db_) return out;
+    {
+        // Snapshot the request_ids first so we can return them; the
+        // UPDATE then runs in a separate statement.  Two queries means
+        // a tiny race window (a request that flips terminal between
+        // the SELECT and the UPDATE will be no-op'd by the WHERE
+        // state='running' clause), which is fine.
+        Stmt q(db_,
+            "SELECT request_id FROM request_status WHERE state = 'running';");
+        while (q.step() == SQLITE_ROW) out.push_back(q.column_text(0));
+    }
+    if (out.empty()) return out;
+    Stmt u(db_,
+        "UPDATE request_status SET state = ?, completed_at = ?, "
+        "error_message = ? WHERE state = 'running';");
+    u.bind(1, new_state);
+    u.bind(2, completed_at);
+    u.bind(3, error_message);
+    u.step();
+    return out;
+}
+
+int64_t TenantStore::append_request_event(int64_t tenant_id,
+                                           const std::string& request_id,
+                                           int64_t seq,
+                                           const std::string& event_kind,
+                                           const std::string& payload_json,
+                                           int64_t created_at_ms) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    if (created_at_ms <= 0) created_at_ms = now_epoch_ms();
+    Stmt q(db_,
+        "INSERT INTO request_events "
+        "(request_id, tenant_id, seq, event_kind, payload_json, created_at_ms) "
+        "VALUES (?, ?, ?, ?, ?, ?);");
+    q.bind(1, request_id);
+    q.bind(2, tenant_id);
+    q.bind(3, seq);
+    q.bind(4, event_kind);
+    q.bind(5, payload_json);
+    q.bind(6, created_at_ms);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert request_event");
+    return sqlite3_last_insert_rowid(db_);
+}
+
+std::vector<TenantStore::RequestEvent>
+TenantStore::list_request_events(int64_t tenant_id,
+                                  const std::string& request_id,
+                                  int64_t since_seq, int limit) const {
+    std::vector<RequestEvent> out;
+    if (!db_) return out;
+    if (limit <= 0 || limit > 5000) limit = 1000;
+    std::string sql = std::string("SELECT ") + kRequestEventCols +
+        " FROM request_events "
+        " WHERE tenant_id = ? AND request_id = ? AND seq > ? "
+        " ORDER BY seq ASC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, request_id);
+    q.bind(3, since_seq);
+    q.bind(4, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_request_event(q));
+    return out;
+}
+
+// ── Lessons ─────────────────────────────────────────────────────────────
+
+namespace {
+
+constexpr const char* kLessonCols =
+    "id, tenant_id, agent_id, signature, lesson_text, "
+    "hit_count, created_at, updated_at, last_seen_at";
+
+TenantStore::Lesson row_to_lesson(Stmt& q) {
+    TenantStore::Lesson l;
+    l.id           = q.column_int64(0);
+    l.tenant_id    = q.column_int64(1);
+    l.agent_id     = q.column_text(2);
+    l.signature    = q.column_text(3);
+    l.lesson_text  = q.column_text(4);
+    l.hit_count    = q.column_int64(5);
+    l.created_at   = q.column_int64(6);
+    l.updated_at   = q.column_int64(7);
+    l.last_seen_at = q.column_int64(8);
+    return l;
+}
+
+} // namespace
+
+TenantStore::Lesson
+TenantStore::create_lesson(int64_t tenant_id,
+                            const std::string& agent_id,
+                            const std::string& signature,
+                            const std::string& lesson_text) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    const int64_t ts = now_epoch();
+    Stmt q(db_,
+        "INSERT INTO lessons "
+        "(tenant_id, agent_id, signature, lesson_text, "
+        " hit_count, created_at, updated_at, last_seen_at) "
+        "VALUES (?, ?, ?, ?, 0, ?, ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, agent_id);
+    q.bind(3, signature);
+    q.bind(4, lesson_text);
+    q.bind(5, ts);
+    q.bind(6, ts);
+    q.bind(7, ts);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert lesson");
+
+    Lesson l;
+    l.id           = sqlite3_last_insert_rowid(db_);
+    l.tenant_id    = tenant_id;
+    l.agent_id     = agent_id;
+    l.signature    = signature;
+    l.lesson_text  = lesson_text;
+    l.created_at   = ts;
+    l.updated_at   = ts;
+    l.last_seen_at = ts;
+    return l;
+}
+
+std::optional<TenantStore::Lesson>
+TenantStore::get_lesson(int64_t tenant_id, int64_t id) const {
+    if (!db_) return std::nullopt;
+    std::string sql = std::string("SELECT ") + kLessonCols +
+        " FROM lessons WHERE tenant_id = ? AND id = ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_lesson(q);
+}
+
+std::vector<TenantStore::Lesson>
+TenantStore::list_lessons(int64_t tenant_id,
+                           const std::string& agent_id, int limit) const {
+    std::vector<Lesson> out;
+    if (!db_) return out;
+    if (limit <= 0 || limit > 200) limit = 100;
+    std::string sql = std::string("SELECT ") + kLessonCols +
+        " FROM lessons WHERE tenant_id = ?";
+    if (!agent_id.empty()) sql += " AND agent_id = ?";
+    sql += " ORDER BY last_seen_at DESC, created_at DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    if (!agent_id.empty()) q.bind(idx++, agent_id);
+    q.bind(idx, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_lesson(q));
+    return out;
+}
+
+std::vector<TenantStore::Lesson>
+TenantStore::search_lessons(int64_t tenant_id,
+                             const std::string& agent_id,
+                             const std::string& query, int limit) const {
+    std::vector<Lesson> out;
+    if (!db_ || query.empty()) return out;
+    if (limit <= 0 || limit > 50) limit = 20;
+    // Substring match — case-insensitive on lesson_text + signature.  At
+    // tens-to-hundreds of rows per agent this is fine; an FTS index
+    // would be premature.
+    std::string sql = std::string("SELECT ") + kLessonCols +
+        " FROM lessons WHERE tenant_id = ?";
+    if (!agent_id.empty()) sql += " AND agent_id = ?";
+    sql += " AND (lower(signature) LIKE ? OR lower(lesson_text) LIKE ?)"
+           " ORDER BY hit_count DESC, last_seen_at DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, tenant_id);
+    if (!agent_id.empty()) q.bind(idx++, agent_id);
+    std::string pat = "%";
+    for (char c : query) pat.push_back(static_cast<char>(std::tolower(
+        static_cast<unsigned char>(c))));
+    pat.push_back('%');
+    q.bind(idx++, pat);
+    q.bind(idx++, pat);
+    q.bind(idx, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_lesson(q));
+    return out;
+}
+
+bool TenantStore::update_lesson(int64_t tenant_id, int64_t id,
+                                 const std::optional<std::string>& signature,
+                                 const std::optional<std::string>& lesson_text) {
+    if (!db_) return false;
+    if (!signature && !lesson_text) return false;
+    std::string sql = "UPDATE lessons SET updated_at = ?";
+    if (signature)   sql += ", signature = ?";
+    if (lesson_text) sql += ", lesson_text = ?";
+    sql += " WHERE tenant_id = ? AND id = ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    q.bind(idx++, now_epoch());
+    if (signature)   q.bind(idx++, *signature);
+    if (lesson_text) q.bind(idx++, *lesson_text);
+    q.bind(idx++, tenant_id);
+    q.bind(idx,   id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::delete_lesson(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    Stmt q(db_, "DELETE FROM lessons WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::bump_lesson_hit(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    Stmt q(db_,
+        "UPDATE lessons SET hit_count = hit_count + 1, last_seen_at = ? "
+        " WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, now_epoch());
+    q.bind(2, tenant_id);
+    q.bind(3, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
 }
 
 // ── Todos ───────────────────────────────────────────────────────────────

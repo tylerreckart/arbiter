@@ -19,8 +19,10 @@
 #include "orchestrator.h"
 #include "billing_client.h"
 #include "notification_bus.h"
+#include "request_event_bus.h"
 #include "schedule_parser.h"
 #include "scheduler.h"
+#include "tenant_limiter.h"
 #include "tenant_store.h"
 #include "tui/stream_filter.h"
 #include "api_client.h"
@@ -259,6 +261,29 @@ void write_json_response(int fd, int code, std::shared_ptr<JsonValue> body) {
     write_all(fd, ss.str());
 }
 
+// 429 Too Many Requests with Retry-After.  Used by the per-tenant
+// limiter when an expensive route (orchestrate, conversation messages,
+// agent chat, A2A dispatch) is denied.  `reason` distinguishes
+// concurrency exhaustion from rate-bucket exhaustion in the body —
+// callers can branch on it without parsing the human string.
+void write_429_response(int fd, int retry_after_seconds, const char* reason) {
+    auto body = jobj();
+    auto& m = body->as_object_mut();
+    m["error"]              = jstr("rate limit exceeded");
+    m["reason"]             = jstr(reason);
+    m["retry_after_seconds"] = jnum(retry_after_seconds);
+    std::string payload = json_serialize(*body);
+    std::ostringstream ss;
+    ss << "HTTP/1.1 429 Too Many Requests\r\n"
+       << "Content-Type: application/json; charset=utf-8\r\n"
+       << "Content-Length: " << payload.size() << "\r\n"
+       << "Retry-After: " << retry_after_seconds << "\r\n"
+       << kCorsHeaders
+       << "Connection: close\r\n\r\n"
+       << payload;
+    write_all(fd, ss.str());
+}
+
 namespace {
 
 // CORS preflight response — 204 No Content + headers.  Browsers fire this
@@ -300,23 +325,150 @@ public:
         write_all(fd_, kHdr);
     }
 
+    // Wire up durable persistence.  Each subsequent emit mirrors to
+    // request_events (text events are coalesced into ~2 KB chunks
+    // before persistence; other events persist 1:1) and broadcasts to
+    // any RequestEventBus subscribers.  Borrowed pointers must outlive
+    // this stream — typical lifetime is the request handler stack
+    // frame.
+    void set_persistence(TenantStore* ts, RequestEventBus* bus,
+                          int64_t tenant_id, std::string request_id) {
+        std::lock_guard<std::mutex> lk(mu_);
+        ts_ = ts;
+        bus_ = bus;
+        persist_tenant_id_ = tenant_id;
+        persist_request_id_ = std::move(request_id);
+    }
+
     void emit(const std::string& event, std::shared_ptr<JsonValue> data) {
         std::lock_guard<std::mutex> lk(mu_);
         if (closed_) return;
         std::string payload = data ? json_serialize(*data) : "{}";
+        // Wire write is always immediate and uncoalesced — clients see
+        // each delta as it arrives.  Persistence is batched per the
+        // operator's choice.
         std::string frame = "event: " + event + "\ndata: " + payload + "\n\n";
         write_all(fd_, frame);
+
+        if (!ts_) return;
+        if (event == "text") {
+            try_coalesce_text_locked(data, payload);
+        } else {
+            flush_pending_text_locked();
+            persist_event_locked(event, payload);
+        }
     }
 
+    // Flush any pending coalesced text and stop persisting / broadcasting.
+    // Called by handle_orchestrate's finalisation code.  Wire-side close
+    // is independent — closing the stream just stops accepting further
+    // events, it doesn't shut the fd.
     void close() {
         std::lock_guard<std::mutex> lk(mu_);
+        if (closed_) return;
+        flush_pending_text_locked();
         closed_ = true;
     }
 
 private:
+    void persist_event_locked(const std::string& kind,
+                                const std::string& payload_json) {
+        if (!ts_) return;
+        ++seq_;
+        try {
+            ts_->append_request_event(persist_tenant_id_,
+                                       persist_request_id_,
+                                       seq_, kind, payload_json);
+        } catch (...) {
+            // Persistence is best-effort.  Failure (typically a
+            // duplicate seq from a concurrent path, or a transient
+            // SQLite busy) shouldn't kill the live wire stream.
+            return;
+        }
+        if (bus_) {
+            RequestEventEnvelope env;
+            env.request_id    = persist_request_id_;
+            env.seq           = seq_;
+            env.event_kind    = kind;
+            env.payload_json  = payload_json;
+            env.terminal      = (kind == "done");
+            try { bus_->publish(env); } catch (...) {}
+        }
+    }
+
+    void try_coalesce_text_locked(const std::shared_ptr<JsonValue>& data,
+                                    const std::string& payload_json) {
+        if (!data || !data->is_object()) {
+            // Unknown shape — persist as-is; coalescing only applies
+            // to the canonical {agent, stream_id, delta} envelope.
+            persist_event_locked("text", payload_json);
+            return;
+        }
+        auto agent_v  = data->get("agent");
+        auto stream_v = data->get("stream_id");
+        auto delta_v  = data->get("delta");
+        if (!agent_v  || !agent_v->is_string()  ||
+            !stream_v || !stream_v->is_number() ||
+            !delta_v  || !delta_v->is_string()) {
+            persist_event_locked("text", payload_json);
+            return;
+        }
+        std::string key = agent_v->as_string() + "|" +
+                          std::to_string(static_cast<int64_t>(stream_v->as_number()));
+        if (pending_text_size_ > 0 && key != pending_text_key_) {
+            flush_pending_text_locked();
+        }
+        if (pending_text_size_ == 0) {
+            pending_text_first_ = data;
+            pending_text_key_   = key;
+            pending_text_concat_.clear();
+        }
+        pending_text_concat_ += delta_v->as_string();
+        pending_text_size_   += delta_v->as_string().size();
+        if (pending_text_size_ >= kCoalesceThreshold) {
+            flush_pending_text_locked();
+        }
+    }
+
+    void flush_pending_text_locked() {
+        if (pending_text_size_ == 0) return;
+        // Build a coalesced payload that reuses the first chunk's
+        // identity (agent, stream_id) but concatenates every delta.
+        // Replay-time clients see one bigger chunk in place of many
+        // small ones; the assembled string is identical.
+        auto coalesced = jobj();
+        auto& m = coalesced->as_object_mut();
+        if (auto a = pending_text_first_->get("agent")) m["agent"] = a;
+        if (auto s = pending_text_first_->get("stream_id")) m["stream_id"] = s;
+        if (auto d = pending_text_first_->get("depth")) m["depth"] = d;
+        m["delta"] = jstr(pending_text_concat_);
+        std::string payload = json_serialize(*coalesced);
+        persist_event_locked("text", payload);
+        pending_text_first_.reset();
+        pending_text_key_.clear();
+        pending_text_concat_.clear();
+        pending_text_size_ = 0;
+    }
+
     int        fd_;
     std::mutex mu_;
     bool       closed_ = false;
+
+    // Optional durable sink.  When ts_ is null, persistence + broadcast
+    // are skipped; the stream behaves exactly as before.
+    TenantStore*       ts_ = nullptr;
+    RequestEventBus*   bus_ = nullptr;
+    int64_t            persist_tenant_id_ = 0;
+    std::string        persist_request_id_;
+    int64_t            seq_ = 0;
+
+    // Text-coalesce buffer.  Held under mu_ so all coalesce/flush
+    // paths are serialized with wire writes.
+    std::shared_ptr<JsonValue> pending_text_first_;
+    std::string                pending_text_key_;
+    std::string                pending_text_concat_;
+    size_t                     pending_text_size_ = 0;
+    static constexpr size_t    kCoalesceThreshold = 2048;
 };
 
 // ─── URL helpers ────────────────────────────────────────────────────────────
@@ -2834,6 +2986,29 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
         created_at_override = cand;
     }
 
+    // Manual consolidation: an explicit list of ids the new entry
+    // should supersede.  Each id gets a `supersedes` relation from
+    // the new entry to the old one, and the old entry is invalidated.
+    // Validated against the tenant before we create anything so a
+    // bad id fails closed instead of leaving a dangling synthesis.
+    std::vector<int64_t> manual_supersedes;
+    if (auto v = body->get("supersedes_ids"); v && v->is_array()) {
+        for (auto& item : v->as_array()) {
+            if (!item || !item->is_number())
+                return write_memory_error(fd, 400,
+                    "supersedes_ids must be an array of positive ids");
+            int64_t sid = static_cast<int64_t>(item->as_number());
+            if (sid <= 0)
+                return write_memory_error(fd, 400,
+                    "supersedes_ids must contain only positive ids");
+            if (!tenants.get_entry(tenant.id, sid))
+                return write_memory_error(fd, 400,
+                    "supersedes_ids: #" + std::to_string(sid) +
+                    " does not exist for this tenant");
+            manual_supersedes.push_back(sid);
+        }
+    }
+
     // Optional auto-supersession.  When `supersede=<model>` is in the
     // body, after creating the new entry we ask the advisor whether
     // the new entry contradicts any existing top-K FTS hits on the
@@ -2843,6 +3018,9 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
     // invalidating the old entry — and it's where the
     // knowledge-update accuracy gap mostly lives.  Strictly opt-in;
     // the prompt biases toward "none" so false positives are rare.
+    // Manual `supersedes_ids` wins: when the caller supplies an
+    // explicit list, the auto pass is skipped (the caller already
+    // knows which prior facts are stale).
     std::string supersede_model;
     if (auto v = body->get("supersede"); v && v->is_string()) {
         supersede_model = v->as_string();
@@ -2852,12 +3030,24 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
                                     *tags, artifact_id, conversation_id,
                                     created_at_override);
 
+    // Apply the manual consolidation immediately after create — any
+    // invalidations land before the response goes out.
+    std::vector<int64_t> manual_superseded_applied;
+    for (auto sid : manual_supersedes) {
+        (void)tenants.create_relation(tenant.id, e.id, sid, "supersedes");
+        if (tenants.invalidate_entry(tenant.id, sid)) {
+            manual_superseded_applied.push_back(sid);
+        }
+    }
+
     // Run supersession detection AFTER create.  We always want the new
-    // entry to be persisted; the advisor pass is auxiliary.
+    // entry to be persisted; the advisor pass is auxiliary.  When the
+    // caller already supplied a manual `supersedes_ids` list, skip the
+    // auto pass — explicit intent wins over inferred intent.
     std::vector<int64_t> superseded_ids;
     std::string supersede_note;
     std::vector<int64_t> supersede_candidates;
-    if (!supersede_model.empty()) {
+    if (!supersede_model.empty() && manual_supersedes.empty()) {
         // Find existing candidates: FTS on the new title, type-matched
         // (so 'preference' contradicts 'preference', not 'context').
         // Top 6 — keep the prompt bounded; -1 in the budget to leave
@@ -2899,6 +3089,23 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
     }
 
     auto resp = memory_entry_to_json_hydrated(e, tenants);
+    // Manual-supersession metadata block.  Echoes the ids the caller
+    // requested so they can confirm which were applied (vs. silently
+    // skipped because the row was already invalid by the time we
+    // tried).  Always emitted when the caller supplied the field.
+    if (!manual_supersedes.empty()) {
+        auto ms = jobj();
+        auto& mso = ms->as_object_mut();
+        auto req_arr = jarr();
+        for (auto sid : manual_supersedes)
+            req_arr->as_array_mut().push_back(jnum(static_cast<double>(sid)));
+        mso["requested"] = req_arr;
+        auto inv_arr = jarr();
+        for (auto sid : manual_superseded_applied)
+            inv_arr->as_array_mut().push_back(jnum(static_cast<double>(sid)));
+        mso["invalidated"] = inv_arr;
+        resp->as_object_mut()["supersedes_manual"] = ms;
+    }
     // Auto-supersession metadata block.  Always emitted when requested
     // so the caller can verify what the advisor decided, even on
     // empty / no-op runs.
@@ -2997,6 +3204,36 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     // when q is empty (browse path) — types are hard filters there.
     if (f.types.empty() && !f.q.empty() && get_str("intent") != "off") {
         f.types = classify_question_intent(f.q);
+    }
+
+    // Age decay.  Off by default on the HTTP path so callers that build
+    // their own ranking on top get raw BM25.  Enable per-request with
+    // `decay=true|on|1` (or `decay=<half_life_days>`).  `decay_floor` /
+    // `decay_half_life_days` override the bucket and floor when set.
+    {
+        std::string dec = get_str("decay");
+        bool decay_on = (dec == "1" || dec == "true" || dec == "on" ||
+                         dec == "yes");
+        int hl = 0;
+        try { hl = std::stoi(dec); } catch (...) { hl = 0; }
+        if (hl > 0) decay_on = true;
+        if (decay_on && !f.q.empty()) {
+            f.age_now_epoch = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()
+                ).count());
+            int hlv = hl;
+            try {
+                int s = std::stoi(get_str("decay_half_life_days"));
+                if (s > 0) hlv = s;
+            } catch (...) {}
+            if (hlv <= 0) hlv = 90;
+            f.age_half_life_days = hlv;
+            try {
+                double fr = std::stod(get_str("decay_floor"));
+                if (fr > 0.0 && fr < 1.0) f.age_floor = fr;
+            } catch (...) {}
+        }
     }
 
     // `graduated=true` (only meaningful with q + conversation_id) runs
@@ -3880,6 +4117,386 @@ void handle_cancel(int fd, const HttpRequest& req,
     }
 }
 
+// ── Request log + resubscribe ──────────────────────────────────────────
+
+std::shared_ptr<JsonValue>
+request_status_to_json(const TenantStore::RequestStatus& s) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["request_id"]      = jstr(s.request_id);
+    m["agent_id"]        = jstr(s.agent_id);
+    m["conversation_id"] = jnum(s.conversation_id);
+    m["state"]           = jstr(s.state);
+    m["started_at"]      = jnum(s.started_at);
+    m["completed_at"]    = jnum(s.completed_at);
+    m["error_message"]   = jstr(s.error_message);
+    m["last_seq"]        = jnum(s.last_seq);
+    return o;
+}
+
+void handle_request_list(int fd, const HttpRequest& req,
+                          TenantStore& tenants, const Tenant& tenant) {
+    int limit = 100;
+    auto qpos = req.path.find('?');
+    if (qpos != std::string::npos) {
+        std::string qs = req.path.substr(qpos + 1);
+        size_t i = 0;
+        while (i < qs.size()) {
+            size_t amp = qs.find('&', i);
+            std::string pair = qs.substr(i, amp - i);
+            auto eq = pair.find('=');
+            if (eq != std::string::npos) {
+                std::string k = pair.substr(0, eq);
+                std::string v = pair.substr(eq + 1);
+                if (k == "limit") try { limit = std::stoi(v); } catch (...) {}
+            }
+            if (amp == std::string::npos) break;
+            i = amp + 1;
+        }
+    }
+    auto rows = tenants.list_request_status(tenant.id, limit);
+    auto arr = jarr();
+    for (const auto& r : rows) arr->as_array_mut().push_back(request_status_to_json(r));
+    auto out = jobj();
+    out->as_object_mut()["requests"] = arr;
+    write_json_response(fd, 200, out);
+}
+
+void handle_request_get(int fd, const std::string& request_id,
+                         TenantStore& tenants, const Tenant& tenant) {
+    auto row = tenants.get_request_status(tenant.id, request_id);
+    if (!row) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("request not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["request"] = request_status_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+// SSE replay-and-tail for /v1/requests/:id/events.  Streams the backlog
+// after `since_seq`, then — if the run is still in flight — subscribes
+// to the per-request bus and continues emitting newly-persisted events
+// until the bus delivers the terminal `done` envelope.  Reconnects
+// after a disconnect re-sync via the same endpoint with the last seen
+// seq; the bus does no buffering.
+void handle_request_events(int fd, const std::string& request_id,
+                             const HttpRequest& req,
+                             TenantStore& tenants, const Tenant& tenant,
+                             RequestEventBus* bus) {
+    auto status = tenants.get_request_status(tenant.id, request_id);
+    if (!status) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("request not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+
+    int64_t since_seq = 0;
+    auto qpos = req.path.find('?');
+    if (qpos != std::string::npos) {
+        std::string qs = req.path.substr(qpos + 1);
+        size_t i = 0;
+        while (i < qs.size()) {
+            size_t amp = qs.find('&', i);
+            std::string pair = qs.substr(i, amp - i);
+            auto eq = pair.find('=');
+            if (eq != std::string::npos) {
+                std::string k = pair.substr(0, eq);
+                std::string v = pair.substr(eq + 1);
+                if (k == "since_seq") try { since_seq = std::stoll(v); } catch (...) {}
+            }
+            if (amp == std::string::npos) break;
+            i = amp + 1;
+        }
+    }
+
+    // Open the SSE response.  CORS headers + X-Accel-Buffering: no so
+    // dev-mode SPAs on a different origin can subscribe.
+    {
+        std::ostringstream hdr;
+        hdr << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: text/event-stream\r\n"
+            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            << "X-Accel-Buffering: no\r\n"
+            << kCorsHeaders
+            << "Connection: close\r\n"
+            << "\r\n";
+        write_all(fd, hdr.str());
+    }
+
+    auto write_envelope = [fd](const std::string& kind, int64_t seq,
+                                  const std::string& payload_json) {
+        // Each persisted event becomes one SSE frame.  The seq is
+        // exposed via the SSE `id:` field so a reconnecting client can
+        // pass it back as `since_seq` without parsing the payload.
+        std::ostringstream f;
+        f << "id: " << seq << "\n"
+          << "event: " << kind << "\n"
+          << "data: " << payload_json << "\n\n";
+        write_all(fd, f.str());
+    };
+
+    // Replay backlog.  Page through in chunks of 1000 — for runs
+    // longer than that we'd rather many small writes than one huge
+    // SQL fetch holding the connection's CPU time.
+    int64_t cursor = since_seq;
+    while (true) {
+        auto chunk = tenants.list_request_events(tenant.id, request_id,
+                                                    cursor, /*limit=*/1000);
+        if (chunk.empty()) break;
+        for (const auto& e : chunk) {
+            write_envelope(e.event_kind, e.seq, e.payload_json);
+            cursor = e.seq;
+        }
+        if (chunk.size() < 1000) break;
+    }
+
+    // Re-fetch status.  If it's already terminal, we're done — close.
+    auto post_replay = tenants.get_request_status(tenant.id, request_id);
+    if (!post_replay || post_replay->state != "running") return;
+    if (!bus) return;
+
+    // Live tail.  Subscribe; mailbox-buffer events under a small mutex
+    // so the publisher thread doesn't block on slow clients.  Heartbeat
+    // every 30s so reverse proxies don't time out the idle connection.
+    std::mutex                      mb_mu;
+    std::condition_variable         mb_cv;
+    std::deque<RequestEventEnvelope> mailbox;
+    std::atomic<bool>               saw_terminal{false};
+
+    int64_t sub_id = bus->subscribe(request_id,
+        [&mb_mu, &mb_cv, &mailbox, &saw_terminal](const RequestEventEnvelope& env) {
+            std::lock_guard<std::mutex> lk(mb_mu);
+            mailbox.push_back(env);
+            if (env.terminal) saw_terminal = true;
+            mb_cv.notify_one();
+        });
+
+    // Drain — exit when we've delivered the terminal envelope.
+    using clock = std::chrono::steady_clock;
+    auto next_heartbeat = clock::now() + std::chrono::seconds(30);
+    while (!saw_terminal.load() || true) {
+        RequestEventEnvelope ev;
+        bool have = false;
+        bool was_terminal = false;
+        {
+            std::unique_lock<std::mutex> lk(mb_mu);
+            mb_cv.wait_until(lk, next_heartbeat,
+                [&]{ return !mailbox.empty(); });
+            if (!mailbox.empty()) {
+                ev = mailbox.front();
+                mailbox.pop_front();
+                have = true;
+                was_terminal = ev.terminal;
+            }
+        }
+        if (have) {
+            // Skip events at or before the cursor — the publisher races
+            // the backlog scan and may republish events we already wrote.
+            if (ev.seq > cursor) {
+                write_envelope(ev.event_kind, ev.seq, ev.payload_json);
+                cursor = ev.seq;
+            }
+            if (was_terminal) break;
+            continue;
+        }
+        // Heartbeat
+        const char* hb = ": heartbeat\n\n";
+        write_all(fd, hb, std::strlen(hb));
+        next_heartbeat = clock::now() + std::chrono::seconds(30);
+        // Re-poll status: if a recovery sweep flipped the row to
+        // failed without publishing on the bus (e.g. another process
+        // marked it), append a terminal frame and exit.
+        auto fresh = tenants.get_request_status(tenant.id, request_id);
+        if (fresh && fresh->state != "running") {
+            auto term = jobj();
+            term->as_object_mut()["ok"]     = jbool(fresh->state == "completed");
+            term->as_object_mut()["reason"] = jstr(fresh->error_message);
+            term->as_object_mut()["state"]  = jstr(fresh->state);
+            write_envelope("done", fresh->last_seq + 1,
+                            json_serialize(*term));
+            break;
+        }
+    }
+    bus->unsubscribe(sub_id);
+}
+
+// ── Lessons ────────────────────────────────────────────────────────────
+
+std::shared_ptr<JsonValue> lesson_to_json(const TenantStore::Lesson& l) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["id"]            = jnum(l.id);
+    m["agent_id"]      = jstr(l.agent_id);
+    m["signature"]     = jstr(l.signature);
+    m["lesson_text"]   = jstr(l.lesson_text);
+    m["hit_count"]     = jnum(l.hit_count);
+    m["created_at"]    = jnum(l.created_at);
+    m["updated_at"]    = jnum(l.updated_at);
+    m["last_seen_at"]  = jnum(l.last_seen_at);
+    return o;
+}
+
+void handle_lesson_create(int fd, const HttpRequest& req,
+                           TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    auto get_str = [&](const char* k) -> std::string {
+        auto v = body->get(k);
+        return (v && v->is_string()) ? v->as_string() : std::string{};
+    };
+    std::string signature   = get_str("signature");
+    std::string lesson_text = get_str("lesson_text");
+    std::string agent_id    = get_str("agent_id");
+    if (signature.empty() || lesson_text.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("required fields: signature, lesson_text");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (signature.size() > 200) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("signature must be ≤ 200 chars");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (lesson_text.size() > 4096) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson_text must be ≤ 4096 chars");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (agent_id.empty()) agent_id = "index";
+    auto l = tenants.create_lesson(tenant.id, agent_id, signature, lesson_text);
+    auto out = jobj();
+    out->as_object_mut()["lesson"] = lesson_to_json(l);
+    write_json_response(fd, 201, out);
+}
+
+void handle_lesson_list(int fd, const HttpRequest& req,
+                         TenantStore& tenants, const Tenant& tenant) {
+    std::string agent_id;
+    std::string query;
+    int limit = 100;
+    auto qpos = req.path.find('?');
+    if (qpos != std::string::npos) {
+        std::string qs = req.path.substr(qpos + 1);
+        size_t i = 0;
+        while (i < qs.size()) {
+            size_t amp = qs.find('&', i);
+            std::string pair = qs.substr(i, amp - i);
+            auto eq = pair.find('=');
+            if (eq != std::string::npos) {
+                std::string k = pair.substr(0, eq);
+                std::string v = pair.substr(eq + 1);
+                if      (k == "agent_id") agent_id = v;
+                else if (k == "q")        query    = v;
+                else if (k == "limit") try { limit = std::stoi(v); } catch (...) {}
+            }
+            if (amp == std::string::npos) break;
+            i = amp + 1;
+        }
+    }
+    auto rows = query.empty()
+        ? tenants.list_lessons(tenant.id, agent_id, limit)
+        : tenants.search_lessons(tenant.id, agent_id, query, limit);
+    auto arr = jarr();
+    for (auto& r : rows) arr->as_array_mut().push_back(lesson_to_json(r));
+    auto out = jobj();
+    out->as_object_mut()["lessons"] = arr;
+    write_json_response(fd, 200, out);
+}
+
+void handle_lesson_get(int fd, int64_t id,
+                        TenantStore& tenants, const Tenant& tenant) {
+    auto row = tenants.get_lesson(tenant.id, id);
+    if (!row) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["lesson"] = lesson_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+void handle_lesson_patch(int fd, int64_t id, const HttpRequest& req,
+                          TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    auto opt_str = [&](const char* k) -> std::optional<std::string> {
+        auto v = body->get(k);
+        if (v && v->is_string()) return v->as_string();
+        return std::nullopt;
+    };
+    auto sig = opt_str("signature");
+    auto txt = opt_str("lesson_text");
+    if (sig && sig->size() > 200) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("signature must be ≤ 200 chars");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (txt && txt->size() > 4096) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson_text must be ≤ 4096 chars");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!tenants.update_lesson(tenant.id, id, sig, txt)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto row = tenants.get_lesson(tenant.id, id);
+    auto out = jobj();
+    if (row) out->as_object_mut()["lesson"] = lesson_to_json(*row);
+    write_json_response(fd, 200, out);
+}
+
+void handle_lesson_delete(int fd, int64_t id,
+                           TenantStore& tenants, const Tenant& tenant) {
+    if (!tenants.delete_lesson(tenant.id, id)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("lesson not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto out = jobj();
+    out->as_object_mut()["deleted"] = jbool(true);
+    write_json_response(fd, 200, out);
+}
+
 // ── Todos ──────────────────────────────────────────────────────────────
 
 std::shared_ptr<JsonValue> todo_to_json(const TenantStore::Todo& t) {
@@ -4679,6 +5296,168 @@ SchedulerInvoker make_scheduler_invoker_callback(
     };
 }
 
+// Build a LessonInvoker bound to the calling tenant.  Lessons are
+// scoped to (tenant, agent_id) — the calling agent's id captured at
+// dispatch time is the owner of any newly-created lesson and the
+// filter on read.  Same render style as /todo and /schedule.
+LessonInvoker make_lesson_invoker_callback(
+        TenantStore& tenants, int64_t tenant_id) {
+    return [&tenants, tenant_id](
+            const std::string& kind,
+            const std::string& args,
+            const std::string& caller_agent_id) -> std::string {
+        auto trim = [](std::string s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+            return s;
+        };
+
+        const std::string owner =
+            caller_agent_id.empty() ? "index" : caller_agent_id;
+
+        auto render_one = [](const TenantStore::Lesson& l) {
+            std::ostringstream out;
+            out << "#" << l.id << "  ";
+            if (!l.signature.empty()) out << "[" << l.signature << "]  ";
+            out << l.lesson_text;
+            if (l.hit_count > 0) out << "  (hits: " << l.hit_count << ")";
+            return out.str();
+        };
+
+        if (kind == "list") {
+            auto rows = tenants.list_lessons(tenant_id, owner, 25);
+            if (rows.empty()) return "(no lessons recorded)";
+            std::ostringstream out;
+            out << rows.size() << " lesson(s):\n";
+            for (auto& l : rows) out << "  " << render_one(l) << "\n";
+            return out.str();
+        }
+
+        if (kind == "search") {
+            std::string q = trim(args);
+            if (q.empty()) return "ERR: usage: /lesson search <query>";
+            auto rows = tenants.search_lessons(tenant_id, owner, q, 10);
+            if (rows.empty()) return "(no matches)";
+            std::ostringstream out;
+            out << rows.size() << " match(es):\n";
+            for (auto& l : rows) out << "  " << render_one(l) << "\n";
+            return out.str();
+        }
+
+        if (kind == "delete") {
+            std::string id_s = trim(args);
+            if (!id_s.empty() && id_s.front() == '#') id_s.erase(0, 1);
+            int64_t id = 0;
+            try { id = std::stoll(id_s); } catch (...) { id = 0; }
+            if (id <= 0) return "ERR: usage: /lesson delete <id>";
+            if (!tenants.delete_lesson(tenant_id, id))
+                return "ERR: lesson #" + std::to_string(id) + " not found";
+            return "OK: deleted #" + std::to_string(id);
+        }
+
+        // Internal: preamble injection.  Looks up lessons that match
+        // the upcoming user message heuristically (substring search on
+        // signature + lesson_text), bumps `last_seen_at` for surfaced
+        // rows so frequently-applicable lessons rise to the top, and
+        // returns a renderable block.  Returns "(no lessons recorded)"
+        // when the agent has none — the orchestrator skips injection.
+        if (kind == "preamble") {
+            // Cheap keyword extraction: grab unique alpha words >= 4 chars
+            // from the first 400 chars of the prompt.  Search each one
+            // and union the results, deduped by id.
+            std::string prompt = args;
+            if (prompt.size() > 400) prompt.resize(400);
+            std::vector<std::string> keywords;
+            {
+                std::string cur;
+                auto flush = [&]() {
+                    if (cur.size() >= 4) {
+                        bool dup = false;
+                        for (auto& k : keywords) if (k == cur) { dup = true; break; }
+                        if (!dup) keywords.push_back(cur);
+                    }
+                    cur.clear();
+                };
+                for (char c : prompt) {
+                    if (std::isalpha(static_cast<unsigned char>(c))) {
+                        cur.push_back(static_cast<char>(std::tolower(
+                            static_cast<unsigned char>(c))));
+                    } else {
+                        flush();
+                    }
+                    if (keywords.size() >= 12) break;
+                }
+                flush();
+            }
+            std::map<int64_t, TenantStore::Lesson> hits;
+            for (auto& kw : keywords) {
+                auto rows = tenants.search_lessons(tenant_id, owner, kw, 5);
+                for (auto& r : rows) hits.emplace(r.id, r);
+                if (hits.size() >= 8) break;
+            }
+            if (hits.empty()) return "(no lessons recorded)";
+
+            // Sort by hit_count desc, last_seen_at desc; cap at 3.
+            std::vector<TenantStore::Lesson> ranked;
+            for (auto& [_, l] : hits) ranked.push_back(l);
+            std::sort(ranked.begin(), ranked.end(),
+                [](const TenantStore::Lesson& a, const TenantStore::Lesson& b){
+                    if (a.hit_count != b.hit_count) return a.hit_count > b.hit_count;
+                    return a.last_seen_at > b.last_seen_at;
+                });
+            if (ranked.size() > 3) ranked.resize(3);
+
+            std::ostringstream out;
+            out << "[KNOWN PITFALLS — your prior lessons]\n";
+            for (auto& l : ranked) {
+                out << "  - [" << l.signature << "] " << l.lesson_text
+                    << " (#" << l.id << ")\n";
+                tenants.bump_lesson_hit(tenant_id, l.id);
+            }
+            out << "[END KNOWN PITFALLS]";
+            return out.str();
+        }
+
+        if (kind == "create") {
+            // args carries either:
+            //   "<signature>: <text>"           (single-line)
+            //   "<signature>\n\n<body>"         (block form)
+            std::string signature, lesson_text;
+            auto blockSep = args.find("\n\n");
+            if (blockSep != std::string::npos) {
+                signature = trim(args.substr(0, blockSep));
+                lesson_text = args.substr(blockSep + 2);
+                while (!lesson_text.empty() && lesson_text.back() == '\n')
+                    lesson_text.pop_back();
+            } else {
+                auto colon = args.find(':');
+                if (colon == std::string::npos) {
+                    return "ERR: /lesson <signature>: <text>  OR  block "
+                           "form ending with /endlesson";
+                }
+                signature   = trim(args.substr(0, colon));
+                lesson_text = trim(args.substr(colon + 1));
+            }
+            if (signature.empty() || lesson_text.empty()) {
+                return "ERR: signature and lesson text are both required";
+            }
+            if (signature.size() > 200) {
+                return "ERR: signature must be ≤ 200 chars";
+            }
+            if (lesson_text.size() > 4096) {
+                return "ERR: lesson text must be ≤ 4096 chars";
+            }
+            auto l = tenants.create_lesson(tenant_id, owner, signature,
+                                            lesson_text);
+            std::ostringstream out;
+            out << "OK: recorded lesson #" << l.id << " — " << render_one(l);
+            return out.str();
+        }
+
+        return "ERR: unknown /lesson subcommand '" + kind + "'";
+    };
+}
+
 // Build a TodoInvoker bound to the calling tenant + (optional) conversation.
 // Captures by value/reference like the scheduler factory.  Returns
 // user-facing tool-result bodies that the dispatcher wraps in
@@ -5413,6 +6192,23 @@ StructuredMemoryReader make_structured_memory_reader_callback(
                 f.conversation_id = reader_conversation_id;
                 f.limit           = rerank ? kAgentRerankPool : 50;
 
+                // Age-decay ranking factor.  When the agent has
+                // `memory.age_decay` on (default), pass a `now` epoch
+                // to the storage layer so the search SQL multiplies
+                // BM25 scores by a piecewise factor of (now -
+                // valid_from).  Half-life and floor come from
+                // MemoryConfig.  Disabling decay means the agent gets
+                // pre-decay ranking (older entries score the same as
+                // fresh ones on identical query matches).
+                if (mc.age_decay) {
+                    f.age_now_epoch = static_cast<int64_t>(
+                        std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch()
+                        ).count());
+                    f.age_half_life_days = mc.age_half_life_days;
+                    f.age_floor          = mc.age_floor;
+                }
+
                 // Question-intent routing — heuristic, no LLM cost.
                 // Soft-boost types matching the question's intent (the
                 // existing 1.3x BM25 multiplier) so a "preference"
@@ -5782,6 +6578,78 @@ StructuredMemoryWriter make_structured_memory_writer_callback(
                            "[--artifact #<id>]";
                 }
 
+                // Manual consolidation: --supersedes #1,#2,#3 — strip
+                // first because we want it before the --artifact strip
+                // (so the artifact pos-search doesn't get confused by a
+                // preceding --supersedes) and validate the ids exist
+                // for the tenant before we commit anything.
+                std::vector<int64_t> supersedes_ids;
+                {
+                    const std::string flag = "--supersedes";
+                    auto pos = title.rfind(flag);
+                    if (pos != std::string::npos &&
+                        (pos == 0 || title[pos - 1] == ' ' || title[pos - 1] == '\t')) {
+                        std::string tail = title.substr(pos + flag.size());
+                        while (!tail.empty() && (tail.front() == ' ' || tail.front() == '\t'))
+                            tail.erase(0, 1);
+                        // Tail runs to the next " --" flag boundary or EOL.
+                        std::string token;
+                        size_t cut = std::string::npos;
+                        size_t scan = 0;
+                        while (scan + 2 < tail.size()) {
+                            if (tail[scan] == ' ' && tail[scan + 1] == '-' && tail[scan + 2] == '-') {
+                                cut = scan;
+                                break;
+                            }
+                            ++scan;
+                        }
+                        if (cut == std::string::npos) {
+                            token = tail;
+                            tail.clear();
+                        } else {
+                            token = tail.substr(0, cut);
+                            tail = tail.substr(cut + 1);   // keep " --next-flag …" for re-attach
+                        }
+                        // token = "#1,#2,#3" — split on comma.
+                        size_t i = 0;
+                        while (i < token.size()) {
+                            size_t comma = token.find(',', i);
+                            std::string piece = token.substr(i,
+                                comma == std::string::npos ? std::string::npos : comma - i);
+                            // trim
+                            while (!piece.empty() && (piece.front() == ' ' || piece.front() == '\t'))
+                                piece.erase(0, 1);
+                            while (!piece.empty() && (piece.back()  == ' ' || piece.back()  == '\t'))
+                                piece.pop_back();
+                            if (!piece.empty() && piece.front() == '#') piece.erase(0, 1);
+                            if (!piece.empty()) {
+                                int64_t id = 0;
+                                try { id = std::stoll(piece); } catch (...) { id = 0; }
+                                if (id <= 0) {
+                                    return "ERR: --supersedes accepts a "
+                                           "comma-separated list of ids, "
+                                           "e.g. --supersedes #41,#42";
+                                }
+                                supersedes_ids.push_back(id);
+                            }
+                            if (comma == std::string::npos) break;
+                            i = comma + 1;
+                        }
+                        if (supersedes_ids.empty()) {
+                            return "ERR: --supersedes accepts a "
+                                   "comma-separated list of ids, "
+                                   "e.g. --supersedes #41,#42";
+                        }
+                        // Reattach any flags that came after --supersedes
+                        // back onto the title chunk for downstream parsing.
+                        if (pos > 0 && (title[pos - 1] == ' ' || title[pos - 1] == '\t'))
+                            --pos;
+                        title.resize(pos);
+                        if (!tail.empty()) title += " " + tail;
+                        title = trim(title);
+                    }
+                }
+
                 int64_t artifact_id = 0;
                 {
                     // Strip trailing `--artifact #<id>` off the title
@@ -5804,6 +6672,18 @@ StructuredMemoryWriter make_structured_memory_writer_callback(
                             --pos;
                         title.resize(pos);
                         title = trim(title);
+                    }
+                }
+
+                // Validate every manual supersedes id belongs to this
+                // tenant BEFORE we create the synthesis entry.  Catching
+                // a bad id here means we don't leave a dangling entry
+                // partway through commit — fail closed instead.
+                for (auto sid : supersedes_ids) {
+                    if (!tenants.get_entry(reader_tenant_id, sid)) {
+                        return "ERR: --supersedes #" + std::to_string(sid) +
+                               " does not exist for this tenant (or is "
+                               "already invalidated; pass active ids only)";
                     }
                 }
 
@@ -5906,15 +6786,35 @@ StructuredMemoryWriter make_structured_memory_writer_callback(
                                                artifact_id,
                                                reader_conversation_id);
 
-                // Auto-supersession.  After the new entry is written,
-                // if the agent opted in, ask the advisor whether any
-                // existing entries on the same title+type are now
-                // factually contradicted; invalidate those.  Bias is
-                // toward "leave alone" — false positives erase
-                // legitimate prior memory.
+                // Manual consolidation: every --supersedes id gets a
+                // `supersedes` relation FROM the new entry TO the old
+                // one, and the old entry is invalidated.  A relation
+                // collision (the link already exists from a prior
+                // attempt) is a no-op — caller's intent still satisfied.
                 std::vector<int64_t> superseded_ids;
                 std::string supersede_note;
-                if (mc_add.auto_supersede && !caller_advisor_model.empty()) {
+                bool manual_supersede = !supersedes_ids.empty();
+                if (manual_supersede) {
+                    for (auto sid : supersedes_ids) {
+                        (void)tenants.create_relation(reader_tenant_id,
+                            e.id, sid, "supersedes");
+                        if (tenants.invalidate_entry(reader_tenant_id, sid)) {
+                            superseded_ids.push_back(sid);
+                        }
+                    }
+                }
+
+                // Auto-supersession.  After the new entry is written,
+                // if the agent opted in (and didn't already supply a
+                // manual --supersedes list), ask the advisor whether
+                // any existing entries on the same title+type are now
+                // factually contradicted; invalidate those.  Bias is
+                // toward "leave alone" — false positives erase
+                // legitimate prior memory.  Manual --supersedes wins:
+                // an explicit list signals the agent already knows
+                // which prior facts are stale.
+                if (!manual_supersede &&
+                    mc_add.auto_supersede && !caller_advisor_model.empty()) {
                     TenantStore::EntryFilter fcand;
                     fcand.q     = title;
                     fcand.types = { type };
@@ -5952,7 +6852,8 @@ StructuredMemoryWriter make_structured_memory_writer_callback(
                 }
                 if (!auto_tag_note.empty()) out << "\n  " << auto_tag_note;
                 if (!superseded_ids.empty()) {
-                    out << "\n  superseded: ";
+                    out << "\n  superseded";
+                    out << (manual_supersede ? " (manual): " : ": ");
                     for (size_t i = 0; i < superseded_ids.size(); ++i) {
                         if (i) out << ", ";
                         out << "#" << superseded_ids[i];
@@ -6296,6 +7197,8 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
         make_scheduler_invoker_callback(tenants, tenant.id, /*conversation_id=*/0));
     orch->set_todo_invoker(
         make_todo_invoker_callback(tenants, tenant.id, /*conversation_id=*/0));
+    orch->set_lesson_invoker(
+        make_lesson_invoker_callback(tenants, tenant.id));
     return orch;
 }
 
@@ -6775,12 +7678,257 @@ void handle_a2a_tasks_cancel(int fd,
         "' and is not in-flight"));
 }
 
+// A2A `tasks/resubscribe` — replay missed task state and live-tail
+// while the task is running.  We map task_id 1:1 to arbiter's request_id
+// (the A2A handler set it that way at submit time), so the underlying
+// log + bus is the same one /v1/requests/:id/events uses; we just wrap
+// each event in an A2A envelope.
+void handle_a2a_tasks_resubscribe(int fd,
+                                    const std::shared_ptr<JsonValue>& rpc_id,
+                                    const std::string& /*agent_id_param*/,
+                                    const a2a::RpcRequest& rpc,
+                                    TenantStore& tenants,
+                                    const Tenant& tenant,
+                                    RequestEventBus* bus) {
+    if (!rpc.params || !rpc.params->is_object()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "params required"));
+        return;
+    }
+    auto id_v = rpc.params->get("id");
+    if (!id_v || !id_v->is_string()) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_PARAMS, "id (string) required"));
+        return;
+    }
+    const std::string task_id = id_v->as_string();
+
+    // Validate ownership via request_status (same row underpinning the
+    // arbiter-native resubscribe surface) AND the legacy a2a_tasks
+    // table (the source of truth for non-orchestrate A2A submissions).
+    auto rs = tenants.get_request_status(tenant.id, task_id);
+    auto a2a_task = tenants.get_a2a_task(tenant.id, task_id);
+    if (!rs && !a2a_task) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::ERR_TASK_NOT_FOUND,
+            "no task with id '" + task_id + "' for this tenant"));
+        return;
+    }
+
+    const std::string context_id = a2a_task ? a2a_task->context_id : "";
+    const std::string agent_id   = a2a_task ? a2a_task->agent_id
+                                            : (rs ? rs->agent_id : "index");
+
+    // Open the SSE response.  CORS + no-buffering so dev-mode clients
+    // and reverse proxies behave.
+    {
+        std::ostringstream hdr;
+        hdr << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: text/event-stream\r\n"
+            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            << "X-Accel-Buffering: no\r\n"
+            << kCorsHeaders
+            << "Connection: close\r\n"
+            << "\r\n";
+        write_all(fd, hdr.str());
+    }
+
+    SseStream sse(fd);  // no headers re-write; we already wrote them
+    auto sink = [&sse](const std::string& ev,
+                        std::shared_ptr<JsonValue> payload) {
+        sse.emit(ev, std::move(payload));
+    };
+    a2a::A2aStreamWriter writer(sink, rpc_id, task_id, context_id, agent_id);
+
+    // If terminal already, emit one final TaskStatusUpdateEvent and close.
+    if (rs && rs->state != "running") {
+        a2a::TaskState ts =
+            (rs->state == "completed") ? a2a::TaskState::completed :
+            (rs->state == "canceled")  ? a2a::TaskState::canceled  :
+                                          a2a::TaskState::failed;
+        writer.emit_status(ts, /*final=*/true);
+        return;
+    }
+    if (!rs && a2a_task) {
+        // No request_status row but there's a legacy a2a_tasks row —
+        // use that for state.  Translate the wire-string back to enum.
+        const std::string& s = a2a_task->state;
+        if (s == "completed" || s == "failed" || s == "canceled" ||
+            s == "rejected") {
+            a2a::TaskState ts =
+                (s == "completed") ? a2a::TaskState::completed :
+                (s == "canceled")  ? a2a::TaskState::canceled  :
+                (s == "rejected")  ? a2a::TaskState::rejected  :
+                                      a2a::TaskState::failed;
+            writer.emit_status(ts, /*final=*/true);
+            return;
+        }
+    }
+
+    // Running: emit a `working` status frame, replay the persisted
+    // text/tool/file events translated into A2A envelopes, then live-
+    // tail until terminal.
+    writer.emit_status(a2a::TaskState::working, /*final=*/false);
+
+    auto translate_and_emit =
+        [&writer](const TenantStore::RequestEvent& e) {
+            // We translate the canonical events: text deltas, tool
+            // calls, files, sub-agent completions, and `done`.  Anything
+            // else lands as x-arbiter.<kind> metadata so spec-aware
+            // clients can pass it through if they want it.
+            if (e.event_kind == "text") {
+                std::shared_ptr<JsonValue> p;
+                try { p = json_parse(e.payload_json); } catch (...) {}
+                if (p && p->is_object()) {
+                    auto d = p->get("delta");
+                    if (d && d->is_string()) {
+                        writer.emit_text_chunk(d->as_string(), false);
+                        return;
+                    }
+                }
+            } else if (e.event_kind == "tool_call") {
+                std::shared_ptr<JsonValue> p;
+                try { p = json_parse(e.payload_json); } catch (...) {}
+                if (p && p->is_object()) {
+                    auto k  = p->get("kind");
+                    auto ok = p->get("ok");
+                    writer.emit_tool_call(
+                        (k && k->is_string()) ? k->as_string() : "?",
+                        (ok && ok->is_bool()) ? ok->as_bool() : false);
+                    return;
+                }
+            } else if (e.event_kind == "file") {
+                std::shared_ptr<JsonValue> p;
+                try { p = json_parse(e.payload_json); } catch (...) {}
+                if (p && p->is_object()) {
+                    auto pa = p->get("path");
+                    auto co = p->get("content");
+                    auto mt = p->get("mime_type");
+                    writer.emit_file(
+                        (pa && pa->is_string()) ? pa->as_string() : "",
+                        (co && co->is_string()) ? co->as_string() : "",
+                        (mt && mt->is_string()) ? mt->as_string() : "text/plain");
+                    return;
+                }
+            } else if (e.event_kind == "sub_agent_response") {
+                std::shared_ptr<JsonValue> p;
+                try { p = json_parse(e.payload_json); } catch (...) {}
+                if (p && p->is_object()) {
+                    auto a = p->get("agent");
+                    auto d = p->get("depth");
+                    auto c = p->get("content");
+                    writer.emit_sub_agent(
+                        (a && a->is_string()) ? a->as_string() : "?",
+                        (d && d->is_number()) ? static_cast<int>(d->as_number()) : 1,
+                        (c && c->is_string()) ? c->as_string() : "");
+                    return;
+                }
+            }
+            // Pass-through metadata for anything else (token_usage,
+            // stream_start, stream_end, etc.).  Spec-aware clients
+            // ignore unknown metadata kinds.
+            std::shared_ptr<JsonValue> p;
+            try { p = json_parse(e.payload_json); } catch (...) {}
+            writer.emit_metadata(e.event_kind, p ? p : jobj());
+        };
+
+    int64_t cursor = 0;
+    while (true) {
+        auto chunk = tenants.list_request_events(tenant.id, task_id,
+                                                    cursor, 1000);
+        if (chunk.empty()) break;
+        for (const auto& e : chunk) {
+            translate_and_emit(e);
+            cursor = e.seq;
+        }
+        if (chunk.size() < 1000) break;
+    }
+
+    auto post_replay = tenants.get_request_status(tenant.id, task_id);
+    if (!post_replay || post_replay->state != "running") {
+        a2a::TaskState ts = !post_replay ? a2a::TaskState::failed :
+            (post_replay->state == "completed") ? a2a::TaskState::completed :
+            (post_replay->state == "canceled")  ? a2a::TaskState::canceled  :
+                                                   a2a::TaskState::failed;
+        writer.emit_status(ts, /*final=*/true);
+        return;
+    }
+    if (!bus) {
+        // No live-tail wire — close with the current state as terminal
+        // would be wrong (the run is still in flight); just exit and
+        // let the client reconnect later with the new since_seq.
+        return;
+    }
+
+    // Live tail.
+    std::mutex                       mb_mu;
+    std::condition_variable          mb_cv;
+    std::deque<RequestEventEnvelope> mailbox;
+    std::atomic<bool>                saw_terminal{false};
+
+    int64_t sub_id = bus->subscribe(task_id,
+        [&mb_mu, &mb_cv, &mailbox, &saw_terminal](const RequestEventEnvelope& env) {
+            std::lock_guard<std::mutex> lk(mb_mu);
+            mailbox.push_back(env);
+            if (env.terminal) saw_terminal = true;
+            mb_cv.notify_one();
+        });
+
+    using clock = std::chrono::steady_clock;
+    auto next_heartbeat = clock::now() + std::chrono::seconds(30);
+    while (true) {
+        RequestEventEnvelope ev;
+        bool have = false;
+        bool was_terminal = false;
+        {
+            std::unique_lock<std::mutex> lk(mb_mu);
+            mb_cv.wait_until(lk, next_heartbeat,
+                [&]{ return !mailbox.empty(); });
+            if (!mailbox.empty()) {
+                ev = mailbox.front();
+                mailbox.pop_front();
+                have = true;
+                was_terminal = ev.terminal;
+            }
+        }
+        if (have) {
+            if (ev.seq > cursor) {
+                TenantStore::RequestEvent re;
+                re.event_kind   = ev.event_kind;
+                re.payload_json = ev.payload_json;
+                translate_and_emit(re);
+                cursor = ev.seq;
+            }
+            if (was_terminal) {
+                // Final status from the persisted row.
+                auto fresh = tenants.get_request_status(tenant.id, task_id);
+                a2a::TaskState ts = !fresh ? a2a::TaskState::failed :
+                    (fresh->state == "completed") ? a2a::TaskState::completed :
+                    (fresh->state == "canceled")  ? a2a::TaskState::canceled  :
+                                                     a2a::TaskState::failed;
+                writer.emit_status(ts, /*final=*/true);
+                break;
+            }
+            continue;
+        }
+        // Heartbeat — same shape as the native resubscribe, the SSE
+        // comment line keeps the connection alive without committing
+        // a payload that A2A clients would have to ignore.
+        const char* hb = ": heartbeat\n\n";
+        write_all(fd, hb, std::strlen(hb));
+        next_heartbeat = clock::now() + std::chrono::seconds(30);
+    }
+
+    bus->unsubscribe(sub_id);
+}
+
 void handle_a2a_rpc(int fd, const std::string& agent_id,
                      const HttpRequest& req,
                      const ApiServerOptions& opts,
                      TenantStore& tenants,
                      InFlightRegistry& in_flight,
-                     const Tenant& tenant) {
+                     const Tenant& tenant,
+                     RequestEventBus* request_event_bus = nullptr) {
     // Version negotiation per spec section 3.6.  Empty header is
     // tolerated as 1.0 since every implementation in the wild today
     // omits it; explicit 1.0 + 1 (loose major) are accepted; anything
@@ -6837,14 +7985,18 @@ void handle_a2a_rpc(int fd, const std::string& agent_id,
         handle_a2a_tasks_cancel(fd, rpc.id, rpc, in_flight, tenants, tenant);
         return;
     }
-    if (rpc.method == "tasks/resubscribe"
-        || rpc.method == "tasks/pushNotificationConfig/set"
+    if (rpc.method == "tasks/resubscribe") {
+        handle_a2a_tasks_resubscribe(fd, rpc.id, agent_id, rpc,
+                                       tenants, tenant, request_event_bus);
+        return;
+    }
+    if (rpc.method == "tasks/pushNotificationConfig/set"
         || rpc.method == "tasks/pushNotificationConfig/get"
         || rpc.method == "tasks/pushNotificationConfig/list"
         || rpc.method == "tasks/pushNotificationConfig/delete") {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc.id, a2a::ERR_UNSUPPORTED_OPERATION,
-            "method not implemented in arbiter v1"));
+            "method not implemented"));
         return;
     }
     write_a2a_rpc(fd, a2a::make_error_response(
@@ -7011,6 +8163,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         // when `billing` is null.
                         const std::string& workspace_id,
                         const Tenant& tenant_in,
+                        // Optional per-request event bus.  Non-null ⇒ the
+                        // SSE writer mirrors every event to request_events
+                        // and broadcasts to live-tail subscribers (the
+                        // resubscribe handler).  Null ⇒ the request runs
+                        // without durable persistence; useful for tests
+                        // and for the legacy in-memory-only path during
+                        // gradual rollout.
+                        RequestEventBus* request_event_bus = nullptr,
                         const std::string& agent_override = "",
                         int64_t conversation_id = 0,
                         // Snapshotted agent_def from the conversation row.  When
@@ -7176,6 +8336,34 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // logs to stderr alongside its SSE error frame.
     const std::string request_id = new_request_id();
     EventLogger logger(opts.log_verbose, request_id, tenant.name);
+
+    // Wire durable SSE persistence + live-tail broadcast.  Insert the
+    // request_status row first so a reconnecting client can find the
+    // run by id even if no events have been persisted yet (a slow
+    // start-up where the orchestrator init takes seconds, for example).
+    // The append_request_event statement enforces FK to request_status,
+    // so the create_request_status call MUST land before any emit().
+    const int64_t now_s_for_request = static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    const bool persist_events = (request_event_bus != nullptr);
+    bool       request_status_created = false;
+    if (persist_events) {
+        try {
+            tenants.create_request_status(tenant.id, request_id,
+                /*agent_id=*/agent_override.empty() ? "" : agent_override,
+                conversation_id, now_s_for_request);
+            request_status_created = true;
+            sse.set_persistence(&tenants, request_event_bus,
+                                tenant.id, request_id);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr,
+                "[orchestrate] persist init failed for %s: %s\n",
+                request_id.c_str(), e.what());
+            // Carry on without persistence rather than 500ing the call;
+            // durable replay degrades, the wire stream still works.
+        }
+    }
 
     auto emit = [&sse, &logger](const std::string& ev,
                                  const std::shared_ptr<JsonValue>& p) {
@@ -7417,6 +8605,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // /todo list scopes to the active thread by default.
     orch->set_todo_invoker(
         make_todo_invoker_callback(tenants, tenant.id, conversation_id));
+
+    // ── Lesson bridge ────────────────────────────────────────────────
+    // /lesson resolves through this callback.  Lessons are agent-scoped
+    // (not conversation-scoped) — they follow the agent's identity
+    // across every conversation in the tenant.
+    orch->set_lesson_invoker(
+        make_lesson_invoker_callback(tenants, tenant.id));
 
     // ── Web search ────────────────────────────────────────────────────
     // /search <query> [top=N] dispatches against the configured provider.
@@ -7766,6 +8961,21 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         m["duration_ms"] = jnum(static_cast<double>(elapsed_ms));
         emit("done", done);
 
+        // Flush any pending coalesced text and stamp the run terminal.
+        // close() is idempotent; re-entry from the catch-all below
+        // would be a no-op.
+        sse.close();
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            tenants.update_request_status(request_id,
+                std::optional<std::string>(resp.ok ? "completed" : "failed"),
+                completed,
+                resp.ok ? std::nullopt : std::optional<std::string>(resp.error),
+                std::nullopt);
+        }
+
         // Persist the assistant turn to the conversation thread.  resp's
         // content + token counts are cumulative across all tool-call
         // re-entry iterations (Orchestrator::send_streaming aggregates
@@ -7785,6 +8995,16 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     } catch (const std::exception& e) {
         log_error(std::string("orchestration failed: ") + e.what());
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            tenants.update_request_status(request_id,
+                std::optional<std::string>("failed"),
+                completed,
+                std::optional<std::string>(e.what()),
+                std::nullopt);
+        }
     }
 
     sse.close();
@@ -7811,9 +9031,53 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         billing_ = std::make_unique<BillingClient>(
             opts_.billing_url);
     }
-    notifications_ = std::make_unique<NotificationBus>();
-    scheduler_     = std::make_unique<Scheduler>(
+    notifications_   = std::make_unique<NotificationBus>();
+    request_events_  = std::make_unique<RequestEventBus>();
+    scheduler_       = std::make_unique<Scheduler>(
         &opts_, &tenants_, notifications_.get());
+    // Per-tenant limiter: defaults from env (ARBITER_TENANT_MAX_CONCURRENT
+    // / RATE_PER_MIN / BURST).  Zeroed defaults ⇒ unlimited; the limiter
+    // grants every acquire without taking the lock.
+    limiter_ = std::make_unique<TenantLimiter>(load_tenant_limits_from_env());
+
+    // Recovery sweep: any request_status row left in 'running' from a
+    // previous process must have been interrupted by a crash or kill.
+    // Mark them failed and append a synthetic terminal event so a
+    // reconnecting client (or a resumed UI tab) sees a clean done.
+    try {
+        const int64_t now_s = static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        auto orphaned = tenants_.recover_running_requests(
+            "failed", now_s,
+            "request was interrupted by a server restart; reconnect to retry");
+        for (const auto& rid : orphaned) {
+            // Synthesise a terminal `done` event so resubscribe finds
+            // a clean tail.  Use the next seq (last_seq+1) for a
+            // reconnecting client tracking the cursor.
+            auto status = tenants_.get_request_status(/*tenant_id=*/0, rid);
+            // get_request_status takes tenant_id, but we don't know
+            // the tenant of an orphan without re-querying.  Quick
+            // helper: pull the row directly.  list_request_status
+            // doesn't filter on a single id; use the cross-tenant
+            // approach: skip tenant filter here by reaching into
+            // list_request_events.  Simpler: append at last_seq+1
+            // using a single-purpose append that doesn't need the
+            // tenant.  For v1 we omit the synthetic done — the
+            // resubscribe handler's heartbeat-time poll catches the
+            // status flip and emits the terminal frame on demand.
+            (void)status; (void)rid;
+        }
+        if (!orphaned.empty()) {
+            std::fprintf(stderr,
+                "[arbiter] recovery: marked %zu orphaned in-flight request(s) "
+                "as failed\n",
+                orphaned.size());
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+            "[arbiter] recovery sweep failed: %s\n", e.what());
+    }
 }
 
 ApiServer::~ApiServer() { stop(); }
@@ -8049,8 +9313,18 @@ void ApiServer::handle_connection(int fd) {
     }
 
     if (req.method == "POST" && req.path == "/v1/orchestrate") {
+        auto lim = limiter_->acquire(tenant->id);
+        if (!lim.granted()) {
+            write_429_response(fd, lim.retry_after_seconds,
+                lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                    ? "concurrent_request_limit"
+                    : "rate_limit");
+            return;
+        }
+        // lim.guard releases the in-flight slot when this scope exits.
         handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
-                           billing_.get(), workspace_id, *tenant);
+                           billing_.get(), workspace_id, *tenant,
+                           request_events_.get());
         return;
     }
 
@@ -8066,6 +9340,42 @@ void ApiServer::handle_connection(int fd) {
         req.path.find("/cancel") != std::string::npos) {
         handle_cancel(fd, req, in_flight_, *tenant);
         return;
+    }
+
+    // ── Request log + resubscribe ────────────────────────────────────
+    // GET /v1/requests                       — list recent runs
+    // GET /v1/requests/:id                   — fetch one run's status
+    // GET /v1/requests/:id/events?since_seq= — replay + live tail (SSE)
+    {
+        const auto rsegs = split_path(req.path);
+        if (rsegs.size() >= 2 && rsegs[0] == "v1" && rsegs[1] == "requests") {
+            if (rsegs.size() == 2) {
+                if (req.method == "GET")
+                    return handle_request_list(fd, req, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (rsegs.size() == 3) {
+                if (req.method == "GET")
+                    return handle_request_get(fd, rsegs[2], tenants_, *tenant);
+                // POST → cancel handled above; everything else 405.
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (rsegs.size() == 4 && rsegs[3] == "events") {
+                if (req.method != "GET") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                handle_request_events(fd, rsegs[2], req, tenants_, *tenant,
+                                       request_events_.get());
+                return;
+            }
+            // Fall through to the cancel route handled above.
+        }
     }
 
     // ── Conversations CRUD ───────────────────────────────────────────────
@@ -8116,9 +9426,18 @@ void ApiServer::handle_connection(int fd) {
                         write_json_response(fd, 404, err);
                         return;
                     }
+                    auto lim = limiter_->acquire(tenant->id);
+                    if (!lim.granted()) {
+                        write_429_response(fd, lim.retry_after_seconds,
+                            lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                                ? "concurrent_request_limit"
+                                : "rate_limit");
+                        return;
+                    }
                     handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
                                         billing_.get(), workspace_id,
                                         *tenant,
+                                        request_events_.get(),
                                         /*agent_override=*/conv->agent_id,
                                         /*conversation_id=*/id,
                                         /*conversation_agent_def_json=*/conv->agent_def_json);
@@ -8248,8 +9567,17 @@ void ApiServer::handle_connection(int fd) {
                                          "method not allowed\n");
                     return;
                 }
+                auto lim = limiter_->acquire(tenant->id);
+                if (!lim.granted()) {
+                    write_429_response(fd, lim.retry_after_seconds,
+                        lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                            ? "concurrent_request_limit"
+                            : "rate_limit");
+                    return;
+                }
                 handle_a2a_rpc(fd, agent_id, req, opts_, tenants_,
-                                in_flight_, *tenant);
+                                in_flight_, *tenant,
+                                request_events_.get());
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "a2a route not found\n");
@@ -8288,9 +9616,19 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             if (req.method == "POST" && segs.size() == 4 && segs[3] == "chat") {
+                auto lim = limiter_->acquire(tenant->id);
+                if (!lim.granted()) {
+                    write_429_response(fd, lim.retry_after_seconds,
+                        lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                            ? "concurrent_request_limit"
+                            : "rate_limit");
+                    return;
+                }
                 handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
                                     billing_.get(), workspace_id,
-                                    *tenant, segs[2]);
+                                    *tenant,
+                                    request_events_.get(),
+                                    segs[2]);
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "agents route not found\n");
@@ -8415,6 +9753,43 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             write_plain_response(fd, 404, "Not Found", "memory route not found\n");
+            return;
+        }
+
+        // ── Lessons ───────────────────────────────────────────────────────
+        // POST   /v1/lessons              — create
+        // GET    /v1/lessons              — list (?agent_id=&q=&limit=)
+        // GET    /v1/lessons/:id          — fetch one
+        // PATCH  /v1/lessons/:id          — update signature/lesson_text
+        // DELETE /v1/lessons/:id          — hard remove
+        if (segs.size() >= 2 && segs[0] == "v1" && segs[1] == "lessons") {
+            if (segs.size() == 2) {
+                if (req.method == "POST")
+                    return handle_lesson_create(fd, req, tenants_, *tenant);
+                if (req.method == "GET")
+                    return handle_lesson_list(fd, req, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (segs.size() == 3) {
+                int64_t id = 0;
+                try { id = std::stoll(segs[2]); } catch (...) { id = 0; }
+                if (id <= 0) {
+                    write_plain_response(fd, 400, "Bad Request", "bad lesson id\n");
+                    return;
+                }
+                if (req.method == "GET")
+                    return handle_lesson_get(fd, id, tenants_, *tenant);
+                if (req.method == "PATCH")
+                    return handle_lesson_patch(fd, id, req, tenants_, *tenant);
+                if (req.method == "DELETE")
+                    return handle_lesson_delete(fd, id, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            write_plain_response(fd, 404, "Not Found", "lesson route not found\n");
             return;
         }
 

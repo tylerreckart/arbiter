@@ -200,6 +200,20 @@ When an agent emits `/mem search deployment notes`, the reader callback inside t
 
 When expansion fires, the rendered output prefixes `(also searched: '<paraphrase 1>' | '<paraphrase 2>')` so the agent can audit what recall surface ran.
 
+### Age decay (per-agent toggle, default on)
+
+A piecewise multiplier on the BM25 score based on `now - valid_from`:
+
+| Age           | Multiplier |
+|---------------|------------|
+| ≤ 30 days     | 1.0        |
+| ≤ half-life   | 0.9        |
+| ≤ 2× half-life | 0.75      |
+| ≤ 4× half-life | 0.6       |
+| older         | `age_floor` (default `0.5`) |
+
+Recall doesn't collapse — the floor is a multiplier > 0, so old entries still surface for queries that have no fresher match. Ranking biases toward fresh evidence. Configurable per agent via `MemoryConfig.age_decay`, `age_half_life_days` (default 90), `age_floor` (default 0.5). The HTTP search surface enables it per request via `decay=true` (with optional `decay_half_life_days` / `decay_floor` overrides).
+
 ### Why metadata is a signal, not a gate
 
 `/mem entries type=project` is a hard filter — the caller is browsing a category, and rows of other types are explicitly excluded. But `/mem search query` is a different shape: the caller is trying to *find* something, and aggressive filtering loses recall. If they passed `types=[project]` because they expect the answer to be a project entry, but the answer is actually a `reference` or `learning` entry that mentions the same query terms, a hard filter would hide it.
@@ -298,6 +312,18 @@ The smarter ranker means a search rarely needs follow-up `/mem entry` reads; the
 ```
 
 A research-and-write turn typically produces one `project` (the deliverable), N `reference` entries (cited sources), one `learning` entry (the recommendation/synthesis), and a few relations linking them. Filing everything as `reference` defeats the type partitioning.
+
+### Consolidating prior entries
+
+```
+/mem add entry learning Honeycomb wins for trace-first small teams --supersedes #88,#89
+   <synthesis content combining the prior two entries>
+/endmem
+```
+
+The agent emits `--supersedes #N,#M,...` on the header line. The runtime creates the new synthesis entry, files a `supersedes` relation from new → each old, and invalidates each old entry. Manual supersession overrides auto-supersession when both could apply (the agent's explicit list signals it already knows which facts are stale).
+
+The HTTP equivalent: `POST /v1/memory/entries` with a `supersedes_ids: [88, 89]` array. Same validation: every id must exist for the tenant or the call fails with `400` before anything is written.
 
 ### Retiring stale facts
 

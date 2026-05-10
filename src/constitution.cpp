@@ -884,10 +884,13 @@ std::string Constitution::to_json() const {
     // Memory block — only emit when at least one toggle deviates from
     // the default, so round-tripping a default config stays compact.
     Constitution::MemoryConfig defaults;
-    if (memory.search_expand   != defaults.search_expand   ||
-        memory.auto_tag        != defaults.auto_tag        ||
-        memory.auto_supersede  != defaults.auto_supersede  ||
-        memory.intent_routing  != defaults.intent_routing) {
+    if (memory.search_expand    != defaults.search_expand    ||
+        memory.auto_tag         != defaults.auto_tag         ||
+        memory.auto_supersede   != defaults.auto_supersede   ||
+        memory.intent_routing   != defaults.intent_routing   ||
+        memory.age_decay        != defaults.age_decay        ||
+        memory.age_half_life_days != defaults.age_half_life_days ||
+        memory.age_floor        != defaults.age_floor) {
         auto mc = jobj();
         auto& mco = mc->as_object_mut();
         if (memory.search_expand   != defaults.search_expand)
@@ -898,6 +901,12 @@ std::string Constitution::to_json() const {
             mco["auto_supersede"]  = jbool(memory.auto_supersede);
         if (memory.intent_routing  != defaults.intent_routing)
             mco["intent_routing"]  = jbool(memory.intent_routing);
+        if (memory.age_decay       != defaults.age_decay)
+            mco["age_decay"]       = jbool(memory.age_decay);
+        if (memory.age_half_life_days != defaults.age_half_life_days)
+            mco["age_half_life_days"] = jnum(memory.age_half_life_days);
+        if (memory.age_floor       != defaults.age_floor)
+            mco["age_floor"]       = jnum(memory.age_floor);
         m["memory"] = mc;
     }
 
@@ -974,6 +983,16 @@ Constitution Constitution::from_json(const std::string& json_str) {
                                                         c.memory.auto_supersede);
         c.memory.intent_routing  = memory_val->get_bool("intent_routing",
                                                         c.memory.intent_routing);
+        c.memory.age_decay       = memory_val->get_bool("age_decay",
+                                                        c.memory.age_decay);
+        c.memory.age_half_life_days = memory_val->get_int("age_half_life_days",
+                                                        c.memory.age_half_life_days);
+        c.memory.age_floor       = memory_val->get_number("age_floor",
+                                                        c.memory.age_floor);
+        // Sanity clamps so a malformed config can't break ranking.
+        if (c.memory.age_half_life_days < 1) c.memory.age_half_life_days = 1;
+        if (c.memory.age_floor <= 0.0)       c.memory.age_floor = 0.5;
+        if (c.memory.age_floor >  1.0)       c.memory.age_floor = 1.0;
     }
 
     auto rules_val = root->get("rules");

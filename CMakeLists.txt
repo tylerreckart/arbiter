@@ -91,9 +91,11 @@ set(ARBITER_SOURCES
     src/advisor_gate.cpp
     src/api_server.cpp
     src/billing_client.cpp
+    src/tenant_limiter.cpp
     src/tenant_store.cpp
     src/schedule_parser.cpp
     src/notification_bus.cpp
+    src/request_event_bus.cpp
     src/scheduler.cpp
     src/json.cpp
     src/commands.cpp
@@ -311,6 +313,51 @@ if(INDEX_BUILD_TESTS)
         SQLite3::SQLite3
     )
     add_test(NAME unit_todos COMMAND unit_todos)
+
+    # --- Unit tests for the agent-scoped lesson store ---
+    add_executable(unit_lessons
+        tests/test_lessons.cpp
+        src/tenant_store.cpp
+    )
+    target_include_directories(unit_lessons PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_lessons PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_lessons COMMAND unit_lessons)
+
+    # --- Unit tests for the durable request log (resubscribe surface) ---
+    add_executable(unit_request_log
+        tests/test_request_log.cpp
+        src/tenant_store.cpp
+    )
+    target_include_directories(unit_request_log PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_request_log PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_request_log COMMAND unit_request_log)
+
+    # --- Unit tests for the per-tenant rate / concurrency limiter ---
+    add_executable(unit_tenant_limiter
+        tests/test_tenant_limiter.cpp
+        src/tenant_limiter.cpp
+    )
+    target_include_directories(unit_tenant_limiter PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_tenant_limiter COMMAND unit_tenant_limiter)
 
     # --- Unit tests for the structured-memory store ---
     # Pins the tenant_store CRUD contract that backs both /v1/memory/entries

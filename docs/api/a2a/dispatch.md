@@ -112,9 +112,17 @@ A task that doesn't exist for the calling tenant returns `TaskNotFound` (-32001)
 
 **Result:** the canceled `Task`. Tries the in-flight registry first (same one [`POST /v1/requests/:id/cancel`](../requests-cancel.md) uses) and signals the orchestrator if the request is still running. Persists `state: canceled` regardless of the cancel-source race. Terminal tasks return `TaskNotCancelable` (-32002).
 
+### `tasks/resubscribe`
+
+**Params:** `{ "id": "<task_id>" }`
+
+**Result:** `Content-Type: text/event-stream`. Replays the persisted event log for the task as A2A `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent` envelopes, then live-tails the run until terminal. Each arbiter event maps to the appropriate A2A frame; arbiter-specific event kinds (token usage, stream lifecycle) ride along under `x-arbiter.<kind>` metadata so spec-strict clients can ignore them.
+
+If the task is already in a terminal state at fetch time, the handler emits one final `TaskStatusUpdateEvent` with `final: true` and closes. Backed by the same store as [`GET /v1/requests/:id/events`](../requests/events.md); see [Durable in-flight execution](../../concepts/durable-execution.md).
+
 ### Unsupported
 
-`tasks/resubscribe` and `tasks/pushNotificationConfig/{set,get,list,delete}` return `UnsupportedOperation` (-32004) with a stable error message.
+`tasks/pushNotificationConfig/{set,get,list,delete}` return `UnsupportedOperation` (-32004) with a stable error message.
 
 ## Error codes
 
@@ -129,7 +137,7 @@ A2A-specific codes follow the v1.0 spec; standard JSON-RPC codes ride alongside.
 | -32603 | `InternalError` | Orchestrator init failure or other server-side fault. |
 | -32001 | `TaskNotFound` | `tasks/get` / `tasks/cancel` against an unknown id, or `message/send` against an unknown agent for the tenant. |
 | -32002 | `TaskNotCancelable` | `tasks/cancel` against a task in a terminal state. |
-| -32004 | `UnsupportedOperation` | Method is not handled by arbiter (`tasks/resubscribe`, `tasks/pushNotificationConfig/*`). |
+| -32004 | `UnsupportedOperation` | Method is not handled by arbiter (`tasks/pushNotificationConfig/*`). |
 | -32005 | `ContentTypeNotSupported` | A `Part` had `kind != "text"`. |
 | -32006 | `InvalidAgentResponse` | Agent threw mid-turn (provider transport failure surfaces as a failed `Task` instead — this is for unrecoverable execution faults). |
 | -32007 | `VersionNotSupportedError` | `A2A-Version` header was set to anything other than `1.0` or `1`. |

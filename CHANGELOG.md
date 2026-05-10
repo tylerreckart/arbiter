@@ -8,6 +8,66 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Durable in-flight execution.**  Every `/v1/orchestrate` (and
+  conversation message, agent chat, A2A dispatch) call now mirrors
+  its SSE event stream into two new tables on `TenantStore`:
+  `request_status` (one row per run; state, agent, timestamps,
+  last_seq) and `request_events` (append-only log indexed
+  `(request_id, seq)`).  `text` deltas coalesce into ~2 KiB chunks
+  before persistence; other events persist 1:1.
+  - **`GET /v1/requests/:id/events?since_seq=N`** replays the
+    persisted backlog as SSE frames, then live-tails via a per-
+    request in-process bus (`RequestEventBus`) until the run hits
+    `done`.  Each frame carries the seq as the SSE `id:` field so
+    re-reconnects need not parse payloads.
+  - **`GET /v1/requests`** + **`GET /v1/requests/:id`** expose the
+    run-level metadata for listing / discovery.
+  - **A2A `tasks/resubscribe`** translates each persisted event into
+    the appropriate `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent`
+    envelope, replacing the prior `UnsupportedOperation` rejection.
+    Backed by the same store + bus.
+  - **Recovery sweep** at `ApiServer::start()` marks every
+    `state='running'` row from a previous process as `failed` so
+    reconnecting clients see a clean terminal signal.
+  See [`docs/concepts/durable-execution.md`](docs/concepts/durable-execution.md).
+- **Self-reflection / learned-from-failure.**  New `lessons` table on
+  `TenantStore`, agent-scoped (`tenant_id`, `agent_id`).  Three
+  integrated mechanisms:
+  - **`/lesson` writ** with `<signature>: <text>` single-line and
+    `/endlesson`-terminated block forms; subcommands `list`, `search
+    <query>`, `delete <id>`.  Backed by a `LessonInvoker` callback
+    threaded through `Orchestrator` and `execute_agent_commands`.
+  - **Intra-turn loop detection.**  The dispatch loop tracks
+    `(tool, args)` signatures that produced `ERR:`; when the same
+    signature ERRs twice in a row a `[LOOP DETECTED]` block is
+    prepended to the next user-role tool-result block, naming the
+    offending call so the agent breaks out instead of grinding.
+  - **Pre-turn lesson injection.**  At the top of each top-level
+    `run_dispatch`, the runtime probes the agent's lessons against
+    the user's prompt (substring match on signature + lesson_text),
+    bumps `hit_count` on surfaced rows, and prepends a `KNOWN
+    PITFALLS` block before the message.
+  HTTP surface: `POST/GET /v1/lessons`, `GET/PATCH/DELETE
+  /v1/lessons/:id`.  See
+  [`docs/concepts/lessons.md`](docs/concepts/lessons.md).
+- **Memory consolidation + age decay.**  `/mem add entry --supersedes
+  #N,#M` (and `POST /v1/memory/entries` `supersedes_ids: [N, M]`)
+  creates a synthesis entry that supersedes the listed prior entries
+  in one transaction: a `supersedes` relation lands per pair, the
+  prior entries are invalidated (`valid_to=now()`).  Manual
+  supersession overrides the existing advisor-driven auto-supersede
+  pass.  Also: BM25 search now multiplies scores by a piecewise
+  recency factor when `MemoryConfig.age_decay` is on (default on; 90d
+  half-life, 0.5 floor) — old entries rank lower without
+  disappearing.  HTTP path opt-in via `decay=true` query param.
+- **Per-tenant rate / concurrency limiter.**  Bounded in-flight LLM
+  requests per tenant (`ARBITER_TENANT_MAX_CONCURRENT`) plus a
+  token-bucket rate limit (`ARBITER_TENANT_RATE_PER_MIN`,
+  `ARBITER_TENANT_RATE_BURST`); both default to 0 = unlimited.
+  Surplus requests on the expensive routes (`/v1/orchestrate`,
+  conversation messages, agent chat, A2A dispatch) get `429 Too Many
+  Requests` with `Retry-After`.  Cheap reads unaffected.  See
+  [`docs/concepts/operations.md`](docs/concepts/operations.md#per-tenant-rate--concurrency-limiting).
 - **Agent-facing todo tracker.** New `todos` table on `TenantStore` plus
   `/todo` writ with `add` (single-line and `/endtodo` block forms),
   `list`, `start`, `done`, `cancel`, `delete`, `describe <id>: <text>`,

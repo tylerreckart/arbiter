@@ -98,6 +98,17 @@ struct Constitution {
         // multiplier.  Defaults on because the worst case is "no
         // match, no boost."
         bool intent_routing   = true;
+
+        // /mem search age-decay.  When true, BM25 scores are scaled by
+        // a piecewise factor of the entry's age — fresh entries keep
+        // their score, week-old entries take a small hit, year-old
+        // entries float at `age_floor`.  Recall doesn't collapse (the
+        // floor is a multiplier > 0), but ranking biases toward fresh
+        // evidence.  Defaults on; the floor of 0.5 keeps old entries
+        // discoverable for queries that have no fresher match.
+        bool   age_decay         = true;
+        int    age_half_life_days = 90;   // 30 → 0.9, 90 → 0.75, 180 → 0.6 …
+        double age_floor         = 0.5;
     } memory;
 
     // --- System prompt pieces ---
