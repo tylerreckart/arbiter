@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.4.5] — 2026-05-11
+
 ### Added
 - **Durable in-flight execution.**  Every `/v1/orchestrate` (and
   conversation message, agent chat, A2A dispatch) call now mirrors
