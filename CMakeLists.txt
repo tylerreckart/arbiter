@@ -91,6 +91,7 @@ set(ARBITER_SOURCES
     src/advisor_gate.cpp
     src/api_server.cpp
     src/sandbox.cpp
+    src/idempotency_cache.cpp
     src/billing_client.cpp
     src/tenant_limiter.cpp
     src/tenant_store.cpp
@@ -359,6 +360,17 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_tenant_limiter COMMAND unit_tenant_limiter)
+
+    # --- Unit tests for the Idempotency-Key dedup cache ---
+    add_executable(unit_idempotency_cache
+        tests/test_idempotency_cache.cpp
+        src/idempotency_cache.cpp
+    )
+    target_include_directories(unit_idempotency_cache PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_idempotency_cache COMMAND unit_idempotency_cache)
 
     # --- Unit tests for the structured-memory store ---
     # Pins the tenant_store CRUD contract that backs both /v1/memory/entries

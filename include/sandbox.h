@@ -25,10 +25,13 @@
 // here — operators run with `docker container prune` cadence of their
 // choice; the v1 contract is "warm until shutdown".
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -68,6 +71,20 @@ struct SandboxConfig {
     // Combined stdout+stderr cap per /exec.  Matches the cmd_exec(host)
     // ceiling so the agent sees uniform behaviour regardless of sandbox.
     int output_max_bytes = 32768;
+
+    // Per-tenant workspace disk quota, bytes.  Enforced at /write time:
+    // a write that would push the workspace over the cap is rejected
+    // with a clean ERR.  Reads remain available, so the agent can list
+    // what's there and clean up.  0 = no quota.  Default 1 GiB.
+    int64_t workspace_max_bytes = 1ll * 1024 * 1024 * 1024;
+
+    // Idle-reaping threshold, seconds.  A background reaper stops
+    // tenant containers whose last sandbox operation (/exec, /write,
+    // /read, /list) was longer ago than this.  Workspace files are
+    // untouched — next sandbox operation cold-starts a fresh
+    // container.  0 = no reaping (containers warm until shutdown).
+    // Default 1800 = 30 minutes.
+    int idle_seconds = 1800;
 };
 
 struct SandboxExecResult {
@@ -143,6 +160,12 @@ public:
     // or doesn't yet exist.
     std::string list_workspace(int64_t tenant_id);
 
+    // Sum of all regular-file sizes in the tenant's workspace, bytes.
+    // Used by write_to_workspace for quota enforcement and exposed for
+    // operators / tests inspecting usage.  Returns 0 when the workspace
+    // doesn't exist.
+    int64_t measure_workspace_bytes(int64_t tenant_id) const;
+
     // Tear down the tenant's container (workspace files remain so a
     // subsequent /exec restarts with the same state).  Idempotent.
     void stop_container(int64_t tenant_id);
@@ -163,12 +186,26 @@ private:
     // a server restart can re-attach without losing track, but we keep
     // the in-memory set so we know which ones to stop on shutdown.
     std::unordered_map<int64_t, std::string>   running_;
+    // tenant_id → last sandbox operation timestamp.  Updated on every
+    // exec / write / read / list that succeeds.  Reaper thread compares
+    // against cfg_.idle_seconds.  Guarded by mu_.
+    std::unordered_map<int64_t, std::chrono::steady_clock::time_point>
+                                                last_access_;
+
+    // Reaper thread.  Spawned in the ctor when usable_ && idle_seconds>0.
+    // Joined in the dtor.
+    std::thread                                reaper_thread_;
+    std::condition_variable                    reaper_cv_;
+    bool                                       reaper_stop_ = false;
 
     // Helpers (implementation detail).
     std::string container_name_for(int64_t tenant_id) const;
     std::string workspace_path_for(int64_t tenant_id) const;
     bool        container_is_running(const std::string& name) const;
+    bool        container_is_responsive(const std::string& name) const;
     bool        start_container(int64_t tenant_id, std::string& err_out);
+    void        touch_access(int64_t tenant_id);
+    void        reaper_loop();
 };
 
 } // namespace arbiter

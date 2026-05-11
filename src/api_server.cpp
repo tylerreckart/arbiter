@@ -22,6 +22,7 @@
 #include "request_event_bus.h"
 #include "schedule_parser.h"
 #include "scheduler.h"
+#include "idempotency_cache.h"
 #include "sandbox.h"
 #include "tenant_limiter.h"
 #include "tenant_store.h"
@@ -310,6 +311,8 @@ class SseStream {
 public:
     explicit SseStream(int fd) : fd_(fd) {}
 
+    ~SseStream() { stop_heartbeat(); }
+
     void write_headers() {
         // Standard SSE headers.  X-Accel-Buffering: no tells nginx and
         // similar proxies to not buffer the response — without it, events
@@ -324,6 +327,8 @@ public:
             "Connection: close\r\n\r\n";
         std::lock_guard<std::mutex> lk(mu_);
         write_all(fd_, kHdr);
+        last_write_ = std::chrono::steady_clock::now();
+        start_heartbeat_locked();
     }
 
     // Wire up durable persistence.  Each subsequent emit mirrors to
@@ -350,6 +355,7 @@ public:
         // operator's choice.
         std::string frame = "event: " + event + "\ndata: " + payload + "\n\n";
         write_all(fd_, frame);
+        last_write_ = std::chrono::steady_clock::now();
 
         if (!ts_) return;
         if (event == "text") {
@@ -365,13 +371,54 @@ public:
     // is independent — closing the stream just stops accepting further
     // events, it doesn't shut the fd.
     void close() {
-        std::lock_guard<std::mutex> lk(mu_);
-        if (closed_) return;
-        flush_pending_text_locked();
-        closed_ = true;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (closed_) return;
+            flush_pending_text_locked();
+            closed_ = true;
+        }
+        // Wake the heartbeat thread so it observes `closed_` and exits.
+        // Joining happens in the destructor; close() shouldn't block on a
+        // 5s wait_for cycle.
+        hb_cv_.notify_all();
     }
 
 private:
+    // Spawn the heartbeat thread.  Called from write_headers under mu_.
+    // The thread writes `: heartbeat\n\n` (an SSE comment, ignored by
+    // clients but keeps TCP alive past idle-killing proxies) whenever
+    // it's been more than kHeartbeatSeconds since the last wire write.
+    void start_heartbeat_locked() {
+        if (hb_thread_.joinable()) return;
+        hb_thread_ = std::thread([this]() {
+            using clock = std::chrono::steady_clock;
+            std::unique_lock<std::mutex> lk(mu_);
+            while (!hb_stop_ && !closed_) {
+                hb_cv_.wait_for(lk, std::chrono::seconds(kHeartbeatTickSeconds));
+                if (hb_stop_ || closed_) break;
+                auto now = clock::now();
+                if (now - last_write_ < std::chrono::seconds(kHeartbeatSeconds))
+                    continue;
+                // Wire write is fast for 14 bytes — keep the lock to
+                // serialize against emit().  If the client is wedged
+                // and write_all blocks, the connection thread is also
+                // wedged; the drain deadline will eventually SIGKILL us.
+                static const std::string kHb = ": heartbeat\n\n";
+                write_all(fd_, kHb);
+                last_write_ = now;
+            }
+        });
+    }
+
+    void stop_heartbeat() {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            hb_stop_ = true;
+        }
+        hb_cv_.notify_all();
+        if (hb_thread_.joinable()) hb_thread_.join();
+    }
+
     void persist_event_locked(const std::string& kind,
                                 const std::string& payload_json) {
         if (!ts_) return;
@@ -470,6 +517,18 @@ private:
     std::string                pending_text_concat_;
     size_t                     pending_text_size_ = 0;
     static constexpr size_t    kCoalesceThreshold = 2048;
+
+    // Heartbeat.  An SSE comment (`: heartbeat\n\n`) emitted whenever the
+    // stream has been quiet longer than kHeartbeatSeconds, so reverse
+    // proxies with idle-kill policies (nginx 60s default, cloudflare 100s)
+    // don't drop long turns mid-LLM-call.  Comment frames are ignored by
+    // spec-compliant clients; the only effect is keeping TCP alive.
+    std::thread                       hb_thread_;
+    std::condition_variable           hb_cv_;
+    bool                              hb_stop_ = false;
+    std::chrono::steady_clock::time_point last_write_{};
+    static constexpr int              kHeartbeatSeconds      = 30;
+    static constexpr int              kHeartbeatTickSeconds  = 5;
 };
 
 // ─── URL helpers ────────────────────────────────────────────────────────────
@@ -8164,6 +8223,49 @@ bool parse_message_field(const std::shared_ptr<JsonValue>& msg_val,
 }
 }  // namespace
 
+// Read the `Idempotency-Key` header, trim whitespace, length-cap.
+// Returns empty string when absent or invalid — caller proceeds normally
+// without dedup.  The cap (256 chars) keeps a malicious client from
+// bloating the in-memory cache with arbitrarily long keys.
+std::string read_idempotency_key(const HttpRequest& req) {
+    auto it = req.headers.find("idempotency-key");
+    if (it == req.headers.end()) return {};
+    std::string k = it->second;
+    while (!k.empty() && (k.back()  == ' ' || k.back()  == '\t' ||
+                          k.back()  == '\r' || k.back()  == '\n')) k.pop_back();
+    while (!k.empty() && (k.front() == ' ' || k.front() == '\t')) k.erase(0, 1);
+    if (k.size() > 256) return {};
+    return k;
+}
+
+// Look up the request_id this idempotency key already maps to.  Empty
+// optional ⇒ key absent or cache miss; caller proceeds with a fresh
+// execution.  Non-empty ⇒ a previous request claimed this key; caller
+// should call handle_request_events with the returned id and return.
+std::optional<std::string>
+check_idempotency_replay(const ApiServerOptions& opts,
+                          const HttpRequest& req, int64_t tenant_id) {
+    if (!opts.idempotency) return std::nullopt;
+    std::string k = read_idempotency_key(req);
+    if (k.empty()) return std::nullopt;
+    auto entry = opts.idempotency->get(tenant_id, k);
+    if (!entry) return std::nullopt;
+    return entry->request_id;
+}
+
+// Register a new (tenant_id, idempotency-key) → request_id mapping.
+// No-op when the header is absent or the cache isn't wired.  Called
+// after the request_status row is created so a concurrent retry
+// finds a valid id to replay against.
+void record_idempotency_key(const ApiServerOptions& opts,
+                              const HttpRequest& req, int64_t tenant_id,
+                              const std::string& request_id) {
+    if (!opts.idempotency) return;
+    std::string k = read_idempotency_key(req);
+    if (k.empty()) return;
+    opts.idempotency->put(tenant_id, k, request_id);
+}
+
 // Two entry points funnel here: /v1/orchestrate (agent_override == "", read
 // from body) and /v1/agents/:id/chat (agent_override == path :id).  Body
 // parsing + dispatch is otherwise identical.
@@ -8201,6 +8303,21 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         // are present (lets callers update an agent mid-thread).
                         const std::string& conversation_agent_def_json = "") {
     Tenant tenant = tenant_in;   // mutable snapshot — MTD refreshes mid-request
+
+    // Idempotency-Key short-circuit.  When the client supplies a key we
+    // already have a request_id for, redirect into the resubscribe path
+    // so the retry receives the same SSE stream (live tail or
+    // backlog replay, depending on the original's state) instead of
+    // triggering a second execution.  In-memory cache; a process
+    // restart resets it.  Body is intentionally not part of the dedup
+    // contract for v1 — clients retrying after a network blip send the
+    // same body.
+    if (auto replay_id = check_idempotency_replay(opts, req, tenant.id)) {
+        handle_request_events(fd, *replay_id, req, tenants, tenant,
+                              request_event_bus);
+        return;
+    }
+
     // Parse the JSON body.
     std::shared_ptr<JsonValue> body;
     try {
@@ -8384,6 +8501,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             // durable replay degrades, the wire stream still works.
         }
     }
+
+    // Register the idempotency key now that we have a request_id a
+    // replay can target.  Racing retries from the same client will
+    // either land here first (winner inserts; loser's check_idempotency
+    // hit replays the winner) or land here second (their put() returns
+    // false; both executions run, but subsequent retries dedup).
+    record_idempotency_key(opts, req, tenant.id, request_id);
 
     auto emit = [&sse, &logger](const std::string& ev,
                                  const std::shared_ptr<JsonValue>& p) {
@@ -9150,6 +9274,11 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     // grants every acquire without taking the lock.
     limiter_ = std::make_unique<TenantLimiter>(load_tenant_limits_from_env());
 
+    // Idempotency cache for retry-safe POSTs.  Always present; an
+    // absent Idempotency-Key header on a request bypasses it entirely.
+    idempotency_  = std::make_unique<IdempotencyCache>();
+    opts_.idempotency = idempotency_.get();
+
     // Per-tenant /exec sandbox.  When configured but unusable (docker
     // missing, no image, etc.) we log the reason and continue with
     // /exec disabled — the alternative (refusing to start the server)
@@ -9164,6 +9293,8 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         sc.cpus                 = opts_.sandbox_cpus;
         sc.pids_limit           = opts_.sandbox_pids_limit;
         sc.exec_timeout_seconds = opts_.sandbox_exec_timeout_seconds;
+        sc.workspace_max_bytes  = opts_.sandbox_workspace_max_bytes;
+        sc.idle_seconds         = opts_.sandbox_idle_seconds;
         auto mgr = std::make_unique<SandboxManager>(std::move(sc));
         if (!mgr->usable()) {
             std::fprintf(stderr,
@@ -9347,12 +9478,53 @@ void ApiServer::stop() {
         listen_fd_ = -1;
     }
     if (accept_thread_.joinable()) accept_thread_.join();
+
+    // Drain in-flight connections.  First, signal every orchestration
+    // currently in the InFlightRegistry to cancel — that wakes the
+    // streaming LLM read so the SSE handler can write its final frame
+    // and unwind.  Then wait on the connection counter with a deadline.
+    int drain_seconds = 30;
+    if (const char* e = std::getenv("ARBITER_DRAIN_SECONDS"); e && *e) {
+        try {
+            int v = std::stoi(e);
+            if (v >= 0) drain_seconds = v;
+        } catch (...) { /* fall through to default */ }
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(in_flight_.mu);
+        for (auto& kv : in_flight_.by_id) {
+            if (kv.second.orch) {
+                try { kv.second.orch->cancel(); } catch (...) {}
+            }
+        }
+    }
+
+    const int initial = active_connections_.load(std::memory_order_acquire);
+    if (initial > 0) {
+        std::fprintf(stderr,
+            "[arbiter] draining %d in-flight connection(s) "
+            "(up to %ds)\n", initial, drain_seconds);
+    }
+    if (drain_seconds > 0 && initial > 0) {
+        std::unique_lock<std::mutex> lk(drain_mu_);
+        drain_cv_.wait_for(lk, std::chrono::seconds(drain_seconds),
+            [this]{ return active_connections_.load(
+                        std::memory_order_acquire) == 0; });
+    }
+    const int leftover = active_connections_.load(std::memory_order_acquire);
+    if (leftover > 0) {
+        std::fprintf(stderr,
+            "[arbiter] drain deadline elapsed with %d connection(s) "
+            "still active; abandoning\n", leftover);
+    } else if (initial > 0) {
+        std::fprintf(stderr, "[arbiter] drain complete\n");
+    }
+
     // Sandbox containers outlive a single connection but should go down
     // with the server.  Workspace bytes remain on disk — only the
     // containers are torn down.
     if (sandbox_) sandbox_->stop_all();
-    // In-flight connection threads are detached; they'll terminate when
-    // their TCP read fails post-shutdown or their response completes.
 }
 
 void ApiServer::accept_loop() {
@@ -9364,6 +9536,10 @@ void ApiServer::accept_loop() {
         }
         int flag = 1;
         ::setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+        // Bump the in-flight counter before detaching so a shutdown
+        // racing the spawn always sees the worker.  Decrement + notify
+        // happens in the worker's exit path.
+        active_connections_.fetch_add(1, std::memory_order_acq_rel);
         // Each connection gets its own thread.  Detached because this
         // server does not retain per-connection handles; the connection
         // thread owns cleanup.
@@ -9371,6 +9547,10 @@ void ApiServer::accept_loop() {
             try { handle_connection(client); }
             catch (...) { /* drop — client socket will be closed below */ }
             ::close(client);
+            if (active_connections_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                std::lock_guard<std::mutex> lk(drain_mu_);
+                drain_cv_.notify_all();
+            }
         }).detach();
     }
 }

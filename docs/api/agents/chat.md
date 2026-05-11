@@ -28,6 +28,10 @@ curl -N \
   http://arbiter.example.com/v1/agents/researcher/chat
 ```
 
+### Headers
+
+`Idempotency-Key` is honoured here with the same semantics as [`POST /v1/orchestrate`](../orchestrate.md#idempotency): a retry with the same key replays the original execution as SSE rather than triggering a second one.
+
 With an inline `agent_def` (UUID-keyed memory persistence):
 
 ```bash

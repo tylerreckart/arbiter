@@ -47,15 +47,17 @@ If the runtime can't be found, the image is missing, or the workspaces root can'
 
 Setting `ARBITER_SANDBOX_IMAGE` is the only required step. Everything else has a default.
 
-| Variable                          | Purpose                                                                                  | Default     |
-|-----------------------------------|------------------------------------------------------------------------------------------|-------------|
-| `ARBITER_SANDBOX_IMAGE`           | Container image to run inside. Required — without this, the sandbox stays off.           | unset       |
-| `ARBITER_SANDBOX_RUNTIME`         | Runtime binary to shell out to. v1 ships with `docker` support only.                     | `docker`    |
-| `ARBITER_SANDBOX_NETWORK`         | Docker `--network` value. `none` keeps `/exec` offline; `bridge` lets it reach the internet. | `none`  |
-| `ARBITER_SANDBOX_MEMORY_MB`       | Hard memory cap per container, MB. `0` = no cap.                                          | `512`       |
-| `ARBITER_SANDBOX_CPUS`            | CPU shares per container. `0` = no cap.                                                   | `1.0`       |
-| `ARBITER_SANDBOX_PIDS_LIMIT`      | Max processes per container. `0` = no cap.                                                | `256`       |
-| `ARBITER_SANDBOX_EXEC_TIMEOUT`    | Wall-clock kill, seconds, per `/exec` call. `0` = no parent-side timeout.                 | `30`        |
+| Variable                                | Purpose                                                                                                | Default        |
+|-----------------------------------------|--------------------------------------------------------------------------------------------------------|----------------|
+| `ARBITER_SANDBOX_IMAGE`                 | Container image to run inside. Required — without this, the sandbox stays off.                         | unset          |
+| `ARBITER_SANDBOX_RUNTIME`               | Runtime binary to shell out to. v1 ships with `docker` support only.                                   | `docker`       |
+| `ARBITER_SANDBOX_NETWORK`               | Docker `--network` value. `none` keeps `/exec` offline; `bridge` lets it reach the internet.           | `none`         |
+| `ARBITER_SANDBOX_MEMORY_MB`             | Hard memory cap per container, MB. `0` = no cap.                                                       | `512`          |
+| `ARBITER_SANDBOX_CPUS`                  | CPU shares per container. `0` = no cap.                                                                | `1.0`          |
+| `ARBITER_SANDBOX_PIDS_LIMIT`            | Max processes per container. `0` = no cap.                                                             | `256`          |
+| `ARBITER_SANDBOX_EXEC_TIMEOUT`          | Wall-clock kill, seconds, per `/exec` call. `0` = no parent-side timeout.                              | `30`           |
+| `ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`   | Per-tenant workspace disk quota, bytes. `/write` over the cap returns ERR; reads still work. `0` = no quota. | `1073741824` (1 GiB) |
+| `ARBITER_SANDBOX_IDLE_SECONDS`          | Idle threshold before a tenant container is stopped by the background reaper. Workspace files survive. `0` = no reaping. | `1800` (30 min) |
 
 Workspaces land at `~/.arbiter/workspaces/t<tenant_id>/` (one directory per tenant, mode `0700`). Override by editing `ApiServerOptions::sandbox_workspaces_root`; there's no env var for the path yet — open an issue if you need one.
 
@@ -63,7 +65,15 @@ Workspaces land at `~/.arbiter/workspaces/t<tenant_id>/` (one directory per tena
 
 The arbiter binary intentionally ships **no default image**. You bring your own so the toolbelt available behind `/exec` reflects your agents' actual needs.
 
-A minimal starter (build it once, tag it, point `ARBITER_SANDBOX_IMAGE` at it):
+A ready-to-use starter ships in [`examples/sandbox/`](../../examples/sandbox/). One command builds it, tags it `arbiter/sandbox:latest`, and prints the env vars to plug into `arbiter --api`:
+
+```bash
+./examples/sandbox/setup.sh
+```
+
+The image is a debian-slim base with `bash`, `coreutils`, `curl`, `git`, `python3`, `jq`, and `build-essential` pre-installed. Edit `examples/sandbox/Dockerfile` to add what your agents actually need (a node toolchain, a Go compiler, your CLI, etc.) and re-run the script.
+
+If you'd rather hand-roll it, the contract is short:
 
 ```dockerfile
 # Dockerfile
@@ -115,14 +125,20 @@ Key properties:
 |------------------------------------|---------------------------------------------------------------------------------------|
 | First `/exec` for a tenant         | Container is started lazily (`docker run -d … sleep infinity`).                       |
 | Subsequent `/exec` (any tenant)    | Reuses the warm container; `docker exec` only.                                        |
-| Tenant container already running on startup | The manager re-attaches (deterministic name `arbiter-sandbox-t<tid>`).         |
+| Tenant container already running on startup | The manager probes with `docker exec true` and re-attaches if responsive; rebuilds if not. |
 | Container dies between requests    | Next `/exec` notices via `docker inspect`, removes the stale row, restarts.            |
+| Container dies *during* a `/exec`  | Docker's stderr ("No such container", "is not running", exit 125) is matched; the tenant is evicted from the live map so the **next** `/exec` cold-starts a fresh container. The current call's failure surfaces verbatim to the agent. |
+| Tenant idle past `ARBITER_SANDBOX_IDLE_SECONDS` | Background reaper stops the container (`docker rm -f`). Workspace bytes remain on disk; next sandbox operation cold-starts. |
 | `arbiter --api` receives SIGTERM   | `stop_all()` removes every managed container. Workspace bytes remain on disk.          |
 | Operator runs `docker rm -f arbiter-sandbox-t<tid>` out of band | Stale row is reaped on next `/exec`; workspace is untouched.  |
 
-There is **no idle reaping** in v1. A tenant that ran one `/exec` six hours ago still owns a `sleep infinity` container. Operators wanting tighter resource hygiene should `docker container prune` on a cron or restart the server periodically; a built-in idle-stop is a planned follow-up.
+The reaper tick fires at `max(30, idle_seconds / 4)` seconds — so an `ARBITER_SANDBOX_IDLE_SECONDS=120` cap is checked every 30s. Setting `ARBITER_SANDBOX_IDLE_SECONDS=0` disables reaping (containers stay warm until shutdown).
 
-There is also **no per-tenant disk quota** in v1. The workspace dir grows as `/write` and `/exec` produce files. Cap it with a filesystem-level quota (XFS project quotas, ZFS dataset reservations, a dedicated mount) or restart-clean if you can tolerate that.
+### Disk quota
+
+`ARBITER_SANDBOX_WORKSPACE_MAX_BYTES` (default 1 GiB) caps total bytes per tenant workspace. Enforcement is at `/write` time: the runtime walks the workspace, computes the projected post-write total (subtracting any pre-existing file's size for in-place overwrites), and rejects with a clean `ERR` if the new total would exceed the cap. The walk is O(N files) per write — fine for typical agent workloads, slower if a workspace accumulates tens of thousands of files.
+
+Writes from inside the container (e.g. `dd if=/dev/zero of=/workspace/big`) are **not** intercepted by the quota check — that path goes through `docker exec`, not `/write`. Operators wanting hard FS quotas should pair the soft cap with a kernel-level limit (XFS project quotas, ZFS dataset reservations, or `--storage-opt size=...` on storage drivers that support it). The agent-visible cap still catches the common case of an agent enthusiastically `/write`ing megabytes of generated text.
 
 ## Resource caps
 
@@ -186,6 +202,9 @@ drwx------ 3 1000 1000 4096 May 11 22:01 ..
 | `[timed out after 30s]` appended to `/exec` output             | Wall-clock kill fired. Bump `ARBITER_SANDBOX_EXEC_TIMEOUT` or shorten the command.    | Exit code 124; tool-result block marked as failed.                                             |
 | `[exit 137]` on an `/exec` that allocated a lot                | OOM-killed by the memory cap. Bump `ARBITER_SANDBOX_MEMORY_MB` or shrink the workload.| Tool-result block marked as failed.                                                            |
 | `ERR: invalid path: …` from `/write` or `/read`                | Absolute path, traversal, or control byte in the request.                             | Agent's standard sanitiser error.                                                              |
+| `ERR: workspace quota exceeded (…); used …, attempted …`       | `/write` would push the workspace past `ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`.         | Agent adapts (clean up + retry, or split the write). Reads still work.                         |
+| `[sandbox] reaping idle container for tenant <tid>` in logs    | Background reaper stopped a container idle past `ARBITER_SANDBOX_IDLE_SECONDS`.       | Informational only. Next sandbox op for that tenant cold-starts.                               |
+| `[sandbox] survivor container … exec-probe failed; rebuilding` | Re-attach path found a "running" container that didn't respond to `docker exec true`. | Container is force-removed and a fresh one starts. Workspace bytes remain.                     |
 | Container vanished out of band (`docker rm -f`)                | Operator force-removed the container.                                                 | Next `/exec` notices the stale row, restarts cleanly.                                          |
 
 ## Failure-mode philosophy: degrade, don't crash
@@ -216,6 +235,7 @@ What it does not protect against:
 
 ## See also
 
+- [`examples/sandbox/`](../../examples/sandbox/) — ready-to-build starter image and `setup.sh` helper.
 - [`docs/concepts/writ.md`](writ.md) — the slash-command DSL `/exec`, `/write`, `/read` belong to.
 - [`docs/concepts/artifacts.md`](artifacts.md) — the persistent, conversation-scoped artifact store. Complementary to the workspace.
 - [`docs/concepts/mcp.md`](mcp.md) — MCP servers run in the arbiter process, not in the sandbox. `/mcp call` is unaffected by `--network=none`.

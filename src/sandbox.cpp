@@ -297,10 +297,65 @@ SandboxManager::SandboxManager(SandboxConfig cfg) : cfg_(std::move(cfg)) {
         return;
     }
     usable_ = true;
+
+    if (cfg_.idle_seconds > 0) {
+        reaper_thread_ = std::thread(&SandboxManager::reaper_loop, this);
+    }
 }
 
 SandboxManager::~SandboxManager() {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        reaper_stop_ = true;
+    }
+    reaper_cv_.notify_all();
+    if (reaper_thread_.joinable()) reaper_thread_.join();
     stop_all();
+}
+
+void SandboxManager::touch_access(int64_t tenant_id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    last_access_[tenant_id] = std::chrono::steady_clock::now();
+}
+
+void SandboxManager::reaper_loop() {
+    using clock = std::chrono::steady_clock;
+    // Tick cadence is bounded by idle_seconds so a 60s idle threshold
+    // doesn't make us wait 5 minutes to react.  Floor at 30s so we
+    // don't burn CPU on a misconfigured tiny idle window.
+    const auto tick = std::chrono::seconds(
+        std::max(30, cfg_.idle_seconds / 4));
+    while (true) {
+        std::vector<int64_t> to_stop;
+        {
+            std::unique_lock<std::mutex> lk(mu_);
+            reaper_cv_.wait_for(lk, tick, [this]{ return reaper_stop_; });
+            if (reaper_stop_) return;
+            auto now = clock::now();
+            auto threshold = std::chrono::seconds(cfg_.idle_seconds);
+            for (auto& kv : running_) {
+                auto it = last_access_.find(kv.first);
+                // No recorded access = pre-reaper era; stamp now so we
+                // don't reap immediately on the next pass.
+                if (it == last_access_.end()) {
+                    last_access_[kv.first] = now;
+                    continue;
+                }
+                if (now - it->second >= threshold) {
+                    to_stop.push_back(kv.first);
+                }
+            }
+        }
+        for (int64_t tid : to_stop) {
+            std::fprintf(stderr,
+                "[sandbox] reaping idle container for tenant %lld "
+                "(idle > %ds)\n",
+                static_cast<long long>(tid), cfg_.idle_seconds);
+            stop_container(tid);
+            std::lock_guard<std::mutex> lk(mu_);
+            last_access_.erase(tid);
+        }
+    }
 }
 
 std::string SandboxManager::container_name_for(int64_t tenant_id) const {
@@ -336,6 +391,26 @@ bool SandboxManager::container_is_running(const std::string& name) const {
     if (rc != 0 || timed_out) return false;
     // `docker inspect` prints `true\n` or `false\n`.
     return out.find("true") == 0;
+}
+
+// Probe the container with a no-op `docker exec <name> true`.  Cheaper
+// than full exec but goes through the same kernel + dockerd path, so a
+// container that's running per inspect but unresponsive per exec
+// (OOM-mid-exec, dockerd wedged on this container's pid namespace,
+// kernel-side namespace teardown in progress) gets caught here.
+//
+// Used only on the re-attach path (stale survivor from a prior process)
+// and after exec failures with infra-level error patterns — calling
+// this on every ensure_container would add 30-100ms to every /exec.
+bool SandboxManager::container_is_responsive(const std::string& name) const {
+    std::vector<std::string> argv{
+        cfg_.runtime, "exec", name, "true"
+    };
+    std::string out;
+    bool timed_out = false;
+    int rc = run_capture(argv, /*timeout_seconds=*/5, /*output_cap=*/256,
+                          out, timed_out);
+    return rc == 0 && !timed_out;
 }
 
 bool SandboxManager::start_container(int64_t tenant_id, std::string& err_out) {
@@ -410,14 +485,28 @@ bool SandboxManager::ensure_container(int64_t tenant_id, std::string& err_out) {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = running_.find(tenant_id);
     if (it != running_.end()) {
-        // We think it's running; verify and re-create if it died.
+        // We think it's running; verify and re-create if it died.  No
+        // responsive-probe here — that's a 30-100ms tax on every /exec
+        // and the next /exec will catch a wedged container via the
+        // post-exec eviction path anyway.
         if (container_is_running(it->second)) return true;
         running_.erase(it);
     } else if (container_is_running(name)) {
-        // Stale survivor from a previous server run with the same workspace
-        // root — re-attach.
-        running_[tenant_id] = name;
-        return true;
+        // Stale survivor from a previous server run with the same
+        // workspace root — re-attach only after a `docker exec true`
+        // roundtrip confirms it's still functional.  A daemon restart
+        // or a kernel-side namespace teardown can leave the inspect
+        // saying "Running" while exec hangs; rebuild in that case.
+        if (container_is_responsive(name)) {
+            running_[tenant_id] = name;
+            return true;
+        }
+        std::fprintf(stderr,
+            "[sandbox] survivor container '%s' inspect=running but "
+            "exec-probe failed; rebuilding\n", name.c_str());
+        std::vector<std::string> rm{cfg_.runtime, "rm", "-f", name};
+        std::string ignore; bool to = false;
+        run_capture(rm, /*timeout_seconds=*/10, /*output_cap=*/512, ignore, to);
     }
 
     if (!start_container(tenant_id, err_out)) return false;
@@ -465,6 +554,26 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     r.timed_out  = timed_out;
     r.exit_status = rc;
 
+    // Self-heal: if the docker exec drove a Docker-level failure (the
+    // container was killed mid-command, or the daemon lost track of
+    // it), evict the tenant from `running_` so the NEXT /exec call
+    // triggers a fresh `docker run`.  The current call's tool result
+    // still surfaces the failure verbatim so the agent learns about
+    // it; the recovery is for the next turn.  Patterns we treat as
+    // "container is gone": exit 125 from docker-itself, OR stderr
+    // containing the daemon's not-found / not-running phrasing.
+    auto is_docker_lost = [](int code, const std::string& out) -> bool {
+        if (code == 125) return true;
+        return out.find("No such container") != std::string::npos
+            || out.find("is not running")    != std::string::npos
+            || out.find("is restarting")     != std::string::npos
+            || out.find("is paused")         != std::string::npos;
+    };
+    if (rc != 0 && !timed_out && is_docker_lost(rc, r.output)) {
+        std::lock_guard<std::mutex> lk(mu_);
+        running_.erase(tenant_id);
+    }
+
     // Match cmd_exec's output framing so the dispatcher's downstream
     // handling is identical.
     if (r.output.empty()) r.output = "(no output)";
@@ -479,6 +588,7 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         r.error = r.output;
         // r.output already starts with "ERR: " from run_capture.
     }
+    touch_access(tenant_id);
     return r;
 }
 
@@ -495,6 +605,33 @@ bool SandboxManager::write_to_workspace(int64_t tenant_id,
     if (ws.empty()) { err_out = "workspace mkdir failed"; return false; }
 
     fs::path target = fs::path(ws) / clean;
+
+    // Quota check.  Subtract any pre-existing entry's size before
+    // testing the cap so an in-place overwrite of a 100 KB file with
+    // 200 KB only "costs" 100 KB against the quota.  Workspace walk
+    // is O(N files) per write — fine for typical agent workloads (a
+    // few hundred files); operators with much larger workspaces will
+    // want the future tracker rework.
+    if (cfg_.workspace_max_bytes > 0) {
+        std::error_code sec;
+        int64_t existing = 0;
+        if (fs::exists(target, sec) && fs::is_regular_file(target, sec)) {
+            auto sz = fs::file_size(target, sec);
+            if (!sec) existing = static_cast<int64_t>(sz);
+        }
+        int64_t current = measure_workspace_bytes(tenant_id);
+        int64_t projected = current - existing +
+                            static_cast<int64_t>(content.size());
+        if (projected > cfg_.workspace_max_bytes) {
+            err_out = "workspace quota exceeded (" +
+                      std::to_string(cfg_.workspace_max_bytes) +
+                      " bytes); used " + std::to_string(current) +
+                      ", attempted " + std::to_string(content.size()) +
+                      " (existing " + std::to_string(existing) + ")";
+            return false;
+        }
+    }
+
     std::error_code ec;
     if (target.has_parent_path()) {
         fs::create_directories(target.parent_path(), ec);
@@ -507,7 +644,24 @@ bool SandboxManager::write_to_workspace(int64_t tenant_id,
     }
     f.write(content.data(), static_cast<std::streamsize>(content.size()));
     if (!f.good()) { err_out = "write failed: " + target.string(); return false; }
+    touch_access(tenant_id);
     return true;
+}
+
+int64_t SandboxManager::measure_workspace_bytes(int64_t tenant_id) const {
+    std::string ws = workspace_path_for(tenant_id);
+    std::error_code ec;
+    if (!fs::exists(ws, ec) || !fs::is_directory(ws, ec)) return 0;
+    int64_t total = 0;
+    for (auto& entry : fs::recursive_directory_iterator(ws, ec)) {
+        if (ec) break;
+        std::error_code sec;
+        if (entry.is_regular_file(sec)) {
+            auto sz = fs::file_size(entry.path(), sec);
+            if (!sec) total += static_cast<int64_t>(sz);
+        }
+    }
+    return total;
 }
 
 bool SandboxManager::read_from_workspace(int64_t tenant_id,
@@ -532,6 +686,7 @@ bool SandboxManager::read_from_workspace(int64_t tenant_id,
     ss << f.rdbuf();
     content_out = ss.str();
     mime_out    = mime_for(clean);
+    touch_access(tenant_id);
     return true;
 }
 
@@ -557,6 +712,7 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
         if (rec) continue;
         out << rel.string() << "  " << sz << " bytes\n";
     }
+    touch_access(tenant_id);
     return out.str();
 }
 

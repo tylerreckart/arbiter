@@ -48,6 +48,7 @@
 // architecture the path of least resistance.
 
 #include <atomic>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -58,6 +59,7 @@
 namespace arbiter {
 
 class BillingClient;
+class IdempotencyCache;
 class NotificationBus;
 class Orchestrator;
 class RequestEventBus;
@@ -115,6 +117,8 @@ struct ApiServerOptions {
     double      sandbox_cpus            = 1.0;
     int         sandbox_pids_limit      = 256;
     int         sandbox_exec_timeout_seconds = 30;
+    int64_t     sandbox_workspace_max_bytes = 1ll * 1024 * 1024 * 1024;
+    int         sandbox_idle_seconds        = 1800;
     // Non-owning runtime handle.  Populated by ApiServer's constructor
     // when it builds a usable SandboxManager; null otherwise.  Lives in
     // opts so downstream request handlers and the orchestrator-builder
@@ -122,6 +126,12 @@ struct ApiServerOptions {
     // signature.  Lifetime is bound to the ApiServer's `sandbox_`
     // unique_ptr — do not delete through this pointer.
     SandboxManager* sandbox             = nullptr;
+
+    // Non-owning runtime handle to the server's IdempotencyCache.
+    // Populated by ApiServer's constructor; null when used outside an
+    // ApiServer (e.g. CLI-mode build_blocking_orchestrator).  Same
+    // ownership story as `sandbox` above.
+    IdempotencyCache* idempotency       = nullptr;
 
     // Plaintext admin token for /v1/admin/*.  Empty ⇒ admin endpoints
     // return 503 (disabled).  `cmd_api` loads/generates this before
@@ -237,11 +247,25 @@ private:
     // AND usable() — null otherwise.  When null, /exec falls back to
     // the legacy disabled behaviour (cmd_exec gated by exec_disabled).
     std::unique_ptr<SandboxManager>  sandbox_;
+    // Idempotency-Key dedup cache for the write-creating POST routes.
+    // Always constructed; absence of an Idempotency-Key header on a
+    // request skips it entirely.
+    std::unique_ptr<IdempotencyCache> idempotency_;
 
     int               listen_fd_  = -1;
     int               bound_port_ = 0;
     std::atomic<bool> running_{false};
     std::thread       accept_thread_;
+
+    // In-flight connection drain.  Each connection thread bumps
+    // `active_connections_` on entry and decrements + notifies on exit.
+    // `stop()` waits on `drain_cv_` for the counter to reach zero, up to
+    // a deadline configurable via `ARBITER_DRAIN_SECONDS` (default 30s).
+    // Connections still running past the deadline are abandoned — the
+    // OS tears the sockets down when the process exits.
+    std::atomic<int>        active_connections_{0};
+    std::mutex              drain_mu_;
+    std::condition_variable drain_cv_;
 };
 
 } // namespace arbiter

@@ -275,6 +275,14 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
         if (const char* t = std::getenv("ARBITER_SANDBOX_EXEC_TIMEOUT"); t && *t) {
             try { opts.sandbox_exec_timeout_seconds = std::stoi(t); } catch (...) {}
         }
+        if (const char* q = std::getenv("ARBITER_SANDBOX_WORKSPACE_MAX_BYTES");
+                q && *q) {
+            try { opts.sandbox_workspace_max_bytes = std::stoll(q); } catch (...) {}
+        }
+        if (const char* i = std::getenv("ARBITER_SANDBOX_IDLE_SECONDS");
+                i && *i) {
+            try { opts.sandbox_idle_seconds = std::stoi(i); } catch (...) {}
+        }
     }
 
     ApiServer server(std::move(opts), tenants);

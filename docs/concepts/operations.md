@@ -13,6 +13,7 @@ Everything arbiter persists lives under `~/.arbiter/`:
 | `tenants.db`             | SQLite ledger. WAL mode + `SQLITE_OPEN_FULLMUTEX` (serialised threading), foreign keys enforced. Schema migrates on open. |
 | `agents/*.json`          | Local example agent constitutions (CLI-mode only — the API path doesn't read these). |
 | `memory/t<tenant_id>/*.md` | Legacy per-tenant agent file scratchpads. The agent file scratchpad now also has a DB-backed implementation (see structured memory + artifacts). |
+| `workspaces/t<tenant_id>/` | Per-tenant sandbox workspace (mode 0700). Created on demand when the sandbox is enabled. See [Sandbox](sandbox.md). |
 | `master_model`           | Override for the master agent's model. |
 | `mcp_servers.json`       | Optional MCP server registry (see [MCP servers](mcp.md)). |
 
@@ -84,9 +85,31 @@ location /v1/ {
 
 Per-handler `[memory] tenant=<id> entry.patch.* …` breadcrumbs are emitted along the entry mutation paths so the *last* line printed before a crash localises the failing step.
 
+## SSE heartbeat
+
+Every primary SSE response (`/v1/orchestrate`, `/v1/conversations/:id/messages`, `/v1/agents/:id/chat`, `/v1/requests/:id/events`) emits a `:` SSE comment frame every 30 seconds when the stream is otherwise idle. Comment frames are ignored by spec-compliant clients but keep TCP alive past reverse proxies that drop idle connections (nginx defaults to 60s, Cloudflare to 100s). Long-running LLM calls survive these limits without per-deployment tuning.
+
+The heartbeat is implementation-detail: clients don't subscribe to or rely on it; resumability is handled by `since_seq` on the resubscribe path, not by counting heartbeats.
+
+## Graceful shutdown
+
+On `SIGINT` or `SIGTERM` the server:
+
+1. Stops accepting new connections (closes the listen socket).
+2. Issues `Orchestrator::cancel()` against every in-flight orchestration via the in-flight registry, so streaming LLM calls wake up and the SSE handler can write a final frame.
+3. Waits up to `ARBITER_DRAIN_SECONDS` (default `30`) for in-flight connection threads to finish.
+4. Tears down sandbox containers via `SandboxManager::stop_all()`.
+5. Exits.
+
+Connections still active past the drain deadline are abandoned with a stderr warning — the OS closes their sockets when the process exits. Set `ARBITER_DRAIN_SECONDS=0` to skip the wait entirely (useful for tests and tight CI shutdowns); set it higher than 30 if your longest expected LLM call is over half a minute.
+
 ## File cap
 
 Agent-generated files (via `/write`, ephemeral path) are captured in memory and forwarded as `file` SSE events. A per-response cap (default 10 MiB across all files in the same request) kicks in if an agent tries to flood the stream. Beyond the cap, `/write` attempts return an `ERR:` tool result and the file is dropped. The persistent path (`/write --persist`) has its own quota structure — see [Artifacts](artifacts.md).
+
+## Sandboxed `/exec`
+
+By default the API server keeps `/exec` disabled and surfaces a clean `ERR:` to the agent. To enable shell execution for agents safely, configure the per-tenant Docker sandbox — see [Sandbox](sandbox.md) for setup, env vars, container lifecycle, resource caps, and failure modes. When the sandbox is wired, `/exec`, `/write`, and `/read` all share the tenant's `/workspace` bind mount so agents can build cross-turn workflows that produce and re-read files.
 
 ## Error response codes (cross-cutting)
 
