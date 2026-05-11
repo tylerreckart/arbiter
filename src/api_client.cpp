@@ -1,6 +1,8 @@
 // arbiter/src/api_client.cpp — Multi-provider LLM client.
 // See api_client.h for the routing model.
 #include "api_client.h"
+#include "circuit_breaker.h"
+#include "metrics.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -982,8 +984,25 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     static const int kMaxAttempts = 4;
     const Provider& prov = provider_for(req.model);
 
+    // Circuit breaker: short-circuit before the retry loop when the
+    // provider is currently Open.  Returning a structured "circuit
+    // open" error lets the caller surface a fast-fail in the SSE
+    // `done.error_code` taxonomy instead of burning 4 retries on a
+    // provider we already know is unhealthy.
+    if (breaker_ && !breaker_->allow(prov.name)) {
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "circuit_open";
+        r.error      = "circuit breaker open for provider '" + prov.name + "'";
+        return r;
+    }
+    if (metrics_) metrics_->inc_provider_call(prov.name);
+
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (attempt > 0) usleep((1 << (attempt - 1)) * 1000000);
+        if (attempt > 0) {
+            usleep((1 << (attempt - 1)) * 1000000);
+            if (metrics_) metrics_->inc_provider_retry(prov.name);
+        }
 
         ApiResponse resp;
         bool threw = false;
@@ -1025,7 +1044,9 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
         }
 
         if (threw) {
+            if (metrics_) metrics_->inc_provider_5xx(prov.name);
             if (attempt >= kMaxAttempts - 1) {
+                if (breaker_) breaker_->record_failure(prov.name);
                 ApiResponse r;
                 r.ok    = false;
                 r.error = "Request failed after retries";
@@ -1035,14 +1056,31 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
         }
 
         if (resp.ok) {
+            if (breaker_) breaker_->record_success(prov.name);
             total_in_  += resp.input_tokens;
             total_out_ += resp.output_tokens;
             return resp;
         }
 
-        if (!is_retryable(resp.error_type) || attempt >= kMaxAttempts - 1) return resp;
+        // Metrics taxonomy: 429-shaped errors → 429 counter; everything
+        // else retryable → 5xx counter (both anthropic "overloaded" and
+        // gemini "UNAVAILABLE" map to the upstream-overloaded case).
+        if (metrics_) {
+            if (resp.error_type == "rate_limit_error" ||
+                resp.error_type == "RESOURCE_EXHAUSTED") {
+                metrics_->inc_provider_429(prov.name);
+            } else if (is_retryable(resp.error_type)) {
+                metrics_->inc_provider_5xx(prov.name);
+            }
+        }
+
+        if (!is_retryable(resp.error_type) || attempt >= kMaxAttempts - 1) {
+            if (breaker_) breaker_->record_failure(prov.name);
+            return resp;
+        }
     }
 
+    if (breaker_) breaker_->record_failure(prov.name);
     ApiResponse r;
     r.ok    = false;
     r.error = "Unreachable";
@@ -1343,8 +1381,20 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     static const int kMaxAttempts = 3;
     const Provider& prov = provider_for(req.model);
 
+    if (breaker_ && !breaker_->allow(prov.name)) {
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "circuit_open";
+        r.error      = "circuit breaker open for provider '" + prov.name + "'";
+        return r;
+    }
+    if (metrics_) metrics_->inc_provider_call(prov.name);
+
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (attempt > 0) usleep((1 << (attempt - 1)) * 1000000);
+        if (attempt > 0) {
+            usleep((1 << (attempt - 1)) * 1000000);
+            if (metrics_) metrics_->inc_provider_retry(prov.name);
+        }
 
         ApiResponse resp;
         bool threw = false;
@@ -1379,14 +1429,29 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
         }
 
         if (resp.ok) {
+            if (breaker_) breaker_->record_success(prov.name);
             total_in_  += resp.input_tokens;
             total_out_ += resp.output_tokens;
             return resp;
         }
 
+        if (metrics_) {
+            if (threw) {
+                metrics_->inc_provider_5xx(prov.name);
+            } else if (resp.error_type == "rate_limit_error" ||
+                       resp.error_type == "RESOURCE_EXHAUSTED") {
+                metrics_->inc_provider_429(prov.name);
+            } else if (is_retryable(resp.error_type)) {
+                metrics_->inc_provider_5xx(prov.name);
+            }
+        }
+
         bool can_retry = resp.content.empty() &&
                          (threw || is_retryable(resp.error_type));
-        if (!can_retry || attempt >= kMaxAttempts - 1) return resp;
+        if (!can_retry || attempt >= kMaxAttempts - 1) {
+            if (breaker_) breaker_->record_failure(prov.name);
+            return resp;
+        }
 
         {
             std::lock_guard<std::mutex> lock(conn_mutex_);
@@ -1394,6 +1459,7 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
         }
     }
 
+    if (breaker_) breaker_->record_failure(prov.name);
     ApiResponse r;
     r.ok    = false;
     r.error = "Stream failed after retries";

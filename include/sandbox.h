@@ -35,6 +35,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace arbiter { class Metrics; }
+
 namespace arbiter {
 
 struct SandboxConfig {
@@ -103,6 +105,11 @@ class SandboxManager {
 public:
     explicit SandboxManager(SandboxConfig cfg);
     ~SandboxManager();
+
+    // Attach a Metrics registry for per-container lifecycle counters
+    // (cold-start, reaped, rebuilt, exec total, exec timeout, gauge of
+    // warm containers).  Non-owning pointer; null = no metrics emitted.
+    void set_metrics(Metrics* m) { metrics_ = m; }
 
     SandboxManager(const SandboxManager&)            = delete;
     SandboxManager& operator=(const SandboxManager&) = delete;
@@ -178,6 +185,7 @@ private:
     SandboxConfig                              cfg_;
     bool                                       usable_ = false;
     std::string                                unusable_reason_;
+    Metrics*                                   metrics_ = nullptr;
 
     // Guards `running_` against concurrent ensure_container / stop calls
     // when two requests on the same tenant race a cold-start.

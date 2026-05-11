@@ -158,9 +158,23 @@ A retry that arrives before the original has created its `request_status` row (m
 |--------|------|------|
 | 400    | Body isn't a JSON object; missing `message`; `agent_def` shape invalid (Constitution parse fails); id-resolution conflict; attempt to override `"index"`. | `{"error": "..."}` |
 | 401    | Missing / invalid bearer; tenant disabled. | `{"error": "..."}` |
-| 200 + `done.ok = false` | Errors that arise after the SSE stream opens (LLM upstream failure, cap exceeded, agent missing for non-`index` id with no inline / stored / snapshot fallback, transient I/O). The stream contains an `error` event followed by `done` with `ok: false`. The connection-level catch returns 200 because headers are already on the wire. | SSE stream |
+| 200 + `done.ok = false` | Errors that arise after the SSE stream opens (LLM upstream failure, cap exceeded, agent missing for non-`index` id with no inline / stored / snapshot fallback, transient I/O, provider circuit breaker open). The stream contains an `error` event followed by `done` with `ok: false`. The connection-level catch returns 200 because headers are already on the wire. | SSE stream |
 
 The "after-headers" mode is intentional: by the time the SSE stream is open, returning a non-200 status code would split the response in confusing ways for clients. All recoverable errors come through as `error` SSE events with structured fields; the terminal `done.ok` flag is the canonical success/failure signal.
+
+### Circuit-breaker fast-fail
+
+When the per-provider circuit breaker is open (5 consecutive provider failures within the cooldown window, see [Operations → Circuit breaker](concepts/operations.md#provider-circuit-breaker)), the SSE stream terminates with:
+
+```
+event: error
+data: {"message":"...","reason":"provider_unavailable","error_code":"circuit_open"}
+
+event: done
+data: {"ok":false,"error":"...","error_code":"circuit_open",...}
+```
+
+This is faster than waiting four retries against a known-unhealthy upstream — typically tens of milliseconds rather than 7+ seconds. The breaker auto-recovers on a successful probe after the cooldown; clients can simply retry (with a new Idempotency-Key if they want a fresh attempt rather than a replay).
 
 ### Billing-service denial specifically
 

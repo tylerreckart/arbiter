@@ -85,6 +85,40 @@ location /v1/ {
 
 Per-handler `[memory] tenant=<id> entry.patch.* …` breadcrumbs are emitted along the entry mutation paths so the *last* line printed before a crash localises the failing step.
 
+## Metrics
+
+`GET /v1/metrics` exposes Prometheus-format counters and gauges covering request flow (per tenant + route), provider call health (per provider), sandbox container lifecycle, idempotency cache hits/misses, and rate-limit rejections. The endpoint is unauthenticated by design — restrict it at the reverse proxy if you don't want every client on the metrics network to scrape it.
+
+See the [metrics endpoint reference](../api/metrics.md) for the full metric list and a sample Prometheus scrape config.
+
+## Structured logging
+
+Operational events (startup, recovery sweep, shutdown drain, sandbox enable/disable, sandbox idle reaping) are routed through a single logger that emits either human-readable or JSON lines on stderr. Switch with `ARBITER_LOG_FORMAT`:
+
+| Value    | Output                                                                       |
+|----------|------------------------------------------------------------------------------|
+| `human`  | Default. `[HH:MM:SS] [level] event key=value key=value`.                     |
+| `json`   | One JSON object per line: `{"ts":"...","level":"...","event":"...",...}`.    |
+
+JSON mode is intended for log aggregators (Loki, ELK, Datadog) that index by field rather than parse free-form text. Per-request stderr logs from `--verbose` SSE mirroring keep their existing human format in v1 — only the operational-event stream is structured.
+
+```json
+{"ts":"2026-05-11T14:23:01.412Z","level":"info","event":"sandbox_enabled","image":"arbiter/sandbox:latest","network":"none","memory_mb":"512","cpus":"1.00","pids":"256","timeout_s":"30"}
+{"ts":"2026-05-11T14:23:01.413Z","level":"info","event":"recovery_sweep","orphaned_count":"2","new_state":"failed"}
+{"ts":"2026-05-11T18:42:55.808Z","level":"info","event":"drain_started","in_flight":"4","deadline_s":"30"}
+{"ts":"2026-05-11T18:42:58.221Z","level":"info","event":"drain_complete"}
+```
+
+## Provider circuit breaker
+
+A per-provider circuit breaker sits in front of the per-request retry loop. After **5 consecutive failures** (5xx or 429 past the retry budget) against the same provider, the breaker opens for a **30 s cooldown**. Calls while open return a structured `circuit_open` error from the `done` event's `error_code` field — agents see a fast-fail instead of every parallel request burning four retries against a clearly-unhealthy upstream. When the cooldown elapses, the next call admits as a half-open probe; success closes the breaker, failure reopens it with a fresh cooldown.
+
+State per provider is exposed via the `arbiter_provider_circuit_open_total` counter on `/v1/metrics`. Defaults are tuned conservatively for v1 — operator-tunable thresholds (env vars) are a Phase 5 follow-up.
+
+## Admin audit log
+
+Every mutation through `/v1/admin/*` (create tenant, disable tenant) writes an append-only row to the `admin_audit` table in `tenants.db`. Operators read the log via [`GET /v1/admin/audit`](../api/admin/audit.md). The runtime never edits or deletes audit rows; retention policy is the operator's call.
+
 ## SSE heartbeat
 
 Every primary SSE response (`/v1/orchestrate`, `/v1/conversations/:id/messages`, `/v1/agents/:id/chat`, `/v1/requests/:id/events`) emits a `:` SSE comment frame every 30 seconds when the stream is otherwise idle. Comment frames are ignored by spec-compliant clients but keep TCP alive past reverse proxies that drop idle connections (nginx defaults to 60s, Cloudflare to 100s). Long-running LLM calls survive these limits without per-deployment tuning.

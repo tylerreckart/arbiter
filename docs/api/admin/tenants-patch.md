@@ -28,7 +28,9 @@ curl -X PATCH \
 
 ### 200 OK
 
-The updated `Tenant` object.
+The updated `Tenant` object. Flipping `disabled=true` immediately cancels every in-flight orchestration for the tenant (the kill switch is hot, not advisory).
+
+A successful update appends an `update_tenant` row to the [admin audit log](audit.md) with `before={disabled: <prior>}` and `after={disabled: <new>}` so the change is auditable after the fact.
 
 ## Failure modes
 
@@ -42,3 +44,4 @@ The updated `Tenant` object.
 ## See also
 
 - [`GET /v1/admin/tenants/:id`](tenants-get.md), [`POST /v1/admin/tenants`](tenants-create.md).
+- [`GET /v1/admin/audit`](audit.md) — read back the audit trail.

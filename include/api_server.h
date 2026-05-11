@@ -60,8 +60,10 @@ namespace arbiter {
 
 class BillingClient;
 class IdempotencyCache;
+class Metrics;
 class NotificationBus;
 class Orchestrator;
+class ProviderCircuitBreaker;
 class RequestEventBus;
 class SandboxManager;
 class Scheduler;
@@ -132,6 +134,16 @@ struct ApiServerOptions {
     // ApiServer (e.g. CLI-mode build_blocking_orchestrator).  Same
     // ownership story as `sandbox` above.
     IdempotencyCache* idempotency       = nullptr;
+
+    // Non-owning runtime handle to the server's Metrics registry.
+    // Populated by ApiServer's ctor; null in CLI / one-shot contexts.
+    // Counter increments are no-ops when null so call sites don't
+    // need to guard.
+    Metrics*          metrics           = nullptr;
+
+    // Process-wide provider circuit breaker.  Wired into every
+    // per-request ApiClient.  Null in CLI / one-shot contexts.
+    ProviderCircuitBreaker* circuit_breaker = nullptr;
 
     // Plaintext admin token for /v1/admin/*.  Empty ⇒ admin endpoints
     // return 503 (disabled).  `cmd_api` loads/generates this before
@@ -251,6 +263,13 @@ private:
     // Always constructed; absence of an Idempotency-Key header on a
     // request skips it entirely.
     std::unique_ptr<IdempotencyCache> idempotency_;
+    // In-process Prometheus-style metrics registry.  Always
+    // constructed; rendered at GET /v1/metrics.
+    std::unique_ptr<Metrics>          metrics_;
+    // Process-wide circuit breaker, shared by every per-request
+    // ApiClient.  Always constructed; bound to metrics for
+    // arbiter_provider_circuit_open_total bookkeeping.
+    std::unique_ptr<ProviderCircuitBreaker> circuit_breaker_;
 
     int               listen_fd_  = -1;
     int               bound_port_ = 0;

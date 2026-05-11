@@ -92,6 +92,9 @@ set(ARBITER_SOURCES
     src/api_server.cpp
     src/sandbox.cpp
     src/idempotency_cache.cpp
+    src/metrics.cpp
+    src/circuit_breaker.cpp
+    src/logger.cpp
     src/billing_client.cpp
     src/tenant_limiter.cpp
     src/tenant_store.cpp
@@ -261,6 +264,8 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_api_client
         tests/test_api_client.cpp
         src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
         src/json.cpp
     )
     target_include_directories(unit_api_client PRIVATE
@@ -372,6 +377,40 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_idempotency_cache COMMAND unit_idempotency_cache)
 
+    # --- Unit tests for the Prometheus-style metrics registry ---
+    add_executable(unit_metrics
+        tests/test_metrics.cpp
+        src/metrics.cpp
+    )
+    target_include_directories(unit_metrics PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_metrics COMMAND unit_metrics)
+
+    # --- Unit tests for the provider circuit breaker ---
+    add_executable(unit_circuit_breaker
+        tests/test_circuit_breaker.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+    )
+    target_include_directories(unit_circuit_breaker PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_circuit_breaker COMMAND unit_circuit_breaker)
+
+    # --- Unit tests for the structured logger ---
+    add_executable(unit_logger
+        tests/test_logger.cpp
+        src/logger.cpp
+    )
+    target_include_directories(unit_logger PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_logger COMMAND unit_logger)
+
     # --- Unit tests for the structured-memory store ---
     # Pins the tenant_store CRUD contract that backs both /v1/memory/entries
     # and the agent-side /mem entries|entry|search reader.
@@ -464,6 +503,8 @@ if(INDEX_BUILD_TESTS)
         src/a2a/sse_reader.cpp
         src/constitution.cpp
         src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
         src/json.cpp
     )
     target_include_directories(unit_a2a PRIVATE
@@ -485,6 +526,8 @@ if(INDEX_BUILD_TESTS)
         tests/test_constitution.cpp
         src/constitution.cpp
         src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
         src/json.cpp
     )
     target_include_directories(unit_constitution PRIVATE

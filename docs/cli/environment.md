@@ -22,6 +22,7 @@ Env-var values take precedence over the file values. The file is read once at pr
 | `ARBITER_API_VERBOSE`     | When set to a non-empty, non-`0` value, mirrors every SSE event to stderr. Equivalent to passing `--verbose`. The CLI flag wins if both are present. |
 | `ARBITER_BILLING_URL`     | Base URL of the operator's external billing service. When set, the runtime exchanges every bearer for a workspace via `/v1/runtime/auth/validate`, pre-flights against `/v1/runtime/quota/check`, and posts post-turn telemetry to `/v1/runtime/usage/record`. Unset → no eligibility checks; provider keys go straight through. |
 | `ARBITER_DRAIN_SECONDS`   | Wall-clock grace period on `SIGTERM` / `SIGINT` shutdown. The listen socket closes immediately and every in-flight orchestration is signalled to cancel; the server then waits up to this many seconds for connection threads to finish before tearing down sandbox containers. `0` skips the wait. Default `30`. See [Operations → Graceful shutdown](../concepts/operations.md#graceful-shutdown). |
+| `ARBITER_LOG_FORMAT`      | Output format for operational stderr events (startup, recovery sweep, drain, sandbox lifecycle). `human` (default) renders `[HH:MM:SS] [level] event key=value`. `json` emits one JSON object per line for log aggregators. The per-request SSE-mirror verbose mode keeps its existing human format regardless. See [Operations → Structured logging](../concepts/operations.md#structured-logging). |
 
 ## Per-tenant sandbox
 

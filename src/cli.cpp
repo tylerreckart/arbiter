@@ -4,6 +4,7 @@
 #include "cli_helpers.h"
 #include "api_server.h"
 #include "constitution.h"
+#include "logger.h"
 #include "orchestrator.h"
 #include "starters.h"
 #include "tenant_store.h"
@@ -179,6 +180,11 @@ void cmd_init(bool force) {
 }
 
 void cmd_api(int port, const std::string& bind, bool verbose) {
+    // Pick up ARBITER_LOG_FORMAT before any of the startup-path log
+    // calls fire — structured JSON deployments expect every line on
+    // stderr to be machine-parseable.
+    Logger::global().init_from_env();
+
     // HTTP+SSE orchestration endpoint.  Spins up a fresh Orchestrator per
     // request with /exec disabled and /write intercepted so any file the
     // agent produces is streamed to the client rather than landing on the

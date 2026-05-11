@@ -39,6 +39,8 @@ The `token` field is the plaintext tenant token and is **only** returned here.
 
 Caps, usage tracking, and invoicing are owned by the external billing service when configured — provision the matching workspace there separately.
 
+A successful create appends a `create_tenant` row to the [admin audit log](audit.md). The audit row's `after` field carries `{id, name}` — the token plaintext is deliberately excluded so a future audit reader doesn't surface credentials.
+
 ## Failure modes
 
 | Status | When | Body |

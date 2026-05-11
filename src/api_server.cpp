@@ -22,7 +22,10 @@
 #include "request_event_bus.h"
 #include "schedule_parser.h"
 #include "scheduler.h"
+#include "circuit_breaker.h"
 #include "idempotency_cache.h"
+#include "logger.h"
+#include "metrics.h"
 #include "sandbox.h"
 #include "tenant_limiter.h"
 #include "tenant_store.h"
@@ -268,7 +271,9 @@ void write_json_response(int fd, int code, std::shared_ptr<JsonValue> body) {
 // agent chat, A2A dispatch) is denied.  `reason` distinguishes
 // concurrency exhaustion from rate-bucket exhaustion in the body —
 // callers can branch on it without parsing the human string.
-void write_429_response(int fd, int retry_after_seconds, const char* reason) {
+void write_429_response(int fd, int retry_after_seconds, const char* reason,
+                         Metrics* metrics = nullptr, int64_t tenant_id = 0) {
+    if (metrics) metrics->inc_rate_limited(tenant_id, reason);
     auto body = jobj();
     auto& m = body->as_object_mut();
     m["error"]              = jstr("rate limit exceeded");
@@ -1120,6 +1125,21 @@ void handle_admin(int fd, const HttpRequest& req,
                     admin_error(fd, 500, std::string("create failed: ") + e.what());
                     return;
                 }
+                // Audit log: record the create.  Token plaintext is
+                // deliberately NOT included — we don't want it sitting
+                // in the audit table where a future read endpoint
+                // exposes it.
+                {
+                    auto after = jobj();
+                    auto& am = after->as_object_mut();
+                    am["id"]   = jnum(static_cast<double>(created.tenant.id));
+                    am["name"] = jstr(created.tenant.name);
+                    try {
+                        tenants.append_admin_audit("admin", "create_tenant",
+                            "tenant", std::to_string(created.tenant.id),
+                            /*before=*/"", json_serialize(*after));
+                    } catch (...) { /* audit is best-effort */ }
+                }
                 auto resp = tenant_to_json(created.tenant);
                 // The plaintext token is ONLY returned here — the DB stores
                 // SHA-256 digest, so a misplaced token means rotating it.
@@ -1157,6 +1177,11 @@ void handle_admin(int fd, const HttpRequest& req,
                 // fields have moved to the billing service.
                 if (auto v = body->get("disabled"); v && v->is_bool()) {
                     const bool now_disabled = v->as_bool();
+                    // Capture pre-update state for the audit row.  If
+                    // the tenant doesn't exist we'll bail out before
+                    // writing the audit, so capturing before set_disabled
+                    // is safe.
+                    auto before = tenants.get_tenant(id);
                     tenants.set_disabled(std::to_string(id), now_disabled);
                     // Kill in-flight streams immediately when disabling.
                     // Without this, an authenticated tenant's existing
@@ -1173,6 +1198,18 @@ void handle_admin(int fd, const HttpRequest& req,
                             }
                         }
                     }
+                    // Audit only if the row existed (else the PATCH
+                    // would 404 below and we'd be auditing a no-op).
+                    if (before) {
+                        auto bj = jobj(); auto aj = jobj();
+                        bj->as_object_mut()["disabled"] = jbool(before->disabled);
+                        aj->as_object_mut()["disabled"] = jbool(now_disabled);
+                        try {
+                            tenants.append_admin_audit("admin", "update_tenant",
+                                "tenant", std::to_string(id),
+                                json_serialize(*bj), json_serialize(*aj));
+                        } catch (...) {}
+                    }
                 }
                 auto t = tenants.get_tenant(id);
                 if (!t) { admin_error(fd, 404, "tenant not found"); return; }
@@ -1184,6 +1221,68 @@ void handle_admin(int fd, const HttpRequest& req,
         }
 
         admin_error(fd, 404, "admin route not found");
+        return;
+    }
+
+    // ── /v1/admin/audit ─────────────────────────────────────────────────
+    // Read-only log of admin mutations.  Newest first, paginated with
+    // `?before_id=N` (the smallest id from the previous page).
+    if (resource == "audit" && segs.size() == 3) {
+        if (req.method != "GET") {
+            admin_error(fd, 405, "method not allowed");
+            return;
+        }
+        int64_t before_id = 0;
+        int     limit     = 50;
+        auto qpos = req.path.find('?');
+        if (qpos != std::string::npos) {
+            std::string qs = req.path.substr(qpos + 1);
+            size_t i = 0;
+            while (i < qs.size()) {
+                size_t amp = qs.find('&', i);
+                std::string pair = qs.substr(i, amp - i);
+                auto eq = pair.find('=');
+                if (eq != std::string::npos) {
+                    std::string k = pair.substr(0, eq);
+                    std::string v = pair.substr(eq + 1);
+                    if (k == "before_id") {
+                        try { before_id = std::stoll(v); } catch (...) {}
+                    } else if (k == "limit") {
+                        try { limit = std::stoi(v); } catch (...) {}
+                    }
+                }
+                if (amp == std::string::npos) break;
+                i = amp + 1;
+            }
+        }
+        auto rows = tenants.list_admin_audit(before_id, limit);
+        auto arr = jarr();
+        auto& a  = arr->as_array_mut();
+        for (auto& r : rows) {
+            auto o = jobj();
+            auto& m = o->as_object_mut();
+            m["id"]          = jnum(static_cast<double>(r.id));
+            m["ts"]          = jnum(static_cast<double>(r.ts));
+            m["actor"]       = jstr(r.actor);
+            m["action"]      = jstr(r.action);
+            m["target_kind"] = jstr(r.target_kind);
+            m["target_id"]   = jstr(r.target_id);
+            // Re-parse the JSON payloads so consumers don't have to do
+            // a double-decode; an unparseable payload (shouldn't happen
+            // since we wrote them) is surfaced as a string.
+            auto parse_or_str = [](const std::string& s)
+                    -> std::shared_ptr<JsonValue> {
+                if (s.empty()) return jnull();
+                try { return json_parse(s); }
+                catch (...) { return jstr(s); }
+            };
+            m["before"]      = parse_or_str(r.before_json);
+            m["after"]       = parse_or_str(r.after_json);
+            a.push_back(o);
+        }
+        auto body = jobj();
+        body->as_object_mut()["entries"] = arr;
+        write_json_response(fd, 200, body);
         return;
     }
 
@@ -7223,6 +7322,8 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
     if (auto exec_inv = make_exec_invoker_callback(opts, tenant.id)) {
         orch->set_exec_invoker(std::move(exec_inv));
     }
+    orch->client().set_circuit_breaker(opts.circuit_breaker);
+    orch->client().set_metrics(opts.metrics);
 
     const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
     for (const auto& rec : records) {
@@ -8313,9 +8414,16 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // contract for v1 — clients retrying after a network blip send the
     // same body.
     if (auto replay_id = check_idempotency_replay(opts, req, tenant.id)) {
+        if (opts.metrics) opts.metrics->inc_idempotency_replay();
         handle_request_events(fd, *replay_id, req, tenants, tenant,
                               request_event_bus);
         return;
+    }
+    // No cached hit, but the client still sent an Idempotency-Key —
+    // count it for ops visibility into "how many writes use the
+    // header" versus "how many actually dedup'd."
+    if (opts.metrics && !read_idempotency_key(req).empty()) {
+        opts.metrics->inc_idempotency_miss();
     }
 
     // Parse the JSON body.
@@ -8473,6 +8581,32 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // logs to stderr alongside its SSE error frame.
     const std::string request_id = new_request_id();
     EventLogger logger(opts.log_verbose, request_id, tenant.name);
+
+    // Metrics: classify the route from the entry-point arguments
+    // (handle_orchestrate is the shared backend for three URL paths).
+    const std::string metrics_route =
+        conversation_id > 0 ? "messages" :
+        !agent_override.empty() ? "agent_chat" : "orchestrate";
+    struct RequestMetricScope {
+        Metrics*    m;
+        int64_t     tid;
+        std::string route;
+        std::chrono::steady_clock::time_point start;
+        bool        ok = false;
+        ~RequestMetricScope() {
+            if (!m) return;
+            auto end = std::chrono::steady_clock::now();
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                end - start).count();
+            m->add_request_duration_ms(tid, route, ms);
+            m->inc_request_completed(tid, route, ok);
+            m->dec_in_flight(tid);
+        }
+    } metric_scope{opts.metrics, tenant.id, metrics_route, start_time};
+    if (opts.metrics) {
+        opts.metrics->inc_request_started(tenant.id, metrics_route);
+        opts.metrics->inc_in_flight(tenant.id);
+    }
 
     // Wire durable SSE persistence + live-tail broadcast.  Insert the
     // request_status row first so a reconnecting client can find the
@@ -8700,6 +8834,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     if (auto exec_inv = make_exec_invoker_callback(opts, tenant.id)) {
         orch->set_exec_invoker(std::move(exec_inv));
     }
+    orch->client().set_circuit_breaker(opts.circuit_breaker);
+    orch->client().set_metrics(opts.metrics);
 
     // Real-time read window into structured memory.  Bound to this request's
     // tenant so /mem entries|entry|search inside any agent turn (master or
@@ -9193,6 +9329,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_time).count();
         m["duration_ms"] = jnum(static_cast<double>(elapsed_ms));
+        metric_scope.ok  = resp.ok;
         emit("done", done);
 
         // Flush any pending coalesced text and stamp the run terminal.
@@ -9279,6 +9416,19 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     idempotency_  = std::make_unique<IdempotencyCache>();
     opts_.idempotency = idempotency_.get();
 
+    // Metrics registry; rendered at GET /v1/metrics.
+    metrics_      = std::make_unique<Metrics>();
+    opts_.metrics = metrics_.get();
+
+    // Circuit breaker shared across all per-request ApiClients.
+    // Defaults (5 consecutive failures → open, 30s cooldown) are
+    // tuned to tolerate transient hiccups while catching sustained
+    // provider outages.  Operator-tunable env vars are a Phase 5
+    // follow-up; the defaults serve the v1 target deployments well.
+    circuit_breaker_ = std::make_unique<ProviderCircuitBreaker>();
+    circuit_breaker_->set_metrics(metrics_.get());
+    opts_.circuit_breaker = circuit_breaker_.get();
+
     // Per-tenant /exec sandbox.  When configured but unusable (docker
     // missing, no image, etc.) we log the reason and continue with
     // /exec disabled — the alternative (refusing to start the server)
@@ -9297,24 +9447,27 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         sc.idle_seconds         = opts_.sandbox_idle_seconds;
         auto mgr = std::make_unique<SandboxManager>(std::move(sc));
         if (!mgr->usable()) {
-            std::fprintf(stderr,
-                "[arbiter] sandbox disabled: %s\n",
-                mgr->unusable_reason().c_str());
+            Logger::global().warn("sandbox_disabled",
+                {{"reason", mgr->unusable_reason()}});
         } else {
             sandbox_ = std::move(mgr);
             // Stash the non-owning pointer into opts so downstream
             // request handlers / orchestrator factories pick it up
             // without an extra parameter on every signature.
             opts_.sandbox = sandbox_.get();
-            std::fprintf(stderr,
-                "[arbiter] sandbox enabled: image=%s network=%s "
-                "memory=%dm cpus=%.2f pids=%d timeout=%ds\n",
-                opts_.sandbox_image.c_str(),
-                opts_.sandbox_network.c_str(),
-                opts_.sandbox_memory_mb,
-                opts_.sandbox_cpus,
-                opts_.sandbox_pids_limit,
-                opts_.sandbox_exec_timeout_seconds);
+            sandbox_->set_metrics(metrics_.get());
+            char cpus_buf[16];
+            std::snprintf(cpus_buf, sizeof(cpus_buf), "%.2f",
+                          opts_.sandbox_cpus);
+            Logger::global().info("sandbox_enabled", {
+                {"image",   opts_.sandbox_image},
+                {"network", opts_.sandbox_network},
+                {"memory_mb", std::to_string(opts_.sandbox_memory_mb)},
+                {"cpus",      cpus_buf},
+                {"pids",      std::to_string(opts_.sandbox_pids_limit)},
+                {"timeout_s", std::to_string(
+                    opts_.sandbox_exec_timeout_seconds)},
+            });
         }
     }
 
@@ -9347,14 +9500,14 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
             (void)status; (void)rid;
         }
         if (!orphaned.empty()) {
-            std::fprintf(stderr,
-                "[arbiter] recovery: marked %zu orphaned in-flight request(s) "
-                "as failed\n",
-                orphaned.size());
+            Logger::global().info("recovery_sweep", {
+                {"orphaned_count", std::to_string(orphaned.size())},
+                {"new_state",      "failed"},
+            });
         }
     } catch (const std::exception& e) {
-        std::fprintf(stderr,
-            "[arbiter] recovery sweep failed: %s\n", e.what());
+        Logger::global().error("recovery_sweep_failed",
+            {{"error", e.what()}});
     }
 }
 
@@ -9502,9 +9655,10 @@ void ApiServer::stop() {
 
     const int initial = active_connections_.load(std::memory_order_acquire);
     if (initial > 0) {
-        std::fprintf(stderr,
-            "[arbiter] draining %d in-flight connection(s) "
-            "(up to %ds)\n", initial, drain_seconds);
+        Logger::global().info("drain_started", {
+            {"in_flight",   std::to_string(initial)},
+            {"deadline_s",  std::to_string(drain_seconds)},
+        });
     }
     if (drain_seconds > 0 && initial > 0) {
         std::unique_lock<std::mutex> lk(drain_mu_);
@@ -9514,11 +9668,10 @@ void ApiServer::stop() {
     }
     const int leftover = active_connections_.load(std::memory_order_acquire);
     if (leftover > 0) {
-        std::fprintf(stderr,
-            "[arbiter] drain deadline elapsed with %d connection(s) "
-            "still active; abandoning\n", leftover);
+        Logger::global().warn("drain_timeout",
+            {{"leftover", std::to_string(leftover)}});
     } else if (initial > 0) {
-        std::fprintf(stderr, "[arbiter] drain complete\n");
+        Logger::global().info("drain_complete");
     }
 
     // Sandbox containers outlive a single connection but should go down
@@ -9582,6 +9735,25 @@ void ApiServer::handle_connection(int fd) {
     // same way; the subsequent real request re-validates.
     if (req.method == "OPTIONS") {
         write_preflight_response(fd);
+        return;
+    }
+
+    // Prometheus-style metrics scrape — no auth, intended to live
+    // behind the same reverse proxy that gates the tenant routes.
+    // Operators wanting tighter access should restrict /v1/metrics
+    // at the proxy or via a network policy; arbiter itself doesn't
+    // gate it so the typical "in-cluster Prometheus" setup works
+    // out of the box.
+    if (req.method == "GET" && req.path == "/v1/metrics") {
+        std::string body = metrics_ ? metrics_->render() : std::string{};
+        std::string headers =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
+            "Content-Length: " + std::to_string(body.size()) + "\r\n" +
+            kCorsHeaders +
+            "Connection: close\r\n\r\n";
+        write_all(fd, headers);
+        write_all(fd, body);
         return;
     }
 
@@ -9649,7 +9821,8 @@ void ApiServer::handle_connection(int fd) {
             write_429_response(fd, lim.retry_after_seconds,
                 lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
                     ? "concurrent_request_limit"
-                    : "rate_limit");
+                    : "rate_limit",
+                metrics_.get(), tenant->id);
             return;
         }
         // lim.guard releases the in-flight slot when this scope exits.
@@ -9762,7 +9935,8 @@ void ApiServer::handle_connection(int fd) {
                         write_429_response(fd, lim.retry_after_seconds,
                             lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
                                 ? "concurrent_request_limit"
-                                : "rate_limit");
+                                : "rate_limit",
+                            metrics_.get(), tenant->id);
                         return;
                     }
                     handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
@@ -9903,7 +10077,8 @@ void ApiServer::handle_connection(int fd) {
                     write_429_response(fd, lim.retry_after_seconds,
                         lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
                             ? "concurrent_request_limit"
-                            : "rate_limit");
+                            : "rate_limit",
+                        metrics_.get(), tenant->id);
                     return;
                 }
                 handle_a2a_rpc(fd, agent_id, req, opts_, tenants_,
@@ -9952,7 +10127,8 @@ void ApiServer::handle_connection(int fd) {
                     write_429_response(fd, lim.retry_after_seconds,
                         lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
                             ? "concurrent_request_limit"
-                            : "rate_limit");
+                            : "rate_limit",
+                        metrics_.get(), tenant->id);
                     return;
                 }
                 handle_orchestrate(fd, req, opts_, tenants_, in_flight_,

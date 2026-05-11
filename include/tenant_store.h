@@ -254,6 +254,42 @@ public:
     std::vector<Tenant> list_tenants() const;
     std::optional<Tenant> get_tenant(int64_t id) const;
 
+    // ── Admin audit log ─────────────────────────────────────────────────
+    //
+    // Every mutation issued through /v1/admin/* lands a row here so
+    // operators have a tamper-evident trail of who disabled which
+    // tenant, when, and what the row looked like before and after.
+    // `actor` is presently always "admin" (single shared token);
+    // when token scopes land in Phase 5 it will distinguish the
+    // calling key.  `target_kind` is closed-set ("tenant" for now);
+    // `target_id` is the tenant id as a string for ergonomics.
+    // `before_json` / `after_json` are free-form payloads; for the
+    // tenant kill-switch they hold {"disabled": <bool>} snapshots so
+    // a future audit reader can render diffs without re-querying.
+    struct AdminAuditEntry {
+        int64_t     id           = 0;
+        int64_t     ts           = 0;          // epoch seconds
+        std::string actor;                       // "admin" (Phase 5: token scope id)
+        std::string action;                      // "create_tenant" | "update_tenant" | ...
+        std::string target_kind;                 // "tenant"
+        std::string target_id;
+        std::string before_json;                 // empty for create
+        std::string after_json;                  // empty for delete
+    };
+
+    AdminAuditEntry append_admin_audit(const std::string& actor,
+                                        const std::string& action,
+                                        const std::string& target_kind,
+                                        const std::string& target_id,
+                                        const std::string& before_json,
+                                        const std::string& after_json);
+
+    // Newest ts first.  Hard-capped at 200 per page.  `before_id == 0`
+    // ⇒ from the latest; otherwise paginate backward using the previous
+    // page's smallest id.
+    std::vector<AdminAuditEntry>
+    list_admin_audit(int64_t before_id, int limit) const;
+
     // ── Conversations ─────────────────────────────────────────────────────
     //
     // Conversations are tenant-scoped threads of messages.  Every method

@@ -1,6 +1,7 @@
 // arbiter/src/sandbox.cpp
 
 #include "sandbox.h"
+#include "metrics.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -352,8 +353,14 @@ void SandboxManager::reaper_loop() {
                 "(idle > %ds)\n",
                 static_cast<long long>(tid), cfg_.idle_seconds);
             stop_container(tid);
+            if (metrics_) metrics_->inc_sandbox_container_reaped();
             std::lock_guard<std::mutex> lk(mu_);
             last_access_.erase(tid);
+        }
+        if (metrics_) {
+            std::lock_guard<std::mutex> lk(mu_);
+            metrics_->set_sandbox_containers_running(
+                static_cast<int>(running_.size()));
         }
     }
 }
@@ -504,6 +511,7 @@ bool SandboxManager::ensure_container(int64_t tenant_id, std::string& err_out) {
         std::fprintf(stderr,
             "[sandbox] survivor container '%s' inspect=running but "
             "exec-probe failed; rebuilding\n", name.c_str());
+        if (metrics_) metrics_->inc_sandbox_container_rebuilt();
         std::vector<std::string> rm{cfg_.runtime, "rm", "-f", name};
         std::string ignore; bool to = false;
         run_capture(rm, /*timeout_seconds=*/10, /*output_cap=*/512, ignore, to);
@@ -511,6 +519,11 @@ bool SandboxManager::ensure_container(int64_t tenant_id, std::string& err_out) {
 
     if (!start_container(tenant_id, err_out)) return false;
     running_[tenant_id] = name;
+    if (metrics_) {
+        metrics_->inc_sandbox_container_started();
+        metrics_->set_sandbox_containers_running(
+            static_cast<int>(running_.size()));
+    }
     return true;
 }
 
@@ -553,6 +566,10 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
                           r.output, timed_out);
     r.timed_out  = timed_out;
     r.exit_status = rc;
+    if (metrics_) {
+        metrics_->inc_sandbox_exec();
+        if (timed_out) metrics_->inc_sandbox_exec_timeout();
+    }
 
     // Self-heal: if the docker exec drove a Docker-level failure (the
     // container was killed mid-command, or the daemon lost track of
