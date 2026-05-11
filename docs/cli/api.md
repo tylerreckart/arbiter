@@ -22,8 +22,9 @@ arbiter --api [--port N] [--bind ADDR] [--verbose]
 6. Loads the optional A2A remote-agent registry from `~/.arbiter/a2a_agents.json`. See [a2a-agents.md](a2a-agents.md).
 7. Reads optional web-search provider config from `ARBITER_SEARCH_PROVIDER` / `ARBITER_SEARCH_API_KEY` (or `BRAVE_SEARCH_API_KEY` as a convenience fallback).
 8. Reads optional billing-service URL from `ARBITER_BILLING_URL`. Unset = no eligibility checks, no usage record posting; provider keys go through directly with no caps.
-9. Clears the terminal (ANSI `\033[2J\033[3J\033[H`) and prints the banner + endpoint summary at row 1, so the bind address and admin-token lines anchor at the top of a clean screen instead of chasing prior shell history.
-10. Binds the listen socket and starts accepting requests.
+9. Reads optional sandbox config from `ARBITER_SANDBOX_IMAGE` (and the rest of the `ARBITER_SANDBOX_*` set). When configured and usable, a per-tenant Docker sandbox is built so `/exec` runs inside a `/workspace` volume shared with `/write` and `/read`. See [`docs/concepts/sandbox.md`](../concepts/sandbox.md). When the sandbox isn't wired or fails its usability check, `/exec` stays disabled — the historic SaaS default.
+10. Clears the terminal (ANSI `\033[2J\033[3J\033[H`) and prints the banner + endpoint summary at row 1, so the bind address and admin-token lines anchor at the top of a clean screen instead of chasing prior shell history.
+11. Binds the listen socket and starts accepting requests.
 
 `SIGINT` / `SIGTERM` triggers graceful shutdown — in-flight SSE streams close cleanly, the listen socket closes, the process exits.
 

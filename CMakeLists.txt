@@ -90,6 +90,7 @@ set(ARBITER_SOURCES
     src/orchestrator.cpp
     src/advisor_gate.cpp
     src/api_server.cpp
+    src/sandbox.cpp
     src/billing_client.cpp
     src/tenant_limiter.cpp
     src/tenant_store.cpp

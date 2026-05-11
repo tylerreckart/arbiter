@@ -1615,6 +1615,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    SchedulerInvoker scheduler_invoker,
                                    TodoInvoker      todo_invoker,
                                    LessonInvoker    lesson_invoker,
+                                   ExecInvoker      exec_invoker,
                                    const std::vector<std::string>& capabilities,
                                    std::vector<ContentPart>* out_image_parts) {
     std::ostringstream out;
@@ -2431,7 +2432,10 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
 
         } else if (cmd.name == "exec") {
             block << "[/exec " << cmd.args << "]\n";
-            if (exec_disabled) {
+            // A wired exec_invoker (sandbox) overrides exec_disabled —
+            // the API server uses the disabled flag to mean "no host
+            // shell" but a per-tenant container is a different surface.
+            if (!exec_invoker && exec_disabled) {
                 // API / sandboxed contexts run with exec turned off so
                 // agents can't invoke arbitrary shell commands.  Tell the
                 // calling agent explicitly so it adapts its plan instead
@@ -2446,6 +2450,12 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                        !confirm("exec '" + cmd.args + "'?")) {
                 block << "ERR: user declined\n";
                 cache_result = false;  // user may want to approve a retry
+            } else if (exec_invoker) {
+                std::string output = exec_invoker(cmd.args);
+                block << output;
+                if (output.empty() || output.back() != '\n') block << "\n";
+                if (output.size() >= 4 && output.compare(0, 4, "ERR:") == 0)
+                    cache_result = false;
             } else {
                 block << cmd_exec(cmd.args, /*confirmed=*/true) << "\n";
             }

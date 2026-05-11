@@ -22,6 +22,7 @@
 #include "request_event_bus.h"
 #include "schedule_parser.h"
 #include "scheduler.h"
+#include "sandbox.h"
 #include "tenant_limiter.h"
 #include "tenant_store.h"
 #include "tui/stream_filter.h"
@@ -5710,6 +5711,22 @@ MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
     };
 }
 
+// Returns nullptr when no SandboxManager is wired into opts.  The
+// dispatcher then falls back to its existing exec_disabled gate, so
+// /exec returns the same clean ERR the SaaS path used before sandbox
+// support landed.  When wired, the closure binds the manager + the
+// request's tenant_id so concurrent requests for two tenants land in
+// two distinct per-tenant containers.
+ExecInvoker make_exec_invoker_callback(const ApiServerOptions& opts,
+                                        int64_t tenant_id) {
+    SandboxManager* mgr = opts.sandbox;
+    if (!mgr) return nullptr;
+    return [mgr, tenant_id](const std::string& cmd) -> std::string {
+        SandboxExecResult r = mgr->exec(tenant_id, cmd);
+        return r.output;
+    };
+}
+
 // Returns nullptr when the configured provider isn't supported or no
 // API key is set — the dispatcher then surfaces its own "search
 // unavailable" ERR with a more useful message than this layer can
@@ -7144,6 +7161,9 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
                               std::to_string(tenant.id));
     }
     orch->set_exec_disabled(opts.exec_disabled);
+    if (auto exec_inv = make_exec_invoker_callback(opts, tenant.id)) {
+        orch->set_exec_invoker(std::move(exec_inv));
+    }
 
     const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
     for (const auto& rec : records) {
@@ -8504,16 +8524,21 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         m["depth"]     = jnum(static_cast<double>(orch_ptr->current_stream_depth()));
     };
 
-    // File-write interceptor — captures content to the SSE stream instead
-    // of persisting to the server's filesystem.  Enforces the per-response
-    // size cap; once exceeded, further writes are rejected with an ERR
-    // that tells the agent to stop trying (dedup cache ensures it won't
-    // retry the identical /write).
+    // File-write interceptor — captures content to the SSE stream so the
+    // client sees every generated file regardless of where the bytes
+    // also live.  When the sandbox is wired, the same bytes also land
+    // in the tenant's workspace volume so a subsequent /exec inside the
+    // container can read what /write just produced.  Per-response size
+    // cap stops a runaway agent from OOMing the SSE buffer; once
+    // exceeded, further writes are rejected with an ERR.
     std::atomic<size_t> bytes_captured{0};
     const size_t cap = opts.file_max_bytes;
+    SandboxManager* sandbox_mgr = opts.sandbox;
+    const int64_t sandbox_tid   = tenant.id;
     auto write_interceptor =
-        [&emit, &bytes_captured, cap, stamp](const std::string& path,
-                                       const std::string& content) -> std::string {
+        [&emit, &bytes_captured, cap, stamp,
+         sandbox_mgr, sandbox_tid](const std::string& path,
+                                    const std::string& content) -> std::string {
         size_t size = content.size();
         size_t prev = bytes_captured.load();
         if (prev + size > cap) {
@@ -8532,11 +8557,25 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         stamp(p);
         emit("file", p);
 
-        return "OK: captured " + std::to_string(size) +
-               " bytes for '" + path + "' (streamed to client, not persisted)";
+        std::string note = "OK: captured " + std::to_string(size) +
+            " bytes for '" + path + "' (streamed to client";
+        if (sandbox_mgr) {
+            std::string werr;
+            if (sandbox_mgr->write_to_workspace(sandbox_tid, path, content, werr)) {
+                note += "; also saved to /workspace/" + path + " in sandbox)";
+            } else {
+                note += "; sandbox write failed: " + werr + ")";
+            }
+        } else {
+            note += ", not persisted)";
+        }
+        return note;
     };
     orch->set_write_interceptor(write_interceptor);
     orch->set_exec_disabled(opts.exec_disabled);
+    if (auto exec_inv = make_exec_invoker_callback(opts, tenant.id)) {
+        orch->set_exec_invoker(std::move(exec_inv));
+    }
 
     // Real-time read window into structured memory.  Bound to this request's
     // tenant so /mem entries|entry|search inside any agent turn (master or
@@ -8635,10 +8674,81 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     if (conversation_id > 0) {
         orch->set_artifact_writer(
             make_artifact_writer_callback(tenant.id, conversation_id, &tenants));
+        ArtifactReader base_reader =
+            make_artifact_reader_callback(tenant.id, conversation_id, &tenants);
+        ArtifactLister base_lister =
+            make_artifact_lister_callback(tenant.id, conversation_id, &tenants);
+        // Sandbox fallback for path-form /read and /list: when the
+        // artifact store doesn't have a hit (or the conversation has
+        // no artifacts) but the tenant's workspace does, serve the
+        // bytes from there.  Artifact-id reads bypass the fallback
+        // because the workspace has no concept of an artifact id; it's
+        // purely path-keyed.
+        if (sandbox_mgr) {
+            const int64_t stid = tenant.id;
+            orch->set_artifact_reader(
+                [base_reader, sandbox_mgr, stid](
+                    const std::string& path, int64_t aid,
+                    int64_t via) -> ArtifactReadResult {
+                    ArtifactReadResult r = base_reader(path, aid, via);
+                    const bool is_err = r.body.size() >= 4 &&
+                                        r.body.compare(0, 4, "ERR:") == 0;
+                    if (!is_err || aid != 0 || path.empty()) return r;
+                    std::string content, mime, werr;
+                    if (sandbox_mgr->read_from_workspace(stid, path,
+                            content, mime, werr)) {
+                        ArtifactReadResult w;
+                        w.body       = std::move(content);
+                        w.media_type = std::move(mime);
+                        return w;
+                    }
+                    return r;
+                });
+            orch->set_artifact_lister(
+                [base_lister, sandbox_mgr, stid]() -> std::string {
+                    std::string out = base_lister();
+                    std::string ws  = sandbox_mgr->list_workspace(stid);
+                    if (ws.empty()) return out;
+                    if (!out.empty() && out.back() != '\n') out += '\n';
+                    out += "\n[sandbox workspace]\n";
+                    out += ws;
+                    return out;
+                });
+        } else {
+            orch->set_artifact_reader(std::move(base_reader));
+            orch->set_artifact_lister(std::move(base_lister));
+        }
+    } else if (sandbox_mgr) {
+        // Raw /v1/orchestrate (no conversation_id) but sandbox is wired:
+        // /read and /list still work against the workspace.  /write
+        // --persist remains a no-op (no artifact store w/o a thread).
+        const int64_t stid = tenant.id;
         orch->set_artifact_reader(
-            make_artifact_reader_callback(tenant.id, conversation_id, &tenants));
+            [sandbox_mgr, stid](const std::string& path, int64_t aid,
+                                int64_t /*via*/) -> ArtifactReadResult {
+                ArtifactReadResult r;
+                if (aid != 0) {
+                    r.body = "ERR: /read #<id> requires a conversation; this "
+                             "request has none.  Use /read <path> against "
+                             "the sandbox workspace instead.";
+                    return r;
+                }
+                std::string content, mime, werr;
+                if (!sandbox_mgr->read_from_workspace(stid, path,
+                        content, mime, werr)) {
+                    r.body = "ERR: " + werr;
+                    return r;
+                }
+                r.body       = std::move(content);
+                r.media_type = std::move(mime);
+                return r;
+            });
         orch->set_artifact_lister(
-            make_artifact_lister_callback(tenant.id, conversation_id, &tenants));
+            [sandbox_mgr, stid]() -> std::string {
+                std::string ws = sandbox_mgr->list_workspace(stid);
+                if (ws.empty()) return std::string{};
+                return "[sandbox workspace]\n" + ws;
+            });
     }
 
     // ── Fleet lifecycle ────────────────────────────────────────────────
@@ -9040,6 +9150,43 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     // grants every acquire without taking the lock.
     limiter_ = std::make_unique<TenantLimiter>(load_tenant_limits_from_env());
 
+    // Per-tenant /exec sandbox.  When configured but unusable (docker
+    // missing, no image, etc.) we log the reason and continue with
+    // /exec disabled — the alternative (refusing to start the server)
+    // is too sharp a knife for an opt-in feature.
+    if (opts_.sandbox_enabled) {
+        SandboxConfig sc;
+        sc.runtime              = opts_.sandbox_runtime;
+        sc.image                = opts_.sandbox_image;
+        sc.workspaces_root      = opts_.sandbox_workspaces_root;
+        sc.network              = opts_.sandbox_network;
+        sc.memory_mb            = opts_.sandbox_memory_mb;
+        sc.cpus                 = opts_.sandbox_cpus;
+        sc.pids_limit           = opts_.sandbox_pids_limit;
+        sc.exec_timeout_seconds = opts_.sandbox_exec_timeout_seconds;
+        auto mgr = std::make_unique<SandboxManager>(std::move(sc));
+        if (!mgr->usable()) {
+            std::fprintf(stderr,
+                "[arbiter] sandbox disabled: %s\n",
+                mgr->unusable_reason().c_str());
+        } else {
+            sandbox_ = std::move(mgr);
+            // Stash the non-owning pointer into opts so downstream
+            // request handlers / orchestrator factories pick it up
+            // without an extra parameter on every signature.
+            opts_.sandbox = sandbox_.get();
+            std::fprintf(stderr,
+                "[arbiter] sandbox enabled: image=%s network=%s "
+                "memory=%dm cpus=%.2f pids=%d timeout=%ds\n",
+                opts_.sandbox_image.c_str(),
+                opts_.sandbox_network.c_str(),
+                opts_.sandbox_memory_mb,
+                opts_.sandbox_cpus,
+                opts_.sandbox_pids_limit,
+                opts_.sandbox_exec_timeout_seconds);
+        }
+    }
+
     // Recovery sweep: any request_status row left in 'running' from a
     // previous process must have been interrupted by a crash or kill.
     // Mark them failed and append a synthetic terminal event so a
@@ -9200,6 +9347,10 @@ void ApiServer::stop() {
         listen_fd_ = -1;
     }
     if (accept_thread_.joinable()) accept_thread_.join();
+    // Sandbox containers outlive a single connection but should go down
+    // with the server.  Workspace bytes remain on disk — only the
+    // containers are torn down.
+    if (sandbox_) sandbox_->stop_all();
     // In-flight connection threads are detached; they'll terminate when
     // their TCP read fails post-shutdown or their response completes.
 }

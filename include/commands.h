@@ -59,6 +59,21 @@ std::string base64_encode(const std::string& bytes);
 // Destructive commands are blocked unless confirmed=true (gate already passed).
 std::string cmd_exec(const std::string& command, bool confirmed = false);
 
+// Sandbox bridge for /exec.  When wired, the dispatcher routes /exec
+// through this callback instead of the host's popen path — the API
+// server binds it to a per-tenant container that confines the command
+// to a workspace volume.  Returns the same combined-stdout+stderr body
+// cmd_exec would (with the "[exit N]" suffix on non-zero exits, the
+// "[truncated at X KB]" trailer when capped, and a similar "[timed out
+// after Ns]" framing when the sandbox killed the run), or an "ERR: ..."
+// string when the sandbox couldn't run the command at all (container
+// failed to start, runtime missing, etc.).
+//
+// CLI/REPL contexts leave this null and /exec falls back to cmd_exec.
+// When set, the invoker overrides `exec_disabled` — the dispatcher
+// considers a wired sandbox sufficient to permit /exec.
+using ExecInvoker = std::function<std::string(const std::string& command)>;
+
 // Write content to a file at path (creates parent directories).
 // Returns "OK: wrote N bytes to <path>" or "ERR: ...".
 std::string cmd_write(const std::string& path, const std::string& content);
@@ -414,6 +429,14 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    SchedulerInvoker scheduler_invoker = nullptr,
                                    TodoInvoker      todo_invoker      = nullptr,
                                    LessonInvoker    lesson_invoker    = nullptr,
+                                   // Sandbox /exec bridge.  When set,
+                                   // /exec routes through this callback
+                                   // (overriding exec_disabled — a wired
+                                   // sandbox is sufficient to permit the
+                                   // writ).  Without it /exec uses the
+                                   // host cmd_exec path (gated by
+                                   // exec_disabled).
+                                   ExecInvoker      exec_invoker      = nullptr,
                                    // Capability allowlist matching the
                                    // calling agent's constitution.  Empty
                                    // = "all bundles" (preserves legacy

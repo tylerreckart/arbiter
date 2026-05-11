@@ -61,6 +61,7 @@ class BillingClient;
 class NotificationBus;
 class Orchestrator;
 class RequestEventBus;
+class SandboxManager;
 class Scheduler;
 class TenantLimiter;
 class TenantStore;
@@ -97,6 +98,30 @@ struct ApiServerOptions {
     std::map<std::string, std::string> api_keys;   // provider name → key
     bool        exec_disabled     = true;     // /exec policy
     size_t      file_max_bytes    = 10 * 1024 * 1024;   // per-response cap
+
+    // ── Per-tenant sandbox ───────────────────────────────────────────
+    // When `sandbox_enabled` is true and the runtime + image are
+    // available, /v1/orchestrate wires a per-tenant container that
+    // confines /exec to a workspace volume and lets /write + /read
+    // share that workspace.  When the SandboxManager fails its
+    // usability check at startup the server logs a warning and
+    // continues with /exec disabled (graceful degradation).
+    bool        sandbox_enabled         = false;
+    std::string sandbox_runtime         = "docker";   // v1: docker only
+    std::string sandbox_image;                          // required when enabled
+    std::string sandbox_workspaces_root;                // host path
+    std::string sandbox_network         = "none";
+    int         sandbox_memory_mb       = 512;
+    double      sandbox_cpus            = 1.0;
+    int         sandbox_pids_limit      = 256;
+    int         sandbox_exec_timeout_seconds = 30;
+    // Non-owning runtime handle.  Populated by ApiServer's constructor
+    // when it builds a usable SandboxManager; null otherwise.  Lives in
+    // opts so downstream request handlers and the orchestrator-builder
+    // factories can wire ExecInvoker without an extra parameter on every
+    // signature.  Lifetime is bound to the ApiServer's `sandbox_`
+    // unique_ptr — do not delete through this pointer.
+    SandboxManager* sandbox             = nullptr;
 
     // Plaintext admin token for /v1/admin/*.  Empty ⇒ admin endpoints
     // return 503 (disabled).  `cmd_api` loads/generates this before
@@ -208,6 +233,10 @@ private:
     // come from env at startup); a zeroed config means "unlimited" so
     // operators not using this surface pay no cost.
     std::unique_ptr<TenantLimiter>   limiter_;
+    // Per-tenant /exec sandbox.  Constructed iff opts.sandbox_enabled
+    // AND usable() — null otherwise.  When null, /exec falls back to
+    // the legacy disabled behaviour (cmd_exec gated by exec_disabled).
+    std::unique_ptr<SandboxManager>  sandbox_;
 
     int               listen_fd_  = -1;
     int               bound_port_ = 0;

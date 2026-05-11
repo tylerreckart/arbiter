@@ -247,6 +247,36 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
         opts.billing_url = q;
     }
 
+    // ── Per-tenant sandbox ───────────────────────────────────────────
+    // Off by default.  Setting ARBITER_SANDBOX_IMAGE flips the feature
+    // on; remaining knobs override SandboxConfig defaults.  ApiServer's
+    // ctor logs the chosen config on success or the failure reason on
+    // graceful degradation, so operators see immediately whether /exec
+    // is wired.  When the sandbox is unusable at runtime (docker
+    // missing, image pull failed) the server keeps running with /exec
+    // disabled — same surface SaaS deploys have always had.
+    if (const char* img = std::getenv("ARBITER_SANDBOX_IMAGE"); img && *img) {
+        opts.sandbox_enabled         = true;
+        opts.sandbox_image           = img;
+        opts.sandbox_workspaces_root = dir + "/workspaces";
+        if (const char* r = std::getenv("ARBITER_SANDBOX_RUNTIME"); r && *r)
+            opts.sandbox_runtime = r;
+        if (const char* n = std::getenv("ARBITER_SANDBOX_NETWORK"); n && *n)
+            opts.sandbox_network = n;
+        if (const char* m = std::getenv("ARBITER_SANDBOX_MEMORY_MB"); m && *m) {
+            try { opts.sandbox_memory_mb = std::stoi(m); } catch (...) {}
+        }
+        if (const char* c = std::getenv("ARBITER_SANDBOX_CPUS"); c && *c) {
+            try { opts.sandbox_cpus = std::stod(c); } catch (...) {}
+        }
+        if (const char* p = std::getenv("ARBITER_SANDBOX_PIDS_LIMIT"); p && *p) {
+            try { opts.sandbox_pids_limit = std::stoi(p); } catch (...) {}
+        }
+        if (const char* t = std::getenv("ARBITER_SANDBOX_EXEC_TIMEOUT"); t && *t) {
+            try { opts.sandbox_exec_timeout_seconds = std::stoi(t); } catch (...) {}
+        }
+    }
+
     ApiServer server(std::move(opts), tenants);
 
     std::signal(SIGINT,  signal_handler);

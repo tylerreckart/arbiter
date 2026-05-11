@@ -168,6 +168,13 @@ public:
     // commands on the server.
     void set_exec_disabled(bool v) { exec_disabled_ = v; }
 
+    // Bind /exec to a per-tenant sandbox (e.g. SandboxManager-backed
+    // container).  When set, the dispatcher routes /exec through this
+    // callback instead of the host's cmd_exec and the exec_disabled flag
+    // is bypassed (a wired sandbox is sufficient to permit the writ).
+    // Without it, /exec falls back to the host path gated by exec_disabled.
+    void set_exec_invoker(ExecInvoker cb) { exec_invoker_cb_ = std::move(cb); }
+
     // ── Fleet-streaming callbacks ──────────────────────────────────────────
     //
     // An agent "turn" is one invocation of Agent::chat/stream; the master
@@ -394,6 +401,7 @@ private:
     ArtifactWriter     artifact_writer_cb_;
     ArtifactReader     artifact_reader_cb_;
     ArtifactLister     artifact_lister_cb_;
+    ExecInvoker        exec_invoker_cb_;
     bool               exec_disabled_ = false;
 
     StreamStartCallback stream_start_cb_;

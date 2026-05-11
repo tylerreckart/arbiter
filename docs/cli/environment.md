@@ -22,6 +22,22 @@ Env-var values take precedence over the file values. The file is read once at pr
 | `ARBITER_API_VERBOSE`     | When set to a non-empty, non-`0` value, mirrors every SSE event to stderr. Equivalent to passing `--verbose`. The CLI flag wins if both are present. |
 | `ARBITER_BILLING_URL`     | Base URL of the operator's external billing service. When set, the runtime exchanges every bearer for a workspace via `/v1/runtime/auth/validate`, pre-flights against `/v1/runtime/quota/check`, and posts post-turn telemetry to `/v1/runtime/usage/record`. Unset → no eligibility checks; provider keys go straight through. |
 
+## Per-tenant sandbox
+
+Arbiter's `/exec` writ is disabled by default in the API. Setting `ARBITER_SANDBOX_IMAGE` enables a per-tenant Docker sandbox that confines `/exec` to a workspace volume shared with `/write` and `/read`. The full walkthrough is in [`docs/concepts/sandbox.md`](../concepts/sandbox.md); the env-var surface:
+
+| Variable                          | Purpose                                                                                  | Default     |
+|-----------------------------------|------------------------------------------------------------------------------------------|-------------|
+| `ARBITER_SANDBOX_IMAGE`           | Container image to run inside. Required — without this the sandbox stays off and `/exec` returns `ERR`. | unset |
+| `ARBITER_SANDBOX_RUNTIME`         | Runtime binary. v1 supports `docker` only.                                                | `docker`    |
+| `ARBITER_SANDBOX_NETWORK`         | Docker `--network` value. `none` keeps `/exec` offline; `bridge` lets it reach the internet. | `none`  |
+| `ARBITER_SANDBOX_MEMORY_MB`       | Hard memory cap per container, MB. `0` = no cap.                                          | `512`       |
+| `ARBITER_SANDBOX_CPUS`            | CPU shares per container. `0` = no cap.                                                   | `1.0`       |
+| `ARBITER_SANDBOX_PIDS_LIMIT`      | Max processes per container. `0` = no cap.                                                | `256`       |
+| `ARBITER_SANDBOX_EXEC_TIMEOUT`    | Wall-clock kill, seconds, per `/exec` call. `0` = no parent-side timeout.                 | `30`        |
+
+A misconfigured sandbox (docker missing, image string empty, workspaces root unwritable) logs the reason at startup and keeps the server running with `/exec` disabled — same surface SaaS deploys have always had. Tenant workspaces land at `~/.arbiter/workspaces/t<tenant_id>/`.
+
 ## Web search
 
 Arbiter agents can emit `/search <query>`. To make that route somewhere, configure a provider:
@@ -58,6 +74,7 @@ Distinct from env vars but listed here for completeness, since the env-vs-file p
 | `agents/*.json`            | Agent constitutions.                                                 |
 | `sessions/*.json`          | Per-cwd interactive session snapshots.                               |
 | `memory/<agent>/notes.md`  | Per-agent persistent scratchpad (`/mem write`).                      |
+| `workspaces/t<id>/…`       | Per-tenant sandbox workspace (mode 0700). Created on demand when the sandbox is enabled. See [`docs/concepts/sandbox.md`](../concepts/sandbox.md). |
 | `mcp_servers.json`         | Optional MCP server registry. See [`docs/concepts/mcp.md`](../concepts/mcp.md). |
 | `history`                  | Merged TUI editor history across panes.                              |
 
