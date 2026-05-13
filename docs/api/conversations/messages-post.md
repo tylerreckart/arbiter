@@ -25,6 +25,10 @@ curl -N \
   http://arbiter.example.com/v1/conversations/1/messages
 ```
 
+### Headers
+
+`Idempotency-Key` is honoured here on the same terms as on [`POST /v1/orchestrate`](../orchestrate.md#idempotency) — retries replay the original execution instead of triggering a duplicate, the assistant turn isn't persisted twice, and the dedup is in-memory with a 24h TTL.
+
 ## What happens server-side
 
 1. Conversation lookup — `404` if missing or wrong tenant. Validation surfaces as a clean JSON error before the SSE stream opens.

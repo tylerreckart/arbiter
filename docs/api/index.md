@@ -32,6 +32,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 
 ### Top-level
 - [`GET /v1/health`](health.md)
+- [`GET /v1/metrics`](metrics.md)
 - [`GET /v1/models`](models.md)
 - [`POST /v1/orchestrate`](orchestrate.md)
 - [`POST /v1/requests/:id/cancel`](requests-cancel.md)
@@ -118,6 +119,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`POST /v1/admin/tenants`](admin/tenants-create.md)
 - [`GET /v1/admin/tenants/:id`](admin/tenants-get.md)
 - [`PATCH /v1/admin/tenants/:id`](admin/tenants-patch.md)
+- [`GET /v1/admin/audit`](admin/audit.md)
 
 Usage ledger, rate cards, caps, and invoices live in the operator's billing service, not here.
 

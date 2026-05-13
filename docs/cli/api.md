@@ -22,15 +22,16 @@ arbiter --api [--port N] [--bind ADDR] [--verbose]
 6. Loads the optional A2A remote-agent registry from `~/.arbiter/a2a_agents.json`. See [a2a-agents.md](a2a-agents.md).
 7. Reads optional web-search provider config from `ARBITER_SEARCH_PROVIDER` / `ARBITER_SEARCH_API_KEY` (or `BRAVE_SEARCH_API_KEY` as a convenience fallback).
 8. Reads optional billing-service URL from `ARBITER_BILLING_URL`. Unset = no eligibility checks, no usage record posting; provider keys go through directly with no caps.
-9. Clears the terminal (ANSI `\033[2J\033[3J\033[H`) and prints the banner + endpoint summary at row 1, so the bind address and admin-token lines anchor at the top of a clean screen instead of chasing prior shell history.
-10. Binds the listen socket and starts accepting requests.
+9. Reads optional sandbox config from `ARBITER_SANDBOX_IMAGE` (and the rest of the `ARBITER_SANDBOX_*` set). When configured and usable, a per-tenant Docker sandbox is built so `/exec` runs inside a `/workspace` volume shared with `/write` and `/read`. See [`docs/concepts/sandbox.md`](../concepts/sandbox.md). When the sandbox isn't wired or fails its usability check, `/exec` stays disabled — the historic SaaS default.
+10. Clears the terminal (ANSI `\033[2J\033[3J\033[H`) and prints the banner + endpoint summary at row 1, so the bind address and admin-token lines anchor at the top of a clean screen instead of chasing prior shell history.
+11. Binds the listen socket and starts accepting requests.
 
-`SIGINT` / `SIGTERM` triggers graceful shutdown — in-flight SSE streams close cleanly, the listen socket closes, the process exits.
+`SIGINT` / `SIGTERM` triggers graceful shutdown: the listen socket closes, every in-flight orchestration receives a cancel signal, and the server waits up to `ARBITER_DRAIN_SECONDS` (default `30`) for connection threads to finish before tearing down sandbox containers and exiting. Connections still active past the deadline are abandoned with a stderr warning. See [Operations → Graceful shutdown](../concepts/operations.md#graceful-shutdown).
 
 ## What it doesn't do
 
 - **TLS termination.** The server speaks plain HTTP. Production deployments should put TLS termination, DDoS protection, and rate limiting in a reverse proxy (nginx, caddy, cloudflare) in front of the process.
-- **Sandboxing.** When configured for SaaS use the API server disables `/exec` (no shell execution from agents) and intercepts `/write` so file output streams to the client instead of landing on the server's disk. This is a reasonable default but is not a substitute for OS-level isolation — run the process in a container or a dedicated user account.
+- **Sandboxing.** By default the API server disables `/exec` (no shell execution from agents) and intercepts `/write` so file output streams to the client without landing on the server's disk. To enable `/exec` safely, configure the per-tenant Docker sandbox — see [`docs/concepts/sandbox.md`](../concepts/sandbox.md). Even with the sandbox on, the arbiter daemon itself is not isolated; run the process in a container or a dedicated user account in production.
 - **Process supervision.** The binary doesn't daemonise itself. Run it under systemd / launchd / docker / pm2 — whichever your platform uses.
 
 ## Endpoint reference

@@ -48,6 +48,7 @@
 // architecture the path of least resistance.
 
 #include <atomic>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -58,9 +59,13 @@
 namespace arbiter {
 
 class BillingClient;
+class IdempotencyCache;
+class Metrics;
 class NotificationBus;
 class Orchestrator;
+class ProviderCircuitBreaker;
 class RequestEventBus;
+class SandboxManager;
 class Scheduler;
 class TenantLimiter;
 class TenantStore;
@@ -97,6 +102,48 @@ struct ApiServerOptions {
     std::map<std::string, std::string> api_keys;   // provider name → key
     bool        exec_disabled     = true;     // /exec policy
     size_t      file_max_bytes    = 10 * 1024 * 1024;   // per-response cap
+
+    // ── Per-tenant sandbox ───────────────────────────────────────────
+    // When `sandbox_enabled` is true and the runtime + image are
+    // available, /v1/orchestrate wires a per-tenant container that
+    // confines /exec to a workspace volume and lets /write + /read
+    // share that workspace.  When the SandboxManager fails its
+    // usability check at startup the server logs a warning and
+    // continues with /exec disabled (graceful degradation).
+    bool        sandbox_enabled         = false;
+    std::string sandbox_runtime         = "docker";   // v1: docker only
+    std::string sandbox_image;                          // required when enabled
+    std::string sandbox_workspaces_root;                // host path
+    std::string sandbox_network         = "none";
+    int         sandbox_memory_mb       = 512;
+    double      sandbox_cpus            = 1.0;
+    int         sandbox_pids_limit      = 256;
+    int         sandbox_exec_timeout_seconds = 30;
+    int64_t     sandbox_workspace_max_bytes = 1ll * 1024 * 1024 * 1024;
+    int         sandbox_idle_seconds        = 1800;
+    // Non-owning runtime handle.  Populated by ApiServer's constructor
+    // when it builds a usable SandboxManager; null otherwise.  Lives in
+    // opts so downstream request handlers and the orchestrator-builder
+    // factories can wire ExecInvoker without an extra parameter on every
+    // signature.  Lifetime is bound to the ApiServer's `sandbox_`
+    // unique_ptr — do not delete through this pointer.
+    SandboxManager* sandbox             = nullptr;
+
+    // Non-owning runtime handle to the server's IdempotencyCache.
+    // Populated by ApiServer's constructor; null when used outside an
+    // ApiServer (e.g. CLI-mode build_blocking_orchestrator).  Same
+    // ownership story as `sandbox` above.
+    IdempotencyCache* idempotency       = nullptr;
+
+    // Non-owning runtime handle to the server's Metrics registry.
+    // Populated by ApiServer's ctor; null in CLI / one-shot contexts.
+    // Counter increments are no-ops when null so call sites don't
+    // need to guard.
+    Metrics*          metrics           = nullptr;
+
+    // Process-wide provider circuit breaker.  Wired into every
+    // per-request ApiClient.  Null in CLI / one-shot contexts.
+    ProviderCircuitBreaker* circuit_breaker = nullptr;
 
     // Plaintext admin token for /v1/admin/*.  Empty ⇒ admin endpoints
     // return 503 (disabled).  `cmd_api` loads/generates this before
@@ -182,6 +229,14 @@ public:
     bool running() const { return running_.load(); }
     int  port()    const { return bound_port_; }
 
+    // Non-owning peek at the sandbox manager.  Always non-null when
+    // `ARBITER_SANDBOX_IMAGE` was set at startup (the manager is held
+    // even on usability failure so the unusable reason stays queryable
+    // after the banner clears scrollback); null when the feature
+    // wasn't requested at all.  Caller checks `usable()` for the
+    // wired-vs-disabled split.
+    const SandboxManager* sandbox_manager() const { return sandbox_.get(); }
+
 private:
     void accept_loop();
     void handle_connection(int client_fd);
@@ -208,11 +263,36 @@ private:
     // come from env at startup); a zeroed config means "unlimited" so
     // operators not using this surface pay no cost.
     std::unique_ptr<TenantLimiter>   limiter_;
+    // Per-tenant /exec sandbox.  Constructed iff opts.sandbox_enabled
+    // AND usable() — null otherwise.  When null, /exec falls back to
+    // the legacy disabled behaviour (cmd_exec gated by exec_disabled).
+    std::unique_ptr<SandboxManager>  sandbox_;
+    // Idempotency-Key dedup cache for the write-creating POST routes.
+    // Always constructed; absence of an Idempotency-Key header on a
+    // request skips it entirely.
+    std::unique_ptr<IdempotencyCache> idempotency_;
+    // In-process Prometheus-style metrics registry.  Always
+    // constructed; rendered at GET /v1/metrics.
+    std::unique_ptr<Metrics>          metrics_;
+    // Process-wide circuit breaker, shared by every per-request
+    // ApiClient.  Always constructed; bound to metrics for
+    // arbiter_provider_circuit_open_total bookkeeping.
+    std::unique_ptr<ProviderCircuitBreaker> circuit_breaker_;
 
     int               listen_fd_  = -1;
     int               bound_port_ = 0;
     std::atomic<bool> running_{false};
     std::thread       accept_thread_;
+
+    // In-flight connection drain.  Each connection thread bumps
+    // `active_connections_` on entry and decrements + notifies on exit.
+    // `stop()` waits on `drain_cv_` for the counter to reach zero, up to
+    // a deadline configurable via `ARBITER_DRAIN_SECONDS` (default 30s).
+    // Connections still running past the deadline are abandoned — the
+    // OS tears the sockets down when the process exits.
+    std::atomic<int>        active_connections_{0};
+    std::mutex              drain_mu_;
+    std::condition_variable drain_cv_;
 };
 
 } // namespace arbiter

@@ -67,6 +67,20 @@ that simply demonstrate them are not vulnerabilities:
   agent documentation flag this. The HTTP API (`arbiter --api`)
   disables `/exec` by default (`ApiServerOptions::exec_disabled = true`)
   and an attempt returns an `ERR:` tool result to the agent.
+- **Sandboxed `/exec` (opt-in via `ARBITER_SANDBOX_IMAGE`, since
+  0.5.0)** — when enabled, `/exec` runs inside a per-tenant Docker
+  container with `--network=none --read-only`, a bind-mounted
+  `/workspace`, configurable memory / CPU / pids caps, and a per-exec
+  wall-clock kill. The sandbox is **not** a container-escape
+  mitigation: it inherits the kernel's Docker threat model.
+  Container-breakout CVEs in the host kernel or Docker daemon are
+  out-of-scope here — track and patch them upstream. In-scope sandbox
+  vulnerabilities (and please report them): workspace path traversal
+  past the canonicaliser, cross-tenant access to another tenant's
+  workspace mount, sandbox-disable bypass that lets `/exec` reach the
+  host shell. The sandbox boundary, what it protects against, and what
+  it does not are documented in
+  [`docs/concepts/sandbox.md#security-boundary`](docs/concepts/sandbox.md#security-boundary).
 - **The HTTP server has no built-in TLS, rate limiting, or DDoS
   protection.** Production deployments are expected to put a reverse
   proxy (nginx / caddy / cloudflare) in front. The default bind is
@@ -101,6 +115,17 @@ If you run `arbiter --api` in a multi-tenant context, please:
    (`src/commands.cpp` — `is_blocked_address`) that rejects RFC1918,
    loopback, link-local, CGNAT, and cloud-metadata-adjacent addresses
    on every connect, including after redirects. Don't disable this.
+8. If you enable the sandbox (`ARBITER_SANDBOX_IMAGE`), treat the
+   image as part of your supply chain — pin tags, scan for CVEs, and
+   keep the base layer current. Leave `ARBITER_SANDBOX_NETWORK=none`
+   (the default) unless agents genuinely need outbound HTTP from
+   inside `/exec`; switching to `bridge` exposes the container to the
+   host network and removes the strongest escape mitigation the
+   sandbox offers. Keep the resource caps non-zero — `0` disables the
+   cgroup limit and lets a runaway `/exec` consume host resources.
+   Per-tenant workspace bytes live at `~/.arbiter/workspaces/t<tid>/`
+   mode `0700`; if you run as a shared user, additionally restrict
+   `~/.arbiter/` itself.
 
 ## Known security-relevant guarantees
 

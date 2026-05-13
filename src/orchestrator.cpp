@@ -965,6 +965,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               scheduler_invoker_cb_,
                                               todo_invoker_cb_,
                                               lesson_invoker_cb_,
+                                              exec_invoker_cb_,
                                               agent_ptr->config().capabilities);
 
         // Loop detection.  For each cmd this iteration, find its result
@@ -1409,6 +1410,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   scheduler_invoker_cb_,
                                                   todo_invoker_cb_,
                                                   lesson_invoker_cb_,
+                                                  exec_invoker_cb_,
                                                   agent_ptr->config().capabilities,
                                                   &image_parts);
             last_cmds         = cmds;

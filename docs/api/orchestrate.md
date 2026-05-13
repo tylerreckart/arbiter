@@ -20,7 +20,11 @@ Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v
 
 ### Headers
 
-`Content-Type: application/json`. Tenant bearer token in `Authorization`.
+| Header | Required | Purpose |
+|---|---|---|
+| `Authorization` | yes | `Bearer <tenant token>`. See [authentication](concepts/authentication.md). |
+| `Content-Type` | yes | `application/json`. |
+| `Idempotency-Key` | no | Opaque client-supplied string (≤ 256 chars). Retries with the same key get the same execution back as an SSE replay rather than triggering a second run. See [Idempotency](#idempotency) below. |
 
 ### Vision input
 
@@ -122,9 +126,29 @@ The stream begins with `request_received`, contains a sequence of `stream_start`
 
 `duration_ms` on `done` is wall-clock from request receipt to stream close. See the [SSE event catalog](concepts/sse-events.md) for full event-by-event field schemas, and [Fleet streaming](concepts/fleet-streaming.md) for the routing rules when `/parallel` is in play.
 
+## Idempotency
+
+`POST /v1/orchestrate` is otherwise unsafe to retry — a network error mid-stream leaves the caller unable to tell whether the server received the request. Supplying an `Idempotency-Key` header makes the call replay-safe: the server records `(tenant_id, key) → request_id` and treats any subsequent request with the same key as a join-or-replay of the original.
+
+| Original state when retry arrives | Server behavior |
+|---|---|
+| Still running | The retry SSE stream live-tails the original request from its current position, exactly as if the client had called [`GET /v1/requests/:id/events`](requests/events.md). |
+| Completed / failed / canceled | The retry replays the durable event log from `seq=0` to the terminal `done` frame, then closes. |
+| Original `request_id` no longer in `request_status` (e.g. deleted) | The retry returns `404 {"error":"request not found"}` instead of a fresh execution — by design, so an aged retry can't silently rerun. |
+
+Constraints and caveats:
+
+- Keys are scoped per tenant. Two tenants using the same `abc` string don't collide.
+- Keys are opaque to the server — any non-empty UTF-8 string ≤ 256 chars works. Most clients send a UUID per logical action.
+- The dedup cache is **in-memory** and has a **24h TTL**. A server restart loses the table; a retry after restart triggers a fresh execution. Durable dedup (survives restarts) is a Phase-3 follow-up gated on full crash resumption.
+- The request body is **not** part of the dedup contract for v1. Reusing a key with a different body returns the original execution's stream, not a 409. Don't reuse keys across logically different requests.
+- The header is supported on every write-creating POST: `/v1/orchestrate`, [`/v1/conversations/:id/messages`](conversations/messages-post.md), and [`/v1/agents/:id/chat`](agents/chat.md). It is **not** supported on cancel, A2A, or admin routes.
+
+A retry that arrives before the original has created its `request_status` row (microseconds-after-the-first-request window) loses the race — both executions run, but the next retry dedups cleanly. Clients that need stricter guarantees should serialize their writes.
+
 ## Policy defaults
 
-- **`/exec` disabled** — agents can't run shell commands on the server. An attempt returns an `ERR:` tool result so the agent adapts.
+- **`/exec` disabled** — agents can't run shell commands on the server unless the per-tenant Docker sandbox is configured. With the sandbox on (see [Sandbox](concepts/sandbox.md)), `/exec` runs inside a tenant-scoped container.
 - **`/write` intercepted** — agent-generated files never hit the server's filesystem. They're streamed back as `file` events with UTF-8 content, subject to a 10 MiB per-response cap (configurable via `ApiServerOptions::file_max_bytes`). Persistent storage is opt-in via `/write --persist` — see [Artifacts](concepts/artifacts.md).
 - **`/pane` unavailable** — pane spawning is a REPL-mode primitive; in API mode the master gets an `ERR:` and must use `/agent` (sequential) or `/parallel` (concurrent) instead.
 
@@ -134,9 +158,23 @@ The stream begins with `request_received`, contains a sequence of `stream_start`
 |--------|------|------|
 | 400    | Body isn't a JSON object; missing `message`; `agent_def` shape invalid (Constitution parse fails); id-resolution conflict; attempt to override `"index"`. | `{"error": "..."}` |
 | 401    | Missing / invalid bearer; tenant disabled. | `{"error": "..."}` |
-| 200 + `done.ok = false` | Errors that arise after the SSE stream opens (LLM upstream failure, cap exceeded, agent missing for non-`index` id with no inline / stored / snapshot fallback, transient I/O). The stream contains an `error` event followed by `done` with `ok: false`. The connection-level catch returns 200 because headers are already on the wire. | SSE stream |
+| 200 + `done.ok = false` | Errors that arise after the SSE stream opens (LLM upstream failure, cap exceeded, agent missing for non-`index` id with no inline / stored / snapshot fallback, transient I/O, provider circuit breaker open). The stream contains an `error` event followed by `done` with `ok: false`. The connection-level catch returns 200 because headers are already on the wire. | SSE stream |
 
 The "after-headers" mode is intentional: by the time the SSE stream is open, returning a non-200 status code would split the response in confusing ways for clients. All recoverable errors come through as `error` SSE events with structured fields; the terminal `done.ok` flag is the canonical success/failure signal.
+
+### Circuit-breaker fast-fail
+
+When the per-provider circuit breaker is open (5 consecutive provider failures within the cooldown window, see [Operations → Circuit breaker](concepts/operations.md#provider-circuit-breaker)), the SSE stream terminates with:
+
+```
+event: error
+data: {"message":"...","reason":"provider_unavailable","error_code":"circuit_open"}
+
+event: done
+data: {"ok":false,"error":"...","error_code":"circuit_open",...}
+```
+
+This is faster than waiting four retries against a known-unhealthy upstream — typically tens of milliseconds rather than 7+ seconds. The breaker auto-recovers on a successful probe after the cooldown; clients can simply retry (with a new Idempotency-Key if they want a fresh attempt rather than a replay).
 
 ### Billing-service denial specifically
 

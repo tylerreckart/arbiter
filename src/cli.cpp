@@ -4,7 +4,9 @@
 #include "cli_helpers.h"
 #include "api_server.h"
 #include "constitution.h"
+#include "logger.h"
 #include "orchestrator.h"
+#include "sandbox.h"
 #include "starters.h"
 #include "tenant_store.h"
 
@@ -179,6 +181,11 @@ void cmd_init(bool force) {
 }
 
 void cmd_api(int port, const std::string& bind, bool verbose) {
+    // Pick up ARBITER_LOG_FORMAT before any of the startup-path log
+    // calls fire — structured JSON deployments expect every line on
+    // stderr to be machine-parseable.
+    Logger::global().init_from_env();
+
     // HTTP+SSE orchestration endpoint.  Spins up a fresh Orchestrator per
     // request with /exec disabled and /write intercepted so any file the
     // agent produces is streamed to the client rather than landing on the
@@ -247,6 +254,44 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
         opts.billing_url = q;
     }
 
+    // ── Per-tenant sandbox ───────────────────────────────────────────
+    // Off by default.  Setting ARBITER_SANDBOX_IMAGE flips the feature
+    // on; remaining knobs override SandboxConfig defaults.  ApiServer's
+    // ctor logs the chosen config on success or the failure reason on
+    // graceful degradation, so operators see immediately whether /exec
+    // is wired.  When the sandbox is unusable at runtime (docker
+    // missing, image pull failed) the server keeps running with /exec
+    // disabled — same surface SaaS deploys have always had.
+    if (const char* img = std::getenv("ARBITER_SANDBOX_IMAGE"); img && *img) {
+        opts.sandbox_enabled         = true;
+        opts.sandbox_image           = img;
+        opts.sandbox_workspaces_root = dir + "/workspaces";
+        if (const char* r = std::getenv("ARBITER_SANDBOX_RUNTIME"); r && *r)
+            opts.sandbox_runtime = r;
+        if (const char* n = std::getenv("ARBITER_SANDBOX_NETWORK"); n && *n)
+            opts.sandbox_network = n;
+        if (const char* m = std::getenv("ARBITER_SANDBOX_MEMORY_MB"); m && *m) {
+            try { opts.sandbox_memory_mb = std::stoi(m); } catch (...) {}
+        }
+        if (const char* c = std::getenv("ARBITER_SANDBOX_CPUS"); c && *c) {
+            try { opts.sandbox_cpus = std::stod(c); } catch (...) {}
+        }
+        if (const char* p = std::getenv("ARBITER_SANDBOX_PIDS_LIMIT"); p && *p) {
+            try { opts.sandbox_pids_limit = std::stoi(p); } catch (...) {}
+        }
+        if (const char* t = std::getenv("ARBITER_SANDBOX_EXEC_TIMEOUT"); t && *t) {
+            try { opts.sandbox_exec_timeout_seconds = std::stoi(t); } catch (...) {}
+        }
+        if (const char* q = std::getenv("ARBITER_SANDBOX_WORKSPACE_MAX_BYTES");
+                q && *q) {
+            try { opts.sandbox_workspace_max_bytes = std::stoll(q); } catch (...) {}
+        }
+        if (const char* i = std::getenv("ARBITER_SANDBOX_IDLE_SECONDS");
+                i && *i) {
+            try { opts.sandbox_idle_seconds = std::stoi(i); } catch (...) {}
+        }
+    }
+
     ApiServer server(std::move(opts), tenants);
 
     std::signal(SIGINT,  signal_handler);
@@ -261,12 +306,15 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
 
     // Reset the terminal so the banner anchors at row 1.  ANSI sequence:
     //   \033[2J  — erase entire screen
-    //   \033[3J  — erase scrollback (xterm/iTerm) so the banner isn't
-    //              chasing a half-screen of prior shell history
     //   \033[H   — cursor home (1,1)
-    // Stops the operator from squinting past stale output to find the
-    // current bind address every time they restart the server.
-    std::cout << "\033[2J\033[3J\033[H";
+    // We deliberately do NOT emit `\033[3J` (erase scrollback) here:
+    // ApiServer's ctor logs operational events (sandbox enabled/disabled,
+    // recovery sweep) to stderr BEFORE we get to this point, and wiping
+    // scrollback was burying them.  The banner re-renders sandbox
+    // status below so operators don't have to scroll up to find it; the
+    // remaining ctor logs (recovery sweep, errors) stay in scrollback
+    // for forensic spelunking.
+    std::cout << "\033[2J\033[H";
 
     std::cout << BANNER;
     std::cout << "API listening on " << bind << ":" << server.port() << "\n";
@@ -277,6 +325,26 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
                                               : "request-level only "
                                                 "(use --verbose for streamed deltas)")
               << "\n";
+
+    // Sandbox status — re-rendered here because the ctor's stderr log
+    // landed pre-screen-clear.  Three cases:
+    //   * Not requested (no ARBITER_SANDBOX_IMAGE)  → no line.
+    //   * Requested + usable                        → image / network / caps.
+    //   * Requested + unusable                      → reason verbatim.
+    if (auto* sb = server.sandbox_manager()) {
+        if (sb->usable()) {
+            const auto& sc = sb->config();
+            std::cout << "Sandbox: " << sc.image
+                      << " (network=" << sc.network
+                      << ", " << sc.memory_mb << "m / "
+                      << sc.cpus << " CPU / "
+                      << sc.pids_limit << " pids, "
+                      << sc.exec_timeout_seconds << "s exec timeout)\n";
+        } else {
+            std::cout << "Sandbox: DISABLED — " << sb->unusable_reason()
+                      << "\n         /exec returns ERR; fix and restart.\n";
+        }
+    }
 
     if (fresh_admin) {
         std::cout << "\n  Admin token (save this — not shown again):\n"

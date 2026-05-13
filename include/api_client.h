@@ -115,6 +115,9 @@ bool is_weak_executor(const std::string& model);
 // → "llama3:8b").  What the actual API expects as the model name.
 std::string strip_model_prefix(const std::string& model);
 
+class Metrics;
+class ProviderCircuitBreaker;
+
 class ApiClient {
 public:
     // Keys keyed by provider name ("anthropic", "openai", …).  Missing
@@ -133,6 +136,18 @@ public:
     int total_input_tokens()  const { return total_in_.load(); }
     int total_output_tokens() const { return total_out_.load(); }
     void reset_stats() { total_in_ = 0; total_out_ = 0; }
+
+    // Attach the process-wide circuit breaker.  When set, complete()
+    // and stream() check `allow(provider)` before each upstream call
+    // and record success/failure on the result.  Non-owning pointer;
+    // null is fine and disables the breaker layer (legacy behaviour).
+    void set_circuit_breaker(ProviderCircuitBreaker* cb) { breaker_ = cb; }
+
+    // Attach the process-wide metrics registry.  When set, every
+    // upstream call increments arbiter_provider_calls_total and the
+    // appropriate retry / 5xx / 429 counters.  Non-owning; null is
+    // fine.
+    void set_metrics(Metrics* m) { metrics_ = m; }
 
     // Interrupt any in-progress streaming call.  Shuts down every open socket
     // so an in-flight SSL_read / read returns immediately.  Thread-safe.
@@ -183,6 +198,13 @@ private:
     std::atomic<int>  total_in_{0};
     std::atomic<int>  total_out_{0};
     std::atomic<bool> cancelled_{false};
+
+    // Process-wide observability hooks.  Both nullable; CLI / unit-test
+    // contexts leave them null and complete() / stream() short-circuit
+    // the bookkeeping.  Lifetime is the caller's responsibility (the
+    // ApiServer owns these for the running-server case).
+    ProviderCircuitBreaker* breaker_ = nullptr;
+    Metrics*                metrics_ = nullptr;
 
     // Connection lifecycle per provider.
     bool ensure_connection(const Provider& p, Conn& c);

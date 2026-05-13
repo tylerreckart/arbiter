@@ -974,6 +974,28 @@ void TenantStore::open(const std::string& path) {
         CREATE INDEX IF NOT EXISTS task_runs_tenant
             ON task_runs(tenant_id, started_at DESC);
     )SQL");
+
+    // Admin audit log.  Append-only; rows are never edited or deleted
+    // by the runtime (operators wanting retention windows should
+    // periodically prune by ts).  Not foreign-keyed to tenants
+    // because we want delete-tenant events to leave a forensic
+    // trail behind the cascade.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS admin_audit (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          INTEGER NOT NULL,
+            actor       TEXT    NOT NULL,
+            action      TEXT    NOT NULL,
+            target_kind TEXT    NOT NULL,
+            target_id   TEXT    NOT NULL DEFAULT '',
+            before_json TEXT    NOT NULL DEFAULT '',
+            after_json  TEXT    NOT NULL DEFAULT ''
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS admin_audit_ts
+            ON admin_audit(ts DESC, id DESC);
+    )SQL");
 }
 
 TenantStore::CreatedTenant
@@ -1063,6 +1085,74 @@ std::optional<Tenant> TenantStore::get_tenant(int64_t id) const {
     q.bind(1, id);
     if (q.step() != SQLITE_ROW) return std::nullopt;
     return row_to_tenant(q);
+}
+
+// ─── Admin audit log ────────────────────────────────────────────────────────
+
+TenantStore::AdminAuditEntry
+TenantStore::append_admin_audit(const std::string& actor,
+                                  const std::string& action,
+                                  const std::string& target_kind,
+                                  const std::string& target_id,
+                                  const std::string& before_json,
+                                  const std::string& after_json) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    const int64_t ts = now_epoch();
+    Stmt q(db_,
+        "INSERT INTO admin_audit "
+        "(ts, actor, action, target_kind, target_id, before_json, after_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?);");
+    q.bind(1, ts);
+    q.bind(2, actor);
+    q.bind(3, action);
+    q.bind(4, target_kind);
+    q.bind(5, target_id);
+    q.bind(6, before_json);
+    q.bind(7, after_json);
+    if (q.step() != SQLITE_DONE) {
+        throw std::runtime_error("append_admin_audit insert failed");
+    }
+    AdminAuditEntry e;
+    e.id          = sqlite3_last_insert_rowid(db_);
+    e.ts          = ts;
+    e.actor       = actor;
+    e.action      = action;
+    e.target_kind = target_kind;
+    e.target_id   = target_id;
+    e.before_json = before_json;
+    e.after_json  = after_json;
+    return e;
+}
+
+std::vector<TenantStore::AdminAuditEntry>
+TenantStore::list_admin_audit(int64_t before_id, int limit) const {
+    if (!db_) return {};
+    if (limit <= 0) limit = 50;
+    if (limit > 200) limit = 200;
+    std::string sql =
+        "SELECT id, ts, actor, action, target_kind, target_id, "
+        "       before_json, after_json "
+        "FROM admin_audit ";
+    if (before_id > 0) sql += "WHERE id < ? ";
+    sql += "ORDER BY id DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    int bind_idx = 1;
+    if (before_id > 0) q.bind(bind_idx++, before_id);
+    q.bind(bind_idx, static_cast<int64_t>(limit));
+    std::vector<AdminAuditEntry> out;
+    while (q.step() == SQLITE_ROW) {
+        AdminAuditEntry e;
+        e.id          = q.column_int64(0);
+        e.ts          = q.column_int64(1);
+        e.actor       = q.column_text(2);
+        e.action      = q.column_text(3);
+        e.target_kind = q.column_text(4);
+        e.target_id   = q.column_text(5);
+        e.before_json = q.column_text(6);
+        e.after_json  = q.column_text(7);
+        out.push_back(std::move(e));
+    }
+    return out;
 }
 
 // ─── Conversations ──────────────────────────────────────────────────────────
