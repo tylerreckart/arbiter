@@ -7,6 +7,122 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.5.0-beta] — 2026-05-13
+
+This is a **beta** release.  The feature surface is operational
+hardening — none of it changes existing agent or HTTP semantics — but
+the per-tenant Docker sandbox is a substantial new module without
+automated test coverage in v1 (verified only via the
+`examples/sandbox/setup.sh --check` smoke test).  Treat sandbox
+deployments accordingly; the rest of the surface (idempotency,
+metrics, circuit breaker, structured logging) is exercised by the
+test suite and safe to depend on.
+
+### Added
+- **Per-tenant Docker sandbox for `/exec`.**  Opt-in via
+  `ARBITER_SANDBOX_IMAGE=<image>`.  One persistent container per
+  tenant, started lazily on the first `/exec`, with a bind-mounted
+  `/workspace` directory shared by `/exec`, `/write`, and `/read`.
+  Containers run `--network=none --read-only --tmpfs /tmp:rw,size=64m`
+  with configurable memory / CPU / pids caps and a per-exec wall-clock
+  kill (`ARBITER_SANDBOX_MEMORY_MB`, `_CPUS`, `_PIDS_LIMIT`,
+  `_EXEC_TIMEOUT`; defaults 512m / 1.0 / 256 / 30s).  Workspace bytes
+  persist across requests and server restarts at
+  `~/.arbiter/workspaces/t<tid>/` (mode `0700`); a soft per-tenant
+  quota (`ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`, default 1 GiB) is
+  enforced at `/write` time.  A background reaper stops containers
+  idle past `ARBITER_SANDBOX_IDLE_SECONDS` (default 30 min) without
+  touching the workspace; the next op cold-starts a fresh container.
+  Survivor containers from a prior process are probed with
+  `docker exec true` and re-attached when responsive, force-removed
+  and rebuilt when not.  `stop_all()` runs on SIGTERM as part of the
+  drain sequence.  Failure-mode philosophy is **degrade, don't crash**:
+  a misconfigured or unreachable sandbox leaves `/exec` returning the
+  standard `ERR:` block and the server runs unaffected.  An example
+  Debian-slim image and `setup.sh` (with `--check`, `--teardown`,
+  `--print-only` modes) ship in `examples/sandbox/`.
+  See [`docs/concepts/sandbox.md`](docs/concepts/sandbox.md).
+- **Idempotent retries on write-creating POSTs.**  `Idempotency-Key`
+  header on `/v1/orchestrate`, `/v1/conversations/:id/messages`, and
+  `/v1/agents/:id/chat`.  The runtime records `(tenant_id, key) →
+  request_id` and treats any subsequent request with the same key as a
+  join-or-replay of the original: still-running keys live-tail the
+  original SSE from its current position, completed keys replay the
+  durable event log from `seq=0` to terminal `done`, deleted keys
+  return `404` instead of silently rerunning.  Keys are tenant-scoped,
+  opaque (≤ 256 chars), and the cache is in-memory with a 24h TTL —
+  durable dedup across server restarts is a Phase-3 follow-up.  CORS
+  allow-list extended to include `Idempotency-Key` and `If-None-Match`.
+  See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
+- **`GET /v1/metrics` (Prometheus exposition format).**  Unauthenticated
+  scrape endpoint — restrict at the reverse proxy.  Counters and
+  gauges cover request flow (`arbiter_requests_started_total`,
+  `_completed_total`, `_duration_ms_sum`, `arbiter_in_flight`; labels
+  `tenant`, `route`, `ok`), provider call health (`_calls_total`,
+  `_retries_total`, `_5xx_total`, `_429_total`,
+  `_circuit_open_total`; label `provider`), sandbox container
+  lifecycle (`_exec_total`, `_exec_timeout_total`,
+  `_container_started_total`, `_reaped_total`, `_rebuilt_total`,
+  `_containers_running`), idempotency hit/miss
+  (`_replay_total`, `_miss_total`), and rate-limit rejections
+  (`arbiter_rate_limited_total{reason}`).  Every registered metric
+  emits its `HELP` + `TYPE` headers on a fresh-start scrape so
+  dashboards don't NaN out.  See
+  [`docs/api/metrics.md`](docs/api/metrics.md).
+- **Per-provider circuit breaker.**  Sits in front of the per-request
+  retry loop.  After 5 consecutive failures (5xx or 429 past the retry
+  budget) against the same provider, the breaker opens for a 30 s
+  cooldown.  Calls while open fast-fail with a structured `error_code:
+  "circuit_open"` on the `done` SSE event instead of every parallel
+  request burning four retries against a clearly-unhealthy upstream —
+  typically tens of milliseconds vs 7+ seconds.  The cooldown elapses
+  into a half-open probe; success closes, failure reopens with a fresh
+  cooldown.  Defaults are tuned conservatively for v1; operator-tunable
+  thresholds are a Phase-5 follow-up.  See
+  [`docs/concepts/operations.md#provider-circuit-breaker`](docs/concepts/operations.md#provider-circuit-breaker).
+- **Structured operational logger.**  Startup, recovery sweep,
+  shutdown drain, sandbox enable/disable, idle reaping, and circuit
+  breaker transitions all route through `Logger::global()` and emit
+  either human-readable (`[HH:MM:SS] [level] event key=value`) or JSON
+  (`{"ts":"…","level":"…","event":"…",…}`) lines on stderr.  Switch
+  with `ARBITER_LOG_FORMAT=json|human` (default `human`).  Per-request
+  `--verbose` SSE mirroring keeps the existing human format; only the
+  operational-event stream is structured in v1.
+- **`GET /v1/admin/audit`.**  Append-only log of every mutation through
+  `/v1/admin/*` (create / update / disable tenant).  Each row records
+  actor, action, target, and JSON snapshots of state before and after.
+  Reverse-chronological with `before_id` / `limit` cursor pagination
+  (default 50, hard cap 200).  The runtime never edits or deletes audit
+  rows — retention is the operator's policy decision.  Backed by a new
+  `admin_audit` table on `tenants.db`.  See
+  [`docs/api/admin/audit.md`](docs/api/admin/audit.md).
+
+### Changed
+- API server startup banner re-renders the sandbox status line (image,
+  network, caps, exec timeout) after the screen clear so operators
+  don't have to scroll up to find it.  The scrollback erase
+  (`\033[3J`) was dropped from the banner sequence so pre-clear ctor
+  logs (recovery sweep, sandbox usability failures) remain available
+  for forensics.
+- `examples/sandbox/setup.sh` gained `--check` (smoke-test an existing
+  image with the same flags `/exec` uses at runtime), `--teardown`
+  (stop containers + remove image; workspace bytes left in place), and
+  a `--yes` confirmation skip.  The smoke test catches "image built
+  but won't run under `--read-only`", "tmpfs mount rejected", "no
+  `/bin/sh` in the image" — failures that would otherwise only surface
+  inside `/exec`.
+
+### Known limitations
+- **Sandbox has no automated test coverage in this release.**  Smoke
+  testing is via `examples/sandbox/setup.sh --check`.  A test suite
+  exercising container lifecycle, quota enforcement, survivor re-attach,
+  and reaper behavior is targeted for the 0.5.x point releases.
+- **Idempotency cache is in-memory.**  A server restart loses the
+  table; a retry after restart triggers a fresh execution.  Durable
+  dedup is gated on full crash resumption (Phase 3).
+- **Circuit breaker thresholds are hard-coded.**  Env-var tunables
+  (`ARBITER_CIRCUIT_*`) are a Phase-5 follow-up.
+
 ## [0.4.5] — 2026-05-11
 
 ### Added

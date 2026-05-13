@@ -6,6 +6,7 @@
 #include "constitution.h"
 #include "logger.h"
 #include "orchestrator.h"
+#include "sandbox.h"
 #include "starters.h"
 #include "tenant_store.h"
 
@@ -305,12 +306,15 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
 
     // Reset the terminal so the banner anchors at row 1.  ANSI sequence:
     //   \033[2J  — erase entire screen
-    //   \033[3J  — erase scrollback (xterm/iTerm) so the banner isn't
-    //              chasing a half-screen of prior shell history
     //   \033[H   — cursor home (1,1)
-    // Stops the operator from squinting past stale output to find the
-    // current bind address every time they restart the server.
-    std::cout << "\033[2J\033[3J\033[H";
+    // We deliberately do NOT emit `\033[3J` (erase scrollback) here:
+    // ApiServer's ctor logs operational events (sandbox enabled/disabled,
+    // recovery sweep) to stderr BEFORE we get to this point, and wiping
+    // scrollback was burying them.  The banner re-renders sandbox
+    // status below so operators don't have to scroll up to find it; the
+    // remaining ctor logs (recovery sweep, errors) stay in scrollback
+    // for forensic spelunking.
+    std::cout << "\033[2J\033[H";
 
     std::cout << BANNER;
     std::cout << "API listening on " << bind << ":" << server.port() << "\n";
@@ -321,6 +325,26 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
                                               : "request-level only "
                                                 "(use --verbose for streamed deltas)")
               << "\n";
+
+    // Sandbox status — re-rendered here because the ctor's stderr log
+    // landed pre-screen-clear.  Three cases:
+    //   * Not requested (no ARBITER_SANDBOX_IMAGE)  → no line.
+    //   * Requested + usable                        → image / network / caps.
+    //   * Requested + unusable                      → reason verbatim.
+    if (auto* sb = server.sandbox_manager()) {
+        if (sb->usable()) {
+            const auto& sc = sb->config();
+            std::cout << "Sandbox: " << sc.image
+                      << " (network=" << sc.network
+                      << ", " << sc.memory_mb << "m / "
+                      << sc.cpus << " CPU / "
+                      << sc.pids_limit << " pids, "
+                      << sc.exec_timeout_seconds << "s exec timeout)\n";
+        } else {
+            std::cout << "Sandbox: DISABLED — " << sb->unusable_reason()
+                      << "\n         /exec returns ERR; fix and restart.\n";
+        }
+    }
 
     if (fresh_admin) {
         std::cout << "\n  Admin token (save this — not shown again):\n"

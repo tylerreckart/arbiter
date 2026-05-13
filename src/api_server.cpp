@@ -228,7 +228,7 @@ bool parse_http_request(int fd, HttpRequest& req) {
 constexpr const char* kCorsHeaders =
     "Access-Control-Allow-Origin: *\r\n"
     "Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS\r\n"
-    "Access-Control-Allow-Headers: Authorization, Content-Type, Accept\r\n"
+    "Access-Control-Allow-Headers: Authorization, Content-Type, Accept, Idempotency-Key, If-None-Match\r\n"
     "Access-Control-Max-Age: 86400\r\n";
 
 } // namespace (anon paused for response writers below)
@@ -9445,12 +9445,14 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         sc.exec_timeout_seconds = opts_.sandbox_exec_timeout_seconds;
         sc.workspace_max_bytes  = opts_.sandbox_workspace_max_bytes;
         sc.idle_seconds         = opts_.sandbox_idle_seconds;
-        auto mgr = std::make_unique<SandboxManager>(std::move(sc));
-        if (!mgr->usable()) {
-            Logger::global().warn("sandbox_disabled",
-                {{"reason", mgr->unusable_reason()}});
-        } else {
-            sandbox_ = std::move(mgr);
+        // Always keep the manager, even on usability failure — cli.cpp
+        // queries it post-banner-clear to render the startup status
+        // line (the ctor's stderr log is wiped by `\033[2J`).  The
+        // unusable path is cheap: SandboxConfig validation fails before
+        // the reaper thread spawns, so a stored-but-unusable manager
+        // costs nothing beyond the SandboxConfig snapshot.
+        sandbox_ = std::make_unique<SandboxManager>(std::move(sc));
+        if (sandbox_->usable()) {
             // Stash the non-owning pointer into opts so downstream
             // request handlers / orchestrator factories pick it up
             // without an extra parameter on every signature.
@@ -9468,6 +9470,9 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
                 {"timeout_s", std::to_string(
                     opts_.sandbox_exec_timeout_seconds)},
             });
+        } else {
+            Logger::global().warn("sandbox_disabled",
+                {{"reason", sandbox_->unusable_reason()}});
         }
     }
 

@@ -229,6 +229,14 @@ public:
     bool running() const { return running_.load(); }
     int  port()    const { return bound_port_; }
 
+    // Non-owning peek at the sandbox manager.  Always non-null when
+    // `ARBITER_SANDBOX_IMAGE` was set at startup (the manager is held
+    // even on usability failure so the unusable reason stays queryable
+    // after the banner clears scrollback); null when the feature
+    // wasn't requested at all.  Caller checks `usable()` for the
+    // wired-vs-disabled split.
+    const SandboxManager* sandbox_manager() const { return sandbox_.get(); }
+
 private:
     void accept_loop();
     void handle_connection(int client_fd);

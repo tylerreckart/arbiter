@@ -127,6 +127,12 @@ public:
     // can surface it in tool-result framing.
     int exec_timeout_seconds() const { return cfg_.exec_timeout_seconds; }
 
+    // Full config snapshot.  Used by `cli.cpp` to render the sandbox
+    // line in the startup banner — the constructor's stderr log gets
+    // wiped by the banner's `\033[2J` clear, so the banner re-surfaces
+    // status by querying this manager directly.
+    const SandboxConfig& config() const { return cfg_; }
+
     // Host path of the tenant's workspace directory.  Idempotent;
     // creates the directory on first call.  Returns empty string on
     // mkdir failure (logged to stderr).
