@@ -100,17 +100,17 @@ shape are subject to change. `/exec` is unsandboxed; treat it accordingly.
 
 ## Documentation
 
-- [`docs/getting-started/`](docs/getting-started/index.md) — quickstart paths
+- [`docs/getting-started`](https://arbiter.run/docs/getting-started/local) — quickstart paths — quickstart paths
   to first agent reply.
-- [`docs/philosophy.md`](docs/philosophy.md) — design philosophy: the six
+- [`docs/philosophy`](https://arbiter.run/docs/philosophy) — design philosophy: the six
   themes that explain why arbiter is shaped the way it is.
-- [`docs/api/`](docs/api/index.md) — full HTTP API reference: concept
+- [`docs/api/`](https://arbiter.run/docs/api) — full HTTP API reference: concept
   pages (tenants, auth, SSE events, fleet streaming, MCP, A2A protocol,
   artifacts, structured memory, operations) and one page per endpoint.
-- [`docs/cli/`](docs/cli/index.md) — non-interactive command-line
+- [`docs/cli/`](https://arbiter.run/docs/cli) — non-interactive command-line
   reference: `--init`, `--send`, `--api`, tenant admin, environment
   variables.
-- [`docs/tui/`](docs/tui/index.md) — interactive terminal client:
+- [`docs/tui/`](https://arbiter.run/docs/tui) — interactive terminal client:
   screen anatomy, slash commands, keybindings, multi-pane layouts,
   streaming and turn lifecycle, session persistence.
 - [`CHANGELOG.md`](CHANGELOG.md) — what changed, when. Breaking
@@ -122,8 +122,7 @@ shape are subject to change. `/exec` is unsandboxed; treat it accordingly.
 
 ## Quick start
 
-Full guide: [`docs/getting-started/`](docs/getting-started/index.md). Bare minimum for a local install:
-
+Bare minimum for a local install:
 ```bash
 # Install (macOS arm64)
 curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
@@ -137,35 +136,7 @@ arbiter --init   # seed ~/.arbiter/ with starter agents
 arbiter          # launch the terminal client
 ```
 
-Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md). For a managed endpoint instead of installing locally, see [getting-started/hosted](docs/getting-started/hosted.md).
-
-
-## Memory benchmarks
-
-Arbiter ships a structured-memory layer — typed entries, FTS retrieval, optional LLM rerank — that agents query through `/mem` and that operators can drive directly via `/v1/memory/entries`. Retrieval quality on [LongMemEval](https://github.com/xiaowu0162/LongMemEval) (500 questions, ~247K conversational turns), where **R@K** is the fraction of
-questions with at least one ground-truth turn in the top K
-results:
-
-| Variant      | R@1   | R@5   | R@10  | p50      | p95     |
-|--------------|------:|------:|------:|---------:|--------:|
-| `bm25`       | 14.2% | 35.2% | 42.0% |   149 ms |  370 ms |
-| `graduated`  | 49.4% | 81.4% | 88.6% |    57 ms |  109 ms |
-| `rerank`     | 72.6% | 90.4% | 91.6% |  1637 ms | 2157 ms |
-
-What each variant actually measures:
-
-- **`bm25`** — FTS5 + Okapi-BM25 across the entire tenant corpus, no
-  scope hint. Query-side stopword stripping plus a phrase-boost
-  clause (`"tok1 tok2 ..." OR tok1 OR tok2 ...`) concentrate scoring
-  on content tokens and reward proximity matches.
-- **`graduated`** — conversation-scoped first pass with tenant-wide
-  fallback if the first pass returns fewer than `limit` candidates.
-- **`rerank`** — `graduated` retrieval drawn from a 25-candidate pool,
-  then reordered by an LLM (here `claude-haiku-4-5`) over the full
-  list before trimming to the requested `limit`. Each candidate is
-  shown to the reranker with up to 800 bytes of content excerpt so
-  the answer-bearing text is visible end-to-end. One extra LLM call
-  per query.
+Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](https://arbiter.run/docs/getting-started/local).
 
 ---
 
