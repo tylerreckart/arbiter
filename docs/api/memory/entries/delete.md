@@ -4,7 +4,7 @@
 
 Permanently delete an entry. **Cascades to relations** with this entry as either endpoint.
 
-For "this fact is no longer true but I want to keep the audit trail," use [`POST /v1/memory/entries/:id/invalidate`](invalidate.md) instead — it stamps `valid_to` rather than removing the row, leaves relations intact, and keeps the entry reachable through historical reads. See [Structured memory → Temporal model](../../concepts/structured-memory.md#temporal-model).
+For "this fact is no longer true but I want to keep the audit trail," use [`POST /v1/memory/entries/:id/invalidate`](invalidate.md) instead — it stamps `valid_to` rather than removing the row, leaves relations intact, and keeps the entry reachable through historical reads. See [Structured memory → Temporal model](../../../concepts/structured-memory.md#temporal-model).
 
 ## Request
 
@@ -37,4 +37,4 @@ curl -X DELETE \
 
 - [`POST /v1/memory/entries/:id/invalidate`](invalidate.md) — soft-delete with audit trail.
 - [`PATCH /v1/memory/entries/:id`](patch.md).
-- [Structured memory](../../concepts/structured-memory.md).
+- [Structured memory](../../../concepts/structured-memory.md).

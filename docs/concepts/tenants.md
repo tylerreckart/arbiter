@@ -11,7 +11,7 @@ Billing — eligibility checks, rate cards, caps, credits, invoicing — is dele
 
 Two paths to create a tenant:
 
-- HTTP: [`POST /v1/admin/tenants`](../admin/tenants-create.md) (admin auth required).
+- HTTP: [`POST /v1/admin/tenants`](../api/admin/tenants-create.md) (admin auth required).
 - CLI: `arbiter --add-tenant <name>`.
 
 Both return the plaintext token exactly once. The DB stores only the digest — if a token is lost, issue a new one. Provision the matching workspace + token in your billing service separately, then hand the runtime the same `atr_…` bearer.
@@ -24,7 +24,7 @@ Tenants present their token via `Authorization: Bearer atr_…` on every request
 
 Every endpoint enforces `tenant_id` match. ID leaks across tenants surface as `404`, never as data exposure. This applies to:
 
-- Conversations and messages (see [Conversations](../conversations/create.md)).
+- Conversations and messages (see [Conversations](../api/conversations/create.md)).
 - Memory entries / relations / artifacts (see [Structured memory](structured-memory.md), [Artifacts](artifacts.md)).
 - File scratchpads at `~/.arbiter/memory/t<tenant_id>/`.
 
@@ -41,5 +41,5 @@ Every endpoint enforces `tenant_id` match. ID leaks across tenants surface as `4
 ## See also
 
 - [Authentication](authentication.md)
-- [`POST /v1/admin/tenants`](../admin/tenants-create.md)
-- [`PATCH /v1/admin/tenants/:id`](../admin/tenants-patch.md)
+- [`POST /v1/admin/tenants`](../api/admin/tenants-create.md)
+- [`PATCH /v1/admin/tenants/:id`](../api/admin/tenants-patch.md)

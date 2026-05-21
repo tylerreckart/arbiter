@@ -48,6 +48,44 @@ Returns the updated `todo`.
 | 401    | Missing / invalid bearer. |
 | 404    | Todo not found for this tenant. |
 
+## Batch form
+
+For multi-row updates (mark several done, reorder a column, sync state from an
+external tracker), use the batch endpoint instead of N HTTP round-trips:
+
+```bash
+curl -X PATCH \
+  -H "Authorization: Bearer atr_…" \
+  -H "Content-Type: application/json" \
+  -d '[
+        {"id":14,"status":"completed"},
+        {"id":15,"status":"completed"},
+        {"id":16,"position":1}
+      ]' \
+  http://arbiter.example.com/v1/todos
+```
+
+The body is either a JSON array of `{id, ...fields}` objects, or
+`{"todos":[...]}` for forward-compatibility with future top-level options. Each
+row is applied independently; per-row failures (`404`, invalid `status`) are
+reported in the response without short-circuiting the rest:
+
+```json
+{
+  "ok": 2,
+  "errors": 1,
+  "results": [
+    {"id":14,"ok":true,"todo":{...}},
+    {"id":15,"ok":true,"todo":{...}},
+    {"id":99,"ok":false,"error":"todo not found"}
+  ]
+}
+```
+
+Cap: 500 items per batch (mirrors the `GET /v1/todos` list cap). The HTTP
+status is always `200` when the body parses; per-row results carry the
+fine-grained errors.
+
 ## See also
 
 - [`GET /v1/todos/:id`](get.md), [`DELETE /v1/todos/:id`](delete.md)

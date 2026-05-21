@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Create or update an artifact in a conversation's working directory. Path validation, three-tier quotas, and PUT-on-conflict semantics all run here. See [Artifacts](../concepts/artifacts.md) for the full storage and safety model.
+Create or update an artifact in a conversation's working directory. Path validation, three-tier quotas, and PUT-on-conflict semantics all run here. See [Artifacts](../../concepts/artifacts.md) for the full storage and safety model.
 
 Same path validator as the agent's `/write --persist` slash command; HTTP and agent paths can't disagree on what's allowed.
 
@@ -16,7 +16,7 @@ Same path validator as the agent's `/write --persist` slash command; HTTP and ag
 
 | Field       | Type   | Required | Description |
 |-------------|--------|----------|-------------|
-| `path`      | string | yes | Will be sanitized — caller may pass user-supplied paths. See [Artifacts → Path safety](../concepts/artifacts.md#path-safety) for rules. |
+| `path`      | string | yes | Will be sanitized — caller may pass user-supplied paths. See [Artifacts → Path safety](../../concepts/artifacts.md#path-safety) for rules. |
 | `content`   | string | yes | UTF-8 string. Binary content should be base64-encoded by the caller. |
 | `mime_type` | string | no  | Defaults to `application/octet-stream`. Free-form; not sniffed. |
 
@@ -60,7 +60,7 @@ PUT-on-conflict math: overwriting a 100 KB file with 200 KB only costs 100 KB ag
 
 | Status | When | Body |
 |--------|------|------|
-| 400    | Invalid JSON; path fails sanitiser ([rules](../concepts/artifacts.md#path-safety)). | `{"error": "invalid path: <reason>"}` |
+| 400    | Invalid JSON; path fails sanitiser ([rules](../../concepts/artifacts.md#path-safety)). | `{"error": "invalid path: <reason>"}` |
 | 401    | Missing / invalid bearer. | `{"error": "..."}` |
 | 404    | Conversation not found / wrong tenant. | `{"error": "conversation not found"}` |
 | 409    | Race: path collision detected mid-INSERT (concurrent writer). Caller should retry as PUT. | `{"error": "path collision (concurrent write); retry"}` |
@@ -69,4 +69,4 @@ PUT-on-conflict math: overwriting a 100 KB file with 200 KB only costs 100 KB ag
 ## See also
 
 - [`GET /v1/conversations/:id/artifacts`](conversations-list.md), [`GET /v1/conversations/:id/artifacts/:aid`](conversations-get.md), [`GET /v1/conversations/:id/artifacts/:aid/raw`](conversations-raw.md), [`DELETE /v1/conversations/:id/artifacts/:aid`](conversations-delete.md).
-- [Artifacts](../concepts/artifacts.md) — storage model, path safety, quotas, agent slash surface.
+- [Artifacts](../../concepts/artifacts.md) — storage model, path safety, quotas, agent slash surface.

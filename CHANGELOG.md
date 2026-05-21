@@ -7,7 +7,100 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-## [0.5.0-beta] — 2026-05-13
+## [0.5.0-beta2] — 2026-05-20
+
+Second **beta** in the 0.5.0 line.  Focus is the agent-facing todo
+tracker — wiring it into the constitution and the master-depth turn
+so the agent actually reaches for it, plus filling out the HTTP
+surface so external clients can drive the same store without N+1
+round-trips.  Also a documentation cleanup: the unreleased hosted
+preview is gone from the public docs while it's still in
+development, and a SwiftUI iOS reference client (Newton) is linked
+from the README as a worked example of consuming the HTTP+SSE API.
+
+### Added
+- **Todos surfaced to the master agent.**  A new `todos` constitution
+  bundle teaches `/todo add | list | start | done | cancel | describe
+  | subject | delete` with rules on when to mark progress vs. when not
+  to re-list, and is on by default for `index`.  Every master-depth
+  turn now receives an `[OPEN TODOS] … [END OPEN TODOS]` preamble
+  prepended to the user message (same lifecycle as the lesson probe),
+  so the agent walks into each turn already aware of in-flight work
+  instead of having to remember to call `/todo list` itself.  Symmetric
+  with the sub-agent `[DELEGATION CONTEXT]` envelope, which was already
+  carrying open todos for delegated agents.
+- **Batch `PATCH /v1/todos`.**  Accepts a JSON array (or `{"todos":[…]}`)
+  of `{id, …fields}` objects, applies each independently, returns
+  per-row results with `ok` / `errors` totals.  Caps at 500 items per
+  batch.  Removes the N round-trip cost of "mark these three done" or
+  "sync state from an external tracker" against the HTTP API.  See
+  [`docs/api/todos/patch.md#batch-form`](docs/api/todos/patch.md#batch-form).
+- **Seed `status` on `POST /v1/todos`.**  Optional `status` field
+  accepts `pending` (default) / `in_progress` / `completed` /
+  `canceled`.  Terminal seeds stamp `completed_at = created_at` so
+  migrated rows don't look like in-flight work that just resolved.
+  Useful when backfilling from another tracker.
+- **`conversation_id=tenant` (or `unscoped`) filter on `GET /v1/todos`.**
+  Returns only `conversation_id = 0` rows — the cross-thread browser
+  surface that previously had to either omit `conversation_id` (which
+  dumps every thread's rows mixed) or sift through the OR-NULL
+  fallback result.
+- **`/todo list all` writ.**  Includes terminal (`completed`,
+  `canceled`) rows in the renderer for retrospective review.  Bare
+  `/todo list` still hides them so the open-work view stays focused.
+- **Newton iOS reference client.**  README now links to
+  [`tylerreckart/newton`](https://github.com/tylerreckart/newton), a
+  SwiftUI app that drives the runtime end-to-end from a mobile
+  frontend (bearer auth, streaming `/v1/orchestrate` parsed
+  event-by-event, conversation persistence, writ tool-call rendering).
+  Starting point for anyone building their own arbiter frontend.
+
+### Changed
+- **`/todo list` renderer shows `[p<N>]` position.**  Agents can now
+  reason about reorder targets without inferring order from ids.
+  Terminal rows (when surfaced via `/todo list all`) get `✓` / `✗`
+  markers paired with the existing `▶` for in-progress.
+- **Block-form `/todo add` body parser is no longer fooled by
+  `/`-prefixed body lines.**  Previously any line starting with `/`
+  (file paths, shell commands, URLs in a description) aborted body
+  capture; the parser now only bails on recognised writ prefixes.
+  When the stream cuts off before `/endtodo`, the runtime soft-commits
+  the subject and emits a `WARN: missing /endtodo terminator` instead
+  of dropping the create entirely, so the agent's intent isn't lost
+  to a network blip; the next turn can `/todo describe <id>: <text>`
+  to fill in the body.
+- **`TenantStore::create_todo` signature.**  Added an optional 6th
+  parameter (`const std::string& status = "pending"`).  Source-compatible
+  with existing callers; downstream binaries linking against the
+  pre-beta2 ABI need a rebuild.
+- **`TenantStore::TodoFilter::conversation_id < 0`** now means
+  "unscoped-only" (returns only `conversation_id = 0` rows).  Positive
+  retains the OR-NULL fallback, `0` retains "no filter".
+- **Version display.**  `INDEX_VERSION` (rendered on the TUI welcome
+  card) is now `${PROJECT_VERSION}${ARBITER_VERSION_SUFFIX}`, so
+  prerelease tags like `-beta2` surface in the UI without violating
+  CMake's strict-numeric `project(... VERSION x.y.z)` parser.
+
+### Removed
+- **Hosted-service docs.**  `docs/getting-started/hosted.md` and every
+  reference to the managed/SaaS deployment posture have been pulled
+  from the documentation.  The hosted product isn't ready for the
+  public yet; pointing prospective users at a waitlisted endpoint
+  while the local install is the only working path was creating noise
+  for no payoff.  Will be reintroduced when the service ships.
+- **README "Why arbiter" feature pitch.**  Trimmed to keep the page
+  focused on "what it is, how to install, an example session";
+  feature exposition lives in the concept docs.
+
+### Fixed
+- **Master agent walking into turns blind.**  Open-todo injection
+  previously fired only on delegation (`/agent`, `/parallel`); the
+  master at depth 0 never saw its own open todos and, paired with the
+  missing constitution bundle, never thought to ask.  Net effect was
+  a feature that essentially did not exist for the master agent
+  through the API.  See the bundle + injection items in **Added**.
+
+
 
 This is a **beta** release.  The feature surface is operational
 hardening — none of it changes existing agent or HTTP semantics — but

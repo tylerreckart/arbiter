@@ -64,4 +64,4 @@ For multi-turn delegation: a cancel during a `/parallel` block waits for in-flig
 ## See also
 
 - [`POST /v1/orchestrate`](orchestrate.md), [`POST /v1/agents/:id/chat`](agents/chat.md), [`POST /v1/conversations/:id/messages`](conversations/messages-post.md) — the streams this endpoint targets.
-- [SSE event catalog](concepts/sse-events.md) — `request_received` and `done` shapes.
+- [SSE event catalog](../concepts/sse-events.md) — `request_received` and `done` shapes.

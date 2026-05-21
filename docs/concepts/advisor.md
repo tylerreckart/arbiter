@@ -3,7 +3,7 @@
 Arbiter's advisor is a structurally separate model that watches an executor agent. Two operating modes are layered on the same configuration block:
 
 - **Consult** (`mode: "consult"`) — opt-in. The executor invokes the advisor on demand via the `/advise <question>` slash command. The advisor replies in plain prose; the executor decides whether to follow the advice. This is the legacy behaviour.
-- **Gate** (`mode: "gate"`) — structural. The runtime invokes the advisor automatically on the executor's *terminating turn* and parses a structured `CONTINUE` / `REDIRECT` / `HALT` signal. The executor cannot return a final result to its caller without the advisor's `CONTINUE`. This is the runtime-level supervision pattern described in [the philosophy doc](../../philosophy.md).
+- **Gate** (`mode: "gate"`) — structural. The runtime invokes the advisor automatically on the executor's *terminating turn* and parses a structured `CONTINUE` / `REDIRECT` / `HALT` signal. The executor cannot return a final result to its caller without the advisor's `CONTINUE`. This is the runtime-level supervision pattern described in [the philosophy doc](../philosophy.md).
 
 The two modes coexist. An agent in `gate` mode can still emit `/advise` for its own purposes; the gate runs in addition.
 
@@ -109,7 +109,7 @@ The consult path doesn't constrain the executor — it's an affordance, not a ga
 
 ## See also
 
-- [Philosophy](../../philosophy.md) — the structural-separation argument.
+- [Philosophy](../philosophy.md) — the structural-separation argument.
 - [SSE events](sse-events.md) — `advisor` and `escalation` event payloads.
 - [Agent data model](data-model.md) — where the advisor block lives.
-- [`POST /v1/agents`](../agents/create.md) — create an agent with an advisor configured.
+- [`POST /v1/agents`](../api/agents/create.md) — create an agent with an advisor configured.

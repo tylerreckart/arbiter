@@ -62,4 +62,4 @@ Guessing URLs from prior knowledge produces fabricated DOIs and dead links — `
 ## See also
 
 - [MCP servers](mcp.md) — `/browse` is a convenience layer over the playwright MCP server.
-- [`POST /v1/orchestrate`](../orchestrate.md)
+- [`POST /v1/orchestrate`](../api/orchestrate.md)

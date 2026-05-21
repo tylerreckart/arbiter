@@ -44,4 +44,4 @@ The `content` is the raw markdown file — it's whatever the agent wrote via `/m
 ## See also
 
 - [`GET /v1/memory`](list-scratchpads.md) — list all scratchpads for this tenant.
-- [Structured memory](../concepts/structured-memory.md) — the typed graph.
+- [Structured memory](../../concepts/structured-memory.md) — the typed graph.

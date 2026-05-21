@@ -29,11 +29,12 @@ Writs factor into a small number of orthogonal axes. Each axis has one primary v
 | Progress tracking | `/todo` | Capture and mark progress on the steps of a request. Tenant-scoped; survives across conversations and pipeline-injects into delegated sub-agents. See [Todos](todos.md). |
 | Self-reflection | `/lesson` | Record "this approach failed; try this instead" after a hard-won fix. Agent-scoped; surfaces as a `KNOWN PITFALLS` block at the top of future turns whose prompt matches. See [Lessons](lessons.md). |
 
-Most writs are single-line. Three are blocks with explicit terminators:
+Most writs are single-line. A few are blocks with explicit terminators:
 
 - `/write <path>` … `/endwrite` — persist a file.
 - `/parallel` … `/endparallel` — fan-out enclosed `/agent` calls concurrently.
 - `/mem add entry` … `/endentry` — commit a structured memory entry.
+- `/todo add <subject>` … `/endtodo` — capture a todo with a multi-line description (single-line form has no terminator).
 
 Block terminators are used instead of indentation or braces because models reliably produce closing tokens but don't reliably produce balanced indentation, and terminators survive line-by-line streaming without buffering.
 
@@ -49,7 +50,7 @@ Composition between agents happens in the same language as composition with tool
 
 ## Per-agent dialects
 
-Every agent's [Constitution](../agents/create.md) declares a `capabilities` array — a hard allowlist of writs that agent is permitted to dispatch. Two layers govern what an agent actually does:
+Every agent's [Constitution](../api/agents/create.md) declares a `capabilities` array — a hard allowlist of writs that agent is permitted to dispatch. Two layers govern what an agent actually does:
 
 - **Rules** (soft, prompt-level) tell the model *when* to use a writ.
 - **Capabilities** (hard, runtime-level) decide whether a writ the model emits will do anything.

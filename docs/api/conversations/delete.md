@@ -38,5 +38,5 @@ curl -X DELETE \
 ## See also
 
 - [`PATCH /v1/conversations/:id`](patch.md) — set `archived: true` to hide without deleting.
-- [Artifacts](../concepts/artifacts.md) — for the cascade behaviour.
-- [Structured memory](../concepts/structured-memory.md) — for the `artifact_id` clearing trigger.
+- [Artifacts](../../concepts/artifacts.md) — for the cascade behaviour.
+- [Structured memory](../../concepts/structured-memory.md) — for the `artifact_id` clearing trigger.

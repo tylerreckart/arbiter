@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Create a directed labeled edge between two entries. Both HTTP callers and agents write directly into the curated graph — see [Structured memory](../../concepts/structured-memory.md).
+Create a directed labeled edge between two entries. Both HTTP callers and agents write directly into the curated graph — see [Structured memory](../../../concepts/structured-memory.md).
 
 Relations are **directed and per-type** — the same pair can have multiple relations of different kinds; the same `(source, target, relation)` triple cannot exist twice. Symmetric relations like `contradicts` are still stored directed; clients dedupe for display.
 
@@ -39,7 +39,7 @@ curl -X POST \
 }
 ```
 
-Field schemas: [Data model → MemoryRelation](../../concepts/data-model.md#memoryrelation).
+Field schemas: [Data model → MemoryRelation](../../../concepts/data-model.md#memoryrelation).
 
 ## Failure modes
 
@@ -52,4 +52,4 @@ Field schemas: [Data model → MemoryRelation](../../concepts/data-model.md#memo
 ## See also
 
 - [`GET /v1/memory/relations`](list.md), [`DELETE /v1/memory/relations/:id`](delete.md).
-- [Structured memory](../../concepts/structured-memory.md).
+- [Structured memory](../../../concepts/structured-memory.md).

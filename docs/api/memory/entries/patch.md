@@ -4,7 +4,7 @@
 
 Update any subset of `{title, content, source, tags, type, artifact_id}`. `created_at` is immutable; `updated_at` is bumped on a successful change.
 
-**Active rows only.** Invalidated entries (those with a non-null `valid_to`) cannot be modified through this endpoint — historical records are immutable. To correct an invalidated entry, hard-delete it (`DELETE /v1/memory/entries/:id`) and re-create. See [Structured memory → Temporal model](../../concepts/structured-memory.md#temporal-model).
+**Active rows only.** Invalidated entries (those with a non-null `valid_to`) cannot be modified through this endpoint — historical records are immutable. To correct an invalidated entry, hard-delete it (`DELETE /v1/memory/entries/:id`) and re-create. See [Structured memory → Temporal model](../../../concepts/structured-memory.md#temporal-model).
 
 ## Request
 
@@ -50,4 +50,4 @@ The updated `Entry` (hydrated `artifact` block if linked).
 ## See also
 
 - [`DELETE /v1/memory/entries/:id`](delete.md), [`POST /v1/memory/entries/:id/invalidate`](invalidate.md).
-- [Structured memory](../../concepts/structured-memory.md).
+- [Structured memory](../../../concepts/structured-memory.md).

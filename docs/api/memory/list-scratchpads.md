@@ -59,4 +59,4 @@ The endpoint returns an empty list — **not a 404** — when the tenant has nev
 ## See also
 
 - [`GET /v1/memory/:agent_id`](get-scratchpad.md) — read one scratchpad.
-- [Structured memory](../concepts/structured-memory.md) — the typed graph that lives alongside this surface.
+- [Structured memory](../../concepts/structured-memory.md) — the typed graph that lives alongside this surface.

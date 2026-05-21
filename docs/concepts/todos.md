@@ -30,6 +30,7 @@ Agents emit slash commands; the dispatcher wraps results in `[/todo …]` / `[EN
 <one or more lines of detail>
 /endtodo
 /todo list
+/todo list all
 /todo start 14
 /todo done 14
 /todo cancel 15
@@ -37,20 +38,32 @@ Agents emit slash commands; the dispatcher wraps results in `[/todo …]` / `[EN
 /todo subject 14: review the canary deploy status
 ```
 
-`/todo add` accepts both the single-line form (subject only) and a block form terminated with `/endtodo` for multi-line descriptions. The block form is required when the description spans multiple lines because the runtime needs the explicit terminator to commit the row — without it, the writ is marked truncated and the agent gets an `ERR: missing /endtodo terminator` so it can retry rather than committing a half-written body.
+`/todo add` accepts both the single-line form (subject only) and a block form terminated with `/endtodo` for multi-line descriptions. The block form is required when the description spans multiple lines because the runtime needs the explicit terminator to commit the row.
+
+The block-body parser only bails to single-line mode when the next line is empty or begins with a recognised writ verb (`/agent`, `/write`, `/mem`, etc.) — a body line that legitimately starts with a slash (file path, shell command, URL) is preserved as body content.
+
+If the stream cuts off before `/endtodo`, the runtime soft-commits the subject so the agent's intent isn't lost, drops the partial body (it may be mid-sentence), and emits a `WARN: missing /endtodo terminator` so the next turn can `/todo describe <id>: <text>` to fill in the body.
 
 A successful `/todo list` looks like:
 
 ```
 [/todo list]
 3 open (1 in progress, 2 pending):
-▶ #14  [in_progress]  review the canary deploy status
-  #15  [pending]      write the post-mortem
-  #16  [pending]      file the rollback ticket  (tenant-wide)
+▶ #14  [p1]  [in_progress]  review the canary deploy status
+  #15  [p1]  [pending]      write the post-mortem
+  #16  [p2]  [pending]      file the rollback ticket  (tenant-wide)
 [END TODO]
 ```
 
-The `▶` marker singles out `in_progress` rows. A `(tenant-wide)` suffix means the row's `conversation_id` is 0 — it'll surface in this conversation but also in every other thread for the tenant.
+The `▶` marker singles out `in_progress` rows. `[p<N>]` is the row's `position` within its (status, conversation) bucket — useful when reasoning about `PATCH position` reorders. A `(tenant-wide)` suffix means the row's `conversation_id` is 0 — it'll surface in this conversation but also in every other thread for the tenant.
+
+`/todo list all` includes terminal rows (`completed`, `canceled`) for retrospective review; bare `/todo list` keeps the display focused on open work.
+
+## Master-turn injection
+
+Every master-depth turn receives an `[OPEN TODOS] … [END OPEN TODOS]` preamble prepended to the user message — same lifecycle as the lesson probe. The agent walks into each turn already seeing what's in flight, so it doesn't need to spend a turn calling `/todo list` just to remember where it left off. Best-effort: an empty list or any failure surface degrades silently.
+
+This is symmetric with the sub-agent `[DELEGATION CONTEXT]` envelope, which already carries open todos for delegated agents — now the master gets the same treatment at depth 0.
 
 ## Pipeline-memory injection
 

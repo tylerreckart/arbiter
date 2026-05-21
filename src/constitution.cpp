@@ -25,7 +25,7 @@ static std::set<std::string> resolve_bundles(
     // so adding it on the empty path would silently expand the master's
     // prompt.  Agents that want /mcp must list it explicitly.
     static const std::set<std::string> kDefaultBundles = {
-        "web", "exec", "write", "read", "mem", "delegation"
+        "web", "exec", "write", "read", "mem", "delegation", "todos"
     };
     if (capabilities.empty()) return kDefaultBundles;
 
@@ -47,6 +47,8 @@ static std::set<std::string> resolve_bundles(
             out.insert("mcp");
         else if (cap == "/a2a")
             out.insert("a2a");
+        else if (cap == "/todo")
+            out.insert("todos");
         // Unknown capability strings are silently dropped — they're routing
         // hints from older agent_defs and may not map to any bundle today.
     }
@@ -194,6 +196,22 @@ static const char* bundle_mem_inventory() {
         "                                               historical reads still return it for audit.\n";
 }
 
+static const char* bundle_todos_inventory() {
+    return
+        "  /todo add <subject>                        — capture next concrete step (single-line)\n"
+        "  /todo add <subject>                        — block form with multi-line description:\n"
+        "  <body lines>\n"
+        "  /endtodo\n"
+        "  /todo list                                 — render open todos (in_progress + pending)\n"
+        "  /todo list all                             — include completed + canceled history\n"
+        "  /todo start <id>                           — mark in_progress before doing the work\n"
+        "  /todo done <id>                            — mark completed when finished\n"
+        "  /todo cancel <id>                          — mark canceled (won't be done)\n"
+        "  /todo describe <id>: <text>                — set/replace description\n"
+        "  /todo subject <id>: <text>                 — rename\n"
+        "  /todo delete <id>                          — hard remove (no undo)\n";
+}
+
 static const char* bundle_mcp_inventory() {
     return
         "  /mcp tools                                 — list available MCP tools\n"
@@ -237,6 +255,22 @@ static std::string compose_command_rules(const std::set<std::string>& b) {
         s +=
             "- /mem write — append to scratchpad when you learn something durable; /mem read\n"
             "  to reload prior context before a long task.\n";
+
+    if (b.count("todos"))
+        s +=
+            "- /todo is your visible progress tracker.  Capture each concrete step as it\n"
+            "  crystallizes — todos ARE the plan, no separate preamble needed.  /todo start\n"
+            "  <id> BEFORE doing the work; /todo done <id> when finished.  The marker is\n"
+            "  what makes progress legible across turns and to anyone reading later.\n"
+            "- Open todos auto-prepend to your turn as [OPEN TODOS]; if no such block\n"
+            "  appears, you have no open work.  Do NOT call /todo list as a habit — only\n"
+            "  call it when you need history (/todo list all) or want to re-render after a\n"
+            "  burst of updates.  Wasting a turn re-listing what you were just shown is\n"
+            "  ceremony, not progress.\n"
+            "- Mark done in the SAME turn the work landed — not in a follow-up turn.  A\n"
+            "  delegation that completed three steps closes three todos in the synthesis\n"
+            "  turn; sub-agents see the open list in their [DELEGATION CONTEXT] envelope\n"
+            "  and may have already marked some.  Don't double-close.\n";
 
     // Artifact pairing pattern requires write + mem (and read to retrieve).
     if (b.count("write") && b.count("mem"))
@@ -350,6 +384,7 @@ static std::string compose_help_inventory(const std::set<std::string>& b) {
     if (b.count("delegation")) add("delegation");
     if (b.count("mem"))        add("mem");
     if (b.count("read"))       add("artifacts");
+    if (b.count("todos"))      add("todos");
     if (b.count("mcp"))        add("mcp");
     add("advise");   // help corpus carries this regardless of /advise wiring
 
@@ -383,6 +418,7 @@ static std::string arbiter_prompt(Brevity level,
         if (bundles.count("write"))      s += bundle_write_inventory();
         if (bundles.count("read"))       s += bundle_read_inventory();
         if (bundles.count("mem"))        s += bundle_mem_inventory();
+        if (bundles.count("todos"))      s += bundle_todos_inventory();
         if (bundles.count("mcp"))        s += bundle_mcp_inventory();
 
         s += compose_help_inventory(bundles);

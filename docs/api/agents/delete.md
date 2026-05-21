@@ -35,4 +35,4 @@ curl -X DELETE \
 ## See also
 
 - [`POST /v1/agents`](create.md), [`PATCH /v1/agents/:id`](patch.md).
-- [Tenants → Isolation](../concepts/tenants.md) — tenant-scoping invariants.
+- [Tenants → Isolation](../../concepts/tenants.md) — tenant-scoping invariants.
