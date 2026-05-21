@@ -22,8 +22,6 @@ It runs in three shapes.
 
 ## Example session
 
-What an agent's reply actually looks like — writs interleaved with the prose, the runtime intercepting them as they're emitted:
-
 ```
 > What's the canonical paper on Bayesian neural networks?
 
@@ -83,17 +81,17 @@ shape are subject to change. `/exec` is unsandboxed; treat it accordingly.
 
 ## Documentation
 
-- [`docs/getting-started/`](docs/getting-started/index.md) — quickstart paths
+- [`docs/getting-started`](https://arbiter.run/docs/getting-started/local) — quickstart paths — quickstart paths
   to first agent reply.
-- [`docs/philosophy.md`](docs/philosophy.md) — design philosophy: the six
+- [`docs/philosophy`](https://arbiter.run/docs/philosophy) — design philosophy: the six
   themes that explain why arbiter is shaped the way it is.
-- [`docs/api/`](docs/api/index.md) — full HTTP API reference: concept
+- [`docs/api/`](https://arbiter.run/docs/api) — full HTTP API reference: concept
   pages (tenants, auth, SSE events, fleet streaming, MCP, A2A protocol,
   artifacts, structured memory, operations) and one page per endpoint.
-- [`docs/cli/`](docs/cli/index.md) — non-interactive command-line
+- [`docs/cli/`](https://arbiter.run/docs/cli) — non-interactive command-line
   reference: `--init`, `--send`, `--api`, tenant admin, environment
   variables.
-- [`docs/tui/`](docs/tui/index.md) — interactive terminal client:
+- [`docs/tui/`](https://arbiter.run/docs/tui) — interactive terminal client:
   screen anatomy, slash commands, keybindings, multi-pane layouts,
   streaming and turn lifecycle, session persistence.
 - [`CHANGELOG.md`](CHANGELOG.md) — what changed, when. Breaking
@@ -105,8 +103,7 @@ shape are subject to change. `/exec` is unsandboxed; treat it accordingly.
 
 ## Quick start
 
-Full guide: [`docs/getting-started/`](docs/getting-started/index.md). Bare minimum for a local install:
-
+Bare minimum for a local install:
 ```bash
 # Install (macOS arm64)
 curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
@@ -119,7 +116,6 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 arbiter --init   # seed ~/.arbiter/ with starter agents
 arbiter          # launch the terminal client
 ```
-
 Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md).
 
 
