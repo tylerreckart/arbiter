@@ -40,7 +40,7 @@ Arbiter's `/exec` writ is disabled by default in the API. Setting `ARBITER_SANDB
 | `ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`   | Per-tenant workspace disk quota, bytes. `/write` over the cap returns ERR; reads still work. `0` = no quota. | `1073741824` (1 GiB) |
 | `ARBITER_SANDBOX_IDLE_SECONDS`          | Idle threshold before a tenant container is stopped by the background reaper. `0` = no reaping.        | `1800` (30 min) |
 
-A misconfigured sandbox (docker missing, image string empty, workspaces root unwritable) logs the reason at startup and keeps the server running with `/exec` disabled — same surface SaaS deploys have always had. Tenant workspaces land at `~/.arbiter/workspaces/t<tenant_id>/`.
+A misconfigured sandbox (docker missing, image string empty, workspaces root unwritable) logs the reason at startup and keeps the server running with `/exec` disabled — the safe default for an exposed API server. Tenant workspaces land at `~/.arbiter/workspaces/t<tenant_id>/`.
 
 ## Web search
 

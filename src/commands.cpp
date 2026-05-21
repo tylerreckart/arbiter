@@ -119,9 +119,38 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             std::string head = line.substr(5);   // "add <subject>"
             cmd.args = head;
 
-            // Peek ahead: only enter block mode if the next line isn't
-            // another /-prefixed writ.  This way "/todo add foo\n/agent …"
-            // emits two separate commands, not one with `/agent …` as body.
+            // Peek ahead: enter block mode unless the next line is plainly
+            // another writ.  Earlier versions bailed on ANY `/`-prefixed
+            // line, which dropped legitimate body content beginning with a
+            // slash (file paths, shell commands, URLs).  We now narrow the
+            // check to recognised writ prefixes — a `/Users/...` or `/v1/`
+            // in the body sails through.
+            auto starts_with_writ = [](const std::string& l) {
+                static const char* kWritPrefixes[] = {
+                    "/todo", "/endtodo",
+                    "/agent ", "/parallel", "/endparallel", "/pane ",
+                    "/write", "/endwrite",
+                    "/read ", "/list",
+                    "/search ", "/fetch ", "/browse ",
+                    "/exec ",
+                    "/mem", "/endmem",
+                    "/mcp ",
+                    "/a2a", "/schedule",
+                    "/lesson", "/endlesson",
+                    "/advise", "/help",
+                };
+                for (const char* p : kWritPrefixes) {
+                    size_t n = std::strlen(p);
+                    if (l.size() >= n && l.compare(0, n, p) == 0) return true;
+                    // Trailing-space-only forms ("/agent " etc.) also
+                    // match exact line == "/agent" (no args).
+                    if (n > 0 && p[n - 1] == ' ' &&
+                        l.size() == n - 1 && l.compare(0, n - 1, p, n - 1) == 0)
+                        return true;
+                }
+                return false;
+            };
+
             std::streampos pos = ss.tellg();
             std::string next;
             std::ostringstream body;
@@ -130,9 +159,11 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             while (std::getline(ss, next)) {
                 if (!next.empty() && next.back() == '\r') next.pop_back();
                 if (!any_body) {
-                    // First peeked line — bail back to single-line mode if
-                    // it looks like another writ or is empty.
-                    if (next.empty() || (!next.empty() && next.front() == '/')) {
+                    // Bail to single-line mode if the next line is empty
+                    // (paragraph break before another writ) or is itself a
+                    // recognised writ.  A non-writ `/`-prefixed line is
+                    // treated as body content.
+                    if (next.empty() || starts_with_writ(next)) {
                         ss.clear();
                         ss.seekg(pos);
                         break;
@@ -2119,7 +2150,21 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 cache_result = false;
             } else if (cmd.name == "todo" && cmd.args.substr(0, 3) == "add"
                         && cmd.truncated) {
-                block << "ERR: missing /endtodo terminator on block-form add\n";
+                // Soft-commit: persist the subject so the agent's intent
+                // isn't lost when streaming cut off before /endtodo, but
+                // drop the partial body (it may be mid-sentence) and warn
+                // so the next turn can /todo describe <id>: ... to finish.
+                if (todo_invoker) {
+                    std::string body_text = todo_invoker(
+                        "add", callback_args.substr(0, callback_args.find("\n\n")),
+                        agent_id);
+                    block << body_text;
+                    if (body_text.empty() || body_text.back() != '\n')
+                        block << "\n";
+                }
+                block << "WARN: missing /endtodo terminator — subject "
+                         "committed, partial body dropped.  Use /todo "
+                         "describe <id>: <text> to fill in the body.\n";
                 cache_result = false;
             } else if (!todo_invoker) {
                 block << "ERR: todos unavailable in this context — only the "

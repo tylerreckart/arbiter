@@ -29,7 +29,7 @@ curl -H "Authorization: Bearer atr_…" \
 }
 ```
 
-Each `artifacts[]` entry is the metadata shape (no `content`). Field schemas: [Data model → ArtifactRecord](../concepts/data-model.md#artifactrecord).
+Each `artifacts[]` entry is the metadata shape (no `content`). Field schemas: [Data model → ArtifactRecord](../../concepts/data-model.md#artifactrecord).
 
 ## Failure modes
 

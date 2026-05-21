@@ -55,7 +55,7 @@ curl -H "Authorization: Bearer atr_…" \
 
 Stored agents carry `created_at` and `updated_at`; the built-in `index` does not (its constitution is server-controlled and immutable from the API).
 
-Field schemas: see [Data model → Agent](../concepts/data-model.md#agent-catalog-row).
+Field schemas: see [Data model → Agent](../../concepts/data-model.md#agent-catalog-row).
 
 ## Failure modes
 

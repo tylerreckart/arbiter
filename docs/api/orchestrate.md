@@ -6,7 +6,7 @@ Runs one agent request end-to-end and streams the result as Server-Sent Events. 
 
 For a multi-turn thread that persists user / assistant messages on the server, use [`POST /v1/conversations/:id/messages`](conversations/messages-post.md) — same SSE shape, plus history replay and message persistence.
 
-Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v1/a2a/agents/:id`](a2a/dispatch.md), which translates between the arbiter event vocabulary and A2A `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent` frames. See the [A2A concept page](concepts/a2a.md) for the full mapping.
+Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v1/a2a/agents/:id`](a2a/dispatch.md), which translates between the arbiter event vocabulary and A2A `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent` frames. See the [A2A concept page](../concepts/a2a.md) for the full mapping.
 
 ## Request
 
@@ -22,7 +22,7 @@ Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v
 
 | Header | Required | Purpose |
 |---|---|---|
-| `Authorization` | yes | `Bearer <tenant token>`. See [authentication](concepts/authentication.md). |
+| `Authorization` | yes | `Bearer <tenant token>`. See [authentication](../concepts/authentication.md). |
 | `Content-Type` | yes | `application/json`. |
 | `Idempotency-Key` | no | Opaque client-supplied string (≤ 256 chars). Retries with the same key get the same execution back as an SSE replay rather than triggering a second run. See [Idempotency](#idempotency) below. |
 
@@ -91,7 +91,7 @@ Send a complete agent configuration in the request body to run it for one call w
 }
 ```
 
-`agent_def` field schema is in the [Agent data model](concepts/data-model.md#agent-catalog-row).
+`agent_def` field schema is in the [Agent data model](../concepts/data-model.md#agent-catalog-row).
 
 ### ID resolution precedence
 
@@ -124,7 +124,7 @@ curl -N \
 
 The stream begins with `request_received`, contains a sequence of `stream_start` / `text` / `tool_call` / `file` / `token_usage` / `sub_agent_response` / `stream_end` events for the master and any delegated sub-agents, and ends with exactly one `done` event (or, on fatal error, an `error` event followed by `done` with `ok: false`).
 
-`duration_ms` on `done` is wall-clock from request receipt to stream close. See the [SSE event catalog](concepts/sse-events.md) for full event-by-event field schemas, and [Fleet streaming](concepts/fleet-streaming.md) for the routing rules when `/parallel` is in play.
+`duration_ms` on `done` is wall-clock from request receipt to stream close. See the [SSE event catalog](../concepts/sse-events.md) for full event-by-event field schemas, and [Fleet streaming](../concepts/fleet-streaming.md) for the routing rules when `/parallel` is in play.
 
 ## Idempotency
 
@@ -148,8 +148,8 @@ A retry that arrives before the original has created its `request_status` row (m
 
 ## Policy defaults
 
-- **`/exec` disabled** — agents can't run shell commands on the server unless the per-tenant Docker sandbox is configured. With the sandbox on (see [Sandbox](concepts/sandbox.md)), `/exec` runs inside a tenant-scoped container.
-- **`/write` intercepted** — agent-generated files never hit the server's filesystem. They're streamed back as `file` events with UTF-8 content, subject to a 10 MiB per-response cap (configurable via `ApiServerOptions::file_max_bytes`). Persistent storage is opt-in via `/write --persist` — see [Artifacts](concepts/artifacts.md).
+- **`/exec` disabled** — agents can't run shell commands on the server unless the per-tenant Docker sandbox is configured. With the sandbox on (see [Sandbox](../concepts/sandbox.md)), `/exec` runs inside a tenant-scoped container.
+- **`/write` intercepted** — agent-generated files never hit the server's filesystem. They're streamed back as `file` events with UTF-8 content, subject to a 10 MiB per-response cap (configurable via `ApiServerOptions::file_max_bytes`). Persistent storage is opt-in via `/write --persist` — see [Artifacts](../concepts/artifacts.md).
 - **`/pane` unavailable** — pane spawning is a REPL-mode primitive; in API mode the master gets an `ERR:` and must use `/agent` (sequential) or `/parallel` (concurrent) instead.
 
 ## Failure modes
@@ -164,7 +164,7 @@ The "after-headers" mode is intentional: by the time the SSE stream is open, ret
 
 ### Circuit-breaker fast-fail
 
-When the per-provider circuit breaker is open (5 consecutive provider failures within the cooldown window, see [Operations → Circuit breaker](concepts/operations.md#provider-circuit-breaker)), the SSE stream terminates with:
+When the per-provider circuit breaker is open (5 consecutive provider failures within the cooldown window, see [Operations → Circuit breaker](../concepts/operations.md#provider-circuit-breaker)), the SSE stream terminates with:
 
 ```
 event: error
@@ -190,4 +190,4 @@ A transport error to the billing service fails open — the runtime proceeds rat
 - [`POST /v1/agents/:id/chat`](agents/chat.md) — REST shape with a path-bound agent.
 - [`POST /v1/conversations/:id/messages`](conversations/messages-post.md) — multi-turn variant with history replay.
 - [`POST /v1/requests/:id/cancel`](requests-cancel.md) — interrupt an in-flight stream.
-- [SSE event catalog](concepts/sse-events.md), [Fleet streaming](concepts/fleet-streaming.md).
+- [SSE event catalog](../concepts/sse-events.md), [Fleet streaming](../concepts/fleet-streaming.md).

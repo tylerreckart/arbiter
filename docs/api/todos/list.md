@@ -10,7 +10,7 @@ List the calling tenant's todos. Ordered with `in_progress` first, then `pending
 
 | Param             | Description |
 |-------------------|-------------|
-| `conversation_id` | Positive integer scopes the list to one thread. The result includes both rows pinned to that conversation **and** unscoped (`conversation_id = 0`) rows — same OR-NULL fallback structured memory uses, so a fresh thread still surfaces tenant-wide todos. Omit for tenant-wide listing of every row. |
+| `conversation_id` | Positive integer scopes the list to one thread. The result includes both rows pinned to that conversation **and** unscoped (`conversation_id = 0`) rows — same OR-NULL fallback structured memory uses, so a fresh thread still surfaces tenant-wide todos. `tenant` (or `unscoped`) returns only unscoped rows — useful for a cross-thread browser that should NOT mix per-thread work into the tenant-wide view. Omit (or pass `0`) for tenant-wide listing of every row across every thread. |
 | `status`          | Hard filter: `pending` \| `in_progress` \| `completed` \| `canceled`. Omit for all statuses. |
 | `agent_id`        | Hard filter on the owner-of-record (the agent that created the row). |
 | `limit`           | Cap; max 500. |

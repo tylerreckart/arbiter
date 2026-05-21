@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-JSON-RPC 2.0 dispatch endpoint for the [Agent2Agent (A2A) protocol](../concepts/a2a.md). All A2A methods funnel through this URL; the method is selected by the `method` field in the JSON-RPC envelope, not by the path.
+JSON-RPC 2.0 dispatch endpoint for the [Agent2Agent (A2A) protocol](../../concepts/a2a.md). All A2A methods funnel through this URL; the method is selected by the `method` field in the JSON-RPC envelope, not by the path.
 
 Successful responses are returned as a single JSON-RPC envelope (HTTP 200 with `result`) for unary methods, or as Server-Sent Events for `message/stream`. Protocol errors round-trip as JSON-RPC error objects (HTTP 200 with `error.code`); only malformed envelopes that can't be answered in JSON-RPC form return a non-200 HTTP status.
 
@@ -96,7 +96,7 @@ event: message
 data: {"jsonrpc":"2.0","id":1,"result":{"kind":"status-update", ... ,"status":{"state":"completed","message":{...}},"final":true}}
 ```
 
-Stream closes after the `final: true` `status-update`. See the [event mapping table](../concepts/a2a.md#streaming-event-mapping) for the full arbiter-event ↔ A2A-frame correspondence.
+Stream closes after the `final: true` `status-update`. See the [event mapping table](../../concepts/a2a.md#streaming-event-mapping) for the full arbiter-event ↔ A2A-frame correspondence.
 
 ### `tasks/get`
 
@@ -167,7 +167,7 @@ Everything else lands at HTTP 200 with a JSON-RPC error object — this matches 
 
 ## See also
 
-- [A2A protocol concept](../concepts/a2a.md)
+- [A2A protocol concept](../../concepts/a2a.md)
 - [Per-agent card endpoint](agent-card.md)
 - [Well-known discovery stub](well-known.md)
 - [`POST /v1/orchestrate`](../orchestrate.md) — the arbiter-native counterpart with a richer event vocabulary.

@@ -1,8 +1,6 @@
-# Local install
+# Local Install
 
 Run arbiter on your own machine. You bring the provider keys; you control the binary. Free, open-source, fully featured. Ten minutes from `curl` to first agent reply.
-
-If you'd rather call arbiter without operating it, see the [hosted preview](hosted.md) instead.
 
 ## Prerequisites
 

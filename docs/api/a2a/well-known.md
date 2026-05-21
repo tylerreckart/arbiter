@@ -2,7 +2,7 @@
 
 **Auth:** none — _Status:_ stable
 
-Top-level [Agent2Agent (A2A)](../concepts/a2a.md) discovery stub. Returns a minimal `AgentCard` describing how to authenticate and where to find the per-agent cards. v1.0 of the A2A spec requires `skills.length >= 1`, so the stub carries a single synthetic `discover` skill whose description tells callers to fetch `/v1/a2a/agents/<agent_id>/agent-card.json` with a tenant bearer.
+Top-level [Agent2Agent (A2A)](../../concepts/a2a.md) discovery stub. Returns a minimal `AgentCard` describing how to authenticate and where to find the per-agent cards. v1.0 of the A2A spec requires `skills.length >= 1`, so the stub carries a single synthetic `discover` skill whose description tells callers to fetch `/v1/a2a/agents/<agent_id>/agent-card.json` with a tenant bearer.
 
 ## Request
 
@@ -59,6 +59,6 @@ The `url` field is built from `ApiServerOptions::public_base_url` when set; othe
 
 ## See also
 
-- [A2A protocol concept](../concepts/a2a.md)
+- [A2A protocol concept](../../concepts/a2a.md)
 - [Per-agent card endpoint](agent-card.md)
 - [JSON-RPC dispatch](dispatch.md)

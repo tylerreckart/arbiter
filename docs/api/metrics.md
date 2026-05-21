@@ -54,7 +54,7 @@ Every registered metric emits its `HELP` + `TYPE` headers even on a fresh-start 
 | `arbiter_provider_retries_total`        | counter | `provider`  | A retry fires (attempt 2+ inside the retry loop). |
 | `arbiter_provider_5xx_total`            | counter | `provider`  | Upstream returned a 5xx or threw at the socket level. |
 | `arbiter_provider_429_total`            | counter | `provider`  | Upstream returned a 429 / `rate_limit_error` / `RESOURCE_EXHAUSTED`. |
-| `arbiter_provider_circuit_open_total`   | counter | `provider`  | The circuit breaker transitions to Open for that provider. See [Operations → Circuit breaker](concepts/operations.md#provider-circuit-breaker). |
+| `arbiter_provider_circuit_open_total`   | counter | `provider`  | The circuit breaker transitions to Open for that provider. See [Operations → Circuit breaker](../concepts/operations.md#provider-circuit-breaker). |
 
 `provider` is one of `anthropic`, `openai`, `gemini`, `ollama`.
 
@@ -111,6 +111,6 @@ scrape_configs:
 
 ## See also
 
-- [Operational notes](concepts/operations.md) — JSON logging, circuit breaker, drain mechanics.
+- [Operational notes](../concepts/operations.md) — JSON logging, circuit breaker, drain mechanics.
 - [`GET /v1/health`](health.md) — liveness probe; pair with `/v1/metrics` for monitoring.
 - [`GET /v1/admin/audit`](admin/audit.md) — admin mutation log.

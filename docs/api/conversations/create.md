@@ -28,7 +28,7 @@ curl -X POST \
 
 ### 201 Created
 
-The new `Conversation` object — `id`, `title`, `agent_id`, `created_at`, `updated_at`, `message_count: 0`, `archived: false`, and `agent_def` if provided. Field schemas: see [Data model → Conversation](../concepts/data-model.md#conversation).
+The new `Conversation` object — `id`, `title`, `agent_id`, `created_at`, `updated_at`, `message_count: 0`, `archived: false`, and `agent_def` if provided. Field schemas: see [Data model → Conversation](../../concepts/data-model.md#conversation).
 
 ## Failure modes
 

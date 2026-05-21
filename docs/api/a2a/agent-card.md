@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Returns the [Agent2Agent (A2A)](../concepts/a2a.md) `AgentCard` for one agent. The card is derived at fetch time from the agent's `Constitution`; there's no on-disk cache, so updates to a stored agent (`PATCH /v1/agents/:id`) take effect on the next card fetch.
+Returns the [Agent2Agent (A2A)](../../concepts/a2a.md) `AgentCard` for one agent. The card is derived at fetch time from the agent's `Constitution`; there's no on-disk cache, so updates to a stored agent (`PATCH /v1/agents/:id`) take effect on the next card fetch.
 
 `:id` resolves against the calling tenant's stored catalog (`tenant_agents`) plus the built-in `index` master:
 
@@ -83,7 +83,7 @@ For a stored agent with declared capabilities, additional `Skill` entries are ap
 
 ## See also
 
-- [A2A protocol concept](../concepts/a2a.md)
+- [A2A protocol concept](../../concepts/a2a.md)
 - [Well-known discovery stub](well-known.md)
 - [JSON-RPC dispatch](dispatch.md)
 - [`GET /v1/agents/:id`](../agents/get.md) — the arbiter-native counterpart that returns the raw `Constitution` JSON.

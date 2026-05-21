@@ -3,7 +3,7 @@
 Arbiter speaks the [Agent2Agent (A2A) protocol](https://a2a-protocol.org/) v1.0 in both directions.
 
 - **Inbound**, every tenant agent is reachable as an A2A endpoint at `/v1/a2a/agents/:id`. Remote A2A clients — other agent frameworks, automation pipelines, multi-vendor orchestrators — call arbiter agents the same way they'd call any other A2A-compatible peer.
-- **Outbound**, arbiter's own agents can delegate to remote A2A agents listed in `~/.arbiter/a2a_agents.json` via the [`/a2a` slash command](../../cli/a2a-agents.md). The master orchestrator sees them in its routing roster alongside local sub-agents and picks between them per turn.
+- **Outbound**, arbiter's own agents can delegate to remote A2A agents listed in `~/.arbiter/a2a_agents.json` via the [`/a2a` slash command](../cli/a2a-agents.md). The master orchestrator sees them in its routing roster alongside local sub-agents and picks between them per turn.
 
 A2A rides JSON-RPC 2.0 over HTTPS, with Server-Sent Events for streaming. Wire types are documented in the [official A2A specification](https://a2a-protocol.org/latest/specification/); arbiter implements a v1.0-only subset.
 
@@ -11,8 +11,8 @@ A2A rides JSON-RPC 2.0 over HTTPS, with Server-Sent Events for streaming. Wire t
 
 | You want… | Use |
 |-----------|-----|
-| Drive arbiter from a JavaScript / Python / etc. arbiter-native client | [`POST /v1/orchestrate`](../orchestrate.md) — richer SSE event vocabulary, native to the runtime. |
-| Plug arbiter into a multi-vendor agent fabric (anything else that speaks A2A) | [`POST /v1/a2a/agents/:id`](../a2a/dispatch.md) — spec-compatible JSON-RPC. |
+| Drive arbiter from a JavaScript / Python / etc. arbiter-native client | [`POST /v1/orchestrate`](../api/orchestrate.md) — richer SSE event vocabulary, native to the runtime. |
+| Plug arbiter into a multi-vendor agent fabric (anything else that speaks A2A) | [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.md) — spec-compatible JSON-RPC. |
 | Persist a multi-turn thread on the server | `/v1/conversations/:id/messages` — A2A's `contextId` is opaque and is not mapped to conversations. |
 
 The two surfaces share the same per-request orchestrator setup, so an agent invoked through A2A has the same tool access (`/mem`, `/mcp`, `/search`, `/a2a`, sub-agent delegation) as one called via `/v1/orchestrate`.
@@ -21,9 +21,9 @@ The two surfaces share the same per-request orchestrator setup, so an agent invo
 
 | Endpoint | Auth | What it does |
 |----------|------|--------------|
-| [`GET /.well-known/agent-card.json`](../a2a/well-known.md) | none | Top-level discovery stub. Tells unauth clients to authenticate and fetch a per-agent card. |
-| [`GET /v1/a2a/agents/:id/agent-card.json`](../a2a/agent-card.md) | tenant | Per-agent A2A AgentCard derived from the agent's `Constitution`. |
-| [`POST /v1/a2a/agents/:id`](../a2a/dispatch.md) | tenant | JSON-RPC 2.0 dispatch — all methods funnel here. |
+| [`GET /.well-known/agent-card.json`](../api/a2a/well-known.md) | none | Top-level discovery stub. Tells unauth clients to authenticate and fetch a per-agent card. |
+| [`GET /v1/a2a/agents/:id/agent-card.json`](../api/a2a/agent-card.md) | tenant | Per-agent A2A AgentCard derived from the agent's `Constitution`. |
+| [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.md) | tenant | JSON-RPC 2.0 dispatch — all methods funnel here. |
 
 ## JSON-RPC method support
 
@@ -33,10 +33,10 @@ The two surfaces share the same per-request orchestrator setup, so an agent invo
 | `message/stream` | implemented | Streams `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames over SSE; final event has `final: true`. |
 | `tasks/get` | implemented | Reads from the `a2a_tasks` table; tenant-scoped. |
 | `tasks/cancel` | implemented | Cancels in-flight tasks via the existing `InFlightRegistry`; terminal tasks return `TaskNotCancelable`. |
-| `tasks/resubscribe` | implemented | Replays the persisted event log for the task, then live-tails until terminal. Backed by the same store as [`GET /v1/requests/:id/events`](../requests/events.md); see [Durable in-flight execution](durable-execution.md). |
+| `tasks/resubscribe` | implemented | Replays the persisted event log for the task, then live-tails until terminal. Backed by the same store as [`GET /v1/requests/:id/events`](../api/requests/events.md); see [Durable in-flight execution](durable-execution.md). |
 | `tasks/pushNotificationConfig/{set,get,list,delete}` | rejected | `UnsupportedOperation` (-32004). |
 
-Unknown methods land at `MethodNotFound` (-32601). Malformed envelopes land at `ParseError` (-32700) or `InvalidRequest` (-32600). See the [`POST /v1/a2a/agents/:id`](../a2a/dispatch.md) endpoint page for the full error code table.
+Unknown methods land at `MethodNotFound` (-32601). Malformed envelopes land at `ParseError` (-32700) or `InvalidRequest` (-32600). See the [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.md) endpoint page for the full error code table.
 
 ## Version negotiation
 
@@ -126,7 +126,7 @@ CREATE TABLE a2a_tasks (
 );
 ```
 
-`task_id` reuses the arbiter `request_id` so [`/v1/requests/:id/cancel`](../requests-cancel.md) and `tasks/cancel` cancel the same in-flight orchestrator. Rows are written at three points: on submission (`submitted`), when streaming starts (`working`), and at terminal state (`completed | failed | canceled`).
+`task_id` reuses the arbiter `request_id` so [`/v1/requests/:id/cancel`](../api/requests-cancel.md) and `tasks/cancel` cancel the same in-flight orchestrator. Rows are written at three points: on submission (`submitted`), when streaming starts (`working`), and at terminal state (`completed | failed | canceled`).
 
 `context_id` is opaque to arbiter — it threads through the protocol verbatim and is **not** foreign-keyed against `conversations`. Persistence-oriented slash commands (`/write --persist`, `/read`, `/list`) are inert in A2A-driven sessions; files written via `/write` still flow as A2A `TaskArtifactUpdateEvent` frames in the streaming path.
 
@@ -149,10 +149,10 @@ A2A in arbiter targets the v1.0 spec exclusively. The implementation supports `m
 
 ## See also
 
-- [Per-agent card endpoint](../a2a/agent-card.md)
-- [Well-known discovery stub](../a2a/well-known.md)
-- [JSON-RPC dispatch endpoint](../a2a/dispatch.md)
-- [`/a2a` slash command + registry](../../cli/a2a-agents.md)
-- [`POST /v1/orchestrate`](../orchestrate.md) — the arbiter-native counterpart.
+- [Per-agent card endpoint](../api/a2a/agent-card.md)
+- [Well-known discovery stub](../api/a2a/well-known.md)
+- [JSON-RPC dispatch endpoint](../api/a2a/dispatch.md)
+- [`/a2a` slash command + registry](../cli/a2a-agents.md)
+- [`POST /v1/orchestrate`](../api/orchestrate.md) — the arbiter-native counterpart.
 - [Authentication](authentication.md) — how the tenant bearer is validated.
 - [SSE event catalog](sse-events.md) — the arbiter-native events that arbiter's own SSE dialect emits; A2A streaming uses different event shapes.

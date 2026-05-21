@@ -19,7 +19,7 @@ curl -H "Authorization: Bearer adm_…" \
 
 ### 200 OK
 
-The `Tenant` object — see [Data model → Tenant](../concepts/data-model.md#tenant). The plaintext token is **not** returned (it's only available at creation time).
+The `Tenant` object — see [Data model → Tenant](../../concepts/data-model.md#tenant). The plaintext token is **not** returned (it's only available at creation time).
 
 ## Failure modes
 

@@ -183,6 +183,50 @@ TEST_CASE("tenant scoping: ids never leak across tenants") {
     CHECK(still->subject == "alpha task");
 }
 
+TEST_CASE("create_todo seeds custom status and stamps completed_at on terminal") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+
+    auto p = s.create_todo(tid, 0, "x", "p", "");
+    CHECK(p.status == "pending");
+    CHECK(p.completed_at == 0);
+
+    auto ip = s.create_todo(tid, 0, "x", "ip", "", "in_progress");
+    CHECK(ip.status == "in_progress");
+    CHECK(ip.completed_at == 0);
+
+    auto d = s.create_todo(tid, 0, "x", "d", "", "completed");
+    CHECK(d.status == "completed");
+    CHECK(d.completed_at > 0);
+    CHECK(d.completed_at == d.created_at);
+
+    auto c = s.create_todo(tid, 0, "x", "c", "", "canceled");
+    CHECK(c.status == "canceled");
+    CHECK(c.completed_at > 0);
+    CHECK(c.completed_at == c.created_at);
+
+    // Seeded terminal rows live in their own position bucket — they don't
+    // perturb the pending counter.
+    auto p2 = s.create_todo(tid, 0, "x", "p2", "");
+    CHECK(p2.position == 2);   // still increments off the pending bucket
+}
+
+TEST_CASE("conversation scope: negative id returns unscoped rows only") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+
+    s.create_todo(tid, 0, "x", "tenant-wide A", "");   // unscoped
+    s.create_todo(tid, 0, "x", "tenant-wide B", "");   // unscoped
+    s.create_todo(tid, 7, "x", "conv 7 only",   "");   // pinned
+    s.create_todo(tid, 9, "x", "conv 9 only",   "");   // pinned
+
+    TenantStore::TodoFilter f;
+    f.conversation_id = -1;        // unscoped-only
+    auto rows = s.list_todos(tid, f);
+    CHECK(rows.size() == 2);
+    for (auto& r : rows) CHECK(r.conversation_id == 0);
+}
+
 TEST_CASE("filter: status + agent_id") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");

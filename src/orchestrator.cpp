@@ -743,6 +743,29 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         } catch (...) { /* never let lesson probe break dispatch */ }
     }
 
+    // Pre-turn open-todo injection.  Symmetric with the delegation-context
+    // injection in make_invoker / make_parallel_invoker — but at depth 0
+    // the master never goes through those, so without this it walks into
+    // every fresh turn blind to its own in-flight work.  Gated to depth 0
+    // because delegated sub-agents already get the same data inside
+    // [DELEGATION CONTEXT].  Best-effort: any failure or empty result
+    // degrades silently rather than blocking dispatch.
+    if (todo_invoker_cb_ && depth == 0 && !current_msg.empty()) {
+        try {
+            std::string body = todo_invoker_cb_("list", "", agent_id);
+            if (!body.empty() &&
+                body.compare(0, 4, "ERR:") != 0 &&
+                body.compare(0, 10, "(no todos)") != 0) {
+                std::string preamble =
+                    "[OPEN TODOS] (mark progress as you go — "
+                    "/todo start <id>, /todo done <id>):\n" + body;
+                if (preamble.back() != '\n') preamble += '\n';
+                preamble += "[END OPEN TODOS]";
+                current_msg = preamble + "\n\n" + current_msg;
+            }
+        } catch (...) { /* never let todo probe break dispatch */ }
+    }
+
     auto invoker          = make_invoker(agent_id, depth, shared_cache, orig_q);
     auto advisor_invoker  = make_advisor_invoker(agent_id);
     auto parallel_invoker = make_parallel_invoker(agent_id, depth, orig_q);

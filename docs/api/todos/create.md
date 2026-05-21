@@ -8,12 +8,13 @@ Create a todo. Most agent-driven creation flows through the [`/todo` writ](../..
 
 ### Body
 
-| Field             | Type   | Required | Default   | Description |
-|-------------------|--------|----------|-----------|-------------|
-| `subject`         | string | yes      | —         | Short title. |
-| `description`     | string | no       | `""`      | Free-form details. |
-| `agent_id`        | string | no       | `"index"` | The owner of record. Captured at create time; not enforced (any tenant agent may later mark it done). |
-| `conversation_id` | int    | no       | `0`       | Pin to a conversation thread. `0` ⇒ tenant-wide (visible from every thread). |
+| Field             | Type   | Required | Default     | Description |
+|-------------------|--------|----------|-------------|-------------|
+| `subject`         | string | yes      | —           | Short title. |
+| `description`     | string | no       | `""`        | Free-form details. |
+| `agent_id`        | string | no       | `"index"`   | The owner of record. Captured at create time; not enforced (any tenant agent may later mark it done). |
+| `conversation_id` | int    | no       | `0`         | Pin to a conversation thread. `0` ⇒ tenant-wide (visible from every thread). |
+| `status`          | string | no       | `"pending"` | Seed status: `pending` \| `in_progress` \| `completed` \| `canceled`. Terminal values also stamp `completed_at = created_at` so historical rows don't look like in-flight work that just resolved. Useful when migrating from another tracker. |
 
 ```bash
 curl -X POST \
@@ -50,7 +51,7 @@ curl -X POST \
 
 | Status | When | Body |
 |--------|------|------|
-| 400    | Missing `subject`; invalid JSON. | `{"error":"..."}` |
+| 400    | Missing `subject`; invalid `status`; invalid JSON. | `{"error":"..."}` |
 | 401    | Missing / invalid bearer.        | `{"error":"..."}` |
 
 ## See also

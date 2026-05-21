@@ -19,7 +19,7 @@ curl -H "Authorization: Bearer atr_…" \
 
 ### 200 OK
 
-The `Conversation` object. Field schemas: [Data model → Conversation](../concepts/data-model.md#conversation).
+The `Conversation` object. Field schemas: [Data model → Conversation](../../concepts/data-model.md#conversation).
 
 ## Failure modes
 
