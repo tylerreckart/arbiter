@@ -2,7 +2,7 @@
 
 A typed graph of facts that arbiter agents read and write across sessions. Entries are nodes, relations are directed labeled edges. The graph survives turn boundaries, persists across restarts, and is searchable mid-turn through `/mem` slash commands.
 
-This document explains *why* the memory layer is shaped the way it is, *what* the data model looks like, and *how* an agent retrieves what it needs out of it. For the surface-level CRUD reference, the endpoint pages under [`memory/entries/`](../memory/entries/list.md) and [`memory/relations/`](../memory/relations/list.md) carry the request/response details.
+This document explains *why* the memory layer is shaped the way it is, *what* the data model looks like, and *how* an agent retrieves what it needs out of it. For the surface-level CRUD reference, the endpoint pages under [`memory/entries/`](../api/memory/entries/list.md) and [`memory/relations/`](../api/memory/relations/list.md) carry the request/response details.
 
 ## Why a typed, temporal graph
 
@@ -28,7 +28,7 @@ The structured-memory layer answers each:
 |---------|---------|------------|--------|
 | **Memory entries** (this doc) | `memory_entries` table | Soft-delete via invalidate; hard-delete via DELETE; PATCH allowed on active rows | Ranked search, per-id, graph traversal |
 | **Memory relations** (this doc) | `memory_relations` table | Hard-delete only | Per-source, per-target, per-pair queries |
-| **File scratchpads** ([list](../memory/list-scratchpads.md), [get](../memory/get-scratchpad.md)) | `agent_scratchpad` table or filesystem fallback | Append-only via `/mem write`; full-overwrite via `/mem clear` | Whole-document read |
+| **File scratchpads** ([list](../api/memory/list-scratchpads.md), [get](../api/memory/get-scratchpad.md)) | `agent_scratchpad` table or filesystem fallback | Append-only via `/mem write`; full-overwrite via `/mem clear` | Whole-document read |
 | **Artifacts** ([concepts](artifacts.md)) | `tenant_artifacts` table | Per-conversation; replaced on path collision; CASCADE on conversation delete | Per-id metadata + raw blob |
 
 An entry is **not** a parsed scratchpad. An agent's `/mem write` does not create an entry. A scratchpad is for the agent's free-form working notes within a conversation; an entry is for facts the agent or operator wants to retain across conversations and surface in ranked retrieval.
@@ -100,7 +100,7 @@ The agent-facing `/mem invalidate <id>` and the HTTP `POST /v1/memory/entries/:i
 
 Three reasons this matters in practice:
 
-- **Audit and replay.** "What did the agent believe last week?" is a real question — diagnosing a bad recommendation, tracing an unintended action, or simply showing the user what changed. Soft-delete preserves the row; the `as_of=<epoch>` query parameter on [`GET /v1/memory/entries`](../memory/entries/list.md) reconstructs the active set at any past timestamp.
+- **Audit and replay.** "What did the agent believe last week?" is a real question — diagnosing a bad recommendation, tracing an unintended action, or simply showing the user what changed. Soft-delete preserves the row; the `as_of=<epoch>` query parameter on [`GET /v1/memory/entries`](../api/memory/entries/list.md) reconstructs the active set at any past timestamp.
 - **Concurrency safety.** Hard deletes race with concurrent reads — an agent mid-turn might read the row right before another invocation deletes it, then write a relation pointing at a now-missing endpoint. Soft delete is observable but not destructive: the read still completes; the relation still has both endpoints in the DB; the next read filters them out.
 - **Idempotent invalidation.** Calling invalidate on an already-invalidated row returns `false` (HTTP 404) without changing `valid_to`. That makes invalidate safe to retry — networks fail, agents emit duplicates, callers shouldn't have to track which ids they've already retired.
 
@@ -434,8 +434,8 @@ The reader and writer are both bound to the request's authenticated tenant — s
 
 ## See also
 
-- [`POST /v1/memory/entries`](../memory/entries/create.md), [`GET /v1/memory/entries`](../memory/entries/list.md), [`GET /v1/memory/entries/:id`](../memory/entries/get.md), [`PATCH /v1/memory/entries/:id`](../memory/entries/patch.md), [`DELETE /v1/memory/entries/:id`](../memory/entries/delete.md), [`POST /v1/memory/entries/:id/invalidate`](../memory/entries/invalidate.md)
-- [`POST /v1/memory/relations`](../memory/relations/create.md), [`GET /v1/memory/relations`](../memory/relations/list.md), [`DELETE /v1/memory/relations/:id`](../memory/relations/delete.md)
-- [`GET /v1/memory/graph`](../memory/graph.md)
+- [`POST /v1/memory/entries`](../api/memory/entries/create.md), [`GET /v1/memory/entries`](../api/memory/entries/list.md), [`GET /v1/memory/entries/:id`](../api/memory/entries/get.md), [`PATCH /v1/memory/entries/:id`](../api/memory/entries/patch.md), [`DELETE /v1/memory/entries/:id`](../api/memory/entries/delete.md), [`POST /v1/memory/entries/:id/invalidate`](../api/memory/entries/invalidate.md)
+- [`POST /v1/memory/relations`](../api/memory/relations/create.md), [`GET /v1/memory/relations`](../api/memory/relations/list.md), [`DELETE /v1/memory/relations/:id`](../api/memory/relations/delete.md)
+- [`GET /v1/memory/graph`](../api/memory/graph.md)
 - [Artifacts](artifacts.md) — for the memory↔artifact link
 - [Data model](data-model.md#memoryentry) — exact field shapes

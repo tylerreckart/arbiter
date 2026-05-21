@@ -35,4 +35,4 @@ curl -X DELETE \
 ## See also
 
 - [`DELETE /v1/artifacts/:aid`](delete.md) — tenant-scoped variant.
-- [Artifacts → Memory ↔ artifact linkage](../concepts/artifacts.md#memory--artifact-linkage) — what happens to memory references.
+- [Artifacts → Memory ↔ artifact linkage](../../concepts/artifacts.md#memory--artifact-linkage) — what happens to memory references.

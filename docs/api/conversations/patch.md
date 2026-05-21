@@ -29,7 +29,7 @@ curl -X PATCH \
 
 ### 200 OK
 
-The updated `Conversation` object. Field schemas: [Data model → Conversation](../concepts/data-model.md#conversation).
+The updated `Conversation` object. Field schemas: [Data model → Conversation](../../concepts/data-model.md#conversation).
 
 ## Failure modes
 

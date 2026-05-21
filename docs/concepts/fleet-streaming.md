@@ -70,4 +70,4 @@ The master orchestrator's text deltas during a delegation iteration are **suppre
 ## See also
 
 - [SSE event catalog](sse-events.md)
-- [`POST /v1/orchestrate`](../orchestrate.md)
+- [`POST /v1/orchestrate`](../api/orchestrate.md)

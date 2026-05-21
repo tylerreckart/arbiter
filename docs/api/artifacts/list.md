@@ -26,7 +26,7 @@ curl -H "Authorization: Bearer atr_…" \
 }
 ```
 
-Each `artifacts[]` entry includes its `conversation_id`. Field schemas: [Data model → ArtifactRecord](../concepts/data-model.md#artifactrecord).
+Each `artifacts[]` entry includes its `conversation_id`. Field schemas: [Data model → ArtifactRecord](../../concepts/data-model.md#artifactrecord).
 
 Capped at 200 per page (no cursor in v1).
 

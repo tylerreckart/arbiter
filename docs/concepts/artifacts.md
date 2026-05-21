@@ -61,10 +61,10 @@ The `--persist` write goes through the same path validator as the HTTP endpoint 
 
 Memory entries can carry an optional `artifact_id` field referencing a row in the artifact store. The link is set via:
 
-- **HTTP**: [`POST /v1/memory/entries`](../memory/entries/create.md) or [`PATCH /v1/memory/entries/:id`](../memory/entries/patch.md) with `artifact_id` in the body. Cross-tenant ids return 400.
+- **HTTP**: [`POST /v1/memory/entries`](../api/memory/entries/create.md) or [`PATCH /v1/memory/entries/:id`](../api/memory/entries/patch.md) with `artifact_id` in the body. Cross-tenant ids return 400.
 - **Agent slash**: `/mem add entry <type> <title> --artifact #<id>` — the agent that just `/write --persist`-ed a file can file it directly into a memory entry in the same turn.
 
-When the linked artifact is deleted (directly via [`DELETE /v1/artifacts/:aid`](../artifacts/delete.md), or indirectly via its conversation being deleted), the database trigger `memory_entries_artifact_id_clear` nullifies the link automatically. The memory entry survives; future reads see `artifact_id: null` (or `(link expired ...)` in the agent-facing format).
+When the linked artifact is deleted (directly via [`DELETE /v1/artifacts/:aid`](../api/artifacts/delete.md), or indirectly via its conversation being deleted), the database trigger `memory_entries_artifact_id_clear` nullifies the link automatically. The memory entry survives; future reads see `artifact_id: null` (or `(link expired ...)` in the agent-facing format).
 
 ### The cross-conversation read rule
 
@@ -108,6 +108,6 @@ The path string lands on the client as a UTF-8 display field — it's untrusted.
 
 ## See also
 
-- [`POST /v1/conversations/:id/artifacts`](../artifacts/conversations-create.md), [`GET /v1/conversations/:id/artifacts`](../artifacts/conversations-list.md), [`GET /v1/conversations/:id/artifacts/:aid`](../artifacts/conversations-get.md), [`GET /v1/conversations/:id/artifacts/:aid/raw`](../artifacts/conversations-raw.md), [`DELETE /v1/conversations/:id/artifacts/:aid`](../artifacts/conversations-delete.md)
-- [`GET /v1/artifacts`](../artifacts/list.md), [`GET /v1/artifacts/:aid`](../artifacts/get.md), [`GET /v1/artifacts/:aid/raw`](../artifacts/raw.md), [`DELETE /v1/artifacts/:aid`](../artifacts/delete.md)
+- [`POST /v1/conversations/:id/artifacts`](../api/artifacts/conversations-create.md), [`GET /v1/conversations/:id/artifacts`](../api/artifacts/conversations-list.md), [`GET /v1/conversations/:id/artifacts/:aid`](../api/artifacts/conversations-get.md), [`GET /v1/conversations/:id/artifacts/:aid/raw`](../api/artifacts/conversations-raw.md), [`DELETE /v1/conversations/:id/artifacts/:aid`](../api/artifacts/conversations-delete.md)
+- [`GET /v1/artifacts`](../api/artifacts/list.md), [`GET /v1/artifacts/:aid`](../api/artifacts/get.md), [`GET /v1/artifacts/:aid/raw`](../api/artifacts/raw.md), [`DELETE /v1/artifacts/:aid`](../api/artifacts/delete.md)
 - [Structured memory](structured-memory.md) — for the memory↔artifact link

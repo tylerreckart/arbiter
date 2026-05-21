@@ -4,9 +4,9 @@ Arbiter ships a pluggable [Model Context Protocol](https://modelcontextprotocol.
 
 The integration is **per-request and stateful within a request**:
 
-- Each [`POST /v1/orchestrate`](../orchestrate.md), [`POST /v1/conversations/:id/messages`](../conversations/messages-post.md), and [`POST /v1/agents/:id/chat`](../agents/chat.md) call gets its own `mcp::Manager` and its own subprocess.
+- Each [`POST /v1/orchestrate`](../api/orchestrate.md), [`POST /v1/conversations/:id/messages`](../api/conversations/messages-post.md), and [`POST /v1/agents/:id/chat`](../api/agents/chat.md) call gets its own `mcp::Manager` and its own subprocess.
 - Within that request, multiple `/mcp` commands share the same browser context — `/mcp call playwright browser_navigate {...}` followed by `/mcp call playwright browser_snapshot` see the same tab.
-- When the request ends (or the client cancels via [`/v1/requests/:id/cancel`](../requests-cancel.md)), the manager is destroyed and the subprocess receives `SIGTERM`. State does not persist across requests.
+- When the request ends (or the client cancels via [`/v1/requests/:id/cancel`](../api/requests-cancel.md)), the manager is destroyed and the subprocess receives `SIGTERM`. State does not persist across requests.
 
 The cold-start cost of spawning a server lazily on first reference is real (`npx @playwright/mcp` is multi-second) but acceptable in exchange for clean tenant isolation and zero zombie-cleanup logic. The first `/mcp` reference per request pays the cost; subsequent ones in the same turn share the live process.
 
@@ -58,7 +58,7 @@ Arbiter speaks **stdio MCP only**. Hosted services that publish HTTP/SSE MCP end
 
 OAuth lifecycle: the first call to a hosted server triggers `mcp-remote` to print a login URL to stderr and wait for the browser callback. Tokens land at `~/.mcp-auth/` and persist across runs. For a daemonised `arbiter --api`, run `npx mcp-remote <url>` once interactively from a shell to seed the cache before launching the daemon.
 
-A ready-to-use registry covering GitHub, Sentry, Linear, and Slack ships at [`examples/mcp_servers.json`](../../../examples/mcp_servers.json) — copy to `~/.arbiter/mcp_servers.json` and edit. The shipped `backend`, `devops`, `frontend`, `reviewer`, `planner`, and `research` agents declare `/mcp` in their capabilities and carry per-agent rules describing which servers to call for which work.
+A ready-to-use registry covering GitHub, Sentry, Linear, and Slack ships at [`examples/mcp_servers.json`](../../examples/mcp_servers.json) — copy to `~/.arbiter/mcp_servers.json` and edit. The shipped `backend`, `devops`, `frontend`, `reviewer`, `planner`, and `research` agents declare `/mcp` in their capabilities and carry per-agent rules describing which servers to call for which work.
 
 ## Slash commands
 
@@ -134,5 +134,5 @@ A subprocess that crashes mid-request is **not auto-restarted** within that requ
 ## See also
 
 - [Web search](search.md) — `/search` is the discovery counterpart to `/browse`.
-- [`POST /v1/orchestrate`](../orchestrate.md)
+- [`POST /v1/orchestrate`](../api/orchestrate.md)
 - [Operational notes](operations.md)

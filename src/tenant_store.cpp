@@ -3082,36 +3082,44 @@ TenantStore::Todo
 TenantStore::create_todo(int64_t tenant_id, int64_t conversation_id,
                           const std::string& agent_id,
                           const std::string& subject,
-                          const std::string& description) {
+                          const std::string& description,
+                          const std::string& status) {
     if (!db_) throw std::runtime_error("TenantStore not opened");
     const int64_t ts = now_epoch();
 
+    const bool terminal = (status == "completed" || status == "canceled");
+
     // Position = MAX(position)+1 within the same (tenant, conversation,
-    // status='pending') bucket so /todo list renders in append order.
+    // status) bucket so /todo list renders in append order within each
+    // status lane.  Seeded terminal rows get their own bucket so they
+    // don't perturb pending-bucket positions.
     int64_t pos = 1;
     {
         Stmt p(db_,
             "SELECT COALESCE(MAX(position), 0) + 1 "
             "  FROM todos "
-            " WHERE tenant_id = ? AND conversation_id = ? AND status = 'pending';");
+            " WHERE tenant_id = ? AND conversation_id = ? AND status = ?;");
         p.bind(1, tenant_id);
         p.bind(2, conversation_id);
+        p.bind(3, status);
         if (p.step() == SQLITE_ROW) pos = p.column_int64(0);
     }
 
     Stmt q(db_,
         "INSERT INTO todos "
         "(tenant_id, conversation_id, agent_id, subject, description, "
-        " status, position, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?);");
+        " status, position, created_at, updated_at, completed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
     q.bind(1, tenant_id);
     q.bind(2, conversation_id);
     q.bind(3, agent_id);
     q.bind(4, subject);
     q.bind(5, description);
-    q.bind(6, pos);
-    q.bind(7, ts);
+    q.bind(6, status);
+    q.bind(7, pos);
     q.bind(8, ts);
+    q.bind(9, ts);
+    q.bind(10, terminal ? ts : 0);
     int rc = q.step();
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert todo");
 
@@ -3122,10 +3130,11 @@ TenantStore::create_todo(int64_t tenant_id, int64_t conversation_id,
     t.agent_id        = agent_id;
     t.subject         = subject;
     t.description     = description;
-    t.status          = "pending";
+    t.status          = status;
     t.position        = pos;
     t.created_at      = ts;
     t.updated_at      = ts;
+    t.completed_at    = terminal ? ts : 0;
     return t;
 }
 
@@ -3150,10 +3159,15 @@ TenantStore::list_todos(int64_t tenant_id, const TodoFilter& f) const {
 
     // Conversation scope: positive = include conversation_id match OR
     // unscoped (=0) rows.  Zero = no filter (tenant-wide, every row).
+    // Negative = unscoped-only (conversation_id = 0); per-thread rows
+    // are excluded so cross-thread browsers don't see other threads'
+    // work item-by-item.
     std::string sql = std::string("SELECT ") + kTodoCols +
         " FROM todos WHERE tenant_id = ?";
     if (f.conversation_id > 0)
         sql += " AND (conversation_id = ? OR conversation_id = 0)";
+    else if (f.conversation_id < 0)
+        sql += " AND conversation_id = 0";
     if (!f.status_filter.empty())
         sql += " AND status = ?";
     if (!f.agent_id_filter.empty())

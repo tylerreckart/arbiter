@@ -545,23 +545,32 @@ public:
         int64_t     completed_at    = 0;         // 0 until terminal
     };
 
-    // Insert at the end of the (status='pending', conversation_id) bucket
-    // by default — the row's position is set to max(position)+1 within
-    // the bucket, so /todo list renders in creation order without ties.
+    // Insert at the end of the (status, conversation_id) bucket — the
+    // row's position is set to max(position)+1 within the bucket, so
+    // /todo list renders in creation order without ties.  `status`
+    // defaults to "pending"; callers seeding history (migration from
+    // another tracker, scripted backfill) may pass a terminal value, in
+    // which case `completed_at` is also stamped to `created_at` so the
+    // row doesn't look like a row that was completed mid-transaction.
     Todo create_todo(int64_t tenant_id, int64_t conversation_id,
                       const std::string& agent_id,
                       const std::string& subject,
-                      const std::string& description);
+                      const std::string& description,
+                      const std::string& status = "pending");
 
     std::optional<Todo> get_todo(int64_t tenant_id, int64_t id) const;
 
     struct TodoFilter {
-        // 0 = no filter (tenant-wide, every conversation).  Negative
-        // is reserved for "unscoped only" if we ever need that surface.
-        // Positive: include todos pinned to this conversation OR rows
-        // with conversation_id=0 (unscoped, visible everywhere) — same
-        // OR-NULL fallback structured memory uses, so a fresh
-        // conversation still sees tenant-wide todos.
+        // Conversation scope:
+        //   0  = no filter (tenant-wide, every row across every thread).
+        //   >0 = include rows pinned to this conversation OR rows with
+        //         conversation_id=0 (unscoped, visible everywhere) —
+        //         same OR-NULL fallback structured memory uses, so a
+        //         fresh conversation still sees tenant-wide todos.
+        //   <0 = unscoped-only: return rows with conversation_id=0 and
+        //         skip every conversation-pinned row.  Useful for the
+        //         tenant-wide browser surface that should NOT mix
+        //         per-thread work into the cross-thread view.
         int64_t     conversation_id = 0;
         std::string status_filter;               // empty = all statuses
         std::string agent_id_filter;             // empty = all owners

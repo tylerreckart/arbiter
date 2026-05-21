@@ -31,4 +31,4 @@ ok
 
 ## See also
 
-- [Operational notes](concepts/operations.md) — deployment + reverse-proxy guidance.
+- [Operational notes](../concepts/operations.md) — deployment + reverse-proxy guidance.

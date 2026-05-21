@@ -31,7 +31,7 @@ curl -H "Authorization: Bearer adm_…" \
 }
 ```
 
-Field schemas: [Data model → Tenant](../concepts/data-model.md#tenant). Tokens are **not** returned (the DB only stores their digests).
+Field schemas: [Data model → Tenant](../../concepts/data-model.md#tenant). Tokens are **not** returned (the DB only stores their digests).
 
 ## Failure modes
 
@@ -43,4 +43,4 @@ Field schemas: [Data model → Tenant](../concepts/data-model.md#tenant). Tokens
 ## See also
 
 - [`POST /v1/admin/tenants`](tenants-create.md), [`GET /v1/admin/tenants/:id`](tenants-get.md), [`PATCH /v1/admin/tenants/:id`](tenants-patch.md).
-- [Tenants](../concepts/tenants.md), [Authentication](../concepts/authentication.md).
+- [Tenants](../../concepts/tenants.md), [Authentication](../../concepts/authentication.md).

@@ -5,7 +5,7 @@
 List entries for the authenticated tenant. Two modes:
 
 - **Browse** (no `q`): rows ordered by `updated_at DESC`. `type` and `tag` act as hard `WHERE` filters.
-- **Search** (`q` present): rows ranked by Okapi-BM25 over an FTS5 index on `(title, content, tags, source)`. `type` and `tag` become **score boosts** (mismatched rows still appear, just lower in the order). See [Structured memory → Retrieval](../../concepts/structured-memory.md#retrieval) for the layered ranking pipeline.
+- **Search** (`q` present): rows ranked by Okapi-BM25 over an FTS5 index on `(title, content, tags, source)`. `type` and `tag` become **score boosts** (mismatched rows still appear, just lower in the order). See [Structured memory → Retrieval](../../../concepts/structured-memory.md#retrieval) for the layered ranking pipeline.
 
 Invalidated rows (those with a non-null `valid_to`) are excluded by default; pass `as_of=<epoch>` to read historical state.
 
@@ -19,7 +19,7 @@ Invalidated rows (those with a non-null `valid_to`) are excluded by default; pas
 | `tag`               | string      | Single-tag substring match against the serialized JSON. Hard filter in browse mode; boost in search mode. |
 | `q`                 | string      | FTS5 query. When set, switches to ranked-search mode; tokens are AND-combined with stemming and case-folding. |
 | `conversation_id`   | int         | Scope results to one conversation. Returns rows pinned to this conversation **plus** unscoped rows (`conversation_id IS NULL`). Cross-tenant ids are silently dropped. |
-| `graduated`         | bool-ish    | Only meaningful with `q` + `conversation_id`. Routes search through `search_entries_graduated`: runs both a conversation-scoped pass and a tenant-wide pass, then [reciprocal-rank-fuses](../../concepts/structured-memory.md#retrieval) the rankings (conversation pass weighted at 1.5×, tenant-wide at 1.0×). A strong tenant-wide hit can therefore outrank a weaker conversation-local one, fixing the multi-session case where the answer lives in another conversation. |
+| `graduated`         | bool-ish    | Only meaningful with `q` + `conversation_id`. Routes search through `search_entries_graduated`: runs both a conversation-scoped pass and a tenant-wide pass, then [reciprocal-rank-fuses](../../../concepts/structured-memory.md#retrieval) the rankings (conversation pass weighted at 1.5×, tenant-wide at 1.0×). A strong tenant-wide hit can therefore outrank a weaker conversation-local one, fixing the multi-session case where the answer lives in another conversation. |
 | `intent`            | string      | `intent=off` disables the heuristic question-intent classifier. Default behavior (and `intent=auto`) uses keyword cues in `q` ("favorite", "when", "how to", etc.) to soft-boost matching memory types via the existing 1.3× BM25 multiplier. Caller-supplied `type=…` always wins; intent boosts only apply when `type` is unset. Zero LLM cost. |
 | `expand`            | string (model) | When set, the server calls this model once per request to generate 2 alternative phrasings of `q`, runs each through the full FTS pipeline (with its own intent classification), and reciprocal-rank-fuses the rankings (original at weight 1.0, paraphrases at 0.7). The no-embedding analogue of dense retrieval — closes the recall gap on paraphrased queries. Costs ~150 ms + ~$0.0001 per request. Failures (advisor unavailable, unparseable response) are benign: search proceeds with the original query alone and a `note` is surfaced in the `expansion` response block. |
 | `rerank`            | string (model) | When set, takes the top-N FTS candidates and routes them through the model for a final reorder. The rerank prompt enriches each candidate row with `(type · YYYY-MM-DD · superseded)` metadata so the model can pick the most-recent non-superseded entry on temporal/knowledge-update questions. |
@@ -116,5 +116,5 @@ When `expand` was passed, the response gains an `expansion` block:
 
 - [`POST /v1/memory/entries`](create.md), [`GET /v1/memory/entries/:id`](get.md), [`PATCH /v1/memory/entries/:id`](patch.md), [`DELETE /v1/memory/entries/:id`](delete.md), [`POST /v1/memory/entries/:id/invalidate`](invalidate.md).
 - [`GET /v1/memory/graph`](../graph.md) — bulk fetch including relations.
-- [Structured memory → Retrieval](../../concepts/structured-memory.md#retrieval) — the ranking pipeline.
-- [Structured memory → Temporal model](../../concepts/structured-memory.md#temporal-model) — `valid_from` / `valid_to` semantics.
+- [Structured memory → Retrieval](../../../concepts/structured-memory.md#retrieval) — the ranking pipeline.
+- [Structured memory → Temporal model](../../../concepts/structured-memory.md#temporal-model) — `valid_from` / `valid_to` semantics.

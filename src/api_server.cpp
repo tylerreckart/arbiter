@@ -4701,6 +4701,7 @@ void handle_todo_create(int fd, const HttpRequest& req,
     std::string subject     = get_str("subject");
     std::string description = get_str("description");
     std::string agent_id    = get_str("agent_id");
+    std::string status      = get_str("status");
     int64_t conv_id         = get_int("conversation_id");
     if (subject.empty()) {
         auto err = jobj();
@@ -4709,7 +4710,17 @@ void handle_todo_create(int fd, const HttpRequest& req,
         return;
     }
     if (agent_id.empty()) agent_id = "index";
-    auto row = tenants.create_todo(tenant.id, conv_id, agent_id, subject, description);
+    if (status.empty())   status   = "pending";
+    if (status != "pending"  && status != "in_progress" &&
+        status != "completed" && status != "canceled") {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(
+            "status must be one of: pending, in_progress, completed, canceled");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    auto row = tenants.create_todo(tenant.id, conv_id, agent_id,
+                                    subject, description, status);
     auto out = jobj();
     out->as_object_mut()["todo"] = todo_to_json(row);
     write_json_response(fd, 201, out);
@@ -4730,8 +4741,14 @@ void handle_todo_list(int fd, const HttpRequest& req,
             if (eq != std::string::npos) {
                 std::string k = pair.substr(0, eq);
                 std::string v = pair.substr(eq + 1);
-                if (k == "conversation_id")
-                    try { f.conversation_id = std::stoll(v); } catch (...) {}
+                if (k == "conversation_id") {
+                    // `conversation_id=tenant` is the spelled-out form
+                    // for the unscoped-only filter; numeric values pass
+                    // through directly (positive = OR-NULL fallback to
+                    // unscoped, 0 = no filter, negative = unscoped only).
+                    if (v == "tenant" || v == "unscoped") f.conversation_id = -1;
+                    else try { f.conversation_id = std::stoll(v); } catch (...) {}
+                }
                 else if (k == "status")   f.status_filter   = v;
                 else if (k == "agent_id") f.agent_id_filter = v;
                 else if (k == "limit")
@@ -4828,6 +4845,133 @@ void handle_todo_delete(int fd, int64_t id,
     }
     auto out = jobj();
     out->as_object_mut()["deleted"] = jbool(true);
+    write_json_response(fd, 200, out);
+}
+
+// PATCH /v1/todos — batch update.  Body is either a JSON array of
+// objects (each `{ "id": N, "status": "...", ... }`) or an object with
+// a top-level "todos" array.  Each row is applied independently;
+// per-row failures are reported in the "results" array without
+// short-circuiting the rest.  No transaction wrapping — each PATCH is
+// already its own SQL update under the hood, and a partial-success
+// model matches how a client iterating one-at-a-time would behave.
+void handle_todo_batch_patch(int fd, const HttpRequest& req,
+                              TenantStore& tenants, const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body required");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    // Accept either shape.  The wrapper-object shape leaves room for
+    // future top-level options (e.g. transactional semantics) without
+    // breaking the array form.
+    const std::vector<std::shared_ptr<JsonValue>>* items = nullptr;
+    if (body->is_array()) {
+        items = &body->as_array();
+    } else if (body->is_object()) {
+        auto v = body->get("todos");
+        if (v && v->is_array()) items = &v->as_array();
+    }
+    if (!items) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(
+            "body must be a JSON array or an object with a 'todos' array");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (items->empty()) {
+        auto out = jobj();
+        out->as_object_mut()["results"] = jarr();
+        write_json_response(fd, 200, out);
+        return;
+    }
+    // Cap the batch size to keep one slow tenant from monopolising the
+    // worker for an unbounded loop.  500 matches the list cap.
+    if (items->size() > 500) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("batch too large: max 500 items");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    auto results = jarr();
+    int ok_count = 0, err_count = 0;
+    for (const auto& item : *items) {
+        auto entry = jobj();
+        auto& em = entry->as_object_mut();
+        if (!item || !item->is_object()) {
+            em["ok"]    = jbool(false);
+            em["error"] = jstr("item must be a JSON object");
+            ++err_count;
+            results->as_array_mut().push_back(entry);
+            continue;
+        }
+        auto id_v = item->get("id");
+        if (!id_v || !id_v->is_number()) {
+            em["ok"]    = jbool(false);
+            em["error"] = jstr("required field: id");
+            ++err_count;
+            results->as_array_mut().push_back(entry);
+            continue;
+        }
+        int64_t id = static_cast<int64_t>(id_v->as_number());
+        em["id"] = jnum(id);
+
+        auto opt_str = [&](const char* k) -> std::optional<std::string> {
+            auto v = item->get(k);
+            if (v && v->is_string()) return v->as_string();
+            return std::nullopt;
+        };
+        auto opt_int = [&](const char* k) -> std::optional<int64_t> {
+            auto v = item->get(k);
+            if (v && v->is_number()) return static_cast<int64_t>(v->as_number());
+            return std::nullopt;
+        };
+        auto stat_opt = opt_str("status");
+        if (stat_opt) {
+            const std::string& s = *stat_opt;
+            if (s != "pending" && s != "in_progress" &&
+                s != "completed" && s != "canceled") {
+                em["ok"]    = jbool(false);
+                em["error"] = jstr(
+                    "status must be one of: pending, in_progress, completed, canceled");
+                ++err_count;
+                results->as_array_mut().push_back(entry);
+                continue;
+            }
+        }
+        bool ok = tenants.update_todo(tenant.id, id,
+            opt_str("subject"), opt_str("description"),
+            stat_opt,            opt_int("position"),
+            std::nullopt);
+        if (!ok) {
+            em["ok"]    = jbool(false);
+            em["error"] = jstr("todo not found");
+            ++err_count;
+        } else {
+            em["ok"] = jbool(true);
+            if (auto row = tenants.get_todo(tenant.id, id))
+                em["todo"] = todo_to_json(*row);
+            ++ok_count;
+        }
+        results->as_array_mut().push_back(entry);
+    }
+
+    auto out = jobj();
+    auto& om = out->as_object_mut();
+    om["ok"]      = jnum(ok_count);
+    om["errors"]  = jnum(err_count);
+    om["results"] = results;
     write_json_response(fd, 200, out);
 }
 
@@ -5646,23 +5790,38 @@ TodoInvoker make_todo_invoker_callback(
         };
 
         // Format a list block.  Pending + in_progress sit at the top in
-        // append order; terminal rows are suppressed (use the HTTP
-        // surface to browse the archive).
-        auto render_list = [&](const std::vector<TenantStore::Todo>& rows) {
+        // append order; terminal rows are suppressed unless include_terminal
+        // is set (/todo list all surfaces them for retrospective review).
+        // `position` is rendered as [p<N>] so the agent can reason about
+        // reordering without inferring order from ids.
+        auto render_list = [&](const std::vector<TenantStore::Todo>& rows,
+                                bool include_terminal) {
             if (rows.empty()) return std::string("(no todos)");
             std::ostringstream out;
-            // Counts for the header line — quick at-a-glance status.
-            int pending = 0, in_prog = 0;
+            int pending = 0, in_prog = 0, done = 0, canc = 0;
             for (const auto& r : rows) {
-                if (r.status == "pending")     ++pending;
-                if (r.status == "in_progress") ++in_prog;
+                if      (r.status == "pending")     ++pending;
+                else if (r.status == "in_progress") ++in_prog;
+                else if (r.status == "completed")   ++done;
+                else if (r.status == "canceled")    ++canc;
             }
             out << pending + in_prog << " open ("
-                << in_prog << " in progress, " << pending << " pending):\n";
+                << in_prog << " in progress, " << pending << " pending)";
+            if (include_terminal && (done + canc) > 0)
+                out << ", " << done << " done, " << canc << " canceled";
+            out << ":\n";
             for (const auto& r : rows) {
-                if (r.status == "completed" || r.status == "canceled") continue;
-                const char* mark = (r.status == "in_progress") ? "▶ " : "  ";
-                out << mark << "#" << r.id << "  [" << r.status << "]  "
+                const bool terminal =
+                    (r.status == "completed" || r.status == "canceled");
+                if (terminal && !include_terminal) continue;
+                const char* mark =
+                    r.status == "in_progress" ? "▶ " :
+                    r.status == "completed"   ? "✓ " :
+                    r.status == "canceled"    ? "✗ " :
+                                                "  ";
+                out << mark << "#" << r.id
+                    << "  [p" << r.position << "]"
+                    << "  [" << r.status << "]  "
                     << r.subject;
                 if (r.conversation_id == 0) out << "  (tenant-wide)";
                 out << "\n";
@@ -5671,11 +5830,16 @@ TodoInvoker make_todo_invoker_callback(
         };
 
         if (kind == "list") {
+            // Args: empty | "all" | "history" — the latter two flip
+            // include_terminal on.  Anything else is treated as empty so
+            // a future addition (e.g. "list 5") fails open, not closed.
+            std::string a = trim(args);
+            bool include_terminal = (a == "all" || a == "history");
             TenantStore::TodoFilter f;
             f.conversation_id = conversation_id;
-            f.limit = 100;
+            f.limit = include_terminal ? 200 : 100;
             auto rows = tenants.list_todos(tenant_id, f);
-            return render_list(rows);
+            return render_list(rows, include_terminal);
         }
 
         if (kind == "add") {
@@ -10308,6 +10472,7 @@ void ApiServer::handle_connection(int fd) {
         // ── Todos ─────────────────────────────────────────────────────────
         // POST   /v1/todos                — create
         // GET    /v1/todos                — list (?conversation_id=&status=&agent_id=)
+        // PATCH  /v1/todos                — batch update (body = array or {todos:[]})
         // GET    /v1/todos/:id            — fetch one
         // PATCH  /v1/todos/:id            — update subject/description/status/position
         // DELETE /v1/todos/:id            — hard remove
@@ -10317,6 +10482,8 @@ void ApiServer::handle_connection(int fd) {
                     return handle_todo_create(fd, req, tenants_, *tenant);
                 if (req.method == "GET")
                     return handle_todo_list(fd, req, tenants_, *tenant);
+                if (req.method == "PATCH")
+                    return handle_todo_batch_patch(fd, req, tenants_, *tenant);
                 write_plain_response(fd, 405, "Method Not Allowed",
                                      "method not allowed\n");
                 return;

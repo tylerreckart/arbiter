@@ -116,10 +116,12 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 arbiter --init   # seed ~/.arbiter/ with starter agents
 arbiter          # launch the terminal client
 ```
+Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md).
 
-Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](https://arbiter.run/docs/getting-started/local).
 
----
+## Example client: Newton (iOS)
+
+[Newton](https://github.com/tylerreckart/newton) is a SwiftUI iOS app that wraps the arbiter HTTP+SSE API as a reference client. It points at any `arbiter --api` instance and demonstrates how to drive the runtime end-to-end from a mobile frontend: bearer-token auth, streaming `/v1/orchestrate` responses parsed event-by-event, conversation persistence against `/v1/conversations`, and rendering the writ tool-call surface as inline UI. Useful as a starting point if you're building your own frontend on top of arbiter.
 
 Licensed under the [Apache License 2.0](LICENSE).
 

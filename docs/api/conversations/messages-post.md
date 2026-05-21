@@ -58,4 +58,4 @@ The `request_id` from this call's `request_received` event is the handle to pass
 
 - [`POST /v1/orchestrate`](../orchestrate.md) — single-turn variant without history replay.
 - [`GET /v1/conversations/:id/messages`](messages-list.md) — read history back.
-- [`POST /v1/requests/:id/cancel`](../requests-cancel.md), [SSE event catalog](../concepts/sse-events.md).
+- [`POST /v1/requests/:id/cancel`](../requests-cancel.md), [SSE event catalog](../../concepts/sse-events.md).
