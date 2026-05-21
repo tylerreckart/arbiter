@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(arbiter VERSION 0.5.0 LANGUAGES CXX)
 
+# CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
+# prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
+# concatenated for the display string surfaced through INDEX_VERSION.
+# Leave empty (or unset) for a final release.
+set(ARBITER_VERSION_SUFFIX "-beta2")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -151,9 +157,10 @@ add_dependencies(arbiter starters_data_header)
 target_include_directories(arbiter PRIVATE ${STARTERS_GENERATED_DIR})
 
 # Surface the project version to C++ so the welcome card can render it on
-# the bottom border.  Keep CMakeLists.txt's `project(... VERSION x.y.z)` in
-# sync with your brew formula / release tags.
-target_compile_definitions(arbiter PRIVATE INDEX_VERSION="${PROJECT_VERSION}")
+# the bottom border.  Keep CMakeLists.txt's `project(... VERSION x.y.z)`
+# and ARBITER_VERSION_SUFFIX in sync with your brew formula / release tags.
+target_compile_definitions(arbiter PRIVATE
+    INDEX_VERSION="${PROJECT_VERSION}${ARBITER_VERSION_SUFFIX}")
 
 # Enable IPO/LTO on Release-ish configs when the toolchain supports it and
 # no sanitizer is active.  Guarded here (not globally) so tests and dev

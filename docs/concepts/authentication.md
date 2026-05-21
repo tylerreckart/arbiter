@@ -23,7 +23,7 @@ Subsequent starts reuse the file. Override at runtime by setting the env var.
 
 Plaintext tenant tokens are returned **only** in the response to:
 
-- [`POST /v1/admin/tenants`](../admin/tenants-create.md)
+- [`POST /v1/admin/tenants`](../api/admin/tenants-create.md)
 - `arbiter --add-tenant <name>` (CLI)
 
 The database stores only the SHA-256 digest. If a tenant loses their token, delete and recreate the tenant to issue a new one.
@@ -38,5 +38,5 @@ The database stores only the SHA-256 digest. If a tenant loses their token, dele
 ## See also
 
 - [Tenants](tenants.md)
-- [`POST /v1/admin/tenants`](../admin/tenants-create.md)
+- [`POST /v1/admin/tenants`](../api/admin/tenants-create.md)
 - [Operational notes](operations.md)

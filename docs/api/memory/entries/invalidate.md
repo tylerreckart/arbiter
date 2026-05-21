@@ -4,7 +4,7 @@
 
 Soft-delete an entry by stamping its `valid_to` field. The row stays in the database and remains reachable through historical reads (`GET /v1/memory/entries?as_of=<epoch>`); it disappears from the default active set used by `/v1/memory/entries`, `/v1/memory/entries/:id`, and the agent-facing `/mem search` / `/mem entries`.
 
-Distinct from `DELETE` — invalidation preserves the row for audit and replay. See [Structured memory → Temporal model](../../concepts/structured-memory.md#temporal-model) for the rationale.
+Distinct from `DELETE` — invalidation preserves the row for audit and replay. See [Structured memory → Temporal model](../../../concepts/structured-memory.md#temporal-model) for the rationale.
 
 ## Request
 
@@ -71,4 +71,4 @@ Memory relations whose source or target was invalidated **stay in the database**
 
 - [`DELETE /v1/memory/entries/:id`](delete.md) — hard delete with relation CASCADE.
 - [`GET /v1/memory/entries`](list.md) — historical reads via `?as_of=<epoch>`.
-- [Structured memory → Temporal model](../../concepts/structured-memory.md#temporal-model) — rationale for soft-delete and the validity window contract.
+- [Structured memory → Temporal model](../../../concepts/structured-memory.md#temporal-model) — rationale for soft-delete and the validity window contract.

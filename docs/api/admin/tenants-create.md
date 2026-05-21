@@ -52,4 +52,4 @@ A successful create appends a `create_tenant` row to the [admin audit log](audit
 ## See also
 
 - [`GET /v1/admin/tenants`](tenants-list.md), [`GET /v1/admin/tenants/:id`](tenants-get.md), [`PATCH /v1/admin/tenants/:id`](tenants-patch.md).
-- [Tenants](../concepts/tenants.md).
+- [Tenants](../../concepts/tenants.md).

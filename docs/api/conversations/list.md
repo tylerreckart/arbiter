@@ -40,7 +40,7 @@ curl -H "Authorization: Bearer atr_…" \
 }
 ```
 
-Field schemas: [Data model → Conversation](../concepts/data-model.md#conversation).
+Field schemas: [Data model → Conversation](../../concepts/data-model.md#conversation).
 
 Archived rows are returned by default — clients filter for display. Use the `archived` flag on the conversation rows to hide them.
 

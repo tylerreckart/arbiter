@@ -4,7 +4,7 @@
 
 Read one entry, with the linked artifact hydrated inline if `artifact_id` is set.
 
-**Active rows only.** Invalidated entries (those with a non-null `valid_to`) return `404` from this endpoint by design — point-lookups should respect the temporal window. To read historical state, use [`GET /v1/memory/entries?as_of=<epoch>`](list.md). See [Structured memory → Temporal model](../../concepts/structured-memory.md#temporal-model).
+**Active rows only.** Invalidated entries (those with a non-null `valid_to`) return `404` from this endpoint by design — point-lookups should respect the temporal window. To read historical state, use [`GET /v1/memory/entries?as_of=<epoch>`](list.md). See [Structured memory → Temporal model](../../../concepts/structured-memory.md#temporal-model).
 
 ## Request
 
@@ -21,7 +21,7 @@ curl -H "Authorization: Bearer atr_…" \
 
 ### 200 OK
 
-Same shape as the [POST response](create.md), with a nested `artifact` block when `artifact_id` is set. Field schemas: [Data model → MemoryEntry](../../concepts/data-model.md#memoryentry).
+Same shape as the [POST response](create.md), with a nested `artifact` block when `artifact_id` is set. Field schemas: [Data model → MemoryEntry](../../../concepts/data-model.md#memoryentry).
 
 ## Failure modes
 

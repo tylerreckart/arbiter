@@ -34,4 +34,4 @@ curl -X DELETE \
 ## See also
 
 - [`DELETE /v1/conversations/:id/artifacts/:aid`](conversations-delete.md).
-- [Artifacts → Memory ↔ artifact linkage](../concepts/artifacts.md#memory--artifact-linkage).
+- [Artifacts → Memory ↔ artifact linkage](../../concepts/artifacts.md#memory--artifact-linkage).

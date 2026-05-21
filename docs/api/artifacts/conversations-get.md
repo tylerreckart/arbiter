@@ -36,7 +36,7 @@ The `ArtifactRecord` shape:
 }
 ```
 
-Field schemas: [Data model → ArtifactRecord](../concepts/data-model.md#artifactrecord).
+Field schemas: [Data model → ArtifactRecord](../../concepts/data-model.md#artifactrecord).
 
 ## Failure modes
 

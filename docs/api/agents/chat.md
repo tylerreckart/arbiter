@@ -53,7 +53,7 @@ curl -N \
 
 ## Response
 
-Identical SSE stream to [`POST /v1/orchestrate`](../orchestrate.md). See the [SSE event catalog](../concepts/sse-events.md) for shapes.
+Identical SSE stream to [`POST /v1/orchestrate`](../orchestrate.md). See the [SSE event catalog](../../concepts/sse-events.md) for shapes.
 
 ## Failure modes
 
@@ -67,4 +67,4 @@ Identical to [`POST /v1/orchestrate`](../orchestrate.md), plus:
 
 - [`POST /v1/orchestrate`](../orchestrate.md) — body-bound variant.
 - [`POST /v1/conversations/:id/messages`](../conversations/messages-post.md) — multi-turn variant with history replay.
-- [SSE event catalog](../concepts/sse-events.md).
+- [SSE event catalog](../../concepts/sse-events.md).

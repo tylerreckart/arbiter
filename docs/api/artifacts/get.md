@@ -19,7 +19,7 @@ curl -H "Authorization: Bearer atr_…" \
 
 ### 200 OK
 
-`ArtifactRecord` (no `content`). Field schemas: [Data model → ArtifactRecord](../concepts/data-model.md#artifactrecord).
+`ArtifactRecord` (no `content`). Field schemas: [Data model → ArtifactRecord](../../concepts/data-model.md#artifactrecord).
 
 ## Failure modes
 

@@ -20,23 +20,6 @@ It runs in three shapes.
 - `arbiter --send <agent> <message>` — one-shot dispatch for scripts and
   cron jobs.
 
-## Why arbiter
-
-- **Writ agentic DSL.** Agents emit slash commands inline
-  with their prose. No function-calling schema, no tool-use turn
-  boundary. The runtime line-buffers the stream and dispatches as the
-  model writes. See [writ](docs/concepts/writ.md).
-- **Multi-agent composition as a language primitive.** `/agent` calls a
-  sub-agent synchronously, `/parallel` fans out, `/pane` spawns
-  detached. Agents are first-class verbs in the same DSL as tools.
-- **Structural advisor gating.** A higher-capability model can supervise
-  the executor's terminating turn at the runtime level, signalling
-  `CONTINUE` / `REDIRECT` / `HALT`. Execution and judgment are separate
-  loops. See [advisor](docs/concepts/advisor.md).
-- **Single binary, local-first.** <2 MB C++ runtime, no Python or Node
-  dependency. SQLite-backed local state under `~/.arbiter/`. The HTTP
-  server is opt-in, not the default.
-
 ## Example session
 
 What an agent's reply actually looks like — writs interleaved with the prose, the runtime intercepting them as they're emitted:
@@ -137,37 +120,12 @@ arbiter --init   # seed ~/.arbiter/ with starter agents
 arbiter          # launch the terminal client
 ```
 
-Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md). For a managed endpoint instead of installing locally, see [getting-started/hosted](docs/getting-started/hosted.md).
+Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md).
 
 
-## Memory benchmarks
+## Example client: Newton (iOS)
 
-Arbiter ships a structured-memory layer — typed entries, FTS retrieval, optional LLM rerank — that agents query through `/mem` and that operators can drive directly via `/v1/memory/entries`. Retrieval quality on [LongMemEval](https://github.com/xiaowu0162/LongMemEval) (500 questions, ~247K conversational turns), where **R@K** is the fraction of
-questions with at least one ground-truth turn in the top K
-results:
-
-| Variant      | R@1   | R@5   | R@10  | p50      | p95     |
-|--------------|------:|------:|------:|---------:|--------:|
-| `bm25`       | 14.2% | 35.2% | 42.0% |   149 ms |  370 ms |
-| `graduated`  | 49.4% | 81.4% | 88.6% |    57 ms |  109 ms |
-| `rerank`     | 72.6% | 90.4% | 91.6% |  1637 ms | 2157 ms |
-
-What each variant actually measures:
-
-- **`bm25`** — FTS5 + Okapi-BM25 across the entire tenant corpus, no
-  scope hint. Query-side stopword stripping plus a phrase-boost
-  clause (`"tok1 tok2 ..." OR tok1 OR tok2 ...`) concentrate scoring
-  on content tokens and reward proximity matches.
-- **`graduated`** — conversation-scoped first pass with tenant-wide
-  fallback if the first pass returns fewer than `limit` candidates.
-- **`rerank`** — `graduated` retrieval drawn from a 25-candidate pool,
-  then reordered by an LLM (here `claude-haiku-4-5`) over the full
-  list before trimming to the requested `limit`. Each candidate is
-  shown to the reranker with up to 800 bytes of content excerpt so
-  the answer-bearing text is visible end-to-end. One extra LLM call
-  per query.
-
----
+[Newton](https://github.com/tylerreckart/newton) is a SwiftUI iOS app that wraps the arbiter HTTP+SSE API as a reference client. It points at any `arbiter --api` instance and demonstrates how to drive the runtime end-to-end from a mobile frontend: bearer-token auth, streaming `/v1/orchestrate` responses parsed event-by-event, conversation persistence against `/v1/conversations`, and rendering the writ tool-call surface as inline UI. Useful as a starting point if you're building your own frontend on top of arbiter.
 
 Licensed under the [Apache License 2.0](LICENSE).
 

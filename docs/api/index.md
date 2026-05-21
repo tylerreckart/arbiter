@@ -10,23 +10,23 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 
 ## Concepts
 
-- [Writ](concepts/writ.md) — the slash-command DSL agents emit inline
-- [Tenants](concepts/tenants.md)
-- [Authentication](concepts/authentication.md)
-- [Fleet streaming](concepts/fleet-streaming.md)
-- [SSE event catalog](concepts/sse-events.md)
-- [Advisor](concepts/advisor.md)
-- [Structured memory](concepts/structured-memory.md)
-- [Artifacts](concepts/artifacts.md)
-- [MCP servers](concepts/mcp.md)
-- [A2A protocol](concepts/a2a.md)
-- [Web search](concepts/search.md)
-- [Data model](concepts/data-model.md)
-- [Operational notes](concepts/operations.md)
-- [Scheduler](concepts/scheduler.md)
-- [Todos](concepts/todos.md)
-- [Lessons (self-reflection)](concepts/lessons.md)
-- [Durable in-flight execution](concepts/durable-execution.md)
+- [Writ](../concepts/writ.md) — the slash-command DSL agents emit inline
+- [Tenants](../concepts/tenants.md)
+- [Authentication](../concepts/authentication.md)
+- [Fleet streaming](../concepts/fleet-streaming.md)
+- [SSE event catalog](../concepts/sse-events.md)
+- [Advisor](../concepts/advisor.md)
+- [Structured memory](../concepts/structured-memory.md)
+- [Artifacts](../concepts/artifacts.md)
+- [MCP servers](../concepts/mcp.md)
+- [A2A protocol](../concepts/a2a.md)
+- [Web search](../concepts/search.md)
+- [Data model](../concepts/data-model.md)
+- [Operational notes](../concepts/operations.md)
+- [Scheduler](../concepts/scheduler.md)
+- [Todos](../concepts/todos.md)
+- [Lessons (self-reflection)](../concepts/lessons.md)
+- [Durable in-flight execution](../concepts/durable-execution.md)
 
 ## Endpoints
 
@@ -87,6 +87,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 ### Todos
 - [`POST /v1/todos`](todos/create.md)
 - [`GET /v1/todos`](todos/list.md)
+- [`PATCH /v1/todos`](todos/patch.md#batch-form) — batch update (array body)
 - [`GET /v1/todos/:id`](todos/get.md)
 - [`PATCH /v1/todos/:id`](todos/patch.md)
 - [`DELETE /v1/todos/:id`](todos/delete.md)

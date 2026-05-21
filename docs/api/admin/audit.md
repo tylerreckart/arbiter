@@ -81,6 +81,6 @@ Future actions land here as new fields without changing the response envelope. C
 
 ## See also
 
-- [Operational notes](../concepts/operations.md) — broader admin / observability surface.
+- [Operational notes](../../concepts/operations.md) — broader admin / observability surface.
 - [`PATCH /v1/admin/tenants/:id`](tenants-patch.md) — produces `update_tenant` audit rows.
 - [`POST /v1/admin/tenants`](tenants-create.md) — produces `create_tenant` audit rows.
