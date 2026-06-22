@@ -1,5 +1,6 @@
 // arbiter/src/orchestrator.cpp
 #include "orchestrator.h"
+#include "advisor.h"
 #include "commands.h"
 #include "config.h"
 #include "tui/stream_filter.h"
@@ -502,14 +503,15 @@ AdvisorInvoker Orchestrator::make_advisor_invoker(const std::string& caller_id) 
 
 AdvisorGateInvoker Orchestrator::make_advisor_gate_invoker(const std::string& caller_id) {
     return [this, caller_id](const AdvisorGateInput& in) -> AdvisorGateOutput {
-        AdvisorGateOutput out;
-
         // Resolve the advisor model + optional prompt override from the
         // caller's constitution.  The structured `advisor` block is the
         // source of truth for gate behaviour; the legacy `advisor_model`
         // field is consulted only as a fallback when the structured model
         // is empty (which can happen if a caller wired the gate via
-        // configuration outside the JSON parser path).
+        // configuration outside the JSON parser path).  The actual
+        // formatting + provider call + signal parse lives in
+        // run_advisor_gate (src/advisor.cpp), shared with the standalone
+        // POST /v1/advise/gate endpoint.
         std::string advisor_model;
         std::string prompt_override;
         if (caller_id == "index") {
@@ -521,6 +523,7 @@ AdvisorGateInvoker Orchestrator::make_advisor_gate_invoker(const std::string& ca
             std::lock_guard<std::mutex> lk(agents_mutex_);
             auto it = agents_.find(caller_id);
             if (it == agents_.end()) {
+                AdvisorGateOutput out;
                 out.kind = AdvisorGateOutput::Kind::Halt;
                 out.text = "no agent '" + caller_id + "' for gate";
                 out.malformed = true;
@@ -531,75 +534,13 @@ AdvisorGateInvoker Orchestrator::make_advisor_gate_invoker(const std::string& ca
                                                         : cfg.advisor.model;
             prompt_override = cfg.advisor.prompt;
         }
-        if (advisor_model.empty()) {
-            // Defence-in-depth: callers should already have checked
-            // mode == "gate", but if a misconfiguration slips through
-            // we fail closed with a HALT explaining the issue.
-            out.kind = AdvisorGateOutput::Kind::Halt;
-            out.text = "no advisor model configured for gate on '" + caller_id + "'";
-            out.malformed = true;
-            return out;
-        }
 
-        // Default gate prompt.  Tenant can override via advisor.prompt.
-        // The prompt explicitly enumerates the three signals and the
-        // tag-based grammar — the parser is strict about tag form, so the
-        // model must produce it verbatim.
-        static constexpr const char* kDefaultGatePrompt =
-            "You are a runtime gate evaluating whether an executor agent's "
-            "terminating turn is acceptable to return to the caller.\n\n"
-            "Inputs you receive (in this order):\n"
-            "  - The original user task.\n"
-            "  - The executor's outputs for the terminating turn (text only — "
-            "no reasoning, no prior turns).\n"
-            "  - A structured summary of tool calls made this turn.\n\n"
-            "You will respond with EXACTLY ONE signal on its own line:\n\n"
-            "  <signal>CONTINUE</signal>\n"
-            "    The terminating turn satisfies the task; let the executor return.\n\n"
-            "  <signal>REDIRECT</signal>\n"
-            "  <guidance>...</guidance>\n"
-            "    The executor is on the wrong track or stopped early.  Provide a "
-            "concrete next step in <guidance>.  This will be injected as a "
-            "synthetic user turn back to the executor.\n\n"
-            "  <signal>HALT</signal>\n"
-            "  <reason>...</reason>\n"
-            "    The executor produced something the user must see before any "
-            "further work — irreversible footgun about to commit, scope "
-            "explosion, confidential data leak, fundamentally wrong premise. "
-            "This will be surfaced to the user as an escalation.\n\n"
-            "No preamble.  No markdown.  Output exactly one signal.  Default "
-            "to CONTINUE when the turn is merely terse but correct.  Default "
-            "to HALT when in doubt about safety; default to REDIRECT when in "
-            "doubt about correctness.";
-
-        std::ostringstream q;
-        q << "[ORIGINAL TASK]\n" << in.original_task << "\n[END ORIGINAL TASK]\n\n"
-          << "[EXECUTOR TERMINATING TURN]\n" << in.terminating_text
-          << "\n[END EXECUTOR TERMINATING TURN]\n\n"
-          << "[TOOL CALLS THIS TURN]\n"
-          << (in.tool_summary.empty() ? "(none)\n" : in.tool_summary)
-          << "[END TOOL CALLS]\n";
-
-        ApiRequest req;
-        req.model               = advisor_model;
-        req.max_tokens          = 512;   // signals are short
-        req.include_temperature = false; // reasoning models reject temperature
-        req.system_prompt       = prompt_override.empty()
-                                  ? std::string(kDefaultGatePrompt)
-                                  : prompt_override;
-        req.messages            = {{"user", q.str()}};
-
-        ApiResponse resp = client_.complete(req);
-        if (cost_cb_) cost_cb_(caller_id, advisor_model, resp);
-        if (!resp.ok) {
-            out.kind = AdvisorGateOutput::Kind::Halt;
-            out.text = "advisor API error: " + resp.error;
-            out.malformed = true;
-            out.raw  = resp.error;
-            return out;
-        }
-
-        return parse_advisor_signal(resp.content);
+        // Attribute the advisor's cost to the caller's ledger with the
+        // advisor model's pricing — same as the /advise consult path.
+        return run_advisor_gate(client_, advisor_model, prompt_override, in,
+            [this, &caller_id, &advisor_model](const ApiResponse& resp) {
+                if (cost_cb_) cost_cb_(caller_id, advisor_model, resp);
+            });
     };
 }
 
