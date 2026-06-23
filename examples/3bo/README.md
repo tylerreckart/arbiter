@@ -21,6 +21,7 @@ for the M5 upgrade path. See [VISION.md](VISION.md) for the full design.
 | `FIRMWARE.md` | Arduino firmware architecture, state machine, and bridge protocol |
 | `JETSON.md` | Step-by-step Jetson setup: Arbiter, Ollama, whisper.cpp, Piper, bridge |
 | `VISION.md` | M5 design spec: USB camera, pan/tilt neck, face tracking, VLM queries |
+| `agents/` | Example Arbiter agent constitutions (event monitor) |
 | `bridge/` | 3bo bridge launcher and hardware bring-up stub |
 | `firmware/arduino/` | Arduino bench firmware sketch |
 

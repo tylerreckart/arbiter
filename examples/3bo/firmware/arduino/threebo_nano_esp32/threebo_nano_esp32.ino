@@ -43,6 +43,8 @@ uint32_t state_started_ms = 0;
 uint32_t last_wifi_attempt_ms = 0;
 uint32_t last_energy_wake_ms = 0;
 bool audio_rx_ready = false;
+bool boot_event_pending = true;  // emit device.boot on first WiFi connect
+bool prev_muted_state = false;   // edge-detect mute transitions
 
 size_t min_size(size_t a, size_t b) {
   return a < b ? a : b;
@@ -309,6 +311,35 @@ bool wake_detected() {
   return serial_wake_requested() || energy_wake_detected();
 }
 
+// POST a JSON event to the bridge POST /v1/event endpoint.
+// Fire-and-forget: the bridge relays it to Arbiter POST /v1/events.
+// No-op when THREEBO_ENABLE_EVENTS is false or Wi-Fi is not connected.
+// data_json must be a valid JSON object literal (e.g. "{}").
+void send_event(const char *type, const char *data_json = "{}") {
+  if (!THREEBO_ENABLE_EVENTS) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClient client;
+  HTTPClient http;
+  const String url = String(THREEBO_BRIDGE_BASE_URL) + "/v1/event";
+
+  if (!http.begin(client, url)) return;
+  http.setTimeout(THREEBO_EVENT_TIMEOUT_MS);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", String("Bearer ") + THREEBO_DEVICE_SECRET);
+
+  String body = "{\"type\":\"";
+  body += type;
+  body += "\",\"data\":";
+  body += data_json;
+  body += "}";
+
+  http.POST(body);
+  http.end();
+  Serial.print("event=");
+  Serial.println(type);
+}
+
 uint8_t *record_utterance_wav(size_t *out_len) {
   *out_len = 0;
   if (!audio_rx_ready && !begin_audio_rx()) return nullptr;
@@ -462,6 +493,8 @@ void handle_turn() {
 
   if (is_muted()) return;
 
+  send_event("audio.wake_detected", "{}");
+
   set_state(RobotState::Listening);
   size_t wav_len = 0;
   uint8_t *wav = record_utterance_wav(&wav_len);
@@ -472,11 +505,13 @@ void handle_turn() {
   if (!wav || wav_len <= WAV_HEADER_BYTES || is_muted()) {
     if (wav) free(wav);
     Serial.println("utterance discarded");
+    send_event("audio.utterance_discarded", "{}");
     return;
   }
 
   const bool ok = upload_utterance_and_play_response(wav, wav_len);
   if (!ok) {
+    send_event("device.error", "{\"source\":\"bridge\"}");
     set_state(RobotState::Error);
     const uint32_t error_started = millis();
     while (millis() - error_started < ERROR_HOLD_MS) {
@@ -508,6 +543,7 @@ void setup() {
   connect_wifi();
   if (!begin_audio_rx()) {
     set_state(RobotState::Error);
+    send_event("device.audio_error", "{\"stage\":\"init\"}");
   } else {
     set_state(is_muted() ? RobotState::Muted : RobotState::Idle);
   }
@@ -524,6 +560,13 @@ void loop() {
   }
 
   if (state == RobotState::WifiConnecting) {
+    const String ip = WiFi.localIP().toString();
+    if (boot_event_pending) {
+      boot_event_pending = false;
+      send_event("device.boot", ("{\"ip\":\"" + ip + "\"}").c_str());
+    } else {
+      send_event("device.wifi_reconnect", ("{\"ip\":\"" + ip + "\"}").c_str());
+    }
     set_state(RobotState::Idle);
   }
 
@@ -533,7 +576,13 @@ void loop() {
     return;
   }
 
-  if (is_muted()) {
+  const bool cur_muted = is_muted();
+  if (cur_muted != prev_muted_state) {
+    prev_muted_state = cur_muted;
+    send_event(cur_muted ? "device.mute" : "device.unmute", "{}");
+  }
+
+  if (cur_muted) {
     set_state(RobotState::Muted);
     delay(25);
     return;

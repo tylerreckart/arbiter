@@ -22,7 +22,14 @@ constexpr bool THREEBO_ENABLE_ENERGY_WAKE = false;
 constexpr int32_t THREEBO_ENERGY_WAKE_THRESHOLD = 1200;
 
 // Keep first tests gentle for the 0.2 W speaker and 8-pixel LED stick.
-constexpr uint8_t THREEBO_LED_BRIGHTNESS = 28;
-constexpr uint8_t THREEBO_RECORD_SECONDS = 4;
-constexpr size_t THREEBO_MAX_RESPONSE_WAV_BYTES = 512 * 1024;
-constexpr uint32_t THREEBO_HTTP_TIMEOUT_MS = 30000;
+constexpr uint8_t  THREEBO_LED_BRIGHTNESS        = 28;
+constexpr uint8_t  THREEBO_RECORD_SECONDS        = 4;
+constexpr size_t   THREEBO_MAX_RESPONSE_WAV_BYTES = 512 * 1024;
+constexpr uint32_t THREEBO_HTTP_TIMEOUT_MS       = 30000;
+
+// Hardware event reporting.  When enabled, the firmware POSTs state transitions
+// (mute, error, Wi-Fi reconnect) to the Jetson bridge as JSON events, which
+// the bridge forwards to Arbiter POST /v1/events for agent-driven handling.
+// Events are fire-and-forget; keep the timeout short since the bridge is LAN-local.
+constexpr bool     THREEBO_ENABLE_EVENTS    = true;
+constexpr uint32_t THREEBO_EVENT_TIMEOUT_MS = 1000;

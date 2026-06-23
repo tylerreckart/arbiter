@@ -375,20 +375,21 @@ THREEBO_CONVERSATION_FILE=/etc/3bo/conversation.json
 # Agent routing (defaults match what we create below)
 # THREEBO_LOCAL_AGENT=local
 # THREEBO_CLOUD_AGENT=index
+
+# Hardware event forwarding — bridge relays firmware state events to Arbiter.
+# Set to 0 to disable if you don't register the threebo-monitor agent.
+# BRIDGE_EVENTS_ENABLED=1
 EOF
 sudo chmod 600 /etc/3bo/bridge.env
 ```
 
-### Register the local Arbiter agent
+### Register the Arbiter agents
 
-The `local` agent sends simple queries to Ollama instead of the cloud. Create
-it once with the admin API. Arbiter must be running:
+Arbiter must be running for these commands.
+
+**Local fast-path agent** — sends simple queries to Ollama instead of the cloud:
 
 ```sh
-# Load the admin token
-ARBITER_ADMIN_TOKEN=$(cat ~/.arbiter/admin_token)
-
-# Create the local fast-path agent (stored in ~/.arbiter/tenants.db)
 curl -s -X POST http://127.0.0.1:8080/v1/agents \
   -H "Authorization: Bearer atr_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
   -H "Content-Type: application/json" \
@@ -405,6 +406,22 @@ curl -s -X POST http://127.0.0.1:8080/v1/agents \
 The `index` agent (cloud) already exists as the default orchestrator. No
 additional registration is needed unless you want to override its model or
 goal.
+
+**Hardware event monitor** — receives device state events from the firmware
+via `POST /v1/events` and handles them with a local Ollama model.  Matched by
+the `event_types` glob patterns in the agent JSON
+(`examples/3bo/agents/threebo-monitor.json`):
+
+```sh
+curl -s -X POST http://127.0.0.1:8080/v1/agents \
+  -H "Authorization: Bearer atr_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d @/path/to/arbiter/examples/3bo/agents/threebo-monitor.json
+```
+
+The monitor agent handles `device.*` and `audio.*` event types locally (no
+cloud call) and logs errors to the agent's `/mem` store.  The bridge must have
+`BRIDGE_EVENTS_ENABLED=1` (the default) for event forwarding to be active.
 
 ### Run
 
@@ -448,6 +465,16 @@ curl -s -o /dev/null -w "%{http_code}" \
   -H "Content-Type: audio/wav" \
   --data-binary @/path/to/test.wav
 # 401
+```
+
+**Hardware event endpoint:**
+
+```sh
+curl -s -X POST http://localhost:8081/v1/event \
+  -H "Authorization: Bearer $THREEBO_DEVICE_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"device.mute","data":{}}'
+# {"ok":true}
 ```
 
 ---
@@ -625,11 +652,13 @@ Run these steps in order. Each depends on the previous.
 
 - [ ] Write `/etc/3bo/bridge.env` with all required variables.
 - [ ] Register the `local` Arbiter agent via `curl POST /v1/agents`.
+- [ ] Register the `threebo-monitor` event agent via `curl POST /v1/agents` with `examples/3bo/agents/threebo-monitor.json`.
 - [ ] Start the bridge: `python3 bridge.py --host 0.0.0.0 --port 8081`.
 - [ ] Confirm `GET /health` returns `ok`.
 - [ ] Confirm unauthenticated `POST /v1/utterance` returns `401`.
 - [ ] Run authenticated `/v1/transcribe` test and confirm transcript.
 - [ ] Run authenticated `/v1/utterance` test and play back the WAV.
+- [ ] Send a test hardware event: `curl -s -X POST .../v1/event -d '{"type":"device.mute","data":{}}'` and confirm `{"ok":true}`.
 
 ### Step 7 — hardware loop
 
@@ -651,62 +680,15 @@ Run these steps in order. Each depends on the previous.
 
 > Not needed for the v1 voice prototype. Complete Milestones 1–8 first.
 > Full design specification: [VISION.md](VISION.md).
+> Wiring: [CIRCUIT.md](CIRCUIT.md) — PCA9685 and camera sections.
+> Parts: [BOM.md](BOM.md) — Vision and motion subsystem table.
 
-### Additional hardware
-
-The OV5640 camera lives in the robot head and connects to the Arduino Nano
-ESP32, not directly to the Jetson. The ESP32-S3 captures frames, JPEG-compresses
-them, and forwards them to the Jetson over the existing USB serial link. No
-camera hardware connection to the Jetson is required.
-
-Wire the PCA9685 servo driver to the Jetson 40-pin header:
-
-| Jetson pin | PCA9685 |
-| --- | --- |
-| Pin 1 (3.3V) | VCC |
-| Pin 2 or 4 (5V) | V+ (servo power) |
-| Pin 3 (SDA) | SDA |
-| Pin 5 (SCL) | SCL |
-| Pin 6 or 9 (GND) | GND |
-
-Confirm I2C: `sudo i2cdetect -y 1` should show the PCA9685 at address `0x40`.
-
-Confirm camera: `ls /dev/video*` after connecting, or run
-`nvgstcapture-1.0` for a live preview.
-
-### Additional Python dependencies
+Additional dependencies when Milestone 5 begins:
 
 ```sh
 pip3 install mediapipe opencv-python smbus2 pyserial
-```
-
-`pyserial` is required for the vision service to read JPEG frames from the
-ESP32-S3 over the USB serial port.
-
-### Additional Ollama model
-
-```sh
 ollama pull moondream
 ```
-
-moondream (~1.6B) handles visual queries ("what do you see?"). It runs
-alongside `gemma3:4b` within the Jetson's 8 GB.
-
-### Bring-up checklist — Milestone 5
-
-- [ ] Confirm `i2cdetect -y 1` shows PCA9685 at 0x40.
-- [ ] Flash ESP32-S3 firmware with OV5640 camera capture and `frame` USB serial message support.
-- [ ] Confirm Jetson sees JPEG frames arriving on the USB serial port from the ESP32-S3.
-- [ ] Install Python deps: `mediapipe opencv-python smbus2 pyserial`.
-- [ ] Pull moondream: `ollama pull moondream`.
-- [ ] Run `vision_service.py`; confirm `GET /health` responds.
-- [ ] Confirm `GET /face` returns a centroid when a face is in frame.
-- [ ] Confirm `POST /track {"enabled": true}` moves servos toward face.
-- [ ] Confirm `POST /rest` returns head to (0°, −5°).
-- [ ] Run a visual query through the bridge: ask "what do you see?" and
-  confirm the response references the scene.
-- [ ] Install `3bo-vision.service` unit and enable it alongside the other
-  services.
 
 ---
 
