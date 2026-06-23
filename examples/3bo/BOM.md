@@ -147,36 +147,21 @@ For the first portable-power add-on:
 
 ## Power budget notes
 
-Treat the Jetson as a separate high-current compute load. Use the
-vendor-recommended Jetson supply during bench bring-up. For an enclosed
-single-input robot, add a dedicated regulator sized for the exact Jetson carrier
-input and power budget.
+Power the Nano ESP32 from the Jetson USB port only — don't connect `VIN` while
+USB is live. Keep NeoPixel brightness and speaker volume low until you've
+measured the body rail current. A 4S 5000 mAh pack at 25–35 W Jetson load is
+roughly 1.5–2.5 hours; use a low-voltage cutoff or protected BMS for unattended
+use.
 
-The Nano ESP32 should be powered from the Jetson over the same USB-C cable used
-for the serial link. Do not connect the battery pack or a battery-derived buck
-regulator to Nano `VIN` in the wired Jetson build. This keeps the battery
-system concerned only with the Jetson input rail and avoids USB/VIN backfeed
-questions.
+Planning current by load:
 
-The 5 V LED/audio rail must be treated as a measured USB-powered load. For the
-quiet first prototype, keep NeoPixel brightness and speaker volume low and
-verify the Jetson USB port, Nano board, and wiring stay within their safe
-current limits. If the MAX98357A and NeoPixel stick need more current than the
-USB/Nano path can provide, add a Jetson-powered USB hub or current-limited 5 V
-accessory rail; do not add a separate battery branch just for the Nano body.
-
-A 4S 5000 mAh pack is about 74 Wh before conversion losses and reserve:
-
-```text
-14.8 V nominal * 5 Ah = 74 Wh
-```
-
-Budget a real-world usable fraction rather than draining the pack flat. A
-Jetson-heavy STT/TTS workload can pull the robot into the 25-35 W range, so a
-5000 mAh 4S pack is a roughly 1.5-2.5 hour prototype battery, not an all-day
-power source. Portable battery mode requires a hard low-voltage cutoff or a
-protected 4S pack/BMS. A balance-plug buzzer is useful while you are nearby on
-the bench, but it is not a product safety mechanism.
+| Load | Planning current |
+|---|---|
+| Jetson Orin Nano Super | 7–25 W depending on power mode |
+| Nano ESP32 over USB | 150–300 mA bursts |
+| MAX98357A speaker path | 50–600 mA (keep low on USB power) |
+| NeoPixel Stick 8 RGBW | 100–500 mA (cap brightness aggressively) |
+| ICS-43434 microphone | < 1 mA |
 
 Before connecting the Jetson to a battery regulator, run these acceptance tests:
 
@@ -188,97 +173,6 @@ Before connecting the Jetson to a battery regulator, run these acceptance tests:
 | Low-pack test     | Still regulates when the 4S pack is near cutoff voltage.                      |
 | Polarity check    | Center-positive barrel wiring confirmed with a meter at the plug.             |
 | Branch protection | Jetson branch has its own fuse or protected distribution path.                |
-
-The Adafruit product 184 kit is convenient and breadboard-friendly, but it is
-based on a low-dropout linear regulator rather than a switching buck converter.
-It is not part of the preferred runtime power path. Use it for bench testing or
-a low-current isolated peripheral experiment, not in parallel with the Jetson
-USB-powered Nano/body rail.
-
-A conservative first power target:
-
-| Load                        | Planning current                                                      |
-| --------------------------- | --------------------------------------------------------------------- |
-| Jetson Orin Nano Super      | 7-25 W depending on power mode and workload                           |
-| Nano ESP32 over USB serial  | 150-300 mA bursts                                                     |
-| MAX98357A speaker path      | 50-600 mA depending on volume and speaker; keep low on USB power      |
-| NeoPixel Stick, 8 RGBW LEDs | 100-500 mA depending on brightness/color; cap brightness aggressively |
-| ICS-43434 I2S microphone    | under 1 mA                                                            |
-
-Cap LED brightness and speaker volume in firmware. A rectangular PP3 9 V
-battery is no longer part of the default plan.
-
-The ICS-43434 microphone needs 3.3 V. The simplest first build can use the Nano
-ESP32 `3V3` pin for that low-current microphone rail after the Nano is powered
-from Jetson USB. If you use product 184 or another regulator as a separate
-3.3 V rail, use it for peripherals only; do not backfeed the Nano `3V3` pin
-unless the board documentation explicitly allows it. Route the microphone's
-3.3 V through the hard-mute switch or load switch so the mic is physically
-unpowered while muted.
-
-## LED indicator choice
-
-The selected 3bo LED indicator is the Adafruit NeoPixel Stick with 8 x 5050
-RGBW LEDs in cool white, product 2869. It provides enough pixels for simple
-states like idle breathing, wake flash, listening pulse, thinking sweep, and
-speaking meter without the current draw of a larger ring or matrix.
-
-Power the stick from the regulated 5 V rail, tie grounds to the Nano ESP32, and
-use a small series resistor on the data line. Product 2869 is RGBW, so firmware
-must use a NeoPixel library/configuration that understands four channels per
-pixel.
-
-## Microphone choice
-
-The selected 3bo speech microphone is the Adafruit ICS-43434 I2S breakout
-because it sends digital audio directly over I2S and fits the ESP32-S3 audio
-path well.
-
-The Adafruit MAX9814 electret microphone amplifier, product 1713, is the better
-optional analog mic if you want an ADC signal for quick sound-level tests or
-sound-reactive LED experiments, because its automatic gain control handles
-changing volume better.
-
-The Adafruit MAX4466 electret microphone amplifier, product 1063, is another
-optional analog mic with manually adjustable gain. Either analog module can help
-compare analog and digital microphone behavior, but neither should replace the
-I2S microphone for the main wake-word pipeline unless the firmware is redesigned
-around analog sampling.
-
-## Speaker amplifier choice
-
-The selected 3bo speaker amplifier is the Adafruit MAX98357A I2S 3 W class-D
-breakout, product 3006. It combines the I2S DAC and mono amplifier stage, so the
-Nano ESP32 can stream digital audio to it directly. With a 5 V supply, the
-breakout is rated up to 3.2 W into 4 ohm or 1.8 W into 8 ohm at 10% THD.
-
-For the first build, an 8 ohm speaker is the safer default because it draws less
-current and gives the breadboard supply more margin. The Adafruit
-breadboard-friendly 8 ohm 0.2 W mini speaker, product 1898, is useful for quiet
-bring-up because it plugs into a breadboard or perfboard, but it must be kept at
-low volume. Consider a temporary 47-100 ohm series resistor for initial tone
-tests. A later 8 ohm 1-3 W speaker will sound better for actual spoken
-responses. A 4 ohm speaker can be louder, but it makes the 5 V rail current
-budget more important.
-
-## Jetson brain choice
-
-The selected local brain is the NVIDIA Jetson Orin Nano Super Developer Kit.
-It is overkill for the first LED-and-speaker prototype, in a useful way: it can
-run Arbiter locally while also hosting STT/TTS and later vision or richer robot
-behaviors.
-
-Recommended first Jetson stack:
-
-- Ubuntu/JetPack on the Jetson.
-- `arbiter --api` bound to `127.0.0.1:8080`.
-- A 3bo bridge service bound to the LAN, for example `0.0.0.0:8081`, with
-  per-device shared-secret authentication and request rate limits.
-- `whisper.cpp` or another local STT runtime using small models first.
-- Local TTS such as Piper first, cloud TTS as an optional quality upgrade.
-
-Keep model files, provider keys, Arbiter tenant tokens, and conversation logs
-on the Jetson, not on the Nano ESP32.
 
 ## Reference links
 

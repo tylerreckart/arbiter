@@ -15,9 +15,10 @@ Pipeline per request:
   7. Concatenate PCM → WAV header → return with Content-Length.
 
 Endpoints:
-  POST /v1/utterance   WAV upload → WAV response  (main device endpoint)
-  POST /v1/transcribe  WAV upload → JSON {"transcript": "..."}  (debug/test)
-  GET  /health         200 ok\\n
+  POST /v1/utterance     WAV upload → WAV response  (main device endpoint)
+  POST /v1/transcribe    WAV upload → JSON {"transcript": "..."}  (debug/test)
+  POST /v1/event         JSON hardware event → forwarded to Arbiter /v1/events
+  GET  /health           200 ok\\n
 
 Required environment variables:
   ARBITER_TOKEN               Arbiter bearer token (atr_...)
@@ -38,6 +39,7 @@ Optional environment variables:
   BRIDGE_CONVERSATION_FILE    path to persist conversation state across restarts
                               (e.g. /etc/3bo/conversation.json)
                               if unset, cloud turns are stateless (no memory)
+  BRIDGE_EVENTS_ENABLED       forward device events to Arbiter, default 1 (set to 0 to disable)
 
 Memory model:
   Simple/local queries (arithmetic, time, greetings) are routed stateless to
@@ -109,9 +111,10 @@ WHISPER_BIN        = _opt("WHISPER_BIN",               "whisper-cli")
 PIPER_BIN          = _opt("PIPER_BIN",                 "piper")
 PIPER_SAMPLE_RATE  = int(_opt("PIPER_SAMPLE_RATE",     "16000"))
 BRIDGE_API_KEY     = os.environ.get("BRIDGE_API_KEY",  "").strip()
-BRIDGE_MAX_BYTES   = int(_opt("BRIDGE_MAX_BYTES",      "524288"))
-BRIDGE_RATE_LIMIT  = int(_opt("BRIDGE_RATE_LIMIT",     "20"))
-BRIDGE_CONV_FILE   = os.environ.get("BRIDGE_CONVERSATION_FILE", "").strip()
+BRIDGE_MAX_BYTES      = int(_opt("BRIDGE_MAX_BYTES",      "524288"))
+BRIDGE_RATE_LIMIT     = int(_opt("BRIDGE_RATE_LIMIT",     "20"))
+BRIDGE_CONV_FILE      = os.environ.get("BRIDGE_CONVERSATION_FILE", "").strip()
+BRIDGE_EVENTS_ENABLED = os.environ.get("BRIDGE_EVENTS_ENABLED", "1").strip() not in ("0", "false", "off")
 
 _parsed      = urlparse(ARBITER_URL)
 ARBITER_HOST = _parsed.hostname or "127.0.0.1"
@@ -486,6 +489,62 @@ def _cloud_stream(message: str, idkey: str) -> Iterator[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Device event forwarding
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _drain_event_stream(conn: http.client.HTTPConnection,
+                        resp: http.client.HTTPResponse) -> None:
+    """Consume the Arbiter SSE stream for an event turn on a daemon thread."""
+    try:
+        buf = b""
+        while len(buf) < 16384:
+            chunk = resp.read(256)
+            if not chunk:
+                break
+            buf += chunk
+            if b"event: done" in buf or b"event:done" in buf:
+                break
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def forward_event_to_arbiter(event_type: str, source: str,
+                              payload: dict) -> None:
+    """POST a device event to Arbiter /v1/events and drain the SSE reply."""
+    body = json.dumps({
+        "type":    event_type,
+        "source":  source,
+        "payload": payload,
+    }).encode()
+    headers = {
+        "Content-Type":   "application/json",
+        "Content-Length": str(len(body)),
+        "Authorization":  f"Bearer {ARBITER_TOKEN}",
+        "Accept":         "text/event-stream",
+    }
+    try:
+        conn = http.client.HTTPConnection(ARBITER_HOST, ARBITER_PORT, timeout=10)
+        conn.request("POST", "/v1/events", body=body, headers=headers)
+        resp = conn.getresponse()
+        if resp.status != 200:
+            log.warning("event forward HTTP %d type=%s", resp.status, event_type)
+            resp.read()
+            conn.close()
+            return
+        log.info("event forwarded type=%s source=%s", event_type, source)
+        threading.Thread(
+            target=_drain_event_stream, args=(conn, resp), daemon=True
+        ).start()
+    except Exception as exc:
+        log.warning("event forward failed type=%s: %s", event_type, exc)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Sentence splitting
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -538,6 +597,12 @@ def process_utterance(
         if _conv_mgr is not None:
             new_id = _conv_mgr.reset()
             log.info("turn=%s memory reset new_conversation=%d", turn_id, new_id)
+        if BRIDGE_EVENTS_ENABLED:
+            threading.Thread(
+                target=forward_event_to_arbiter,
+                args=("device.conversation.reset", source, {"turn_id": turn_id}),
+                daemon=True,
+            ).start()
         tier = "cloud"
         log.info("turn=%s tier=reset->cloud", turn_id)
         text_stream = _cloud_stream(transcript, turn_id)
@@ -579,6 +644,20 @@ def process_utterance(
     if not total_pcm:
         return make_error_wav("I don't have a response for that."), transcript
 
+    if BRIDGE_EVENTS_ENABLED:
+        elapsed_ms = int((t_done - t0) * 1000)
+        threading.Thread(
+            target=forward_event_to_arbiter,
+            args=("audio.turn_complete", source, {
+                "turn_id":          turn_id,
+                "tier":             tier,
+                "transcript_chars": len(transcript),
+                "pcm_bytes":        len(total_pcm),
+                "elapsed_ms":       elapsed_ms,
+            }),
+            daemon=True,
+        ).start()
+
     return make_wav(total_pcm), transcript
 
 
@@ -594,6 +673,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_utterance()
         elif self.path == "/v1/transcribe":
             self._handle_transcribe()
+        elif self.path in ("/v1/event", "/v1/device-event"):
+            self._handle_device_event()
         else:
             self.send_error(404, "not found")
 
@@ -610,6 +691,41 @@ class Handler(BaseHTTPRequestHandler):
         hint = self.headers.get("X-Complexity-Hint", "").lower().strip()
         wav, _ = process_utterance(body, source=self.client_address[0], complexity_hint=hint)
         self._send_wav(wav)
+
+    def _handle_device_event(self) -> None:
+        """Accept a hardware state event from the device and forward to Arbiter."""
+        if not self._authorized():
+            self.send_error(401, "unauthorized")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            self.send_error(400, "invalid content-length")
+            return
+        if length <= 0 or length > 4096:
+            self.send_error(400, "bad body size")
+            return
+        body_bytes = self.rfile.read(length)
+        try:
+            event      = json.loads(body_bytes)
+            event_type = str(event.get("type", ""))
+            # Firmware sends "data"; legacy/direct callers may send "payload".
+            payload    = event.get("data") or event.get("payload") or {}
+            if not isinstance(payload, dict):
+                payload = {}
+        except (json.JSONDecodeError, AttributeError):
+            self.send_error(400, "invalid json")
+            return
+        if not event_type:
+            self.send_error(400, "missing type")
+            return
+        if BRIDGE_EVENTS_ENABLED:
+            threading.Thread(
+                target=forward_event_to_arbiter,
+                args=(event_type, "3bo", payload),
+                daemon=True,
+            ).start()
+        self._send_json(202, b'{"ok":true}')
 
     def _handle_transcribe(self) -> None:
         """STT-only — useful for debug and latency measurement."""
