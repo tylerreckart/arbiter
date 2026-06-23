@@ -12,6 +12,7 @@
 #include <algorithm>
 
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
@@ -208,6 +209,16 @@ ApiClient::ApiClient(std::map<std::string, std::string> api_keys) {
         for (size_t i = 0; i < key.size(); ++i) {
             mk.masked[i] = static_cast<unsigned char>(key[i]) ^ mk.mask[i];
         }
+        // Lock both buffers into RAM so they are never written to swap.
+        // mlock() may fail when the process hits RLIMIT_MEMLOCK (common in
+        // containers); degrade gracefully — the XOR masking still protects
+        // against simple credential-scanner passes.
+        if (::mlock(mk.masked.data(), mk.masked.size()) != 0 ||
+            ::mlock(mk.mask.data(),   mk.mask.size())   != 0) {
+            ::fprintf(stderr,
+                "WARN: mlock failed for API key '%s' — key may appear in swap\n",
+                name.c_str());
+        }
         // Wipe the plaintext from the input map before dropping it.
         OPENSSL_cleanse(key.data(), key.size());
         api_keys_.emplace(name, std::move(mk));
@@ -216,13 +227,38 @@ ApiClient::ApiClient(std::map<std::string, std::string> api_keys) {
 
 ApiClient::~ApiClient() {
     for (auto& [_, mk] : api_keys_) {
-        if (!mk.masked.empty()) OPENSSL_cleanse(mk.masked.data(), mk.masked.size());
-        if (!mk.mask.empty())   OPENSSL_cleanse(mk.mask.data(),   mk.mask.size());
+        // Unlock before zeroing — munlock after cleanse would be a no-op
+        // on the already-zeroed pages, but order matters for correctness.
+        if (!mk.masked.empty()) {
+            ::munlock(mk.masked.data(), mk.masked.size());
+            OPENSSL_cleanse(mk.masked.data(), mk.masked.size());
+        }
+        if (!mk.mask.empty()) {
+            ::munlock(mk.mask.data(), mk.mask.size());
+            OPENSSL_cleanse(mk.mask.data(), mk.mask.size());
+        }
     }
     api_keys_.clear();
     for (auto& [_, c] : conns_) close_connection(c);
     if (ssl_ctx_) SSL_CTX_free(ssl_ctx_);
 }
+
+// RAII wrapper that zeros a string's buffer on scope exit regardless of
+// how the scope exits (return, exception, etc.).  Used for the short-lived
+// plaintext copies produced by unmask_api_key so the key is zeroed even
+// when an exception unwinds through the call site before the manual wipe.
+struct SensitiveString {
+    std::string value;
+    SensitiveString() = default;
+    explicit SensitiveString(std::string s) : value(std::move(s)) {}
+    SensitiveString(const SensitiveString&) = delete;
+    SensitiveString& operator=(const SensitiveString&) = delete;
+    SensitiveString(SensitiveString&&) = default;
+    SensitiveString& operator=(SensitiveString&&) = default;
+    ~SensitiveString() {
+        if (!value.empty()) OPENSSL_cleanse(value.data(), value.size());
+    }
+};
 
 std::string ApiClient::unmask_api_key(const std::string& provider) const {
     auto it = api_keys_.find(provider);
@@ -664,32 +700,33 @@ void ApiClient::send_request(const Provider& p, Conn& c,
     }
     http << "\r\n";
     http << "Content-Type: application/json\r\n";
-    // Materialise the plaintext key only while building the request header,
-    // then wipe it below before the call returns.  Limits the window during
-    // which the raw token is present in process memory.  Missing key for a
-    // provider that requires one → clean error via the caller's catch(...)
+    // Materialise the plaintext key only while building the request header.
+    // SensitiveString zeroes its buffer on scope exit regardless of how the
+    // scope exits (normal return, throw, etc.), so the key can't leak through
+    // an exception path that bypasses the manual wipe below.  Missing key for
+    // a provider that requires one → clean error via the caller's catch(...)
     // in complete() / stream().
-    std::string key_plain;
+    SensitiveString key_sensitive;
     if (p.uses_api_key) {
         if (api_keys_.find(p.name) == api_keys_.end()) {
             throw std::runtime_error(
                 "No API key configured for provider '" + p.name + "'");
         }
-        key_plain = unmask_api_key(p.name);
-        if (key_plain.empty()) {
+        key_sensitive.value = unmask_api_key(p.name);
+        if (key_sensitive.value.empty()) {
             throw std::runtime_error(
                 "No API key configured for provider '" + p.name + "'");
         }
         if (p.format == Provider::FORMAT_ANTHROPIC) {
-            http << "x-api-key: " << key_plain << "\r\n";
+            http << "x-api-key: " << key_sensitive.value << "\r\n";
             http << "anthropic-version: 2023-06-01\r\n";
             http << "anthropic-beta: prompt-caching-2024-07-31\r\n";
         } else if (p.format == Provider::FORMAT_GEMINI) {
             // Gemini supports both `?key=…` and `x-goog-api-key`; the header
             // form keeps the token out of URLs and proxy access logs.
-            http << "x-goog-api-key: " << key_plain << "\r\n";
+            http << "x-goog-api-key: " << key_sensitive.value << "\r\n";
         } else {
-            http << "Authorization: Bearer " << key_plain << "\r\n";
+            http << "Authorization: Bearer " << key_sensitive.value << "\r\n";
         }
     }
     http << "Content-Length: " << body.size() << "\r\n";
@@ -697,12 +734,9 @@ void ApiClient::send_request(const Provider& p, Conn& c,
     http << "Connection: keep-alive\r\n";
     http << "\r\n";
     http << body;
-
-    // Wipe the temporary unmasked key — the serialized request still holds
-    // it, but that buffer is wiped immediately after send() below.
-    if (!key_plain.empty()) {
-        OPENSSL_cleanse(key_plain.data(), key_plain.size());
-    }
+    // key_sensitive destructor zeroes the key here.  The `raw` buffer still
+    // holds it (streamed into the ostringstream above); that buffer is wiped
+    // immediately after send() completes.
 
     std::string raw = http.str();
     int total = static_cast<int>(raw.size());

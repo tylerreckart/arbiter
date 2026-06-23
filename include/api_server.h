@@ -101,6 +101,7 @@ struct ApiServerOptions {
 
     std::map<std::string, std::string> api_keys;   // provider name → key
     bool        exec_disabled     = true;     // /exec policy
+    bool        host_exec_enabled = false;    // true → /exec via popen() on host; see --allow-host-exec
     size_t      file_max_bytes    = 10 * 1024 * 1024;   // per-response cap
 
     // ── Per-tenant sandbox ───────────────────────────────────────────

@@ -114,7 +114,7 @@ static void getc_flush_output() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void cmd_interactive() {
+static void cmd_interactive(bool exec_allowed_flag = true) {
     std::string dir = get_config_dir();
     auto api_keys = get_api_keys();
 
@@ -127,6 +127,8 @@ static void cmd_interactive() {
     // turn checks it on the fly — no need to rebuild the filter when the
     // flag changes.  Not persisted across sessions by design.
     arbiter::Config cfg;
+    cfg.exec_allowed = exec_allowed_flag;
+    orch.set_exec_disabled(!cfg.exec_allowed);
     LoopManager loops;
 
     // Each pane's exec thread sets ::g_active_pane (file-scope thread_local)
@@ -232,8 +234,18 @@ static void cmd_interactive() {
     // Layout calls this when splitting to materialise a new pane with every
     // callback wired to app-scope state.  Defined before orch callbacks so
     // their captures of active_pane/layout_ptr are consistent.
+    //
+    // Declared here so make_pane can capture it by reference; the lambda
+    // body is assigned in the pump setup block below once the CV is live.
+    std::function<void()> pump_notify;
+
     auto make_pane = [&]() -> std::unique_ptr<Pane> {
         auto p = std::make_unique<Pane>();
+        // Wire pump wakeup so any output push wakes the drain thread
+        // immediately rather than waiting for the next 30ms tick.
+        p->output_queue.set_notify_fn([&pump_notify](){
+            if (pump_notify) pump_notify();
+        });
         p->current_agent = "index";
         p->current_model = orch.get_agent_model(p->current_agent);
         p->tui.init(p->current_agent, p->current_model,
@@ -414,6 +426,28 @@ static void cmd_interactive() {
     // Welcome card goes in the initial pane only.  Subsequent splits get a
     // clean start (no welcome), since splitting is an explicit user action.
     layout.focused().tui.draw_welcome(layout.focused().history);
+
+    // Exec-capability warning — list any agents that can run shell commands.
+    // Queued here so the pump thread renders it below the welcome card on its
+    // first tick.  Omitted when exec is globally disabled (--no-exec).
+    if (cfg.exec_allowed) {
+        std::vector<std::string> exec_agents;
+        for (const auto& id : orch.list_agents_all()) {
+            for (const auto& cap : orch.get_constitution(id).capabilities) {
+                if (cap == "exec") { exec_agents.push_back(id); break; }
+            }
+        }
+        if (!exec_agents.empty()) {
+            std::string names;
+            for (size_t i = 0; i < exec_agents.size(); ++i) {
+                if (i) names += ", ";
+                names += exec_agents[i];
+            }
+            layout.focused().output_queue.push_msg(
+                "\033[2m[exec enabled: " + names +
+                " \xe2\x80\x94 shell commands will run as you]\033[0m");
+        }
+    }
 
     // Pump thread reads through g_getc_state.pane, which tracks the focused
     // pane for SIGWINCH repaints (output drain iterates all panes directly).
@@ -1195,12 +1229,30 @@ static void cmd_interactive() {
     // different agents execute simultaneously (same-provider sends still
     // serialize at ApiClient's connection mutex, which is a network-layer
     // constraint rather than an app-level one).
-    start_pane_thread(layout.focused());
-
     // ── Output pump ────────────────────────────────────────────────────────
     // Drains every pane's output_queue every tick and repaints its scroll
     // region.  Holds layout_mu for the whole iteration so a concurrent
     // split/close/focus on the main thread can't mutate the tree mid-walk.
+    //
+    // The pump wakes immediately when any pane's OutputQueue receives data
+    // (via the notify_fn_ callback) and falls back to a 30ms poll so
+    // SIGWINCH repaints and the stop signal are still serviced promptly.
+    std::mutex          pump_cv_mu;
+    std::condition_variable pump_cv;
+    bool                pump_notified = false;
+
+    // Assign the notify function before starting any exec thread so the
+    // callback is fully visible to any thread that calls push().
+    pump_notify = [&]() {
+        { std::lock_guard<std::mutex> lk(pump_cv_mu); pump_notified = true; }
+        pump_cv.notify_one();
+    };
+
+    // Start exec thread after pump_notify is assigned — the exec thread
+    // captures pump_notify by reference via OutputQueue::notify_fn_ and
+    // may call push() on its first tick.
+    start_pane_thread(layout.focused());
+
     std::atomic<bool> pump_stop{false};
     std::thread output_pump([&]() {
         auto flush_pane = [&](Pane& p) {
@@ -1216,6 +1268,13 @@ static void cmd_interactive() {
                                      p.new_while_scrolled);
         };
         while (!pump_stop.load()) {
+            // Wait for data or the 30ms fallback tick (covers SIGWINCH and stop).
+            {
+                std::unique_lock<std::mutex> wlk(pump_cv_mu);
+                pump_cv.wait_for(wlk, std::chrono::milliseconds(30),
+                                 [&]{ return pump_notified || pump_stop.load(); });
+                pump_notified = false;
+            }
             std::unique_lock<std::recursive_mutex> lk(layout_mu);
             if (g_winch) {
                 g_winch = 0;
@@ -1233,8 +1292,6 @@ static void cmd_interactive() {
                 layout.focused().editor.interrupt();
             }
             layout.for_each_pane(flush_pane);
-            lk.unlock();
-            std::this_thread::sleep_for(std::chrono::milliseconds(30));
         }
         // Final drain — no need to lock here; exec threads have been joined
         // by this point (shutdown ordering), so no other thread is mutating.
@@ -1482,6 +1539,7 @@ static void cmd_interactive() {
     }
 
     pump_stop = true;
+    pump_cv.notify_one();   // unblock the pump's wait_for so it exits promptly
     output_pump.join();
 
     if (stdin_is_tty) ::tcsetattr(STDIN_FILENO, TCSANOW, &orig_stdin_tm);
@@ -1513,6 +1571,10 @@ int main(int argc, char* argv[]) {
 
         std::string arg1 = argv[1];
 
+        if (arg1 == "--no-exec") {
+            cmd_interactive(false);
+            return 0;
+        }
         if (arg1 == "--init" || arg1 == "init") {
             // arbiter --init [--force]
             // Without --force, --init preserves existing agent JSON files
@@ -1530,14 +1592,20 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (arg1 == "--api" || arg1 == "api") {
-            // arbiter --api [--port N] [--bind ADDR] [--verbose]
+            // arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]
             int port = 8080;
             std::string bind = "127.0.0.1";
             bool verbose = false;
+            bool allow_host_exec = false;
             for (int i = 2; i < argc; ) {
                 std::string k = argv[i];
                 if (k == "--verbose" || k == "-v") {
                     verbose = true;
+                    ++i;
+                    continue;
+                }
+                if (k == "--allow-host-exec") {
+                    allow_host_exec = true;
                     ++i;
                     continue;
                 }
@@ -1554,7 +1622,7 @@ int main(int argc, char* argv[]) {
                 }
                 i += 2;
             }
-            arbiter::cmd_api(port, bind, verbose);
+            arbiter::cmd_api(port, bind, verbose, allow_host_exec);
             return 0;
         }
         if (arg1 == "--send" || arg1 == "send") {
@@ -1608,10 +1676,15 @@ int main(int argc, char* argv[]) {
             std::cout <<
                 "Usage:\n"
                 "  arbiter                            Interactive REPL\n"
-                "  arbiter --api [--port N] [--bind ADDR] [--verbose]\n"
+                "  arbiter --no-exec                  Interactive REPL with /exec disabled\n"
+                "                                     (agents cannot run shell commands)\n"
+                "  arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]\n"
                 "                                     HTTP+SSE orchestration API (default 127.0.0.1:8080).\n"
                 "                                     --verbose mirrors every SSE event (text deltas, tool calls,\n"
                 "                                     thinking, etc.) to stderr.  Env: ARBITER_API_VERBOSE=1.\n"
+                "                                     --allow-host-exec permits agents to run shell commands on\n"
+                "                                     the host via popen().  WARNING: agents run as this process's\n"
+                "                                     user.  Also: ARBITER_ALLOW_HOST_EXEC=1.\n"
                 "  arbiter --send <agent> <msg>       One-shot message\n"
                 "  arbiter --init [--force]           Initialize config + example agents\n"
                 "                                     --force overwrites existing ~/.arbiter/agents/*.json files;\n"

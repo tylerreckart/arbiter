@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -60,6 +61,10 @@ public:
     // a single end_message() make up one logical message.  If a prior
     // message ended (via end_message or push_msg), the first push that
     // follows automatically gets a blank-line separator prepended.
+    //
+    // If a notify function has been wired in via set_notify_fn(), it is
+    // called after appending so the pump thread can wake immediately instead
+    // of waiting for its next timer tick.
     void push(const std::string& s);
 
     // Mark the current message as complete.  Idempotent — multiple
@@ -74,12 +79,20 @@ public:
 
     std::string drain();
 
+    // Wire a callback to be fired (without holding mu_) on every push().
+    // The pump thread sets this to a closure that signals its condition
+    // variable; call sites don't need to know the CV exists.
+    void set_notify_fn(std::function<void()> fn);
+
 private:
     std::mutex  mu_;
     std::string buf_;
     // True when the previous push ended a message — the next push applies
     // exactly one blank-line separator before appending its content.
     bool        need_sep_ = false;
+
+    // Optional pump-wakeup hook — set by the pump thread at startup.
+    std::function<void()> notify_fn_;
 };
 
 } // namespace arbiter

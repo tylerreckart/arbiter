@@ -180,7 +180,8 @@ void cmd_init(bool force) {
     }
 }
 
-void cmd_api(int port, const std::string& bind, bool verbose) {
+void cmd_api(int port, const std::string& bind, bool verbose,
+             bool allow_host_exec) {
     // Pick up ARBITER_LOG_FORMAT before any of the startup-path log
     // calls fire — structured JSON deployments expect every line on
     // stderr to be machine-parseable.
@@ -227,6 +228,24 @@ void cmd_api(int port, const std::string& bind, bool verbose) {
     opts.memory_root   = dir + "/memory";    // per-tenant subdirs land under here
     opts.api_keys      = std::move(api_keys);
     opts.exec_disabled = true;               // SaaS default: no shell
+    // Host exec opt-in: CLI flag or ARBITER_ALLOW_HOST_EXEC=1.  Sandbox
+    // takes precedence when both are set (make_exec_invoker_callback checks
+    // sandbox first).
+    {
+        bool host_exec = allow_host_exec;
+        if (!host_exec) {
+            const char* env = std::getenv("ARBITER_ALLOW_HOST_EXEC");
+            host_exec = (env && env[0] == '1' && env[1] == '\0');
+        }
+        if (host_exec) {
+            opts.host_exec_enabled = true;
+            opts.exec_disabled     = false;
+            ::fprintf(stderr,
+                "WARN: host exec enabled — agents can run shell commands "
+                "as this process (uid %d)\n",
+                (int)::getuid());
+        }
+    }
     opts.admin_token   = admin_token;
     opts.log_verbose   = log_verbose;
     // MCP registry — file is optional.  If present, every /v1/orchestrate

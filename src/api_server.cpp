@@ -8,6 +8,7 @@
 
 #include "api_server.h"
 
+#include "advisor.h"
 #include "commands.h"
 #include "config.h"
 #include "constitution.h"
@@ -5203,6 +5204,89 @@ void handle_schedule_runs(int fd, int64_t task_id, const HttpRequest& /*req*/,
     write_json_response(fd, 200, out);
 }
 
+// ── POST /v1/advise/gate ─────────────────────────────────────────────────────
+// Stateless, one-shot advisor gate call.  Exposes run_advisor_gate() to
+// external callers that own their own executor loop and need to honour the
+// gate verdict themselves.  Bearer auth required; no orchestrator involved.
+//
+// Request body (JSON):
+//   advisor_model    — provider-prefixed model id (required)
+//   prompt           — gate system-prompt override (optional)
+//   original_task    — the user's task given to the executor (required)
+//   terminating_text — the executor's text for its terminating turn (required)
+//   tool_summary     — pre-formatted tool call summary, one line per call (optional)
+//
+// Response body (200):
+//   signal   — "CONTINUE" | "REDIRECT" | "HALT"
+//   text     — guidance (REDIRECT) or reason (HALT); "" for CONTINUE
+//   malformed — true when the advisor's reply was unparseable
+void handle_advise_gate(int fd, const HttpRequest& req,
+                        const std::map<std::string, std::string>& api_keys) {
+    if (req.method != "POST") {
+        write_plain_response(fd, 405, "Method Not Allowed", "method not allowed\n");
+        return;
+    }
+
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    const std::string advisor_model    = body->get_string("advisor_model", "");
+    const std::string prompt_override  = body->get_string("prompt", "");
+    const std::string original_task    = body->get_string("original_task", "");
+    const std::string terminating_text = body->get_string("terminating_text", "");
+    const std::string tool_summary     = body->get_string("tool_summary", "");
+
+    if (advisor_model.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("advisor_model is required");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (original_task.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("original_task is required");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (terminating_text.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("terminating_text is required");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    AdvisorGateInput in;
+    in.original_task    = original_task;
+    in.terminating_text = terminating_text;
+    in.tool_summary     = tool_summary;
+
+    ApiClient client(api_keys);
+    AdvisorGateOutput out = run_advisor_gate(client, advisor_model, prompt_override, in);
+
+    const char* signal_str = "CONTINUE";
+    if      (out.kind == AdvisorGateOutput::Kind::Redirect) signal_str = "REDIRECT";
+    else if (out.kind == AdvisorGateOutput::Kind::Halt)     signal_str = "HALT";
+
+    auto resp = jobj();
+    auto& m = resp->as_object_mut();
+    m["signal"]   = jstr(signal_str);
+    m["text"]     = jstr(out.text);
+    m["malformed"] = jbool(out.malformed);
+    write_json_response(fd, 200, resp);
+}
+
 void handle_runs_list(int fd, const HttpRequest& req,
                        TenantStore& tenants, const Tenant& tenant) {
     int64_t since = 0;
@@ -6042,11 +6126,23 @@ MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
 ExecInvoker make_exec_invoker_callback(const ApiServerOptions& opts,
                                         int64_t tenant_id) {
     SandboxManager* mgr = opts.sandbox;
-    if (!mgr) return nullptr;
-    return [mgr, tenant_id](const std::string& cmd) -> std::string {
-        SandboxExecResult r = mgr->exec(tenant_id, cmd);
-        return r.output;
-    };
+    if (mgr) {
+        return [mgr, tenant_id](const std::string& cmd) -> std::string {
+            SandboxExecResult r = mgr->exec(tenant_id, cmd);
+            return r.output;
+        };
+    }
+    // Host exec only when explicitly opted in AND no sandbox was requested.
+    // If sandbox_enabled is true but mgr is null (sandbox failed usability),
+    // refuse the host path — falling back silently would give wider access
+    // than the operator intended.  They must remove ARBITER_SANDBOX_IMAGE
+    // to use host exec.
+    if (opts.host_exec_enabled && !opts.sandbox_enabled) {
+        return [](const std::string& cmd) -> std::string {
+            return cmd_exec(cmd);
+        };
+    }
+    return nullptr;
 }
 
 // Returns nullptr when the configured provider isn't supported or no
@@ -9558,6 +9654,78 @@ build_blocking_orchestrator(const ApiServerOptions& opts,
     return build_a2a_orchestrator(opts, tenants, tenant, err_out);
 }
 
+// POST /v1/events — hardware/software event ingestion.
+//
+// Accepts a structured event envelope, routes it to the first agent whose
+// constitution event_types patterns match the event's type (or uses the
+// explicit "agent" override), formats the event as a natural-language
+// message, and delegates to handle_orchestrate for SSE streaming.  The
+// agent sees the event as a normal turn and may use any writ (/exec, /write,
+// /agent, etc.) in its response.
+void handle_event_ingest(int fd, HttpRequest req,
+                                 const ApiServerOptions& opts,
+                                 TenantStore& tenants,
+                                 InFlightRegistry& in_flight,
+                                 BillingClient* billing,
+                                 const std::string& workspace_id,
+                                 const Tenant& tenant,
+                                 RequestEventBus* request_events) {
+    if (req.method != "POST") {
+        write_plain_response(fd, 405, "Method Not Allowed", "method not allowed\n");
+        return;
+    }
+
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    const std::string event_type = body->get_string("type", "");
+    if (event_type.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("\"type\" is required");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    const std::string source  = body->get_string("source", "");
+    const std::string agent   = body->get_string("agent", "");
+    auto payload_val          = body->get("payload");
+
+    // Route: explicit override wins; otherwise scan agent constitutions.
+    std::string agent_id = agent.empty()
+        ? route_event(opts.agents_dir, event_type)
+        : agent;
+
+    // Format event as a natural-language message the agent can reason about.
+    std::string message = "Event: " + event_type;
+    if (!source.empty())  message += "\nSource: " + source;
+    if (payload_val)      message += "\nPayload: " + json_serialize(*payload_val);
+
+    // Rewrite request body as orchestrate format and delegate.
+    // handle_orchestrate reads req.body["message"] and uses agent_override
+    // to target the routed agent; everything else (SSE, auth, billing,
+    // writ execution) flows through the existing path unchanged.
+    auto synth = jobj();
+    synth->as_object_mut()["message"] = jstr(message);
+    req.body = json_serialize(*synth);
+
+    handle_orchestrate(fd, req, opts, tenants, in_flight,
+                       billing, workspace_id, tenant,
+                       request_events,
+                       /*agent_override=*/agent_id);
+}
+
 // ─── ApiServer public API ───────────────────────────────────────────────────
 
 ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
@@ -10593,6 +10761,30 @@ void ApiServer::handle_connection(int fd) {
             }
             handle_notifications_stream(fd, *tenant, *notifications_);
             return;
+        }
+
+        // ── Advisor gate ──────────────────────────────────────────────────
+        // POST /v1/advise/gate — stateless gate verdict for external callers
+        if (segs.size() == 3 && segs[0] == "v1" && segs[1] == "advise"
+            && segs[2] == "gate") {
+            return handle_advise_gate(fd, req, opts_.api_keys);
+        }
+
+        // ── Event ingestion ───────────────────────────────────────────────
+        // POST /v1/events — hardware/software event → agent routing
+        if (segs.size() == 2 && segs[0] == "v1" && segs[1] == "events") {
+            auto lim = limiter_->acquire(tenant->id);
+            if (!lim.granted()) {
+                write_429_response(fd, lim.retry_after_seconds,
+                    lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                        ? "concurrent_request_limit"
+                        : "rate_limit",
+                    metrics_.get(), tenant->id);
+                return;
+            }
+            return handle_event_ingest(fd, req, opts_, tenants_, in_flight_,
+                                       billing_.get(), workspace_id, *tenant,
+                                       request_events_.get());
         }
     }
 

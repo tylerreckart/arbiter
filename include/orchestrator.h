@@ -14,6 +14,14 @@
 
 namespace arbiter {
 
+// Scan *.json agent files in agents_dir for the first agent whose event_types
+// array contains a glob pattern matching event_type.  Returns that agent's id
+// (Constitution::name or filename stem), or "index" if no match.  Reads
+// constitution files on each call — intended for the infrequent /v1/events
+// dispatch path, not a hot loop.
+std::string route_event(const std::string& agents_dir,
+                        const std::string& event_type);
+
 class Orchestrator {
 public:
     explicit Orchestrator(std::map<std::string, std::string> api_keys);
@@ -341,7 +349,10 @@ public:
     void save_session(const std::string& path) const;
     bool load_session(const std::string& path);  // returns true if anything loaded
 
-    // Token tracking
+    // Token tracking — counts the shared client only.  Per-child ApiClients
+    // created for /parallel turns track their own counters independently, so
+    // these totals undercount tokens spent in parallel turns.  Per-turn cost
+    // attribution via cost_cb_ is unaffected (it reads ApiResponse directly).
     int total_input_tokens()  const { return client_.total_input_tokens(); }
     int total_output_tokens() const { return client_.total_output_tokens(); }
 
@@ -377,6 +388,16 @@ public:
 
 private:
     ApiClient client_;
+    // Stored so make_parallel_invoker can create per-child ApiClient instances
+    // (each with its own connection pool) instead of sharing the parent's
+    // conn_mutex_.  Keys are plaintext — same exposure as the constructor arg.
+    std::map<std::string, std::string> api_keys_;
+    // Non-owning pointers to child ApiClients active during a /parallel turn.
+    // cancel() iterates this under parallel_clients_mu_ so a cancel request
+    // reaches in-flight parallel children, not just the parent client.
+    std::mutex parallel_clients_mu_;
+    std::vector<ApiClient*> parallel_clients_;
+
     std::unordered_map<std::string, std::unique_ptr<Agent>> agents_;
     mutable std::mutex agents_mutex_;
     std::string memory_dir_;
