@@ -47,22 +47,32 @@ void CommandQueue::drain() {
 
 // ─── OutputQueue ─────────────────────────────────────────────────────────────
 
-void OutputQueue::push(const std::string& s) {
+void OutputQueue::set_notify_fn(std::function<void()> fn) {
     std::lock_guard<std::mutex> lk(mu_);
-    if (s.empty()) return;
-    if (need_sep_) {
-        // Materialise the pending separator as exactly `\n\n`.  Strip any
-        // trailing newlines from the buffer first so multi-line content
-        // (markdown-rendered lines that end with `\n`) gets one blank line
-        // between messages, not two or more.  If the buffer was drained in
-        // between, buf_ is empty and we emit a leading `\n\n` — the prior
-        // drain's content already ends with the trailing-content newline,
-        // so `A` + next drain `\n\nB` renders as `A` + blank + `B`.
-        while (!buf_.empty() && buf_.back() == '\n') buf_.pop_back();
-        buf_ += "\n\n";
-        need_sep_ = false;
+    notify_fn_ = std::move(fn);
+}
+
+void OutputQueue::push(const std::string& s) {
+    std::function<void()> fn;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (s.empty()) return;
+        if (need_sep_) {
+            // Materialise the pending separator as exactly `\n\n`.  Strip any
+            // trailing newlines from the buffer first so multi-line content
+            // (markdown-rendered lines that end with `\n`) gets one blank line
+            // between messages, not two or more.  If the buffer was drained in
+            // between, buf_ is empty and we emit a leading `\n\n` — the prior
+            // drain's content already ends with the trailing-content newline,
+            // so `A` + next drain `\n\nB` renders as `A` + blank + `B`.
+            while (!buf_.empty() && buf_.back() == '\n') buf_.pop_back();
+            buf_ += "\n\n";
+            need_sep_ = false;
+        }
+        buf_ += s;
+        fn = notify_fn_;   // copy under lock; invoke outside to avoid inversion
     }
-    buf_ += s;
+    if (fn) fn();
 }
 
 void OutputQueue::end_message() {

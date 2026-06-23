@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fnmatch.h>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -93,7 +94,8 @@ std::string pick_master_model_default(
 }  // namespace
 
 Orchestrator::Orchestrator(std::map<std::string, std::string> api_keys)
-    : client_(api_keys)  // copy — the map is tiny, we still need it below
+    : client_(api_keys),    // copy into client_ — keys are tiny
+      api_keys_(api_keys)   // second copy for per-child clients in /parallel
 {
     // Default memory directory is cwd-scoped ($PWD/.arbiter/memory)
     memory_dir_ = (fs::current_path() / ".arbiter" / "memory").string();
@@ -169,6 +171,29 @@ void Orchestrator::load_agents(const std::string& dir) {
             }
         }
     }
+}
+
+std::string route_event(const std::string& agents_dir,
+                        const std::string& event_type) {
+    if (!fs::is_directory(agents_dir)) return "index";
+    for (auto& entry : fs::directory_iterator(agents_dir)) {
+        if (entry.path().extension() != ".json") continue;
+        try {
+            auto config = Constitution::from_file(entry.path().string());
+            for (const auto& pattern : config.event_types) {
+                if (fnmatch(pattern.c_str(), event_type.c_str(), 0) == 0) {
+                    std::string id = config.name.empty()
+                        ? entry.path().stem().string()
+                        : config.name;
+                    return id;
+                }
+            }
+        } catch (const std::exception& e) {
+            fprintf(stderr, "WARN: route_event skip %s: %s\n",
+                    entry.path().c_str(), e.what());
+        }
+    }
+    return "index";
 }
 
 // Build an AgentInvoker that runs a sub-agent through the full dispatch loop.
@@ -298,6 +323,22 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
         //     a fan-out, not a chained continuation.
         //   • The shared dedup cache is intentionally not propagated
         //     between siblings — see make_invoker's note.
+        // Give each child its own ApiClient so their LLM calls run concurrently
+        // instead of serializing on the parent's conn_mutex_.  Children are
+        // wired with the same circuit breaker and metrics as the parent.
+        std::vector<std::unique_ptr<ApiClient>> child_clients;
+        child_clients.reserve(kids.size());
+        for (size_t i = 0; i < kids.size(); ++i) {
+            child_clients.push_back(std::make_unique<ApiClient>(api_keys_));
+            child_clients.back()->set_circuit_breaker(client_.circuit_breaker());
+            child_clients.back()->set_metrics(client_.metrics());
+        }
+        // Register child clients so cancel() can reach them while threads run.
+        {
+            std::lock_guard<std::mutex> lk(parallel_clients_mu_);
+            for (auto& c : child_clients) parallel_clients_.push_back(c.get());
+        }
+
         std::vector<std::thread> threads;
         std::vector<std::string> results(kids.size());
         threads.reserve(kids.size());
@@ -306,7 +347,7 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             const std::string sub_id  = kids[i].first;
             const std::string sub_msg = kids[i].second;
             threads.emplace_back([this, i, sub_id, sub_msg, caller_id, depth,
-                                   original_query, &results]() {
+                                   original_query, &results, &child_clients]() {
                 // Basic validations — mirror make_invoker's gates.
                 if (sub_id == caller_id) {
                     results[i] = "ERR: agent cannot invoke itself";
@@ -393,9 +434,9 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                 }
 
                 // Fresh ephemeral Agent for this child — independent
-                // history_, independent stats_, no race with siblings or
-                // the canonical agent registered in agents_.
-                Agent ephemeral(sub_id, std::move(cfg_copy), client_);
+                // history_, independent stats_, independent ApiClient
+                // (its own connection pool so LLM calls run concurrently).
+                Agent ephemeral(sub_id, std::move(cfg_copy), *child_clients[i]);
                 if (compact_cb_) ephemeral.set_compact_callback(compact_cb_);
 
                 std::map<std::string, std::string> local_cache;
@@ -411,6 +452,18 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
         }
 
         for (auto& t : threads) t.join();
+
+        // Unregister child clients — they're about to be destroyed.
+        {
+            std::lock_guard<std::mutex> lk(parallel_clients_mu_);
+            for (auto& c : child_clients) {
+                auto it = std::find(parallel_clients_.begin(),
+                                    parallel_clients_.end(), c.get());
+                if (it != parallel_clients_.end())
+                    parallel_clients_.erase(it);
+            }
+        }
+
         return results;
     };
 }
@@ -1768,10 +1821,14 @@ static std::vector<Message> messages_from_json(const JsonValue* arr) {
 }
 
 void Orchestrator::cancel() {
-    // All agents and the master share the same ApiClient instance.
-    // One cancel() call interrupts any in-progress streaming across the board.
     client_.cancel();
+    // Also cancel any per-child clients active inside a /parallel turn.
+    std::lock_guard<std::mutex> lk(parallel_clients_mu_);
+    for (ApiClient* c : parallel_clients_) c->cancel();
 }
+
+static constexpr size_t kSessionWarnBytes = 4 * 1024 * 1024;  // 4 MB total
+static constexpr size_t kAgentWarnBytes   = 512 * 1024;        // per-agent
 
 void Orchestrator::save_session(const std::string& path) const {
     auto root = jobj();
@@ -1792,8 +1849,35 @@ void Orchestrator::save_session(const std::string& path) const {
     }
     m["agents"] = agents_obj;
 
+    std::string serialized = json_serialize(*root);
+
+    if (serialized.size() > kSessionWarnBytes) {
+        // Log which agents contributed large histories so the user knows
+        // which to /compact when the file grows unwieldy.  Includes the
+        // index master since it can independently be the source of bloat.
+        std::string over_limit;
+        auto check_agent = [&](const std::string& id, const Agent& a) {
+            std::string blob = json_serialize(*messages_to_json(a.history()));
+            if (blob.size() > kAgentWarnBytes) {
+                if (!over_limit.empty()) over_limit += ", ";
+                over_limit += id + " (" + std::to_string(blob.size() / 1024) + " KB)";
+            }
+        };
+        {
+            check_agent("index", *index_master_);
+            std::lock_guard<std::mutex> lk(agents_mutex_);
+            for (auto& [id, agent] : agents_) check_agent(id, *agent);
+        }
+        ::fprintf(stderr,
+            "WARN: session file is %.1f MB (limit %.0f MB)%s\n"
+            "      Run /compact [agent] to trim histories and keep startup fast.\n",
+            serialized.size() / (1024.0 * 1024.0),
+            kSessionWarnBytes / (1024.0 * 1024.0),
+            over_limit.empty() ? "" : (" — large agents: " + over_limit).c_str());
+    }
+
     std::ofstream f(path);
-    if (f.is_open()) f << json_serialize(*root);
+    if (f.is_open()) f << serialized;
 }
 
 bool Orchestrator::load_session(const std::string& path) {
@@ -1804,6 +1888,13 @@ bool Orchestrator::load_session(const std::string& path) {
     ss << f.rdbuf();
     std::string raw = ss.str();
     if (raw.empty()) return false;
+
+    if (raw.size() > kSessionWarnBytes) {
+        ::fprintf(stderr,
+            "WARN: session file is %.1f MB — startup may be slow. "
+            "Run /compact [agent] to trim histories.\n",
+            raw.size() / (1024.0 * 1024.0));
+    }
 
     try {
         auto root = json_parse(raw);

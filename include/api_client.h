@@ -142,12 +142,14 @@ public:
     // and record success/failure on the result.  Non-owning pointer;
     // null is fine and disables the breaker layer (legacy behaviour).
     void set_circuit_breaker(ProviderCircuitBreaker* cb) { breaker_ = cb; }
+    ProviderCircuitBreaker* circuit_breaker() const { return breaker_; }
 
     // Attach the process-wide metrics registry.  When set, every
     // upstream call increments arbiter_provider_calls_total and the
     // appropriate retry / 5xx / 429 counters.  Non-owning; null is
     // fine.
     void set_metrics(Metrics* m) { metrics_ = m; }
+    Metrics* metrics() const { return metrics_; }
 
     // Interrupt any in-progress streaming call.  Shuts down every open socket
     // so an in-flight SSL_read / read returns immediately.  Thread-safe.
@@ -189,6 +191,9 @@ private:
         std::vector<unsigned char> mask;
     };
     std::map<std::string, MaskedKey> api_keys_;
+    // Returns the unmasked key.  The caller must zero the returned string
+    // before it goes out of scope; call sites wrap it in SensitiveString
+    // (defined in api_client.cpp) for automatic zeroing on scope exit.
     std::string unmask_api_key(const std::string& provider) const;
     SSL_CTX* ssl_ctx_ = nullptr;
 
