@@ -1,6 +1,6 @@
 # Arbiter HTTP API
 
-Arbiter exposes its multi-agent orchestrator as an HTTP + Server-Sent Events API. One `POST /v1/orchestrate` drives the full agentic loop — master agent turns, delegated and parallel sub-agent calls, tool invocations, generated files — and streams the whole thing back as SSE events.
+Arbiter exposes its reasoning runtime as an HTTP + Server-Sent Events API. Send a direct request with `POST /v1/orchestrate`, or ingest a structured hardware or software event with `POST /v1/events`. Both drive the full agentic loop — routing, durable context, delegated and parallel sub-agent calls, tool invocations, and generated files — and stream the whole execution back as SSE events.
 
 Billing — eligibility checks, rate cards, caps, invoicing — is delegated to an external billing service when `ARBITER_BILLING_URL` is set. The runtime exchanges every bearer for a workspace_id via `POST /v1/runtime/auth/validate`, pre-flights against `POST /v1/runtime/quota/check`, and posts post-turn telemetry to `POST /v1/runtime/usage/record`. Operators wanting a commercial deployment must implement that protocol against a service of their choosing — arbiter ships no reference implementation under this repository. With the env var unset, the runtime acts as a thin pass-through using the operator-supplied provider keys, with no eligibility checks.
 
@@ -34,6 +34,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/health`](health.md)
 - [`GET /v1/metrics`](metrics.md)
 - [`GET /v1/models`](models.md)
+- [`POST /v1/events`](events.md)
 - [`POST /v1/orchestrate`](orchestrate.md)
 - [`POST /v1/requests/:id/cancel`](requests-cancel.md)
 - [`GET /v1/requests`](requests/list.md)

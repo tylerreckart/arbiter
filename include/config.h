@@ -13,6 +13,11 @@ struct Config {
     // by StreamFilter and ToolCallIndicator surfaces a single "N tool calls…"
     // spinner in the status bar for the duration of the turn.
     bool verbose = false;
+
+    // When false (set by --no-exec), /exec commands are blocked in TUI mode
+    // just as they are in API mode when no sandbox invoker is wired up.
+    // Default true so existing TUI behaviour is unchanged.
+    bool exec_allowed = true;
 };
 
 } // namespace arbiter
