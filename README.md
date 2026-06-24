@@ -1,81 +1,177 @@
 # Arbiter
 
-A multi-agent orchestration runtime for the terminal and the network.
+A reasoning runtime for software, devices, and machines.
 
-Arbiter runs a master agent named `index` that decides whether to answer a
-request directly or delegate it to a specialist, streams the work back
-live, and persists the durable output — files, structured memory, agent
-definitions — across sessions. Agents drive the runtime with **writ**, a
-small slash-command DSL they emit inline in their replies: fetch a URL,
-run a shell command, write a file, record a memory, call each other.
+Arbiter turns prompts and events into supervised, stateful actions. Route
+work to specialized agents, consult durable memory, execute permitted
+tools, and observe every decision as a live stream of structured SSE.
 
 It runs in three shapes.
 
 - `arbiter` — interactive terminal client. Multi-pane TUI, persistent
   per-cwd session.
-- `arbiter --api` — multi-tenant HTTP+SSE server with bearer-token auth.
-  Speaks the arbiter-native protocol and the Agent2Agent (A2A) v1.0
-  protocol — agents are reachable from any A2A-compatible client and
-  can delegate to remote A2A agents.
+- `arbiter --api` — multi-tenant HTTP+SSE server. Ingest events and direct
+  requests via `/v1/events` and `/v1/orchestrate`. OpenAPI 3.1,
+  Agent2Agent (A2A) v1.0 compatible.
 - `arbiter --send <agent> <message>` — one-shot dispatch for scripts and
   cron jobs.
 
-## Example session
+## What it does
+
+**Orchestrate any task.** Send a prompt from the TUI, the one-shot CLI,
+or the HTTP API. The runtime fans work out to specialist agents, consults
+durable memory, and streams the full reasoning trace back to the caller.
+
+**Route events from software and hardware.** Turn webhooks, queues,
+incidents, sensors, and edge devices into supervised actions — each event
+type routed to the right agent with no custom glue code.
+
+**Let it act — with supervision.** Constrain the tools each agent can use
+and enforce advisor gates before consequential actions leave the runtime.
+
+## Example sessions
+
+All examples share the same stream shape. `/v1/orchestrate` takes a
+direct prompt; `/v1/events` routes structured events from software or
+hardware sources. Either way the full reasoning trace — delegation, tool
+calls, memory, gates — streams back as SSE.
+
+**Direct orchestration** — a research prompt dispatches parallel specialist
+agents then hands their findings to a writer:
 
 ```
-> What's the canonical paper on Bayesian neural networks?
+POST /v1/orchestrate
+agent=index · "write a report on Neanderthal gene flow into modern humans"
+─────────────────────────────────────────────────────────────────
+event:   request_received     req_7p2n
+event:   stream_start         index · depth 1
 
-arbiter ↗ POST /v1/orchestrate
-agent:                  index
-message:                "What's the canonical paper on Bayesian neural networks?"
-─────────────────────────────────────────────────────────────────────────────────
-event:                  req_9c59
-request_received
-event:                  index · depth 1
+index: dispatching parallel research; writer will synthesize
 
-[index → research]
-I'll find the foundational reference.
+event:   tool_call            /parallel genomics, archaeology, population-genetics
+event:   delegate             genomics, archaeology, population-genetics
+event:   stream_start         genomics · depth 2
+event:   tool_call            /search Neanderthal introgression modern human genome
+event:   tool_output          top results: Green et al. 2010, Prüfer et al. 2014
+event:   tool_call            /fetch https://doi.org/10.1126/science.1188021
+event:   tool_output          1–4% Neanderthal ancestry in non-African populations
 
-stream_start
-event:                  scout · depth 2
-stream_start
-event: tool_call        /mem
-event: tool_call        /mem
-event: tool_call        /mem
+genomics: adaptive alleles confirmed in STAT2, BNC2, OCA2
 
-/search Bayesian neural networks foundational paper
+event:   stream_start         archaeology · depth 2
+event:   tool_call            /search Neanderthal modern human coexistence fossil sites
+event:   tool_output          key sites: Peștera cu Oase, Bacho Kiro, Zlatý kůň
+event:   tool_call            /search Châtelperronian transition Europe 40000 BP
+event:   tool_output          coexistence window ~50–40 ka; Oase 1 ~6–9% ancestry
 
-event: tool_call        /search ✓
-event: tool_call        /search ✓
-event: tool_call        /search ✓
+archaeology: overlap concentrated in Europe and western Asia
 
-[search returned 5 results]
+event:   stream_start         population-genetics · depth 2
+event:   tool_call            /search Neanderthal introgression direction asymmetry
+event:   tool_output          Vernot & Akey 2014; Sankararaman et al. 2016
+event:   tool_call            /search Neanderthal desert low-introgression regions
+event:   tool_output          purifying selection reduced introgression near coding genes
 
-The most-cited candidate is MacKay 1992. Confirming.
+population-genetics: asymmetric flow; immunity and pigmentation pathways retained
 
-/fetch https://authors.library.caltech.edu/13793/
+event:   join                 genomics, archaeology, population-genetics · ordered merge
+event:   tool_call            /agent writer
+event:   stream_start         writer · depth 2
 
-event: tool_call        /fetch
-event: tool_call        /fetch
+writer: composing report from research findings
 
-MacKay 1992, "A Practical Bayesian Framework for Backpropagation
-Networks." First application of Laplace approximation to NN
-posteriors; ~3,600 citations on Google Scholar.
+event:   tool_call            /write neanderthal-gene-flow.md
+event:   gate                 verdict: continue ✓
 
-event: advise           verdict: continue ✓
-event: stream_end       stream ended
+writer: report complete — 1,840 words
 
-[research → index]
-MacKay 1992. "A Practical Bayesian Framework for Backpropagation
-Networks." Foundational; introduces Laplace approximation to NN
-posteriors.
-
-event: done             ok=true · 112.1s · $0.0185
+event:   artifact             neanderthal-gene-flow.md · 1,840 words
+event:   gate                 final review
+event:   gate                 verdict: continue ✓
+event:   done                 ok=true · 28.4s · $0.038
 ```
 
-In the TUI, the `/search` and `/fetch` lines are intercepted, executed by the runtime, and their output fed back into the next turn. Verbose mode shows the raw stream above; normal mode shows the synthesised reply with a spinner for tool activity.
+**Software event** — a GitHub PR webhook routes to a code review agent.
+It fetches the diff, checks it against conventions stored in memory, and
+produces a review artifact:
 
-Arbiter is experimental. The writ surface, agent constitutions, and HTTP
+```
+POST /v1/events · source=github/acme/api
+type=github.pull_request.opened · pr=481 · author=jsmith
+─────────────────────────────────────────────────────────────────
+event:   event_received       evt_5r8q · authenticated service
+event:   route_match          github.pull_request.* → reviewer
+event:   stream_start         reviewer · depth 1
+
+reviewer: fetching diff and checking against team conventions
+
+event:   tool_call            /fetch https://github.com/acme/api/pull/481.diff
+event:   tool_output          +312 −47 · 6 files · auth middleware, session handling
+event:   tool_call            /mem read acme/api review conventions
+event:   tool_output          require tests for auth changes · no direct session mutation
+event:   tool_call            /search OWASP session fixation
+event:   tool_output          session ID must be rotated on privilege change
+
+reviewer: session ID not rotated after login — flags against convention and OWASP guidance
+
+event:   tool_call            /write review-pr-481.md
+event:   gate                 verdict: continue ✓
+event:   tool_call            /mem write pr-481 review summary
+event:   tool_output          memory mem_7c3k saved
+
+reviewer: review complete — 1 blocking finding, 2 suggestions
+
+event:   artifact             review-pr-481.md
+event:   gate                 final review
+event:   gate                 verdict: continue ✓
+event:   done                 ok=true · 4.2s · action recorded
+```
+
+**Hardware event** — a temperature threshold breach on an edge device
+routes to the facilities agent, which delegates parallel diagnostics and
+operations sub-agents:
+
+```
+POST /v1/events · source=edge/rack-04
+type=sensor.temperature.threshold · value=84.6°C
+─────────────────────────────────────────────────────────────────
+event:   event_received       evt_8s3z · authenticated device
+event:   route_match          sensor.* → facilities
+event:   stream_start         facilities · depth 1
+
+facilities: checking thermal history and response policy
+
+event:   tool_call            /mem read rack-04 thermal history
+event:   tool_output          3 prior events · cooling policy v3
+event:   tool_call            /parallel diagnostics, operations
+event:   delegate             diagnostics, operations
+event:   stream_start         diagnostics · depth 2
+event:   tool_call            /exec read_sensors --zone rack-04
+event:   tool_output          inlet=31.2 · cpu=84.6 · fan=61%
+event:   tool_call            /exec inspect_processes --top 5
+event:   tool_output          inference-worker using 93% GPU
+
+diagnostics: sustained compute load is driving the thermal spike
+
+event:   stream_start         operations · depth 2
+event:   tool_call            /exec reduce_load --service inference-worker
+event:   tool_output          load target 60% · graceful drain started
+event:   gate                 verdict: continue ✓
+event:   tool_call            /mem write thermal event + response
+event:   join                 diagnostics, operations · ordered merge
+
+facilities: rack-04 stabilized; monitoring for recurrence
+
+event:   artifact             incident evt_8s3z · trace + actions
+event:   gate                 final review · action + outcome
+event:   gate                 verdict: continue ✓
+event:   done                 ok=true · 6.8s · action recorded
+```
+
+Every step is visible on the wire: routing, delegation, tool calls, memory
+reads, gate verdicts, and the final outcome. Nothing happens off-stream.
+
+Arbiter is experimental. The event surface, agent constitutions, and HTTP
 shape are subject to change. `/exec` is unsandboxed; treat it accordingly.
 
 
@@ -119,9 +215,10 @@ arbiter          # launch the terminal client
 Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md).
 
 
-## Example client: Newton (iOS)
+## Examples
 
-[Newton](https://github.com/tylerreckart/newton) is a SwiftUI iOS app that wraps the arbiter HTTP+SSE API as a reference client. It points at any `arbiter --api` instance and demonstrates how to drive the runtime end-to-end from a mobile frontend: bearer-token auth, streaming `/v1/orchestrate` responses parsed event-by-event, conversation persistence against `/v1/conversations`, and rendering the writ tool-call surface as inline UI. Useful as a starting point if you're building your own frontend on top of arbiter.
+**[Newton](https://github.com/tylerreckart/newton)** — SwiftUI iOS app that wraps the arbiter HTTP+SSE API as a reference client. Points at any `arbiter --api` instance and demonstrates how to drive the runtime end-to-end from a mobile frontend: bearer-token auth, streaming responses parsed event-by-event, conversation persistence against `/v1/conversations`, and rendering the tool-call surface as inline UI. Useful as a starting point if you're building your own frontend on top of arbiter.
+
+**[3bo](examples/3bo/)** — small stationary robot that uses arbiter as its reasoning layer. An Arduino Nano ESP32 handles the physical interface: I2S microphone capture, wake-word detection, LED states, and speaker playback. A Jetson Orin Nano runs whisper.cpp for STT, Piper for TTS, and arbiter for reasoning. The firmware holds only a per-device bridge secret; cloud provider keys and arbiter tokens never leave the Jetson. A reference build for connecting hardware to arbiter over a local voice bridge.
 
 Licensed under the [Apache License 2.0](LICENSE).
-
