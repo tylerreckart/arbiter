@@ -76,8 +76,8 @@ flowchart LR
 | Controller | Arduino Nano ESP32 | Wake word, I2S mic/amp, LEDs, mute |
 | Microphone | Adafruit ICS-43434 I2S MEMS mic breakout, product 6049 | Digital mono speech capture |
 | Amplifier | Adafruit MAX98357A I2S amplifier, product 3006 | Speaker playback |
-| Speaker | Adafruit 8 ohm 0.2 W mini speaker, product 1898 | Bring-up audio output |
-| LEDs | Adafruit NeoPixel Stick 8 × RGBW, product 2869 | Robot state display |
+| Speaker | Adafruit 3" 8 ohm 1 W speaker, product 1313 | Audio output |
+| LEDs | Adafruit NeoPixel Jewel 7 × RGBW, product 2858 | Robot eye / state display |
 | Mute | DPDT switch + P-channel MOSFET or load switch | Hard microphone power cutoff |
 
 Power rules:

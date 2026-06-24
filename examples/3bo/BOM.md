@@ -25,9 +25,8 @@ the verified USB/body 5 V budget, or add a Jetson-powered USB hub/accessory
 | 1   | Microcontroller                          | Arduino Nano ESP32                                                                | 25-35    | Main controller. ESP32-S3, 3.3 V I/O, USB-C. Powered by the Jetson USB host link in the wired build.                                                                                                                                                                  |
 | 1   | I2S MEMS microphone                      | Adafruit ICS-43434 I2S MEMS microphone breakout, product 6049                     | 5        | Digital mono microphone. Power from 3.3 V; not for 5 V logic.                                                                                                                                                                                                         |
 | 1   | I2S audio amplifier                      | Adafruit MAX98357A I2S 3 W class-D amplifier breakout, product 3006               | 6        | Drives the speaker directly from I2S audio. Runs from 2.7-5.5 V and accepts 3.3 V logic.                                                                                                                                                                              |
-| 1   | Breadboard speaker                       | Adafruit breadboard-friendly PCB mount mini speaker, 8 ohm 0.2 W, product 1898    | 2        | Quiet first-test speaker. Do not overdrive it with the MAX98357A.                                                                                                                                                                                                     |
-| 1   | Final enclosure speaker                  | 8 ohm 1-3 W small speaker                                                         | 3-8      | Optional upgrade once the audio path works. Better suited to spoken responses than the 0.2 W breadboard speaker.                                                                                                                                                      |
-| 1   | Addressable LED indicator                | Adafruit NeoPixel Stick, 8 x 5050 RGBW cool white, product 2869                   | 8        | Main 3bo status indicator. 5 V power, one data pin, RGBW library required.                                                                                                                                                                                            |
+| 1   | Speaker                                  | Adafruit 3" diameter 8 ohm 1 W speaker, product 1313                              | 4        | Robot eye speaker. 8 ohm, 1 W max. MAX98357A delivers ~1.8 W into 8 ohm on 5 V — keep volume below speaker rating.                                                                                                                                                   |
+| 1   | Addressable LED indicator                | Adafruit NeoPixel Jewel, 7 x 5050 RGBW warm white ~3000K, product 2858            | 6        | Robot eye. 7 pixels: centre (index 0) + 6-pixel outer ring (indices 1–6). 5 V power, one data pin, NEO_GRBW + NEO_KHZ800.                                                                                                                                            |
 | 1   | USB-C data cable                         | Short, data-capable USB-C cable from Jetson USB host to Nano ESP32                | 5-15     | Carries power and serial data between Jetson and Nano. Avoid charge-only cables.                                                                                                                                                                                      |
 | 1   | USB 5 V breakout or measured VBUS access | USB-C breakout, powered USB hub, or carrier-approved 5 V accessory output         | varies   | Optional only if the NeoPixel/amp need more 5 V current than the Nano exposes safely. Verify current limits before use.                                                                                                                                               |
 | 1   | 5 V body rail, optional                  | Jetson-powered USB hub/accessory 5 V rail, current-limited/fused                  | 15-40    | Use only if speaker/LED tests exceed the safe USB/Nano 5 V budget. Not battery-fed separately.                                                                                                                                                                        |
@@ -120,13 +119,13 @@ For the smallest useful prototype order:
 - Short data-capable USB-C cable from Jetson to Nano
 - Adafruit ICS-43434 I2S microphone breakout, product 6049
 - Adafruit MAX98357A I2S amplifier breakout, product 3006
-- Adafruit breadboard-friendly 8 ohm 0.2 W mini speaker, product 1898
-- Adafruit NeoPixel Stick 8 x RGBW cool white, product 2869
+- Adafruit 3" 8 ohm 1 W speaker, product 1313
+- Adafruit NeoPixel Jewel 7 x RGBW warm white, product 2858
 - Adafruit adjustable breadboard power supply kit, product 184
 - DPDT hard-mute switch, or SPST switch plus microphone load-switch circuit
 - SPST power switch
 - Microphone power-switch/load-switch parts for hard mute
-- 74AHCT/74HCT data level shifter for the NeoPixel stick
+- 74AHCT/74HCT data level shifter for the NeoPixel Jewel
 - 470-1000 uF capacitor
 - 330-470 ohm resistor
 - Jumper wires and breadboard/perfboard
@@ -179,11 +178,11 @@ Before connecting the Jetson to a battery regulator, run these acceptance tests:
 - Arduino Nano ESP32 product/spec page: https://store.arduino.cc/products/nano-esp32
 - Arduino Nano ESP32 docs: https://docs.arduino.cc/hardware/nano-esp32/
 - Adafruit MAX98357A I2S amplifier: https://www.adafruit.com/product/3006
-- Adafruit breadboard-friendly 8 ohm 0.2 W mini speaker: https://www.adafruit.com/product/1898
+- Adafruit 3" 8 ohm 1 W speaker: https://www.adafruit.com/product/1313
 - Adafruit ICS-43434 I2S microphone breakout: https://www.adafruit.com/product/6049
 - Adafruit MAX9814 electret microphone amplifier with AGC: https://www.adafruit.com/product/1713
 - Adafruit MAX4466 electret microphone amplifier: https://www.adafruit.com/product/1063
-- Adafruit NeoPixel Stick 8 x RGBW cool white: https://www.adafruit.com/product/2869
+- Adafruit NeoPixel Jewel 7 x RGBW warm white: https://www.adafruit.com/product/2858
 - Adafruit adjustable breadboard power supply kit: https://www.adafruit.com/product/184
 - Pololu step-down voltage regulators: https://www.pololu.com/category/131/step-down-buck-voltage-regulators
 - NVIDIA Jetson Orin Nano Super Developer Kit: https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/nano-super-developer-kit/

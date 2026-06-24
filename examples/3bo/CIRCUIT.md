@@ -126,7 +126,7 @@ enclosure wall.
 
 | MAX98357A pin | Connects to | Notes |
 | --- | --- | --- |
-| `VIN` | 5 V rail | Keep volume low with the 0.2 W speaker. |
+| `VIN` | 5 V rail | Amp delivers ~1.8 W into 8 Ω on 5 V — stay below the 1 W speaker rating. |
 | `GND` | GND rail | Common ground. |
 | `BCLK` | Nano `D2` | Shared I2S bit clock. |
 | `LRC` / `LRCLK` | Nano `D3` | Shared I2S word select. |
@@ -136,17 +136,17 @@ enclosure wall.
 | `+` speaker output | Speaker `+` | Bridge-tied output. Do not connect to GND. |
 | `-` speaker output | Speaker `-` | Bridge-tied output. Do not connect to GND. |
 
-The MAX98357A can overpower the 0.2 W speaker. Use the lowest possible software
-volume for the first test, and prefer short test tones. For safer bring-up,
-place a 47-100 ohm resistor in series with one speaker lead, or use an 8 ohm
-1 W speaker.
+The MAX98357A delivers approximately 1.8 W into 8 Ω on a 5 V supply. The
+selected speaker (product 1313) is rated 1 W, so keep software volume moderate.
 
-### Breadboard speaker, product 1898
+### Speaker, product 1313
+
+3" diameter, 8 Ω, 1 W. Four mounting tabs at 60 mm spacing.
 
 | Speaker pin | Connects to | Notes |
 | --- | --- | --- |
-| One speaker pin | MAX98357A speaker `+` | Polarity is not critical for a single speaker. |
-| Other speaker pin | MAX98357A speaker `-` | Do not connect either speaker pin to GND. |
+| One speaker lead | MAX98357A speaker `+` | Polarity is not critical for a single speaker. |
+| Other speaker lead | MAX98357A speaker `-` | Do not connect either speaker lead to GND. |
 
 ### 74AHCT/74HCT level shifter for NeoPixel data
 
@@ -163,16 +163,20 @@ the logic is the same.
 | `DIR` | fixed direction, if present | Tie for A-to-Y direction on bidirectional parts. Not present on simple buffers. |
 | Unused inputs | GND or defined level | Do not leave CMOS inputs floating. |
 
-### NeoPixel Stick RGBW, product 2869
+### NeoPixel Jewel RGBW, product 2858
+
+7 pixels: index 0 is the centre LED; indices 1–6 are the outer ring. Firmware
+addresses them individually — ring-chase animations rotate through indices 1–6,
+with the centre pixel held at a dim accent colour.
 
 | NeoPixel pin | Connects to | Notes |
 | --- | --- | --- |
-| `5V` / `+` | 5 V rail | Cap brightness in firmware. |
+| `PWR` / `+` | 5 V rail | Cap brightness in firmware. |
 | `GND` / `-` | GND rail | Common ground. |
-| `DIN` | 330-470 ohm resistor from level shifter output | Use the input side of the stick, not `DOUT`. |
-| `DOUT` | unconnected | Only used if chaining another NeoPixel module. |
+| `DIN` | 330-470 ohm resistor from level shifter output | Use the `DIN` pad, not `DOUT`. |
+| `DOUT` | unconnected | Only used if chaining another Jewel. |
 
-Firmware must configure this as RGBW, not RGB.
+Firmware type constant: `NEO_GRBW + NEO_KHZ800` (same protocol as the former NeoPixel Stick).
 
 ### Hard mute switch
 
