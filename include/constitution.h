@@ -121,6 +121,14 @@ struct Constitution {
     // Example: {"/fetch", "/mem"} for researcher, {"/exec", "/write"} for devops.
     std::vector<std::string> capabilities;
 
+    // --- Event routing ---
+    // Glob patterns for hardware/software events this agent handles via
+    // POST /v1/events.  Matched with fnmatch(pattern, type, 0) — '*'
+    // matches any sequence of characters including dots, so "sensor.*"
+    // matches "sensor.temp.threshold_exceeded".  Empty vector → agent is
+    // not event-routed (events fall through to index by default).
+    std::vector<std::string> event_types;
+
     // --- Computed ---
     std::string build_system_prompt() const;
 

@@ -189,6 +189,61 @@ TEST_CASE("parse_agent_commands skips code fences") {
     CHECK(cmds[0].args == "ls");
 }
 
+TEST_CASE("parse_agent_commands fence: tilde fence skips commands inside") {
+    std::string response = "~~~\n/exec rm -rf /\n~~~\n/exec echo ok\n";
+    auto cmds = parse_agent_commands(response);
+    REQUIRE(cmds.size() == 1);
+    CHECK(cmds[0].name == "exec");
+    CHECK(cmds[0].args == "echo ok");
+}
+
+TEST_CASE("parse_agent_commands fence: mismatched open/close does not escape block") {
+    // Opened with ```, attempted close with ~~~ — block must stay open.
+    // The /exec after the mismatch is still inside the fence.
+    // Only a matching ``` can close it.
+    std::string response = "```\n/exec danger\n~~~\n/exec still_inside\n```\n/exec outside\n";
+    auto cmds = parse_agent_commands(response);
+    REQUIRE(cmds.size() == 1);
+    CHECK(cmds[0].name == "exec");
+    CHECK(cmds[0].args == "outside");
+}
+
+TEST_CASE("parse_agent_commands fence: info string on opening line") {
+    // ```python or ```cpp should open a fence just like a bare ```
+    std::string response = "```python\n/exec echo inside\n```\n/exec echo outside\n";
+    auto cmds = parse_agent_commands(response);
+    REQUIRE(cmds.size() == 1);
+    CHECK(cmds[0].name == "exec");
+    CHECK(cmds[0].args == "echo outside");
+}
+
+TEST_CASE("parse_agent_commands fence: unclosed fence suppresses trailing commands") {
+    // An unclosed ``` means everything after is inside the block.
+    std::string response = "```\n/exec danger\n/exec also_danger\n";
+    auto cmds = parse_agent_commands(response);
+    CHECK(cmds.empty());
+}
+
+TEST_CASE("parse_agent_commands fence: nested open attempt is ignored") {
+    // Once inside a ``` block, a second ``` line is not a new fence — it
+    // is treated as a close of the outer block.
+    std::string response = "```\n```\n/exec this_is_outside\n";
+    auto cmds = parse_agent_commands(response);
+    REQUIRE(cmds.size() == 1);
+    CHECK(cmds[0].args == "this_is_outside");
+}
+
+TEST_CASE("parse_agent_commands fence: empty file is safe") {
+    auto cmds = parse_agent_commands("");
+    CHECK(cmds.empty());
+}
+
+TEST_CASE("parse_agent_commands fence: only fence markers, no commands") {
+    std::string response = "```\n```\n";
+    auto cmds = parse_agent_commands(response);
+    CHECK(cmds.empty());
+}
+
 TEST_CASE("parse_agent_commands recognises /help with and without topic") {
     {
         auto cmds = parse_agent_commands("/help\n");
@@ -398,6 +453,43 @@ TEST_CASE("/mem add entry dispatcher rejects empty body and unclosed block") {
         CHECK(captured_args == "1 supports 2");
         CHECK(captured_body.empty());
     }
+}
+
+TEST_CASE("/parallel duplicate agent_id produces explicit error") {
+    // When the same agent_id appears more than once in a /parallel block,
+    // execute_agent_commands must reject it with the exact error string
+    // defined in commands.cpp before calling the parallel_invoker.
+
+    // Build a /parallel command whose body lists the same agent twice.
+    AgentCommand cmd;
+    cmd.name = "parallel";
+    cmd.args = "";
+    cmd.content = "/agent researcher find patterns\n/agent researcher find more\n";
+    cmd.truncated = false;
+
+    std::vector<AgentCommand> cmds;
+    cmds.push_back(cmd);
+
+    // The parallel_invoker must NOT be called — set it to one that panics
+    // so we detect any accidental call.
+    bool invoker_called = false;
+    auto guard_invoker = [&](const std::vector<std::pair<std::string, std::string>>&)
+        -> std::vector<std::string> {
+        invoker_called = true;
+        return {};
+    };
+
+    auto out = execute_agent_commands(
+        cmds, "index", "",
+        /*agent_invoker=*/nullptr, /*confirm=*/nullptr,
+        /*dedup_cache=*/nullptr, /*advisor_invoker=*/nullptr,
+        /*tool_status=*/nullptr, /*pane_spawner=*/nullptr,
+        /*write_interceptor=*/nullptr, /*exec_disabled=*/false,
+        /*parallel_invoker=*/guard_invoker);
+
+    CHECK(!invoker_called);
+    CHECK(out.find("ERR: /parallel cannot invoke 'researcher' twice in one batch") != std::string::npos);
+    CHECK(out.find("each agent_id must appear at most once") != std::string::npos);
 }
 
 TEST_CASE("/help dispatch returns topic body or ERR for unknown topic") {

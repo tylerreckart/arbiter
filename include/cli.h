@@ -29,7 +29,8 @@ namespace arbiter {
 // writes ones that don't exist yet — re-run with force=true (CLI: --force)
 // to reset every starter back to the embedded definition.
 void cmd_init(bool force = false);
-void cmd_api(int port, const std::string& bind, bool verbose);
+void cmd_api(int port, const std::string& bind, bool verbose,
+             bool allow_host_exec = false);
 void cmd_oneshot(const std::string& agent_id, const std::string& msg);
 
 // Tenant admin.  Each opens ~/.arbiter/tenants.db, runs one operation, and

@@ -35,16 +35,27 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
     std::vector<AgentCommand> result;
     std::istringstream ss(response);
     std::string line;
-    bool in_code_block = false;
+    // Track open code fence by its exact opening sequence ("```" or "~~~").
+    // A fence only closes when a line starts with the same sequence that
+    // opened it — mismatched pairs don't cross-close and can't be used to
+    // escape a block mid-stream.  Empty = not currently inside a fence.
+    std::string current_fence;
 
     while (std::getline(ss, line)) {
-        // Track code fences (``` or ~~~)
-        if (line.size() >= 3 &&
-            (line.substr(0, 3) == "```" || line.substr(0, 3) == "~~~")) {
-            in_code_block = !in_code_block;
-            continue;
+        // Track code fences (``` or ~~~), matched by opening sequence.
+        if (line.size() >= 3) {
+            std::string pfx = line.substr(0, 3);
+            if (pfx == "```" || pfx == "~~~") {
+                if (current_fence.empty()) {
+                    current_fence = pfx;   // open
+                } else if (current_fence == pfx) {
+                    current_fence.clear(); // close — only when sequence matches
+                }
+                // mismatched fence (open "```", see "~~~") → stay in block
+                continue;
+            }
         }
-        if (in_code_block) continue;
+        if (!current_fence.empty()) continue;
 
         // Trim trailing whitespace / CR
         while (!line.empty() && (line.back() == ' ' || line.back() == '\r'))
@@ -2598,6 +2609,17 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 }
             }
 
+            // Duplicate agent_id detection — each id must appear at most once
+            // in the batch; two concurrent calls would race the same history.
+            std::string parallel_dup_id;
+            {
+                std::set<std::string> seen_ids;
+                for (const auto& [id, msg] : children) {
+                    (void)msg;
+                    if (!seen_ids.insert(id).second) { parallel_dup_id = id; break; }
+                }
+            }
+
             block << "[/parallel " << children.size() << " children]\n";
             if (cmd.truncated) {
                 block << "ERR: /parallel block was cut off (missing "
@@ -2607,6 +2629,12 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << "ERR: /parallel block had no /agent lines — only "
                          "/agent <id> <msg> is permitted inside "
                          "/parallel.../endparallel\n";
+                cache_result = false;
+            } else if (!parallel_dup_id.empty()) {
+                block << "ERR: /parallel cannot invoke '" << parallel_dup_id
+                      << "' twice in one batch — each agent_id must appear"
+                         " at most once. Use separate /agent calls or"
+                         " different agent ids.\n";
                 cache_result = false;
             } else if (!parallel_invoker) {
                 block << "ERR: /parallel unavailable in this context\n";

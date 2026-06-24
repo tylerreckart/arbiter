@@ -95,6 +95,7 @@ set(ARBITER_SOURCES
     src/constitution.cpp
     src/orchestrator.cpp
     src/advisor_gate.cpp
+    src/advisor.cpp
     src/api_server.cpp
     src/sandbox.cpp
     src/idempotency_cache.cpp

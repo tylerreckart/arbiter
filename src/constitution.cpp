@@ -917,6 +917,12 @@ std::string Constitution::to_json() const {
         m["capabilities"] = cap;
     }
 
+    if (!event_types.empty()) {
+        auto et = jarr();
+        for (auto& e : event_types) et->as_array_mut().push_back(jstr(e));
+        m["event_types"] = et;
+    }
+
     // Memory block — only emit when at least one toggle deviates from
     // the default, so round-tripping a default config stays compact.
     Constitution::MemoryConfig defaults;
@@ -1041,6 +1047,12 @@ Constitution Constitution::from_json(const std::string& json_str) {
     if (cap_val && cap_val->is_array()) {
         for (auto& v : cap_val->as_array()) {
             if (v && v->is_string()) c.capabilities.push_back(v->as_string());
+        }
+    }
+    auto et_val = root->get("event_types");
+    if (et_val && et_val->is_array()) {
+        for (auto& v : et_val->as_array()) {
+            if (v && v->is_string()) c.event_types.push_back(v->as_string());
         }
     }
     return c;
