@@ -1,6 +1,6 @@
 # TUI engine overhaul — implementation plan
 
-Status: **draft** · Branch: `cursor/tui-engine-overhaul` · Engine: [OpenTUI](https://github.com/anomalyco/opentui) (Zig core, C ABI)
+Status: **Phase 6 in progress** · Branch: `cursor/tui-engine-overhaul` · Engine: [OpenTUI](https://github.com/anomalyco/opentui) (Zig core, C ABI)
 
 This document is the working plan for replacing arbiter's hand-rolled C++ terminal renderer with OpenTUI's native core while preserving REPL semantics: multi-pane layout, exec-thread streaming, scrollback, multi-line input, tool-call chrome, and background loops.
 
@@ -26,30 +26,30 @@ This document is the working plan for replacing arbiter's hand-rolled C++ termin
 ## Current architecture (arbiter)
 
 ```
-main thread (pump)                exec thread (per pane)
-─────────────────                 ───────────────────────
-read keys → LineEditor            cmd_queue.pop → handle()
+main thread (UI loop)               exec thread (per pane)
+────────────────────              ───────────────────────
+PaneInputEditor (stdin)             cmd_queue.pop → handle()
      │                                  │
      │                                  ├─ orch.send_streaming()
      │                                  │     └─ StreamFilter → OutputQueue
      │                                  └─ pane.last_response (delegation)
      │
-drain OutputQueue → ScrollBuffer
-render_scrollback() → raw ANSI (TUI)
-ThinkingIndicator / ToolCallIndicator → TUI status rows
+output pump (~30 ms): drain OutputQueue → PaneScrollView (AnsiScrollAppender)
+pane_history_present() → OpenTUI frame (chrome + scroll + input + borders)
+ThinkingIndicator / ToolCallIndicator → tick in pump (no threads)
 ```
 
 | Component | Location | Responsibility |
 |-----------|----------|----------------|
-| `TUI` | `include/tui/tui.h`, `src/tui/tui.cpp` | Alt-screen, fixed row layout, header/mid/hint separators, status |
-| `ScrollBuffer` | `src/tui/scroll_buffer.cpp` | Visual-row scrollback, PgUp/Pn navigation |
-| `LineEditor` | `src/tui/line_editor.cpp` | Input, history, slash tab-complete |
+| `TUI` | `include/tui/tui.h`, `src/tui/tui.cpp` | Per-pane layout rects, status/title state (OpenTUI paints) |
+| `PaneScrollView` | `src/tui/opentui/pane_scroll_view.cpp` | OpenTUI `TextBuffer` scrollback, PgUp/PgDn |
+| `PaneInputEditor` | `src/tui/opentui/pane_input_editor.cpp` | Input, history, slash tab-complete |
 | `StreamFilter` | `src/tui/stream_filter.cpp` | Strip inline `/cmd` from streamed prose |
 | `MarkdownRenderer` | `src/markdown.cpp` | ANSI styling for agent output |
 | `Pane` / `LayoutTree` | `include/repl/` | Per-pane state, N-ary split tree, focus |
 | `OutputQueue` / `CommandQueue` | `include/repl/queues.h` | Exec ↔ pump handoff |
 
-~2.1k lines of TUI-specific C++. Layout is **row-index arithmetic** on a shared alt-screen; scroll region is repainted from `ScrollBuffer` on each drain.
+OpenTUI renders the full alt-screen frame; `TUI` holds chrome metadata only.
 
 ---
 
@@ -110,7 +110,7 @@ src/tui/opentui/
   ffi_shim.c        # If needed for callback trampolines
 ```
 
-Old `TUI` / `ScrollBuffer` / `LineEditor` remain until parity; compile-time flag `ARBITER_TUI_ENGINE=legacy|opentui` for incremental migration.
+Old `ScrollBuffer` / `LineEditor` / `--tui-engine=legacy` removed in Phase 6. OpenTUI is the only interactive renderer (`-DARBITER_ENABLE_OPENTUI=ON`, default).
 
 ---
 
@@ -174,13 +174,8 @@ If you already configured with the old Zig-from-source path, wipe the cache firs
 ```bash
 cmake -B build -DARBITER_ENABLE_OPENTUI=ON
 cmake --build build
-./build/arbiter --tui-engine=opentui
-# or: ARBITER_TUI_ENGINE=opentui ./build/arbiter
+./build/arbiter
 ```
-
-Legacy input (LineEditor) and chrome (header/separators/hints) are unchanged; only the scroll region uses OpenTUI.
-
-**Phase 2:** input is now `PaneInputEditor` (EditBuffer + EditorView); painted by the output pump, not ANSI stdout.
 
 - [x] `PaneScrollView` owns `TextBuffer` + `TextBufferView` (`include/tui/opentui/pane_scroll_view.h`)
 - [x] `OutputQueue` drain → `textBufferAppend` on pump (batched per tick; NativeSpanFeed next)
@@ -229,9 +224,10 @@ Legacy input (LineEditor) and chrome (header/separators/hints) are unchanged; on
 
 **Exit criteria:** default build uses OpenTUI; legacy code deleted; docs updated.
 
-- [ ] Default `ARBITER_TUI_ENGINE=opentui`
-- [ ] Delete `src/tui/tui.cpp`, `scroll_buffer.cpp`, `line_editor.cpp` (or move to `legacy/` for one release)
-- [ ] Update [index.md](index.md), [streaming.md](streaming.md) implementation notes
+- [x] OpenTUI required at configure time (`ARBITER_ENABLE_OPENTUI=ON` default)
+- [x] Delete `line_editor.cpp` / `ScrollBuffer` (removed earlier)
+- [x] Remove legacy stdout erase paths from `TUI`
+- [x] Update [index.md](index.md), [streaming.md](streaming.md) implementation notes
 - [ ] Performance bench: stream 10k-token response, measure frame time p95
 
 ---
@@ -291,11 +287,11 @@ Add `tests/test_opentui_engine.cpp` in Phase 0.
 | Risk | Mitigation |
 |------|------------|
 | Zig toolchain burden for contributors | Document install; optional prebuilt libs; CI always builds native |
-| Markdown parity gaps | Keep legacy renderer path until visual diff passes |
+| Markdown parity gaps | AnsiScrollAppender + highlight path; report regressions |
 | Threading bugs (render off exec thread) | Assert in debug builds; code review rule; TSAN on CI job |
 | OpenTUI API churn | Pin submodule commit; minimal wrapper surface |
-| Multi-pane resize bugs | Port layout tests; compare rect output legacy vs Yoga |
-| Terminal compatibility | Test Terminal.app, iTerm2, Kitty, tmux; fall back to legacy flag |
+| Multi-pane resize bugs | Port layout tests; manual checklist in [panes.md](panes.md) |
+| Terminal compatibility | Test Terminal.app, iTerm2, Kitty, Ghostty, tmux |
 
 ---
 
