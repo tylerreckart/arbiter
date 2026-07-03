@@ -1,7 +1,5 @@
-// LineEditor integration tests.  The editor owns stdin while blocking on
-// user input and repaints the single input row on every keystroke, so most
-// of its behavior is visible as a stream of "clear-line, prompt, buffer"
-// repaints interleaved with cursor-positioning escapes.
+// REPL input integration tests.  The interactive REPL owns stdin while
+// blocking on user input; OpenTUI repaints the input row each frame.
 //
 // Assertions work on the ANSI-stripped output stream's *tail* — what the
 // editor drew most recently.  For each test we send a sequence of bytes

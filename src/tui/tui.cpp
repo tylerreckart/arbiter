@@ -120,16 +120,6 @@ TuiChromeSnapshot TUI::chrome_snapshot() const {
     return s;
 }
 
-void TUI::erase_chrome_row(int row) {
-    erase_pane_row(row);
-}
-
-void TUI::erase_pane_row(int row) {
-    std::printf("\033[%d;%dH\033[0m", row, left_col());
-    for (int i = 0; i < rect_.w; ++i) std::putc(' ', stdout);
-    std::printf("\033[%d;%dH", row, left_col());
-}
-
 void TUI::set_footer_hint_visible(bool visible) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     footer_hint_visible_ = visible;
@@ -138,14 +128,6 @@ void TUI::set_footer_hint_visible(bool visible) {
 void TUI::set_focus_accent(bool active) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     focus_accent_ = active;
-}
-
-void TUI::clear_input_area() {
-    // Input is rendered each frame by OpenTUI; nothing to erase on stdout.
-}
-
-void TUI::paint_idle_input_prompt() {
-    // Idle prompt is drawn by PaneInputEditor in the output pump.
 }
 
 // ─── Welcome card ────────────────────────────────────────────────────────────

@@ -105,11 +105,7 @@ static void update_pane_original_task(Pane& pane,
     }
 }
 
-// Drain any pending exec output, record it in the scroll buffer, and render.
-// VT100 DECSTBM is gone now (it's a physical-terminal resource, unusable for
-// multi-pane), so we always re-render the scroll region from ScrollBuffer —
-// a full clear+repaint of ~40 rows per output tick is cheap and avoids the
-// auto-scroll shared-state problem.
+// Drain any pending exec output into the pane scroll view and repaint.
 static void getc_flush_output() {
     auto& S = g_getc_state;
     if (!S.pane) return;
@@ -190,7 +186,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
     bool restored = orch.load_session(session_path);
     (void)restored;
 
-    // Load shared input history once — each pane's LineEditor gets a copy.
+    // Load shared input history once — each pane's editor gets a copy.
     std::vector<std::string> shared_history;
     {
         std::ifstream hf(get_config_dir() + "/history");

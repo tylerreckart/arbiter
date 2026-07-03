@@ -224,15 +224,11 @@ Pane& LayoutTree::focused() const {
 }
 
 namespace {
-// Refresh focus-accent colors on every leaf and replace the leaving
-// pane's live prompt with a dim idle stub.  Shared between focus_next /
-// focus_prev so either direction behaves identically.  The incoming
-// focused pane's PaneInputEditor will repaint its live prompt on the next
-// begin_input tick of the main loop.
+// Refresh focus-accent colors on every leaf.  The incoming focused pane's
+// PaneInputEditor repaints on the next present tick; unfocused panes draw
+// a dim idle stub in draw().
 void apply_focus_change(const std::vector<Pane*>& leaves,
-                        Pane* old_focused, Pane* new_focused) {
-    if (old_focused && old_focused != new_focused)
-        old_focused->tui.paint_idle_input_prompt();
+                        Pane* /*old_focused*/, Pane* new_focused) {
     const bool multi = leaves.size() > 1;
     for (auto* p : leaves) {
         p->tui.set_focus_accent(multi && p == new_focused);

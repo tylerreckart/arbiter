@@ -2,6 +2,8 @@
 
 Arbiter's interactive terminal interface. One process, one shell window — but inside that window: a multi-pane layout where each pane is an independent conversation with its own agent, history, and streaming output. The TUI is what you get when you run `arbiter` with no arguments.
 
+Rendering uses [OpenTUI](https://github.com/anomalyco/opentui) (native cell-buffer diff renderer). Per-pane chrome, scrollback, and input are composited each frame by the output pump (~30 ms).
+
 A pane is to a conversation what a tab is to a browser. A new pane is a new conversation against an agent of your choosing; multiple panes run side-by-side or stacked, each independently typing, streaming, and waiting for its agent. Background loops (long-running agent processes) live alongside; foreground panes can spawn child panes (`/pane <agent> <msg>`) whose results land back in the spawner when done.
 
 Start with `arbiter`. The default layout is a single pane covering the full terminal; `Ctrl-w v` / `Ctrl-w s` splits it.
@@ -29,9 +31,9 @@ What lives where:
 
 - **Identity row.** Left side: focused agent name and the session title. Right side: live status when the agent is working ("thinking…"), or aggregate token / cost stats when idle.
 - **Header separator.** Plain dashed line; gets an accent colour on the focused pane in multi-pane layouts.
-- **Scroll region.** Where everything the agent emits goes — streamed prose, tool-call summary lines, `/cmd` output, system notices. Scrollable with PgUp/PgDn (visual-row aware: wrapped lines count as multiple rows for navigation).
+- **Scroll region.** Where everything the agent emits goes — streamed prose, tool-call summary lines, `/cmd` output, system notices. Scrollable with PgUp/PgDn (virtual-line aware: wrapped lines count as multiple rows). Markdown/theme ANSI is rendered as OpenTUI syntax highlights.
 - **Mid separator.** Dashed line above the input. Doubles as the tool-call indicator: while a turn is firing tool calls, this row shows `⠋ N tool calls…` instead of plain dashes.
-- **Input area.** 1 row by default, grows up to 5 as readline wraps. Standard editing controls (arrows, history, tab-complete on slash commands).
+- **Input area.** 1 row by default, grows up to 5 as text wraps. Standard editing controls (arrows, history, tab-complete on slash commands). Rendered by OpenTUI `EditBuffer` / `EditorView`.
 - **Hint row.** Static legend of the most-used keys and commands. Hidden in multi-pane layouts (becomes clutter on every pane); the rows are still reserved as blank padding so input row position doesn't shift between modes.
 
 ## Where to next
