@@ -180,6 +180,8 @@ cmake --build build
 
 Legacy input (LineEditor) and chrome (header/separators/hints) are unchanged; only the scroll region uses OpenTUI.
 
+**Phase 2:** input is now `PaneInputEditor` (EditBuffer + EditorView); painted by the output pump, not ANSI stdout.
+
 - [x] `PaneScrollView` owns `TextBuffer` + `TextBufferView` (`include/tui/opentui/pane_scroll_view.h`)
 - [x] `OutputQueue` drain → `textBufferAppend` on pump (batched per tick; NativeSpanFeed next)
 - [x] Port visual-row scroll offset semantics to `textBufferViewSetFirstLineOffset`
@@ -190,10 +192,10 @@ Legacy input (LineEditor) and chrome (header/separators/hints) are unchanged; on
 
 **Exit criteria:** multiline input, history, slash tab-complete, `\` continuation, Enter to submit unchanged.
 
-- [ ] `EditBuffer` + `EditorView` replace `LineEditor` for opentui mode
-- [ ] Key events routed through arbiter keymap (reuse existing binding table where possible; evaluate `@opentui/keymap` later as optional)
-- [ ] Submit hands line to `cmd_queue` same as today
-- [ ] Hint row rendered as static footer text (hidden in multi-pane)
+- [x] `EditBuffer` + `EditorView` replace `LineEditor` (`PaneInputEditor`)
+- [x] Key events routed through arbiter keymap (existing stdin dispatch preserved)
+- [x] Submit hands line to `cmd_queue` same as today
+- [x] Hint row rendered as static footer text (hidden in multi-pane)
 
 ### Phase 3 — Chrome and indicators (3–5 days)
 

@@ -135,12 +135,6 @@ void LayoutTree::resize(const Rect& bounds) {
     for (auto* p : leaves) {
         p->tui.set_footer_hint_visible(!multi);
         p->tui.set_focus_accent(multi && p == focused_);
-        // Non-focused panes get a dim stub prompt so their input row
-        // reads as an idle input surface.  The focused pane's input row
-        // is left blank here; the REPL's begin_input re-paints the live
-        // prompt via the refresh-pending handoff on the next main-loop
-        // iteration (see cmd_interactive's refresh_pending flag).
-        if (multi && p != focused_) p->tui.paint_idle_input_prompt();
     }
 
     render_borders();

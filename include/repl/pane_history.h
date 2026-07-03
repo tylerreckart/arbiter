@@ -16,6 +16,7 @@ struct Pane;
 
 struct UiContext {
     opentui::Session* session = nullptr;
+    Pane*             focused_pane = nullptr;
 };
 
 void pane_history_init(Pane& pane);
@@ -23,6 +24,7 @@ void pane_history_set_cols(Pane& pane, int cols);
 void pane_history_clear(Pane& pane);
 void pane_history_push(Pane& pane, std::string_view text);
 [[nodiscard]] int pane_history_total_rows(const Pane& pane);
+[[nodiscard]] int pane_history_max_scroll(const Pane& pane);
 
 void pane_history_begin_frame(UiContext& ctx);
 void pane_history_draw_pane(Pane& pane, UiContext& ctx);

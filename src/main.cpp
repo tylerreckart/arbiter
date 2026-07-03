@@ -15,7 +15,6 @@
 #include "title_generator.h"
 #include "cli.h"
 #include "tui/tui.h"
-#include "tui/line_editor.h"
 #include "tui/stream_filter.h"
 #include "repl/pane.h"
 #include "repl/layout.h"
@@ -213,6 +212,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
         raw.c_cc[VMIN]  = 1;
         raw.c_cc[VTIME] = 0;
         ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+        arbiter::drain_stdin_spurious(200);
     }
 
     // Forward declaration — layout_ptr lets lambdas registered before layout
@@ -250,6 +250,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
 
         p->editor.set_max_history(1000);
         p->editor.set_history(shared_history);  // copy per-pane
+        p->editor.set_present_fn([&]() { if (pump_notify) pump_notify(); });
 
         p->editor.set_completion_provider(
             [&orch, &loops](const std::string& buf, const std::string& tok)
@@ -291,7 +292,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
 
         Pane* raw = p.get();
         p->editor.set_scroll_handler([raw, &ui_ctx](int direction, int step) {
-            int max_off = pane_history_total_rows(*raw);
+            const int max_off = pane_history_max_scroll(*raw);
             if (direction < 0) {
                 raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
             } else {
@@ -434,6 +435,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
     }
 
     g_getc_state.pane = &layout.focused();
+    ui_ctx.focused_pane = &layout.focused();
 
     std::function<std::string(const std::string& agent, const std::string& message)>
         spawn_pane_fn;
@@ -1210,6 +1212,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     pane_history_set_cols(p, p.tui.cols());
                 });
                 g_getc_state.pane = &layout.focused();
+                ui_ctx.focused_pane = &layout.focused();
                 refresh_focused_input.store(true);
                 layout.focused().editor.interrupt();
             }
@@ -1303,6 +1306,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     if (p.exec_thread.joinable()) p.exec_thread.join();
                 });
                 g_getc_state.pane = &layout.focused();
+                ui_ctx.focused_pane = &layout.focused();
                 layout.for_each_pane([&](Pane& p) {
                     pane_history_set_cols(p, p.tui.cols());
                     pane_history_render(p, ui_ctx);
@@ -1364,6 +1368,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
             pane_history_render(p, ui_ctx);
         });
         g_getc_state.pane = &layout.focused();
+        ui_ctx.focused_pane = &layout.focused();
     };
 
     // ── Main readline loop ──────────────────────────────────────────────────
@@ -1372,6 +1377,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
         while (service_pending_closes()) {}
 
         Pane& focused = layout.focused();
+        ui_ctx.focused_pane = &focused;
         focused.tui.begin_input([&focused]() { return focused.cmd_queue.pending(); });
 
         std::string prompt = focused.multiline_accum.empty()

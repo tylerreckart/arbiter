@@ -140,16 +140,11 @@ void TUI::set_focus_accent(bool active) {
 }
 
 void TUI::clear_input_area() {
-    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    for (int r = sep_row(); r <= input_row(); ++r) erase_pane_row(r);
-    std::fflush(stdout);
+    // Input is rendered each frame by OpenTUI; nothing to erase on stdout.
 }
 
 void TUI::paint_idle_input_prompt() {
-    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    erase_pane_row(input_top_row());
-    std::printf("\033[%d;%dH> ", input_top_row(), left_col());
-    std::fflush(stdout);
+    // Idle prompt is drawn by PaneInputEditor in the output pump.
 }
 
 // ─── Welcome card ────────────────────────────────────────────────────────────
