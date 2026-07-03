@@ -104,6 +104,7 @@ set(ARBITER_SOURCES
     src/starters.cpp
     src/theme.cpp
     src/tui/tui.cpp
+    src/tui/tui_design.cpp
     src/tui/ansi_util.cpp
     src/tui/stream_filter.cpp
     src/api_client.cpp

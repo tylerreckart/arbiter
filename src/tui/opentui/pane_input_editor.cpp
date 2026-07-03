@@ -1,7 +1,7 @@
 #include "tui/opentui/pane_input_editor.h"
 
-#include "theme.h"
 #include "tui/opentui/engine.h"
+#include "tui/tui_design.h"
 
 #include <algorithm>
 #include <array>
@@ -15,20 +15,14 @@ namespace arbiter::opentui {
 
 namespace {
 
-using Rgba = std::array<std::uint16_t, 4>;
-
 constexpr std::uint8_t kWrapWord = 2;
-
-Rgba prompt_fg() { return rgba8(0x98, 0xc3, 0x79); }
-Rgba idle_fg()     { return rgba8(0x5c, 0x63, 0x70); }
-Rgba input_bg()    { return rgba8(0x2a, 0x2a, 0x3c); }
 
 void draw_plain_text(OpenTuiHandle frame,
                      std::uint32_t x,
                      std::uint32_t y,
                      std::string_view text,
-                     const Rgba& fg,
-                     const Rgba* bg = nullptr) {
+                     const TuiRgba& fg,
+                     const TuiRgba* bg = nullptr) {
     if (text.empty()) return;
     bufferDrawText(frame,
                    text.data(),
@@ -283,7 +277,8 @@ void PaneInputEditor::sync_edit_buffer() {
 void PaneInputEditor::update_input_rows() {
     int cols = tui_.cols();
     if (cols <= 0) cols = 80;
-    const int total_vis = prompt_cols_ + visible_width(buffer_);
+    const int pad = tui_design().layout.input_padding_x;
+    const int total_vis = prompt_cols_ + visible_width(buffer_) + std::max(0, pad * 2);
     const int needed_rows = std::max(1, (total_vis + cols) / cols);
     tui_.grow_input(needed_rows);
 }
@@ -307,17 +302,19 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
 
     const std::uint32_t px = static_cast<std::uint32_t>(tui.left_col() - 1);
     const std::uint32_t py = static_cast<std::uint32_t>(tui.input_top_row_pub() - 1);
+    const TuiDesign& d = tui_design();
+    const int pad = (tui.cols() <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
+    const std::uint32_t content_x = px + static_cast<std::uint32_t>(pad);
 
     if (!focused) {
-        const Rgba bg = input_bg();
-        draw_plain_text(frame, px, py, "> ", idle_fg(), &bg);
+        draw_plain_text(frame, content_x, py, d.component.inactive_prompt, d.text.subtle, &d.bg.input);
         return;
     }
 
     const int cols = std::max(1, tui.cols());
     const int prompt_skip = std::max(0, prompt_cols_);
-    const int editor_w = std::max(1, cols - prompt_skip);
-    const std::uint32_t ex = px + static_cast<std::uint32_t>(prompt_skip);
+    const int editor_w = std::max(1, cols - (pad * 2) - prompt_skip);
+    const std::uint32_t ex = content_x + static_cast<std::uint32_t>(prompt_skip);
 
     bind_viewport(tui, editor_w);
 
@@ -327,8 +324,7 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
 
     const std::string plain_prompt = plain_text(prompt_);
     if (!plain_prompt.empty()) {
-        const Rgba bg = input_bg();
-        draw_plain_text(frame, px, py, plain_prompt, prompt_fg(), &bg);
+        draw_plain_text(frame, content_x, py, plain_prompt, d.accent.primary, &d.bg.input);
     }
 }
 

@@ -4,6 +4,7 @@
 #include "tui/opentui/pane_frame.h"
 #include "tui/opentui/pane_scroll_view.h"
 #include "tui/opentui/session.h"
+#include "tui/tui_design.h"
 
 #include <functional>
 
@@ -40,8 +41,7 @@ void pane_history_begin_frame(UiContext& ctx) {
     if (!ctx.session || !ctx.session->active()) return;
     const OpenTuiHandle frame = ctx.session->begin_frame();
     if (frame == 0) return;
-    static const std::uint16_t kBg[] = {0x1e, 0x1e, 0x2e, 255};
-    bufferClear(frame, kBg);
+    bufferClear(frame, tui_design().bg.base.data());
 }
 
 void pane_history_draw_pane(Pane& pane, UiContext& ctx) {
