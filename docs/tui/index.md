@@ -36,6 +36,7 @@ What lives where:
 
 ## Where to next
 
+- **[Engine overhaul plan](engine-overhaul.md)** — OpenTUI migration: phases, architecture, build strategy.
 - **[Slash commands](commands.md)** — the full `/cmd` catalogue, grouped by category.
 - **[Keybindings](keybindings.md)** — every key, chord, and modifier the editor recognizes.
 - **[Panes](panes.md)** — multi-pane layouts: split, focus, close, `/pane` spawn semantics.
