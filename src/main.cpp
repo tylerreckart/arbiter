@@ -73,6 +73,7 @@ using arbiter::OutputQueue;
 using arbiter::LoopManager;
 using arbiter::Pane;
 using arbiter::LayoutTree;
+using arbiter::PaneFrameHooks;
 using arbiter::Rect;
 
 // State the output-pump thread needs.  Points into cmd_interactive()'s stack
@@ -291,7 +292,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
             });
 
         Pane* raw = p.get();
-        p->editor.set_scroll_handler([raw, &ui_ctx](int direction, int step) {
+        p->editor.set_scroll_handler([raw, &pump_notify](int direction, int step) {
             const int max_off = pane_history_max_scroll(*raw);
             if (direction < 0) {
                 raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
@@ -300,7 +301,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 raw->new_while_scrolled = 0;
                 if (raw->scroll_offset == 0) raw->tui.clear_status();
             }
-            pane_history_render(*raw, ui_ctx);
+            if (pump_notify) pump_notify();
         });
         p->editor.set_cancel_handler([raw, &orch]() {
             orch.cancel();
@@ -403,13 +404,28 @@ static void cmd_interactive(bool exec_allowed_flag) {
     LayoutTree layout(make_pane(), full_rect);
     layout_ptr = &layout;
 
+    PaneFrameHooks pane_hooks;
+    pane_hooks.for_each_pane = [&](const std::function<void(Pane&)>& fn) {
+        layout.for_each_pane(fn);
+    };
+    pane_hooks.draw_overlays = [&](OpenTuiHandle frame) {
+        if (layout.pane_count() > 1) layout.draw_borders(frame);
+    };
+    auto present_unlocked = [&]() {
+        pane_history_present(ui_ctx, pane_hooks);
+    };
+    ui_ctx.present_all = [&]() {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        present_unlocked();
+    };
+
     // Welcome card goes in the initial pane only.  Subsequent splits get a
     // clean start (no welcome), since splitting is an explicit user action.
     {
         Pane& welcome_pane = layout.focused();
         const std::string welcome = welcome_pane.tui.build_welcome_card();
         pane_history_push(welcome_pane, welcome);
-        pane_history_render(welcome_pane, ui_ctx);
+        present_unlocked();
     }
 
     // Exec-capability warning — list any agents that can run shell commands.
@@ -1129,8 +1145,8 @@ static void cmd_interactive(bool exec_allowed_flag) {
         dismiss_welcome_everywhere();
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
-            pane_history_render(p, ui_ctx);
         });
+        ui_ctx.present_all();
 
         refresh_focused_input.store(true);
         layout.focused().editor.interrupt();
@@ -1189,18 +1205,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 p.new_while_scrolled += (after - before);
             }
         };
-        auto present_all = [&]() {
-            pane_history_begin_frame(ui_ctx);
-            layout.for_each_pane([&](Pane& p) {
-                p.thinking.tick();
-                p.tool_indicator.tick();
-            });
-            layout.for_each_pane([&](Pane& p) {
-                pane_history_draw_pane(p, ui_ctx);
-            });
-            layout.draw_borders(ui_ctx.session->frame());
-            pane_history_end_frame(ui_ctx);
-        };
+        auto present_all = [&]() { present_unlocked(); };
         while (!pump_stop.load()) {
             {
                 std::unique_lock<std::mutex> wlk(pump_cv_mu);
@@ -1246,7 +1251,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
         std::string rendered =
             "\n" + theme().accent_prompt + conf_prompt + " [y/N] " + theme().reset + "";
         pane_history_push(pane, rendered);
-        pane_history_render(pane, ui_ctx);
+        ui_ctx.present_all();
 
         unsigned char ch = 0;
         ssize_t n = ::read(STDIN_FILENO, &ch, 1);
@@ -1255,7 +1260,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
             ? std::string("\n" + theme().accent_success + "[user accepted input]" + theme().reset + "\n")
             : std::string("\n" + theme().accent_error + "[user denied input]" + theme().reset + "\n");
         pane_history_push(pane, answer);
-        pane_history_render(pane, ui_ctx);
+        ui_ctx.present_all();
         pending->set_value(yes);
         return true;
     };
@@ -1292,7 +1297,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 "\n" + theme().accent_prompt + "pane '" + pc.agent_id +
                 "' finished — close it? [y/N] " + theme().reset + "";
             pane_history_push(shown, prompt);
-            pane_history_render(shown, ui_ctx);
+            ui_ctx.present_all();
 
             unsigned char ch = 0;
             ssize_t n = ::read(STDIN_FILENO, &ch, 1);
@@ -1302,7 +1307,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 ? std::string("\n" + theme().accent_success + "[closing '" + pc.agent_id + "']" + theme().reset + "\n")
                 : std::string("\n" + theme().accent_error + "[keeping '" + pc.agent_id + "' open]" + theme().reset + "\n");
             pane_history_push(shown, answer);
-            pane_history_render(shown, ui_ctx);
+            ui_ctx.present_all();
 
             if (yes) {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
@@ -1314,8 +1319,8 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 ui_ctx.focused_pane = &layout.focused();
                 layout.for_each_pane([&](Pane& p) {
                     pane_history_set_cols(p, p.tui.cols());
-                    pane_history_render(p, ui_ctx);
                 });
+                present_unlocked();
             }
         }
         return true;
@@ -1369,8 +1374,8 @@ static void cmd_interactive(bool exec_allowed_flag) {
         // repaint scrollback for every pane so their content survives the relayout.
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
-            pane_history_render(p, ui_ctx);
         });
+        present_unlocked();
         g_getc_state.pane = &layout.focused();
         ui_ctx.focused_pane = &layout.focused();
     };

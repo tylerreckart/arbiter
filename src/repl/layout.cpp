@@ -142,7 +142,7 @@ void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
     if (n.is_leaf() || frame == 0) return;
 
     using Rgba = std::array<std::uint16_t, 4>;
-    const Rgba bg     = opentui::rgba8(0x1e, 0x1e, 0x2e);
+    const Rgba gutter = opentui::rgba8(0x14, 0x14, 0x1f);
     const Rgba active = opentui::rgba8(0x61, 0xaf, 0xef);
     const Rgba idle   = opentui::rgba8(0x3e, 0x44, 0x52);
 
@@ -150,24 +150,36 @@ void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
         const Rect& left = n.children[i]->bounds;
         const bool accent = subtree_contains_(*n.children[i], focused_)
                          || subtree_contains_(*n.children[i + 1], focused_);
-        const Rgba& fg = accent ? active : idle;
-        const std::uint16_t* fg_ptr = fg.data();
-        const std::uint16_t* bg_ptr = bg.data();
+        const Rgba& line = accent ? active : idle;
+        const std::uint16_t* line_ptr = line.data();
+        const std::uint16_t* gutter_ptr = gutter.data();
 
         if (n.orient == Orient::Vertical) {
             const int sep_x = left.x + left.w;
             for (int y = n.bounds.y; y < n.bounds.y + n.bounds.h; ++y) {
+                bufferFillRect(frame,
+                               static_cast<std::uint32_t>(sep_x),
+                               static_cast<std::uint32_t>(y),
+                               1,
+                               1,
+                               gutter_ptr);
                 bufferDrawText(frame,
                                "\u2502",
                                3,
                                static_cast<std::uint32_t>(sep_x),
                                static_cast<std::uint32_t>(y),
-                               fg_ptr,
-                               bg_ptr,
+                               line_ptr,
+                               gutter_ptr,
                                0);
             }
         } else {
             const int sep_y = left.y + left.h;
+            bufferFillRect(frame,
+                           static_cast<std::uint32_t>(n.bounds.x),
+                           static_cast<std::uint32_t>(sep_y),
+                           static_cast<std::uint32_t>(n.bounds.w),
+                           1,
+                           gutter_ptr);
             std::string dashes;
             dashes.reserve(static_cast<size_t>(n.bounds.w) * 3);
             for (int k = 0; k < n.bounds.w; ++k) dashes += "\u2500";
@@ -176,8 +188,8 @@ void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
                            static_cast<std::uint32_t>(dashes.size()),
                            static_cast<std::uint32_t>(n.bounds.x),
                            static_cast<std::uint32_t>(sep_y),
-                           fg_ptr,
-                           bg_ptr,
+                           line_ptr,
+                           gutter_ptr,
                            0);
         }
     }

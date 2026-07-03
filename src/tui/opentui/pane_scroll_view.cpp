@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 #include <stdexcept>
 
 namespace arbiter::opentui {
@@ -23,6 +24,7 @@ PaneScrollView::PaneScrollView() {
     }
     textBufferViewSetWrapMode(view_, kWrapWord);
     textBufferViewSetFirstLineOffset(view_, 0);
+    styled_append_ = std::make_unique<AnsiScrollAppender>(buffer_);
 }
 
 PaneScrollView::~PaneScrollView() {
@@ -44,18 +46,14 @@ void PaneScrollView::set_wrap_cols(int cols) {
 }
 
 void PaneScrollView::append(std::string_view text) {
-    if (text.empty()) return;
-    std::string plain = strip_stream_.feed(text);
-    if (plain.empty()) return;
-    text_storage_.push_back(std::move(plain));
-    const std::string& stable = text_storage_.back();
-    textBufferAppend(buffer_, stable.data(), static_cast<std::uint32_t>(stable.size()));
+    if (text.empty() || !styled_append_) return;
+    text_storage_.emplace_back(text);
+    styled_append_->append(text);
 }
 
 void PaneScrollView::clear() {
-    textBufferClear(buffer_);
+    if (styled_append_) styled_append_->clear();
     text_storage_.clear();
-    strip_stream_.reset();
 }
 
 int PaneScrollView::total_visual_rows() const {

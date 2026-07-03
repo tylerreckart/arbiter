@@ -68,8 +68,32 @@ void bufferPopScissorRect(OpenTuiHandle buffer);
 
 OpenTuiHandle createTextBuffer(uint8_t width_method);
 void destroyTextBuffer(OpenTuiHandle buffer);
+uint32_t textBufferGetLength(OpenTuiHandle buffer);
+uint32_t textBufferGetByteSize(OpenTuiHandle buffer);
 void textBufferClear(OpenTuiHandle buffer);
 void textBufferAppend(OpenTuiHandle buffer, const char* data, uint32_t data_len);
+
+OpenTuiHandle createSyntaxStyle();
+void destroySyntaxStyle(OpenTuiHandle style);
+uint32_t syntaxStyleRegister(OpenTuiHandle style,
+                              const char* name,
+                              uint32_t name_len,
+                              const uint16_t* fg,
+                              const uint16_t* bg,
+                              uint32_t attributes);
+bool textBufferSetSyntaxStyle(OpenTuiHandle buffer, OpenTuiHandle style);
+
+typedef struct {
+    uint32_t start;
+    uint32_t end;
+    uint32_t style_id;
+    uint8_t  priority;
+    uint16_t hl_ref;
+} OpenTuiHighlight;
+
+void textBufferAddHighlightByCharRange(OpenTuiHandle buffer,
+                                       const OpenTuiHighlight* hl);
+void textBufferClearAllHighlights(OpenTuiHandle buffer);
 
 OpenTuiHandle createTextBufferView(OpenTuiHandle buffer);
 void destroyTextBufferView(OpenTuiHandle view);
