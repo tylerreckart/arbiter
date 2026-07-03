@@ -26,19 +26,8 @@ namespace arbiter {
 
 namespace {
 
-// ─── Thread-local streaming context ─────────────────────────────────────────
-//
-// Each in-flight agent turn carries (stream_id, agent_id, depth).  A turn
-// runs on exactly one thread — sequential delegation reuses the request
-// thread; /parallel spawns fresh threads, one per child.  Thread-local
-// storage lets any callback invoked DURING the turn (text stream,
-// tool_status, cost, etc.) read the current context with zero coordination
-// — no mutex, no parameter threading.
-//
-// The parent's context is stashed on the RAII guard's stack frame so
-// sequential calls naturally restore the parent's id on return.  Parallel
-// children start in a fresh thread where the thread-local defaults to zero,
-// and the child's StreamScope sets it before any callback fires.
+// Thread-local (stream_id, agent, depth) so callbacks can read turn context without locking.
+// StreamScope stashes/restores parent context; parallel children get fresh threads.
 thread_local int         tl_stream_id    = 0;
 thread_local std::string tl_stream_agent;
 thread_local int         tl_stream_depth = 0;
@@ -64,14 +53,7 @@ struct StreamScope {
     StreamScope& operator=(const StreamScope&) = delete;
 };
 
-// Master-agent model resolution order (first match wins):
-//   1. ~/.arbiter/master_model  — explicit user choice (set by the setup wizard
-//      or hand-edited).  One line, trimmed.
-//   2. An available-provider default based on which API keys are configured
-//      — Anthropic wins, OpenAI is the fallback.
-//   3. The hardcoded default baked into master_constitution().
-// The master can still be retargeted at runtime via `/model index <id>`;
-// that change is session-scoped and does not touch the override file.
+// Model resolution: ~/.arbiter/master_model > key-based default > constitution default.
 std::string load_master_model_override() {
     const char* home = std::getenv("HOME");
     if (!home || !home[0]) return {};
@@ -932,7 +914,10 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                 advisor_event_cb_(ev);
             }
 
-            if (sig.kind == AdvisorGateOutput::Kind::Continue) break;
+            if (sig.kind == AdvisorGateOutput::Kind::Continue) {
+                resp.gate_approved = true;
+                break;
+            }
 
             if (sig.kind == AdvisorGateOutput::Kind::Redirect) {
                 ++redirects_used;
@@ -1067,8 +1052,10 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     return resp;
 }
 
-ApiResponse Orchestrator::send(const std::string& agent_id, const std::string& message) {
-    return send_internal(agent_id, message, 0);
+ApiResponse Orchestrator::send(const std::string& agent_id,
+                               const std::string& message,
+                               const std::string& original_query) {
+    return send_internal(agent_id, message, 0, nullptr, original_query);
 }
 
 void Orchestrator::recover_truncated_writes(Agent* agent,
@@ -1373,7 +1360,10 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                 advisor_event_cb_(ev);
             }
 
-            if (sig.kind == AdvisorGateOutput::Kind::Continue) break;
+            if (sig.kind == AdvisorGateOutput::Kind::Continue) {
+                resp.gate_approved = true;
+                break;
+            }
 
             if (sig.kind == AdvisorGateOutput::Kind::Halt) {
                 if (!iter_buffer.empty() && cb) cb(iter_buffer);
