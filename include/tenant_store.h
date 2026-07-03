@@ -9,11 +9,8 @@
 //   • A display name for CLI reporting.
 //   • A disabled flag for admin kill-switches.
 //
-// Billing — eligibility, pricing, ledger, caps — is delegated to the
-// external billing service (see `include/billing_client.h`)
-// and is no longer this store's responsibility.  The historical
-// `usage_log`, `monthly_cap_uc`, and `month_to_date_uc` fields have
-// been removed; existing DBs upgrade by dropping the orphan columns
+// The historical `usage_log`, `monthly_cap_uc`, and `month_to_date_uc`
+// fields have been removed; existing DBs upgrade by dropping those columns
 // and table on first open.
 
 #include <cstdint>
@@ -118,24 +115,13 @@ struct PutArtifactResult {
 std::optional<std::string>
 sanitize_artifact_path(const std::string& raw, std::string& err);
 
-// Hard quota ceilings.  Enforced inside put_artifact; the per-tenant
-// number is the upper bound for the SQLite-blob backing — tenants
-// approaching it should migrate to the (future) object-storage tier.
+// Hard quota ceilings enforced by put_artifact.
 constexpr int64_t kArtifactPerFileMaxBytes         = 1ll  * 1024 * 1024;
 constexpr int64_t kArtifactPerConversationMaxBytes = 50ll * 1024 * 1024;
 constexpr int64_t kArtifactPerTenantMaxBytes       = 500ll * 1024 * 1024;
 
-// One row from the agent_scratchpad table.  The legacy file scratchpad
-// at `~/.arbiter/memory/t<tid>/<agent_id>.md` is replaced by per-tenant
-// rows here when the API is the consumer — keeping notes inside the
-// same DB the conversation history lives in (no orphan files when a
-// tenant is deleted; no per-machine filesystem state to back up).
-//
-// `scope_key` is the agent_id for per-agent scratchpads or "" (the
-// empty string) for the pipeline-shared scratchpad that every agent in
-// a turn can read/write.  `content` is the cumulative markdown text
-// — appends modify the row in place, keeping the read path a single
-// SELECT.  `updated_at` is bumped on every write.
+// DB-backed scratchpad (replaces legacy filesystem scratchpads).
+// `scope_key` is agent_id for per-agent scratchpads or "" for the shared one.
 struct AgentScratchpad {
     int64_t     id          = 0;
     int64_t     tenant_id   = 0;
@@ -144,21 +130,8 @@ struct AgentScratchpad {
     int64_t     updated_at  = 0;
 };
 
-// One row from the tenant_agents table.  Persists per-tenant agent
-// definitions sent from the front-end so callers can reference them
-// across requests by `agent_id` instead of re-sending the full
-// `agent_def` JSON on every turn.  The HTTP API is authoritative for
-// the catalog: the front-end is the source of truth and the server
-// stores whatever it sends, replacing the blob wholesale on PATCH.
-//
-// `agent_id` is caller-chosen (typically a UUID owned by the sibling
-// service) and is what `/agent`, `/parallel`, and the orchestrate
-// request body all reference.  Unique per-tenant — two tenants can
-// independently use the id "researcher" without collision.
-//
-// `name`, `role`, `model` are denormalised from the canonical
-// `agent_def_json` blob solely for cheap list-display rendering;
-// reads that need anything else parse the blob.
+// Persisted per-tenant agent definition. `agent_id` is caller-chosen and unique per tenant.
+// `name`/`role`/`model` are denormalised from `agent_def_json` for cheap list rendering.
 struct AgentRecord {
     int64_t     id              = 0;
     int64_t     tenant_id       = 0;
@@ -171,13 +144,6 @@ struct AgentRecord {
     int64_t     updated_at      = 0;
 };
 
-// One row from the memory_entries table.  These are the structured-memory
-// nodes the frontend graph UI renders — each entry is a typed note with
-// free-form content, an optional list of tags, and a free-form provenance
-// string.  Distinct from the legacy file-scratchpad memory at
-// `~/.arbiter/memory/t<id>/<agent_id>.md`: those endpoints stay read-only
-// and store unstructured per-agent markdown.  An entry is *not* a parsed
-// agent scratchpad and an agent's `/mem write` does not create entries.
 struct MemoryEntry {
     int64_t     id          = 0;
     int64_t     tenant_id   = 0;
@@ -186,35 +152,16 @@ struct MemoryEntry {
     std::string content;
     std::string source;                 // free-form provenance string
     std::string tags_json;              // raw JSON array of strings; serialize on output
-    // Optional reference to a tenant_artifacts row.  0 = no artifact.
-    // FK ON DELETE SET NULL — if the linked artifact's conversation is
-    // dropped (cascade) the link nulls out but the memory entry stays.
-    // The linked artifact may live in a different conversation than the
-    // reader; cross-conversation reads require the agent to cite the
-    // memory entry (`/read #<aid> via=mem:<mid>`) so access flows through
-    // the curated graph rather than around it.
-    int64_t     artifact_id = 0;
+    int64_t     artifact_id = 0; // optional FK into tenant_artifacts; 0 = none
     int64_t     created_at  = 0;
     int64_t     updated_at  = 0;
-    // Temporal validity window.  `valid_from` is set on insert and is
-    // typically equal to `created_at`.  `valid_to == 0` means the entry
-    // is currently active; non-zero is the moment it was invalidated.
-    // Storage exposes invalidated rows only via `EntryFilter::as_of`.
     int64_t     valid_from  = 0;
-    int64_t     valid_to    = 0;
-    // Optional conversation scope.  0 (NULL on disk) means "unscoped —
-    // visible from any conversation".  Positive values pin the entry to
-    // one conversation; conversation-scoped reads return rows that
-    // either match or are unscoped (the OR-NULL fallback keeps old rows
-    // discoverable everywhere).
-    int64_t     conversation_id = 0;
+    int64_t     valid_to    = 0;    // 0 = active; non-zero = invalidated at this epoch
+    int64_t     conversation_id = 0; // 0 = unscoped (visible from any conversation)
 };
 
-// One row from the memory_relations table.  Relations are directed and
-// per-type — the unique index on (tenant_id, source_id, target_id, relation)
-// allows both `A→B refines` and `B→A refines` to coexist.  Symmetric
-// relations like `contradicts` are still stored directed; clients dedupe
-// for display.
+// Directed relation between two memory entries. Symmetric types (e.g. `contradicts`)
+// are stored directed; clients dedupe for display.
 struct MemoryRelation {
     int64_t     id          = 0;
     int64_t     tenant_id   = 0;

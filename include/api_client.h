@@ -78,6 +78,10 @@ struct ApiResponse {
     std::string raw_body;            // full response for debug
     std::string stop_reason;
     bool had_tool_calls = false;
+    // Set when gate-mode advisor returned CONTINUE on the terminating turn.
+    // Outer loops (LoopManager) use this to distinguish "task done" from
+    // "send() returned ok but hit kMaxTurns before the gate could fire".
+    bool gate_approved = false;
 };
 
 using StreamCallback = std::function<void(const std::string& chunk)>;

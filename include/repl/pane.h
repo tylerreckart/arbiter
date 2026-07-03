@@ -56,6 +56,9 @@ struct Pane {
     // hit the orchestrator every redraw.
     std::string       current_agent = "index";
     std::string       current_model;
+    // Pins the advisor gate's [ORIGINAL TASK] across foreground turns until
+    // gate_approved clears it (mirrors LoopManager's original_task pinning).
+    std::string       original_task;
     std::string       multiline_accum;         // backslash-continuation buffer
     int               scroll_offset       = 0; // visual rows above the tail
     int               new_while_scrolled  = 0; // accumulated while scrolled back

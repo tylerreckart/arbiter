@@ -2,11 +2,13 @@
 // arbiter/include/loop_manager.h
 //
 // LoopManager owns autonomous agent "loops": an agent is invoked repeatedly in
-// a dedicated thread, each iteration running until the agent stops producing
-// tool calls for a few consecutive turns (or hits a hard ceiling, or is killed
-// by the user).  Output is buffered per-loop and surfaced lazily via /log and
-// /watch; only fatal failures and completions push back into OutputQueue so
-// they surface in the REPL immediately.
+// a dedicated thread, each iteration running a full orchestrator send() (tool
+// dispatch + advisor gate when configured).  Self-prompt continuations pin the
+// loop's initial prompt as original_query so the gate's [ORIGINAL TASK] stays
+// stable across iterations.  Stop conditions:
+//   • gate mode  — advisor CONTINUE (gate_approved) or HALT (!ok)
+//   • consult/off — consecutive idle turns (no tool calls), max iterations,
+//                   or user kill/inject
 //
 // Public surface:
 //   start()      — spawn a new loop, return its id

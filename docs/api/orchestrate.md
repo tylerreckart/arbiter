@@ -15,6 +15,7 @@ Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v
 | Field        | Type     | Required | Default   | Description |
 |--------------|----------|----------|-----------|-------------|
 | `message`    | string \| array | yes | —      | The prompt to send to the agent. Either a plain string (text-only) or an array of content parts (text + image, see [Vision input](#vision-input) below). |
+| `original_query` | string | no | — | Pins the advisor gate's `[ORIGINAL TASK]` when `message` is a continuation prompt. Omit on the first turn of a loop; pass the loop's initial prompt on subsequent `/v1/orchestrate` calls. When omitted, defaults to the flattened `message` text. |
 | `agent`      | string   | no       | `"index"` | Which agent to address. Any stored agent id, the built-in `"index"` master, or (with `agent_def`) a caller-supplied UUID. |
 | `agent_def`  | object   | no       | —         | Inline agent definition. See [Inline agents](#inline-agents) below. When set, overrides any stored agent at this id for this one request. |
 
@@ -175,15 +176,6 @@ data: {"ok":false,"error":"...","error_code":"circuit_open",...}
 ```
 
 This is faster than waiting four retries against a known-unhealthy upstream — typically tens of milliseconds rather than 7+ seconds. The breaker auto-recovers on a successful probe after the cooldown; clients can simply retry (with a new Idempotency-Key if they want a fresh attempt rather than a replay).
-
-### Billing-service denial specifically
-
-When the configured billing service rejects the pre-flight quota check (suspended tenant, exhausted budget, etc.):
-
-1. `error` event with the upstream `message`, `reason` (`tenant_suspended` | `tenant_disabled` | `insufficient_budget`), and the matching `*_micro_cents` budget fields.
-2. `done` with `ok: false` and no further turns.
-
-A transport error to the billing service fails open — the runtime proceeds rather than blocking the request on a billing-service blip.
 
 ## See also
 

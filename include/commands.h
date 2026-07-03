@@ -31,13 +31,7 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response);
 // Fetch a URL via curl. Returns content or "ERR: ..." on failure.
 std::string cmd_fetch(const std::string& url);
 
-// Bytes-returning sibling of cmd_fetch.  No HTML→text transform; callers see
-// the raw response body verbatim with the upstream Content-Type so they can
-// dispatch on it (text → string envelope, image/* → base64 inline, …).
-// Same SSRF guards and protocol allowlist as cmd_fetch.  max_bytes caps
-// declared response size via CURLOPT_MAXFILESIZE_LARGE — servers without
-// Content-Length can in principle blow past the cap, but image hosts and
-// CDNs reliably set it.
+// Raw bytes variant of cmd_fetch. No HTML→text transform; same SSRF guards.
 struct FetchedResource {
     bool        ok = false;
     std::string error;          // populated when ok=false
@@ -59,19 +53,7 @@ std::string base64_encode(const std::string& bytes);
 // Destructive commands are blocked unless confirmed=true (gate already passed).
 std::string cmd_exec(const std::string& command, bool confirmed = false);
 
-// Sandbox bridge for /exec.  When wired, the dispatcher routes /exec
-// through this callback instead of the host's popen path — the API
-// server binds it to a per-tenant container that confines the command
-// to a workspace volume.  Returns the same combined-stdout+stderr body
-// cmd_exec would (with the "[exit N]" suffix on non-zero exits, the
-// "[truncated at X KB]" trailer when capped, and a similar "[timed out
-// after Ns]" framing when the sandbox killed the run), or an "ERR: ..."
-// string when the sandbox couldn't run the command at all (container
-// failed to start, runtime missing, etc.).
-//
-// CLI/REPL contexts leave this null and /exec falls back to cmd_exec.
-// When set, the invoker overrides `exec_disabled` — the dispatcher
-// considers a wired sandbox sufficient to permit /exec.
+// Sandbox-backed /exec invoker. When null, /exec falls back to cmd_exec.
 using ExecInvoker = std::function<std::string(const std::string& command)>;
 
 // Write content to a file at path (creates parent directories).

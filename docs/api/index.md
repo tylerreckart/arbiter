@@ -2,8 +2,6 @@
 
 Arbiter exposes its reasoning runtime as an HTTP + Server-Sent Events API. Send a direct request with `POST /v1/orchestrate`, or ingest a structured hardware or software event with `POST /v1/events`. Both drive the full agentic loop — routing, durable context, delegated and parallel sub-agent calls, tool invocations, and generated files — and stream the whole execution back as SSE events.
 
-Billing — eligibility checks, rate cards, caps, invoicing — is delegated to an external billing service when `ARBITER_BILLING_URL` is set. The runtime exchanges every bearer for a workspace_id via `POST /v1/runtime/auth/validate`, pre-flights against `POST /v1/runtime/quota/check`, and posts post-turn telemetry to `POST /v1/runtime/usage/record`. Operators wanting a commercial deployment must implement that protocol against a service of their choosing — arbiter ships no reference implementation under this repository. With the env var unset, the runtime acts as a thin pass-through using the operator-supplied provider keys, with no eligibility checks.
-
 Start with `arbiter --api --port 8080`. The default bind is `127.0.0.1`; production deployments should put TLS termination, DDoS protection, and rate limiting in a reverse proxy (nginx, caddy, cloudflare) in front of the process.
 
 Each endpoint page below uses the same template: **Function**, **Request**, **Response**, **Failure modes**, **See also**.
@@ -122,8 +120,6 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/admin/tenants/:id`](admin/tenants-get.md)
 - [`PATCH /v1/admin/tenants/:id`](admin/tenants-patch.md)
 - [`GET /v1/admin/audit`](admin/audit.md)
-
-Usage ledger, rate cards, caps, and invoices live in the operator's billing service, not here.
 
 ## Versioning
 
