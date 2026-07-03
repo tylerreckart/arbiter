@@ -78,10 +78,61 @@ std::string strip_readline_markers(std::string_view raw) {
             if (i < raw.size()) ++i;
             continue;
         }
+        if (c < 0x20 && c != '\n' && c != '\t' && c != '\r') {
+            ++i;
+            continue;
+        }
         out.push_back(static_cast<char>(c));
         ++i;
     }
     return out;
+}
+
+bool is_terminal_response_csi(std::string_view params, char final) {
+    if (final == 'R') return true;
+    if (final == 'c' && !params.empty()
+        && (params[0] == '?' || params[0] == '>' || params[0] == '=')) {
+        return true;
+    }
+    if (final == 'y' && params.find('$') != std::string_view::npos) return true;
+    if (final == 'u' && !params.empty() && params[0] == '?') return true;
+    return false;
+}
+
+// Skip a bare CSI (no leading ESC) when it is a terminal reply such as [1;1R.
+size_t skip_bare_csi_response(std::string_view chunk, size_t i) {
+    if (i >= chunk.size() || chunk[i] != '[') return 0;
+    size_t j = i + 1;
+    std::string params;
+    while (j < chunk.size()) {
+        const unsigned char x = static_cast<unsigned char>(chunk[j]);
+        if ((x >= '0' && x <= '9') || x == ';' || x == '?' || x == '$'
+            || x == '>' || x == '=') {
+            params.push_back(static_cast<char>(x));
+            ++j;
+            continue;
+        }
+        if (x >= 0x40 && x <= 0x7E) {
+            const char final = static_cast<char>(x);
+            if (is_terminal_response_csi(params, final)) return j + 1;
+            return 0;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+size_t skip_bare_osc(std::string_view chunk, size_t i) {
+    if (i >= chunk.size() || chunk[i] != ']') return 0;
+    size_t j = i + 1;
+    while (j < chunk.size()) {
+        if (chunk[j] == 0x07) return j + 1;
+        if (chunk[j] == 0x1B && j + 1 < chunk.size() && chunk[j + 1] == '\\') {
+            return j + 2;
+        }
+        ++j;
+    }
+    return 0;
 }
 
 } // namespace
@@ -118,7 +169,9 @@ AnsiScrollAppender::~AnsiScrollAppender() {
 }
 
 void AnsiScrollAppender::clear() {
-    hold_.clear();
+    esc_hold_.clear();
+    utf8_hold_.clear();
+    plain_storage_.clear();
     fg_.reset();
     bg_.reset();
     attrs_ = 0;
@@ -131,9 +184,11 @@ void AnsiScrollAppender::clear() {
 void AnsiScrollAppender::append(std::string_view raw) {
     if (buffer_ == 0 || raw.empty()) return;
     std::string combined;
-    combined.reserve(hold_.size() + raw.size());
-    combined.append(hold_);
-    hold_.clear();
+    combined.reserve(esc_hold_.size() + utf8_hold_.size() + raw.size());
+    combined.append(esc_hold_);
+    esc_hold_.clear();
+    combined.append(utf8_hold_);
+    utf8_hold_.clear();
     combined.append(raw);
     feed_bytes(combined);
 }
@@ -154,27 +209,34 @@ void AnsiScrollAppender::feed_bytes(std::string_view chunk) {
         const unsigned char c = static_cast<unsigned char>(chunk[i]);
         if (c == 0x1B) {
             if (i + 1 >= chunk.size()) {
-                hold_.assign(chunk.data() + i, chunk.size() - i);
+                esc_hold_.assign(chunk.data() + i, chunk.size() - i);
                 flush_plain();
                 return;
             }
             const char next = chunk[i + 1];
             if (next == '[') {
                 size_t j = i + 2;
+                std::string params;
                 while (j < chunk.size()) {
                     const unsigned char x = static_cast<unsigned char>(chunk[j]);
+                    if ((x >= '0' && x <= '9') || x == ';' || x == '?' || x == '$'
+                        || x == '>' || x == '=') {
+                        params.push_back(static_cast<char>(x));
+                        ++j;
+                        continue;
+                    }
                     if (x >= 0x40 && x <= 0x7E) break;
                     ++j;
                 }
                 if (j >= chunk.size()) {
-                    hold_.assign(chunk.data() + i, chunk.size() - i);
+                    esc_hold_.assign(chunk.data() + i, chunk.size() - i);
                     flush_plain();
                     return;
                 }
-                if (chunk[j] == 'm') {
+                const char final = chunk[j];
+                if (final == 'm') {
                     flush_plain();
-                    const std::string_view body(chunk.data() + i + 2, j - (i + 2));
-                    apply_sgr(parse_sgr_params(body));
+                    apply_sgr(parse_sgr_params(params));
                 }
                 i = j + 1;
                 continue;
@@ -191,7 +253,7 @@ void AnsiScrollAppender::feed_bytes(std::string_view chunk) {
                     ++j;
                 }
                 if (j >= chunk.size()) {
-                    hold_.assign(chunk.data() + i, chunk.size() - i);
+                    esc_hold_.assign(chunk.data() + i, chunk.size() - i);
                     return;
                 }
                 i = j;
@@ -200,6 +262,20 @@ void AnsiScrollAppender::feed_bytes(std::string_view chunk) {
             flush_plain();
             i += 2;
             continue;
+        }
+        if (const size_t bare_csi = skip_bare_csi_response(chunk, i); bare_csi > i) {
+            flush_plain();
+            i = bare_csi;
+            continue;
+        }
+        if (chunk[i] == ']') {
+            flush_plain();
+            if (const size_t end = skip_bare_osc(chunk, i); end > i) {
+                i = end;
+                continue;
+            }
+            esc_hold_.assign(chunk.data() + i, chunk.size() - i);
+            return;
         }
         if (c == 0x01) {
             flush_plain();
@@ -213,7 +289,7 @@ void AnsiScrollAppender::feed_bytes(std::string_view chunk) {
     }
 
     if (!plain_run.empty()) {
-        peel_incomplete_utf8(plain_run, hold_);
+        peel_incomplete_utf8(plain_run, utf8_hold_);
     }
     flush_plain();
 }
@@ -238,6 +314,14 @@ void AnsiScrollAppender::apply_sgr(const std::vector<int>& params) {
         if (p == 29) { attrs_ &= ~kAttrStrikethrough; continue; }
         if (p == 39) { fg_.reset(); continue; }
         if (p == 49) { bg_.reset(); continue; }
+        if (p == 38 && i + 2 < params.size() && params[i + 1] == 5) {
+            i += 2;
+            continue;
+        }
+        if (p == 48 && i + 2 < params.size() && params[i + 1] == 5) {
+            i += 2;
+            continue;
+        }
         if (p == 38 && i + 4 < params.size() && params[i + 1] == 2) {
             fg_ = pack_rgb(static_cast<std::uint8_t>(params[i + 2]),
                            static_cast<std::uint8_t>(params[i + 3]),
@@ -257,8 +341,12 @@ void AnsiScrollAppender::apply_sgr(const std::vector<int>& params) {
 
 void AnsiScrollAppender::emit_plain(std::string_view text) {
     if (text.empty()) return;
-    const std::string cleaned = strip_readline_markers(text);
-    if (cleaned.empty()) return;
+    plain_storage_.push_back(strip_readline_markers(text));
+    const std::string& cleaned = plain_storage_.back();
+    if (cleaned.empty()) {
+        plain_storage_.pop_back();
+        return;
+    }
 
     const std::uint32_t start = textBufferGetLength(buffer_);
     textBufferAppend(buffer_, cleaned.data(), static_cast<std::uint32_t>(cleaned.size()));

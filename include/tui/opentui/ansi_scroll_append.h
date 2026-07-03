@@ -51,7 +51,9 @@ private:
 
     OpenTuiHandle buffer_{0};
     OpenTuiHandle syntax_{0};
-    std::string hold_;
+    std::string esc_hold_;
+    std::string utf8_hold_;
+    std::vector<std::string> plain_storage_;
     std::optional<std::array<std::uint16_t, 4>> fg_;
     std::optional<std::array<std::uint16_t, 4>> bg_;
     std::uint32_t attrs_ = 0;
