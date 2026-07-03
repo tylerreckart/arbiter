@@ -1579,6 +1579,17 @@ int main(int argc, char* argv[]) {
             arbiter::cmd_enable_tenant(argv[2]);
             return 0;
         }
+        if (arg1 == "--tui-spike") {
+#ifdef ARBITER_HAS_OPENTUI
+            arbiter::cmd_tui_spike();
+#else
+            std::cerr << "arbiter was built without OpenTUI support.\n"
+                      << "Reconfigure with -DARBITER_ENABLE_OPENTUI=ON "
+                      << "(requires Zig 0.15.2 and a clone of opentui).\n";
+            return 1;
+#endif
+            return 0;
+        }
         if (arg1 == "--help" || arg1 == "-h" || arg1 == "help") {
             std::cout << BANNER;
             std::cout <<
@@ -1597,6 +1608,7 @@ int main(int argc, char* argv[]) {
                 "  arbiter --init [--force]           Initialize config + example agents\n"
                 "                                     --force overwrites existing ~/.arbiter/agents/*.json files;\n"
                 "                                     omit it to preserve user-edited agent definitions.\n"
+                "  arbiter --tui-spike                OpenTUI engine spike (build with -DARBITER_ENABLE_OPENTUI=ON)\n"
                 "  arbiter --help                     This help\n\n"
                 "Tenants (for --api):\n"
                 "  arbiter --add-tenant <name>        Provision a tenant + API key\n"

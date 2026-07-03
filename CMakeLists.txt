@@ -52,6 +52,9 @@ if(ARBITER_TSAN)
     add_link_options(-fsanitize=thread)
 endif()
 
+# --- OpenTUI (optional; Phase 0 spike) ---
+include(${CMAKE_SOURCE_DIR}/cmake/BuildOpenTUI.cmake)
+
 # --- Find system deps ---
 find_package(Threads REQUIRED)
 
@@ -185,6 +188,32 @@ target_link_libraries(arbiter PRIVATE
     CURL::libcurl
     SQLite3::SQLite3
 )
+
+if(ARBITER_ENABLE_OPENTUI)
+    target_sources(arbiter PRIVATE
+        src/tui/opentui/engine.cpp
+        src/tui/opentui/spike.cpp
+    )
+    target_compile_definitions(arbiter PRIVATE ARBITER_HAS_OPENTUI)
+    target_link_libraries(arbiter PRIVATE OpenTUI::core)
+    if(APPLE)
+        target_link_libraries(arbiter PRIVATE
+            "-framework CoreFoundation"
+            "-framework CoreAudio"
+            "-framework AudioToolbox"
+        )
+        set_target_properties(arbiter PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
+            INSTALL_RPATH "@executable_path/../lib/opentui"
+        )
+    elseif(UNIX)
+        target_link_libraries(arbiter PRIVATE dl pthread)
+        set_target_properties(arbiter PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
+            INSTALL_RPATH "$ORIGIN/../lib/opentui"
+        )
+    endif()
+endif()
 
 # --- Readline / libedit for interactive line editing ---
 # Try libedit first (BSD license, ships on macOS)

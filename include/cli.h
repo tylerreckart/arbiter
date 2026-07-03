@@ -38,4 +38,8 @@ void cmd_list_tenants();
 void cmd_disable_tenant(const std::string& key);
 void cmd_enable_tenant(const std::string& key);
 
+#ifdef ARBITER_HAS_OPENTUI
+void cmd_tui_spike();
+#endif
+
 } // namespace arbiter
