@@ -9,6 +9,7 @@ namespace arbiter::opentui {
 namespace {
 
 void log_bridge(std::uint8_t level, const char* msg, std::uint32_t len) {
+    if (level <= 1) return;   // skip debug/trace — noisy during terminal setup
     const char* tag = "info";
     if (level >= 3) tag = "error";
     else if (level == 2) tag = "warn";
@@ -65,6 +66,10 @@ void Engine::resize(std::uint32_t width, std::uint32_t height) {
     width_ = width;
     height_ = height;
     resizeRenderer(renderer_, width, height);
+}
+
+void Engine::set_render_offset(std::uint32_t offset) {
+    setRenderOffset(renderer_, offset);
 }
 
 void Engine::draw(const DrawFn& draw_fn) {

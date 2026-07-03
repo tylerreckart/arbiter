@@ -28,6 +28,7 @@ public:
     void shutdown_terminal();
 
     void resize(std::uint32_t width, std::uint32_t height);
+    void set_render_offset(std::uint32_t offset);
 
     using DrawFn = std::function<void(OpenTuiHandle buffer, std::uint32_t width, std::uint32_t height)>;
     void draw(const DrawFn& draw);

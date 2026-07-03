@@ -169,11 +169,22 @@ If you already configured with the old Zig-from-source path, wipe the cache firs
 
 **Exit criteria:** agent turn output appears in OpenTUI scroll view; PgUp/PgDn work; scroll-while-streaming behaves like today.
 
-- [ ] `PaneScrollView` owns `TextBuffer` + `TextBufferView`
-- [ ] `OutputQueue` drain → `NativeSpanFeed` append (batch on pump)
-- [ ] Port visual-row scroll offset semantics to view line index
-- [ ] `new_while_scrolled` badge behaviour preserved
-- [ ] Feature flag: `--tui-engine=opentui` uses new scroll path only; legacy input
+**Try it:**
+
+```bash
+cmake -B build -DARBITER_ENABLE_OPENTUI=ON
+cmake --build build
+./build/arbiter --tui-engine=opentui
+# or: ARBITER_TUI_ENGINE=opentui ./build/arbiter
+```
+
+Legacy input (LineEditor) and chrome (header/separators/hints) are unchanged; only the scroll region uses OpenTUI.
+
+- [x] `PaneScrollView` owns `TextBuffer` + `TextBufferView` (`include/tui/opentui/pane_scroll_view.h`)
+- [x] `OutputQueue` drain → `textBufferAppend` on pump (batched per tick; NativeSpanFeed next)
+- [x] Port visual-row scroll offset semantics to `textBufferViewSetFirstLineOffset`
+- [x] `new_while_scrolled` badge behaviour preserved
+- [x] Feature flag: `--tui-engine=opentui` uses new scroll path only; legacy input
 
 ### Phase 2 — Input replacement (1 week)
 

@@ -1,6 +1,6 @@
 // Usage:
 //   arbiter                          — interactive REPL
-//   arbiter --api [--port 8080]      — HTTP+SSE multi-tenant API server
+//   arbiter --api [--port 8080]      — HTTP+SSE API server
 //   arbiter --send <agent> <msg>     — one-shot message
 //   arbiter --init                   — create config dir + example agents
 
@@ -19,8 +19,11 @@
 #include "tui/stream_filter.h"
 #include "repl/pane.h"
 #include "repl/layout.h"
+#include "repl/pane_history.h"
 #include "theme.h"
 #include "config.h"
+#include "repl/repl_argv.h"
+#include "tui/opentui/session.h"
 
 #include <iostream>
 #include <string>
@@ -28,6 +31,7 @@
 #include <csignal>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -80,6 +84,7 @@ struct ReplGetcState {
 };
 
 static ReplGetcState g_getc_state;
+static arbiter::UiContext* g_ui_ctx = nullptr;
 
 // Set by each pane's exec thread at startup and left untouched thereafter.
 // Orchestrator callbacks (progress/tool-status/agent-start/compact) run
@@ -112,23 +117,29 @@ static void getc_flush_output() {
     std::string pending = pane.output_queue.drain();
     if (pending.empty()) return;
 
-    int before = (pane.scroll_offset > 0) ? pane.history.total_visual_rows() : 0;
-    pane.history.push(pending);
+    int before = (pane.scroll_offset > 0) ? pane_history_total_rows(pane) : 0;
+    pane_history_push(pane, pending);
 
     if (pane.scroll_offset > 0) {
-        int after = pane.history.total_visual_rows();
+        int after = pane_history_total_rows(pane);
         pane.new_while_scrolled += (after - before);
     }
-    pane.tui.render_scrollback(pane.history, pane.scroll_offset,
-                                pane.new_while_scrolled);
+    if (g_ui_ctx) pane_history_render(pane, *g_ui_ctx);
 }
 
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void cmd_interactive(bool exec_allowed_flag = true) {
+static void cmd_interactive(bool exec_allowed_flag) {
     std::string dir = get_config_dir();
     auto api_keys = get_api_keys();
+
+    arbiter::opentui::Session ot_session;
+    arbiter::UiContext ui_ctx;
+    ot_session.start(static_cast<std::uint32_t>(arbiter::term_cols()),
+                     static_cast<std::uint32_t>(arbiter::term_rows()));
+    ui_ctx.session = &ot_session;
+    g_ui_ctx = &ui_ctx;
 
     arbiter::Orchestrator orch(std::move(api_keys));
     orch.set_memory_dir(get_memory_dir());
@@ -204,8 +215,6 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
     }
 
-    TUI::enter_alt_screen();
-
     // Forward declaration — layout_ptr lets lambdas registered before layout
     // construction reach it safely (we set it once and never clear).
     LayoutTree* layout_ptr = nullptr;
@@ -236,7 +245,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         p->current_model = orch.get_agent_model(p->current_agent);
         p->tui.init(p->current_agent, p->current_model,
                     agent_color(p->current_agent));
-        p->history.set_cols(p->tui.cols());
+        pane_history_init(*p);
+        pane_history_set_cols(*p, p->tui.cols());
 
         p->editor.set_max_history(1000);
         p->editor.set_history(shared_history);  // copy per-pane
@@ -280,8 +290,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
             });
 
         Pane* raw = p.get();
-        p->editor.set_scroll_handler([raw](int direction, int step) {
-            int max_off = raw->history.total_visual_rows();
+        p->editor.set_scroll_handler([raw, &ui_ctx](int direction, int step) {
+            int max_off = pane_history_total_rows(*raw);
             if (direction < 0) {
                 raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
             } else {
@@ -289,8 +299,7 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                 raw->new_while_scrolled = 0;
                 if (raw->scroll_offset == 0) raw->tui.clear_status();
             }
-            raw->tui.render_scrollback(raw->history, raw->scroll_offset,
-                                        raw->new_while_scrolled);
+            pane_history_render(*raw, ui_ctx);
         });
         p->editor.set_cancel_handler([raw, &orch]() {
             orch.cancel();
@@ -395,7 +404,12 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
 
     // Welcome card goes in the initial pane only.  Subsequent splits get a
     // clean start (no welcome), since splitting is an explicit user action.
-    layout.focused().tui.draw_welcome(layout.focused().history);
+    {
+        Pane& welcome_pane = layout.focused();
+        const std::string welcome = welcome_pane.tui.build_welcome_card();
+        pane_history_push(welcome_pane, welcome);
+        pane_history_render(welcome_pane, ui_ctx);
+    }
 
     // Exec-capability warning — list any agents that can run shell commands.
     // Queued here so the pump thread renders it below the welcome card on its
@@ -1062,10 +1076,9 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         layout.for_each_pane([&](Pane& p) {
             if (p.welcome_visible) {
                 p.welcome_visible = false;
-                p.history.clear();
+                pane_history_clear(p);
                 p.scroll_offset = 0;
                 p.new_while_scrolled = 0;
-                p.tui.clear_scroll_region();
             }
         });
     };
@@ -1095,7 +1108,7 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                 p->tui.update(p->current_agent, p->current_model, "",
                               agent_color(p->current_agent));
                 p->welcome_visible = false;
-                p->history.clear();
+                pane_history_clear(*p);
                 return p;
             },
             /*focus_new=*/false);
@@ -1113,9 +1126,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
 
         dismiss_welcome_everywhere();
         layout.for_each_pane([&](Pane& p) {
-            p.history.set_cols(p.tui.cols());
-            p.tui.render_scrollback(p.history, p.scroll_offset,
-                                     p.new_while_scrolled);
+            pane_history_set_cols(p, p.tui.cols());
+            pane_history_render(p, ui_ctx);
         });
 
         refresh_focused_input.store(true);
@@ -1165,20 +1177,24 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
 
     std::atomic<bool> pump_stop{false};
     std::thread output_pump([&]() {
-        auto flush_pane = [&](Pane& p) {
+        auto push_pane_output = [&](Pane& p) {
             std::string pending = p.output_queue.drain();
             if (pending.empty()) return;
-            int before = (p.scroll_offset > 0) ? p.history.total_visual_rows() : 0;
-            p.history.push(pending);
+            int before = (p.scroll_offset > 0) ? pane_history_total_rows(p) : 0;
+            pane_history_push(p, pending);
             if (p.scroll_offset > 0) {
-                int after = p.history.total_visual_rows();
+                int after = pane_history_total_rows(p);
                 p.new_while_scrolled += (after - before);
             }
-            p.tui.render_scrollback(p.history, p.scroll_offset,
-                                     p.new_while_scrolled);
+        };
+        auto present_all = [&]() {
+            pane_history_begin_frame(ui_ctx);
+            layout.for_each_pane([&](Pane& p) {
+                pane_history_draw_pane(p, ui_ctx);
+            });
+            pane_history_end_frame(ui_ctx);
         };
         while (!pump_stop.load()) {
-            // Wait for data or the 30ms fallback tick (covers SIGWINCH and stop).
             {
                 std::unique_lock<std::mutex> wlk(pump_cv_mu);
                 pump_cv.wait_for(wlk, std::chrono::milliseconds(30),
@@ -1191,21 +1207,17 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                 Rect r{0, 0, arbiter::term_cols(), arbiter::term_rows()};
                 layout.resize(r);
                 layout.for_each_pane([&](Pane& p) {
-                    p.history.set_cols(p.tui.cols());
-                    p.tui.render_scrollback(p.history, p.scroll_offset,
-                                             p.new_while_scrolled);
+                    pane_history_set_cols(p, p.tui.cols());
                 });
                 g_getc_state.pane = &layout.focused();
-                // resize() blanked every pane's input row; kick the main
-                // thread to repaint the focused pane's live prompt.
                 refresh_focused_input.store(true);
                 layout.focused().editor.interrupt();
             }
-            layout.for_each_pane(flush_pane);
+            layout.for_each_pane(push_pane_output);
+            present_all();
         }
-        // Final drain — no need to lock here; exec threads have been joined
-        // by this point (shutdown ordering), so no other thread is mutating.
-        layout.for_each_pane(flush_pane);
+        layout.for_each_pane(push_pane_output);
+        present_all();
     });
 
     // Service a pending confirm (destructive-action dialog from orch).  The
@@ -1225,9 +1237,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         Pane& pane = layout.focused();
         std::string rendered =
             "\n" + theme().accent_prompt + conf_prompt + " [y/N] " + theme().reset + "";
-        pane.history.push(rendered);
-        pane.tui.render_scrollback(pane.history, pane.scroll_offset,
-                                    pane.new_while_scrolled);
+        pane_history_push(pane, rendered);
+        pane_history_render(pane, ui_ctx);
 
         unsigned char ch = 0;
         ssize_t n = ::read(STDIN_FILENO, &ch, 1);
@@ -1235,9 +1246,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         std::string answer = yes
             ? std::string("\n" + theme().accent_success + "[user accepted input]" + theme().reset + "\n")
             : std::string("\n" + theme().accent_error + "[user denied input]" + theme().reset + "\n");
-        pane.history.push(answer);
-        pane.tui.render_scrollback(pane.history, pane.scroll_offset,
-                                    pane.new_while_scrolled);
+        pane_history_push(pane, answer);
+        pane_history_render(pane, ui_ctx);
         pending->set_value(yes);
         return true;
     };
@@ -1273,9 +1283,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
             std::string prompt =
                 "\n" + theme().accent_prompt + "pane '" + pc.agent_id +
                 "' finished — close it? [y/N] " + theme().reset + "";
-            shown.history.push(prompt);
-            shown.tui.render_scrollback(shown.history, shown.scroll_offset,
-                                         shown.new_while_scrolled);
+            pane_history_push(shown, prompt);
+            pane_history_render(shown, ui_ctx);
 
             unsigned char ch = 0;
             ssize_t n = ::read(STDIN_FILENO, &ch, 1);
@@ -1284,9 +1293,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
             std::string answer = yes
                 ? std::string("\n" + theme().accent_success + "[closing '" + pc.agent_id + "']" + theme().reset + "\n")
                 : std::string("\n" + theme().accent_error + "[keeping '" + pc.agent_id + "' open]" + theme().reset + "\n");
-            shown.history.push(answer);
-            shown.tui.render_scrollback(shown.history, shown.scroll_offset,
-                                         shown.new_while_scrolled);
+            pane_history_push(shown, answer);
+            pane_history_render(shown, ui_ctx);
 
             if (yes) {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
@@ -1296,9 +1304,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                 });
                 g_getc_state.pane = &layout.focused();
                 layout.for_each_pane([&](Pane& p) {
-                    p.history.set_cols(p.tui.cols());
-                    p.tui.render_scrollback(p.history, p.scroll_offset,
-                                             p.new_while_scrolled);
+                    pane_history_set_cols(p, p.tui.cols());
+                    pane_history_render(p, ui_ctx);
                 });
             }
         }
@@ -1353,9 +1360,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         // set_rect on each pane; we repaint scrollback for every pane so
         // their content survives the relayout.
         layout.for_each_pane([&](Pane& p) {
-            p.history.set_cols(p.tui.cols());
-            p.tui.render_scrollback(p.history, p.scroll_offset,
-                                     p.new_while_scrolled);
+            pane_history_set_cols(p, p.tui.cols());
+            pane_history_render(p, ui_ctx);
         });
         g_getc_state.pane = &layout.focused();
     };
@@ -1419,10 +1425,9 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
 
         if (focused.welcome_visible) {
             focused.welcome_visible = false;
-            focused.history.clear();
+            pane_history_clear(focused);
             focused.scroll_offset      = 0;
             focused.new_while_scrolled = 0;
-            focused.tui.clear_scroll_region();
         }
 
         focused.output_queue.push_msg(
@@ -1468,14 +1473,15 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
     }
     orch.save_session(session_path);
 
-    TUI::leave_alt_screen();
+    g_ui_ctx = nullptr;
+    ot_session.shutdown();
     std::cout << "\n";
 }
 
 int main(int argc, char* argv[]) {
     try {
-        if (argc < 2) {
-            cmd_interactive();
+        if (arbiter::argv_launches_interactive(argc, argv)) {
+            cmd_interactive(!arbiter::argv_has_no_exec(argc, argv));
             return 0;
         }
 
@@ -1580,14 +1586,7 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (arg1 == "--tui-spike") {
-#ifdef ARBITER_HAS_OPENTUI
             arbiter::cmd_tui_spike();
-#else
-            std::cerr << "arbiter was built without OpenTUI support.\n"
-                      << "Reconfigure with -DARBITER_ENABLE_OPENTUI=ON "
-                      << "(requires Zig 0.15.2 and a clone of opentui).\n";
-            return 1;
-#endif
             return 0;
         }
         if (arg1 == "--help" || arg1 == "-h" || arg1 == "help") {
@@ -1608,7 +1607,7 @@ int main(int argc, char* argv[]) {
                 "  arbiter --init [--force]           Initialize config + example agents\n"
                 "                                     --force overwrites existing ~/.arbiter/agents/*.json files;\n"
                 "                                     omit it to preserve user-edited agent definitions.\n"
-                "  arbiter --tui-spike                OpenTUI engine spike (build with -DARBITER_ENABLE_OPENTUI=ON)\n"
+                "  arbiter --tui-spike                OpenTUI engine demo\n"
                 "  arbiter --help                     This help\n\n"
                 "Tenants (for --api):\n"
                 "  arbiter --add-tenant <name>        Provision a tenant + API key\n"
