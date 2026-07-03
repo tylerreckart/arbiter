@@ -52,7 +52,7 @@ if(ARBITER_TSAN)
     add_link_options(-fsanitize=thread)
 endif()
 
-# --- OpenTUI (optional; Phase 0 spike) ---
+# --- OpenTUI (required) ---
 include(${CMAKE_SOURCE_DIR}/cmake/BuildOpenTUI.cmake)
 
 # --- Find system deps ---
@@ -97,13 +97,14 @@ set(ARBITER_SOURCES
     src/cli_helpers.cpp
     src/repl/queues.cpp
     src/repl/layout.cpp
+    src/repl/pane_history.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
     src/cli.cpp
     src/starters.cpp
     src/theme.cpp
     src/tui/tui.cpp
-    src/tui/scroll_buffer.cpp
+    src/tui/ansi_util.cpp
     src/tui/line_editor.cpp
     src/tui/stream_filter.cpp
     src/api_client.cpp
@@ -202,33 +203,31 @@ target_link_libraries(arbiter PRIVATE
     SQLite3::SQLite3
 )
 
-if(ARBITER_ENABLE_OPENTUI)
-    target_sources(arbiter PRIVATE
-        src/tui/opentui/engine.cpp
-        src/tui/opentui/spike.cpp
+target_sources(arbiter PRIVATE
+    src/tui/opentui/engine.cpp
+    src/tui/opentui/spike.cpp
+    src/tui/opentui/session.cpp
+    src/tui/opentui/pane_scroll_view.cpp
+    src/tui/opentui/pane_frame.cpp
+)
+target_link_libraries(arbiter PRIVATE OpenTUI::core)
+if(APPLE)
+    target_link_libraries(arbiter PRIVATE
+        "-framework CoreFoundation"
+        "-framework CoreAudio"
+        "-framework AudioToolbox"
     )
-    target_compile_definitions(arbiter PRIVATE ARBITER_HAS_OPENTUI)
-    target_link_libraries(arbiter PRIVATE OpenTUI::core)
-    if(APPLE)
-        target_link_libraries(arbiter PRIVATE
-            "-framework CoreFoundation"
-            "-framework CoreAudio"
-            "-framework AudioToolbox"
-        )
-        # Xcode 16+ ld fails linking a thin-LTO arbiter against libopentui.dylib
-        # (__dso_handle arm64_adrp_lo12 fixup). Classic ld works until Apple fixes it.
-        target_link_options(arbiter PRIVATE "-Wl,-ld_classic")
-        set_target_properties(arbiter PROPERTIES
-            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
-            INSTALL_RPATH "@executable_path/../lib/opentui"
-        )
-    elseif(UNIX)
-        target_link_libraries(arbiter PRIVATE dl pthread)
-        set_target_properties(arbiter PROPERTIES
-            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
-            INSTALL_RPATH "$ORIGIN/../lib/opentui"
-        )
-    endif()
+    target_link_options(arbiter PRIVATE "-Wl,-ld_classic")
+    set_target_properties(arbiter PROPERTIES
+        BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
+        INSTALL_RPATH "@executable_path/../lib/opentui"
+    )
+elseif(UNIX)
+    target_link_libraries(arbiter PRIVATE dl pthread)
+    set_target_properties(arbiter PROPERTIES
+        BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
+        INSTALL_RPATH "$ORIGIN/../lib/opentui"
+    )
 endif()
 
 # --- Readline / libedit for interactive line editing ---

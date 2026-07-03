@@ -10,10 +10,11 @@
 # Pin library path:       -DARBITER_OPENTUI_LIBRARY=/path/to/libopentui.dylib
 # Force source build:    -DARBITER_OPENTUI_USE_PREBUILT=OFF
 
-option(ARBITER_ENABLE_OPENTUI "Link OpenTUI native core" OFF)
+option(ARBITER_ENABLE_OPENTUI "Link OpenTUI native core (required)" ON)
 
 if(NOT ARBITER_ENABLE_OPENTUI)
-    return()
+    message(FATAL_ERROR
+        "OpenTUI is required. Reconfigure with -DARBITER_ENABLE_OPENTUI=ON")
 endif()
 
 if(APPLE)

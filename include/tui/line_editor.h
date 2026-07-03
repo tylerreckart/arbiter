@@ -13,7 +13,7 @@
 // reading stdin byte-by-byte (stdin is in raw mode).  It writes echo and
 // redisplay directly to stdout under TUI::tty_mutex.  Scroll and cancel
 // actions are surfaced through handler callbacks rather than internalised so
-// the REPL (which owns the ScrollBuffer and the orchestrator) can respond.
+// Scroll and cancel callbacks are owned by the REPL (orchestrator + pane scroll).
 
 #include "tui/tui.h"
 
