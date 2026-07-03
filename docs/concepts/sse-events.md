@@ -18,7 +18,7 @@ Every event on the `/v1/orchestrate` stream has an `event:` line and a `data:` l
 | `escalation` | Out-of-band advisor halt. Fires before the corresponding `stream_end` (which arrives with `ok: false`). Only fires at the originating depth — sub-agent halts bubble up via the parent's response, not via duplicate escalation events. | `agent`, `stream_id`, `reason`. |
 | `stream_end` | Closes each turn. Line-buffered text is flushed before this fires, so no `text` events arrive with this `stream_id` after. | `agent`, `stream_id`, `ok`. |
 | `error` | Recoverable errors during the request (transient upstream issue). The stream continues or terminates depending on severity. | `message`, plus optional context fields (e.g. `reason`). |
-| `done` | Exactly once, last event. Terminal aggregate. | `ok`, `content`, `input_tokens`, `output_tokens`, `files_bytes`, `tenant_id`, `duration_ms`, `request_id`, `conversation_id?`. On failure: `error`. When the runtime gate halted the executor, `error` is `"advisor_halt"` and the halt reason is also surfaced via the preceding `escalation` event. |
+| `done` | Exactly once, last event. Terminal aggregate. | `ok`, `content`, `input_tokens`, `output_tokens`, `files_bytes`, `tenant_id`, `duration_ms`, `request_id`, `conversation_id?`, `gate_approved?` (present and `true` when the runtime gate returned `CONTINUE` on the terminating turn — HTTP loop clients use this to decide whether to self-prompt for another iteration). On failure: `error`. When the runtime gate halted the executor, `error` is `"advisor_halt"` and the halt reason is also surfaced via the preceding `escalation` event. |
 
 ### `advisor` event kinds
 

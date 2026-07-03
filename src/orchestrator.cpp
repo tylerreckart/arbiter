@@ -1107,7 +1107,8 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
 
 ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                          const std::string& message,
-                                         StreamCallback cb) {
+                                         StreamCallback cb,
+                                         const std::string& original_query) {
     // Thin wrapper — delegate to the parts-aware overload with a single
     // text part.  Keeps every call site that builds a plain-text user
     // message untouched while letting vision callers reach the same
@@ -1117,12 +1118,14 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     p.kind = ContentPart::TEXT;
     p.text = message;
     parts.push_back(std::move(p));
-    return send_streaming(agent_id, std::move(parts), std::move(cb));
+    return send_streaming(agent_id, std::move(parts), std::move(cb),
+                          original_query);
 }
 
 ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                          std::vector<ContentPart> parts,
-                                         StreamCallback cb) {
+                                         StreamCallback cb,
+                                         const std::string& original_query) {
     Agent* agent_ptr;
     std::vector<ContentPart> current_parts;
 
@@ -1138,6 +1141,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             message += p.text;
         }
     }
+    const std::string orig_q = original_query.empty() ? message : original_query;
 
     if (agent_id == "index") {
         agent_ptr = index_master_.get();
@@ -1284,9 +1288,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     end_iteration(cmds);
 
     std::map<std::string, std::string> shared_cache;
-    auto invoker          = make_invoker(agent_id, 0, &shared_cache, message);
+    auto invoker          = make_invoker(agent_id, 0, &shared_cache, orig_q);
     auto advisor_invoker  = make_advisor_invoker(agent_id);
-    auto parallel_invoker = make_parallel_invoker(agent_id, 0, message);
+    auto parallel_invoker = make_parallel_invoker(agent_id, 0, orig_q);
 
     // Gate-mode wiring (master / top-level).  Same construction as
     // run_dispatch — see the longer comment there for the reasoning.
@@ -1324,7 +1328,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                            std::to_string(max_redirects) + ")";
             } else {
                 AdvisorGateInput in{
-                    /* original_task    = */ message,
+                    /* original_task    = */ orig_q,
                     /* terminating_text = */ resp.content,
                     /* tool_summary     = */ summarize_tool_calls(last_cmds, last_tool_results),
                 };

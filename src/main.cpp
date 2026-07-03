@@ -88,6 +88,18 @@ static ReplGetcState g_getc_state;
 // Threads other than pane-exec (main, pump) leave it nullptr.
 thread_local Pane* g_active_pane = nullptr;
 
+// Pin the advisor gate's original task across foreground turns until the gate
+// approves termination; mirrors LoopManager's original_task pinning.
+static void update_pane_original_task(Pane& pane,
+                                      const std::string& user_line,
+                                      const arbiter::ApiResponse& resp) {
+    if (resp.ok && resp.gate_approved) {
+        pane.original_task.clear();
+    } else if (resp.ok && pane.original_task.empty()) {
+        pane.original_task = user_line;
+    }
+}
+
 // Drain any pending exec output, record it in the scroll buffer, and render.
 // VT100 DECSTBM is gone now (it's a physical-terminal resource, unusable for
 // multi-pane), so we always re-render the scroll region from ScrollBuffer —
@@ -452,6 +464,7 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                 if (id == "index" || orch.has_agent(id)) {
                     current_agent = id;
                     current_model = orch.get_agent_model(id);
+                    pane.original_task.clear();
                     tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                 } else {
                     output_queue.push_msg("ERR: no agent '" + id + "'");
@@ -968,7 +981,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                     if (!s.empty()) output_queue.push(s);
                 });
             auto resp = orch.send_streaming(current_agent, line,
-                [&filter](const std::string& chunk) { filter.feed(chunk); });
+                [&filter](const std::string& chunk) { filter.feed(chunk); },
+                pane.original_task);
             filter.flush();
             auto tail = md.flush();
             if (!tail.empty()) output_queue.push(tail);
@@ -983,6 +997,7 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
             // parent sees the failure, not silence.
             pane.last_response = resp.ok ? resp.content
                                          : ("ERR: " + resp.error);
+            update_pane_original_task(pane, line, resp);
             if (resp.ok) {
                 tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                 maybe_generate_title(line, resp.content);
