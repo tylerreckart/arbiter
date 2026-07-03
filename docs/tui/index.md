@@ -59,3 +59,42 @@ Per-user state lives under `~/.arbiter/`:
 | `tenants.db`               | Tenant identity store. Only used when running `--api`.  |
 
 Everything else (current pane layout, scrollback, in-flight turns) is in-memory only and gone when the process exits — except for the session snapshot, which is restored automatically the next time you `arbiter` from the same directory.
+
+## TUI design config
+
+Arbiter has a small CSS-like design layer for OpenTUI chrome. The built-in
+`modern` preset is loaded by default; `~/.arbiter/tui.json` can switch presets
+or override individual semantic tokens.
+
+Example:
+
+```json
+{
+  "preset": "modern",
+  "bg": {
+    "base": "#161822",
+    "scroll": "#141721",
+    "input": "#212635"
+  },
+  "accent": {
+    "primary": "#7ac7ff"
+  },
+  "layout": {
+    "input_padding_x": 1,
+    "status_inset_x": 2,
+    "show_footer": true,
+    "status_pill": true
+  },
+  "component": {
+    "prompt": "> ",
+    "inactive_prompt": "> ",
+    "footer_left_compact": "esc cancel  pg scroll",
+    "footer_right_compact": "/help"
+  }
+}
+```
+
+Supported color groups are `bg`, `text`, `accent`, and `border`, using
+`#RRGGBB` values. Supported spacing and visibility values live under `layout`.
+The `component` group controls small text atoms such as prompt and footer hints.
+Use `"preset": "dense"` for tighter padding on small terminals.

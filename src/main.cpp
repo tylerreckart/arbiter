@@ -15,6 +15,7 @@
 #include "title_generator.h"
 #include "cli.h"
 #include "tui/tui.h"
+#include "tui/tui_design.h"
 #include "tui/stream_filter.h"
 #include "repl/pane.h"
 #include "repl/layout.h"
@@ -128,6 +129,7 @@ static void getc_flush_output() {
 
 static void cmd_interactive(bool exec_allowed_flag) {
     std::string dir = get_config_dir();
+    arbiter::load_tui_design(dir);
     auto api_keys = get_api_keys();
 
     arbiter::opentui::Session ot_session;

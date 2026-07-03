@@ -69,21 +69,15 @@ TEST_CASE("printable characters appear in the input row") {
 
 TEST_CASE("backspace deletes the character before the cursor") {
     PtySession s = ready_editor();
-    s.send("hellx");
+    s.send("/agentx");
     s.read_for(200);
     s.send("\x7F");      // DEL (backspace)
-    s.send("o");
-    s.read_for(300);
+    s.send("s\r");       // final command should be /agents
+    s.read_for(500);
 
-    std::string tail = tail_stripped(s);
-    // Final buffer is "hello"; must not retain the typo "hellx".
-    CHECK(tail.find("hello") != std::string::npos);
-    // The mistyped variant should not be the *latest* rendered content.
-    auto hellx_last = tail.rfind("hellx");
-    auto hello_last = tail.rfind("hello");
-    if (hellx_last != std::string::npos && hello_last != std::string::npos) {
-        CHECK(hello_last > hellx_last);
-    }
+    // Submitting the edited line should execute /agents, proving the buffer
+    // became "/agents" even if OpenTUI only diff-rendered the last changed cell.
+    CHECK(PtySession::strip_ansi(s.output()).find("index") != std::string::npos);
 }
 
 TEST_CASE("Ctrl-U kills the whole input line") {
@@ -208,13 +202,14 @@ TEST_CASE("Home and End move the cursor to the buffer extremes") {
 
 TEST_CASE("left/right arrow cursor navigation allows mid-string insertion") {
     PtySession s = ready_editor();
-    s.send("helo");
+    s.send("/agnts");
     s.read_for(200);
-    // Cursor is past 'o'; move left once to land before 'o', insert 'l'.
+    // Cursor is past 's'; move left to before 'n', insert 'e' -> "/agents".
     s.send(kArrLeft);
-    s.send("l");
-    s.read_for(300);
+    s.send(kArrLeft);
+    s.send(kArrLeft);
+    s.send("e\r");
+    s.read_for(500);
 
-    // Buffer is now "hello" — the classic typo-fix motion.
-    CHECK(tail_stripped(s).find("hello") != std::string::npos);
+    CHECK(PtySession::strip_ansi(s.output()).find("index") != std::string::npos);
 }

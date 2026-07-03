@@ -1,5 +1,7 @@
 #include "tui/opentui/engine.h"
 
+#include "tui/tui_design.h"
+
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -35,8 +37,7 @@ Engine::Engine(std::uint32_t width, std::uint32_t height)
     setUseThread(renderer_, false);
     setClearOnShutdown(renderer_, true);
 
-    const auto bg = rgba8(0x1e, 0x1e, 0x2e);
-    setBackgroundColor(renderer_, bg.data());
+    setBackgroundColor(renderer_, arbiter::tui_design().bg.base.data());
 }
 
 Engine::~Engine() {

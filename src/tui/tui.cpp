@@ -3,6 +3,7 @@
 #include "tui/tui.h"
 #include "cli_helpers.h"
 #include "theme.h"
+#include "tui/tui_design.h"
 
 #include <algorithm>
 #include <chrono>
@@ -66,7 +67,8 @@ void TUI::grow_input(int needed) {
 
 std::string TUI::build_prompt() const {
     const Theme& t = theme();
-    return "\001" + t.prompt_color + "\002>\001" + t.reset + "\002 ";
+    return "\001" + t.prompt_color + "\002" + tui_design().component.prompt
+         + "\001" + t.reset + "\002";
 }
 
 void TUI::set_status(const std::string& msg) {

@@ -228,7 +228,21 @@ cmake --build build
 - [x] Delete `line_editor.cpp` / `ScrollBuffer` (removed earlier)
 - [x] Remove legacy stdout erase paths from `TUI`
 - [x] Update [index.md](index.md), [streaming.md](streaming.md) implementation notes
+- [x] Add CSS-like TUI design tokens and `~/.arbiter/tui.json` overrides
 - [ ] Performance bench: stream 10k-token response, measure frame time p95
+
+### Phase 7 — Design system polish
+
+**Exit criteria:** OpenTUI chrome, split borders, and input styling are driven by
+semantic tokens rather than hard-coded RGB values.
+
+- [x] Add `TuiDesign` semantic color/layout/component tokens
+- [x] Add built-in `modern` and `dense` presets
+- [x] Load `~/.arbiter/tui.json` overrides at interactive startup
+- [x] Refactor pane chrome, input prompt/stub, split borders, renderer
+      background, and frame clear to consume design tokens
+- [ ] Optional `/layout` command for live preset switching
+- [ ] Optional JSONC comments for `tui.json`
 
 ---
 

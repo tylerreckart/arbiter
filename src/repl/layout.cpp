@@ -2,6 +2,7 @@
 
 #include "repl/layout.h"
 #include "tui/opentui/engine.h"
+#include "tui/tui_design.h"
 
 #include <algorithm>
 #include <array>
@@ -141,16 +142,16 @@ bool LayoutTree::subtree_contains_(const Node& n, const Pane* target) {
 void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
     if (n.is_leaf() || frame == 0) return;
 
-    using Rgba = std::array<std::uint16_t, 4>;
-    const Rgba gutter = opentui::rgba8(0x14, 0x14, 0x1f);
-    const Rgba active = opentui::rgba8(0x61, 0xaf, 0xef);
-    const Rgba idle   = opentui::rgba8(0x3e, 0x44, 0x52);
+    const TuiDesign& d = tui_design();
+    const TuiRgba& gutter = d.border.gutter;
+    const TuiRgba& active = d.border.focus;
+    const TuiRgba& idle   = d.border.subtle;
 
     for (int i = 0; i + 1 < static_cast<int>(n.children.size()); ++i) {
         const Rect& left = n.children[i]->bounds;
         const bool accent = subtree_contains_(*n.children[i], focused_)
                          || subtree_contains_(*n.children[i + 1], focused_);
-        const Rgba& line = accent ? active : idle;
+        const TuiRgba& line = accent ? active : idle;
         const std::uint16_t* line_ptr = line.data();
         const std::uint16_t* gutter_ptr = gutter.data();
 
@@ -164,8 +165,8 @@ void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
                                1,
                                gutter_ptr);
                 bufferDrawText(frame,
-                               "\u2502",
-                               3,
+                               d.border.vertical.data(),
+                               static_cast<std::uint32_t>(d.border.vertical.size()),
                                static_cast<std::uint32_t>(sep_x),
                                static_cast<std::uint32_t>(y),
                                line_ptr,
@@ -181,8 +182,8 @@ void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
                            1,
                            gutter_ptr);
             std::string dashes;
-            dashes.reserve(static_cast<size_t>(n.bounds.w) * 3);
-            for (int k = 0; k < n.bounds.w; ++k) dashes += "\u2500";
+            dashes.reserve(static_cast<size_t>(n.bounds.w) * d.border.horizontal.size());
+            for (int k = 0; k < n.bounds.w; ++k) dashes += d.border.horizontal;
             bufferDrawText(frame,
                            dashes.data(),
                            static_cast<std::uint32_t>(dashes.size()),
