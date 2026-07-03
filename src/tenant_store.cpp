@@ -37,21 +37,8 @@ int64_t now_epoch() {
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-// English stopword list — common articles, pronouns, auxiliary verbs,
-// prepositions, question words, and meta-conversational fillers ("tell",
-// "ask", "say", "want", "know") that appear in nearly every natural-
-// language question without carrying retrieval signal.  Hand-curated:
-// errs toward removing too few rather than too many, since over-
-// pruning a content word would silently drop recall on queries that
-// happen to centre on it.
-//
-// Why hand-curate instead of using a published list (NLTK, MySQL,
-// etc.): published stopword lists are tuned for general document
-// retrieval, not question-style conversational queries.  They tend to
-// keep "what / when / how" (which we want to drop because they're
-// ubiquitous in our query distribution) and drop "now / very" (which
-// we want to keep because they carry signal in conversational
-// memory).
+// Hand-curated stopwords for conversational queries (not general document retrieval).
+// Errs toward keeping content words rather than over-pruning.
 const std::unordered_set<std::string>& fts5_stopwords() {
     static const std::unordered_set<std::string> kSet = {
         // Articles
@@ -108,9 +95,7 @@ bool fts5_is_stopword(const std::string& tok) {
     return fts5_stopwords().count(lower) > 0;
 }
 
-// Quote a single token for FTS5, escaping internal quotes by doubling.
-// FTS5 treats `"foo"` as a single-token query (still goes through the
-// Porter tokenizer at match time so stems still apply).
+// Quote a single FTS5 token; doubling internal quotes neutralises operators.
 void fts5_quote_token(std::string& out, const std::string& tok) {
     out += '"';
     for (char c : tok) {
@@ -120,36 +105,9 @@ void fts5_quote_token(std::string& out, const std::string& tok) {
     out += '"';
 }
 
-// Convert a free-form user query into a safe FTS5 expression.
-//
-// Pipeline:
-//   1. Tokenise on whitespace.
-//   2. Strip stopwords (a/the/what/did/i/you/...).  Common conversational
-//      filler dilutes BM25 scoring across hundreds of thousands of
-//      irrelevant rows; removing it concentrates the score on
-//      content-bearing tokens and dramatically tightens the
-//      candidate pool.
-//   3. If 2+ content tokens remain, emit a phrase clause first
-//      (`"tok1 tok2 ..."`) so rows containing the tokens adjacent
-//      score above rows containing them separately.  Phrase
-//      proximity is a strong signal in factual recall queries
-//      ("software engineer", "machine learning", "Tucker Carlson")
-//      where the meaningful concept is multi-word.
-//   4. Append the bag-of-words OR fallback (`tok1 OR tok2 OR ...`)
-//      so we still match rows that have the words separately —
-//      OR-rather-than-AND keeps recall on queries where no single
-//      row contains every content token.
-//
-// All tokens are quoted to neutralise FTS5 operator characters
-// (-, +, *, ^, :, parens).  Quoting still goes through Porter at match
-// time, so `"deploys"` still matches a document containing
-// "deployment".
-//
-// Degenerate cases:
-//   • Empty input → empty string (caller treats as "no filter").
-//   • Every token a stopword (e.g. "what is the?") → fall back to the
-//     original tokens.  Better to keep a low-quality query working
-//     than fail silently on an edge case.
+// Convert a free-form query into an FTS5 expression: strip stopwords, emit a
+// phrase clause for adjacency boosting, then append an OR fallback for recall.
+// Falls back to raw tokens when all tokens are stopwords.
 std::string fts5_escape(const std::string& q) {
     // Split on whitespace.
     std::vector<std::string> tokens;
@@ -245,8 +203,6 @@ std::string sha256_hex(const std::string& input) {
 }
 
 std::string generate_token() {
-    // 32 random bytes → 64 hex chars.  Prefixed "atr_" (arbiter) so it's
-    // recognizable in logs without shape ambiguity with other keys.
     unsigned char buf[32];
     if (RAND_bytes(buf, sizeof(buf)) != 1)
         throw std::runtime_error("CSPRNG failure generating tenant token");
@@ -328,18 +284,8 @@ TenantStore::~TenantStore() {
 
 void TenantStore::open(const std::string& path) {
     if (db_) return;   // idempotent; caller re-opening the same instance is a no-op
-    // SQLITE_OPEN_FULLMUTEX forces the connection into serialized
-    // threading mode regardless of the underlying library's build
-    // defaults.  Without this, the system SQLite on macOS is
-    // typically built in multi-thread mode (SQLITE_THREADSAFE=2),
-    // which forbids sharing one `sqlite3*` across threads — and the
-    // API server's accept loop spawns one thread per connection, all
-    // calling into this TenantStore.  Sharing a non-serialized
-    // connection would race the parser and surface as garbage error
-    // messages ("no such table: <…>") followed by SIGSEGV inside
-    // sqlite3RunParser.  FULLMUTEX makes every API call take an
-    // internal mutex on the connection, making concurrent calls safe
-    // at the cost of one mutex per SQL op (negligible for our scale).
+    // FULLMUTEX: per-connection thread safety required because one sqlite3*
+    // is shared across per-request threads in the API server's accept loop.
     int rc = sqlite3_open_v2(
         path.c_str(), &db_,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
@@ -369,13 +315,9 @@ void TenantStore::open(const std::string& path) {
         );
     )SQL");
 
-    // Billing-cleanup migration.  Older DBs carry a usage_log table plus
-    // monthly_cap_uc/month_yyyymm/month_to_date_uc columns on `tenants` —
-    // billing is now external, so drop the dead schema on first open of
-    // an upgraded DB.  ALTER TABLE DROP COLUMN needs SQLite ≥ 3.35
-    // (Mar 2021); both macOS and modern Linux ship newer builds.
-    // IF EXISTS / column-existence guards keep the migration idempotent
-    // across reopens.
+    // Schema migration: drop legacy columns/tables from older DBs.
+    // ALTER TABLE DROP COLUMN needs SQLite ≥ 3.35 (Mar 2021).
+    // IF EXISTS / column-existence guards keep this idempotent across reopens.
     exec_sql(db_, "DROP TABLE IF EXISTS usage_log;");
     auto tenant_col_exists = [this](const char* col) -> bool {
         Stmt q(db_, "PRAGMA table_info(tenants);");
@@ -433,9 +375,7 @@ void TenantStore::open(const std::string& path) {
         CREATE INDEX IF NOT EXISTS messages_conversation_id
             ON messages(conversation_id, id);
     )SQL");
-    // Billing-cleanup migration: drop the legacy `billed_uc` column on
-    // pre-billing-extraction DBs.  Same idempotent pattern as tenants
-    // above.
+    // Drop the legacy `billed_uc` column from older DBs.
     {
         auto msg_col_exists = [this](const char* col) -> bool {
             Stmt q(db_, "PRAGMA table_info(messages);");

@@ -176,15 +176,6 @@ data: {"ok":false,"error":"...","error_code":"circuit_open",...}
 
 This is faster than waiting four retries against a known-unhealthy upstream — typically tens of milliseconds rather than 7+ seconds. The breaker auto-recovers on a successful probe after the cooldown; clients can simply retry (with a new Idempotency-Key if they want a fresh attempt rather than a replay).
 
-### Billing-service denial specifically
-
-When the configured billing service rejects the pre-flight quota check (suspended tenant, exhausted budget, etc.):
-
-1. `error` event with the upstream `message`, `reason` (`tenant_suspended` | `tenant_disabled` | `insufficient_budget`), and the matching `*_micro_cents` budget fields.
-2. `done` with `ok: false` and no further turns.
-
-A transport error to the billing service fails open — the runtime proceeds rather than blocking the request on a billing-service blip.
-
 ## See also
 
 - [`POST /v1/agents/:id/chat`](agents/chat.md) — REST shape with a path-bound agent.
