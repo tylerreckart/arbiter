@@ -36,6 +36,8 @@ void bufferFillRect(OpenTuiHandle buffer,
                     uint32_t height,
                     const uint16_t* bg);
 
+void bufferClear(OpenTuiHandle buffer, const uint16_t* bg);
+
 void bufferDrawText(OpenTuiHandle buffer,
                     const char* text,
                     uint32_t text_len,
@@ -80,6 +82,33 @@ void textBufferViewSetViewport(OpenTuiHandle view,
                                uint32_t height);
 void textBufferViewSetFirstLineOffset(OpenTuiHandle view, uint32_t offset);
 uint32_t textBufferViewGetVirtualLineCount(OpenTuiHandle view);
+
+OpenTuiHandle createEditBuffer(uint8_t width_method, OpenTuiHandle event_sink);
+void destroyEditBuffer(OpenTuiHandle edit);
+void editBufferClear(OpenTuiHandle edit);
+void editBufferInsertText(OpenTuiHandle edit, const char* text, uint32_t text_len);
+void editBufferDeleteCharBackward(OpenTuiHandle edit);
+void editBufferDeleteChar(OpenTuiHandle edit);
+void editBufferMoveCursorLeft(OpenTuiHandle edit);
+void editBufferMoveCursorRight(OpenTuiHandle edit);
+void editBufferSetText(OpenTuiHandle edit, const char* text, uint32_t text_len);
+void editBufferSetCursorByOffset(OpenTuiHandle edit, uint32_t offset);
+void editBufferGetText(OpenTuiHandle edit, uint8_t* out, uint32_t max_len);
+
+OpenTuiHandle createEditorView(OpenTuiHandle edit,
+                               uint32_t viewport_width,
+                               uint32_t viewport_height);
+void destroyEditorView(OpenTuiHandle view);
+void editorViewSetViewport(OpenTuiHandle view,
+                           uint32_t x,
+                           uint32_t y,
+                           uint32_t width,
+                           uint32_t height,
+                           bool move_cursor);
+void editorViewSetViewportSize(OpenTuiHandle view, uint32_t width, uint32_t height);
+void editorViewSetWrapMode(OpenTuiHandle view, uint8_t mode);
+
+void bufferDrawEditorView(OpenTuiHandle buffer, OpenTuiHandle view, int32_t x, int32_t y);
 
 #ifdef __cplusplus
 }

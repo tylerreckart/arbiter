@@ -170,7 +170,7 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
         }
     }
 
-    // Input background (LineEditor draws text on top).
+    // Input background (PaneInputEditor draws prompt + buffer on top).
     if (input_top_y <= input_bottom_y) {
         bufferFillRect(frame,
                        px,

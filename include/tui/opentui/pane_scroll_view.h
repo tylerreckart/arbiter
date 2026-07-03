@@ -28,6 +28,7 @@ public:
     void clear();
 
     [[nodiscard]] int total_visual_rows() const;
+    [[nodiscard]] int max_scroll_offset() const;
 
     void draw(OpenTuiHandle frame,
               TUI& tui,

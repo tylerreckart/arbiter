@@ -29,9 +29,17 @@ int pane_history_total_rows(const Pane& pane) {
     return 0;
 }
 
+int pane_history_max_scroll(const Pane& pane) {
+    if (pane.scroll) return pane.scroll->max_scroll_offset();
+    return 0;
+}
+
 void pane_history_begin_frame(UiContext& ctx) {
     if (!ctx.session || !ctx.session->active()) return;
-    ctx.session->begin_frame();
+    const OpenTuiHandle frame = ctx.session->begin_frame();
+    if (frame == 0) return;
+    static const std::uint16_t kBg[] = {0x1e, 0x1e, 0x2e, 255};
+    bufferClear(frame, kBg);
 }
 
 void pane_history_draw_pane(Pane& pane, UiContext& ctx) {
@@ -44,6 +52,8 @@ void pane_history_draw_pane(Pane& pane, UiContext& ctx) {
                       pane.tui,
                       pane.scroll_offset,
                       pane.new_while_scrolled);
+    const bool focused = (&pane == ctx.focused_pane);
+    pane.editor.draw(frame, pane.tui, focused);
 }
 
 void pane_history_end_frame(UiContext& ctx) {

@@ -22,6 +22,7 @@ PaneScrollView::PaneScrollView() {
         throw std::runtime_error("createTextBufferView failed");
     }
     textBufferViewSetWrapMode(view_, kWrapWord);
+    textBufferViewSetFirstLineOffset(view_, 0);
 }
 
 PaneScrollView::~PaneScrollView() {
@@ -35,11 +36,6 @@ void PaneScrollView::bind(const TUI& tui) {
     viewport_w_ = tui.cols();
     viewport_h_ = tui.scroll_region_rows();
     set_wrap_cols(tui.cols());
-    textBufferViewSetViewport(view_,
-                              static_cast<std::uint32_t>(buf_x_),
-                              static_cast<std::uint32_t>(buf_y_),
-                              static_cast<std::uint32_t>(viewport_w_),
-                              static_cast<std::uint32_t>(viewport_h_));
 }
 
 void PaneScrollView::set_wrap_cols(int cols) {
@@ -66,14 +62,28 @@ int PaneScrollView::total_visual_rows() const {
     return static_cast<int>(textBufferViewGetVirtualLineCount(view_));
 }
 
+int PaneScrollView::max_scroll_offset() const {
+    const int total = total_visual_rows();
+    if (total <= viewport_h_) return 0;
+    return total - viewport_h_;
+}
+
 void PaneScrollView::sync_scroll_offset(int scroll_offset) const {
     const int total = total_visual_rows();
-    int first = 0;
+    int start_y = 0;
     if (total > viewport_h_) {
-        first = total - viewport_h_ - scroll_offset;
-        if (first < 0) first = 0;
+        start_y = total - viewport_h_ - scroll_offset;
+        if (start_y < 0) start_y = 0;
     }
-    textBufferViewSetFirstLineOffset(view_, static_cast<std::uint32_t>(first));
+    // Viewport x/y index into virtual lines (0 = top of content).  Screen
+    // placement is handled by bufferDrawTextBufferView's x/y arguments.
+    // first_line_offset is for partial first-line wrap width only — not scroll.
+    textBufferViewSetFirstLineOffset(view_, 0);
+    textBufferViewSetViewport(view_,
+                              0,
+                              static_cast<std::uint32_t>(start_y),
+                              static_cast<std::uint32_t>(viewport_w_),
+                              static_cast<std::uint32_t>(viewport_h_));
 }
 
 void PaneScrollView::draw(OpenTuiHandle frame,
@@ -83,9 +93,15 @@ void PaneScrollView::draw(OpenTuiHandle frame,
     bind(tui);
     sync_scroll_offset(scroll_offset);
 
+    bufferPushScissorRect(frame,
+                          static_cast<int32_t>(buf_x_),
+                          static_cast<int32_t>(buf_y_),
+                          static_cast<std::uint32_t>(viewport_w_),
+                          static_cast<std::uint32_t>(viewport_h_));
     bufferDrawTextBufferView(frame, view_,
                              static_cast<std::uint32_t>(buf_x_),
                              static_cast<std::uint32_t>(buf_y_));
+    bufferPopScissorRect(frame);
 
     if (scroll_offset > 0) {
         char sbuf[96];

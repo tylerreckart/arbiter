@@ -1,9 +1,9 @@
 #pragma once
 
 #include "repl/queues.h"
-#include "tui/line_editor.h"
-#include "tui/tui.h"
+#include "tui/opentui/pane_input_editor.h"
 #include "tui/opentui/pane_scroll_view.h"
+#include "tui/tui.h"
 
 #include <atomic>
 #include <memory>
@@ -16,7 +16,7 @@ struct Pane {
     TUI               tui;
     ThinkingIndicator thinking{&tui};
     ToolCallIndicator tool_indicator{&tui};
-    LineEditor        editor{tui};
+    opentui::PaneInputEditor editor{tui};
 
     OutputQueue       output_queue;
     CommandQueue      cmd_queue;

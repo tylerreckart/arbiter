@@ -161,8 +161,7 @@ public:
     // Paint a dim placeholder prompt on the pane's input row.  Used for
     // non-focused panes so their bottom edge reads as "input surface,
     // currently idle" instead of looking half-drawn.  The focused pane's
-    // LineEditor overwrites this stub with the live prompt + buffer on
-    // its next redraw.
+    // focused pane's PaneInputEditor overwrites the idle stub on the next frame.
     void paint_idle_input_prompt();
 
     // One-shot welcome card on cold starts.  build_welcome_card() returns the
