@@ -8651,6 +8651,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             return;
         }
     }
+    const std::string original_query = body->get_string("original_query", "");
 
     // ── Resolve the agent identity ────────────────────────────────────────
     //
@@ -9400,12 +9401,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
     try {
         auto resp = orch->send_streaming(agent_id, std::move(message_parts),
-            [&filter](const std::string& chunk) { filter.feed(chunk); });
+            [&filter](const std::string& chunk) { filter.feed(chunk); },
+            original_query);
         filter.flush();
 
         auto done = jobj();
         auto& m = done->as_object_mut();
         m["ok"]      = jbool(resp.ok);
+        if (resp.gate_approved) m["gate_approved"] = jbool(true);
         if (!resp.ok) {
             // Never proxy the provider's free-form error message —
             // log it operator-side, ship a fixed taxonomy on the wire.

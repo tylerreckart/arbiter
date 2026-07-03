@@ -15,6 +15,7 @@ Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v
 | Field        | Type     | Required | Default   | Description |
 |--------------|----------|----------|-----------|-------------|
 | `message`    | string \| array | yes | —      | The prompt to send to the agent. Either a plain string (text-only) or an array of content parts (text + image, see [Vision input](#vision-input) below). |
+| `original_query` | string | no | — | Pins the advisor gate's `[ORIGINAL TASK]` when `message` is a continuation prompt. Omit on the first turn of a loop; pass the loop's initial prompt on subsequent `/v1/orchestrate` calls. When omitted, defaults to the flattened `message` text. |
 | `agent`      | string   | no       | `"index"` | Which agent to address. Any stored agent id, the built-in `"index"` master, or (with `agent_def`) a caller-supplied UUID. |
 | `agent_def`  | object   | no       | —         | Inline agent definition. See [Inline agents](#inline-agents) below. When set, overrides any stored agent at this id for this one request. |
 

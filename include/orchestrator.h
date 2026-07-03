@@ -216,7 +216,8 @@ public:
     // falls back to non-streaming for tool-call re-entry turns.
     ApiResponse send_streaming(const std::string& agent_id,
                                const std::string& message,
-                               StreamCallback cb);
+                               StreamCallback cb,
+                               const std::string& original_query = "");
     // Multipart variant — used when the inbound user message includes
     // image parts (vision input).  Internally identical to the string
     // variant; the string overload wraps in a single text part.  The
@@ -224,7 +225,8 @@ public:
     // all run unchanged on top of this.
     ApiResponse send_streaming(const std::string& agent_id,
                                std::vector<ContentPart> parts,
-                               StreamCallback cb);
+                               StreamCallback cb,
+                               const std::string& original_query = "");
 
     // Ask index (master) about system state — used by the TCP server.
     ApiResponse ask_arbiter(const std::string& query);
