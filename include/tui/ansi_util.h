@@ -5,8 +5,8 @@
 
 namespace arbiter {
 
-// Drop CSI/OSC and other two-byte ESC sequences.  Plain text for OpenTUI
-// TextBuffer until NativeSpanFeed carries styled spans.
+// Drop CSI/OSC and other two-byte ESC sequences.  Plain text for callers that
+// do not need styled OpenTUI highlights (e.g. legacy paths, tests).
 std::string strip_ansi(std::string_view raw);
 
 // Streaming variant: holds an incomplete trailing ESC sequence or UTF-8 code

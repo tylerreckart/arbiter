@@ -210,19 +210,20 @@ Legacy input (LineEditor) and chrome (header/separators/hints) are unchanged; on
 
 **Exit criteria:** `Ctrl-w v/s`, focus cycle, close pane, minimum sizes — all pass manual checklist in [panes.md](panes.md).
 
-- [ ] Map `LayoutTree` rects to Yoga nodes (one subtree per leaf)
-- [ ] `resize()` → recalculate layout → update renderer root bounds
+- [ ] Map `LayoutTree` rects to Yoga nodes (one subtree per leaf) — deferred; rects drive OpenTUI draw offsets today
+- [x] `resize()` → recalculate layout → update renderer root bounds (SIGWINCH + `Session::begin_frame`)
 - [x] Border rendering between splits (OpenTUI `LayoutTree::draw_borders`)
-- [ ] Per-pane independent scroll views and input editors
-- [ ] `/pane` spawn: new leaf gets fresh subtree wired like today
+- [x] Per-pane independent scroll views and input editors
+- [x] `/pane` spawn: new leaf gets fresh subtree wired like today
+- [x] Single-frame multi-pane present (`pane_history_present`) — no per-pane flicker on split/focus
 
 ### Phase 5 — Markdown and StreamFilter (3–5 days)
 
 **Exit criteria:** code blocks, bold, links in agent output render equivalently; `/cmd` lines never appear in scrollback.
 
-- [ ] Keep `StreamFilter` on exec thread **before** queue push (unchanged)
-- [ ] Either feed markdown AST as styled spans into `NativeSpanFeed`, or render markdown to ANSI spans in C++ then feed — **spike both in Phase 1** and pick winner
-- [ ] Regression: compare rendered output for representative agent transcripts
+- [x] Keep `StreamFilter` on exec thread **before** queue push (unchanged)
+- [x] Render markdown/theme ANSI into OpenTUI highlights (`AnsiScrollAppender`)
+- [ ] NativeSpanFeed migration (deferred — highlight path covers streaming markdown today)
 
 ### Phase 6 — Cutover and cleanup (3–5 days)
 

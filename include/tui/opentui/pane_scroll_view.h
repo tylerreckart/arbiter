@@ -1,7 +1,9 @@
 #pragma once
 
 #include "tui/opentui/c_api.h"
-#include "tui/ansi_util.h"
+#include "tui/opentui/ansi_scroll_append.h"
+
+#include <memory>
 #include "tui/tui.h"
 
 #include <cstdint>
@@ -47,7 +49,7 @@ private:
     int wrap_cols_{80};
 
     std::vector<std::string> text_storage_;
-    AnsiStripStream strip_stream_;
+    std::unique_ptr<AnsiScrollAppender> styled_append_;
 };
 
 } // namespace arbiter::opentui

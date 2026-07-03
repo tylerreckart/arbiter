@@ -5,6 +5,8 @@
 #include "tui/opentui/pane_scroll_view.h"
 #include "tui/opentui/session.h"
 
+#include <functional>
+
 namespace arbiter {
 
 void pane_history_init(Pane& pane) {
@@ -61,10 +63,28 @@ void pane_history_end_frame(UiContext& ctx) {
     ctx.session->end_frame();
 }
 
-void pane_history_render(Pane& pane, UiContext& ctx) {
+void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks) {
+    if (!ctx.session || !ctx.session->active()) return;
     pane_history_begin_frame(ctx);
-    pane_history_draw_pane(pane, ctx);
+    if (hooks.for_each_pane) {
+        hooks.for_each_pane([](Pane& p) {
+            p.thinking.tick();
+            p.tool_indicator.tick();
+        });
+        hooks.for_each_pane([&](Pane& p) {
+            pane_history_draw_pane(p, ctx);
+        });
+    }
+    if (hooks.draw_overlays) {
+        hooks.draw_overlays(ctx.session->frame());
+    }
     pane_history_end_frame(ctx);
+}
+
+void pane_history_render(Pane& pane, UiContext& ctx) {
+    PaneFrameHooks hooks;
+    hooks.for_each_pane = [&](const std::function<void(Pane&)>& fn) { fn(pane); };
+    pane_history_present(ctx, hooks);
 }
 
 } // namespace arbiter

@@ -208,6 +208,7 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/spike.cpp
     src/tui/opentui/session.cpp
     src/tui/opentui/pane_scroll_view.cpp
+    src/tui/opentui/ansi_scroll_append.cpp
     src/tui/opentui/pane_input_editor.cpp
     src/tui/opentui/pane_frame.cpp
 )

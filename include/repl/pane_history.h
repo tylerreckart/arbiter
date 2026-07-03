@@ -1,7 +1,9 @@
 #pragma once
 
+#include "tui/opentui/c_api.h"
 #include "tui/tui.h"
 
+#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -17,7 +19,16 @@ struct Pane;
 struct UiContext {
     opentui::Session* session = nullptr;
     Pane*             focused_pane = nullptr;
+    // Repaint every pane in one OpenTUI frame (set once layout exists).
+    std::function<void()> present_all;
 };
+
+struct PaneFrameHooks {
+    std::function<void(const std::function<void(Pane&)>&)> for_each_pane;
+    std::function<void(OpenTuiHandle frame)>               draw_overlays;
+};
+
+void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks);
 
 void pane_history_init(Pane& pane);
 void pane_history_set_cols(Pane& pane, int cols);
