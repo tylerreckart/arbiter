@@ -26,154 +26,90 @@ class Orchestrator {
 public:
     explicit Orchestrator(std::map<std::string, std::string> api_keys);
 
-    // Set directory used for agent memory files.  The REPL passes the
-    // cwd-scoped path from get_memory_dir(); the default below is a harmless
-    // fallback for callers (tests, --send one-shots) that forget to set it.
     void set_memory_dir(const std::string& dir) { memory_dir_ = dir; }
 
-    // Optional callback fired after each sub-agent turn (depth > 0).
-    // Called on the same thread as send()/send_streaming(), with any output
-    // lock already held by the caller — do NOT re-acquire g_out_mu inside it.
+    // Fired after each sub-agent turn (depth > 0).
     using ProgressCallback = std::function<void(const std::string& agent_id,
                                                  const std::string& content)>;
     void set_progress_callback(ProgressCallback cb);
 
-    // Optional callback fired after every completed agent turn at any depth.
-    // Use this to record sub-agent token costs that would otherwise be invisible
-    // to a CostTracker wired only to the top-level REPL response handler.
+    // Fired after every completed turn at any depth (includes sub-agents).
     using CostCallback = std::function<void(const std::string& agent_id,
                                              const std::string& model,
                                              const ApiResponse& resp)>;
     void set_cost_callback(CostCallback cb);
 
-    // Fired at the start of each sub-agent turn (before the API call).
-    // Use to show a "working..." indicator in the UI.
+    // Fired at the start of each turn (before the API call).
     using AgentStartCallback = std::function<void(const std::string& agent_id)>;
     void set_agent_start_callback(AgentStartCallback cb);
 
-    // Fired when an agent auto-compacts its context.  Wired to every managed
-    // agent (master + existing + future) so newly-loaded agents also report.
     using CompactCallback = Agent::CompactCallback;
     void set_compact_callback(CompactCallback cb);
 
-    // Gatekeeper for destructive agent actions — /write (always) and /exec
-    // when the command matches a destructive pattern.  Called on the exec
-    // thread; implementations must be thread-safe vs the main REPL thread.
-    // Unset ⇒ all actions proceed without prompting.
+    // Gate for destructive actions (/write, /exec). Unset ⇒ proceed without prompting.
+    // Must be thread-safe vs the REPL thread.
     void set_confirm_callback(ConfirmFn cb) { confirm_cb_ = std::move(cb); }
 
-    // Fired once per executed /cmd with (name, ok).  Wired by the REPL to
-    // ToolCallIndicator so the spinner's count and ✓/✗ summary reflect real
-    // post-exec status.  Fires for every tool call at any delegation depth —
-    // main agent, sub-agent, sub-sub — so the turn's tally is unified.
+    // Fired once per /cmd with (name, ok), at every delegation depth.
     void set_tool_status_callback(ToolStatusFn cb) { tool_status_cb_ = std::move(cb); }
 
-    // Spawn a new UI pane running `agent_id` with `message` queued as its
-    // first command.  The REPL provides this; without it (e.g. --send or
-    // --api callers) /pane commands from agents get an "ERR: pane
-    // spawning unavailable" tool result and the agent is told not to retry.
+    // Spawn a UI pane. Without it, /pane returns ERR.
     void set_pane_spawner(PaneSpawner cb) { pane_spawner_cb_ = std::move(cb); }
 
-    // Intercept /write — when set, every /write in any turn (this agent or
-    // a delegated one) routes through `cb` instead of touching the local
-    // filesystem.  Used by the HTTP API to stream generated files to the
-    // client as SSE events without persisting server-side.
+    // Intercept /write; without it, files land on the local filesystem.
     void set_write_interceptor(WriteInterceptor cb) { write_interceptor_cb_ = std::move(cb); }
 
-    // Real-time read window into the tenant's structured memory.  When set,
-    // /mem entries|entry|search resolve through this callback at every
-    // turn and depth.  Without it, those subcommands return ERR.  The HTTP
-    // API wires this against the request's authenticated tenant; CLI/REPL
-    // contexts leave it null.
+    // /mem entries|entry|search bridge. Without it, those subcommands return ERR.
     void set_structured_memory_reader(StructuredMemoryReader cb) {
         structured_memory_reader_cb_ = std::move(cb);
     }
 
-    // Write window for agent-contributed entries and links.  /mem add entry|link
-    // routes through this callback and lands rows directly in the curated
-    // graph — they surface to all readers (HTTP or agent) immediately.
-    // Wired by the API per-tenant; CLI/REPL contexts leave it null.
+    // /mem add entry|link bridge. Without it, returns ERR.
     void set_structured_memory_writer(StructuredMemoryWriter cb) {
         structured_memory_writer_cb_ = std::move(cb);
     }
 
-    // Bridge to the per-request MCP session manager.  /mcp tools|call
-    // routes through this callback; the API server owns the
-    // mcp::Manager that backs it (subprocesses die when the request's
-    // orchestrator does).  Without this set, /mcp returns ERR — CLI/REPL
-    // contexts don't spawn MCP servers.
+    // /mcp tools|call bridge. Without it, returns ERR.
     void set_mcp_invoker(MCPInvoker cb) { mcp_invoker_cb_ = std::move(cb); }
 
-    // Bridge to the per-request A2A remote-agent manager.  /a2a list|card|call
-    // routes through this callback; the API server owns the a2a::Manager
-    // backing it, just like MCP.  Without this set, /a2a returns ERR.
+    // /a2a list|card|call bridge. Without it, returns ERR.
     void set_a2a_invoker(A2AInvoker cb) { a2a_invoker_cb_ = std::move(cb); }
 
-    // Bridge to the scheduling subsystem.  When set, /schedule resolves
-    // through this callback at every turn and depth.  The HTTP API wires
-    // this against the per-tenant scheduler created at server start.
-    // Without this set, /schedule returns ERR.
+    // /schedule bridge. Without it, returns ERR.
     void set_scheduler_invoker(SchedulerInvoker cb) {
         scheduler_invoker_cb_ = std::move(cb);
     }
 
-    // Bridge to the agent-facing todo tracker.  When set, /todo resolves
-    // through this callback at every depth and the open-todo block is
-    // injected into [DELEGATION CONTEXT] for sub-agents.  The HTTP API
-    // wires this against the per-tenant todo store.  Without this set,
-    // /todo returns ERR.
+    // /todo bridge; open todos are injected into sub-agent delegation context.
     void set_todo_invoker(TodoInvoker cb) {
         todo_invoker_cb_ = std::move(cb);
     }
 
-    // Bridge to the agent-scoped lesson store.  /lesson resolves through
-    // this callback at every depth.  Wired by the API server against
-    // the per-tenant TenantStore.  Without this set, /lesson returns ERR.
+    // /lesson bridge. Without it, returns ERR.
     void set_lesson_invoker(LessonInvoker cb) {
         lesson_invoker_cb_ = std::move(cb);
     }
 
-    // Inject a roster of remote A2A agents into the master orchestrator's
-    // turn preamble.  When set, every /v1/orchestrate (and /v1/a2a)
-    // invocation against `index` sees the configured remote agents in
-    // the same place as the local agent catalog, so it can choose to
-    // delegate via /a2a call <name> alongside /agent <local>.  Empty
-    // string suppresses the section.  Wired by the API server from
-    // a2a::Manager::cards(); CLI/REPL contexts leave it null.
+    // Injects remote A2A agent roster into the master's turn preamble.
     using RemoteRosterProvider = std::function<std::string()>;
     void set_remote_roster_provider(RemoteRosterProvider cb) {
         remote_roster_cb_ = std::move(cb);
     }
 
-    // DB-backed file-scratchpad bridge.  /mem read|write|clear and
-    // /mem shared read|write|clear route through this callback when set;
-    // otherwise they fall back to the filesystem (~/.arbiter/memory/...).
-    // The HTTP API wires this to a TenantStore-backed implementation so
-    // tenant memory persists in the same database as conversations and
-    // structured memory; the CLI/REPL leaves it null.
+    // /mem read|write|clear bridge; falls back to filesystem when null.
     void set_memory_scratchpad(MemoryScratchpadInvoker cb) {
         memory_scratchpad_cb_ = std::move(cb);
     }
 
-    // Web-search bridge (/search <query> [top=N]).  Wired by the API
-    // server to a Brave-backed (or other provider) HTTPS call when an
-    // API key is configured; CLI/REPL contexts leave it null and the
-    // dispatcher returns a clean ERR.
+    // /search bridge. Without it, returns ERR.
     void set_search_invoker(SearchInvoker cb) { search_invoker_cb_ = std::move(cb); }
 
-    // Artifact-store bridges (/write --persist, /read, /list).  Bound
-    // by the API server to TenantStore + the request's conversation_id
-    // so artifacts are scoped to the active thread.  Without them set,
-    // /write --persist degrades to ephemeral SSE only and /read / /list
-    // return ERR.
+    // /write --persist, /read, /list bridges. Without them, persist degrades to SSE-only.
     void set_artifact_writer(ArtifactWriter cb) { artifact_writer_cb_ = std::move(cb); }
     void set_artifact_reader(ArtifactReader cb) { artifact_reader_cb_ = std::move(cb); }
     void set_artifact_lister(ArtifactLister cb) { artifact_lister_cb_ = std::move(cb); }
 
-    // Flip /exec off for this orchestrator.  Agents that emit /exec get a
-    // tool result explaining the ban; they're expected to adapt their plan.
-    // Used by the HTTP API so SaaS callers can't invoke arbitrary shell
-    // commands on the server.
+    // Disable /exec; agents receive a tool result explaining the ban.
     void set_exec_disabled(bool v) { exec_disabled_ = v; }
 
     // Bind /exec to a per-tenant sandbox (e.g. SandboxManager-backed
@@ -269,7 +205,12 @@ public:
     // Runs an agentic dispatch loop: if the agent's response contains
     // /fetch or /mem commands, they are executed and results fed back
     // automatically (up to 6 turns).
-    ApiResponse send(const std::string& agent_id, const std::string& message);
+    // `original_query` pins the advisor gate's [ORIGINAL TASK] context across
+    // self-prompt continuations.  When empty, defaults to `message` (the
+    // first turn of a fresh request).  LoopManager passes the loop's initial
+    // prompt here on every iteration after the first.
+    ApiResponse send(const std::string& agent_id, const std::string& message,
+                     const std::string& original_query = "");
 
     // Streaming variant of send() — streams first turn via callback,
     // falls back to non-streaming for tool-call re-entry turns.

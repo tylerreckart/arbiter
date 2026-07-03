@@ -16,6 +16,25 @@ namespace arbiter {
 static constexpr size_t kMaxLogEntryBytes = 32 * 1024;   //  32 KB per entry
 static constexpr size_t kMaxLogTotalBytes = 2 * 1024 * 1024;  // 2 MB total
 
+// Self-prompt envelope for inter-iteration continuations.  Mirrors the advisor
+// redirect envelope so the executor sees a consistent synthetic-user-turn
+// shape; the orchestrator's in-loop gate still fires on each terminating turn.
+static const char kLoopContinuation[] =
+    "[loop continuation — synthetic user turn]\n"
+    "Continue working on the original task. Prior turns are in your "
+    "conversation history — do not repeat completed work unless needed "
+    "for context.\n"
+    "[end loop continuation]";
+
+static bool gate_mode_active(Orchestrator& orch, const std::string& agent_id) {
+    try {
+        const auto& cfg = orch.get_constitution(agent_id);
+        return cfg.advisor.mode == "gate" && !cfg.advisor.model.empty();
+    } catch (...) {
+        return false;
+    }
+}
+
 static std::string truncate_entry(const std::string& s) {
     if (s.size() <= kMaxLogEntryBytes) return s;
     std::string out = s.substr(0, kMaxLogEntryBytes);
@@ -226,10 +245,8 @@ int LoopManager::active_count() const {
 
 void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
                            std::string initial_prompt) {
-    // First iteration uses the initial prompt.  Subsequent iterations send
-    // "Continue." — the agent already has its prior output in conversation
-    // history, so feeding the raw output back as a user message would make
-    // it appear to be echoed by a human.
+    const std::string original_task = initial_prompt;
+    const bool gate_active = gate_mode_active(orch, e->agent_id);
     std::string prompt = initial_prompt;
     bool first = true;
     bool stopped_by_request = false;
@@ -272,7 +289,9 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
             trim_log_bytes(e->output_log);
         }
 
-        auto resp = orch.send(e->agent_id, prompt);
+        // Pin original_task on every iteration so the in-loop advisor gate
+        // evaluates against the loop's real goal, not the continuation prompt.
+        auto resp = orch.send(e->agent_id, prompt, original_task);
         e->iter++;
         total_iters++;
 
@@ -317,7 +336,28 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
             break;
         }
 
-        if (consecutive_idle >= kMaxIdle) {
+        // Gate mode: the in-loop advisor gate is the termination authority.
+        // CONTINUE (gate_approved) means the task is done; REDIRECT/HALT and
+        // tool dispatch all resolve inside this send() call.  When the gate
+        // never fires (kMaxTurns truncation mid tool-chain), gate_approved
+        // stays false and we self-prompt for another top-level iteration.
+        if (gate_active && resp.gate_approved) {
+            {
+                std::lock_guard<std::mutex> ek(e->mu);
+                e->stop_reason = "task complete (advisor gate approved)";
+            }
+            if (e->oq) {
+                e->oq->push("\n" + theme().bold + theme().accent_success + "[" +
+                            e->loop_id + "/" + e->agent_id + " DONE]" +
+                            theme().reset + " " +
+                            e->stop_reason +
+                            "\n  Use /log " + e->loop_id +
+                            " to review, /kill " + e->loop_id + " to dismiss.\n");
+            }
+            break;
+        }
+
+        if (!gate_active && consecutive_idle >= kMaxIdle) {
             {
                 std::lock_guard<std::mutex> ek(e->mu);
                 e->stop_reason = "task complete (idle after " +
@@ -335,7 +375,7 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
         }
 
         if (first) first = false;
-        prompt = "Continue.";
+        prompt = kLoopContinuation;
 
         { std::lock_guard<std::mutex> lk(e->mu); if (e->stop_req) { stopped_by_request = true; break; } }
 
