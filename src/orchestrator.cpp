@@ -26,19 +26,8 @@ namespace arbiter {
 
 namespace {
 
-// ─── Thread-local streaming context ─────────────────────────────────────────
-//
-// Each in-flight agent turn carries (stream_id, agent_id, depth).  A turn
-// runs on exactly one thread — sequential delegation reuses the request
-// thread; /parallel spawns fresh threads, one per child.  Thread-local
-// storage lets any callback invoked DURING the turn (text stream,
-// tool_status, cost, etc.) read the current context with zero coordination
-// — no mutex, no parameter threading.
-//
-// The parent's context is stashed on the RAII guard's stack frame so
-// sequential calls naturally restore the parent's id on return.  Parallel
-// children start in a fresh thread where the thread-local defaults to zero,
-// and the child's StreamScope sets it before any callback fires.
+// Thread-local (stream_id, agent, depth) so callbacks can read turn context without locking.
+// StreamScope stashes/restores parent context; parallel children get fresh threads.
 thread_local int         tl_stream_id    = 0;
 thread_local std::string tl_stream_agent;
 thread_local int         tl_stream_depth = 0;
@@ -64,14 +53,7 @@ struct StreamScope {
     StreamScope& operator=(const StreamScope&) = delete;
 };
 
-// Master-agent model resolution order (first match wins):
-//   1. ~/.arbiter/master_model  — explicit user choice (set by the setup wizard
-//      or hand-edited).  One line, trimmed.
-//   2. An available-provider default based on which API keys are configured
-//      — Anthropic wins, OpenAI is the fallback.
-//   3. The hardcoded default baked into master_constitution().
-// The master can still be retargeted at runtime via `/model index <id>`;
-// that change is session-scoped and does not touch the override file.
+// Model resolution: ~/.arbiter/master_model > key-based default > constitution default.
 std::string load_master_model_override() {
     const char* home = std::getenv("HOME");
     if (!home || !home[0]) return {};
@@ -932,7 +914,10 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                 advisor_event_cb_(ev);
             }
 
-            if (sig.kind == AdvisorGateOutput::Kind::Continue) break;
+            if (sig.kind == AdvisorGateOutput::Kind::Continue) {
+                resp.gate_approved = true;
+                break;
+            }
 
             if (sig.kind == AdvisorGateOutput::Kind::Redirect) {
                 ++redirects_used;
@@ -1067,8 +1052,10 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     return resp;
 }
 
-ApiResponse Orchestrator::send(const std::string& agent_id, const std::string& message) {
-    return send_internal(agent_id, message, 0);
+ApiResponse Orchestrator::send(const std::string& agent_id,
+                               const std::string& message,
+                               const std::string& original_query) {
+    return send_internal(agent_id, message, 0, nullptr, original_query);
 }
 
 void Orchestrator::recover_truncated_writes(Agent* agent,
@@ -1120,7 +1107,8 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
 
 ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                          const std::string& message,
-                                         StreamCallback cb) {
+                                         StreamCallback cb,
+                                         const std::string& original_query) {
     // Thin wrapper — delegate to the parts-aware overload with a single
     // text part.  Keeps every call site that builds a plain-text user
     // message untouched while letting vision callers reach the same
@@ -1130,12 +1118,14 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     p.kind = ContentPart::TEXT;
     p.text = message;
     parts.push_back(std::move(p));
-    return send_streaming(agent_id, std::move(parts), std::move(cb));
+    return send_streaming(agent_id, std::move(parts), std::move(cb),
+                          original_query);
 }
 
 ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                          std::vector<ContentPart> parts,
-                                         StreamCallback cb) {
+                                         StreamCallback cb,
+                                         const std::string& original_query) {
     Agent* agent_ptr;
     std::vector<ContentPart> current_parts;
 
@@ -1151,6 +1141,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             message += p.text;
         }
     }
+    const std::string orig_q = original_query.empty() ? message : original_query;
 
     if (agent_id == "index") {
         agent_ptr = index_master_.get();
@@ -1297,9 +1288,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     end_iteration(cmds);
 
     std::map<std::string, std::string> shared_cache;
-    auto invoker          = make_invoker(agent_id, 0, &shared_cache, message);
+    auto invoker          = make_invoker(agent_id, 0, &shared_cache, orig_q);
     auto advisor_invoker  = make_advisor_invoker(agent_id);
-    auto parallel_invoker = make_parallel_invoker(agent_id, 0, message);
+    auto parallel_invoker = make_parallel_invoker(agent_id, 0, orig_q);
 
     // Gate-mode wiring (master / top-level).  Same construction as
     // run_dispatch — see the longer comment there for the reasoning.
@@ -1337,7 +1328,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                            std::to_string(max_redirects) + ")";
             } else {
                 AdvisorGateInput in{
-                    /* original_task    = */ message,
+                    /* original_task    = */ orig_q,
                     /* terminating_text = */ resp.content,
                     /* tool_summary     = */ summarize_tool_calls(last_cmds, last_tool_results),
                 };
@@ -1373,7 +1364,10 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                 advisor_event_cb_(ev);
             }
 
-            if (sig.kind == AdvisorGateOutput::Kind::Continue) break;
+            if (sig.kind == AdvisorGateOutput::Kind::Continue) {
+                resp.gate_approved = true;
+                break;
+            }
 
             if (sig.kind == AdvisorGateOutput::Kind::Halt) {
                 if (!iter_buffer.empty() && cb) cb(iter_buffer);

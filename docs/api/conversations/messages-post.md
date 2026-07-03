@@ -12,10 +12,11 @@ Send a user message and stream the assistant's reply. Same SSE response shape as
 
 ### Body
 
-| Field       | Type   | Required | Description |
-|-------------|--------|----------|-------------|
-| `message`   | string | yes | The new user turn. |
-| `agent_def` | object | no  | Override the conversation's snapshotted agent for this one turn (rare — usually a follow-up should just send `message`). When omitted, the conversation's snapshot from create time is reused. |
+| Field            | Type   | Required | Description |
+|------------------|--------|----------|-------------|
+| `message`        | string | yes      | The new user turn. |
+| `original_query` | string | no       | Same as [`POST /v1/orchestrate`](../orchestrate.md) — pins the advisor gate's original task on continuation turns. |
+| `agent_def`      | object | no       | Override the conversation's snapshotted agent for this one turn (rare — usually a follow-up should just send `message`). When omitted, the conversation's snapshot from create time is reused. |
 
 ```bash
 curl -N \

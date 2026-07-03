@@ -22,13 +22,8 @@
 namespace arbiter {
 
 // ─── Provider registry ────────────────────────────────────────────────────────
-//
-// First entry whose `prefix` matches the start of the model string wins.  An
-// empty prefix is the catch-all (bare model names like "claude-sonnet-4-…").
-// To add a provider: append a row here, teach build_body_*/parse_body_* if
-// the format differs, done.  Ollama is reached via OLLAMA_HOST (defaults to
-// http://localhost:11434); other providers wanting a configurable host can
-// follow the same pattern.
+// First entry whose `prefix` matches the model string wins; empty prefix = catch-all.
+// Ollama host is OLLAMA_HOST (default http://localhost:11434).
 
 namespace {
 
@@ -162,11 +157,7 @@ std::string strip_model_prefix(const std::string& model) {
     return model;
 }
 
-// Compute the per-request HTTP path.  Anthropic and OpenAI route every model
-// through the same fixed path (`/v1/messages`, `/v1/chat/completions`) — for
-// those, we just return the static Provider::path.  Gemini puts the model id
-// in the URL itself, with a different action token for streaming vs not, so
-// the path is built per-request and varies by both model and streaming flag.
+// Gemini embeds model + action in the URL; other providers use a static path.
 static std::string path_for(const Provider& p, const ApiRequest& req,
                              bool streaming) {
     if (p.format != Provider::FORMAT_GEMINI) return p.path;
@@ -243,10 +234,7 @@ ApiClient::~ApiClient() {
     if (ssl_ctx_) SSL_CTX_free(ssl_ctx_);
 }
 
-// RAII wrapper that zeros a string's buffer on scope exit regardless of
-// how the scope exits (return, exception, etc.).  Used for the short-lived
-// plaintext copies produced by unmask_api_key so the key is zeroed even
-// when an exception unwinds through the call site before the manual wipe.
+// Zeros its buffer on destruction so plaintext key copies don't outlive their scope.
 struct SensitiveString {
     std::string value;
     SensitiveString() = default;
@@ -767,11 +755,7 @@ static int parse_http_status(const std::string& headers) {
     return std::atoi(headers.c_str() + sp + 1);
 }
 
-// Read HTTP headers in buffered chunks instead of one byte at a time.  The
-// sentinel "\r\n\r\n" can straddle a read boundary, so each scan revisits the
-// last 3 bytes of the prior buffer.  Bytes past the sentinel belong to the
-// response body and are returned via `leftover` for the body reader to
-// consume before touching the socket again.
+// Reads until "\r\n\r\n"; body bytes past the sentinel come back in `leftover`.
 static bool read_http_headers(arbiter::ApiClient::Conn& c,
                               std::string& headers,
                               std::string& leftover) {
@@ -799,10 +783,6 @@ static bool read_http_headers(arbiter::ApiClient::Conn& c,
     }
 }
 
-// Drain `prefix` before reading from the socket.  Lets the body reader
-// consume header-read leftovers transparently — we use a small helper
-// closure inside read_response_body / read_streaming_response to keep the
-// consume-then-recv pattern tidy.
 namespace { struct PrefixCursor { const std::string& s; size_t pos = 0; }; }
 
 static std::string read_response_body(arbiter::ApiClient::Conn& c,
@@ -937,9 +917,7 @@ ApiResponse ApiClient::parse_body_openai(const std::string& body) {
         }
         // Usage is optional on openai-compat servers.  Ollama reports it.
         // OpenAI nests cached-prompt tokens under prompt_tokens_details
-        // (implicit caching, no write cost), which we surface as
-        // cache_read_tokens so the external billing service can discount
-        // them.
+        // (implicit caching, no write cost); surface as cache_read_tokens.
         auto usage = root->get("usage");
         if (usage && usage->is_object()) {
             resp.input_tokens  = usage->get_int("prompt_tokens");
@@ -1215,10 +1193,7 @@ static void process_openai_event(const std::string& data,
 
 // Gemini SSE chunk: `data: {"candidates":[{"content":{"parts":[{"text":"…"}],
 // "role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{...}}`.
-// No `[DONE]` marker — the stream just ends.  Each chunk's candidates[0]
-// content.parts may carry one or more text fragments; the final chunk also
-// carries `finishReason` and `usageMetadata`.  Errors land as a top-level
-// `error` object identical in shape to the non-streaming response.
+// Gemini SSE: no [DONE] marker; final chunk carries finishReason + usageMetadata.
 static void process_gemini_event(const std::string& data,
                                   std::string& content,
                                   ApiResponse& resp,
@@ -1260,9 +1235,7 @@ static void process_gemini_event(const std::string& data,
             resp.input_tokens  = usage->get_int("promptTokenCount");
             resp.output_tokens = usage->get_int("candidatesTokenCount");
             // Implicit context caching shows up as `cachedContentTokenCount`
-            // on usageMetadata (not always present); surface it under the
-            // same field the billing service uses for Anthropic / OpenAI
-            // cache hits.
+            // on usageMetadata (not always present); surface as cache_read_tokens.
             resp.cache_read_tokens = usage->get_int("cachedContentTokenCount");
         }
     } catch (...) {

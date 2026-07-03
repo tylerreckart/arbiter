@@ -88,6 +88,18 @@ static ReplGetcState g_getc_state;
 // Threads other than pane-exec (main, pump) leave it nullptr.
 thread_local Pane* g_active_pane = nullptr;
 
+// Pin the advisor gate's original task across foreground turns until the gate
+// approves termination; mirrors LoopManager's original_task pinning.
+static void update_pane_original_task(Pane& pane,
+                                      const std::string& user_line,
+                                      const arbiter::ApiResponse& resp) {
+    if (resp.ok && resp.gate_approved) {
+        pane.original_task.clear();
+    } else if (resp.ok && pane.original_task.empty()) {
+        pane.original_task = user_line;
+    }
+}
+
 // Drain any pending exec output, record it in the scroll buffer, and render.
 // VT100 DECSTBM is gone now (it's a physical-terminal resource, unusable for
 // multi-pane), so we always re-render the scroll region from ScrollBuffer —
@@ -123,22 +135,13 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
     orch.load_agents(dir + "/agents");
 
     // ── App-scope shared state ─────────────────────────────────────────────
-    // /verbose flips cfg.verbose and the StreamFilter wrapping each agent
-    // turn checks it on the fly — no need to rebuild the filter when the
-    // flag changes.  Not persisted across sessions by design.
     arbiter::Config cfg;
     cfg.exec_allowed = exec_allowed_flag;
     orch.set_exec_disabled(!cfg.exec_allowed);
     LoopManager loops;
 
-    // Each pane's exec thread sets ::g_active_pane (file-scope thread_local)
-    // at startup; orch callbacks read that thread's value to route output to
-    // the right pane without any shared state.  Main and pump threads leave
-    // g_active_pane nullptr — they don't handle() commands.
-
-    // Serializes layout tree mutations (split/close/focus) against the pump
-    // thread's iteration.  Recursive because dispatch_chord internally does
-    // layout operations that call back into the tree.
+    // Serializes layout tree mutations against the pump thread's iteration.
+    // Recursive because dispatch_chord can call back into the tree.
     std::recursive_mutex layout_mu;
 
     struct ConfirmState {
@@ -150,20 +153,10 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
     std::atomic<bool> quit_requested{false};
     std::atomic<bool> title_generated{false};   // generated once per session
 
-    // Set by any worker thread that mutated the layout (pane spawner, pump
-    // handling SIGWINCH) — signals the main thread to bounce out of its
-    // blocked read_line and re-enter begin_input so the focused pane's
-    // blank input row gets a fresh prompt painted over it.  Without this,
-    // the prompt only reappears after the user types something.
+    // Signals the main thread to repaint the focused input after a layout mutation.
     std::atomic<bool> refresh_focused_input{false};
 
-    // Pending-close queue for the delegation chain.  A pane's exec thread
-    // appends an entry after its spawn_message turn completes and it has
-    // flowed its output back to its parent.  The main thread services the
-    // queue between read_line iterations: prompts the user on the focused
-    // pane ("close X?"), and on yes stops+joins the pane's thread and
-    // removes it from the layout.  Non-blocking from the exec thread's
-    // perspective — the pane's thread is already done with its task.
+    // Pane close requests queued by exec threads for the main thread to process.
     struct PendingClose {
         Pane*       pane;
         std::string agent_id;  // for the prompt text
@@ -171,8 +164,7 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
     std::mutex                pending_closes_mu;
     std::vector<PendingClose> pending_closes;
 
-    // Session files are scoped to the working directory so that starting
-    // arbiter in different repos doesn't bleed history across contexts.
+    // Session key is cwd-scoped so history doesn't bleed across repos.
     auto cwd_session_key = []() -> std::string {
         std::string cwd = fs::current_path().string();
         uint32_t h = 2166136261u;
@@ -231,12 +223,6 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
     };
 
     // ── Pane factory ───────────────────────────────────────────────────────
-    // Layout calls this when splitting to materialise a new pane with every
-    // callback wired to app-scope state.  Defined before orch callbacks so
-    // their captures of active_pane/layout_ptr are consistent.
-    //
-    // Declared here so make_pane can capture it by reference; the lambda
-    // body is assigned in the pump setup block below once the CV is live.
     std::function<void()> pump_notify;
 
     auto make_pane = [&]() -> std::unique_ptr<Pane> {
@@ -348,9 +334,6 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         Pane* p = g_active_pane;
         if (p) p->tool_indicator.bump(kind, ok);
     });
-    // No local cost callback in REPL mode — billing/cost reporting has
-    // moved to an external billing service on the API path, and the
-    // interactive REPL no longer prints per-turn cost summaries.
     orch.set_agent_start_callback([&](const std::string& agent_id) {
         Pane* p = g_active_pane;
         if (p) p->thinking.start(agent_id + ": thinking");
@@ -360,10 +343,6 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         if (p) p->tui.set_status(agent_id + ": compacting context (" +
                                  std::to_string(n) + " msgs)");
     });
-    // Advisor gate halt — surface as a distinct banner separate from the
-    // agent's normal text stream.  HALT means the runtime stopped the
-    // executor before it could return; the user needs to see the reason
-    // out-of-band so it doesn't blend into the agent's last sentence.
     orch.set_escalation_callback([&](const std::string& agent_id,
                                       int /*stream_id*/,
                                       const std::string& reason) {
@@ -375,11 +354,6 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         p->output_queue.push_msg(banner);
     });
 
-    // Advisor activity (consults + gate decisions) — render as dim status
-    // lines so the user can watch the runtime gate without it crowding the
-    // agent's actual output.  Continue events are silent (they're the
-    // common case and wouldn't add information); only redirects, halts,
-    // budget exhaustion, and explicit /advise consultations surface here.
     orch.set_advisor_event_callback([&](const arbiter::Orchestrator::AdvisorEvent& ev) {
         Pane* p = g_active_pane;
         if (!p) return;
@@ -410,10 +384,6 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
             confirm_state.prompt  = p;
             confirm_state.pending = &done;
         }
-        // Wake the focused pane's editor so the main loop can service the
-        // confirm.  In single-exec-thread mode the focused pane is almost
-        // always the active one; in edge cases (focus change mid-turn) the
-        // service_confirm runs on the new focused pane anyway.
         if (layout_ptr) layout_ptr->focused().editor.interrupt();
         return fut.get();
     });
@@ -449,21 +419,12 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         }
     }
 
-    // Pump thread reads through g_getc_state.pane, which tracks the focused
-    // pane for SIGWINCH repaints (output drain iterates all panes directly).
     g_getc_state.pane = &layout.focused();
 
-    // Shared pane spawner — both the REPL's /pane command (handle() below)
-    // and the orchestrator's pane_spawner callback (registered further
-    // down) route through this function.  Forward-declared here so handle
-    // can reference it; assigned after start_pane_thread exists, since
-    // spawning starts an exec thread on the new pane.
     std::function<std::string(const std::string& agent, const std::string& message)>
         spawn_pane_fn;
 
     // ── Command handler ────────────────────────────────────────────────────
-    // Takes the pane that owns the line; body references pane members via
-    // per-call aliases so the existing code shape is preserved.
     auto handle = [&](Pane& pane, const std::string& line) {
         auto& tui             = pane.tui;
         auto& output_queue    = pane.output_queue;
@@ -494,7 +455,7 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                 return;
             }
             if (cmd == "tokens") {
-                output_queue.push_msg("token stats: removed (billing is external)");
+                output_queue.push_msg("token stats: not available");
                 return;
             }
             if (cmd == "use" || cmd == "switch") {
@@ -503,6 +464,7 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                 if (id == "index" || orch.has_agent(id)) {
                     current_agent = id;
                     current_model = orch.get_agent_model(id);
+                    pane.original_task.clear();
                     tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                 } else {
                     output_queue.push_msg("ERR: no agent '" + id + "'");
@@ -1019,7 +981,8 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                     if (!s.empty()) output_queue.push(s);
                 });
             auto resp = orch.send_streaming(current_agent, line,
-                [&filter](const std::string& chunk) { filter.feed(chunk); });
+                [&filter](const std::string& chunk) { filter.feed(chunk); },
+                pane.original_task);
             filter.flush();
             auto tail = md.flush();
             if (!tail.empty()) output_queue.push(tail);
@@ -1034,6 +997,7 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
             // parent sees the failure, not silence.
             pane.last_response = resp.ok ? resp.content
                                          : ("ERR: " + resp.error);
+            update_pane_original_task(pane, line, resp);
             if (resp.ok) {
                 tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
                 maybe_generate_title(line, resp.content);
@@ -1048,10 +1012,6 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
     };  // end handle lambda
 
     // Starts a pane's exec thread.  The thread pins g_active_pane at entry
-    // (thread_local) so orch callbacks route to this pane, then drains the
-    // pane's cmd_queue until it's stopped.  Caller is responsible for:
-    //   (1) cmd_queue.stop() to unblock the blocking pop()
-    //   (2) thread.join() before destroying the Pane
     auto start_pane_thread = [&](Pane& p_ref) {
         Pane* pane_ptr = &p_ref;
         pane_ptr->exec_thread = std::thread([&, pane_ptr]() {
@@ -1064,19 +1024,9 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                 p.cmd_queue.set_busy(false);
                 p.tui.clear_queue_indicator();
 
-                // Delegation-chain flow-back: once per pane lifetime, after
-                // the pane's first queued command completes (which is the
-                // spawn_message for /pane-spawned children), push the
-                // framed result into parent_pane->cmd_queue so the
-                // delegating agent sees its sub-work's output as a fresh
-                // message.  Then post a pending-close request so the REPL
-                // can prompt the user before tearing this pane down.
                 if (p.parent_pane != nullptr &&
                     !p.spawn_flowed.exchange(true)) {
 
-                    // Verify the parent is still in the layout before
-                    // touching its cmd_queue — a user Ctrl-w c or another
-                    // chain-close could have removed it while we worked.
                     bool parent_alive = false;
                     Pane* parent = p.parent_pane;
                     {
@@ -1102,19 +1052,12 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                         std::lock_guard<std::mutex> lk(pending_closes_mu);
                         pending_closes.push_back({&p, p.current_agent});
                     }
-                    // Wake the main loop so it services the pending close
-                    // promptly instead of waiting on the next keypress.
                     if (layout_ptr) layout_ptr->focused().editor.interrupt();
                 }
             }
         });
     };
 
-    // Dismiss any pane's welcome card.  Once the user has two or more panes
-    // (user-split or agent-spawned), the greeting is noise — it clutters a
-    // pane that the user is now trying to use as a work surface.  Each pane
-    // still has its own scrollback; this just tears the card out of history
-    // so render_scrollback no longer paints it.
     auto dismiss_welcome_everywhere = [&]() {
         layout.for_each_pane([&](Pane& p) {
             if (p.welcome_visible) {
@@ -1127,16 +1070,6 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         });
     };
 
-    // Pane spawner — called from an agent's exec thread when it emits
-    // `/pane <agent> <msg>`.  Creates a new pane, starts its exec thread,
-    // queues the message as the first command.  Returns a short status
-    // string for the agent's tool-result block.  Fire-and-forget: the
-    // spawning agent's context does NOT accumulate the new pane's output.
-    //
-    // Safety:
-    //   - Takes layout_mu so the pump thread can't iterate mid-mutation.
-    //   - Caps panes at kMaxPanes so a runaway agent can't keep splitting.
-    //   - Refuses unknown agents and too-small focused panes.
     static constexpr size_t kMaxPanes = 8;
     spawn_pane_fn = [&](const std::string& req_agent,
                          const std::string& message) -> std::string {
@@ -1150,19 +1083,7 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                    " open); close one before spawning more";
         }
 
-        // The spawning pane is whichever pane's exec thread is currently
-        // running (g_active_pane is set by start_pane_thread on entry).
-        // Capture it so the new child can flow its result back here when
-        // its task finishes.
         Pane* spawner_pane = g_active_pane;
-
-        // Build the new pane via make_pane, then override its current_agent
-        // to the requested sub-agent before the exec thread starts.  We
-        // explicitly opt out of the focus transfer that split_focused does
-        // by default — keeping focus on the spawner is important so the
-        // user-facing readline cursor stays put, close prompts still
-        // appear where they're reading, and multiple /pane spawns in the
-        // same turn don't whip focus around three times.
         std::string captured_agent = req_agent;
         Pane* new_pane_ptr = layout.split_focused(
             LayoutTree::Orient::Vertical,
@@ -1173,8 +1094,6 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
                 p->current_model = orch.get_agent_model(captured_agent);
                 p->tui.update(p->current_agent, p->current_model, "",
                               agent_color(p->current_agent));
-                // No welcome card on agent-spawned panes — the first line
-                // is the queued message, which matters more than greetings.
                 p->welcome_visible = false;
                 p->history.clear();
                 return p;
@@ -1186,28 +1105,19 @@ static void cmd_interactive(bool exec_allowed_flag = true) {
         }
 
         Pane& new_pane = *new_pane_ptr;
-        // Record delegation lineage so the child pane's exec thread can
-        // flow its output back to the spawner when its task is done.
         new_pane.parent_pane   = spawner_pane;
         new_pane.spawn_message = message;
         new_pane.spawn_flowed.store(false);
         start_pane_thread(new_pane);
         new_pane.cmd_queue.push(message);
 
-        // Tear the welcome card off any pane still showing it — if an
-        // agent is spawning parallel work, the user is done with greetings.
         dismiss_welcome_everywhere();
-
-        // Repaint every pane's scrollback so the relayout is coherent.
         layout.for_each_pane([&](Pane& p) {
             p.history.set_cols(p.tui.cols());
             p.tui.render_scrollback(p.history, p.scroll_offset,
                                      p.new_while_scrolled);
         });
 
-        // Kick the main thread so its blocked read_line returns and the
-        // REPL loop re-enters begin_input, which repaints the focused
-        // pane's prompt over the input row that set_rect just blanked.
         refresh_focused_input.store(true);
         layout.focused().editor.interrupt();
 
@@ -1640,9 +1550,7 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         // Tenant identity admin — `arbiter --api` uses the resulting
-        // tenants.db for bearer-token auth.  Billing (caps, usage, the
-        // ledger) lives in the external billing service when configured
-        // via $ARBITER_BILLING_URL.
+        // tenants.db for bearer-token auth.
         if (arg1 == "--add-tenant") {
             if (argc < 3) {
                 std::cerr << "Usage: arbiter --add-tenant <name>\n";
@@ -1699,10 +1607,6 @@ int main(int argc, char* argv[]) {
                 "  ANTHROPIC_API_KEY                  Claude API key\n"
                 "  OPENAI_API_KEY                     OpenAI API key\n"
                 "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n"
-                "  ARBITER_BILLING_URL                Billing service base URL.  When set, requests\n"
-                "                                     pre-flight against /v1/runtime/quota/check and\n"
-                "                                     post-turn usage to /v1/runtime/usage/record.\n"
-                "                                     Empty ⇒ no billing; requests use provider keys.\n\n"
                 "Config: ~/.arbiter/\n"
                 "  api_key                            Anthropic key file\n"
                 "  openai_api_key                     OpenAI key file\n"

@@ -26,14 +26,7 @@ namespace arbiter {
 
 namespace {
 
-// Run argv to completion, capture combined stdout+stderr into `out`,
-// and return the exit status.  Wall-clock parent-side timeout SIGKILLs
-// the child when it elapses; `timed_out_out` is set in that case.
-// `output_cap` caps `out` size; bytes past the cap are dropped on the
-// floor (we keep reading so the child doesn't block on a full pipe).
-//
-// Returns -1 on infra failure (fork/exec); the `out` string holds
-// "ERR: <reason>" in that case so callers can surface it verbatim.
+// Run argv, capture stdout+stderr into `out`. SIGKILL on timeout; -1 on fork failure.
 int run_capture(const std::vector<std::string>& argv,
                 int timeout_seconds,
                 size_t output_cap,
@@ -400,15 +393,8 @@ bool SandboxManager::container_is_running(const std::string& name) const {
     return out.find("true") == 0;
 }
 
-// Probe the container with a no-op `docker exec <name> true`.  Cheaper
-// than full exec but goes through the same kernel + dockerd path, so a
-// container that's running per inspect but unresponsive per exec
-// (OOM-mid-exec, dockerd wedged on this container's pid namespace,
-// kernel-side namespace teardown in progress) gets caught here.
-//
-// Used only on the re-attach path (stale survivor from a prior process)
-// and after exec failures with infra-level error patterns — calling
-// this on every ensure_container would add 30-100ms to every /exec.
+// `docker exec <name> true` — catches containers that are "running" per inspect
+// but unresponsive at exec level. Only called on re-attach and after infra failures.
 bool SandboxManager::container_is_responsive(const std::string& name) const {
     std::vector<std::string> argv{
         cfg_.runtime, "exec", name, "true"

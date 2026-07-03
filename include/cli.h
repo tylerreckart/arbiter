@@ -7,10 +7,8 @@
 //   arbiter --api  [--port N]         → cmd_api        (HTTP+SSE orchestration API)
 //   arbiter --send <a> <msg>          → cmd_oneshot    (one-turn request, no TUI)
 //
-//   Tenant management (for `--api` mode).  Billing — eligibility, caps,
-//   and the usage ledger — lives in an external billing service;
-//   this CLI only manages local tenant identity (name, token, disabled
-//   flag).
+//   Tenant management (for `--api` mode).  Manages local tenant identity
+//   (name, token, disabled flag).
 //     arbiter --add-tenant <name>                → cmd_add_tenant
 //     arbiter --list-tenants                     → cmd_list_tenants
 //     arbiter --disable-tenant <id|name>         → cmd_disable_tenant
