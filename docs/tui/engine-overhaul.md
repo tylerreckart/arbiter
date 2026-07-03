@@ -201,10 +201,10 @@ Legacy input (LineEditor) and chrome (header/separators/hints) are unchanged; on
 
 **Exit criteria:** header, separators, tool-call row, thinking status, token stats match legacy screenshots.
 
-- [ ] Header: agent name, title, status/stats renderables
-- [ ] Mid-separator + tool-call indicator (no fighting with header — same split as today)
-- [ ] Remove `ThinkingIndicator` thread; spinner in UI loop
-- [ ] Focused-pane accent on split separators via layout pass
+- [x] Header: agent name, title, status/stats renderables
+- [x] Mid-separator + tool-call indicator (no fighting with header — same split as today)
+- [x] Remove `ThinkingIndicator` thread; spinner in UI loop
+- [x] Focused-pane accent on split separators via layout pass
 
 ### Phase 4 — Multi-pane layout (1–2 weeks)
 
@@ -212,7 +212,7 @@ Legacy input (LineEditor) and chrome (header/separators/hints) are unchanged; on
 
 - [ ] Map `LayoutTree` rects to Yoga nodes (one subtree per leaf)
 - [ ] `resize()` → recalculate layout → update renderer root bounds
-- [ ] Border rendering between splits (replace `render_borders()` ANSI hacks)
+- [x] Border rendering between splits (OpenTUI `LayoutTree::draw_borders`)
 - [ ] Per-pane independent scroll views and input editors
 - [ ] `/pane` spawn: new leaf gets fresh subtree wired like today
 

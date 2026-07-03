@@ -21,7 +21,7 @@ constexpr std::uint8_t kWrapWord = 2;
 
 Rgba prompt_fg() { return rgba8(0x98, 0xc3, 0x79); }
 Rgba idle_fg()     { return rgba8(0x5c, 0x63, 0x70); }
-Rgba input_bg()    { return rgba8(0x1e, 0x1e, 0x2e); }
+Rgba input_bg()    { return rgba8(0x2a, 0x2a, 0x3c); }
 
 void draw_plain_text(OpenTuiHandle frame,
                      std::uint32_t x,

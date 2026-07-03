@@ -1192,8 +1192,13 @@ static void cmd_interactive(bool exec_allowed_flag) {
         auto present_all = [&]() {
             pane_history_begin_frame(ui_ctx);
             layout.for_each_pane([&](Pane& p) {
+                p.thinking.tick();
+                p.tool_indicator.tick();
+            });
+            layout.for_each_pane([&](Pane& p) {
                 pane_history_draw_pane(p, ui_ctx);
             });
+            layout.draw_borders(ui_ctx.session->frame());
             pane_history_end_frame(ui_ctx);
         };
         while (!pump_stop.load()) {
@@ -1360,9 +1365,8 @@ static void cmd_interactive(bool exec_allowed_flag) {
         // Manual split dismisses the welcome too — user has committed to
         // multi-pane work, don't leave the greeting on the original pane.
         if (spawned) dismiss_welcome_everywhere();
-        // resize() inside split/close already called render_borders and
-        // set_rect on each pane; we repaint scrollback for every pane so
-        // their content survives the relayout.
+        // resize() inside split/close already set_rect on each pane; we
+        // repaint scrollback for every pane so their content survives the relayout.
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
             pane_history_render(p, ui_ctx);
