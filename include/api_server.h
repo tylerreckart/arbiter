@@ -1,24 +1,18 @@
 #pragma once
 // arbiter/include/api_server.h
 //
-// HTTP API surface for multi-agent orchestration.  Exposes the Orchestrator
+// HTTP API surface for orchestration.  Exposes the Orchestrator
 // as a streaming SSE endpoint so external clients send a prompt in one POST
 // and receive the agent's thinking, tool calls, sub-agent output, token
 // usage, and any files the pipeline produced as separate SSE events.
 //
 // Endpoints:
 //   GET  /v1/health              — 200 "ok", no auth, liveness probe
-//   POST /v1/orchestrate         — main orchestration call, SSE response (tenant auth)
-//   GET  /v1/admin/tenants       — list tenants (admin auth)
-//   POST /v1/admin/tenants       — create tenant, returns plaintext token (admin auth)
-//   GET  /v1/admin/tenants/{id}  — one tenant (admin auth)
-//   PATCH /v1/admin/tenants/{id} — update {disabled} (admin auth)
+//   POST /v1/orchestrate         — main orchestration call, SSE response
 //
 // Auth:
-//   Tenant routes  — Bearer token that maps to a Tenant in the TenantStore.
-//   Admin  routes  — Bearer admin token.  Admin token is distinct from tenant
-//                    tokens and only works on /v1/admin/*; tenant tokens are
-//                    rejected on admin routes and vice versa.
+//   Runtime routes — single-tenant mode; no tenant bearer required.
+//   Admin   routes — Bearer admin token for /v1/admin/*.
 //
 // Concurrency:
 //   One thread per connection.  Each request gets a fresh Orchestrator —
@@ -86,10 +80,8 @@ struct ApiServerOptions {
     std::string bind         = "127.0.0.1";   // bind 0.0.0.0 only behind a proxy
     std::string agents_dir;                   // absolute path, e.g. ~/.arbiter/agents
 
-    // Parent directory for per-tenant memory.  Each request's orchestrator
-    // gets `memory_root + "/t<tenant_id>"` so /mem read/write for tenant A
-    // can never see tenant B's notes.  Created on-demand by the memory
-    // commands; empty memory is an empty dir, not an error.
+    // Parent directory for tenant memory. In single-tenant mode every
+    // request resolves to one primary tenant subdir under this root.
     std::string memory_root;
 
     std::map<std::string, std::string> api_keys;   // provider name → key
@@ -97,7 +89,7 @@ struct ApiServerOptions {
     bool        host_exec_enabled = false;    // true → /exec via popen() on host; see --allow-host-exec
     size_t      file_max_bytes    = 10 * 1024 * 1024;   // per-response cap
 
-    // ── Per-tenant sandbox ───────────────────────────────────────────
+    // ── Sandbox ──────────────────────────────────────────────────────
     // When `sandbox_enabled` is true and the runtime + image are
     // available, /v1/orchestrate wires a per-tenant container that
     // confines /exec to a workspace volume and lets /write + /read
@@ -140,7 +132,7 @@ struct ApiServerOptions {
     ProviderCircuitBreaker* circuit_breaker = nullptr;
 
     // Plaintext admin token for /v1/admin/*.  Empty ⇒ admin endpoints
-    // return 503 (disabled).  `cmd_api` loads/generates this before
+    // return 503 (disabled). `cmd_api` loads/generates this before
     // constructing the server.
     std::string admin_token;
 
@@ -239,11 +231,10 @@ private:
     // each newly-persisted event as it lands.  Always constructed; the
     // SSE writer publishes here whenever persistence is wired.
     std::unique_ptr<RequestEventBus> request_events_;
-    // Per-tenant rate / concurrency limiter.  Always constructed (defaults
-    // come from env at startup); a zeroed config means "unlimited" so
-    // operators not using this surface pay no cost.
+    // Per-tenant rate / concurrency limiter. Single-tenant mode still
+    // uses this path keyed by the primary tenant id.
     std::unique_ptr<TenantLimiter>   limiter_;
-    // Per-tenant /exec sandbox.  Constructed iff opts.sandbox_enabled
+    // /exec sandbox.  Constructed iff opts.sandbox_enabled
     // AND usable() — null otherwise.  When null, /exec falls back to
     // the legacy disabled behaviour (cmd_exec gated by exec_disabled).
     std::unique_ptr<SandboxManager>  sandbox_;
