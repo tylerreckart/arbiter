@@ -135,10 +135,33 @@ Old `TUI` / `ScrollBuffer` / `LineEditor` remain until parity; compile-time flag
 
 **Exit criteria:** standalone binary or `arbiter --tui-spike` renders alt-screen box + static text + clean shutdown on resize.
 
-- [ ] Submodule + CMake build of `libopentui`
-- [ ] C++ `OpenTuiEngine` wrapping `createRenderer` / `destroyRenderer`
-- [ ] Log callback bridged to stderr (OpenTUI has no console in raw TTY)
-- [ ] Document Zig version pin in this file
+**Zig pin:** OpenTUI `.zig-version` → **0.15.2** (system `zig` 0.16.x will not build the core).
+
+**Build spike:**
+
+```bash
+cmake -B build -DARBITER_ENABLE_OPENTUI=ON \
+  -DARBITER_OPENTUI_ROOT=$HOME/dev/opentui \
+  -DARBITER_ZIG_EXECUTABLE=$PATH/to/zig-0.15.2
+cmake --build build
+./build/arbiter --tui-spike
+```
+
+**Prebuilt fallback** (when `zig build` is unavailable, e.g. host OS newer than Zig 0.15.2 supports):
+
+```bash
+npm i @opentui/core-darwin-arm64@0.4.2   # or matching platform package
+cmake -B build -DARBITER_ENABLE_OPENTUI=ON \
+  -DARBITER_OPENTUI_LIBRARY=$PWD/node_modules/@opentui/core-darwin-arm64/libopentui.dylib
+cmake --build build
+```
+
+- [x] CMake build of `libopentui` (`cmake/BuildOpenTUI.cmake`, `-DARBITER_ENABLE_OPENTUI=ON`)
+- [x] C++ `opentui::Engine` wrapping `createRenderer` / `destroyRenderer` (`include/tui/opentui/engine.h`)
+- [x] Log callback bridged to stderr (`engine.cpp`)
+- [x] Document Zig version pin in this file
+- [x] `arbiter --tui-spike` alt-screen demo (`src/tui/opentui/spike.cpp`)
+- [ ] Git submodule for `third_party/opentui` (optional; default path `$HOME/dev/opentui`)
 
 ### Phase 1 — Scrollback replacement (1 week)
 
