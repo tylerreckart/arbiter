@@ -21,8 +21,7 @@ arbiter --api [--port N] [--bind ADDR] [--verbose]
 5. Loads the optional MCP registry from `~/.arbiter/mcp_servers.json`. See [`docs/concepts/mcp.md`](../concepts/mcp.md).
 6. Loads the optional A2A remote-agent registry from `~/.arbiter/a2a_agents.json`. See [a2a-agents.md](a2a-agents.md).
 7. Reads optional web-search provider config from `ARBITER_SEARCH_PROVIDER` / `ARBITER_SEARCH_API_KEY` (or `BRAVE_SEARCH_API_KEY` as a convenience fallback).
-8. Reads optional billing-service URL from `ARBITER_BILLING_URL`. Unset = no eligibility checks, no usage record posting; provider keys go through directly with no caps.
-9. Reads optional sandbox config from `ARBITER_SANDBOX_IMAGE` (and the rest of the `ARBITER_SANDBOX_*` set). When configured and usable, a per-tenant Docker sandbox is built so `/exec` runs inside a `/workspace` volume shared with `/write` and `/read`. See [`docs/concepts/sandbox.md`](../concepts/sandbox.md). When the sandbox isn't wired or fails its usability check, `/exec` stays disabled — the safe default for an exposed API server.
+8. Reads optional sandbox config from `ARBITER_SANDBOX_IMAGE` (and the rest of the `ARBITER_SANDBOX_*` set). When configured and usable, a per-tenant Docker sandbox is built so `/exec` runs inside a `/workspace` volume shared with `/write` and `/read`. See [`docs/concepts/sandbox.md`](../concepts/sandbox.md). When the sandbox isn't wired or fails its usability check, `/exec` stays disabled — the safe default for an exposed API server.
 10. Clears the terminal (ANSI `\033[2J\033[3J\033[H`) and prints the banner + endpoint summary at row 1, so the bind address and admin-token lines anchor at the top of a clean screen instead of chasing prior shell history.
 11. Binds the listen socket and starts accepting requests.
 
@@ -49,10 +48,6 @@ The HTTP surface is documented in detail in [`docs/api/`](../api/index.md). Quic
 ## Tenant identity
 
 Every authenticated request carries `Authorization: Bearer <token>` where the token was issued by `arbiter --add-tenant <name>`. Tokens are stored hashed (SHA-256) in `~/.arbiter/tenants.db`; the plaintext is shown exactly once at provisioning time. See [tenants.md](tenants.md).
-
-## Billing
-
-Optional. When `ARBITER_BILLING_URL` is set, the runtime exchanges every bearer for a workspace_id via `POST /v1/runtime/auth/validate`, pre-flights against `POST /v1/runtime/quota/check`, and posts post-turn telemetry to `POST /v1/runtime/usage/record`. With the env var unset, the runtime acts as a thin pass-through using the operator-supplied provider keys, with no eligibility checks. Operators wanting a commercial deployment must implement the runtime's billing protocol against a service of their own choosing — arbiter ships no reference implementation in this repository.
 
 ## Logging
 

@@ -4,7 +4,7 @@ Two token kinds, both presented as `Authorization: Bearer TOKEN`:
 
 | Prefix  | Purpose | Endpoints |
 |---------|---------|-----------|
-| `atr_…` | **Tenant token** — drives `/v1/orchestrate`, meters against the tenant's cap and ledger. | All non-admin `/v1/*` routes |
+| `atr_…` | **Tenant token** — drives `/v1/orchestrate` and all non-admin routes. | All non-admin `/v1/*` routes |
 | `adm_…` | **Admin token** — read/write tenants and usage data. | `/v1/admin/*` |
 
 Cross-presentation is rejected: an admin token on `/v1/orchestrate` returns `401`, and a tenant token on an admin route returns `401`.

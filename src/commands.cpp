@@ -35,11 +35,7 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
     std::vector<AgentCommand> result;
     std::istringstream ss(response);
     std::string line;
-    // Track open code fence by its exact opening sequence ("```" or "~~~").
-    // A fence only closes when a line starts with the same sequence that
-    // opened it — mismatched pairs don't cross-close and can't be used to
-    // escape a block mid-stream.  Empty = not currently inside a fence.
-    std::string current_fence;
+    std::string current_fence; // tracks open ``` or ~~~; closes only on matching sequence
 
     while (std::getline(ss, line)) {
         // Track code fences (``` or ~~~), matched by opening sequence.
@@ -80,15 +76,12 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
         } else if (line.size() > 6 && line.substr(0, 6) == "/read ") {
-            // /read <path> — read this conversation's persisted artifact.
             AgentCommand cmd;
             cmd.name = "read";
             cmd.args = line.substr(6);
             if (!cmd.args.empty()) result.push_back(std::move(cmd));
 
         } else if (line == "/list") {
-            // /list — list this conversation's persisted artifacts.
-            // No-arg command; the args field stays empty.
             AgentCommand cmd;
             cmd.name = "list";
             result.push_back(std::move(cmd));

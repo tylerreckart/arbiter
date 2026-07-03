@@ -231,7 +231,7 @@ What it does not protect against:
 - **Container escapes.** The standard Docker threat model. Run arbiter on a kernel you trust, behind a daemon you trust. CVE-tracking is your responsibility.
 - **Cross-conversation leakage *within* a tenant.** The workspace is tenant-scoped, not conversation-scoped. An agent that writes a secret in conversation A can read it back in conversation B as the same tenant. Use the persistent artifact store for conversation-scoped storage.
 - **Image content.** If the image contains a backdoor or vulnerable binaries, the sandbox happily runs them. Pin tags, scan images, treat the registry as part of your supply chain.
-- **Cost from `/exec`.** Sandbox CPU/memory consumption isn't currently surfaced to the billing service. Agent token cost is billed as normal; container compute is operator infrastructure.
+- **Cost from `/exec`.** Sandbox CPU/memory consumption is not metered by arbiter. Agent token cost is tracked via `token_usage` events; container compute is operator infrastructure.
 
 ## See also
 

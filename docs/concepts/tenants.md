@@ -5,8 +5,6 @@ A **tenant** is a named identity tied to a single API token. Each carries:
 - An opaque API token (shown once at creation, stored only as a SHA-256 digest).
 - A `disabled` flag for admin kill-switches.
 
-Billing — eligibility checks, rate cards, caps, credits, invoicing — is delegated to an external billing service when `ARBITER_BILLING_URL` is configured. The runtime tenant has no money fields of its own; the matching billing-service workspace_id is resolved per request via `POST /v1/runtime/auth/validate` and cached.
-
 ## Provisioning
 
 Two paths to create a tenant:
@@ -14,7 +12,7 @@ Two paths to create a tenant:
 - HTTP: [`POST /v1/admin/tenants`](../api/admin/tenants-create.md) (admin auth required).
 - CLI: `arbiter --add-tenant <name>`.
 
-Both return the plaintext token exactly once. The DB stores only the digest — if a token is lost, issue a new one. Provision the matching workspace + token in your billing service separately, then hand the runtime the same `atr_…` bearer.
+Both return the plaintext token exactly once. The DB stores only the digest — if a token is lost, issue a new one.
 
 ## Authentication
 

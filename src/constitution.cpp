@@ -9,21 +9,11 @@
 
 namespace arbiter {
 
-// Capability bundles — opt-in groups of slash commands and the rules that
-// govern them.  An agent's `capabilities` vector (e.g. {"/search", "/mem"})
-// resolves to a set of bundle names (e.g. {"web", "mem"}); the prompt
-// composer emits ONLY the inventory + rules for enabled bundles, keeping
-// the per-turn token cost proportional to what the agent actually uses.
-//
-// Empty `capabilities` means "all bundles" — back-compat for the master
-// orchestrator and any agent definition that pre-dates this split.
+// Maps capabilities (e.g. {"/search", "/mem"}) to bundle names (e.g. {"web", "mem"}).
+// Empty capabilities = all bundles (back-compat for agents predating the split).
 static std::set<std::string> resolve_bundles(
         const std::vector<std::string>& capabilities) {
-    // The empty-capabilities default covers the legacy monolithic prompt's
-    // surface (master orchestrator + any agent_def predating the split).
-    // `mcp` is intentionally excluded: it was never in the legacy prompt,
-    // so adding it on the empty path would silently expand the master's
-    // prompt.  Agents that want /mcp must list it explicitly.
+    // `mcp` excluded from default: was never in the legacy prompt; must be listed explicitly.
     static const std::set<std::string> kDefaultBundles = {
         "web", "exec", "write", "read", "mem", "delegation", "todos"
     };
@@ -125,10 +115,6 @@ static std::string prompt_core_voice(Brevity level) {
 }
 
 // ─── Per-bundle inventory rows (the COMMANDS list) ────────────────────────────
-//
-// Each helper returns the slash-DSL inventory rows for one capability bundle.
-// They are concatenated in a fixed order by the composer, matching the order
-// agents see them in the legacy monolithic prompt.
 
 static const char* bundle_web_inventory() {
     return
@@ -219,10 +205,6 @@ static const char* bundle_mcp_inventory() {
 }
 
 // ─── Per-bundle COMMAND RULES bullets ─────────────────────────────────────────
-//
-// The "BE PROACTIVE about the structured graph" + artifact-pairing patterns
-// require multiple bundles to be relevant; the composer gates them on the
-// joint condition.
 
 static std::string compose_command_rules(const std::set<std::string>& b) {
     std::string s = "\nCOMMAND RULES:\n";
@@ -394,11 +376,6 @@ static std::string compose_help_inventory(const std::set<std::string>& b) {
 }
 
 // ─── Composer ─────────────────────────────────────────────────────────────────
-//
-// Builds the arbiter system prompt by emitting always-on sections plus
-// only the bundles requested.  Bundle order matches the legacy monolithic
-// prompt (web → exec → delegation → write → read → mem → mcp) so the cache
-// breakpoints stay aligned for agents that previously had the full prompt.
 
 static std::string arbiter_prompt(Brevity level,
                                    const std::set<std::string>& bundles) {
@@ -550,16 +527,8 @@ static std::string planner_prompt() {
         "- After writing the plan, confirm the file path in your response.\n";
 }
 
-// Weak-executor prompt profile.  Used when the agent's `model` points at a
-// non-Anthropic provider (currently any ollama/* target).  Small local
-// instruction-tuned models ignore abstract guidance about "when to use
-// tools" — they need the tool vocabulary leading the prompt, concrete
-// examples showing correct emission, and less competition from meta
-// guidance (brevity levels, index voice, etc.) they don't translate well.
-// The weak profile drops Layer 1's mode-based base prompt entirely and
-// leads with commands, an /advise example (when an advisor is configured),
-// then identity + rules.  Layer 4's advisor block is merged inline so the
-// model sees the tool description right next to the example that uses it.
+// Simplified prompt for weak local models (ollama/*): leads with commands and examples
+// rather than abstract guidance, which small instruction-tuned models tend to ignore.
 static std::string weak_executor_prompt(const Constitution& c) {
     std::ostringstream ss;
 

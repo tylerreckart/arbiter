@@ -182,22 +182,8 @@ void cmd_init(bool force) {
 
 void cmd_api(int port, const std::string& bind, bool verbose,
              bool allow_host_exec) {
-    // Pick up ARBITER_LOG_FORMAT before any of the startup-path log
-    // calls fire — structured JSON deployments expect every line on
-    // stderr to be machine-parseable.
     Logger::global().init_from_env();
 
-    // HTTP+SSE orchestration endpoint.  Spins up a fresh Orchestrator per
-    // request with /exec disabled and /write intercepted so any file the
-    // agent produces is streamed to the client rather than landing on the
-    // server disk.
-    //
-    // Tenant identity (tokens, conversations, artifacts, scratchpad)
-    // runs through TenantStore (`~/.arbiter/tenants.db`).  Eligibility
-    // and per-turn billing are delegated to an external billing service
-    // when $ARBITER_BILLING_URL is set; otherwise the runtime routes
-    // every authenticated request through to the configured provider
-    // keys with no cap enforcement.
     std::string dir = get_config_dir();
     auto api_keys = get_api_keys();
 
@@ -212,9 +198,6 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     bool fresh_admin = false;
     std::string admin_token = resolve_admin_token(dir, fresh_admin);
 
-    // Verbose logging: explicit --verbose flag wins; otherwise honour
-    // ARBITER_API_VERBOSE=1 so an operator running under systemd can flip
-    // logging on without restarting with new args.
     bool log_verbose = verbose;
     if (!log_verbose) {
         if (const char* e = std::getenv("ARBITER_API_VERBOSE"))
@@ -267,20 +250,7 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     } else if (const char* k = std::getenv("BRAVE_SEARCH_API_KEY"); k && *k) {
         opts.search_api_key = k;
     }
-    // External billing host.  Empty ⇒ no billing; requests pass
-    // through to the configured provider keys.  See ApiServerOptions.
-    if (const char* q = std::getenv("ARBITER_BILLING_URL"); q && *q) {
-        opts.billing_url = q;
-    }
-
     // ── Per-tenant sandbox ───────────────────────────────────────────
-    // Off by default.  Setting ARBITER_SANDBOX_IMAGE flips the feature
-    // on; remaining knobs override SandboxConfig defaults.  ApiServer's
-    // ctor logs the chosen config on success or the failure reason on
-    // graceful degradation, so operators see immediately whether /exec
-    // is wired.  When the sandbox is unusable at runtime (docker
-    // missing, image pull failed) the server keeps running with /exec
-    // disabled — same surface SaaS deploys have always had.
     if (const char* img = std::getenv("ARBITER_SANDBOX_IMAGE"); img && *img) {
         opts.sandbox_enabled         = true;
         opts.sandbox_image           = img;
@@ -323,16 +293,6 @@ void cmd_api(int port, const std::string& bind, bool verbose,
         std::exit(1);
     }
 
-    // Reset the terminal so the banner anchors at row 1.  ANSI sequence:
-    //   \033[2J  — erase entire screen
-    //   \033[H   — cursor home (1,1)
-    // We deliberately do NOT emit `\033[3J` (erase scrollback) here:
-    // ApiServer's ctor logs operational events (sandbox enabled/disabled,
-    // recovery sweep) to stderr BEFORE we get to this point, and wiping
-    // scrollback was burying them.  The banner re-renders sandbox
-    // status below so operators don't have to scroll up to find it; the
-    // remaining ctor logs (recovery sweep, errors) stay in scrollback
-    // for forensic spelunking.
     std::cout << "\033[2J\033[H";
 
     std::cout << BANNER;
@@ -345,11 +305,6 @@ void cmd_api(int port, const std::string& bind, bool verbose,
                                                 "(use --verbose for streamed deltas)")
               << "\n";
 
-    // Sandbox status — re-rendered here because the ctor's stderr log
-    // landed pre-screen-clear.  Three cases:
-    //   * Not requested (no ARBITER_SANDBOX_IMAGE)  → no line.
-    //   * Requested + usable                        → image / network / caps.
-    //   * Requested + unusable                      → reason verbatim.
     if (auto* sb = server.sandbox_manager()) {
         if (sb->usable()) {
             const auto& sc = sb->config();

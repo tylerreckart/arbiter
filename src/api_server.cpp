@@ -18,7 +18,6 @@
 #include "a2a/server.h"
 #include "mcp/manager.h"
 #include "orchestrator.h"
-#include "billing_client.h"
 #include "notification_bus.h"
 #include "request_event_bus.h"
 #include "schedule_parser.h"
@@ -76,9 +75,7 @@ namespace {
 
 // ─── Socket helpers ──────────────────────────────────────────────────────────
 
-// Write the full buffer or fail silently (caller closes on error).  Uses
-// MSG_NOSIGNAL on Linux; on macOS SO_NOSIGPIPE would be cleaner but
-// MSG_NOSIGNAL is not available — we just accept EPIPE as "client gone".
+// Write the full buffer or fail silently on EPIPE.
 void write_all(int fd, const char* data, size_t n) {
 #ifdef MSG_NOSIGNAL
     int flags = MSG_NOSIGNAL;
@@ -101,9 +98,7 @@ struct HttpRequest {
     std::string method;     // "GET", "POST"
     std::string path;       // "/v1/orchestrate"
     std::string version;    // "HTTP/1.1"
-    // Header name is stored lowercase because HTTP headers are case-
-    // insensitive; callers look up by the canonical lowercase key.
-    std::map<std::string, std::string> headers;
+    std::map<std::string, std::string> headers; // canonical lowercase keys
     std::string body;
 };
 
@@ -112,10 +107,7 @@ std::string to_lower(std::string s) {
     return s;
 }
 
-// Read from `fd` until we see CRLFCRLF or the buffer exceeds a hard cap.
-// Bytes read past the sentinel belong to the body and are returned via
-// `leftover` so the body reader can consume them before touching the
-// socket again.
+// Read headers up to CRLFCRLF; excess bytes go into `leftover` for the body reader.
 bool read_http_headers(int fd, std::string& headers, std::string& leftover) {
     static constexpr size_t kMaxHeaderSize = 64 * 1024;
     static constexpr char kSentinel[] = "\r\n\r\n";
@@ -267,11 +259,6 @@ void write_json_response(int fd, int code, std::shared_ptr<JsonValue> body) {
     write_all(fd, ss.str());
 }
 
-// 429 Too Many Requests with Retry-After.  Used by the per-tenant
-// limiter when an expensive route (orchestrate, conversation messages,
-// agent chat, A2A dispatch) is denied.  `reason` distinguishes
-// concurrency exhaustion from rate-bucket exhaustion in the body —
-// callers can branch on it without parsing the human string.
 void write_429_response(int fd, int retry_after_seconds, const char* reason,
                          Metrics* metrics = nullptr, int64_t tenant_id = 0) {
     if (metrics) metrics->inc_rate_limited(tenant_id, reason);
@@ -294,9 +281,6 @@ void write_429_response(int fd, int retry_after_seconds, const char* reason,
 
 namespace {
 
-// CORS preflight response — 204 No Content + headers.  Browsers fire this
-// ahead of any non-simple request (custom headers like Authorization, or
-// PATCH/DELETE methods); answering it fast keeps perceived latency low.
 void write_preflight_response(int fd) {
     std::ostringstream ss;
     ss << "HTTP/1.1 204 No Content\r\n"
@@ -337,12 +321,7 @@ public:
         start_heartbeat_locked();
     }
 
-    // Wire up durable persistence.  Each subsequent emit mirrors to
-    // request_events (text events are coalesced into ~2 KB chunks
-    // before persistence; other events persist 1:1) and broadcasts to
-    // any RequestEventBus subscribers.  Borrowed pointers must outlive
-    // this stream — typical lifetime is the request handler stack
-    // frame.
+    // Pointers must outlive this stream (typically the request handler stack frame).
     void set_persistence(TenantStore* ts, RequestEventBus* bus,
                           int64_t tenant_id, std::string request_id) {
         std::lock_guard<std::mutex> lk(mu_);
@@ -356,9 +335,6 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         if (closed_) return;
         std::string payload = data ? json_serialize(*data) : "{}";
-        // Wire write is always immediate and uncoalesced — clients see
-        // each delta as it arrives.  Persistence is batched per the
-        // operator's choice.
         std::string frame = "event: " + event + "\ndata: " + payload + "\n\n";
         write_all(fd_, frame);
         last_write_ = std::chrono::steady_clock::now();
@@ -372,10 +348,6 @@ public:
         }
     }
 
-    // Flush any pending coalesced text and stop persisting / broadcasting.
-    // Called by handle_orchestrate's finalisation code.  Wire-side close
-    // is independent — closing the stream just stops accepting further
-    // events, it doesn't shut the fd.
     void close() {
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -383,17 +355,11 @@ public:
             flush_pending_text_locked();
             closed_ = true;
         }
-        // Wake the heartbeat thread so it observes `closed_` and exits.
-        // Joining happens in the destructor; close() shouldn't block on a
-        // 5s wait_for cycle.
-        hb_cv_.notify_all();
+        hb_cv_.notify_all(); // wake heartbeat thread; join deferred to destructor
     }
 
 private:
-    // Spawn the heartbeat thread.  Called from write_headers under mu_.
-    // The thread writes `: heartbeat\n\n` (an SSE comment, ignored by
-    // clients but keeps TCP alive past idle-killing proxies) whenever
-    // it's been more than kHeartbeatSeconds since the last wire write.
+    // Writes `: heartbeat\n\n` (SSE comment) when idle, to keep TCP alive past proxies.
     void start_heartbeat_locked() {
         if (hb_thread_.joinable()) return;
         hb_thread_ = std::thread([this]() {
@@ -405,10 +371,6 @@ private:
                 auto now = clock::now();
                 if (now - last_write_ < std::chrono::seconds(kHeartbeatSeconds))
                     continue;
-                // Wire write is fast for 14 bytes — keep the lock to
-                // serialize against emit().  If the client is wedged
-                // and write_all blocks, the connection thread is also
-                // wedged; the drain deadline will eventually SIGKILL us.
                 static const std::string kHb = ": heartbeat\n\n";
                 write_all(fd_, kHb);
                 last_write_ = now;
@@ -434,10 +396,7 @@ private:
                                        persist_request_id_,
                                        seq_, kind, payload_json);
         } catch (...) {
-            // Persistence is best-effort.  Failure (typically a
-            // duplicate seq from a concurrent path, or a transient
-            // SQLite busy) shouldn't kill the live wire stream.
-            return;
+            return; // persistence is best-effort; don't kill the wire stream
         }
         if (bus_) {
             RequestEventEnvelope env;
@@ -986,9 +945,8 @@ private:
 
     // Emit one text/thinking line in the column layout: streamed text
     // Rough cost estimate in USD for the demo log.  Sonnet-equivalent
-    // pricing ($3/M input, $15/M output) — the actual ledger lives in
-    // the billing service.  Returns 0 when no tokens were used so the
-    // caller can fall back to a tokens display.
+    // pricing ($3/M input, $15/M output).  Returns 0 when no tokens
+    // were used so the caller can fall back to a tokens display.
     static double estimate_cost(double in_tokens, double out_tokens) {
         if (in_tokens <= 0 && out_tokens <= 0) return 0.0;
         return (in_tokens / 1'000'000.0) * 3.0
@@ -1037,9 +995,8 @@ void emit_error(SseStream& sse, const std::string& msg) {
 
 // ─── Admin endpoints ────────────────────────────────────────────────────────
 //
-// All admin routes are JSON-in, JSON-out.  Billing has moved to
-// the billing service — this surface only manages tenant identity and the
-// per-tenant access tokens used by the runtime hot path.
+// All admin routes are JSON-in, JSON-out.  This surface manages tenant
+// identity and the per-tenant access tokens used by the runtime hot path.
 
 std::shared_ptr<JsonValue> tenant_to_json(const Tenant& t) {
     auto o = jobj();
@@ -1174,8 +1131,7 @@ void handle_admin(int fd, const HttpRequest& req,
                     admin_error(fd, 400, "body must be a JSON object");
                     return;
                 }
-                // `disabled` is the only mutable field — billing-related
-                // fields have moved to the billing service.
+                // `disabled` is the only mutable field.
                 if (auto v = body->get("disabled"); v && v->is_bool()) {
                     const bool now_disabled = v->as_bool();
                     // Capture pre-update state for the audit row.  If
@@ -1287,9 +1243,6 @@ void handle_admin(int fd, const HttpRequest& req,
         return;
     }
 
-    // Usage/billing endpoints have moved to the billing service.  The runtime
-    // no longer exposes /v1/admin/usage or /v1/admin/usage/summary —
-    // the sibling billing service owns the ledger and any rollups.
     admin_error(fd, 404, "admin resource not found");
 }
 
@@ -2132,10 +2085,8 @@ void handle_conversation_messages(int fd, int64_t id, const HttpRequest& req,
 
 void handle_models_list(int fd) {
     // Static catalog of model ids the orchestrator can route to, paired
-    // with the provider that handles them.  Pricing is intentionally
-    // absent — the billing service's rate card is the source of truth for
-    // billing-grade numbers; the runtime only needs to know what
-    // routes to what provider.
+    // with the provider that handles them.  Pricing is not included;
+    // the runtime only needs to know what routes to what provider.
     struct ModelEntry { const char* id; const char* provider; };
     static constexpr ModelEntry kModels[] = {
         // Anthropic Claude
@@ -2748,12 +2699,6 @@ std::vector<MemoryEntry> rrf_fuse_rankings(
     return out;
 }
 
-// Render an epoch-seconds timestamp as YYYY-MM-DD UTC, or "" if missing.
-// Used in rerank prompt enrichment so the LLM can pick the most-recent
-// non-superseded entry on temporal/knowledge-update questions.  We
-// deliberately omit time-of-day to keep the prompt compact — day-level
-// granularity is enough to break ties between memories on different
-// dates, and most LongMemEval-style questions ground at day resolution.
 std::string format_ts_yyyymmdd(int64_t epoch_s) {
     if (epoch_s <= 0) return {};
     std::time_t t = static_cast<std::time_t>(epoch_s);
@@ -8458,8 +8403,8 @@ void handle_a2a_rpc(int fd, const std::string& agent_id,
 // caller supplied directly.  Caps each fetched image at `kImageMaxBytes`.
 //
 // `out_text` carries the flattened text view used everywhere the runtime
-// still expects a string (history persistence, billing pre-flight,
-// invoker context).  Image parts contribute zero bytes to it.
+// still expects a string (history persistence, invoker context).
+// Image parts contribute zero bytes to it.
 //
 // On success, returns true and populates out_parts + out_text.
 // On failure, returns false and writes a clear, caller-safe message into
@@ -8634,17 +8579,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         const ApiServerOptions& opts,
                         TenantStore& tenants,
                         InFlightRegistry& in_flight,
-                        // Nullable.  When non-null, drives pre-flight quota
-                        // checks and post-turn usage records — the runtime
-                        // becomes a thin gateway and the billing service owns
-                        // billing.  When null, neither call fires; the
-                        // turn runs straight through to the provider keys
-                        // configured in `opts.api_keys`.
-                        BillingClient* billing,
-                        // The billing service's workspace_id the bearer maps to
-                        // (returned from /v1/runtime/auth/validate).  Empty
-                        // when `billing` is null.
-                        const std::string& workspace_id,
                         const Tenant& tenant_in,
                         // Optional per-request event bus.  Non-null ⇒ the
                         // SSE writer mirrors every event to request_events
@@ -9322,42 +9256,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             stamp(p);
             emit("tool_call", p);
         });
-    // Per-turn telemetry.  Direct billing has been pulled out of the
-    // runtime — the billing service (when configured) is the source of truth
-    // for cost accounting, cap enforcement, and credit consumption.
-    // The runtime no longer prices turns locally; the SSE event carries
-    // raw token counts and the model id, and the billing service's
-    // `usage/record` endpoint settles the µ¢ figure on its side.
-    std::atomic<int> turn_counter{0};
-
     orch->set_cost_callback(
-        [&emit, &turn_counter, billing, &workspace_id,
-         &request_id, orch_ptr, stamp](const std::string& id,
-                                          const std::string& model,
-                                          const ApiResponse& resp) {
-            // Per-turn idempotency key for the billing service.  The runtime's
-            // request_id covers the whole orchestration (master + delegated
-            // sub-agents); each cost-callback firing is one logical LLM
-            // turn, so we suffix a counter to give the billing service a stable
-            // unique id per turn that survives a retry of *that* turn.
-            const int turn_idx = turn_counter.fetch_add(1);
-            const std::string turn_request_id =
-                request_id + "-t" + std::to_string(turn_idx);
-
-            if (billing && billing->enabled() &&
-                !workspace_id.empty()) {
-                BillingClient::UsageRecord ur;
-                ur.request_id    = turn_request_id;
-                ur.workspace_id  = workspace_id;
-                ur.model         = model;
-                ur.input_tokens  = resp.input_tokens;
-                ur.output_tokens = resp.output_tokens;
-                ur.cached_tokens = resp.cache_read_tokens;
-                ur.agent_id      = id;
-                ur.depth         = orch_ptr->current_stream_depth();
-                billing->record_usage(ur);
-            }
-
+        [&emit, orch_ptr, stamp](const std::string& id,
+                                 const std::string& model,
+                                 const ApiResponse& resp) {
             auto p = jobj();
             auto& m = p->as_object_mut();
             m["agent"]         = jstr(id);
@@ -9411,64 +9313,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                                ? message.substr(0, 200) + "…"
                                : message);
         emit("request_received", p);
-    }
-
-    // Pre-flight quota check.  Asks the billing service
-    // whether this tenant has the budget to run the upcoming turn.  We
-    // only know the master agent's model up front (delegations may pick
-    // different models mid-stream), so the estimate is approximate;
-    // the billing service's per-turn `usage/record` callback below settles
-    // the actual cost.
-    //
-    // Skipped entirely when the billing service is not configured — the
-    // runtime then becomes a thin pass-through to the operator-supplied
-    // provider keys with no cap enforcement, per the documented escape
-    // hatch in `ApiServerOptions::billing_url`.
-    if (billing && billing->enabled() && !workspace_id.empty()) {
-        // Best-effort model: prefer the inline agent_def's declared
-        // model so quota_check prices against the right rate card; fall
-        // back to a representative default when no agent_def is present
-        // (e.g. resolved-by-id catalog agent — the billing service will treat
-        // an unknown model as priced-at-zero, which is acceptable for
-        // the budget *check* though not for `usage/record`).
-        const std::string preflight_model =
-            parsed_cfg ? parsed_cfg->model : std::string("claude-sonnet-4-6");
-
-        // Conservative input estimate: ~3 chars/token rounds the count
-        // up vs the 4-chars/token typical, so we err on the side of
-        // declining a request that would be on the edge.  Output budget
-        // is a fixed 4096-token cap; the agent rarely exceeds that and
-        // overshooting only matters at the tenant's cap edge.
-        const int est_in  = static_cast<int>(message.size() / 3);
-        const int est_out = 4096;
-
-        auto qr = billing->check_quota(workspace_id, preflight_model,
-                                              est_in, est_out, request_id);
-        if (qr.ok && !qr.allow) {
-            auto e = jobj();
-            auto& em = e->as_object_mut();
-            em["message"] = jstr(qr.message.empty()
-                                 ? std::string("request denied by billing service")
-                                 : qr.message);
-            if (!qr.reason.empty()) em["reason"] = jstr(qr.reason);
-            em["estimated_cost_micro_cents"] =
-                jnum(static_cast<double>(qr.estimated_cost_uc));
-            if (qr.plan_remaining_uc >= 0)
-                em["plan_remaining_micro_cents"] =
-                    jnum(static_cast<double>(qr.plan_remaining_uc));
-            em["credit_balance_micro_cents"] =
-                jnum(static_cast<double>(qr.credit_balance_uc));
-            if (qr.total_budget_uc >= 0)
-                em["total_budget_micro_cents"] =
-                    jnum(static_cast<double>(qr.total_budget_uc));
-            emit("error", e);
-            sse.close();
-            return;
-        }
-        // Transport errors (qr.ok=false) fall through — fail open so a
-        // billing-service blip doesn't take the runtime offline.  An
-        // operator alert on the billing service availability is the right
-        // place to act on this.
     }
 
     // The master agent's own streamed text arrives with /cmd lines
@@ -9578,9 +9422,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         m["output_tokens"] = jnum(static_cast<double>(resp.output_tokens));
         m["files_bytes"]   = jnum(static_cast<double>(bytes_captured.load()));
 
-        // No local cost figure on the runtime side — the billing service's
-        // ledger is authoritative for the billed amount.  Consumers
-        // wanting a request-level total query the billing service directly.
         m["tenant_id"]   = jnum(static_cast<double>(tenant.id));
         m["request_id"]  = jstr(request_id);
         if (conversation_id > 0)
@@ -9666,8 +9507,6 @@ void handle_event_ingest(int fd, HttpRequest req,
                                  const ApiServerOptions& opts,
                                  TenantStore& tenants,
                                  InFlightRegistry& in_flight,
-                                 BillingClient* billing,
-                                 const std::string& workspace_id,
                                  const Tenant& tenant,
                                  RequestEventBus* request_events) {
     if (req.method != "POST") {
@@ -9714,14 +9553,14 @@ void handle_event_ingest(int fd, HttpRequest req,
 
     // Rewrite request body as orchestrate format and delegate.
     // handle_orchestrate reads req.body["message"] and uses agent_override
-    // to target the routed agent; everything else (SSE, auth, billing,
-    // writ execution) flows through the existing path unchanged.
+    // to target the routed agent; everything else (SSE, auth, writ execution)
+    // flows through the existing path unchanged.
     auto synth = jobj();
     synth->as_object_mut()["message"] = jstr(message);
     req.body = json_serialize(*synth);
 
     handle_orchestrate(fd, req, opts, tenants, in_flight,
-                       billing, workspace_id, tenant,
+                       tenant,
                        request_events,
                        /*agent_override=*/agent_id);
 }
@@ -9730,10 +9569,6 @@ void handle_event_ingest(int fd, HttpRequest req,
 
 ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     : opts_(std::move(opts)), tenants_(tenants) {
-    if (!opts_.billing_url.empty()) {
-        billing_ = std::make_unique<BillingClient>(
-            opts_.billing_url);
-    }
     notifications_   = std::make_unique<NotificationBus>();
     request_events_  = std::make_unique<RequestEventBus>();
     scheduler_       = std::make_unique<Scheduler>(
@@ -10125,33 +9960,6 @@ void ApiServer::handle_connection(int fd) {
         return;
     }
 
-    // the billing service gate.  When billing is configured, every authenticated
-    // request goes through /v1/runtime/auth/validate so a back-office
-    // suspension or revocation lands within the cached TTL window.  A
-    // transport-error to the billing service fails open — we'd rather bill
-    // imperfectly than brick the runtime on a single-service outage.
-    std::string workspace_id;
-    if (billing_ && billing_->enabled()) {
-        auto av = billing_->validate(token);
-        if (av.ok) {
-            workspace_id = av.workspace_id;
-        } else if (av.http_status == 401) {
-            write_plain_response(fd, 401, "Unauthorized",
-                                 "billing service rejected token\n");
-            return;
-        } else if (av.http_status == 403) {
-            write_plain_response(fd, 403, "Forbidden",
-                                 av.message.empty()
-                                     ? "tenant not active\n"
-                                     : (av.message + "\n"));
-            return;
-        }
-        // Anything else (transport_error, 5xx, malformed) falls through —
-        // workspace_id stays empty, so downstream quota_check sees an
-        // unknown workspace and the BillingClient's own
-        // fail-open path keeps the request flowing.
-    }
-
     if (req.method == "POST" && req.path == "/v1/orchestrate") {
         auto lim = limiter_->acquire(tenant->id);
         if (!lim.granted()) {
@@ -10164,7 +9972,7 @@ void ApiServer::handle_connection(int fd) {
         }
         // lim.guard releases the in-flight slot when this scope exits.
         handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
-                           billing_.get(), workspace_id, *tenant,
+                           *tenant,
                            request_events_.get());
         return;
     }
@@ -10256,8 +10064,7 @@ void ApiServer::handle_connection(int fd) {
                 if (req.method == "GET")
                     return handle_conversation_messages(fd, id, req, tenants_, *tenant);
                 // POST routes through handle_orchestrate with conversation_id
-                // set — same SSE pipeline + billing, but the agent's
-                // history is hydrated from prior messages and the
+                // set; history is hydrated from prior messages and the
                 // user/assistant pair is persisted around the call.
                 if (req.method == "POST") {
                     auto conv = tenants_.get_conversation(tenant->id, id);
@@ -10277,7 +10084,6 @@ void ApiServer::handle_connection(int fd) {
                         return;
                     }
                     handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
-                                        billing_.get(), workspace_id,
                                         *tenant,
                                         request_events_.get(),
                                         /*agent_override=*/conv->agent_id,
@@ -10469,7 +10275,6 @@ void ApiServer::handle_connection(int fd) {
                     return;
                 }
                 handle_orchestrate(fd, req, opts_, tenants_, in_flight_,
-                                    billing_.get(), workspace_id,
                                     *tenant,
                                     request_events_.get(),
                                     segs[2]);
@@ -10783,7 +10588,7 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             return handle_event_ingest(fd, req, opts_, tenants_, in_flight_,
-                                       billing_.get(), workspace_id, *tenant,
+                                       *tenant,
                                        request_events_.get());
         }
     }

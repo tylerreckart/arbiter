@@ -102,7 +102,6 @@ set(ARBITER_SOURCES
     src/metrics.cpp
     src/circuit_breaker.cpp
     src/logger.cpp
-    src/billing_client.cpp
     src/tenant_limiter.cpp
     src/tenant_store.cpp
     src/schedule_parser.cpp
