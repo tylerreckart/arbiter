@@ -58,8 +58,21 @@ include(${CMAKE_SOURCE_DIR}/cmake/BuildOpenTUI.cmake)
 # --- Find system deps ---
 find_package(Threads REQUIRED)
 
+include(${CMAKE_SOURCE_DIR}/cmake/HomebrewHints.cmake)
+
 # OpenSSL / LibreSSL for TLS (1.1+ required; deprecated init APIs removed)
-find_package(OpenSSL 1.1 REQUIRED)
+find_package(OpenSSL 1.1)
+if(NOT OpenSSL_FOUND)
+    if(APPLE)
+        message(FATAL_ERROR
+            "OpenSSL not found.\n"
+            "  brew install openssl@3\n"
+            "  cmake -B build -DOPENSSL_ROOT_DIR=\"$(brew --prefix openssl@3)\" ...")
+    else()
+        message(FATAL_ERROR
+            "OpenSSL not found. On Debian/Ubuntu: sudo apt install libssl-dev")
+    endif()
+endif()
 
 # libcurl for safe HTTP fetching (no shell injection via popen)
 find_package(CURL REQUIRED)
@@ -202,6 +215,9 @@ if(ARBITER_ENABLE_OPENTUI)
             "-framework CoreAudio"
             "-framework AudioToolbox"
         )
+        # Xcode 16+ ld fails linking a thin-LTO arbiter against libopentui.dylib
+        # (__dso_handle arm64_adrp_lo12 fixup). Classic ld works until Apple fixes it.
+        target_link_options(arbiter PRIVATE "-Wl,-ld_classic")
         set_target_properties(arbiter PROPERTIES
             BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
             INSTALL_RPATH "@executable_path/../lib/opentui"

@@ -135,26 +135,28 @@ Old `TUI` / `ScrollBuffer` / `LineEditor` remain until parity; compile-time flag
 
 **Exit criteria:** standalone binary or `arbiter --tui-spike` renders alt-screen box + static text + clean shutdown on resize.
 
-**Zig pin:** OpenTUI `.zig-version` → **0.15.2** (system `zig` 0.16.x will not build the core).
+**Zig pin:** OpenTUI `.zig-version` → **0.15.2** (only needed for source builds; Zig 0.15.2 often cannot run `zig build` on newer macOS).
 
-**Build spike:**
+**Build spike (macOS — npm prebuilt, default):**
 
 ```bash
-cmake -B build -DARBITER_ENABLE_OPENTUI=ON \
-  -DARBITER_OPENTUI_ROOT=$HOME/dev/opentui \
-  -DARBITER_ZIG_EXECUTABLE=$PATH/to/zig-0.15.2
+cmake -B build -DARBITER_ENABLE_OPENTUI=ON
 cmake --build build
 ./build/arbiter --tui-spike
 ```
 
-**Prebuilt fallback** (when `zig build` is unavailable, e.g. host OS newer than Zig 0.15.2 supports):
+CMake downloads `@opentui/core-darwin-arm64` into `build/opentui/libopentui.dylib` at configure time.
+
+**Source build** (Linux CI, or when prebuilts are disabled):
 
 ```bash
-npm i @opentui/core-darwin-arm64@0.4.2   # or matching platform package
 cmake -B build -DARBITER_ENABLE_OPENTUI=ON \
-  -DARBITER_OPENTUI_LIBRARY=$PWD/node_modules/@opentui/core-darwin-arm64/libopentui.dylib
+  -DARBITER_OPENTUI_USE_PREBUILT=OFF \
+  -DARBITER_OPENTUI_ROOT=$HOME/dev/opentui
 cmake --build build
 ```
+
+If you already configured with the old Zig-from-source path, wipe the cache first: `rm -rf build && cmake -B build ...`
 
 - [x] CMake build of `libopentui` (`cmake/BuildOpenTUI.cmake`, `-DARBITER_ENABLE_OPENTUI=ON`)
 - [x] C++ `opentui::Engine` wrapping `createRenderer` / `destroyRenderer` (`include/tui/opentui/engine.h`)
