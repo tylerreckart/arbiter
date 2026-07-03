@@ -5,6 +5,7 @@
 #include "theme.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 
 namespace arbiter {
@@ -258,41 +259,11 @@ std::string TUI::build_welcome_card() const {
     return card;
 }
 
-// ─── ThinkingIndicator ───────────────────────────────────────────────────────
-
-void ThinkingIndicator::start(const std::string& label) {
-    stop();
-    label_   = label;
-    running_ = true;
-    thread_  = std::thread([this]() {
-        static const char* frames[] = {
-            "\u2801", "\u2802", "\u2804", "\u2840", "\u2848", "\u2850",
-            "\u2860", "\u28C0", "\u28C1", "\u28C2", "\u28C4", "\u28CC",
-            "\u28D4", "\u28E4", "\u28E5", "\u28E6", "\u28EE", "\u28F6",
-            "\u28F7", "\u28FF", "\u287F", "\u283F", "\u281F", "\u281F",
-            "\u285B", "\u281B", "\u282B", "\u288B", "\u280B", "\u280D",
-            "\u2809", "\u2809", "\u2811", "\u2821", "\u2881"
-        };
-        static const int kFrames = sizeof(frames) / sizeof(frames[0]);
-        int i = 0;
-        while (running_.load()) {
-            if (tui_) tui_->set_status(label_ + " " + frames[i % kFrames]);
-            ++i;
-            std::this_thread::sleep_for(std::chrono::milliseconds(80));
-        }
-        if (tui_) tui_->clear_status();
-    });
-}
-
-void ThinkingIndicator::stop() {
-    running_ = false;
-    if (thread_.joinable()) thread_.join();
-}
-
-// ─── ToolCallIndicator ───────────────────────────────────────────────────────
+// ─── Braille spinner frames (shared by both indicators) ─────────────────────
 
 namespace {
-static const char* kToolFrames[] = {
+
+static const char* kSpinnerFrames[] = {
     "\u2801", "\u2802", "\u2804", "\u2840", "\u2848", "\u2850",
     "\u2860", "\u28C0", "\u28C1", "\u28C2", "\u28C4", "\u28CC",
     "\u28D4", "\u28E4", "\u28E5", "\u28E6", "\u28EE", "\u28F6",
@@ -300,43 +271,62 @@ static const char* kToolFrames[] = {
     "\u285B", "\u281B", "\u282B", "\u288B", "\u280B", "\u280D",
     "\u2809", "\u2809", "\u2811", "\u2821", "\u2881"
 };
-static constexpr int kToolFramesCount = sizeof(kToolFrames) / sizeof(kToolFrames[0]);
+static constexpr int kSpinnerFrameCount =
+    static_cast<int>(sizeof(kSpinnerFrames) / sizeof(kSpinnerFrames[0]));
+
+int spinner_frame_index() {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return static_cast<int>((ms / 80) % kSpinnerFrameCount);
 }
 
+} // namespace
+
+// ─── ThinkingIndicator ───────────────────────────────────────────────────────
+
+void ThinkingIndicator::start(const std::string& label) {
+    stop();
+    label_  = label;
+    active_ = true;
+    tick();
+}
+
+void ThinkingIndicator::stop() {
+    active_ = false;
+    if (tui_) tui_->clear_status();
+}
+
+void ThinkingIndicator::tick() {
+    if (!active_.load() || !tui_) return;
+    const int i = spinner_frame_index();
+    tui_->set_status(label_ + " " + kSpinnerFrames[i]);
+}
+
+// ─── ToolCallIndicator ───────────────────────────────────────────────────────
+
 void ToolCallIndicator::begin() {
-    if (running_.load() || thread_.joinable()) {
-        running_ = false;
-        if (thread_.joinable()) thread_.join();
-    }
-    armed_.store(true);
+    armed_  = true;
+    active_ = false;
     total_.store(0);
     failed_.store(0);
+    if (tui_) tui_->clear_pre_input_status();
 }
 
 void ToolCallIndicator::bump(const std::string& /*kind*/, bool ok) {
     if (!armed_.load()) return;
     total_.fetch_add(1);
     if (!ok) failed_.fetch_add(1);
-    if (!running_.load()) start_spinner();
-    render_status();
+    active_ = true;
+    update_status();
 }
 
-void ToolCallIndicator::start_spinner() {
-    running_ = true;
-    thread_ = std::thread([this]() {
-        while (running_.load()) {
-            render_status();
-            std::this_thread::sleep_for(std::chrono::milliseconds(80));
-        }
-    });
-}
-
-void ToolCallIndicator::render_status() {
-    if (!tui_) return;
-    static thread_local int frame = 0;
+void ToolCallIndicator::update_status() {
+    if (!tui_ || !active_.load()) return;
     const int n = total_.load();
+    if (n == 0) return;
+
     const int f = failed_.load();
-    std::string label = kToolFrames[(frame++) % kToolFramesCount];
+    std::string label = kSpinnerFrames[spinner_frame_index()];
     label += " ";
     label += std::to_string(n);
     label += " tool call";
@@ -350,11 +340,15 @@ void ToolCallIndicator::render_status() {
     tui_->set_pre_input_status(label);
 }
 
+void ToolCallIndicator::tick() {
+    if (!active_.load()) return;
+    update_status();
+}
+
 std::string ToolCallIndicator::finalize() {
     if (!armed_.load()) return "";
-    armed_ = false;
-    running_ = false;
-    if (thread_.joinable()) thread_.join();
+    armed_  = false;
+    active_ = false;
     if (tui_) tui_->clear_pre_input_status();
 
     const int n = total_.load();

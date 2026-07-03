@@ -36,16 +36,13 @@
 // main thread).  set_title() is the one exception — it holds header_mu_ so
 // the async title-generation thread can update the header safely.
 //
-// ThinkingIndicator is a thin companion: a background thread that animates a
-// "thinking..." label into the status bar until stop() is called.  It always
-// operates through TUI::set_status / TUI::clear_status so it obeys the same
-// save/restore-cursor invariants the rest of the layout relies on.
+// ThinkingIndicator animates a "thinking..." label into the status bar until
+// stop() is called.  Spinner frames advance in the output pump (no thread).
 
 #include <atomic>
 #include <functional>
 #include <mutex>
 #include <string>
-#include <thread>
 
 namespace arbiter {
 
@@ -146,10 +143,9 @@ public:
     // shift between modes.
     void set_footer_hint_visible(bool visible);
 
-    // Accent the header bottom border when this pane is the focused one in
-    // a multi-pane layout.  LayoutTree flips this on the focused leaf and
-    // off on all others after every focus or structural change.  In single
-    // pane mode the accent is not used.
+    // Accent split separators when this pane is focused in a multi-pane layout.
+    // LayoutTree flips this on the focused leaf and off on all others after
+    // every focus or structural change.  In single-pane mode it is unused.
     void set_focus_accent(bool active);
 
     // Blank the input rows of the pane (separator above input through
@@ -212,69 +208,42 @@ public:
     void erase_pane_row_pub(int row) { erase_pane_row(row); }
 };
 
-// Background spinner that updates TUI status state (frame redrawn by UI loop).
+// Background spinner that updates TUI status state (animated in the UI loop).
 class ThinkingIndicator {
 public:
     explicit ThinkingIndicator(TUI* tui = nullptr) : tui_(tui) {}
 
     void start(const std::string& label = "thinking");
     void stop();
+    void tick();
 
 private:
     TUI*              tui_ = nullptr;
     std::string       label_;
-    std::atomic<bool> running_{false};
-    std::thread       thread_;
+    std::atomic<bool> active_{false};
 };
 
-// Background spinner + counter for tool-call bursts.  When stacking mode is
-// active (Config::verbose == false), the REPL suppresses the agent's raw
-// /cmd lines from the scroll region and instead surfaces an animated
-// "⠋ N tool calls…" label on the mid-separator row just above the readline
-// (via TUI::set_pre_input_status).  finalize() prints a single summary row
-// into scrollback — ✓ if every tool call succeeded, ✗ with the fail count
-// otherwise.
-//
-// The indicator deliberately does NOT paint the header status row — that
-// slot belongs to the ThinkingIndicator, and having both spinners repaint
-// the same cell at 80 ms produced visible flashing.
-//
-// Lifecycle: begin() starts the spinner thread (idempotent on repeat
-// begin()), bump(kind, ok) records one completed call from any delegation
-// depth, finalize() stops the spinner and returns the one-line summary
-// string for the caller to push into scrollback.  All calls are thread-safe
-// — bump() is invoked from the orchestrator's exec thread while the spinner
-// thread paints the pre-input row.
+// Tool-call burst counter with a mid-separator spinner (animated in the UI loop).
 class ToolCallIndicator {
 public:
     explicit ToolCallIndicator(TUI* tui = nullptr) : tui_(tui) {}
 
-    // Arm the indicator for a new turn.  No spinner paints until bump() is
-    // called at least once — the status bar should stay clean when the
-    // agent's response contains no tool calls at all.
     void begin();
-
-    // Record one completed /cmd.  First call also starts the spinner thread.
     void bump(const std::string& kind, bool ok);
-
-    // Stop the spinner, clear the status bar, and return the scrollback
-    // summary line (or empty string if no tool calls occurred this turn).
-    // Thread-safe: finalize() joins the spinner thread before returning.
     std::string finalize();
+    void tick();
 
     int total()  const { return total_.load(); }
     int failed() const { return failed_.load(); }
 
 private:
-    void start_spinner();
-    void render_status();
+    void update_status();
 
     TUI*              tui_ = nullptr;
     std::atomic<bool> armed_{false};
-    std::atomic<bool> running_{false};
+    std::atomic<bool> active_{false};
     std::atomic<int>  total_{0};
     std::atomic<int>  failed_{0};
-    std::thread       thread_;
 };
 
 } // namespace arbiter
