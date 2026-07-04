@@ -48,7 +48,7 @@ arbiter --init --force
 
 ## What's NOT in `--init`
 
-- **API keys.** You provide those yourself — see [environment.md](environment.md) for `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc. and the `~/.arbiter/api_key` file convention.
+- **API keys.** You provide those yourself — see [environment.md](environment.md) for `OPENROUTER_API_KEY` and the `~/.arbiter/openrouter_api_key` file convention.
 - **The tenant store.** Created automatically the first time you run `--api` or `--add-tenant`. Empty until you provision a tenant.
 - **Sessions, scratchpad memory, artifact stores.** Created on demand by the relevant subsystems.
 

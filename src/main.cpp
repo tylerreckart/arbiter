@@ -1625,12 +1625,10 @@ int main(int argc, char* argv[]) {
                 "  arbiter --disable-tenant <id|name> Revoke a tenant's access\n"
                 "  arbiter --enable-tenant  <id|name> Restore a tenant's access\n\n"
                 "Environment:\n"
-                "  ANTHROPIC_API_KEY                  Claude API key\n"
-                "  OPENAI_API_KEY                     OpenAI API key\n"
+                "  OPENROUTER_API_KEY                 OpenRouter key for hosted models\n"
                 "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n"
                 "Config: ~/.arbiter/\n"
-                "  api_key                            Anthropic key file\n"
-                "  openai_api_key                     OpenAI key file\n"
+                "  openrouter_api_key                 OpenRouter key file\n"
                 "  tenants.db                         Tenant identity store (--api)\n"
                 "  agents/*.json                      Agent constitutions\n";
             return 0;

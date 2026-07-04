@@ -4,14 +4,15 @@ Every environment variable arbiter reads, what it controls, and what overrides w
 
 ## Provider keys
 
-Arbiter routes model calls through whichever provider key is set. At least one is required; multiple can coexist (different agents in `~/.arbiter/agents/*.json` can target different providers).
+Arbiter routes hosted model calls through OpenRouter. Local model calls continue
+to use Ollama when the model id starts with `ollama/`.
 
 | Variable                | Used by                              | Fallback                          |
 |-------------------------|--------------------------------------|-----------------------------------|
-| `ANTHROPIC_API_KEY`     | Any agent whose `model` is a Claude id | `~/.arbiter/api_key` file       |
-| `OPENAI_API_KEY`        | Any agent whose `model` is an OpenAI id | `~/.arbiter/openai_api_key` file |
-| `GEMINI_API_KEY`        | Any agent whose `model` is a `gemini/<…>` id | `~/.arbiter/gemini_api_key` file |
+| `OPENROUTER_API_KEY`    | Hosted models such as `openai/...`, `anthropic/...`, `google/...` | `~/.arbiter/openrouter_api_key` file |
 | `OLLAMA_HOST`           | Any agent whose `model` resolves to Ollama | `http://localhost:11434`     |
+| `ARBITER_OPENROUTER_REFERER` | Optional `HTTP-Referer` attribution header | Arbiter GitHub URL |
+| `ARBITER_OPENROUTER_TITLE` | Optional `X-OpenRouter-Title` attribution header | `Arbiter` |
 
 Env-var values take precedence over the file values. The file is read once at process start; changes during a long-running `--api` session require a restart.
 
@@ -59,7 +60,7 @@ For each setting, the order arbiter checks (first hit wins):
 
 1. **CLI flag** — `--port`, `--bind`, `--verbose`.
 2. **`ARBITER_*` env var** — preferred for arbiter-specific config.
-3. **Convention env var** — `BRAVE_SEARCH_API_KEY`, `ANTHROPIC_API_KEY`, etc.
+3. **Convention env var** — `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, etc.
 4. **`~/.arbiter/<file>`** — convenient for keys, less convenient for runtime config.
 5. **Hard-coded default** — `127.0.0.1`, `8080`, `localhost:11434`.
 
@@ -69,9 +70,7 @@ Distinct from env vars but listed here for completeness, since the env-vs-file p
 
 | Path                       | Purpose                                                              |
 |----------------------------|----------------------------------------------------------------------|
-| `api_key`                  | Anthropic API key (one line, no whitespace).                         |
-| `openai_api_key`           | OpenAI API key.                                                      |
-| `gemini_api_key`           | Google Gemini API key.                                               |
+| `openrouter_api_key`       | OpenRouter API key (one line, no whitespace).                        |
 | `admin_token`              | Admin token used by `/v1/admin/*`. Generated automatically on first `--api` launch if missing. |
 | `tenants.db`               | Tenant identity store (SQLite).                                      |
 | `agents/*.json`            | Agent constitutions.                                                 |

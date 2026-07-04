@@ -205,14 +205,14 @@ Bare minimum for a local install:
 curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
   | tar xz -C /usr/local/bin
 
-# Configure (one provider key minimum)
-export ANTHROPIC_API_KEY="sk-ant-..."
+# Configure hosted models through OpenRouter
+export OPENROUTER_API_KEY="sk-or-..."
 
 # Run
 arbiter --init   # seed ~/.arbiter/ with starter agents
 arbiter          # launch the terminal client
 ```
-Linux binary, source builds, OpenAI/Ollama keys, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md).
+Linux binary, source builds, OpenRouter/Ollama setup, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md).
 
 
 ## Examples

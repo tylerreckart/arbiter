@@ -46,10 +46,9 @@ build/arbiter --api --port 8080   # HTTP+SSE server
 build/arbiter --send <agent> "msg"  # one-shot
 ```
 
-You'll need at least one provider key — `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, or `GEMINI_API_KEY` in the environment, or saved at
-`~/.arbiter/api_key`, `~/.arbiter/openai_api_key`, or
-`~/.arbiter/gemini_api_key`.
+You'll need an OpenRouter key for hosted models — `OPENROUTER_API_KEY` in the
+environment or saved at `~/.arbiter/openrouter_api_key`. Local models can use
+Ollama with `ollama/<model>` ids.
 
 ## Project layout
 

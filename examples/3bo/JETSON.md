@@ -112,16 +112,13 @@ sudo install -m 755 build/arbiter /usr/local/bin/arbiter
 
 ### Provider API keys
 
-Arbiter reads provider keys from environment variables or files in
-`~/.arbiter/`. Set the keys for any providers the robot will use:
+Arbiter reads hosted-model keys from `OPENROUTER_API_KEY` or
+`~/.arbiter/openrouter_api_key`. Ollama stays keyless for local models:
 
 ```sh
-# Anthropic (cloud agent — required for the index/cloud path)
-echo "sk-ant-..." > ~/.arbiter/api_key
-chmod 600 ~/.arbiter/api_key
-
-# OpenAI (optional alternative cloud provider)
-# echo "sk-..." > ~/.arbiter/openai_api_key
+# OpenRouter (hosted agent path)
+echo "sk-or-..." > ~/.arbiter/openrouter_api_key
+chmod 600 ~/.arbiter/openrouter_api_key
 
 # Ollama is keyless — no file needed
 ```
@@ -129,7 +126,7 @@ chmod 600 ~/.arbiter/api_key
 Or export them as environment variables before starting the server:
 
 ```sh
-export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENROUTER_API_KEY="sk-or-..."
 ```
 
 ### First start
@@ -494,7 +491,7 @@ Wants=ollama.service
 Type=simple
 User=jetson
 EnvironmentFile=/etc/3bo/bridge.env
-Environment=ANTHROPIC_API_KEY=sk-ant-...
+Environment=OPENROUTER_API_KEY=sk-or-...
 ExecStart=/usr/local/bin/arbiter --api --bind 127.0.0.1 --port 8080
 Restart=on-failure
 RestartSec=5
@@ -504,9 +501,9 @@ WantedBy=multi-user.target
 EOF
 ```
 
-Put the Anthropic key in the `Environment=` line above, or add it to
-`/etc/3bo/bridge.env` and reference it there. Do not put provider keys in
-`~/.arbiter/api_key` when running as a system service under a different user.
+Put the OpenRouter key in the `Environment=` line above, or add it to
+`/etc/3bo/bridge.env` and reference it there. Do not put provider keys in a
+different user's `~/.arbiter/openrouter_api_key` when running as a system service.
 
 ### 3bo bridge
 
@@ -625,7 +622,7 @@ Run these steps in order. Each depends on the previous.
 ### Step 2 — Arbiter
 
 - [ ] Build Arbiter and install to `/usr/local/bin/arbiter`.
-- [ ] Write provider key to `~/.arbiter/api_key`.
+- [ ] Write provider key to `~/.arbiter/openrouter_api_key`.
 - [ ] Run `arbiter --api` once interactively; save the admin token.
 - [ ] Run `arbiter --add-tenant 3bo`; save the `atr_...` token.
 - [ ] Confirm `curl http://127.0.0.1:8080/v1/health` returns `{"status":"ok"}`.

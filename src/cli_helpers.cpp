@@ -142,27 +142,21 @@ std::string load_key(const char* env_var, const std::string& file_path) {
 }
 
 struct ProviderSetup {
-    const char* name;       // "anthropic"
-    const char* display;    // "Anthropic (Claude models)"
-    const char* key_file;   // "api_key"
-    const char* env_var;    // "ANTHROPIC_API_KEY"
+    const char* name;       // "openrouter"
+    const char* display;    // "OpenRouter (hosted models)"
+    const char* key_file;   // "openrouter_api_key"
+    const char* env_var;    // "OPENROUTER_API_KEY"
     const char* hint;       // key-format hint shown to the user
     const char* console_url;// where to grab a key
 };
 
 constexpr ProviderSetup kProviderSetups[] = {
-    { "anthropic",
-      "Anthropic (Claude models)",
-      "api_key",
-      "ANTHROPIC_API_KEY",
-      "starts with sk-ant-",
-      "https://console.anthropic.com/settings/keys" },
-    { "openai",
-      "OpenAI (GPT / o-series models)",
-      "openai_api_key",
-      "OPENAI_API_KEY",
-      "starts with sk-",
-      "https://platform.openai.com/api-keys" },
+    { "openrouter",
+      "OpenRouter (hosted models)",
+      "openrouter_api_key",
+      "OPENROUTER_API_KEY",
+      "starts with sk-or-",
+      "https://openrouter.ai/settings/keys" },
 };
 constexpr size_t kNumProviders = sizeof(kProviderSetups) / sizeof(kProviderSetups[0]);
 
@@ -170,20 +164,15 @@ constexpr size_t kNumProviders = sizeof(kProviderSetups) / sizeof(kProviderSetup
 // these by which providers the user configured.  The first entry of a given
 // provider acts as its recommended default if the user presses Enter.
 struct ModelOption {
-    const char* provider;   // "anthropic" | "openai"
+    const char* provider;   // "openrouter"
     const char* id;         // model id passed to the API router
     const char* blurb;      // one-liner shown to the user
 };
 
 constexpr ModelOption kModelOptions[] = {
-    { "anthropic", "claude-sonnet-4-6",   "Sonnet  — balanced quality/speed (recommended)" },
-    { "anthropic", "claude-haiku-4-5",    "Haiku   — fast and cheap" },
-    { "anthropic", "claude-opus-4-7",     "Opus    — highest quality, slowest" },
-    { "openai",    "openai/gpt-4.1",      "GPT-4.1 — balanced (recommended for OpenAI)" },
-    { "openai",    "openai/gpt-4o",       "GPT-4o  — flagship chat model" },
-    { "openai",    "openai/gpt-4o-mini",  "GPT-4o-mini — fast and cheap" },
-    { "openai",    "openai/gpt-5.4",      "GPT-5.4 — newest frontier model" },
-    { "openai",    "openai/o4-mini",      "o4-mini — reasoning model" },
+    { "openrouter", "~openai/gpt-latest",          "OpenAI latest — via OpenRouter (recommended)" },
+    { "openrouter", "openai/gpt-5.2",              "GPT-5.2 — via OpenRouter" },
+    { "openrouter", "google/gemini-3.1-flash-lite","Gemini Flash Lite — via OpenRouter" },
 };
 
 // Read one line from stdin with echo disabled — for API keys so they don't
@@ -370,10 +359,8 @@ std::string wizard_step_default_model(
 bool model_usable(const std::string& model,
                   const std::map<std::string, std::string>& keys) {
     if (model.empty()) return true;
-    if (model.rfind("openai/", 0) == 0) return keys.count("openai") > 0;
     if (model.rfind("ollama/", 0) == 0) return true;   // ollama is keyless
-    // Bare ids default to Anthropic in the provider registry.
-    return keys.count("anthropic") > 0;
+    return keys.count("openrouter") > 0;
 }
 
 // Step 3: multi-select starter agents; let the user customize each one's
@@ -499,14 +486,8 @@ std::map<std::string, std::string> get_api_keys() {
     const std::string dir = get_config_dir();
     std::map<std::string, std::string> out;
 
-    auto anthropic = load_key("ANTHROPIC_API_KEY", dir + "/api_key");
-    if (!anthropic.empty()) out["anthropic"] = std::move(anthropic);
-
-    auto openai = load_key("OPENAI_API_KEY", dir + "/openai_api_key");
-    if (!openai.empty()) out["openai"] = std::move(openai);
-
-    auto gemini = load_key("GEMINI_API_KEY", dir + "/gemini_api_key");
-    if (!gemini.empty()) out["gemini"] = std::move(gemini);
+    auto openrouter = load_key("OPENROUTER_API_KEY", dir + "/openrouter_api_key");
+    if (!openrouter.empty()) out["openrouter"] = std::move(openrouter);
 
     if (out.empty()) {
         // First-run path: interactive wizard when stdin is a TTY.  Scripted
@@ -516,9 +497,7 @@ std::map<std::string, std::string> get_api_keys() {
             out = run_key_setup_wizard();
         } else {
             std::cerr << "ERR: No provider API keys configured. Set one of:\n"
-                      << "  ANTHROPIC_API_KEY  (or write to ~/.arbiter/api_key)\n"
-                      << "  OPENAI_API_KEY     (or write to ~/.arbiter/openai_api_key)\n"
-                      << "  GEMINI_API_KEY     (or write to ~/.arbiter/gemini_api_key)\n";
+                      << "  OPENROUTER_API_KEY (or write to ~/.arbiter/openrouter_api_key)\n";
             std::exit(1);
         }
     }
