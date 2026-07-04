@@ -52,11 +52,27 @@ if(ARBITER_TSAN)
     add_link_options(-fsanitize=thread)
 endif()
 
+# --- OpenTUI (required) ---
+include(${CMAKE_SOURCE_DIR}/cmake/BuildOpenTUI.cmake)
+
 # --- Find system deps ---
 find_package(Threads REQUIRED)
 
+include(${CMAKE_SOURCE_DIR}/cmake/HomebrewHints.cmake)
+
 # OpenSSL / LibreSSL for TLS (1.1+ required; deprecated init APIs removed)
-find_package(OpenSSL 1.1 REQUIRED)
+find_package(OpenSSL 1.1)
+if(NOT OpenSSL_FOUND)
+    if(APPLE)
+        message(FATAL_ERROR
+            "OpenSSL not found.\n"
+            "  brew install openssl@3\n"
+            "  cmake -B build -DOPENSSL_ROOT_DIR=\"$(brew --prefix openssl@3)\" ...")
+    else()
+        message(FATAL_ERROR
+            "OpenSSL not found. On Debian/Ubuntu: sudo apt install libssl-dev")
+    endif()
+endif()
 
 # libcurl for safe HTTP fetching (no shell injection via popen)
 find_package(CURL REQUIRED)
@@ -81,14 +97,15 @@ set(ARBITER_SOURCES
     src/cli_helpers.cpp
     src/repl/queues.cpp
     src/repl/layout.cpp
+    src/repl/pane_history.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
     src/cli.cpp
     src/starters.cpp
     src/theme.cpp
     src/tui/tui.cpp
-    src/tui/scroll_buffer.cpp
-    src/tui/line_editor.cpp
+    src/tui/tui_design.cpp
+    src/tui/ansi_util.cpp
     src/tui/stream_filter.cpp
     src/api_client.cpp
     src/agent.cpp
@@ -185,6 +202,34 @@ target_link_libraries(arbiter PRIVATE
     CURL::libcurl
     SQLite3::SQLite3
 )
+
+target_sources(arbiter PRIVATE
+    src/tui/opentui/engine.cpp
+    src/tui/opentui/session.cpp
+    src/tui/opentui/pane_scroll_view.cpp
+    src/tui/opentui/ansi_scroll_append.cpp
+    src/tui/opentui/pane_input_editor.cpp
+    src/tui/opentui/pane_frame.cpp
+)
+target_link_libraries(arbiter PRIVATE OpenTUI::core)
+if(APPLE)
+    target_link_libraries(arbiter PRIVATE
+        "-framework CoreFoundation"
+        "-framework CoreAudio"
+        "-framework AudioToolbox"
+    )
+    target_link_options(arbiter PRIVATE "-Wl,-ld_classic")
+    set_target_properties(arbiter PROPERTIES
+        BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
+        INSTALL_RPATH "@executable_path/../lib/opentui"
+    )
+elseif(UNIX)
+    target_link_libraries(arbiter PRIVATE dl pthread)
+    set_target_properties(arbiter PROPERTIES
+        BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
+        INSTALL_RPATH "$ORIGIN/../lib/opentui"
+    )
+endif()
 
 # --- Readline / libedit for interactive line editing ---
 # Try libedit first (BSD license, ships on macOS)

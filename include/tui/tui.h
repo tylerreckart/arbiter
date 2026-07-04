@@ -1,30 +1,28 @@
 #pragma once
 // arbiter/include/tui/tui.h
 //
-// Terminal UI — owns a rectangular region (a "pane") of the alternate-screen
-// buffer.  Today the REPL uses one TUI instance whose rect spans the full
-// terminal; the multi-pane refactor adds a layout tree where each TUI draws
-// into its own rect and the same code paths work unchanged.
+// Terminal UI — per-pane chrome state (layout rects, status, title).  OpenTUI
+// renders pixels via opentui::Session; this class holds the data pane_frame
+// reads each frame.
 //
 // Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
-//   row 1              identity + status
+//   row 1              top padding
+//   rows 2..4          identity + status block
 //                      left:  agent (bold, colored) · title (dim)
 //                      right: status (when active) — else stats (dim)
-//   row 2              dim separator
-//   rows 3..h-3        scroll region (streamed model output lives here)
-//   row  h-2           mid separator above input (doubles as pre-input status)
-//   rows h-2..h-k-1    readline input area (1..kMaxInputRows, grows on wrap)
-//   row  h-1           dim separator above hint row
-//   row  h             hint row (key / command hints)
+//   rows 5..h-5        scroll region (streamed model output lives here)
+//   row  h-6           content padding / pre-input status
+//   rows h-6..h-3      input area (readline block)
+//   row  h-2           content padding below readline
+//   row  h-1           hint row (key / command hints)
+//   row  h             bottom padding
 //
 // All `*_row()` accessors return absolute 1-indexed terminal rows — they fold
-// in rect_.y so call sites can pass the result straight to ANSI cursor
-// positioning escapes without further arithmetic.
+// in rect_.y for scroll/input placement in OpenTUI draw calls.
 //
 // Status is on the same row as identity; when active it preempts stats on the
 // right side (stats are already dim and unimportant vs a live "thinking..."
-// indicator).  A one-row blank pad sits below the input so the readline
-// cursor never butts up against the bottom edge of the terminal.
+// indicator).
 //
 // The mid separator has a second use: while tool calls are streaming the
 // ToolCallIndicator paints its animated "⠋ N tool calls…" label onto this
@@ -32,31 +30,16 @@
 // output on its own row frees the header status for the thinking indicator
 // — previously both fought for row 1 at 80 ms, which flashed.
 //
-// All stdout writes are expected to happen from a single thread (the REPL's
-// main thread).  set_title() is the one exception — it holds header_mu_ so
-// the async title-generation thread can update the header safely.
-//
-// ThinkingIndicator is a thin companion: a background thread that animates a
-// "thinking..." label into the status bar until stop() is called.  It always
-// operates through TUI::set_status / TUI::clear_status so it obeys the same
-// save/restore-cursor invariants the rest of the layout relies on.
-
-#include "tui/scroll_buffer.h"
+// set_title() holds header_mu_ so the async title-generation thread can update
+// the header safely.  Spinner frames advance in the output pump (no thread).
 
 #include <atomic>
 #include <functional>
 #include <mutex>
 #include <string>
-#include <thread>
 
 namespace arbiter {
 
-// A rectangular region of the terminal owned by one TUI instance.  Coordinates
-// are 0-indexed: (x, y) is the top-left corner, w / h the interior size.  In
-// single-pane mode (today) the rect spans the full terminal: {0, 0, cols, rows}.
-// A future multi-pane layout simply gives each pane its own rect — the TUI's
-// row/col math below is already written in terms of `rect_`, so the same code
-// paints into whichever rect it owns.
 struct Rect {
     int x = 0;
     int y = 0;
@@ -64,28 +47,29 @@ struct Rect {
     int h = 24;
 };
 
+struct TuiChromeSnapshot {
+    Rect rect;
+    int  input_rows = 1;
+    bool status_active = false;
+    bool focus_accent = false;
+    bool footer_hint_visible = true;
+    std::string agent;
+    std::string title;
+    std::string status;
+    std::string stats;
+    std::string pre_input_status;
+};
+
 class TUI {
 public:
     // Chrome layout offsets WITHIN a pane (not absolute terminal rows).
-    // Header is 2 rows: identity+status, then separator.
-    static constexpr int kHeaderRows    = 2;
+    // Header is 4 rows: top padding, then a three-row header block.
+    static constexpr int kHeaderRows    = 4;
     static constexpr int kSepRows       = 1;   // mid separator above input area
-    static constexpr int kMaxInputRows  = 5;
-    static constexpr int kBottomPadRows = 2;   // hint separator + hint row
+    static constexpr int kMaxInputRows  = 7;
+    static constexpr int kBottomPadRows = 3;   // input spacer + hint row + bottom padding
 
-    // App-level setup: enter alt-screen and clear it.  Must be called exactly
-    // once per process before any TUI::init (or set_rect on a freshly-built
-    // TUI).  Not a TUI method because alt-screen is a physical-terminal
-    // resource shared by every pane.
-    static void enter_alt_screen();
-
-    // Exit alt-screen and restore the user's terminal.  Also static — matches
-    // enter_alt_screen and can be called independent of any specific TUI.
-    static void leave_alt_screen();
-
-    // Per-pane chrome paint.  Defaults the rect to a full-screen cover for
-    // single-pane callers; multi-pane callers set_rect to their pane's
-    // bounds afterward (or before) without re-entering alt-screen.
+    // Per-pane layout.  Rendering is handled by OpenTUI (see opentui::Session).
     void init(const std::string& agent,
               const std::string& model,
               const std::string& color = "");
@@ -103,31 +87,16 @@ public:
     // case where no layout tree exists.
     void resize();
 
-    // No-op for backward compat.  In Stage A this entered alt-screen; that
-    // moved to enter_alt_screen().  Kept for callers that still expect a
-    // shutdown hook, paired with leave_alt_screen at program exit.
+    // No-op — terminal lifecycle is owned by opentui::Session.
     void shutdown();
 
-    // Redraw the header with updated agent / stats / color.
     void update(const std::string& agent,
                 const std::string& model,
                 const std::string& stats,
                 const std::string& color = "");
 
-    // Draw the separator row (uses save/restore, cursor unchanged).
-    void draw_sep();
-
-    // Reset the input area to 1 row, redraw separator, park the cursor ready
-    // for readline.  `pending_fn`, if provided, is queried under tty_mu_ so the
-    // queue count is atomic with the status-bar repaint — passing a stale int
-    // races with the exec thread popping and would leave "N queued" stuck.
     void begin_input(std::function<int()> pending_fn = {});
-
-    // Grow the input area to `needed` rows (clamped to kMaxInputRows) when
-    // readline's buffer has wrapped to another visual line.
     void grow_input(int needed);
-
-    // Default prompt string (escape-wrapped for readline's width accounting).
     std::string build_prompt() const;
 
     // Last usable row of the scroll region (where streamed output lands).
@@ -143,14 +112,6 @@ public:
         return last_scroll_row() - scroll_top_row() + 1;
     }
 
-    // Full repaint of the scroll region from a ScrollBuffer.
-    //   visual_offset — visual rows above the tail (0 = live view)
-    //   new_count     — new visual rows accumulated while scrolled back
-    // Updates the header status line with an "↑ N lines above" indicator.
-    void render_scrollback(const ScrollBuffer& buf,
-                           int visual_offset, int new_count);
-
-    // Status-bar writes.  set_status repaints; clear_status blanks the row.
     void set_status(const std::string& msg);
     void clear_status();
 
@@ -174,37 +135,13 @@ public:
     // shift between modes.
     void set_footer_hint_visible(bool visible);
 
-    // Accent the header bottom border when this pane is the focused one in
-    // a multi-pane layout.  LayoutTree flips this on the focused leaf and
-    // off on all others after every focus or structural change.  In single
-    // pane mode the accent is not used.
+    // Accent split separators when this pane is focused in a multi-pane layout.
+    // LayoutTree flips this on the focused leaf and off on all others after
+    // every focus or structural change.  In single-pane mode it is unused.
     void set_focus_accent(bool active);
 
-    // Blank the input rows of the pane (separator above input through
-    // input bottom) without touching the rest of the chrome.  Called by
-    // LayoutTree when the pane loses focus so its stale prompt text
-    // doesn't linger while the active pane elsewhere handles input.
-    void clear_input_area();
-
-    // Paint a dim placeholder prompt on the pane's input row.  Used for
-    // non-focused panes so their bottom edge reads as "input surface,
-    // currently idle" instead of looking half-drawn.  The focused pane's
-    // LineEditor overwrites this stub with the live prompt + buffer on
-    // its next redraw.
-    void paint_idle_input_prompt();
-
-    // One-shot welcome card painted into the middle of the scroll region on
-    // cold starts (no session to restore).  Box + hello text on the left,
-    // 3-line ASCII sigil on the right.  Pushes the rendered card into the
-    // given scroll buffer so it's part of scrollback, and paints at the top
-    // of the live scroll region so it's visible before any output arrives.
-    void draw_welcome(ScrollBuffer& history);
-
-    // Blank every row in the scroll region.  Used to dismiss the welcome
-    // card the moment the user sends their first message — the REPL also
-    // clears the backing ScrollBuffer so the card doesn't come back on the
-    // next PgUp.  Doesn't touch chrome (header/footer/input).
-    void clear_scroll_region();
+    // One-shot welcome card on cold starts (ANSI box art pushed to scrollback).
+    [[nodiscard]] std::string build_welcome_card() const;
 
     int cols() const { return rect_.w; }
     int left_col() const { return rect_.x + 1; }  // 1-indexed leftmost col
@@ -215,15 +152,8 @@ public:
     // Thread-safe: called from the async title-generation thread.
     void set_title(const std::string& title);
 
-    // Mutex every thread must hold while writing to stdout.  The pump thread
-    // (output drain), the exec thread (tui.update / tui.set_status), and the
-    // main thread (echo, begin_input) all share stdout, so serialising their
-    // ANSI-escape sequences here keeps cursor save/restore pairs from
-    // interleaving with each other's writes.  Readline's own writes are
-    // outside the mutex — they're always single characters at the current
-    // cursor position, so races there are visible but recoverable.
-    // Recursive because some TUI methods call each other while both want the
-    // lock — render_scrollback → set_status → draw_header, for instance.
+    [[nodiscard]] TuiChromeSnapshot chrome_snapshot() const;
+
     std::recursive_mutex& tty_mutex() { return tty_mu_; }
 
 private:
@@ -239,7 +169,7 @@ private:
     std::string current_status_;       // cached so resize() can redraw it
     std::string current_pre_input_status_;  // inlined on sep_row() when non-empty
     mutable std::mutex header_mu_;
-    std::recursive_mutex tty_mu_;      // serializes concurrent stdout writes
+    mutable std::recursive_mutex tty_mu_;
 
     // Absolute 1-indexed terminal rows for each chrome slot within rect_.
     int identity_row()   const { return rect_.y + 1; }
@@ -249,90 +179,44 @@ private:
     int input_row()      const { return rect_.y + rect_.h - kBottomPadRows; }
     int hint_sep_row()   const { return rect_.y + rect_.h - 1; }
     int pad_row()        const { return rect_.y + rect_.h; }
-
-    void paint_chrome();          // header + separators + input row + hint
-    void erase_chrome_row(int row);
-
-    // Pane-aware line clear — writes rect_.w spaces at left_col() of `row`
-    // and repositions the cursor at that left edge, ready for the caller
-    // to paint content.  Replaces \033[2K everywhere; that escape clears
-    // the entire physical row, which in multi-pane mode wipes whatever
-    // siblings painted at the same row.
-    void erase_pane_row(int row);
-
-public:
-    // Exposed for LineEditor, which paints its input row at the pane's
-    // left edge with the same anti-\033[2K constraint.
-    void erase_pane_row_pub(int row) { erase_pane_row(row); }
-private:
-    void draw_header();
-    void draw_header_locked();
-    void draw_footer_hint();
 };
 
-// Background spinner that ticks a "thinking..." label into TUI::set_status.
+// Background spinner that updates TUI status state (animated in the UI loop).
 class ThinkingIndicator {
 public:
     explicit ThinkingIndicator(TUI* tui = nullptr) : tui_(tui) {}
 
     void start(const std::string& label = "thinking");
     void stop();
+    void tick();
 
 private:
     TUI*              tui_ = nullptr;
     std::string       label_;
-    std::atomic<bool> running_{false};
-    std::thread       thread_;
+    std::atomic<bool> active_{false};
 };
 
-// Background spinner + counter for tool-call bursts.  When stacking mode is
-// active (Config::verbose == false), the REPL suppresses the agent's raw
-// /cmd lines from the scroll region and instead surfaces an animated
-// "⠋ N tool calls…" label on the mid-separator row just above the readline
-// (via TUI::set_pre_input_status).  finalize() prints a single summary row
-// into scrollback — ✓ if every tool call succeeded, ✗ with the fail count
-// otherwise.
-//
-// The indicator deliberately does NOT paint the header status row — that
-// slot belongs to the ThinkingIndicator, and having both spinners repaint
-// the same cell at 80 ms produced visible flashing.
-//
-// Lifecycle: begin() starts the spinner thread (idempotent on repeat
-// begin()), bump(kind, ok) records one completed call from any delegation
-// depth, finalize() stops the spinner and returns the one-line summary
-// string for the caller to push into scrollback.  All calls are thread-safe
-// — bump() is invoked from the orchestrator's exec thread while the spinner
-// thread paints the pre-input row.
+// Tool-call burst counter with a mid-separator spinner (animated in the UI loop).
 class ToolCallIndicator {
 public:
     explicit ToolCallIndicator(TUI* tui = nullptr) : tui_(tui) {}
 
-    // Arm the indicator for a new turn.  No spinner paints until bump() is
-    // called at least once — the status bar should stay clean when the
-    // agent's response contains no tool calls at all.
     void begin();
-
-    // Record one completed /cmd.  First call also starts the spinner thread.
     void bump(const std::string& kind, bool ok);
-
-    // Stop the spinner, clear the status bar, and return the scrollback
-    // summary line (or empty string if no tool calls occurred this turn).
-    // Thread-safe: finalize() joins the spinner thread before returning.
     std::string finalize();
+    void tick();
 
     int total()  const { return total_.load(); }
     int failed() const { return failed_.load(); }
 
 private:
-    void start_spinner();
-    void render_status();
+    void update_status();
 
     TUI*              tui_ = nullptr;
     std::atomic<bool> armed_{false};
-    std::atomic<bool> running_{false};
+    std::atomic<bool> active_{false};
     std::atomic<int>  total_{0};
     std::atomic<int>  failed_{0};
-    std::thread       thread_;
 };
 
 } // namespace arbiter

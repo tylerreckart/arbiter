@@ -49,4 +49,8 @@ std::string fetch_url   (const std::string& url);
 int term_cols();
 int term_rows();
 
+// Drop bytes already waiting on stdin (terminal capability-query responses
+// from OpenTUI startup probes, paste dribble, etc.).
+void drain_stdin_spurious(int max_wait_ms = 300);
+
 } // namespace arbiter

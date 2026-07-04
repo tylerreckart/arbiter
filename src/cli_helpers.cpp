@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -21,6 +22,7 @@
 #include <fcntl.h>
 #include <pwd.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <termios.h>
@@ -535,6 +537,40 @@ int term_rows() {
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
         return ws.ws_row;
     return 24;
+}
+
+void drain_stdin_spurious(int max_wait_ms) {
+    const int old_flags = ::fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (old_flags >= 0)
+        ::fcntl(STDIN_FILENO, F_SETFL, old_flags | O_NONBLOCK);
+
+    char buf[4096];
+    auto drain_available = [&]() {
+        while (true) {
+            const ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
+            if (n <= 0) break;
+        }
+    };
+
+    if (max_wait_ms <= 0) {
+        drain_available();
+    } else {
+        const auto deadline = std::chrono::steady_clock::now()
+                            + std::chrono::milliseconds(max_wait_ms);
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            fd_set rfds;
+            FD_ZERO(&rfds);
+            FD_SET(STDIN_FILENO, &rfds);
+            timeval tv = {0, 25000};
+            const int r = ::select(STDIN_FILENO + 1, &rfds, nullptr, nullptr, &tv);
+            if (r > 0) drain_available();
+        }
+        drain_available();
+    }
+
+    if (old_flags >= 0)
+        ::fcntl(STDIN_FILENO, F_SETFL, old_flags);
 }
 
 } // namespace arbiter

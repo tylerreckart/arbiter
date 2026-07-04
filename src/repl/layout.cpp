@@ -1,10 +1,12 @@
 // arbiter/src/repl/layout.cpp — see repl/layout.h
 
 #include "repl/layout.h"
-#include "theme.h"
+#include "tui/opentui/engine.h"
+#include "tui/tui_design.h"
 
 #include <algorithm>
-#include <cstdio>
+#include <array>
+#include <string>
 
 namespace arbiter {
 
@@ -78,7 +80,6 @@ LayoutTree::LayoutTree(std::unique_ptr<Pane> first, const Rect& bounds) {
     focused_ = root_->pane.get();
     bounds_ = bounds;
     compute_bounds(*root_, bounds);
-    render_borders();
 }
 
 LayoutTree::~LayoutTree() = default;
@@ -119,61 +120,54 @@ void LayoutTree::compute_bounds(Node& n, const Rect& r) {
 
 void LayoutTree::resize(const Rect& bounds) {
     bounds_ = bounds;
-    std::printf("\033[2J");          // clear once per relayout
     compute_bounds(*root_, bounds);
 
-    // Footer hint is useful in single-pane mode and clutters every pane
-    // when there are two or more.  Focus accent is only visible in
-    // multi-pane mode — single-pane keeps the neutral dim-grey header
-    // separator.  Both flags are resolved from the leaf count and the
-    // current focused_ pointer; LayoutTree::focus_next/prev refresh the
-    // focus accent independently when focus moves without a structural
-    // change.
     std::vector<Pane*> leaves;
     collect_leaves(*root_, leaves);
     const bool multi = leaves.size() > 1;
     for (auto* p : leaves) {
         p->tui.set_footer_hint_visible(!multi);
         p->tui.set_focus_accent(multi && p == focused_);
-        // Non-focused panes get a dim stub prompt so their input row
-        // reads as an idle input surface.  The focused pane's input row
-        // is left blank here; the REPL's begin_input re-paints the live
-        // prompt via the refresh-pending handoff on the next main-loop
-        // iteration (see cmd_interactive's refresh_pending flag).
-        if (multi && p != focused_) p->tui.paint_idle_input_prompt();
     }
-
-    render_borders();
 }
 
-void LayoutTree::render_borders_(Node& n) {
-    if (n.is_leaf()) return;
-    const Theme& t = theme();
-    // Paint a separator between every adjacent pair of children.
-    for (int i = 0; i + 1 < (int)n.children.size(); ++i) {
+void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
+    if (n.is_leaf() || frame == 0) return;
+
+    const TuiDesign& d = tui_design();
+    const TuiRgba& gutter = d.bg.scroll;
+
+    for (int i = 0; i + 1 < static_cast<int>(n.children.size()); ++i) {
         const Rect& left = n.children[i]->bounds;
+        const std::uint16_t* gutter_ptr = gutter.data();
+
         if (n.orient == Orient::Vertical) {
-            int sep_x = left.x + left.w;  // 0-indexed column of separator
+            const int sep_x = left.x + left.w;
             for (int y = n.bounds.y; y < n.bounds.y + n.bounds.h; ++y) {
-                std::printf("\033[%d;%dH%s│%s",
-                            y + 1, sep_x + 1,
-                            t.border_inactive.c_str(), t.reset.c_str());
+                bufferFillRect(frame,
+                               static_cast<std::uint32_t>(sep_x),
+                               static_cast<std::uint32_t>(y),
+                               1,
+                               1,
+                               gutter_ptr);
             }
         } else {
-            int sep_y = left.y + left.h;
-            std::printf("\033[%d;%dH%s",
-                        sep_y + 1, n.bounds.x + 1,
-                        t.border_inactive.c_str());
-            for (int k = 0; k < n.bounds.w; ++k) std::printf("─");
-            std::printf("%s", t.reset.c_str());
+            const int sep_y = left.y + left.h;
+            bufferFillRect(frame,
+                           static_cast<std::uint32_t>(n.bounds.x),
+                           static_cast<std::uint32_t>(sep_y),
+                           static_cast<std::uint32_t>(n.bounds.w),
+                           1,
+                           gutter_ptr);
         }
     }
-    for (auto& child : n.children) render_borders_(*child);
+
+    for (const auto& child : n.children) draw_borders_(*child, frame);
 }
 
-void LayoutTree::render_borders() {
-    render_borders_(*root_);
-    std::fflush(stdout);
+void LayoutTree::draw_borders(OpenTuiHandle frame) const {
+    if (!root_ || frame == 0) return;
+    draw_borders_(*root_, frame);
 }
 
 void LayoutTree::collect_leaves(Node& n, std::vector<Pane*>& out) const {
@@ -198,15 +192,11 @@ Pane& LayoutTree::focused() const {
 }
 
 namespace {
-// Refresh focus-accent colors on every leaf and replace the leaving
-// pane's live prompt with a dim idle stub.  Shared between focus_next /
-// focus_prev so either direction behaves identically.  The incoming
-// focused pane's LineEditor will repaint its live prompt on the next
-// begin_input tick of the main loop.
+// Refresh focus-accent colors on every leaf.  The incoming focused pane's
+// PaneInputEditor repaints on the next present tick; unfocused panes draw
+// a dim idle stub in draw().
 void apply_focus_change(const std::vector<Pane*>& leaves,
-                        Pane* old_focused, Pane* new_focused) {
-    if (old_focused && old_focused != new_focused)
-        old_focused->tui.paint_idle_input_prompt();
+                        Pane* /*old_focused*/, Pane* new_focused) {
     const bool multi = leaves.size() > 1;
     for (auto* p : leaves) {
         p->tui.set_focus_accent(multi && p == new_focused);
@@ -223,7 +213,6 @@ void LayoutTree::focus_next() {
     Pane* old = focused_;
     focused_ = leaves[(idx + 1) % leaves.size()];
     apply_focus_change(leaves, old, focused_);
-    render_borders();
 }
 
 void LayoutTree::focus_prev() {
@@ -235,7 +224,6 @@ void LayoutTree::focus_prev() {
     Pane* old = focused_;
     focused_ = leaves[(idx + leaves.size() - 1) % leaves.size()];
     apply_focus_change(leaves, old, focused_);
-    render_borders();
 }
 
 Pane* LayoutTree::split_focused(Orient orient, const PaneFactory& make_pane,
