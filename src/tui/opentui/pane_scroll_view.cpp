@@ -1,5 +1,7 @@
 #include "tui/opentui/pane_scroll_view.h"
 
+#include "tui/tui_design.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <memory>
@@ -33,11 +35,18 @@ PaneScrollView::~PaneScrollView() {
 }
 
 void PaneScrollView::bind(const TUI& tui) {
-    buf_x_ = tui.left_col() - 1;
+    const TuiDesign& d = tui_design();
+    const int raw_pad = (tui.cols() <= d.layout.dense_cols)
+        ? 0
+        : std::max(0, d.layout.pane_padding_x);
+    const int pad = std::min(raw_pad, std::max(0, (tui.cols() - 1) / 2));
+    const int content_w = std::max(1, tui.cols() - (pad * 2));
+
+    buf_x_ = tui.left_col() - 1 + pad;
     buf_y_ = tui.scroll_top_row() - 1;
-    viewport_w_ = tui.cols();
+    viewport_w_ = content_w;
     viewport_h_ = tui.scroll_region_rows();
-    set_wrap_cols(tui.cols());
+    set_wrap_cols(content_w);
 }
 
 void PaneScrollView::set_wrap_cols(int cols) {
@@ -47,13 +56,11 @@ void PaneScrollView::set_wrap_cols(int cols) {
 
 void PaneScrollView::append(std::string_view text) {
     if (text.empty() || !styled_append_) return;
-    text_storage_.emplace_back(text);
     styled_append_->append(text);
 }
 
 void PaneScrollView::clear() {
     if (styled_append_) styled_append_->clear();
-    text_storage_.clear();
 }
 
 int PaneScrollView::total_visual_rows() const {

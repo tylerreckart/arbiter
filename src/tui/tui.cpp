@@ -40,7 +40,7 @@ void TUI::update(const std::string& agent,
 
 void TUI::begin_input(std::function<int()> pending_fn) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    input_rows_ = 1;
+    input_rows_ = 3;
 
     if (pending_fn) {
         const int queued = pending_fn();
@@ -59,7 +59,7 @@ void TUI::begin_input(std::function<int()> pending_fn) {
 }
 
 void TUI::grow_input(int needed) {
-    needed = std::max(1, std::min(needed, kMaxInputRows));
+    needed = std::max(3, std::min(needed, kMaxInputRows));
     if (needed == input_rows_) return;
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     input_rows_ = needed;

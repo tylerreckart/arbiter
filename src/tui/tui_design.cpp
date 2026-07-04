@@ -74,43 +74,43 @@ void string_value(const JsonValue& root, const char* group, const char* key, std
 TuiDesign modern_design() {
     TuiDesign d;
 
-    d.bg.base   = tui_rgba(0x16, 0x18, 0x22);
-    d.bg.panel  = tui_rgba(0x1b, 0x1e, 0x2b);
-    d.bg.header = tui_rgba(0x20, 0x24, 0x33);
-    d.bg.scroll = tui_rgba(0x14, 0x17, 0x21);
-    d.bg.status = tui_rgba(0x1d, 0x22, 0x30);
-    d.bg.input  = tui_rgba(0x21, 0x26, 0x35);
-    d.bg.footer = tui_rgba(0x17, 0x1a, 0x25);
-    d.bg.gutter = tui_rgba(0x10, 0x12, 0x1a);
+    d.bg.base   = tui_rgba(0x08, 0x08, 0x08);
+    d.bg.panel  = tui_rgba(0x10, 0x10, 0x10);
+    d.bg.header = tui_rgba(0x1a, 0x1a, 0x1a);
+    d.bg.scroll = tui_rgba(0x0c, 0x0c, 0x0c);
+    d.bg.status = tui_rgba(0x15, 0x15, 0x15);
+    d.bg.input  = tui_rgba(0x1f, 0x1f, 0x1f);
+    d.bg.footer = tui_rgba(0x12, 0x12, 0x12);
+    d.bg.gutter = d.bg.scroll;
 
-    d.text.primary = tui_rgba(0xdc, 0xe3, 0xf0);
-    d.text.muted   = tui_rgba(0x8b, 0x95, 0xa7);
-    d.text.subtle  = tui_rgba(0x58, 0x63, 0x74);
-    d.text.inverse = tui_rgba(0x16, 0x18, 0x22);
+    d.text.primary = tui_rgba(0xe8, 0xe8, 0xe8);
+    d.text.muted   = tui_rgba(0x9a, 0x9a, 0x9a);
+    d.text.subtle  = tui_rgba(0x63, 0x63, 0x63);
+    d.text.inverse = tui_rgba(0x0a, 0x0a, 0x0a);
 
-    d.accent.primary   = tui_rgba(0x7a, 0xc7, 0xff);
-    d.accent.secondary = tui_rgba(0xc6, 0x78, 0xdd);
-    d.accent.success   = tui_rgba(0x98, 0xc3, 0x79);
-    d.accent.warning   = tui_rgba(0xe5, 0xc0, 0x7b);
-    d.accent.error     = tui_rgba(0xe0, 0x6c, 0x75);
-    d.accent.info      = tui_rgba(0x61, 0xaf, 0xef);
+    d.accent.primary   = tui_rgba(0xf5, 0xa5, 0x24);
+    d.accent.secondary = tui_rgba(0xb8, 0xb8, 0xb8);
+    d.accent.success   = tui_rgba(0xb6, 0xd7, 0xb6);
+    d.accent.warning   = tui_rgba(0xd7, 0xc8, 0xa0);
+    d.accent.error     = tui_rgba(0xd7, 0xa8, 0xa8);
+    d.accent.info      = tui_rgba(0xc4, 0xc4, 0xc4);
 
-    d.border.subtle = tui_rgba(0x32, 0x39, 0x49);
-    d.border.focus  = d.accent.primary;
-    d.border.gutter = d.bg.gutter;
+    d.border.subtle = d.bg.scroll;
+    d.border.focus  = d.bg.scroll;
+    d.border.gutter = d.bg.scroll;
 
     d.layout.pane_padding_x = 1;
     d.layout.header_padding_x = 1;
     d.layout.status_inset_x = 2;
-    d.layout.input_padding_x = 1;
+    d.layout.input_padding_x = 2;
     d.layout.footer_gap = 2;
     d.layout.compact_cols = 72;
     d.layout.dense_cols = 88;
     d.layout.show_footer = true;
     d.layout.status_pill = true;
 
-    d.component.agent_prefix = " ";
-    d.component.agent_suffix = " ";
+    d.component.agent_prefix.clear();
+    d.component.agent_suffix.clear();
     d.component.status_prefix = " ";
     d.component.status_suffix = " ";
     return d;
@@ -176,6 +176,7 @@ void apply_overrides(TuiDesign& d, const JsonValue& root) {
     boolean(root, "layout", "status_pill", d.layout.status_pill);
 
     string_value(root, "component", "prompt", d.component.prompt);
+    string_value(root, "component", "continuation_prompt", d.component.continuation_prompt);
     string_value(root, "component", "inactive_prompt", d.component.inactive_prompt);
     string_value(root, "component", "agent_prefix", d.component.agent_prefix);
     string_value(root, "component", "agent_suffix", d.component.agent_suffix);

@@ -123,7 +123,6 @@ private:
     void compute_bounds(Node& n, const Rect& r);
     void collect_leaves(Node& n, std::vector<Pane*>& out) const;
     void draw_borders_(const Node& n, OpenTuiHandle frame) const;
-    static bool subtree_contains_(const Node& n, const Pane* target);
 
     std::unique_ptr<Node> root_;
     Pane*                 focused_ = nullptr;

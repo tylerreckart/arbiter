@@ -15,6 +15,8 @@ constexpr std::uint32_t kAttrDim           = 1u << 1;
 constexpr std::uint32_t kAttrItalic        = 1u << 2;
 constexpr std::uint32_t kAttrUnderline     = 1u << 3;
 constexpr std::uint32_t kAttrStrikethrough = 1u << 7;
+constexpr std::size_t kMaxStoredRuns       = 20000;
+constexpr std::size_t kCompactedRuns       = 16000;
 
 bool is_continuation(unsigned char c) {
     return (c & 0xC0) == 0x80;
@@ -176,8 +178,8 @@ void AnsiScrollAppender::clear() {
     bg_.reset();
     attrs_ = 0;
     if (buffer_ != 0) {
-        textBufferClearAllHighlights(buffer_);
-        textBufferClear(buffer_);
+        textBufferReset(buffer_);
+        if (syntax_ != 0) textBufferSetSyntaxStyle(buffer_, syntax_);
     }
 }
 
@@ -269,13 +271,11 @@ void AnsiScrollAppender::feed_bytes(std::string_view chunk) {
             continue;
         }
         if (chunk[i] == ']') {
-            flush_plain();
             if (const size_t end = skip_bare_osc(chunk, i); end > i) {
+                flush_plain();
                 i = end;
                 continue;
             }
-            esc_hold_.assign(chunk.data() + i, chunk.size() - i);
-            return;
         }
         if (c == 0x01) {
             flush_plain();
@@ -341,21 +341,47 @@ void AnsiScrollAppender::apply_sgr(const std::vector<int>& params) {
 
 void AnsiScrollAppender::emit_plain(std::string_view text) {
     if (text.empty()) return;
-    plain_storage_.push_back(strip_readline_markers(text));
-    const std::string& cleaned = plain_storage_.back();
-    if (cleaned.empty()) {
-        plain_storage_.pop_back();
-        return;
-    }
+    std::string cleaned = strip_readline_markers(text);
+    if (cleaned.empty()) return;
+
+    StoredRun run;
+    run.text = std::move(cleaned);
+    run.style = current_style_key();
+    run.has_style = run.style.has_fg || run.style.has_bg || run.style.attrs != 0;
+    plain_storage_.push_back(std::move(run));
+    const StoredRun& stored = plain_storage_.back();
 
     const std::uint32_t start = textBufferGetLength(buffer_);
-    textBufferAppend(buffer_, cleaned.data(), static_cast<std::uint32_t>(cleaned.size()));
+    textBufferAppend(buffer_,
+                     stored.text.data(),
+                     static_cast<std::uint32_t>(stored.text.size()));
     const std::uint32_t end = textBufferGetLength(buffer_);
+    if (end > start && stored.has_style) {
+        add_highlight(start, end, stored.style);
+    }
+    compact_storage_if_needed();
+}
+
+AnsiScrollAppender::StyleKey AnsiScrollAppender::current_style_key() const {
+    StyleKey key;
+    key.attrs = attrs_;
+    if (fg_) {
+        key.has_fg = true;
+        key.fg = *fg_;
+    }
+    if (bg_) {
+        key.has_bg = true;
+        key.bg = *bg_;
+    }
+    return key;
+}
+
+void AnsiScrollAppender::add_highlight(std::uint32_t start,
+                                       std::uint32_t end,
+                                       const StyleKey& key) {
     if (end <= start) return;
-
-    const std::uint32_t style_id = style_id_for_current();
+    const std::uint32_t style_id = style_id_for_key(key);
     if (style_id == 0) return;
-
     OpenTuiHighlight hl{};
     hl.start = start;
     hl.end = end;
@@ -367,18 +393,11 @@ void AnsiScrollAppender::emit_plain(std::string_view text) {
 
 std::uint32_t AnsiScrollAppender::style_id_for_current() {
     if (!fg_ && !bg_ && attrs_ == 0) return 0;
+    return style_id_for_key(current_style_key());
+}
 
-    StyleKey key;
-    key.attrs = attrs_;
-    if (fg_) {
-        key.has_fg = true;
-        key.fg = *fg_;
-    }
-    if (bg_) {
-        key.has_bg = true;
-        key.bg = *bg_;
-    }
-
+std::uint32_t AnsiScrollAppender::style_id_for_key(const StyleKey& key) {
+    if (!key.has_fg && !key.has_bg && key.attrs == 0) return 0;
     if (const auto it = style_cache_.find(key); it != style_cache_.end()) {
         return it->second;
     }
@@ -395,6 +414,28 @@ std::uint32_t AnsiScrollAppender::style_id_for_current() {
         key.attrs);
     if (id != 0) style_cache_.emplace(key, id);
     return id;
+}
+
+void AnsiScrollAppender::compact_storage_if_needed() {
+    if (plain_storage_.size() <= kMaxStoredRuns) return;
+    while (plain_storage_.size() > kCompactedRuns) plain_storage_.pop_front();
+    rebuild_buffer_from_storage();
+}
+
+void AnsiScrollAppender::rebuild_buffer_from_storage() {
+    if (buffer_ == 0) return;
+    textBufferReset(buffer_);
+    if (syntax_ != 0) textBufferSetSyntaxStyle(buffer_, syntax_);
+
+    for (const StoredRun& run : plain_storage_) {
+        if (run.text.empty()) continue;
+        const std::uint32_t start = textBufferGetLength(buffer_);
+        textBufferAppend(buffer_,
+                         run.text.data(),
+                         static_cast<std::uint32_t>(run.text.size()));
+        const std::uint32_t end = textBufferGetLength(buffer_);
+        if (run.has_style) add_highlight(start, end, run.style);
+    }
 }
 
 } // namespace arbiter::opentui

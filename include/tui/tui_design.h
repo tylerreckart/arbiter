@@ -57,8 +57,9 @@ struct TuiDesign {
     } layout;
 
     struct Component {
-        std::string prompt = "> ";
-        std::string inactive_prompt = "> ";
+        std::string prompt;
+        std::string continuation_prompt = "\u2026 ";
+        std::string inactive_prompt;
         std::string agent_prefix = " ";
         std::string agent_suffix = " ";
         std::string status_prefix = " ";
