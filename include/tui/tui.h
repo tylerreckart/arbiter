@@ -140,9 +140,6 @@ public:
     // every focus or structural change.  In single-pane mode it is unused.
     void set_focus_accent(bool active);
 
-    // One-shot welcome card on cold starts (ANSI box art pushed to scrollback).
-    [[nodiscard]] std::string build_welcome_card() const;
-
     int cols() const { return rect_.w; }
     int left_col() const { return rect_.x + 1; }  // 1-indexed leftmost col
     int input_top_row_pub() const { return input_top_row(); }
@@ -165,7 +162,7 @@ private:
     std::atomic<bool> queue_indicator_shown_{false};
     std::string current_agent_ = "index";
     std::string current_stats_;
-    std::string session_title_;
+    std::string session_title_ = "Arbiter";
     std::string current_status_;       // cached so resize() can redraw it
     std::string current_pre_input_status_;  // inlined on sep_row() when non-empty
     mutable std::mutex header_mu_;

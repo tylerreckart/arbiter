@@ -9,7 +9,6 @@ A session captures the *agents' memory of the conversation* — every message ex
 | `arbiter` startup | The session for the current cwd is loaded if one exists. Conversation histories are restored to each agent before the first prompt. |
 | `/quit` / Ctrl-D  | The current state is written to disk. Pane layout is **not** saved (always single-pane on next start). |
 | `/reset [agent]`  | Clears the named (or focused) agent's history in memory only. The next save snapshots the new state. |
-| `/compact [agent]` | Summarizes history to a single system message and clears the rest. The compaction is in-memory until next save. |
 
 Saves are not incremental — `/quit` writes the full snapshot. A hard kill (`SIGKILL`, terminal close, power loss) loses any history accumulated since the last save.
 
@@ -51,15 +50,13 @@ Delete `~/.arbiter/sessions/<cwd-hash>.json` to start fresh from a directory. Th
 
 To purge everything: `rm -rf ~/.arbiter/sessions/`.
 
-## Compacting before saving
+## Context Length
 
-A long session's history grows unboundedly — at some point the next turn either hits the model's context limit or wastes tokens replaying old context the agent doesn't need. `/compact [agent]` solves this:
-
-1. Asks the agent to summarize its history into one paragraph.
-2. Replaces the full history with a single system message containing that summary.
-3. The next turn sees the summary plus your fresh input — much shorter context, same continuity.
-
-`/compact` is safe to run during a session; the `/quit` save afterwards is correspondingly smaller. There's no auto-compact heuristic.
+Arbiter preserves the full conversation history it has for each agent. It does
+not summarize, trim, or rewrite old turns before sending a model request.
+Context-window behavior is delegated to the selected model provider. If a
+conversation outgrows the provider's context handling, use `/reset [agent]` to
+clear that agent's history.
 
 ## Sessions vs the structured memory graph
 

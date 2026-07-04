@@ -106,7 +106,6 @@ Agent& Orchestrator::create_agent(const std::string& id, Constitution config) {
         throw std::runtime_error("Agent already exists: " + id);
     }
     auto agent = std::make_unique<Agent>(id, std::move(config), client_);
-    if (compact_cb_) agent->set_compact_callback(compact_cb_);
     auto& ref = *agent;
     agents_[id] = std::move(agent);
     return ref;
@@ -420,7 +419,6 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                 // history_, independent stats_, independent ApiClient
                 // (its own connection pool so LLM calls run concurrently).
                 Agent ephemeral(sub_id, std::move(cfg_copy), *child_clients[i]);
-                if (compact_cb_) ephemeral.set_compact_callback(compact_cb_);
 
                 std::map<std::string, std::string> local_cache;
                 std::string orig_q = original_query.empty() ? sub_msg : original_query;
@@ -640,13 +638,6 @@ void Orchestrator::set_cost_callback(CostCallback cb) {
 
 void Orchestrator::set_agent_start_callback(AgentStartCallback cb) {
     start_cb_ = std::move(cb);
-}
-
-void Orchestrator::set_compact_callback(CompactCallback cb) {
-    compact_cb_ = std::move(cb);
-    if (index_master_) index_master_->set_compact_callback(compact_cb_);
-    std::lock_guard<std::mutex> lock(agents_mutex_);
-    for (auto& [_, a] : agents_) a->set_compact_callback(compact_cb_);
 }
 
 int Orchestrator::next_stream_id() {
@@ -1569,15 +1560,6 @@ std::string Orchestrator::global_status() const {
     return ss.str();
 }
 
-// ─── Context compaction ───────────────────────────────────────────────────────
-
-std::string Orchestrator::compact_agent(const std::string& agent_id) {
-    if (agent_id == "index") {
-        return index_master_->compact();
-    }
-    return get_agent(agent_id).compact();
-}
-
 // ─── Plan execution ───────────────────────────────────────────────────────────
 
 // Parse the planner's markdown format into a list of PlanPhases.
@@ -1848,7 +1830,7 @@ void Orchestrator::save_session(const std::string& path) const {
 
     if (serialized.size() > kSessionWarnBytes) {
         // Log which agents contributed large histories so the user knows
-        // which to /compact when the file grows unwieldy.  Includes the
+        // which to /reset if the file grows unwieldy.  Includes the
         // index master since it can independently be the source of bloat.
         std::string over_limit;
         auto check_agent = [&](const std::string& id, const Agent& a) {
@@ -1865,7 +1847,7 @@ void Orchestrator::save_session(const std::string& path) const {
         }
         ::fprintf(stderr,
             "WARN: session file is %.1f MB (limit %.0f MB)%s\n"
-            "      Run /compact [agent] to trim histories and keep startup fast.\n",
+            "      Session history is preserved in full; use /reset [agent] to clear it.\n",
             serialized.size() / (1024.0 * 1024.0),
             kSessionWarnBytes / (1024.0 * 1024.0),
             over_limit.empty() ? "" : (" — large agents: " + over_limit).c_str());
@@ -1887,7 +1869,7 @@ bool Orchestrator::load_session(const std::string& path) {
     if (raw.size() > kSessionWarnBytes) {
         ::fprintf(stderr,
             "WARN: session file is %.1f MB — startup may be slow. "
-            "Run /compact [agent] to trim histories.\n",
+            "Use /reset [agent] to clear histories.\n",
             raw.size() / (1024.0 * 1024.0));
     }
 
