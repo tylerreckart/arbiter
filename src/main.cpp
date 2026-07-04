@@ -1600,10 +1600,6 @@ int main(int argc, char* argv[]) {
             arbiter::cmd_enable_tenant(argv[2]);
             return 0;
         }
-        if (arg1 == "--tui-spike") {
-            arbiter::cmd_tui_spike();
-            return 0;
-        }
         if (arg1 == "--help" || arg1 == "-h" || arg1 == "help") {
             std::cout << BANNER;
             std::cout <<
@@ -1622,7 +1618,6 @@ int main(int argc, char* argv[]) {
                 "  arbiter --init [--force]           Initialize config + example agents\n"
                 "                                     --force overwrites existing ~/.arbiter/agents/*.json files;\n"
                 "                                     omit it to preserve user-edited agent definitions.\n"
-                "  arbiter --tui-spike                OpenTUI engine demo\n"
                 "  arbiter --help                     This help\n\n"
                 "Tenants (for --api):\n"
                 "  arbiter --add-tenant <name>        Provision a tenant + API key\n"

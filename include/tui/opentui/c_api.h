@@ -1,6 +1,7 @@
 #pragma once
 // Minimal C declarations for OpenTUI's native core (packages/core/src/zig/lib.zig).
-// Full ABI lives in the OpenTUI repo; this header covers Phase 0 spike surface.
+// Full ABI lives in the OpenTUI repo; this header covers the native calls used
+// by Arbiter's interactive renderer.
 
 #include <stdbool.h>
 #include <stdint.h>
