@@ -53,7 +53,7 @@ The agent runs the full orchestration loop internally (tool calls, sub-agent del
 
 **API (`--api`).** A long-running HTTP+SSE server. Real applications (web UIs, automations, mobile clients) call it instead of forking the binary per request. Multi-tenant: every request authenticates with a bearer token from `--add-tenant`, all conversations / artifacts / memory / scratchpads are tenant-scoped. See [`docs/api`](../api/index.md) for the endpoint catalogue.
 
-The three modes share the same on-disk state — agents under `~/.arbiter/agents/*.json`, API keys read from `~/.arbiter/api_key` (or env), provider keys at the same precedence everywhere. A change made in one mode is visible to the others on next launch.
+The three modes share the same on-disk state — agents under `~/.arbiter/agents/*.json`, the OpenRouter key from `OPENROUTER_API_KEY` or `~/.arbiter/openrouter_api_key`, and provider settings at the same precedence everywhere. A change made in one mode is visible to the others on next launch.
 
 ## Exit codes
 

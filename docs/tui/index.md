@@ -50,8 +50,7 @@ Per-user state lives under `~/.arbiter/`:
 
 | Path                       | What it is                                              |
 |----------------------------|---------------------------------------------------------|
-| `api_key`                  | Anthropic API key (used by all agents that hit Claude). |
-| `openai_api_key`           | OpenAI API key.                                         |
+| `openrouter_api_key`       | OpenRouter API key for hosted models.                   |
 | `agents/*.json`            | Agent constitutions — one file per agent.               |
 | `sessions/*.json`          | Per-cwd session snapshots (auto-saved on `/quit`).      |
 | `memory/<agent>/*.md`      | Per-agent persistent scratchpads (`/mem write`).        |
