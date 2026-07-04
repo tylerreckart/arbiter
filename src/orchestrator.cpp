@@ -68,6 +68,7 @@ std::string load_master_model_override() {
 
 std::string pick_master_model_default(
     const std::map<std::string, std::string>& keys) {
+    if (keys.count("openrouter")) return "~openai/gpt-latest";
     if (keys.count("anthropic")) return "claude-sonnet-4-6";
     if (keys.count("openai"))    return "openai/gpt-4.1";
     return {};

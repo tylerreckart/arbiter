@@ -1,10 +1,10 @@
 #pragma once
 // arbiter/include/api_client.h — Multi-provider LLM API client over raw TLS / TCP.
-// Routes requests by model-string prefix: bare "claude-*" → Anthropic Messages
-// API, "openai/<model>" → OpenAI Chat Completions, "ollama/<model>" → Ollama
-// (OpenAI-compatible /v1/chat/completions), "gemini/<model>" → Google Gemini
-// generateContent.  Adding a new provider is a prefix + one row in the provider
-// table in api_client.cpp.
+// Routes requests by model-string prefix: "ollama/<model>" → local Ollama
+// (OpenAI-compatible /v1/chat/completions).  All hosted model ids route through
+// OpenRouter's OpenAI-compatible chat endpoint, including canonical slugs like
+// "openai/...", "anthropic/...", "google/...", and the explicit
+// "openrouter/<slug>" prefix.
 
 #include "json.h"
 #include <string>
@@ -92,7 +92,7 @@ using StreamCallback = std::function<void(const std::string& chunk)>;
 struct Provider {
     enum Format { FORMAT_ANTHROPIC, FORMAT_OPENAI_CHAT, FORMAT_GEMINI };
 
-    std::string name;            // "anthropic", "ollama", …
+    std::string name;            // "openrouter", "ollama", …
     std::string prefix;          // match against req.model ("" = fallback)
     std::string host;
     int         port = 443;
@@ -112,7 +112,7 @@ const Provider& provider_for(const std::string& model);
 // tool emission.  Today that's local Ollama models; small local models
 // (qwen-7b, llama3-8b, etc.) don't reliably invoke tools from abstract
 // instructions the way frontier cloud models do.  Cloud providers
-// (Anthropic, OpenAI) are treated as tool-fluent.
+// (OpenRouter-hosted models) are treated as tool-fluent.
 bool is_weak_executor(const std::string& model);
 
 // Strip any provider prefix from a model string (e.g. "ollama/llama3:8b"
@@ -124,7 +124,7 @@ class ProviderCircuitBreaker;
 
 class ApiClient {
 public:
-    // Keys keyed by provider name ("anthropic", "openai", …).  Missing
+    // Keys keyed by provider name ("openrouter").  Missing
     // entries are fine — a request routed to a provider without a key
     // fails with a clear per-request error rather than refusing to
     // construct.  Values are zeroed on destruction.
@@ -161,10 +161,8 @@ public:
 
     // Pure helpers — request body builders.  Public so unit tests can verify
     // each provider's wire shape directly without spinning up a mock server.
-    // The openai builder needs the Provider to branch on name (OpenAI proper
-    // vs Ollama) — they share a wire format but differ on a handful of
-    // fields (max_completion_tokens, stream_options, reasoning-model
-    // temperature handling).
+    // The OpenAI-compatible builder branches on provider name (OpenRouter vs
+    // Ollama) because they share a wire format but differ on a few fields.
     static std::string build_body_anthropic(const ApiRequest& req, bool streaming);
     static std::string build_body_openai   (const Provider& prov,
                                             const ApiRequest& req, bool streaming);

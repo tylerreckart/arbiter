@@ -117,6 +117,23 @@ TEST_CASE("parse_host port 65536 overflows to default") {
     CHECK(r.port == 443);
 }
 
+TEST_CASE("provider routing sends hosted models through OpenRouter") {
+    CHECK(arbiter::provider_for("ollama/llama3.2").name == "ollama");
+    CHECK(arbiter::provider_for("openrouter/openai/gpt-5.2").name == "openrouter");
+    CHECK(arbiter::provider_for("openai/gpt-5.2").name == "openrouter");
+    CHECK(arbiter::provider_for("anthropic/claude-sonnet-4.5").name == "openrouter");
+    CHECK(arbiter::provider_for("claude-sonnet-4-6").name == "openrouter");
+}
+
+TEST_CASE("strip_model_prefix normalizes OpenRouter and Ollama model ids") {
+    CHECK(arbiter::strip_model_prefix("ollama/llama3.2") == "llama3.2");
+    CHECK(arbiter::strip_model_prefix("openrouter/openai/gpt-5.2") == "openai/gpt-5.2");
+    CHECK(arbiter::strip_model_prefix("openai/gpt-5.2") == "openai/gpt-5.2");
+    CHECK(arbiter::strip_model_prefix("gemini/gemini-3.1-flash-lite") ==
+          "google/gemini-3.1-flash-lite");
+    CHECK(arbiter::strip_model_prefix("claude-sonnet-4-6") == "anthropic/claude-sonnet-4-6");
+}
+
 // ---------------------------------------------------------------------------
 // Vision input — multipart body builder shapes
 // ---------------------------------------------------------------------------
@@ -246,6 +263,25 @@ TEST_CASE("openai body emits inline base64 as a data: URL") {
     CHECK(body.find("\"url\":\"data:image/png;base64,iVBORw0KGgo") !=
           std::string::npos);
     CHECK(body.find("\"type\":\"text\"") != std::string::npos);
+}
+
+TEST_CASE("openrouter body keeps canonical hosted model slug") {
+    ApiRequest req;
+    req.model      = "openrouter/openai/gpt-5.2";
+    req.max_tokens = 256;
+    Message m;
+    m.role = "user";
+    m.content = "hello";
+    req.messages.push_back(m);
+
+    Provider prov;
+    prov.name = "openrouter";
+    prov.format = Provider::FORMAT_OPENAI_CHAT;
+
+    auto body = ApiClient::build_body_openai(prov, req, /*streaming=*/true);
+    CHECK(body.find("\"model\":\"openai/gpt-5.2\"") != std::string::npos);
+    CHECK(body.find("\"stream\":true") != std::string::npos);
+    CHECK(body.find("\"stream_options\"") == std::string::npos);
 }
 
 TEST_CASE("openai body emits hosted-URL image directly") {

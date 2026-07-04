@@ -104,11 +104,11 @@ void PtySession::spawn(const std::vector<std::string>& argv) {
     bool has_home = false, has_key = false, has_term = false;
     for (auto& kv : env_) {
         if (kv.first == "HOME") has_home = true;
-        if (kv.first == "ANTHROPIC_API_KEY") has_key = true;
+        if (kv.first == "OPENROUTER_API_KEY") has_key = true;
         if (kv.first == "TERM") has_term = true;
     }
     if (!has_home) env_.emplace_back("HOME", home_dir_);
-    if (!has_key)  env_.emplace_back("ANTHROPIC_API_KEY", "dummy-key-no-network");
+    if (!has_key)  env_.emplace_back("OPENROUTER_API_KEY", "dummy-key-no-network");
     if (!has_term) env_.emplace_back("TERM", "xterm-256color");
 
     struct winsize ws{};
