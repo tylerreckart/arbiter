@@ -20,13 +20,11 @@ While waiting for the first byte from the model, the header status (right side o
 agent · my session                                  ⠋ thinking…
 ```
 
-This indicator runs on its own thread and updates at ~80 ms cadence. It clears the moment the first content chunk arrives. Token / cost stats from the previous turn stay hidden behind it; they re-appear when the turn ends.
+This indicator runs in the output pump and updates at ~80 ms cadence. It clears the moment the first content chunk arrives. Token / cost stats from the previous turn stay hidden behind it; they re-appear when the turn ends.
 
 ### 2. Streaming output
 
-Model deltas land in the scroll region as they arrive — character by character for short responses, sentence by sentence for longer ones depending on provider buffering. ANSI sequences from the model (it can emit colours) pass through; the scrollback ring stores them intact so PgUp redraws preserve formatting.
-
-Markdown rendering is piped through a server-side renderer: code fences get language-aware syntax colouring, headings render bold, lists keep their bullets. The rendered output is what lands in the scrollback; the raw markdown is not preserved.
+Model deltas land in the scroll region as they arrive — character by character for short responses, sentence by sentence for longer ones depending on provider buffering. Markdown rendering produces ANSI SGR sequences that `AnsiScrollAppender` maps to OpenTUI syntax highlights; PgUp redraw preserves colours.
 
 ### 3. Tool calls
 
@@ -79,7 +77,7 @@ Loops are useful for "watch this and report" patterns — a research agent polli
 ## What gets persisted
 
 In-memory only:
-- Scrollback (the visual ring buffer).
+- Scrollback (OpenTUI `TextBuffer` per pane).
 - Tool-call counters.
 - Pane layout.
 

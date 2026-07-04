@@ -35,6 +35,7 @@
 //     handing them to the tree.
 
 #include "repl/pane.h"
+#include "tui/opentui/c_api.h"
 #include "tui/tui.h"
 
 #include <functional>
@@ -54,12 +55,12 @@ public:
     LayoutTree(std::unique_ptr<Pane> first, const Rect& bounds);
     ~LayoutTree();
 
-    // Recompute every leaf's rect for a new outer bounds and repaint chrome.
-    // Clears the terminal to avoid stale chrome from prior layout.
+    // Recompute every leaf's rect for a new outer bounds.  Chrome is repainted
+    // by the output pump on the next frame.
     void resize(const Rect& bounds);
 
-    // Paint the separator characters between sibling panes.
-    void render_borders();
+    // Paint split separators between sibling panes into an OpenTUI frame.
+    void draw_borders(OpenTuiHandle frame) const;
 
     // Pre-order enumeration of leaves.
     void for_each_pane(const std::function<void(Pane&)>& fn);
@@ -121,7 +122,7 @@ public:
 private:
     void compute_bounds(Node& n, const Rect& r);
     void collect_leaves(Node& n, std::vector<Pane*>& out) const;
-    void render_borders_(Node& n);
+    void draw_borders_(const Node& n, OpenTuiHandle frame) const;
 
     std::unique_ptr<Node> root_;
     Pane*                 focused_ = nullptr;
