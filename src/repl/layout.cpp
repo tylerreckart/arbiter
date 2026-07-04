@@ -131,28 +131,14 @@ void LayoutTree::resize(const Rect& bounds) {
     }
 }
 
-bool LayoutTree::subtree_contains_(const Node& n, const Pane* target) {
-    if (n.is_leaf()) return n.pane.get() == target;
-    for (const auto& child : n.children) {
-        if (subtree_contains_(*child, target)) return true;
-    }
-    return false;
-}
-
 void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
     if (n.is_leaf() || frame == 0) return;
 
     const TuiDesign& d = tui_design();
-    const TuiRgba& gutter = d.border.gutter;
-    const TuiRgba& active = d.border.focus;
-    const TuiRgba& idle   = d.border.subtle;
+    const TuiRgba& gutter = d.bg.scroll;
 
     for (int i = 0; i + 1 < static_cast<int>(n.children.size()); ++i) {
         const Rect& left = n.children[i]->bounds;
-        const bool accent = subtree_contains_(*n.children[i], focused_)
-                         || subtree_contains_(*n.children[i + 1], focused_);
-        const TuiRgba& line = accent ? active : idle;
-        const std::uint16_t* line_ptr = line.data();
         const std::uint16_t* gutter_ptr = gutter.data();
 
         if (n.orient == Orient::Vertical) {
@@ -164,14 +150,6 @@ void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
                                1,
                                1,
                                gutter_ptr);
-                bufferDrawText(frame,
-                               d.border.vertical.data(),
-                               static_cast<std::uint32_t>(d.border.vertical.size()),
-                               static_cast<std::uint32_t>(sep_x),
-                               static_cast<std::uint32_t>(y),
-                               line_ptr,
-                               gutter_ptr,
-                               0);
             }
         } else {
             const int sep_y = left.y + left.h;
@@ -181,17 +159,6 @@ void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
                            static_cast<std::uint32_t>(n.bounds.w),
                            1,
                            gutter_ptr);
-            std::string dashes;
-            dashes.reserve(static_cast<size_t>(n.bounds.w) * d.border.horizontal.size());
-            for (int k = 0; k < n.bounds.w; ++k) dashes += d.border.horizontal;
-            bufferDrawText(frame,
-                           dashes.data(),
-                           static_cast<std::uint32_t>(dashes.size()),
-                           static_cast<std::uint32_t>(n.bounds.x),
-                           static_cast<std::uint32_t>(sep_y),
-                           line_ptr,
-                           gutter_ptr,
-                           0);
         }
     }
 

@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace arbiter::opentui {
 
@@ -48,7 +47,6 @@ private:
     int viewport_h_{0};
     int wrap_cols_{80};
 
-    std::vector<std::string> text_storage_;
     std::unique_ptr<AnsiScrollAppender> styled_append_;
 };
 

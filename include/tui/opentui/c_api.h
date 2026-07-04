@@ -24,6 +24,13 @@ void destroyRenderer(OpenTuiHandle renderer);
 void setUseThread(OpenTuiHandle renderer, bool use_thread);
 void setClearOnShutdown(OpenTuiHandle renderer, bool clear);
 void setBackgroundColor(OpenTuiHandle renderer, const uint16_t* color);
+typedef struct OpenTuiCursorStyleOptions {
+    uint8_t style;
+    bool blinking;
+    const uint16_t* color;
+    uint8_t cursor;
+} OpenTuiCursorStyleOptions;
+void setCursorStyleOptions(OpenTuiHandle renderer, const OpenTuiCursorStyleOptions* options);
 
 OpenTuiHandle getNextBuffer(OpenTuiHandle renderer);
 uint32_t getBufferWidth(OpenTuiHandle buffer);
@@ -70,6 +77,7 @@ OpenTuiHandle createTextBuffer(uint8_t width_method);
 void destroyTextBuffer(OpenTuiHandle buffer);
 uint32_t textBufferGetLength(OpenTuiHandle buffer);
 uint32_t textBufferGetByteSize(OpenTuiHandle buffer);
+void textBufferReset(OpenTuiHandle buffer);
 void textBufferClear(OpenTuiHandle buffer);
 void textBufferAppend(OpenTuiHandle buffer, const char* data, uint32_t data_len);
 

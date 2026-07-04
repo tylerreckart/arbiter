@@ -72,22 +72,25 @@ Example:
 {
   "preset": "modern",
   "bg": {
-    "base": "#161822",
-    "scroll": "#141721",
-    "input": "#212635"
+    "base": "#080808",
+    "scroll": "#0c0c0c",
+    "header": "#1a1a1a",
+    "input": "#1f1f1f"
   },
   "accent": {
-    "primary": "#7ac7ff"
+    "primary": "#f5a524"
   },
   "layout": {
-    "input_padding_x": 1,
+    "pane_padding_x": 1,
+    "input_padding_x": 2,
     "status_inset_x": 2,
     "show_footer": true,
     "status_pill": true
   },
   "component": {
-    "prompt": "> ",
-    "inactive_prompt": "> ",
+    "prompt": "",
+    "continuation_prompt": "… ",
+    "inactive_prompt": "",
     "footer_left_compact": "esc cancel  pg scroll",
     "footer_right_compact": "/help"
   }

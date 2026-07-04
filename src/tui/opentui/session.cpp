@@ -2,6 +2,7 @@
 #include "tui/opentui/c_api.h"
 
 #include "cli_helpers.h"
+#include "tui/tui_design.h"
 
 namespace arbiter::opentui {
 
@@ -16,6 +17,12 @@ void Session::start(std::uint32_t width, std::uint32_t height) {
     engine_ = new Engine(width, height);
     engine_->setup_terminal(true);
     engine_->set_render_offset(0);
+    OpenTuiCursorStyleOptions cursor{};
+    cursor.style = 0; // block
+    cursor.blinking = true;
+    cursor.color = tui_design().accent.primary.data();
+    cursor.cursor = 0;
+    setCursorStyleOptions(engine_->handle(), &cursor);
 }
 
 void Session::resize(std::uint32_t width, std::uint32_t height) {

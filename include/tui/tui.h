@@ -6,15 +6,16 @@
 // reads each frame.
 //
 // Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
-//   row 1              identity + status
+//   row 1              top padding
+//   rows 2..4          identity + status block
 //                      left:  agent (bold, colored) · title (dim)
 //                      right: status (when active) — else stats (dim)
-//   row 2              dim separator
-//   rows 3..h-3        scroll region (streamed model output lives here)
-//   row  h-2           mid separator above input (doubles as pre-input status)
-//   rows h-2..h-k-1    input area (1..kMaxInputRows, grows on wrap)
-//   row  h-1           dim separator above hint row
-//   row  h             hint row (key / command hints)
+//   rows 5..h-5        scroll region (streamed model output lives here)
+//   row  h-6           content padding / pre-input status
+//   rows h-6..h-3      input area (readline block)
+//   row  h-2           content padding below readline
+//   row  h-1           hint row (key / command hints)
+//   row  h             bottom padding
 //
 // All `*_row()` accessors return absolute 1-indexed terminal rows — they fold
 // in rect_.y for scroll/input placement in OpenTUI draw calls.
@@ -62,11 +63,11 @@ struct TuiChromeSnapshot {
 class TUI {
 public:
     // Chrome layout offsets WITHIN a pane (not absolute terminal rows).
-    // Header is 2 rows: identity+status, then separator.
-    static constexpr int kHeaderRows    = 2;
+    // Header is 4 rows: top padding, then a three-row header block.
+    static constexpr int kHeaderRows    = 4;
     static constexpr int kSepRows       = 1;   // mid separator above input area
-    static constexpr int kMaxInputRows  = 5;
-    static constexpr int kBottomPadRows = 2;   // hint separator + hint row
+    static constexpr int kMaxInputRows  = 7;
+    static constexpr int kBottomPadRows = 3;   // input spacer + hint row + bottom padding
 
     // Per-pane layout.  Rendering is handled by OpenTUI (see opentui::Session).
     void init(const std::string& agent,

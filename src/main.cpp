@@ -1389,7 +1389,9 @@ static void cmd_interactive(bool exec_allowed_flag) {
 
         std::string prompt = focused.multiline_accum.empty()
             ? focused.tui.build_prompt()
-            : "\001" + theme().prompt_color + "\002…\001" + theme().reset + "\002 ";
+            : "\001" + theme().prompt_color + "\002"
+                + arbiter::tui_design().component.continuation_prompt
+                + "\001" + theme().reset + "\002";
 
         std::string line;
         if (!focused.editor.read_line(prompt, line)) {
