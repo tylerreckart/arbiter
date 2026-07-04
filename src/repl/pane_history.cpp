@@ -50,10 +50,14 @@ void pane_history_draw_pane(Pane& pane, UiContext& ctx) {
     if (frame == 0) return;
 
     opentui::draw_pane_chrome(frame, pane.tui);
-    pane.scroll->draw(frame,
-                      pane.tui,
-                      pane.scroll_offset,
-                      pane.new_while_scrolled);
+    if (pane.welcome_visible) {
+        opentui::draw_welcome_card(frame, pane.tui);
+    } else {
+        pane.scroll->draw(frame,
+                          pane.tui,
+                          pane.scroll_offset,
+                          pane.new_while_scrolled);
+    }
     const bool focused = (&pane == ctx.focused_pane);
     pane.editor.draw(frame, pane.tui, focused);
 }

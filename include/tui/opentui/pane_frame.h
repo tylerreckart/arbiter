@@ -9,4 +9,7 @@ namespace arbiter::opentui {
 // OpenTUI frame buffer.  Does not draw scrollback — PaneScrollView handles that.
 void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui);
 
+// Centered welcome card drawn over the scroll region when a pane is fresh.
+void draw_welcome_card(OpenTuiHandle frame, const TUI& tui);
+
 } // namespace arbiter::opentui
