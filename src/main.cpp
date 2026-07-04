@@ -24,6 +24,8 @@
 #include "config.h"
 #include "repl/repl_argv.h"
 #include "tui/opentui/session.h"
+#include "tui/sidebar.h"
+#include "tui/opentui/sidebar_frame.h"
 
 #include <iostream>
 #include <string>
@@ -76,6 +78,7 @@ using arbiter::Pane;
 using arbiter::LayoutTree;
 using arbiter::PaneFrameHooks;
 using arbiter::Rect;
+using arbiter::SidebarState;
 
 // State the output-pump thread needs.  Points into cmd_interactive()'s stack
 // frame — lifetime is the REPL call.  Pane* is the only per-pane hook; the
@@ -88,7 +91,7 @@ static ReplGetcState g_getc_state;
 static arbiter::UiContext* g_ui_ctx = nullptr;
 
 // Set by each pane's exec thread at startup and left untouched thereafter.
-// Orchestrator callbacks (progress/tool-status/agent-start/compact) run
+// Orchestrator callbacks (progress/tool-status/agent-start) run
 // synchronously from whichever exec thread invoked orch.send_streaming, so
 // reading this thread-local gets the owning pane with zero synchronization.
 // Threads other than pane-exec (main, pump) leave it nullptr.
@@ -172,6 +175,18 @@ static void cmd_interactive(bool exec_allowed_flag) {
     };
     std::mutex                pending_closes_mu;
     std::vector<PendingClose> pending_closes;
+
+    SidebarState sidebar;
+    auto layout_bounds = []() -> Rect {
+        const int cols = arbiter::term_cols();
+        const int rows = arbiter::term_rows();
+        const int sw = SidebarState::width_for_terminal(cols);
+        return Rect{0, 0, std::max(1, cols - sw), rows};
+    };
+    auto refresh_pane_header = [&](Pane& p) {
+        p.tui.update(p.current_agent, p.current_model,
+                     sidebar.header_stats_line(), agent_color(p.current_agent));
+    };
 
     // Session key is cwd-scoped so history doesn't bleed across repos.
     auto cwd_session_key = []() -> std::string {
@@ -269,14 +284,14 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 bool only_cmd = (buf.find(' ') == std::string::npos);
                 if (only_cmd || buf.empty()) {
                     return match({"/send","/ask","/use","/agents","/status","/tokens",
-                                  "/create","/remove","/reset","/compact","/model",
+                                  "/create","/remove","/reset","/model",
                                   "/pane",
                                   "/loop","/loops","/log","/watch",
                                   "/kill","/suspend","/resume","/inject",
                                   "/fetch","/mem","/plan","/verbose","/quit","/help"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
-                    cmd == "reset" || cmd == "compact" || cmd == "pane") {
+                    cmd == "reset" || cmd == "pane") {
                     auto agents = orch.list_agents();
                     agents.push_back("index");
                     return match(agents);
@@ -342,15 +357,16 @@ static void cmd_interactive(bool exec_allowed_flag) {
     orch.set_tool_status_callback([&](const std::string& kind, bool ok) {
         Pane* p = g_active_pane;
         if (p) p->tool_indicator.bump(kind, ok);
+        sidebar.record_tool(kind, ok);
+    });
+    orch.set_cost_callback([&](const std::string& agent_id,
+                                 const std::string& model,
+                                 const arbiter::ApiResponse& resp) {
+        sidebar.record_turn(agent_id, model, resp);
     });
     orch.set_agent_start_callback([&](const std::string& agent_id) {
         Pane* p = g_active_pane;
         if (p) p->thinking.start(agent_id + ": thinking");
-    });
-    orch.set_compact_callback([&](const std::string& agent_id, size_t n) {
-        Pane* p = g_active_pane;
-        if (p) p->tui.set_status(agent_id + ": compacting context (" +
-                                 std::to_string(n) + " msgs)");
     });
     orch.set_escalation_callback([&](const std::string& agent_id,
                                       int /*stream_id*/,
@@ -398,8 +414,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
     });
 
     // ── Layout + initial pane ──────────────────────────────────────────────
-    Rect full_rect{0, 0, arbiter::term_cols(), arbiter::term_rows()};
-    LayoutTree layout(make_pane(), full_rect);
+    LayoutTree layout(make_pane(), layout_bounds());
     layout_ptr = &layout;
 
     PaneFrameHooks pane_hooks;
@@ -408,6 +423,17 @@ static void cmd_interactive(bool exec_allowed_flag) {
     };
     pane_hooks.draw_overlays = [&](OpenTuiHandle frame) {
         if (layout.pane_count() > 1) layout.draw_borders(frame);
+        const Rect sb = SidebarState::rect_for_terminal(arbiter::term_cols(),
+                                                        arbiter::term_rows());
+        if (sb.w > 0) {
+            Pane& focused = layout.focused();
+            sidebar.set_focus_context(focused.current_agent,
+                                      focused.current_model,
+                                      focused.original_task);
+            sidebar.set_active_tool_calls(focused.tool_indicator.total());
+            const arbiter::SidebarSnapshot snap = sidebar.snapshot();
+            arbiter::opentui::draw_sidebar(frame, snap, sb, focused.tui.chrome_snapshot());
+        }
     };
     auto present_unlocked = [&]() {
         pane_history_present(ui_ctx, pane_hooks);
@@ -417,14 +443,8 @@ static void cmd_interactive(bool exec_allowed_flag) {
         present_unlocked();
     };
 
-    // Welcome card goes in the initial pane only.  Subsequent splits get a
-    // clean start (no welcome), since splitting is an explicit user action.
-    {
-        Pane& welcome_pane = layout.focused();
-        const std::string welcome = welcome_pane.tui.build_welcome_card();
-        pane_history_push(welcome_pane, welcome);
-        present_unlocked();
-    }
+    // Initial pane shows the welcome overlay until the user types or splits.
+    present_unlocked();
 
     // Exec-capability warning — list any agents that can run shell commands.
     // Queued here so the pump thread renders it below the welcome card on its
@@ -485,7 +505,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 return;
             }
             if (cmd == "tokens") {
-                output_queue.push_msg("token stats: not available");
+                output_queue.push_msg(sidebar.tokens_report());
                 return;
             }
             if (cmd == "use" || cmd == "switch") {
@@ -495,7 +515,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     current_agent = id;
                     current_model = orch.get_agent_model(id);
                     pane.original_task.clear();
-                    tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
+                    refresh_pane_header(pane);
                 } else {
                     output_queue.push_msg("ERR: no agent '" + id + "'");
                 }
@@ -527,7 +547,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     // the next message.
                     output_queue.end_message();
                     if (resp.ok) {
-                        tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
+                        refresh_pane_header(pane);
                         maybe_generate_title(msg, resp.content);
                     } else {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
@@ -581,7 +601,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     if (!tool_summary.empty()) output_queue.push(tool_summary);
                     output_queue.end_message();
                     if (resp.ok) {
-                        tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
+                        refresh_pane_header(pane);
                         maybe_generate_title(query, resp.content);
                     } else {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
@@ -622,27 +642,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     orch.get_agent(id).reset_history();
                     output_queue.push_msg("History cleared: " + id);
                 } catch (const std::exception& e) {
-                    output_queue.push_msg("ERR: " + std::string(e.what()));
-                }
-                return;
-            }
-            if (cmd == "compact") {
-                std::string id;
-                iss >> id;
-                if (id.empty()) id = current_agent;
-                thinking.start("compacting");
-                try {
-                    std::string summary = orch.compact_agent(id);
-                    thinking.stop();
-                    if (summary.empty()) {
-                        output_queue.push_msg("Nothing to compact: " + id + " has no history.");
-                    } else {
-                        output_queue.push_msg(
-                            "\033[2m[compacted — context window cleared, summary held in session]" + theme().reset + "\n"
-                            "\033[2m" + summary + theme().reset + "");
-                    }
-                } catch (const std::exception& e) {
-                    thinking.stop();
                     output_queue.push_msg("ERR: " + std::string(e.what()));
                 }
                 return;
@@ -786,7 +785,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     thinking.stop();
                     if (resp.ok) {
                         output_queue.push_msg(arbiter::render_markdown(resp.content));
-                        tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
+                        refresh_pane_header(pane);
                     } else {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
                     }
@@ -851,7 +850,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                         thinking.stop();
                         if (resp.ok) {
                             output_queue.push_msg(arbiter::render_markdown(resp.content));
-                            tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
+                            refresh_pane_header(pane);
                         } else {
                             output_queue.push_msg("ERR: " + resp.error);
                         }
@@ -939,7 +938,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     "  /create <id>                     — create agent with default config\n"
                     "  /remove <id>                     — remove agent\n"
                     "  /reset [id]                      — clear an agent's history (default: focused)\n"
-                    "  /compact [id]                    — summarize + clear history (session memory)\n"
                     "  /model <agent> <model-id>        — change agent model at runtime\n"
                     "\n"
                     "Panes  (each pane is an independent conversation view)\n"
@@ -1029,7 +1027,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                                          : ("ERR: " + resp.error);
             update_pane_original_task(pane, line, resp);
             if (resp.ok) {
-                tui.update(current_agent, current_model, std::string(), agent_color(current_agent));
+                refresh_pane_header(pane);
                 maybe_generate_title(line, resp.content);
             } else {
                 output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
@@ -1121,8 +1119,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 if (!p) return p;
                 p->current_agent = captured_agent;
                 p->current_model = orch.get_agent_model(captured_agent);
-                p->tui.update(p->current_agent, p->current_model, "",
-                              agent_color(p->current_agent));
+                refresh_pane_header(*p);
                 p->welcome_visible = false;
                 pane_history_clear(*p);
                 return p;
@@ -1214,8 +1211,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
             std::unique_lock<std::recursive_mutex> lk(layout_mu);
             if (g_winch) {
                 g_winch = 0;
-                Rect r{0, 0, arbiter::term_cols(), arbiter::term_rows()};
-                layout.resize(r);
+                layout.resize(layout_bounds());
                 layout.for_each_pane([&](Pane& p) {
                     pane_history_set_cols(p, p.tui.cols());
                 });
