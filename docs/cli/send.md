@@ -65,7 +65,8 @@ arbiter --send reviewer "$(git diff main...HEAD)" \
 
 The same precedence as the other modes (see [environment.md](environment.md)):
 
-1. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env vars (preferred for scripts).
-2. `~/.arbiter/api_key` / `~/.arbiter/openai_api_key` files.
+1. `OPENROUTER_API_KEY` env var for hosted models (preferred for scripts).
+2. `~/.arbiter/openrouter_api_key` file.
+3. `OLLAMA_HOST` plus an `ollama/<model>` id for local models.
 
 If a script can't find a key, the agent's first model call fails with `ERR: <provider-error>` and the process exits `1`. There's no interactive prompt.

@@ -35,8 +35,7 @@ std::string get_memory_dir();
 //   found, printing setup instructions for every supported provider.
 //
 // Currently:
-//   anthropic → ANTHROPIC_API_KEY | ~/.arbiter/api_key
-//   openai    → OPENAI_API_KEY    | ~/.arbiter/openai_api_key
+//   openrouter → OPENROUTER_API_KEY | ~/.arbiter/openrouter_api_key
 std::map<std::string, std::string> get_api_keys();
 
 // Thin wrappers: commands.cpp's cmd_mem_*/cmd_fetch but with memory_dir

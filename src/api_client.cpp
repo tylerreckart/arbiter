@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <string_view>
 
 #include <unistd.h>
 #include <sys/mman.h>
@@ -23,7 +24,8 @@ namespace arbiter {
 
 // ─── Provider registry ────────────────────────────────────────────────────────
 // First entry whose `prefix` matches the model string wins; empty prefix = catch-all.
-// Ollama host is OLLAMA_HOST (default http://localhost:11434).
+// Ollama stays local via OLLAMA_HOST (default http://localhost:11434); hosted
+// models route through OpenRouter's OpenAI-compatible chat endpoint.
 
 namespace {
 
@@ -58,16 +60,16 @@ static ParsedHost parse_host(const std::string& s,
     return r;
 }
 
-static Provider make_anthropic_provider() {
+static Provider make_openrouter_provider(const std::string& prefix = "") {
     Provider p;
-    p.name = "anthropic";
-    p.prefix = "";                      // catch-all; also matches "claude-…"
-    p.host = "api.anthropic.com";
+    p.name = "openrouter";
+    p.prefix = prefix;
+    p.host = "openrouter.ai";
     p.port = 443;
-    p.path = "/v1/messages";
+    p.path = "/api/v1/chat/completions";
     p.tls = true;
     p.uses_api_key = true;
-    p.format = Provider::FORMAT_ANTHROPIC;
+    p.format = Provider::FORMAT_OPENAI_CHAT;
     return p;
 }
 
@@ -86,45 +88,48 @@ static Provider make_ollama_provider() {
     return p;
 }
 
-static Provider make_openai_provider() {
-    Provider p;
-    p.name = "openai";
-    p.prefix = "openai/";
-    p.host = "api.openai.com";
-    p.port = 443;
-    p.path = "/v1/chat/completions";
-    p.tls = true;
-    p.uses_api_key = true;
-    p.format = Provider::FORMAT_OPENAI_CHAT;
-    return p;
-}
-
-static Provider make_gemini_provider() {
-    Provider p;
-    p.name = "gemini";
-    p.prefix = "gemini/";
-    p.host = "generativelanguage.googleapis.com";
-    p.port = 443;
-    // The static `path` field is unused for Gemini — the model id is part
-    // of the URL (`/v1beta/models/<model>:generateContent`), so the actual
-    // path is computed per-request in path_for() and passed to send_request
-    // by complete() / stream().
-    p.path = "/v1beta/models";
-    p.tls = true;
-    p.uses_api_key = true;
-    p.format = Provider::FORMAT_GEMINI;
-    return p;
-}
-
 // NOTE: order matters — longest/most-specific prefix first, fallback last.
 static const std::vector<Provider>& registry() {
     static const std::vector<Provider> kProviders = {
-        make_openai_provider(),
         make_ollama_provider(),
-        make_gemini_provider(),
-        make_anthropic_provider(),
+        make_openrouter_provider("openrouter/"),
+        make_openrouter_provider(),
     };
     return kProviders;
+}
+
+static bool starts_with(const std::string& s, const char* prefix) {
+    const std::string_view p(prefix);
+    return s.size() >= p.size() && s.compare(0, p.size(), p) == 0;
+}
+
+static std::string strip_known_prefix(const std::string& model, const char* prefix) {
+    return starts_with(model, prefix) ? model.substr(std::strlen(prefix)) : model;
+}
+
+static std::string openrouter_model_id(const std::string& model) {
+    std::string m = strip_known_prefix(model, "openrouter/");
+    if (starts_with(m, "claude-")) return "anthropic/" + m;
+    if (starts_with(m, "gemini/")) return "google/" + m.substr(std::strlen("gemini/"));
+    return m;
+}
+
+static std::string model_for_provider_request(const Provider& p,
+                                              const std::string& model) {
+    if (p.name == "openrouter") return openrouter_model_id(model);
+    if (!p.prefix.empty() && starts_with(model, p.prefix.c_str())) {
+        return model.substr(p.prefix.size());
+    }
+    return model;
+}
+
+static std::string header_value_from_env(const char* env_var,
+                                         const char* fallback) {
+    const char* v = std::getenv(env_var);
+    std::string out = (v && v[0]) ? v : fallback;
+    out.erase(std::remove(out.begin(), out.end(), '\r'), out.end());
+    out.erase(std::remove(out.begin(), out.end(), '\n'), out.end());
+    return out;
 }
 
 } // namespace
@@ -145,23 +150,21 @@ const Provider& provider_for(const std::string& model) {
 
 bool is_weak_executor(const std::string& model) {
     // Local small models need the tool-vocabulary-first prompt profile;
-    // frontier cloud models (Anthropic, OpenAI) follow abstract tool
+    // frontier hosted models follow abstract tool
     // instructions reliably.
     return provider_for(model).name == "ollama";
 }
 
 std::string strip_model_prefix(const std::string& model) {
     const auto& p = provider_for(model);
-    if (!p.prefix.empty() && model.compare(0, p.prefix.size(), p.prefix) == 0)
-        return model.substr(p.prefix.size());
-    return model;
+    return model_for_provider_request(p, model);
 }
 
 // Gemini embeds model + action in the URL; other providers use a static path.
 static std::string path_for(const Provider& p, const ApiRequest& req,
                              bool streaming) {
     if (p.format != Provider::FORMAT_GEMINI) return p.path;
-    const std::string model = strip_model_prefix(req.model);
+    const std::string model = model_for_provider_request(p, req.model);
     return std::string("/v1beta/models/") + model +
            (streaming ? ":streamGenerateContent?alt=sse"
                       : ":generateContent");
@@ -510,7 +513,7 @@ std::string ApiClient::build_body_openai(const Provider& prov,
     // reasoning models).  Ollama keeps the classic `max_tokens`.  Reasoning
     // models also reject non-default `temperature`, so we drop it for them.
     const bool is_openai = (prov.name == "openai");
-    const std::string stripped = strip_model_prefix(req.model);
+    const std::string stripped = model_for_provider_request(prov, req.model);
 
     // Reasoning-model detection: "o<digit>..." (o3, o4-mini, …).
     auto is_reasoning_model = [](const std::string& m) {
@@ -715,6 +718,17 @@ void ApiClient::send_request(const Provider& p, Conn& c,
             http << "x-goog-api-key: " << key_sensitive.value << "\r\n";
         } else {
             http << "Authorization: Bearer " << key_sensitive.value << "\r\n";
+            if (p.name == "openrouter") {
+                const std::string referer = header_value_from_env(
+                    "ARBITER_OPENROUTER_REFERER",
+                    "https://github.com/tylerreckart/arbiter");
+                const std::string title = header_value_from_env(
+                    "ARBITER_OPENROUTER_TITLE",
+                    "Arbiter");
+                http << "HTTP-Referer: " << referer << "\r\n";
+                http << "X-OpenRouter-Title: " << title << "\r\n";
+                http << "X-OpenRouter-Categories: cli-agent,cloud-agent\r\n";
+            }
         }
     }
     http << "Content-Length: " << body.size() << "\r\n";

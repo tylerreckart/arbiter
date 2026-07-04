@@ -8,8 +8,8 @@
 // than a parsed screen — most TUI regressions are visible at the byte level.
 //
 // Isolation: every session gets a private temp HOME so the real ~/.arbiter
-// isn't touched, and ANTHROPIC_API_KEY=dummy so index refuses to make live
-// API calls.  Session files land in the temp HOME and get blown away on
+// isn't touched. A dummy OpenRouter key suppresses first-run setup; tests avoid
+// live model calls. Session files land in the temp HOME and get blown away on
 // destruct.
 //
 // NOT thread-safe; each test owns its own PtySession.
