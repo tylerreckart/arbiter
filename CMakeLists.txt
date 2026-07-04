@@ -209,6 +209,8 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/pane_scroll_view.cpp
     src/tui/opentui/ansi_scroll_append.cpp
     src/tui/opentui/pane_input_editor.cpp
+    src/tui/sidebar.cpp
+    src/tui/opentui/sidebar_frame.cpp
     src/tui/opentui/pane_frame.cpp
 )
 target_link_libraries(arbiter PRIVATE OpenTUI::core)

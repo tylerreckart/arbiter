@@ -23,7 +23,6 @@ Plain text (no leading `/`) is treated as a message to the focused pane's curren
 | `/create <id>`                 | Create an agent with default config; opens `~/.arbiter/agents/<id>.json` for edit. |
 | `/remove <id>`                 | Remove an agent (deletes the JSON; history in memory is dropped).   |
 | `/reset [id]`                  | Clear an agent's conversation history. Default target is the focused pane's agent. |
-| `/compact [id]`                | Summarize and clear history. Keeps a system-message synopsis at the head of the new context. |
 | `/model <agent> <model-id>`    | Change an agent's model at runtime without editing the JSON.        |
 
 ## Panes

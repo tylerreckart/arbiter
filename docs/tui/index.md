@@ -6,7 +6,7 @@ Rendering uses [OpenTUI](https://github.com/anomalyco/opentui) (native cell-buff
 
 A pane is to a conversation what a tab is to a browser. A new pane is a new conversation against an agent of your choosing; multiple panes run side-by-side or stacked, each independently typing, streaming, and waiting for its agent. Background loops (long-running agent processes) live alongside; foreground panes can spawn child panes (`/pane <agent> <msg>`) whose results land back in the spawner when done.
 
-Start with `arbiter`. The default layout is a single pane covering the full terminal; `Ctrl-w v` / `Ctrl-w s` splits it.
+Start with `arbiter`. The default layout is a single pane covering the main terminal area; a right-hand **sidebar** shows session usage, the focused pane's active task, and recent tool/MCP activity when the terminal is wide enough (≥96 columns). `Ctrl-w v` / `Ctrl-w s` splits the main area.
 
 ## Screen anatomy
 
@@ -35,6 +35,17 @@ What lives where:
 - **Mid separator.** Dashed line above the input. Doubles as the tool-call indicator: while a turn is firing tool calls, this row shows `⠋ N tool calls…` instead of plain dashes.
 - **Input area.** 1 row by default, grows up to 5 as text wraps. Standard editing controls (arrows, history, tab-complete on slash commands). Rendered by OpenTUI `EditBuffer` / `EditorView`.
 - **Hint row.** Static legend of the most-used keys and commands. Hidden in multi-pane layouts (becomes clutter on every pane); the rows are still reserved as blank padding so input row position doesn't shift between modes.
+
+### Sidebar (wide terminals)
+
+When the terminal is at least 96 columns wide, a fixed right column (~24–28 cols) shows live session telemetry without cluttering the scroll region:
+
+- **Usage** — cumulative input/output tokens, estimated cost, turn count, and the last model used.
+- **Task** — the focused pane's pinned original task (advisor-gated work), or its current agent/model when idle.
+- **Tools** — recent non-MCP tool calls (`/fetch`, `/exec`, `/write`, …) with ✓/✗ status; shows a live count while a turn is running tools.
+- **MCP** — recent `/mcp` invocations, listed separately.
+
+Token totals also appear in the pane header stats row (right side of row 1) when idle. `/tokens` prints the full breakdown in scrollback.
 
 ## Where to next
 

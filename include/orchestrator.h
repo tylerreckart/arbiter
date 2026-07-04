@@ -43,9 +43,6 @@ public:
     using AgentStartCallback = std::function<void(const std::string& agent_id)>;
     void set_agent_start_callback(AgentStartCallback cb);
 
-    using CompactCallback = Agent::CompactCallback;
-    void set_compact_callback(CompactCallback cb);
-
     // Gate for destructive actions (/write, /exec). Unset ⇒ proceed without prompting.
     // Must be thread-safe vs the REPL thread.
     void set_confirm_callback(ConfirmFn cb) { confirm_cb_ = std::move(cb); }
@@ -253,11 +250,6 @@ public:
     // Global stats
     std::string global_status() const;
 
-    // Context compaction — summarize and clear one agent's history.
-    // Returns the summary text, or "" if history was empty or the API call failed.
-    // Works for "index" (master) and any loaded agent.
-    std::string compact_agent(const std::string& agent_id);
-
     // ── Plan execution ──────────────────────────────────────────────────────────
     // Parse a plan markdown file (produced by the planner agent) and execute each
     // phase deterministically.  Phases run in dependency order; each phase's output
@@ -347,7 +339,6 @@ private:
     ProgressCallback   progress_cb_;
     CostCallback       cost_cb_;
     AgentStartCallback start_cb_;
-    CompactCallback    compact_cb_;
     ConfirmFn          confirm_cb_;
     ToolStatusFn       tool_status_cb_;
     PaneSpawner        pane_spawner_cb_;
