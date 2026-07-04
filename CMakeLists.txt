@@ -205,7 +205,6 @@ target_link_libraries(arbiter PRIVATE
 
 target_sources(arbiter PRIVATE
     src/tui/opentui/engine.cpp
-    src/tui/opentui/spike.cpp
     src/tui/opentui/session.cpp
     src/tui/opentui/pane_scroll_view.cpp
     src/tui/opentui/ansi_scroll_append.cpp
