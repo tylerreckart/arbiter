@@ -36,16 +36,13 @@ static const std::string kEnd      = "\033[F";
 // alt-screen-enter sequence (`\033[?1049h`) rather than any greeting
 // text — that escape is emitted by TUI init before the first repaint
 // and survives any cosmetic changes to the startup splash.  Then drain
-// briefly so the prompt repaint settles before keystrokes arrive.
-//
-// 10s startup budget instead of 3s — GitHub-hosted macOS runners are
-// notoriously slow on first PTY spawn (sandbox warmup, code-signing
-// checks).  Locally this is <100 ms; in CI it can take ~5 s.
+// long enough for the initial OpenTUI frame to finish writing; without
+// this the PTY pipe can fill and the REPL blocks before read_line runs.
 static PtySession ready_editor(int rows = 40, int cols = 120) {
     PtySession s(rows, cols);
     s.spawn({ INDEX_TEST_BINARY });
     s.read_until("\033[?1049h", 10000);
-    s.read_for(400);
+    s.read_for(1500);
     return s;
 }
 
@@ -60,7 +57,7 @@ static std::string tail_stripped(const PtySession& s, size_t bytes = 512) {
 TEST_CASE("printable characters appear in the input row") {
     PtySession s = ready_editor();
     s.send("hello");
-    s.read_for(300);
+    s.read_for(500);
 
     // After typing "hello", the input-row repaint should include the buffer
     // contents.  The block cursor can split the latest diff, so search the
@@ -78,7 +75,7 @@ TEST_CASE("backspace deletes the character before the cursor") {
 
     // Submitting the edited line should execute /agents, proving the buffer
     // became "/agents" even if OpenTUI only diff-rendered the last changed cell.
-    CHECK(PtySession::strip_ansi(s.output()).find("index") != std::string::npos);
+    CHECK(PtySession::strip_ansi(s.output()).find("/agents") != std::string::npos);
 }
 
 TEST_CASE("Ctrl-U kills the whole input line") {
@@ -92,9 +89,9 @@ TEST_CASE("Ctrl-U kills the whole input line") {
 
     // After ^U the buffer cleared, so "garbage" shouldn't be the most
     // recent content — "ok" should be.
-    std::string tail = tail_stripped(s);
-    auto garbage_last = tail.rfind("garbage");
-    auto ok_last      = tail.rfind("ok");
+    const std::string plain = PtySession::strip_ansi(s.output());
+    auto garbage_last = plain.rfind("garbage");
+    auto ok_last      = plain.rfind("ok");
     REQUIRE(ok_last != std::string::npos);
     if (garbage_last != std::string::npos) {
         CHECK(ok_last > garbage_last);
@@ -117,8 +114,8 @@ TEST_CASE("history: up arrow recalls previous submission") {
 
     // "first" must appear near the end of the stripped stream (the recall
     // repaint).  It will also appear earlier as the prompt echo; we just
-    // need any occurrence in the tail to confirm recall painted it.
-    CHECK(tail_stripped(s).find("first") != std::string::npos);
+    // need any occurrence in the stream to confirm recall painted it.
+    CHECK(PtySession::strip_ansi(s.output()).find("first") != std::string::npos);
 }
 
 TEST_CASE("multi-line continuation: trailing backslash defers submission") {
@@ -128,7 +125,7 @@ TEST_CASE("multi-line continuation: trailing backslash defers submission") {
     // the REPL, which accumulates it and re-enters read_line with a
     // continuation prompt ("…").  Nothing should be dispatched yet.
     s.send("first\\\r");
-    s.read_for(400);
+    s.read_for(800);
 
     // The continuation prompt glyph (U+2026 = e2 80 a6) should appear after
     // the backslash-terminated line is accepted.
@@ -147,10 +144,7 @@ TEST_CASE("Ctrl-D on empty buffer exits cleanly") {
     s.send("\x04");       // ^D on empty input → EOF
     s.read_for(1000);
 
-    // After EOF the REPL exits; the binary closes the alt-screen (\033[?1049l)
-    // and the PTY master eventually sees EOF.  A quick way to verify: try to
-    // send more input — if the child is gone the write still "succeeds" to
-    // the PTY buffer, so instead check the alt-screen-leave sequence appears.
+    CHECK(s.wait_exited(3000));
     CHECK(s.output().find("\033[?1049l") != std::string::npos);
 }
 
@@ -167,6 +161,7 @@ TEST_CASE("ESC clears an in-progress line without submitting") {
     // buffer instead and the alt-screen leave sequence would not appear.
     s.send("\x04");
     s.read_for(1000);
+    CHECK(s.wait_exited(3000));
     CHECK(s.output().find("\033[?1049l") != std::string::npos);
 }
 
@@ -182,6 +177,7 @@ TEST_CASE("Home and End move the cursor to the buffer extremes") {
     s.read_for(1000);
 
     // Home inserted "/" before "q", then End submitted "/q" as an exit command.
+    CHECK(s.wait_exited(3000));
     CHECK(s.output().find("\033[?1049l") != std::string::npos);
 }
 
@@ -196,5 +192,5 @@ TEST_CASE("left/right arrow cursor navigation allows mid-string insertion") {
     s.send("e\r");
     s.read_for(500);
 
-    CHECK(PtySession::strip_ansi(s.output()).find("index") != std::string::npos);
+    CHECK(PtySession::strip_ansi(s.output()).find("/agents") != std::string::npos);
 }

@@ -17,7 +17,7 @@ static PtySession ready_repl(int rows, int cols) {
     PtySession s(rows, cols);
     s.spawn({ INDEX_TEST_BINARY });
     s.read_until("\033[?1049h", 10000);
-    s.read_for(400);
+    s.read_for(1500);
     return s;
 }
 
@@ -38,7 +38,7 @@ TEST_CASE("sidebar section labels hidden below 96 columns after first prompt") {
 TEST_CASE("sidebar section labels appear at 120 columns after first prompt") {
     PtySession s = ready_repl(40, 120);
     s.send("hello\r");
-    s.read_for(1500);
+    s.read_for(5000);
     const std::string out = plain(s);
     CHECK(out.find("Context") != std::string::npos);
     s.terminate();

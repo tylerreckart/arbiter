@@ -59,15 +59,18 @@ PtySession::PtySession(PtySession&& o) noexcept
       cols_(o.cols_),
       env_(std::move(o.env_)),
       output_(std::move(o.output_)),
-      home_dir_(std::move(o.home_dir_)) {
+      home_dir_(std::move(o.home_dir_)),
+      drain_thread_(std::move(o.drain_thread_)),
+      drain_stop_(o.drain_stop_.load()) {
     o.master_fd_ = -1;
     o.pid_       = -1;
-    o.home_dir_.clear();    // prevent rm_rf from the moved-from destructor
+    o.home_dir_.clear();
+    o.drain_stop_ = true;
 }
 
 PtySession& PtySession::operator=(PtySession&& o) noexcept {
     if (this == &o) return *this;
-    // Release anything we were holding, then take ownership of o's state.
+    stop_drain_thread();
     terminate();
     if (master_fd_ >= 0) ::close(master_fd_);
     rm_rf(home_dir_);
@@ -77,19 +80,40 @@ PtySession& PtySession::operator=(PtySession&& o) noexcept {
     rows_      = o.rows_;
     cols_      = o.cols_;
     env_       = std::move(o.env_);
-    output_    = std::move(o.output_);
+    {
+        std::lock_guard<std::mutex> lk(output_mu_);
+        output_ = std::move(o.output_);
+    }
     home_dir_  = std::move(o.home_dir_);
+    drain_thread_ = std::move(o.drain_thread_);
+    drain_stop_ = o.drain_stop_.load();
 
     o.master_fd_ = -1;
     o.pid_       = -1;
     o.home_dir_.clear();
+    o.drain_stop_ = true;
     return *this;
 }
 
 PtySession::~PtySession() {
+    stop_drain_thread();
     terminate();
     if (master_fd_ >= 0) ::close(master_fd_);
     if (!home_dir_.empty()) rm_rf(home_dir_);
+}
+
+void PtySession::start_drain_thread() {
+    drain_stop_ = false;
+    drain_thread_ = std::thread([this]() {
+        while (!drain_stop_.load()) {
+            drain_once(50);
+        }
+    });
+}
+
+void PtySession::stop_drain_thread() {
+    drain_stop_ = true;
+    if (drain_thread_.joinable()) drain_thread_.join();
 }
 
 void PtySession::env(const std::string& key, const std::string& value) {
@@ -152,6 +176,7 @@ void PtySession::spawn(const std::vector<std::string>& argv) {
 
     master_fd_ = master;
     pid_       = pid;
+    start_drain_thread();
 }
 
 int PtySession::drain_once(int timeout_ms) {
@@ -164,7 +189,10 @@ int PtySession::drain_once(int timeout_ms) {
     char buf[4096];
     ssize_t got = ::read(master_fd_, buf, sizeof(buf));
     if (got <= 0) return 0;
-    output_.append(buf, (size_t)got);
+    {
+        std::lock_guard<std::mutex> lk(output_mu_);
+        output_.append(buf, (size_t)got);
+    }
     return (int)got;
 }
 
@@ -177,16 +205,27 @@ std::string PtySession::read_for(int millis) {
         if (remaining <= 0) break;
         drain_once(std::min(remaining, 50));
     }
-    return output_;
+    return output();
+}
+
+const std::string& PtySession::output() const {
+    std::lock_guard<std::mutex> lk(output_mu_);
+    output_snapshot_ = output_;
+    return output_snapshot_;
 }
 
 std::string PtySession::read_until(const std::string& needle, int timeout_ms) {
     auto start = std::chrono::steady_clock::now();
-    while (output_.find(needle) == std::string::npos) {
+    while (true) {
+        {
+            std::lock_guard<std::mutex> lk(output_mu_);
+            if (output_.find(needle) != std::string::npos) return output_;
+        }
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - start).count();
         int remaining = timeout_ms - (int)elapsed;
         if (remaining <= 0) {
+            std::lock_guard<std::mutex> lk(output_mu_);
             throw std::runtime_error(
                 "read_until: timeout waiting for '" + needle + "' after "
                 + std::to_string(timeout_ms) + "ms; captured "
@@ -194,7 +233,6 @@ std::string PtySession::read_until(const std::string& needle, int timeout_ms) {
         }
         drain_once(std::min(remaining, 50));
     }
-    return output_;
 }
 
 void PtySession::send(const std::string& bytes) {
@@ -263,6 +301,23 @@ void PtySession::terminate() {
     int status = 0;
     ::waitpid(pid_, &status, 0);
     pid_ = -1;
+}
+
+bool PtySession::wait_exited(int timeout_ms) {
+    if (pid_ <= 0) return true;
+    auto start = std::chrono::steady_clock::now();
+    while (true) {
+        int status = 0;
+        pid_t r = ::waitpid(pid_, &status, WNOHANG);
+        if (r == pid_ || r < 0) {
+            pid_ = -1;
+            return true;
+        }
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - start).count();
+        if (elapsed >= timeout_ms) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
 
 } // namespace index_tests
