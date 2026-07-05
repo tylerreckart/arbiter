@@ -4,10 +4,17 @@
 #include "theme.h"
 #include <cctype>
 #include <cstring>
+#include <sstream>
 #include <string>
 #include <string_view>
 
 namespace arbiter {
+
+namespace {
+
+constexpr size_t kCodeBlockPreviewLines = 8;
+
+} // anonymous namespace
 
 // ─── ANSI primitives ─────────────────────────────────────────────────────────
 // Attribute-only escapes stay hard-coded — they're theme-agnostic (dim /
@@ -159,6 +166,36 @@ static size_t fence_ltrim(const std::string& line) {
     return i;
 }
 
+static bool is_fence_line(const std::string& line) {
+    const size_t lead = fence_ltrim(line);
+    const std::string_view view(line.data() + lead, line.size() - lead);
+    return view.size() >= 3 &&
+           (view.substr(0, 3) == "```" || view.substr(0, 3) == "~~~");
+}
+
+std::string MarkdownRenderer::render_buffered_code_block(const std::string& close_fence) {
+    std::string out;
+    if (!code_open_fence_.empty()) {
+        out += DIM;
+        out += code_open_fence_;
+        out += RST;
+        out += '\n';
+    }
+    for (const auto& body : code_buf_) {
+        out += theme().md_code;
+        out += body;
+        out += RST;
+        out += '\n';
+    }
+    if (!close_fence.empty()) {
+        out += DIM;
+        out += close_fence;
+        out += RST;
+        out += '\n';
+    }
+    return out;
+}
+
 std::string MarkdownRenderer::process_line(const std::string& line) {
     const size_t lead = fence_ltrim(line);
     const std::string_view view(line.data() + lead, line.size() - lead);
@@ -170,26 +207,41 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
             in_code_block_ = true;
             in_diff_block_ = is_diff_fence_lang(view.substr(3));
             diff_buf_.clear();
-            return in_diff_block_ ? std::string{} : std::string(DIM) + line + RST;
+            code_buf_.clear();
+            code_open_fence_ = line;
+            code_preview_emitted_ = false;
+            return std::string{};
         }
         if (in_diff_block_) {
             if (diff_sink_ && !diff_buf_.empty()) diff_sink_(diff_buf_);
             diff_buf_.clear();
             in_diff_block_ = false;
             in_code_block_ = false;
+            code_open_fence_.clear();
             return std::string{};
         }
+        std::string out = render_buffered_code_block(line);
+        code_buf_.clear();
+        code_open_fence_.clear();
+        code_preview_emitted_ = false;
         in_code_block_ = false;
-        return std::string(DIM) + line + RST;
+        return out;
     }
     if (in_diff_block_) {
         if (!diff_buf_.empty()) diff_buf_ += '\n';
         diff_buf_ += line;
         return std::string{};
     }
-    // Code block body.
+    // Non-diff fenced code block body — buffer until the closing fence.
     if (in_code_block_) {
-        return theme().md_code + line + RST;
+        code_buf_.push_back(line);
+        if (!code_preview_emitted_ &&
+            code_buf_.size() >= kCodeBlockPreviewLines) {
+            code_preview_emitted_ = true;
+            return std::string(DIM) + "  … (code block, " +
+                   std::to_string(code_buf_.size()) + "+ lines) …" + RST + "\n";
+        }
+        return std::string{};
     }
 
     // Empty line
@@ -307,8 +359,8 @@ std::string MarkdownRenderer::feed(const std::string& chunk) {
             const std::string line_out = process_line(line_buf_);
             if (!line_out.empty()) {
                 result += line_out;
-                result += '\n';
-            } else if (!was_in_diff && line_buf_.empty()) {
+                if (line_out.back() != '\n') result += '\n';
+            } else if (!was_in_diff && !in_code_block_ && line_buf_.empty()) {
                 result += '\n';
             }
             line_buf_.clear();
@@ -332,6 +384,14 @@ std::string MarkdownRenderer::flush() {
         diff_buf_.clear();
         in_diff_block_ = false;
         in_code_block_ = false;
+        code_open_fence_.clear();
+    } else if (in_code_block_ && !code_buf_.empty()) {
+        std::string result = render_buffered_code_block("");
+        code_buf_.clear();
+        code_open_fence_.clear();
+        code_preview_emitted_ = false;
+        in_code_block_ = false;
+        return result;
     }
     return {};
 }
@@ -341,6 +401,9 @@ void MarkdownRenderer::reset() {
     in_code_block_ = false;
     in_diff_block_ = false;
     diff_buf_.clear();
+    code_buf_.clear();
+    code_open_fence_.clear();
+    code_preview_emitted_ = false;
     seen_content_  = false;
 }
 
@@ -396,6 +459,53 @@ std::string render_diff_ansi(const std::string& patch) {
         start = end + 1;
     }
     return out;
+}
+
+std::string truncate_interim_output(const std::string& text,
+                                      size_t max_lines,
+                                      size_t max_chars) {
+    std::ostringstream out;
+    bool in_fence = false;
+    size_t lines = 0;
+    size_t chars = 0;
+    bool truncated = false;
+
+    std::istringstream ss(text);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (is_fence_line(line)) {
+            if (!in_fence) {
+                in_fence = true;
+                const std::string placeholder = "  … (fenced block) …";
+                if (lines >= max_lines || chars + placeholder.size() > max_chars) {
+                    truncated = true;
+                    break;
+                }
+                out << placeholder << '\n';
+                ++lines;
+                chars += placeholder.size() + 1;
+            } else {
+                in_fence = false;
+            }
+            continue;
+        }
+        if (in_fence) continue;
+
+        if (lines >= max_lines || chars + line.size() > max_chars) {
+            truncated = true;
+            break;
+        }
+        out << line << '\n';
+        ++lines;
+        chars += line.size() + 1;
+    }
+
+    std::string result = out.str();
+    if (truncated) {
+        if (!result.empty() && result.back() != '\n') result += '\n';
+        result += "  … [truncated — full result in synthesis turn]\n";
+    }
+    return result;
 }
 
 } // namespace arbiter

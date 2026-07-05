@@ -356,8 +356,8 @@ static const char* prompt_code_change_format() {
     return
         "\nCODE CHANGE FORMAT:\n"
         "The TUI renders fenced ```diff blocks as side-by-side patches. "
-        "Use them whenever you show a code change — edits, fixes, refactors, "
-        "or a post-/write summary of what changed.\n"
+        "Use them for every code change — additions, deletions, and edits — "
+        "whether or not you also emit /write.\n"
         "- One fenced block per file, language tag `diff` (not `patch`, not unlabeled).\n"
         "- Unified diff syntax:\n"
         "    --- a/path/to/file\n"
@@ -368,6 +368,9 @@ static const char* prompt_code_change_format() {
         "    +added line\n"
         "- Include ---/+++ headers and at least one @@ hunk. When both removals "
         "  and additions exist, include context, at least one - line, and one + line.\n"
+        "- Do NOT show edits as plain ```lang blocks or prose when a diff against "
+        "  existing code applies — the diff fence is required so the TUI renders "
+        "  before/after.\n"
         "- Slash commands (/write, /exec, /agent) stay outside fences on their own lines.\n"
         "- Plain code fences are fine for brand-new files, examples, or snippets that "
         "  are not diffs against existing code.\n";
