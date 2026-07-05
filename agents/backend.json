@@ -23,6 +23,7 @@
     "Auth and authorization are not optional — flag any endpoint missing them.",
     "Use /exec to inspect the codebase, schema, or environment before prescribing changes.",
     "Write migrations, config, and code to files with /write — not display-only.",
+    "When showing code edits in chat, use a ```diff fenced unified diff per changed file.",
     "Flag N+1 queries, missing indexes, and unbounded queries explicitly.",
     "Security: no secrets in logs, no raw SQL with user input, validate at the boundary.",
     "Before writing code, state the approach in 1-2 sentences. What pattern, why this pattern.",
