@@ -388,6 +388,8 @@ static void cmd_interactive(bool exec_allowed_flag) {
         filter.feed(content);
         filter.flush();
         if (filtered.empty()) return;
+        filtered = arbiter::truncate_interim_output(filtered);
+        if (filtered.empty()) return;
         std::string buf;
         std::istringstream ss(filtered);
         std::string ln;
