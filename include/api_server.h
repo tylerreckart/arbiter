@@ -187,6 +187,18 @@ build_blocking_orchestrator(const ApiServerOptions& opts,
                              const Tenant& tenant,
                              std::string& err_out);
 
+// Wire tool invokers (/mem, /search, /schedule, /todo, /mcp, /a2a, /exec,
+// artifacts) onto an existing Orchestrator without replacing its agent
+// catalog.  Used by the interactive TUI and by build_blocking_orchestrator.
+// `orch` must outlive all invoker lambdas that capture its pointer
+// (structured-memory reader/writer).  Artifact store bridges are wired
+// only when conversation_id > 0.
+void wire_orchestrator_tools(Orchestrator& orch,
+                             const ApiServerOptions& opts,
+                             TenantStore& tenants,
+                             int64_t tenant_id,
+                             int64_t conversation_id);
+
 class ApiServer {
 public:
     ApiServer(ApiServerOptions opts, TenantStore& tenants);

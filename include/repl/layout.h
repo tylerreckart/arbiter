@@ -59,6 +59,8 @@ public:
     // by the output pump on the next frame.
     void resize(const Rect& bounds);
 
+    [[nodiscard]] const Rect& outer_bounds() const { return bounds_; }
+
     // Paint split separators between sibling panes into an OpenTUI frame.
     void draw_borders(OpenTuiHandle frame) const;
 

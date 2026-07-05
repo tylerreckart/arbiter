@@ -1,9 +1,11 @@
 #include "tui/opentui/sidebar_frame.h"
 
 #include "tui/opentui/engine.h"
+#include "tui/sidebar_format.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -14,6 +16,13 @@ namespace {
 
 constexpr std::uint32_t kAttrBold = 1u << 0;
 constexpr int kEdgePad = 1;
+
+std::string capitalize_label(std::string_view s) {
+    if (s.empty()) return {};
+    std::string out(s);
+    out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
+    return out;
+}
 
 int cell_width(std::string_view s) {
     int w = 0;
@@ -57,39 +66,6 @@ std::string trim_to_cells(std::string s, int max_cells) {
     return s;
 }
 
-std::string format_cost_usd(double usd) {
-    if (usd <= 0.0) return "$0.00";
-    if (usd < 0.01) {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "$%.4f", usd);
-        return buf;
-    }
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "$%.2f", usd);
-    return buf;
-}
-
-double estimate_cost_usd(int in_tokens, int out_tokens) {
-    if (in_tokens <= 0 && out_tokens <= 0) return 0.0;
-    return (static_cast<double>(in_tokens) / 1'000'000.0) * 3.0
-         + (static_cast<double>(out_tokens) / 1'000'000.0) * 15.0;
-}
-
-std::string format_token_count(int n) {
-    if (n < 0) n = 0;
-    if (n >= 1'000'000) {
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "%.1fM", static_cast<double>(n) / 1'000'000.0);
-        return buf;
-    }
-    if (n >= 1'000) {
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "%.1fk", static_cast<double>(n) / 1'000.0);
-        return buf;
-    }
-    return std::to_string(n);
-}
-
 int draw_section_label(OpenTuiHandle frame,
                        const TuiDesign& d,
                        int content_x,
@@ -100,7 +76,7 @@ int draw_section_label(OpenTuiHandle frame,
     draw_text(frame,
               static_cast<std::uint32_t>(content_x),
               static_cast<std::uint32_t>(y),
-              trim_to_cells(std::string(title), std::max(0, content_w)),
+              trim_to_cells(capitalize_label(title), std::max(0, content_w)),
               d.accent.primary,
               bg,
               kAttrBold);
@@ -179,6 +155,105 @@ int draw_tool_list(OpenTuiHandle frame,
     return row;
 }
 
+int draw_todo_list(OpenTuiHandle frame,
+                   const TuiDesign& d,
+                   int content_x,
+                   int content_w,
+                   int y,
+                   int max_rows,
+                   const std::vector<SidebarTodoEntry>& entries,
+                   const TuiRgba& bg) {
+    if (entries.empty()) return y;
+    int row = y;
+    const int shown = std::min(max_rows, static_cast<int>(entries.size()));
+    for (int i = 0; i < shown; ++i) {
+        const auto& t = entries[static_cast<size_t>(i)];
+        const TuiRgba& mark_fg = (t.status == "in_progress")
+                                     ? d.accent.warning
+                                     : d.text.subtle;
+        const char* mark = (t.status == "in_progress") ? "\u25b6" : "\u2022";
+        draw_text(frame,
+                  static_cast<std::uint32_t>(content_x),
+                  static_cast<std::uint32_t>(row),
+                  mark,
+                  mark_fg,
+                  bg);
+        std::string line = "#" + std::to_string(t.id) + " " + t.subject;
+        draw_text(frame,
+                  static_cast<std::uint32_t>(content_x + 2),
+                  static_cast<std::uint32_t>(row),
+                  trim_to_cells(line, std::max(0, content_w - 2)),
+                  d.text.primary,
+                  bg);
+        ++row;
+    }
+    return row;
+}
+
+int draw_schedule_list(OpenTuiHandle frame,
+                       const TuiDesign& d,
+                       int content_x,
+                       int content_w,
+                       int y,
+                       int max_rows,
+                       const std::vector<SidebarScheduleEntry>& entries,
+                       const TuiRgba& bg) {
+    if (entries.empty()) return y;
+    int row = y;
+    const int shown = std::min(max_rows, static_cast<int>(entries.size()));
+    for (int i = 0; i < shown; ++i) {
+        const auto& s = entries[static_cast<size_t>(i)];
+        const TuiRgba& mark_fg = (s.status == "paused") ? d.text.subtle : d.accent.primary;
+        const char* mark = (s.status == "paused") ? "\u2016" : "\u23f1";
+        draw_text(frame,
+                  static_cast<std::uint32_t>(content_x),
+                  static_cast<std::uint32_t>(row),
+                  mark,
+                  mark_fg,
+                  bg);
+        std::string line = "#" + std::to_string(s.id) + " " + s.phrase;
+        draw_text(frame,
+                  static_cast<std::uint32_t>(content_x + 2),
+                  static_cast<std::uint32_t>(row),
+                  trim_to_cells(line, std::max(0, content_w - 2)),
+                  d.text.muted,
+                  bg);
+        ++row;
+    }
+    return row;
+}
+
+int draw_loop_list(OpenTuiHandle frame,
+                   const TuiDesign& d,
+                   int content_x,
+                   int content_w,
+                   int y,
+                   int max_rows,
+                   const std::vector<SidebarLoopEntry>& entries,
+                   const TuiRgba& bg) {
+    if (entries.empty()) return y;
+    int row = y;
+    const int shown = std::min(max_rows, static_cast<int>(entries.size()));
+    for (int i = 0; i < shown; ++i) {
+        const auto& l = entries[static_cast<size_t>(i)];
+        draw_text(frame,
+                  static_cast<std::uint32_t>(content_x),
+                  static_cast<std::uint32_t>(row),
+                  "\u21bb",
+                  d.accent.warning,
+                  bg);
+        std::string line = l.id + " " + l.agent_id + " i" + std::to_string(l.iter);
+        draw_text(frame,
+                  static_cast<std::uint32_t>(content_x + 2),
+                  static_cast<std::uint32_t>(row),
+                  trim_to_cells(line, std::max(0, content_w - 2)),
+                  d.text.muted,
+                  bg);
+        ++row;
+    }
+    return row;
+}
+
 void draw_version_tag(OpenTuiHandle frame,
                       const TuiDesign& d,
                       int content_x,
@@ -189,7 +264,7 @@ void draw_version_tag(OpenTuiHandle frame,
 #else
     const char* version = "dev";
 #endif
-    std::string tag = "v";
+    std::string tag = "Arbiter v";
     tag += version;
     tag = trim_to_cells(tag, std::max(0, content_w));
     const int tag_cells = cell_width(tag);
@@ -207,19 +282,18 @@ void draw_version_tag(OpenTuiHandle frame,
 void draw_sidebar(OpenTuiHandle frame,
                   const SidebarSnapshot& snap,
                   const Rect& r,
-                  const TuiChromeSnapshot& chrome) {
+                  const Rect& pane_rect,
+                  int pane_input_rows) {
     if (frame == 0 || r.w <= 0 || r.h <= 0) return;
 
-    const Rect& pr = chrome.rect;
+    const Rect& pr = pane_rect;
     if (pr.h <= 0) return;
 
     const TuiDesign& d = tui_design();
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
 
-    const int identity_y = pr.y + 1;
-    const int header_text_y = identity_y + 1;
-    const int scroll_top_y = pr.y + TUI::kHeaderRows;
-    const int sep_y = pr.y + pr.h - TUI::kBottomPadRows - chrome.input_rows - TUI::kSepRows;
+    const int block_top_y = pr.y;
+    const int sep_y = pr.y + pr.h - TUI::kBottomPadRows - pane_input_rows - TUI::kSepRows;
     const int input_bottom_y = pr.y + pr.h - TUI::kBottomPadRows - 1;
     if (input_bottom_y < pr.y) return;
 
@@ -249,7 +323,6 @@ void draw_sidebar(OpenTuiHandle frame,
               1,
               d.bg.base);
 
-    const int block_top_y = identity_y;
     const int block_h = std::max(1, input_bottom_y - block_top_y + 1);
 
     fill_rect(frame,
@@ -259,37 +332,63 @@ void draw_sidebar(OpenTuiHandle frame,
               static_cast<std::uint32_t>(block_h),
               d.bg.header);
 
-    draw_text(frame,
-              static_cast<std::uint32_t>(content_x),
-              static_cast<std::uint32_t>(header_text_y),
-              trim_to_cells("sidebar", content_w),
-              d.text.primary,
-              d.bg.header,
-              kAttrBold);
-
-    int y = scroll_top_y;
+    int y = block_top_y + 1;
     const int scroll_bottom = sep_y;
     const TuiRgba& bg = d.bg.header;
 
-    y = draw_section_label(frame, d, content_x, content_w, y, "usage", bg);
-    const double cost = estimate_cost_usd(snap.total_input, snap.total_output);
+    y = draw_section_label(frame, d, content_x, content_w, y, "Context", bg);
+    if (snap.context_pct_current >= 0) {
+        std::string used = std::to_string(snap.context_pct_current) + "%";
+        if (snap.last_context_tokens > 0 && snap.context_window > 0) {
+            used += " " + format_token_count(snap.last_context_tokens)
+                  + "/" + format_token_count(snap.context_window);
+        }
+        y = draw_kv_line(frame, d, content_x, content_w, y, "used",
+                         used, d.text.primary, bg);
+        if (snap.context_pct_peak > snap.context_pct_current) {
+            y = draw_kv_line(frame, d, content_x, content_w, y, "peak",
+                             std::to_string(snap.context_pct_peak) + "%",
+                             d.text.muted, bg);
+        }
+    } else if (y <= scroll_bottom) {
+        y = draw_kv_line(frame, d, content_x, content_w, y, "used",
+                         "\u2014", d.text.subtle, bg);
+    }
+    std::string cost_line = format_cost_usd(snap.total_cost_usd);
+    if (!snap.cost_basis.empty())
+        cost_line += " (" + trim_to_cells(snap.cost_basis, 16) + ")";
     y = draw_kv_line(frame, d, content_x, content_w, y, "in",
-                     format_token_count(snap.total_input), d.text.primary, bg);
+                     format_token_count(snap.total_input), d.text.muted, bg);
     y = draw_kv_line(frame, d, content_x, content_w, y, "out",
-                     format_token_count(snap.total_output), d.text.primary, bg);
+                     format_token_count(snap.total_output), d.text.muted, bg);
     y = draw_kv_line(frame, d, content_x, content_w, y, "cost",
-                     format_cost_usd(cost), d.text.muted, bg);
+                     cost_line, d.text.muted, bg);
     y = draw_kv_line(frame, d, content_x, content_w, y, "turns",
                      std::to_string(snap.turn_count), d.text.muted, bg);
-    if (!snap.last_model.empty()) {
-        y = draw_kv_line(frame, d, content_x, content_w, y, "last",
-                         trim_to_cells(snap.last_agent + " / " + snap.last_model, content_w - 6),
-                         d.text.subtle, bg);
-    }
     ++y;
 
     if (y <= scroll_bottom) {
-        y = draw_section_label(frame, d, content_x, content_w, y, "task", bg);
+        y = draw_section_label(frame, d, content_x, content_w, y, "Agent", bg);
+        const std::string agent = snap.focus_agent.empty() ? "(none)" : snap.focus_agent;
+        y = draw_kv_line(frame, d, content_x, content_w, y, "id",
+                         agent, d.text.primary, bg);
+        if (!snap.focus_model.empty()) {
+            y = draw_kv_line(frame, d, content_x, content_w, y, "model",
+                             trim_to_cells(snap.focus_model, content_w - 7),
+                             d.text.subtle, bg);
+        }
+        if (!snap.last_model.empty() &&
+            (snap.last_model != snap.focus_model || snap.last_agent != snap.focus_agent)) {
+            y = draw_kv_line(frame, d, content_x, content_w, y, "last",
+                             trim_to_cells(snap.last_agent + " / " + snap.last_model,
+                                           content_w - 6),
+                             d.text.subtle, bg);
+        }
+        ++y;
+    }
+
+    if (y <= scroll_bottom) {
+        y = draw_section_label(frame, d, content_x, content_w, y, "Task", bg);
         if (!snap.active_task.empty()) {
             std::string task = snap.active_task;
             int lines = 0;
@@ -319,8 +418,31 @@ void draw_sidebar(OpenTuiHandle frame,
         ++y;
     }
 
+    if (y <= scroll_bottom && !snap.todos.empty()) {
+        y = draw_section_label(frame, d, content_x, content_w, y, "Todos", bg);
+        const int budget = std::max(1, std::min(4, scroll_bottom - y + 1));
+        y = draw_todo_list(frame, d, content_x, content_w, y, budget, snap.todos, bg);
+        ++y;
+    }
+
+    if (y <= scroll_bottom &&
+        (!snap.schedules.empty() || !snap.loops.empty())) {
+        y = draw_section_label(frame, d, content_x, content_w, y, "Scheduled", bg);
+        int budget = std::max(1, scroll_bottom - y + 1);
+        if (!snap.schedules.empty()) {
+            const int sched_rows = std::min(budget, static_cast<int>(snap.schedules.size()));
+            y = draw_schedule_list(frame, d, content_x, content_w, y, sched_rows,
+                                   snap.schedules, bg);
+            budget = std::max(0, scroll_bottom - y + 1);
+        }
+        if (!snap.loops.empty() && budget > 0) {
+            y = draw_loop_list(frame, d, content_x, content_w, y, budget, snap.loops, bg);
+        }
+        ++y;
+    }
+
     if (y <= scroll_bottom) {
-        y = draw_section_label(frame, d, content_x, content_w, y, "tools", bg);
+        y = draw_section_label(frame, d, content_x, content_w, y, "Tools", bg);
         if (snap.active_tool_calls > 0 && y <= scroll_bottom) {
             std::string live = std::to_string(snap.active_tool_calls) + " running\u2026";
             y = draw_kv_line(frame, d, content_x, content_w, y, "live", live,
@@ -333,7 +455,7 @@ void draw_sidebar(OpenTuiHandle frame,
     }
 
     if (y <= scroll_bottom) {
-        y = draw_section_label(frame, d, content_x, content_w, y, "mcp", bg);
+        y = draw_section_label(frame, d, content_x, content_w, y, "MCP", bg);
         const int mcp_budget = std::max(1, scroll_bottom - y + 1);
         draw_tool_list(frame, d, content_x, content_w, y, mcp_budget,
                        snap.mcp, "(none yet)", bg);

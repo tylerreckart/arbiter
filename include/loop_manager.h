@@ -100,6 +100,14 @@ public:
     bool has_active()  const;
     int  active_count() const;
 
+    struct LoopBrief {
+        std::string id;
+        std::string agent_id;
+        std::string state;
+        int         iter = 0;
+    };
+    std::vector<LoopBrief> briefs() const;
+
 private:
     static void run_loop(LoopEntry* e, Orchestrator& orch, std::string initial_prompt);
 

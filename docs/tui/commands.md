@@ -33,7 +33,8 @@ Each pane is an independent conversation view. See [panes.md](panes.md) for the 
 |----------------------------|-------------------------------------------------------------------------|
 | `/pane <agent> <msg>`      | Spawn a child pane running `<agent>` with `<msg>` as its first input. The result flows back to the spawner pane as a `[PANE RESULT]` message when the child completes. |
 | `Ctrl-w v`                 | Split the focused pane vertically (children side-by-side).              |
-| `Ctrl-w s`                 | Split the focused pane horizontally (children stacked).                 |
+| `Ctrl-w h`                 | Split the focused pane horizontally (children stacked).                 |
+| `Ctrl-w s`                 | Toggle the session sidebar (wide terminals).                            |
 | `Ctrl-w w` / `Ctrl-w Ctrl-w` | Cycle focus to the next pane (pre-order traversal).                   |
 | `Ctrl-w c`                 | Close the focused pane. The pane's exec thread is joined cleanly; in-flight turn is cancelled. |
 
@@ -56,16 +57,29 @@ A loop runs an agent repeatedly with its own buffered output, decoupled from any
 
 | Command                        | Effect                                                              |
 |--------------------------------|---------------------------------------------------------------------|
-| `/fetch <url>`                 | Fetch the URL, strip to readable text, send the result to the focused agent as a tool result. Uses libcurl directly — no shell injection surface. |
-| `/mem write <text>`            | Append `<text>` to the focused agent's persistent scratchpad (`~/.arbiter/memory/<agent>/notes.md`). |
-| `/mem read`                    | Load the agent's scratchpad into the next turn's context.           |
-| `/mem show`                    | Print the raw scratchpad file inline.                               |
-| `/mem clear`                   | Delete the scratchpad file.                                         |
-| `/mem shared write <text>`     | Write to a pipeline-shared scratchpad visible to every agent in this conversation. |
-| `/mem shared read`             | Read the shared scratchpad.                                         |
-| `/mem shared clear`            | Clear the shared scratchpad.                                        |
+| `/fetch <url>`                 | TUI shortcut: fetch the URL, strip to readable text, and send the result to the focused agent as context. |
+| `/mem write\|read\|show\|clear` | Per-agent scratchpad in `tenants.db` (same store the API uses).     |
+| `/mem shared write\|read\|clear` | Tenant-wide shared scratchpad.                                    |
+| `/mem search\|entries\|entry\|add entry` | Structured memory graph — FTS-ranked search, typed entries, relations. See [`docs/concepts/structured-memory.md`](../concepts/structured-memory.md). |
 
-The structured memory graph (typed nodes + relations, FTS-ranked search) is exposed via the HTTP API only — see [`docs/concepts/structured-memory.md`](../concepts/structured-memory.md). The TUI's `/mem` operates on the simpler per-agent scratchpad files.
+## Tools (API parity)
+
+These commands use the same dispatch path as agent tool calls during `/v1/orchestrate` turns. Type `/help <topic>` (e.g. `/help search`) for detailed syntax.
+
+| Command                        | Effect                                                              |
+|--------------------------------|---------------------------------------------------------------------|
+| `/search <query> [top=N]`      | Web search via Brave (`BRAVE_SEARCH_API_KEY` or `ARBITER_SEARCH_API_KEY`). |
+| `/browse <url>`                | Fetch and extract readable text (tool form; does not auto-send to agent). |
+| `/todo list\|add\|start\|done\|…` | Conversation-scoped task list (`~/.arbiter/tenants.db`).         |
+| `/schedule list\|<phrase>: <msg>` | Create or list scheduled tasks; background scheduler fires them while the TUI runs. |
+| `/schedule cancel\|pause\|resume <id>` | Manage scheduled tasks.                                      |
+| `/exec <cmd>`                  | Shell command (confirm gate; disabled unless started with host exec allowed). |
+| `/write <path>`                | Write a file (confirm gate). `/write --persist` stores in the conversation artifact store. |
+| `/read <path>` \| `/list`      | Read or list conversation artifacts.                                |
+| `/mcp tools\|call`             | MCP servers from `~/.arbiter/mcp_servers.json`.                     |
+| `/a2a list\|call`              | Remote A2A agents from `~/.arbiter/a2a_agents.json`.               |
+| `/lesson list\|add`            | Agent-scoped lessons persisted in `tenants.db`.                     |
+| `/agent <id> <msg>`            | Delegate to another agent (same as when an agent emits `/agent` during a turn). |
 
 ## Plans
 
@@ -79,11 +93,12 @@ The structured memory graph (typed nodes + relations, FTS-ranked search) is expo
 |--------------------------------|---------------------------------------------------------------------|
 | `/verbose [on\|off]`           | Toggle raw `/cmd` line streaming. Off (default): tool-call lines are swallowed and replaced by the spinner on the mid-separator. On: every `/fetch`, `/exec`, `/agent`, `/mem` line lands in the scroll region as the agent emits it. |
 | `/help`                        | Print this command reference.                                       |
+| `/help <topic>`                | Detailed reference for one slash command (same text agents see).    |
 | `/quit` / `/exit` / `/q`       | Save the session snapshot and exit.                                 |
 
 ## Notes on argument parsing
 
 - Commands are line-oriented: a slash command and its arguments are everything between the leading `/` and the next newline.
 - There's no quoting layer above whitespace splitting. `/send research analyze the q3 report` works; `/send research "analyze the report"` would pass the literal quotes through to the agent.
-- Tab completion is enabled for the leading slash command word. After the command, completion is unconfigured (just inserts a literal space).
+- Tab completion is enabled for the leading slash command word and common subcommands.
 - Unknown commands print `Unknown command. /help for list.` and don't consume the line as a message — type it again without the slash if you meant it as input.

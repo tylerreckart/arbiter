@@ -1797,6 +1797,50 @@ static std::vector<Message> messages_from_json(const JsonValue* arr) {
     return out;
 }
 
+std::string Orchestrator::execute_slash_command(const std::string& line,
+                                                const std::string& agent_id) {
+    auto cmds = parse_agent_commands(line);
+    if (cmds.empty()) return {};
+
+    Agent* agent_ptr = nullptr;
+    if (agent_id == "index") {
+        agent_ptr = index_master_.get();
+    } else {
+        std::lock_guard<std::mutex> lk(agents_mutex_);
+        auto it = agents_.find(agent_id);
+        if (it == agents_.end())
+            return "ERR: no agent '" + agent_id + "'";
+        agent_ptr = it->second.get();
+    }
+
+    std::map<std::string, std::string> dedup_cache;
+    auto invoker          = make_invoker(agent_id, 0, &dedup_cache, "");
+    auto advisor_invoker  = make_advisor_invoker(agent_id);
+    auto parallel_invoker = make_parallel_invoker(agent_id, 0, "");
+
+    return execute_agent_commands(cmds, agent_id, memory_dir_,
+                                  invoker, confirm_cb_, &dedup_cache,
+                                  advisor_invoker, tool_status_cb_,
+                                  pane_spawner_cb_,
+                                  write_interceptor_cb_,
+                                  exec_disabled_,
+                                  parallel_invoker,
+                                  structured_memory_reader_cb_,
+                                  structured_memory_writer_cb_,
+                                  mcp_invoker_cb_,
+                                  memory_scratchpad_cb_,
+                                  search_invoker_cb_,
+                                  artifact_writer_cb_,
+                                  artifact_reader_cb_,
+                                  artifact_lister_cb_,
+                                  a2a_invoker_cb_,
+                                  scheduler_invoker_cb_,
+                                  todo_invoker_cb_,
+                                  lesson_invoker_cb_,
+                                  exec_invoker_cb_,
+                                  agent_ptr->config().capabilities);
+}
+
 void Orchestrator::cancel() {
     client_.cancel();
     // Also cancel any per-child clients active inside a /parallel turn.

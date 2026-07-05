@@ -16,6 +16,8 @@ namespace arbiter::opentui {
 
 namespace {
 
+constexpr int kInputAccentCells = 1;
+
 constexpr std::uint8_t kWrapWord = 2;
 
 constexpr std::uint32_t kAttrBold = 1u << 0;
@@ -293,7 +295,8 @@ void PaneInputEditor::update_input_rows() {
     const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
     const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
     const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
-    const int content_cols = std::max(1, cols - (outer_pad * 2));
+    const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
+    const int content_cols = std::max(1, cols - (outer_pad * 2) - chrome_inset);
     const int total_vis = prompt_cols_ + visible_width(buffer_) + (inner_pad * 2);
     const int editor_rows = std::max(1, (total_vis + content_cols - 1) / content_cols);
     tui_.grow_input(editor_rows + 2);
@@ -324,18 +327,20 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
     const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
     const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
+    const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
     const std::uint32_t content_x = px
-        + static_cast<std::uint32_t>(outer_pad + inner_pad);
+        + static_cast<std::uint32_t>(outer_pad + chrome_inset + inner_pad);
+    const TuiRgba& input_bg = d.bg.header;
 
     if (!focused) {
-        draw_plain_text(frame, content_x, py, d.component.inactive_prompt, d.text.subtle, &d.bg.input);
+        draw_plain_text(frame, content_x, py, d.component.inactive_prompt, d.text.subtle, &input_bg);
         return;
     }
 
     const int prompt_skip = std::max(0, prompt_cols_);
     const int editor_w = std::max(1,
-                                  cols - (outer_pad * 2) - (inner_pad * 2)
-                                      - prompt_skip);
+                                  cols - (outer_pad * 2) - chrome_inset
+                                      - (inner_pad * 2) - prompt_skip);
     const std::uint32_t ex = content_x + static_cast<std::uint32_t>(prompt_skip);
 
     bind_viewport(tui, editor_w);
@@ -346,7 +351,7 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
 
     const std::string plain_prompt = plain_text(prompt_);
     if (!plain_prompt.empty()) {
-        draw_plain_text(frame, content_x, py, plain_prompt, d.accent.primary, &d.bg.input);
+        draw_plain_text(frame, content_x, py, plain_prompt, d.accent.primary, &input_bg);
     }
     if (cursor_visible_now()) {
         const int before_cursor = visible_width(buffer_.substr(0, static_cast<size_t>(cursor_)));

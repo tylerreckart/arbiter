@@ -27,6 +27,154 @@ namespace fs = std::filesystem;
 
 namespace arbiter {
 
+namespace {
+
+std::string trim_label_ws(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front())))
+        s.erase(s.begin());
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())))
+        s.pop_back();
+    return s;
+}
+
+std::string truncate_for_label(std::string s, size_t max_cells = 44) {
+    s = trim_label_ws(std::move(s));
+    if (s.size() <= max_cells) return s;
+    if (max_cells <= 1) return s.substr(0, max_cells);
+    s.resize(max_cells - 1);
+    s += "\u2026";
+    return s;
+}
+
+std::string first_token(const std::string& s) {
+    std::istringstream iss(s);
+    std::string tok;
+    iss >> tok;
+    return tok;
+}
+
+} // namespace
+
+std::string tool_status_label(const AgentCommand& cmd) {
+    const std::string& name = cmd.name;
+    const std::string args = trim_label_ws(cmd.args);
+
+    if (name == "fetch")  return "fetch:" + truncate_for_label(args);
+    if (name == "browse") return "browse:" + truncate_for_label(args);
+    if (name == "exec")   return "exec:" + truncate_for_label(args);
+    if (name == "search") {
+        std::string query = args;
+        const auto pos = query.rfind(" top=");
+        if (pos != std::string::npos) query.resize(pos);
+        return "search:" + truncate_for_label(trim_label_ws(query));
+    }
+    if (name == "read")   return "read:" + truncate_for_label(args);
+    if (name == "list")   return "list";
+    if (name == "help")   return "help:" + truncate_for_label(args.empty() ? "index" : args);
+    if (name == "advise") return "advise:" + truncate_for_label(args);
+
+    if (name == "write") {
+        std::string path = args;
+        if (path.rfind("--persist ", 0) == 0) path = path.substr(10);
+        else if (path == "--persist") path.clear();
+        path = trim_label_ws(path);
+        if (path.empty()) path = "(content)";
+        return "write:" + truncate_for_label(path);
+    }
+
+    if (name == "agent") {
+        const std::string id = first_token(args);
+        return "agent:" + (id.empty() ? "?" : id);
+    }
+    if (name == "pane") {
+        const std::string id = first_token(args);
+        return "pane:" + (id.empty() ? "?" : id);
+    }
+    if (name == "parallel") return "parallel";
+
+    if (name == "mcp") {
+        std::istringstream iss(args);
+        std::string subcmd;
+        iss >> subcmd;
+        std::string rest;
+        std::getline(iss, rest);
+        if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+        rest = trim_label_ws(rest);
+        if (subcmd == "call") {
+            std::istringstream rs(rest);
+            std::string server, tool;
+            rs >> server >> tool;
+            if (!server.empty() && !tool.empty())
+                return "mcp:" + server + "." + tool;
+        }
+        if (subcmd.empty()) return "mcp";
+        return "mcp:" + subcmd + (rest.empty() ? "" : " " + truncate_for_label(rest));
+    }
+
+    if (name == "a2a") {
+        std::istringstream iss(args);
+        std::string subcmd;
+        iss >> subcmd;
+        std::string rest;
+        std::getline(iss, rest);
+        if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+        rest = trim_label_ws(rest);
+        if (subcmd == "call") {
+            const std::string remote = first_token(rest);
+            return "a2a:" + (remote.empty() ? "call" : remote);
+        }
+        return "a2a:" + (subcmd.empty() ? "?" : subcmd);
+    }
+
+    if (name == "todo") {
+        std::istringstream iss(args);
+        std::string subcmd;
+        iss >> subcmd;
+        std::string rest;
+        std::getline(iss, rest);
+        if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+        rest = trim_label_ws(rest);
+        if (subcmd == "add") {
+            std::string subject = rest;
+            const auto nl = subject.find('\n');
+            if (nl != std::string::npos) subject.resize(nl);
+            subject = trim_label_ws(subject);
+            return "todo:add " + truncate_for_label(subject.empty() ? "(untitled)" : subject);
+        }
+        return "todo:" + subcmd + (rest.empty() ? "" : " " + rest);
+    }
+
+    if (name == "schedule") {
+        std::istringstream iss(args);
+        std::string subcmd;
+        iss >> subcmd;
+        std::string rest;
+        std::getline(iss, rest);
+        if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+        rest = trim_label_ws(rest);
+        if (subcmd == "list" || subcmd == "cancel" ||
+            subcmd == "pause" || subcmd == "resume") {
+            return "schedule:" + subcmd + (rest.empty() ? "" : " " + rest);
+        }
+        return "schedule:create " + truncate_for_label(args);
+    }
+
+    if (name == "mem") {
+        const std::string sub = first_token(args);
+        return "mem:" + (sub.empty() ? "?" : sub);
+    }
+
+    if (name == "lesson") {
+        const std::string sub = first_token(args);
+        if (sub == "list" || sub == "search" || sub == "delete")
+            return "lesson:" + sub;
+        return "lesson:add " + truncate_for_label(args);
+    }
+
+    if (!args.empty()) return name + ":" + truncate_for_label(args);
+    return name;
+}
+
 // ---------------------------------------------------------------------------
 // parse_agent_commands
 // ---------------------------------------------------------------------------
@@ -1743,7 +1891,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     << "emitting /" << cmd.name
                     << " or delegate via /agent to one that has it.\n"
                     << "[END " << cmd.name << "]\n\n";
-                if (tool_status) tool_status(cmd.name, false);
+                if (tool_status) tool_status(tool_status_label(cmd), false);
                 continue;
             }
         }
@@ -1763,7 +1911,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             // Dedup hits still count toward the turn's tool-call tally; the
             // model emitted a /cmd, so the user's "(N tool calls…)" indicator
             // should reflect that.  ok/fail mirrors the cached block.
-            if (tool_status) tool_status(cmd.name, !is_tool_result_failure(cached));
+            if (tool_status) tool_status(tool_status_label(cmd),
+                                      !is_tool_result_failure(cached));
             continue;
         }
 
@@ -2727,7 +2876,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << "[END WRITE]\n\n";
                 cache_result = false;   // allow a clean retry
                 out << block.str();
-                if (tool_status) tool_status(cmd.name, false);
+                if (tool_status) tool_status(tool_status_label(cmd), false);
                 continue;
             }
             if (!write_interceptor && confirm) {
@@ -2744,7 +2893,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     block << "[END WRITE]\n\n";
                     cache_result = false;
                     out << block.str();
-                    if (tool_status) tool_status(cmd.name, false);
+                    if (tool_status) tool_status(tool_status_label(cmd), false);
                     continue;
                 }
             }
@@ -2899,7 +3048,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             (*dedup_cache)[dedup_key] = block_str;
         }
         if (tool_status && !block_str.empty()) {
-            tool_status(cmd.name, !is_tool_result_failure(block_str));
+            tool_status(tool_status_label(cmd), !is_tool_result_failure(block_str));
         }
     }
 
