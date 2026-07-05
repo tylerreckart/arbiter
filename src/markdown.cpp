@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 namespace arbiter {
 
@@ -137,12 +138,54 @@ static bool is_hr(const std::string& line) {
 
 // ─── Line renderer ───────────────────────────────────────────────────────────
 
+static bool lang_eq_ci(std::string_view lang, std::string_view want) {
+    if (lang.size() != want.size()) return false;
+    for (size_t i = 0; i < lang.size(); ++i) {
+        const unsigned char a = static_cast<unsigned char>(lang[i]);
+        const unsigned char b = static_cast<unsigned char>(want[i]);
+        if (std::tolower(a) != std::tolower(b)) return false;
+    }
+    return true;
+}
+
+bool MarkdownRenderer::is_diff_fence_lang(std::string_view lang) {
+    lang = lang.substr(0, lang.find_first_of(" \t\r"));
+    return lang_eq_ci(lang, "diff") || lang_eq_ci(lang, "patch");
+}
+
+static size_t fence_ltrim(const std::string& line) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    return i;
+}
+
 std::string MarkdownRenderer::process_line(const std::string& line) {
+    const size_t lead = fence_ltrim(line);
+    const std::string_view view(line.data() + lead, line.size() - lead);
+
     // Fenced code block toggle (``` or ~~~)
-    if (line.size() >= 3 &&
-        (line.substr(0, 3) == "```" || line.substr(0, 3) == "~~~")) {
-        in_code_block_ = !in_code_block_;
+    if (view.size() >= 3 &&
+        (view.substr(0, 3) == "```" || view.substr(0, 3) == "~~~")) {
+        if (!in_code_block_) {
+            in_code_block_ = true;
+            in_diff_block_ = is_diff_fence_lang(view.substr(3));
+            diff_buf_.clear();
+            return in_diff_block_ ? std::string{} : std::string(DIM) + line + RST;
+        }
+        if (in_diff_block_) {
+            if (diff_sink_ && !diff_buf_.empty()) diff_sink_(diff_buf_);
+            diff_buf_.clear();
+            in_diff_block_ = false;
+            in_code_block_ = false;
+            return std::string{};
+        }
+        in_code_block_ = false;
         return std::string(DIM) + line + RST;
+    }
+    if (in_diff_block_) {
+        if (!diff_buf_.empty()) diff_buf_ += '\n';
+        diff_buf_ += line;
+        return std::string{};
     }
     // Code block body.
     if (in_code_block_) {
@@ -260,8 +303,14 @@ std::string MarkdownRenderer::feed(const std::string& chunk) {
                 continue;
             }
             seen_content_ = true;
-            result += process_line(line_buf_);
-            result += '\n';
+            const bool was_in_diff = in_diff_block_;
+            const std::string line_out = process_line(line_buf_);
+            if (!line_out.empty()) {
+                result += line_out;
+                result += '\n';
+            } else if (!was_in_diff && line_buf_.empty()) {
+                result += '\n';
+            }
             line_buf_.clear();
         } else if (c != '\r') {
             line_buf_ += c;
@@ -271,20 +320,27 @@ std::string MarkdownRenderer::feed(const std::string& chunk) {
 }
 
 std::string MarkdownRenderer::flush() {
-    if (line_buf_.empty()) return {};
-    if (is_endwrite_line(line_buf_)) { line_buf_.clear(); return {}; }
-    std::string result = process_line(line_buf_);
-    line_buf_.clear();
-    // Always terminate with a newline so the caller can append a single
-    // separator `\n` and get exactly one blank line — regardless of whether
-    // the model's last chunk had a trailing newline or not.
-    if (result.empty() || result.back() != '\n') result += '\n';
-    return result;
+    if (!line_buf_.empty()) {
+        if (is_endwrite_line(line_buf_)) { line_buf_.clear(); return {}; }
+        std::string result = process_line(line_buf_);
+        line_buf_.clear();
+        if (result.empty() || result.back() != '\n') result += '\n';
+        return result;
+    }
+    if (in_diff_block_ && diff_sink_ && !diff_buf_.empty()) {
+        diff_sink_(diff_buf_);
+        diff_buf_.clear();
+        in_diff_block_ = false;
+        in_code_block_ = false;
+    }
+    return {};
 }
 
 void MarkdownRenderer::reset() {
     line_buf_.clear();
     in_code_block_ = false;
+    in_diff_block_ = false;
+    diff_buf_.clear();
     seen_content_  = false;
 }
 
@@ -296,6 +352,50 @@ std::string render_markdown(const std::string& text) {
     std::string tail   = r.flush();
     if (!tail.empty()) result += tail;
     return result;
+}
+
+std::string render_diff_ansi(const std::string& patch) {
+    const Theme& t = theme();
+    std::string out;
+    size_t start = 0;
+    while (start <= patch.size()) {
+        size_t end = patch.find('\n', start);
+        std::string_view line(patch.data() + start,
+                              (end == std::string::npos) ? patch.size() - start
+                                                         : end - start);
+        while (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+
+        if (line.size() >= 3 && line.substr(0, 3) == "+++") {
+            out += t.accent_info;
+            out += line;
+            out += RST;
+        } else if (line.size() >= 3 && line.substr(0, 3) == "---") {
+            out += t.accent_info;
+            out += line;
+            out += RST;
+        } else if (line.size() >= 2 && line.substr(0, 2) == "@@") {
+            out += DIM;
+            out += line;
+            out += RST;
+        } else if (!line.empty() && line[0] == '+') {
+            out += t.accent_success;
+            out += line;
+            out += RST;
+        } else if (!line.empty() && line[0] == '-') {
+            out += t.accent_error;
+            out += line;
+            out += RST;
+        } else {
+            out += t.md_code;
+            out += line;
+            out += RST;
+        }
+        out += '\n';
+
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return out;
 }
 
 } // namespace arbiter

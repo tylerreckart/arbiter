@@ -10,15 +10,16 @@
 //     streaming.
 //
 //   • OutputQueue — formatted text the exec / loop threads want rendered.
-//     Only the main thread calls drain() and writes to stdout, keeping the
-//     terminal free of cross-thread tearing.
+//     Only the main thread calls drain_items() and writes to the scroll view.
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <queue>
 #include <string>
+#include <vector>
 
 namespace arbiter {
 
@@ -55,44 +56,40 @@ private:
     std::atomic<bool>       busy_{false};
 };
 
+struct OutputItem {
+    enum class Kind : std::uint8_t { Text, Diff };
+    Kind kind = Kind::Text;
+    std::string data;
+    // When true, PaneScrollView inserts one blank row before this item.
+    bool new_block = false;
+};
+
 class OutputQueue {
 public:
-    // Append a raw chunk.  Use for streaming — many push() calls followed by
-    // a single end_message() make up one logical message.  If a prior
-    // message ended (via end_message or push_msg), the first push that
-    // follows automatically gets a blank-line separator prepended.
-    //
-    // If a notify function has been wired in via set_notify_fn(), it is
-    // called after appending so the pump thread can wake immediately instead
-    // of waiting for its next timer tick.
+    // Append a raw text chunk.  Chunks from the same logical message are
+    // coalesced until end_message() or push_msg() marks a boundary.
     void push(const std::string& s);
 
-    // Mark the current message as complete.  Idempotent — multiple
-    // end_message() calls in a row collapse to a single separator.  No
-    // content is written to the buffer until the next push; the separator
-    // is materialised there so a drain in between doesn't emit it twice.
+    // Mark the current message as complete.  Idempotent.
     void end_message();
 
-    // Convenience — push(s) + end_message().  Use for single-call messages
-    // (errors, status lines, one-shot command output).
+    // Convenience — push(s) + end_message().
     void push_msg(const std::string& s);
 
-    std::string drain();
+    // Queue a diff patch.  Preserves stream order relative to text chunks.
+    void push_diff(const std::string& patch);
 
-    // Wire a callback to be fired (without holding mu_) on every push().
-    // The pump thread sets this to a closure that signals its condition
-    // variable; call sites don't need to know the CV exists.
+    // Drain all pending items in submission order.
+    std::vector<OutputItem> drain_items();
+
     void set_notify_fn(std::function<void()> fn);
 
 private:
-    std::mutex  mu_;
-    std::string buf_;
-    // True when the previous push ended a message — the next push applies
-    // exactly one blank-line separator before appending its content.
-    bool        need_sep_ = false;
-
-    // Optional pump-wakeup hook — set by the pump thread at startup.
-    std::function<void()> notify_fn_;
+    std::mutex               mu_;
+    std::vector<OutputItem>  items_;
+    bool                     need_sep_ = false;
+    bool                     split_after_diff_ = false;
+    std::function<void()>    notify_fn_;
 };
 
 } // namespace arbiter

@@ -4,6 +4,14 @@
 
 namespace arbiter {
 
+namespace {
+
+void trim_trailing_newlines(std::string& s) {
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+}
+
+} // namespace
+
 // ─── CommandQueue ────────────────────────────────────────────────────────────
 
 void CommandQueue::push(std::string cmd) {
@@ -53,24 +61,29 @@ void OutputQueue::set_notify_fn(std::function<void()> fn) {
 }
 
 void OutputQueue::push(const std::string& s) {
+    if (s.empty()) return;
     std::function<void()> fn;
     {
         std::lock_guard<std::mutex> lk(mu_);
-        if (s.empty()) return;
+        bool new_block = false;
         if (need_sep_) {
-            // Materialise the pending separator as exactly `\n\n`.  Strip any
-            // trailing newlines from the buffer first so multi-line content
-            // (markdown-rendered lines that end with `\n`) gets one blank line
-            // between messages, not two or more.  If the buffer was drained in
-            // between, buf_ is empty and we emit a leading `\n\n` — the prior
-            // drain's content already ends with the trailing-content newline,
-            // so `A` + next drain `\n\nB` renders as `A` + blank + `B`.
-            while (!buf_.empty() && buf_.back() == '\n') buf_.pop_back();
-            buf_ += "\n\n";
+            new_block = true;
             need_sep_ = false;
         }
-        buf_ += s;
-        fn = notify_fn_;   // copy under lock; invoke outside to avoid inversion
+        if (split_after_diff_) {
+            new_block = true;
+            split_after_diff_ = false;
+        }
+
+        if (!items_.empty() && items_.back().kind == OutputItem::Kind::Text && !new_block) {
+            items_.back().data += s;
+        } else {
+            if (new_block && !items_.empty() && items_.back().kind == OutputItem::Kind::Text) {
+                trim_trailing_newlines(items_.back().data);
+            }
+            items_.push_back(OutputItem{OutputItem::Kind::Text, s, new_block});
+        }
+        fn = notify_fn_;
     }
     if (fn) fn();
 }
@@ -81,24 +94,36 @@ void OutputQueue::end_message() {
 }
 
 void OutputQueue::push_msg(const std::string& s) {
-    // Strip leading newlines from message content so callers don't
-    // accidentally inject extra blank lines before their message.
-    // The separator between messages is owned by end_message / need_sep_.
     size_t start = 0;
-    while (start < s.size() && s[start] == '\n') ++start;
-    if (start == 0)
+    while (start < s.size() && (s[start] == '\n' || s[start] == '\r')) ++start;
+    if (start == 0) {
         push(s);
-    else if (start < s.size())
+    } else if (start < s.size()) {
         push(s.substr(start));
+    }
     end_message();
 }
 
-std::string OutputQueue::drain() {
+void OutputQueue::push_diff(const std::string& patch) {
+    if (patch.empty()) return;
+    std::function<void()> fn;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!items_.empty() && items_.back().kind == OutputItem::Kind::Text) {
+            trim_trailing_newlines(items_.back().data);
+        }
+        items_.push_back(OutputItem{OutputItem::Kind::Diff, patch, false});
+        split_after_diff_ = true;
+        fn = notify_fn_;
+    }
+    if (fn) fn();
+}
+
+std::vector<OutputItem> OutputQueue::drain_items() {
     std::lock_guard<std::mutex> lk(mu_);
-    // need_sep_ intentionally survives drain — if the drained content ended
-    // a message and the next push comes after a render has flushed to
-    // stdout, we still want one blank line before the new content.
-    return std::move(buf_);
+    std::vector<OutputItem> out;
+    out.swap(items_);
+    return out;
 }
 
 } // namespace arbiter

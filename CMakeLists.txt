@@ -173,7 +173,7 @@ add_executable(arbiter ${ARBITER_SOURCES})
 add_dependencies(arbiter starters_data_header)
 target_include_directories(arbiter PRIVATE ${STARTERS_GENERATED_DIR})
 
-# Surface the project version to C++ so the welcome card can render it on
+# Surface the project version to C++ (sidebar version label, etc.).
 # the bottom border.  Keep CMakeLists.txt's `project(... VERSION x.y.z)`
 # and ARBITER_VERSION_SUFFIX in sync with your brew formula / release tags.
 target_compile_definitions(arbiter PRIVATE
@@ -207,6 +207,7 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/engine.cpp
     src/tui/opentui/session.cpp
     src/tui/opentui/pane_scroll_view.cpp
+    src/tui/opentui/diff_panel.cpp
     src/tui/opentui/ansi_scroll_append.cpp
     src/tui/opentui/pane_input_editor.cpp
     src/tui/sidebar.cpp
@@ -346,6 +347,17 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_stream_filter COMMAND unit_stream_filter)
+
+    add_executable(unit_markdown_diff
+        tests/test_markdown_diff.cpp
+        src/markdown.cpp
+        src/theme.cpp
+    )
+    target_include_directories(unit_markdown_diff PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_markdown_diff COMMAND unit_markdown_diff)
 
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser

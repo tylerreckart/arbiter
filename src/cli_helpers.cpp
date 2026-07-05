@@ -36,34 +36,6 @@ namespace fs = std::filesystem;
 
 namespace arbiter {
 
-const char* BANNER =
-    "\n"
-    "                      aaa                      \n"
-    "                    aaaaa                      \n"
-    "                    aaaaa     aaaaa            \n"
-    "                    aaaaa    aaaaaaaaa         \n"
-    "                    aaaaaaaaaaaaaaaaa          \n"
-    "                    aaaaaaaaaaaaaaa            \n"
-    "                    aaaaaaaaaaaaaaa    aaaaa   \n"
-    "   aaaa             aaaaaaaaaaaaaaaaaaaaaaaa   \n"
-    "       aaaa        aaaaaaaaaaaaaaaaaaaaaa      \n"
-    "          aaaaa   aaaaaaaaaaaaaaaaaaaa         \n"
-    "            aaaaaaaaaaaaaaaaaaaaaaaa           \n"
-    "            aaaaaaaaaaaaaaaaaaaaaaaaa          \n"
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-    "           aaaaaaaaaaaaaaaaaaaaaaaaa           \n"
-    "           aaaaaaaaaaaaaaaaaaaaaaaaa           \n"
-    "        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa         \n"
-    "     aaaaaaaaaaaaaaaaaaaaaa      aaaaaaaaa     \n"
-    "  aaaaa      aaaaaaaaaaaaaa          aaaaaaa   \n"
-    "            aaaaaaaaaaaaaaa             aaa    \n"
-    "           aaaaaaaaaaaaaaaa                    \n"
-    "          aaaaaa   aaaaaaaa                    \n"
-    "           aaaa    aaaaaaaa                    \n"
-    "                   aaaaaaaa                    \n"
-    "                    aaaaa                      \n"
-    "\n";
-
 std::string agent_color(const std::string& agent_id) {
     const Theme& t = theme();
     if (agent_id == "index") return t.agent_master;
@@ -463,24 +435,6 @@ private:
             std::uint32_t cy = y + 1;
             draw_text(frame, x + 3, cy, title, d.text.primary, d.bg.header, kAttrBold);
             cy = y + 4;
-
-            const auto banner_lines = split_lines(BANNER);
-            const int max_banner_rows = height > 34 ? 10 : 5;
-            int drawn_banner = 0;
-            for (const auto& raw : banner_lines) {
-                if (raw.find_first_not_of(' ') == std::string::npos) continue;
-                if (drawn_banner >= max_banner_rows) break;
-                std::string line = raw;
-                while (!line.empty() && line.front() == ' ') line.erase(line.begin());
-                while (!line.empty() && line.back() == ' ') line.pop_back();
-                if (line.empty()) continue;
-                draw_text(frame, x + 3, cy++,
-                          line,
-                          drawn_banner == 0 ? d.accent.primary : d.text.muted,
-                          d.bg.panel);
-                ++drawn_banner;
-            }
-            if (drawn_banner > 0) ++cy;
 
             for (const auto& line : body) {
                 if (cy + 2 >= y + panel_h) break;

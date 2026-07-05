@@ -306,7 +306,6 @@ void cmd_api(int port, const std::string& bind, bool verbose,
 
     std::cout << "\033[2J\033[H";
 
-    std::cout << BANNER;
     std::cout << "API listening on " << bind << ":" << server.port() << "\n";
     std::cout << "  POST  /v1/orchestrate          (single-tenant; no bearer required)\n";
     std::cout << "  GET   /v1/health\n";
