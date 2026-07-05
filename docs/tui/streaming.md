@@ -24,13 +24,13 @@ This indicator runs in the output pump and updates at ~80 ms cadence. It clears 
 
 ### 2. Streaming output
 
-Model deltas land in the scroll region as they arrive. Prose and inline markdown render line-by-line; fenced blocks (including ` ```diff ` patches) buffer until the closing fence so long partial blocks do not flood scrollback mid-stream. Code blocks longer than eight lines may show a single dim `… (code block, N+ lines) …` placeholder while streaming; the fully styled block appears when the fence closes. Diff fences render as side-by-side before/after panels via the diff sink. Markdown rendering produces ANSI SGR sequences that `AnsiScrollAppender` maps to OpenTUI syntax highlights; PgUp redraw preserves colours.
+Model deltas land in the scroll region as they arrive via `StreamRenderer`: `BlockParser` suppresses `/cmd` lines (unless `/verbose`), `MarkdownRenderer` emits styled spans into `ProseSegment`, non-diff fenced code streams into `CodeSegment` (draw-time collapse — first eight body lines plus a live `… +N lines` summary, no placeholder artifacts in scrollback), and ` ```diff ` patches become side-by-side `DiffSegment` panels. Styling resolves from `tui.json`'s `content` tokens through `StyleId` → OpenTUI highlights — no ANSI round-trip on the master stream path.
 
-Sub-agent progress (dimmed lines emitted while delegated agents run) collapses fenced blocks and caps at eight lines — the master's synthesis turn carries the full styled result.
+Sub-agent progress uses the same pipeline with `kInterim` policy: dimmed prose, collapsed fences, capped at eight display rows / 480 columns. The master's synthesis turn carries the full result.
 
 ### 3. Tool calls
 
-When the agent emits `/fetch`, `/exec`, `/agent`, `/mem`, `/write … /endwrite`, etc., the StreamFilter intercepts those lines. Behaviour depends on `/verbose`:
+When the agent emits `/fetch`, `/exec`, `/agent`, `/mem`, `/write … /endwrite`, etc., `BlockParser` intercepts those lines. Behaviour depends on `/verbose`:
 
 **Verbose off (default).** The `/cmd` lines are *swallowed* from the scroll region and the mid separator above the input switches to a tool-call spinner:
 

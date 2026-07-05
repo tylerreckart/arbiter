@@ -9,6 +9,7 @@
 #include "sandbox.h"
 #include "starters.h"
 #include "tenant_store.h"
+#include "tui/tui_design.h"
 
 #include <algorithm>
 #include <cctype>
@@ -177,6 +178,18 @@ void cmd_init(bool force) {
                      "to overwrite existing definitions.\n";
     } else if (written > 0) {
         std::cout << "\nEdit these or add your own. Then run: arbiter\n";
+    }
+
+    const std::string tui_path = dir + "/tui.json";
+    if (!fs::exists(tui_path)) {
+        std::ofstream tf(tui_path);
+        if (tf) {
+            tf << "{\n  \"preset\": \"" << arbiter::kDefaultTuiPreset << "\"\n}\n";
+            std::cout << "\nWrote " << tui_path << " (preset: "
+                      << arbiter::kDefaultTuiPreset << ")\n";
+            std::cout << "  Other presets: onedark, modern, nord, dracula, "
+                         "solarized, light, dense\n";
+        }
     }
 }
 

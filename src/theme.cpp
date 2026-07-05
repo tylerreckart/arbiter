@@ -1,12 +1,8 @@
 // arbiter/src/theme.cpp — see theme.h
-//
-// Default theme: OneDark, matched to the canonical palette from
-// joshdick/onedark.vim.  Values are hex triplets emitted as 24-bit
-// true-color ANSI.  See Theme fields in theme.h for semantic roles.
 
 #include "theme.h"
+#include "tui/tui_design.h"
 
-#include <array>
 #include <cstdio>
 #include <string>
 
@@ -14,18 +10,20 @@ namespace arbiter {
 
 namespace {
 
-// 24-bit true-color foreground escape.  Kept as a tiny helper so each
-// palette entry reads as an RGB triple rather than an opaque escape
-// string — keeps the theme table human-scannable.
-std::string fg(int r, int g, int b) {
+std::string fg_rgba(const TuiRgba& c) {
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "\033[38;2;%d;%d;%dm", r, g, b);
+    std::snprintf(buf, sizeof(buf), "\033[38;2;%u;%u;%um",
+                  static_cast<unsigned>(c[0]),
+                  static_cast<unsigned>(c[1]),
+                  static_cast<unsigned>(c[2]));
     return buf;
 }
 
-Theme build_onedark() {
+Theme build_theme_from_design() {
+    const TuiDesign& d = tui_design();
+    const auto& c = d.content;
+
     Theme t;
-    // Attribute-only — same in every theme.
     t.reset     = "\033[0m";
     t.dim       = "\033[2m";
     t.bold      = "\033[1m";
@@ -33,75 +31,47 @@ Theme build_onedark() {
     t.underline = "\033[4m";
     t.strike    = "\033[9m";
 
-    // OneDark palette (https://github.com/joshdick/onedark.vim):
-    //   Red         #e06c75   224 108 117
-    //   DarkRed     #be5046   190  80  70
-    //   Green       #98c379   152 195 121
-    //   Yellow      #e5c07b   229 192 123
-    //   DarkYellow  #d19a66   209 154 102      (orange)
-    //   Blue        #61afef    97 175 239
-    //   Purple      #c678dd   198 120 221
-    //   Cyan        #56b6c2    86 182 194
-    //   White       #abb2bf   171 178 191      (fg)
-    //   Comment     #5c6370    92  99 112
-    //   NonText     #3e4452    62  68  82
-    //   CursorGrey  #2c323c    44  50  60
+    t.accent_focused  = fg_rgba(c.accent_focused);
+    t.accent_prompt   = fg_rgba(c.accent_prompt);
+    t.accent_error    = fg_rgba(c.error);
+    t.accent_success  = fg_rgba(c.success);
+    t.accent_warning  = fg_rgba(c.warning);
+    t.accent_info     = fg_rgba(c.info);
 
-    // Semantic roles.
-    t.accent_focused  = fg( 97, 175, 239);   // Blue       — focused pane border
-    t.accent_prompt   = fg(229, 192, 123);   // Yellow     — confirm "[y/N]"
-    t.accent_error    = fg(224, 108, 117);   // Red        — errors / denied
-    t.accent_success  = fg(152, 195, 121);   // Green      — ✓, accepted
-    t.accent_warning  = fg(229, 192, 123);   // Yellow     — warnings (alias of prompt)
-    t.accent_info     = fg( 97, 175, 239);   // Blue       — info / titles
+    t.border_inactive = fg_rgba(c.border_inactive);
+    t.border_active   = t.accent_focused;
+    t.text_dim        = fg_rgba(c.text_dim);
+    t.text_dimmer     = fg_rgba(c.text_dimmer);
+    t.prompt_color    = fg_rgba(c.prompt_color);
+    t.user_echo_arrow = fg_rgba(c.user_echo_arrow);
+    t.user_echo_text  = fg_rgba(c.user_echo_text);
 
-    // Chrome.
-    t.border_inactive = fg( 62,  68,  82);   // NonText    — pane dividers
-    t.border_active   = t.accent_focused;    // alias — Blue
-    t.text_dim        = fg( 92,  99, 112);   // Comment    — hint text, status
-    t.text_dimmer     = fg( 62,  68,  82);   // NonText    — sub-agent progress
-    t.prompt_color    = fg( 92,  99, 112);   // Comment    — "> " prompt
-    t.user_echo_arrow = fg( 92,  99, 112);   // Comment    — echo arrow
-    t.user_echo_text  = fg(171, 178, 191);   // White      — echoed user text
+    t.agent_master = fg_rgba(c.agent_master);
+    for (size_t i = 0; i < t.agent_palette.size(); ++i) {
+        t.agent_palette[i] = fg_rgba(c.agent_palette[i]);
+    }
 
-    // Agent color cycle.  Kept distinct from accent_focused so the focus
-    // indicator (blue) doesn't collide with the "index" master identity.
-    // Orange stays the canonical "index" accent the way it always has.
-    t.agent_master    = fg(209, 154, 102);   // DarkYellow — "index"
-    t.agent_palette   = {
-        fg(224, 108, 117),   // Red
-        fg(229, 192, 123),   // Yellow
-        fg(209, 154, 102),   // DarkYellow (orange)
-        fg(152, 195, 121),   // Green
-        fg( 97, 175, 239),   // Blue
-        fg(198, 120, 221),   // Purple
-        fg( 86, 182, 194),   // Cyan
-        fg(171, 178, 191),   // White
-        fg(190,  80,  70),   // DarkRed
-        fg(181, 141, 206),   // Lavender (Purple lightened)
-        fg( 68, 136, 199),   // Muted Blue (Blue darkened)
-        fg(184, 228, 151),   // Light Green
-    };
-
-    // Markdown.
-    t.md_code     = fg(209, 154, 102);       // DarkYellow — code / inline code
-    t.md_link     = fg( 97, 175, 239);       // Blue       — hyperlinks
-    t.md_bullet   = fg( 92,  99, 112);       // Comment    — dim list bullets
-    t.md_cmd_line = fg(209, 154, 102);       // DarkYellow — agent /cmd passthrough
-    t.md_heading  = {
-        fg( 97, 175, 239),                   // h1 Blue
-        fg(198, 120, 221),                   // h2 Purple
-        fg( 86, 182, 194),                   // h3 Cyan
-        fg(209, 154, 102),                   // h4+ DarkYellow
-    };
+    t.md_code     = fg_rgba(c.code);
+    t.md_link     = fg_rgba(c.link);
+    t.md_bullet   = fg_rgba(c.bullet);
+    t.md_cmd_line = fg_rgba(c.writ_line);
+    for (size_t i = 0; i < t.md_heading.size(); ++i) {
+        t.md_heading[i] = fg_rgba(c.heading[i]);
+    }
     return t;
 }
 
 } // namespace
 
 const Theme& theme() {
-    static const Theme kOneDark = build_onedark();
-    return kOneDark;
+    static Theme cached = build_theme_from_design();
+    static std::uint32_t generation = tui_design_generation();
+    const std::uint32_t current = tui_design_generation();
+    if (generation != current) {
+        cached = build_theme_from_design();
+        generation = current;
+    }
+    return cached;
 }
 
 } // namespace arbiter

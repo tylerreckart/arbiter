@@ -1,0 +1,97 @@
+#include "tui/style_resolver.h"
+
+namespace arbiter {
+
+namespace {
+
+constexpr std::uint32_t kAttrBold          = 1u << 0;
+constexpr std::uint32_t kAttrDim           = 1u << 1;
+constexpr std::uint32_t kAttrItalic        = 1u << 2;
+constexpr std::uint32_t kAttrUnderline     = 1u << 3;
+
+} // namespace
+
+ResolvedStyle resolve_style(StyleId id) {
+    const TuiDesign& d = tui_design();
+    ResolvedStyle rs;
+    switch (id) {
+    case StyleId::Default:
+        break;
+    case StyleId::Dim:
+        rs.attrs = kAttrDim;
+        break;
+    case StyleId::Bold:
+        rs.attrs = kAttrBold;
+        break;
+    case StyleId::Italic:
+        rs.attrs = kAttrItalic;
+        break;
+    case StyleId::Heading1:
+        rs.fg = &d.content.heading[0];
+        rs.attrs = kAttrBold;
+        break;
+    case StyleId::Heading2:
+        rs.fg = &d.content.heading[1];
+        rs.attrs = kAttrBold;
+        break;
+    case StyleId::Heading3:
+        rs.fg = &d.content.heading[2];
+        rs.attrs = kAttrBold;
+        break;
+    case StyleId::Heading4:
+        rs.fg = &d.content.heading[3];
+        rs.attrs = kAttrBold;
+        break;
+    case StyleId::Code:
+    case StyleId::CodeFence:
+        rs.fg = &d.content.code;
+        break;
+    case StyleId::Link:
+        rs.fg = &d.content.link;
+        rs.attrs = kAttrUnderline;
+        break;
+    case StyleId::Bullet:
+        rs.fg = &d.content.bullet;
+        break;
+    case StyleId::Blockquote:
+        rs.fg = &d.content.blockquote;
+        rs.attrs = kAttrDim;
+        break;
+    case StyleId::Rule:
+        rs.fg = &d.content.rule;
+        rs.attrs = kAttrDim;
+        break;
+    case StyleId::WritLine:
+        rs.fg = &d.content.writ_line;
+        rs.attrs = kAttrDim;
+        break;
+    case StyleId::DiffAdd:
+        rs.fg = &d.content.diff_add;
+        break;
+    case StyleId::DiffRemove:
+        rs.fg = &d.content.diff_remove;
+        break;
+    case StyleId::DiffHunk:
+        rs.fg = &d.content.diff_hunk;
+        rs.attrs = kAttrDim;
+        break;
+    case StyleId::DiffFile:
+        rs.fg = &d.content.diff_file;
+        break;
+    case StyleId::Success:
+        rs.fg = &d.content.success;
+        break;
+    case StyleId::Error:
+        rs.fg = &d.content.error;
+        break;
+    case StyleId::Warning:
+        rs.fg = &d.content.warning;
+        break;
+    case StyleId::Info:
+        rs.fg = &d.content.info;
+        break;
+    }
+    return rs;
+}
+
+} // namespace arbiter

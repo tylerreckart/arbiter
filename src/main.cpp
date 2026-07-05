@@ -9,6 +9,8 @@
 #include "constitution.h"
 #include "readline_wrapper.h"
 #include "markdown.h"
+#include "stream_renderer.h"
+#include "render_policy.h"
 #include "cli_helpers.h"
 #include "cli.h"
 #include "api_server.h"
@@ -78,6 +80,7 @@ using arbiter::TUI;
 using arbiter::ThinkingIndicator;
 using arbiter::ToolCallIndicator;
 using arbiter::StreamFilter;
+using arbiter::StyleId;
 using arbiter::CommandQueue;
 using arbiter::OutputQueue;
 using arbiter::LoopManager;
@@ -104,17 +107,40 @@ static void wire_markdown_diff_sink(arbiter::MarkdownRenderer& md, OutputQueue& 
     });
 }
 
+static arbiter::RenderPolicy master_stream_policy(const arbiter::Config& cfg) {
+    return cfg.verbose ? arbiter::kVerbose : arbiter::kMasterStream;
+}
+
 static void flush_pane_output(Pane& pane) {
     auto items = pane.output_queue.drain_items();
     if (items.empty()) return;
 
     int before = (pane.scroll_offset > 0) ? pane_history_total_rows(pane) : 0;
     for (const auto& item : items) {
-        if (item.kind == arbiter::OutputItem::Kind::Text) {
-            if (item.data.empty()) continue;
-            pane_history_push(pane, item.data, item.new_block);
-        } else {
+        switch (item.kind) {
+        case arbiter::OutputItem::Kind::Text:
+            if (!item.data.empty()) {
+                pane_history_push(pane, item.data, item.new_block);
+            }
+            break;
+        case arbiter::OutputItem::Kind::Prose:
+            if (!item.styled_lines.empty()) {
+                pane_history_push_prose(pane, item.styled_lines, item.new_block);
+            }
+            break;
+        case arbiter::OutputItem::Kind::Code:
+            if (item.code_op == arbiter::OutputItem::CodeOp::Open) {
+                pane_history_push_code_open(
+                    pane, item.data, item.code_preview_rows, item.new_block);
+            } else if (item.code_op == arbiter::OutputItem::CodeOp::Line) {
+                pane_history_push_code_line(pane, item.data);
+            } else {
+                pane_history_push_code_close(pane, item.data);
+            }
+            break;
+        case arbiter::OutputItem::Kind::Diff:
             pane_history_push_diff(pane, item.data);
+            break;
         }
     }
     if (pane.scroll_offset > 0) {
@@ -153,9 +179,9 @@ static void getc_flush_output() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void cmd_interactive(bool exec_allowed_flag) {
+static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override = {}) {
     std::string dir = get_config_dir();
-    arbiter::load_tui_design(dir);
+    arbiter::load_tui_design(dir, theme_override);
     auto api_keys = get_api_keys();
 
     arbiter::opentui::Session ot_session;
@@ -361,7 +387,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
         p->editor.set_cancel_handler([raw, &orch]() {
             orch.cancel();
             raw->multiline_accum.clear();
-            raw->output_queue.push_msg(theme().accent_error + "[interrupted]" + theme().reset + "");
+            raw->output_queue.push_prose_msg("[interrupted]", StyleId::Error);
         });
         // Chord prefix: Ctrl-w.  Recognized follow-ups: w (next pane),
         // h (horizontal split), v (vertical split), s (sidebar toggle),
@@ -380,23 +406,9 @@ static void cmd_interactive(bool exec_allowed_flag) {
                                     const std::string& content) {
         Pane* p = g_active_pane;
         if (!p) return;
-        const std::string& dim = theme().text_dimmer;
-        const std::string& rst = theme().reset;
-        std::string filtered;
-        StreamFilter filter(cfg,
-            [&filtered](const std::string& s) { filtered += s; });
-        filter.feed(content);
-        filter.flush();
-        if (filtered.empty()) return;
-        filtered = arbiter::truncate_interim_output(filtered);
-        if (filtered.empty()) return;
-        std::string buf;
-        std::istringstream ss(filtered);
-        std::string ln;
-        while (std::getline(ss, ln)) {
-            buf += dim; buf += "  "; buf += ln; buf += rst; buf += "\n";
-        }
-        p->output_queue.push_msg(buf);
+        arbiter::StreamRenderer renderer(arbiter::kInterim, p->output_queue);
+        renderer.feed(content);
+        renderer.flush();
     });
     orch.set_tool_status_callback([&](const std::string& kind, bool ok) {
         Pane* p = g_active_pane;
@@ -614,30 +626,29 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 reveal_sidebar();
                 try {
-                    arbiter::MarkdownRenderer md;
-                    wire_markdown_diff_sink(md, output_queue);
                     if (!cfg.verbose) tool_indicator.begin();
-                    StreamFilter filter(cfg,
-                        [&md, &output_queue](const std::string& chunk) {
-                            auto s = md.feed(chunk);
-                            if (!s.empty()) output_queue.push(s);
-                        });
-                    auto resp = orch.send_streaming(id, msg,
-                        [&filter](const std::string& chunk) { filter.feed(chunk); });
-                    filter.flush();
-                    auto tail = md.flush();
-                    if (!tail.empty()) output_queue.push(tail);
-                    auto tool_summary = tool_indicator.finalize();
-                    if (!tool_summary.empty()) output_queue.push(tool_summary);
+                    arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
+                    auto resp = orch.send_streaming(id, msg, [&](const std::string& chunk) {
+                        renderer.feed(chunk);
+                    });
+                    renderer.flush();
+                    {
+                        const int n = tool_indicator.total();
+                        const int f = tool_indicator.failed();
+                        tool_indicator.finalize();
+                        if (n > 0) {
+                            output_queue.push_prose(arbiter::tool_call_summary_lines(n, f));
+                        }
+                    }
                     // Separator: md.flush() guarantees the stream ends with
                     // a `\n`, so one more gives exactly one blank line before
                     // the next message.
                     output_queue.end_message();
                     if (!resp.ok) {
-                        output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
+                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
                     }
                 } catch (const std::exception& e) {
-                    output_queue.push_msg(theme().accent_error + "ERR: " + std::string(e.what()) + theme().reset + "");
+                    output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
                 }
                 thinking.stop();
                 return;
@@ -670,27 +681,26 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
                 reveal_sidebar();
                 try {
-                    arbiter::MarkdownRenderer md;
-                    wire_markdown_diff_sink(md, output_queue);
                     if (!cfg.verbose) tool_indicator.begin();
-                    StreamFilter filter(cfg,
-                        [&md, &output_queue](const std::string& chunk) {
-                            auto s = md.feed(chunk);
-                            if (!s.empty()) output_queue.push(s);
-                        });
-                    auto resp = orch.send_streaming("index", query,
-                        [&filter](const std::string& chunk) { filter.feed(chunk); });
-                    filter.flush();
-                    auto tail = md.flush();
-                    if (!tail.empty()) output_queue.push(tail);
-                    auto tool_summary = tool_indicator.finalize();
-                    if (!tool_summary.empty()) output_queue.push(tool_summary);
+                    arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
+                    auto resp = orch.send_streaming("index", query, [&](const std::string& chunk) {
+                        renderer.feed(chunk);
+                    });
+                    renderer.flush();
+                    {
+                        const int n = tool_indicator.total();
+                        const int f = tool_indicator.failed();
+                        tool_indicator.finalize();
+                        if (n > 0) {
+                            output_queue.push_prose(arbiter::tool_call_summary_lines(n, f));
+                        }
+                    }
                     output_queue.end_message();
                     if (!resp.ok) {
-                        output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
+                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
                     }
                 } catch (const std::exception& e) {
-                    output_queue.push_msg(theme().accent_error + "ERR: " + std::string(e.what()) + theme().reset + "");
+                    output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
                 }
                 thinking.stop();
                 return;
@@ -869,7 +879,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     if (resp.ok) {
                         output_queue.push_msg(arbiter::render_markdown(resp.content));
                     } else {
-                        output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
+                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
                     }
                 } catch (const std::exception& ex) {
                     thinking.stop();
@@ -1034,22 +1044,20 @@ static void cmd_interactive(bool exec_allowed_flag) {
         // Plain text → stream to current agent
         reveal_sidebar();
         try {
-            arbiter::MarkdownRenderer md;
-            wire_markdown_diff_sink(md, output_queue);
             tool_indicator.begin();
-            StreamFilter filter(cfg,
-                [&md, &output_queue](const std::string& chunk) {
-                    auto s = md.feed(chunk);
-                    if (!s.empty()) output_queue.push(s);
-                });
+            arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
             auto resp = orch.send_streaming(current_agent, line,
-                [&filter](const std::string& chunk) { filter.feed(chunk); },
+                [&](const std::string& chunk) { renderer.feed(chunk); },
                 pane.original_task);
-            filter.flush();
-            auto tail = md.flush();
-            if (!tail.empty()) output_queue.push(tail);
-            auto tool_summary = tool_indicator.finalize();
-            if (!tool_summary.empty()) output_queue.push(tool_summary);
+            renderer.flush();
+            {
+                const int n = tool_indicator.total();
+                const int f = tool_indicator.failed();
+                tool_indicator.finalize();
+                if (n > 0) {
+                    output_queue.push_prose(arbiter::tool_call_summary_lines(n, f));
+                }
+            }
             // md.flush() guarantees the stream ended on `\n`; one more gives
             // exactly one blank line before the next message.
             output_queue.end_message();
@@ -1061,10 +1069,10 @@ static void cmd_interactive(bool exec_allowed_flag) {
                                          : ("ERR: " + resp.error);
             update_pane_original_task(pane, line, resp);
             if (!resp.ok) {
-                output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
+                output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
             }
         } catch (const std::exception& e) {
-            output_queue.push_msg(theme().accent_error + "ERR: " + std::string(e.what()) + theme().reset + "");
+            output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
             pane.last_response = std::string("ERR: ") + e.what();
         }
         thinking.stop();
@@ -1496,15 +1504,36 @@ static void cmd_interactive(bool exec_allowed_flag) {
 
 int main(int argc, char* argv[]) {
     try {
+        if (arbiter::argv_has_theme_flag(argc, argv) &&
+            arbiter::argv_repl_theme(argc, argv).empty()) {
+            std::cerr << "Usage: arbiter [--no-exec] [--theme PRESET]\n";
+            return 1;
+        }
+
         if (arbiter::argv_launches_interactive(argc, argv)) {
-            cmd_interactive(!arbiter::argv_has_no_exec(argc, argv));
+            const std::string theme = arbiter::argv_repl_theme(argc, argv);
+            if (!theme.empty() && !arbiter::tui_preset_is_valid(theme)) {
+                std::cerr << "Unknown theme: " << theme << "\n";
+                std::cerr << "Valid themes:";
+                for (const auto& p : arbiter::tui_builtin_presets()) {
+                    std::cerr << ' ' << p;
+                }
+                std::cerr << "\n";
+                return 1;
+            }
+            cmd_interactive(!arbiter::argv_has_no_exec(argc, argv), theme);
             return 0;
         }
 
         std::string arg1 = argv[1];
 
         if (arg1 == "--no-exec") {
-            cmd_interactive(false);
+            const std::string theme = arbiter::argv_repl_theme(argc, argv);
+            if (!theme.empty() && !arbiter::tui_preset_is_valid(theme)) {
+                std::cerr << "Unknown theme: " << theme << "\n";
+                return 1;
+            }
+            cmd_interactive(false, theme);
             return 0;
         }
         if (arg1 == "--init" || arg1 == "init") {
@@ -1604,9 +1633,11 @@ int main(int argc, char* argv[]) {
         if (arg1 == "--help" || arg1 == "-h" || arg1 == "help") {
             std::cout <<
                 "Usage:\n"
-                "  arbiter                            Interactive REPL\n"
-                "  arbiter --no-exec                  Interactive REPL with /exec disabled\n"
+                "  arbiter [--theme PRESET]           Interactive REPL\n"
+                "  arbiter --no-exec [--theme PRESET] Interactive REPL with /exec disabled\n"
                 "                                     (agents cannot run shell commands)\n"
+                "                                     --theme: onedark (default), modern, nord,\n"
+                "                                     dracula, solarized, light, dense\n"
                 "  arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]\n"
                 "                                     HTTP+SSE orchestration API (default 127.0.0.1:8080).\n"
                 "                                     --verbose mirrors every SSE event (text deltas, tool calls,\n"
@@ -1629,6 +1660,7 @@ int main(int argc, char* argv[]) {
                 "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n"
                 "Config: ~/.arbiter/\n"
                 "  openrouter_api_key                 OpenRouter key file\n"
+                "  tui.json                           TUI theme preset + overrides\n"
                 "  tenants.db                         Tenant identity store (--api)\n"
                 "  agents/*.json                      Agent constitutions\n";
             return 0;
