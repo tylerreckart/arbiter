@@ -39,56 +39,6 @@ event type is routed to the right agent.
 **Act with supervision.** Constrain the tools each agent can use and enforce
 advisor gates before consequential actions leave the runtime.
 
-## Example session
-
-`/v1/orchestrate` takes a direct prompt; `/v1/events` routes structured
-events from software or hardware. Either way the full trace — routing,
-delegation, tool calls, memory, gates — streams back as SSE. More examples
-in the [API docs](https://arbiter.run/docs/api).
-
-**Hardware event** — a temperature threshold on an edge device routes to a
-facilities agent, which delegates parallel diagnostics and operations
-sub-agents:
-
-```
-POST /v1/events · source=edge/rack-04
-type=sensor.temperature.threshold · value=84.6°C
-─────────────────────────────────────────────────────────────────
-event:   event_received       evt_8s3z · authenticated device
-event:   route_match          sensor.* → facilities
-event:   stream_start         facilities · depth 1
-
-facilities: checking thermal history and response policy
-
-event:   tool_call            /mem read rack-04 thermal history
-event:   tool_output          3 prior events · cooling policy v3
-event:   tool_call            /parallel diagnostics, operations
-event:   delegate             diagnostics, operations
-event:   stream_start         diagnostics · depth 2
-event:   tool_call            /exec read_sensors --zone rack-04
-event:   tool_output          inlet=31.2 · cpu=84.6 · fan=61%
-event:   tool_call            /exec inspect_processes --top 5
-event:   tool_output          inference-worker using 93% GPU
-
-diagnostics: sustained compute load is driving the thermal spike
-
-event:   stream_start         operations · depth 2
-event:   tool_call            /exec reduce_load --service inference-worker
-event:   tool_output          load target 60% · graceful drain started
-event:   gate                 verdict: continue ✓
-event:   tool_call            /mem write thermal event + response
-event:   join                 diagnostics, operations · ordered merge
-
-facilities: rack-04 stabilized; monitoring for recurrence
-
-event:   artifact             incident evt_8s3z · trace + actions
-event:   gate                 final review · action + outcome
-event:   gate                 verdict: continue ✓
-event:   done                 ok=true · 6.8s · action recorded
-```
-
-Nothing happens off-stream.
-
 ## Quick start
 
 ```bash
