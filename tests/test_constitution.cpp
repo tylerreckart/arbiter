@@ -42,6 +42,7 @@ TEST_CASE("empty capabilities yields the legacy surface (master back-compat)") {
     CHECK(prompt.find("REASONING:")                      != std::string::npos);
     CHECK(prompt.find("DELEGATION-TURN OUTPUT DISCIPLINE:") != std::string::npos);
     CHECK(prompt.find("INTER-AGENT RESPONSE FORMAT:")    != std::string::npos);
+    CHECK(prompt.find("CODE CHANGE FORMAT:")             != std::string::npos);
 
     // All default-bundle inventory rows should appear.
     CHECK(prompt.find("/search ")    != std::string::npos);
