@@ -352,6 +352,27 @@ static const char* prompt_inter_agent_format() {
         "- If incomplete: lead with INCOMPLETE: <what's missing and why>\n";
 }
 
+static const char* prompt_code_change_format() {
+    return
+        "\nCODE CHANGE FORMAT:\n"
+        "The TUI renders fenced ```diff blocks as side-by-side patches. "
+        "Use them whenever you show a code change — edits, fixes, refactors, "
+        "or a post-/write summary of what changed.\n"
+        "- One fenced block per file, language tag `diff` (not `patch`, not unlabeled).\n"
+        "- Unified diff syntax:\n"
+        "    --- a/path/to/file\n"
+        "    +++ b/path/to/file\n"
+        "    @@ -old_start,old_count +new_start,new_count @@\n"
+        "     context line (leading space)\n"
+        "    -removed line\n"
+        "    +added line\n"
+        "- Include ---/+++ headers and at least one @@ hunk. When both removals "
+        "  and additions exist, include context, at least one - line, and one + line.\n"
+        "- Slash commands (/write, /exec, /agent) stay outside fences on their own lines.\n"
+        "- Plain code fences are fine for brand-new files, examples, or snippets that "
+        "  are not diffs against existing code.\n";
+}
+
 // /help inventory line.  Topic list reflects actually-loaded bundles plus
 // "advise" (which is gated on advisor_model, not on bundles).
 static std::string compose_help_inventory(const std::set<std::string>& b) {
@@ -405,6 +426,7 @@ static std::string arbiter_prompt(Brevity level,
 
     s += prompt_reasoning();
     if (bundles.count("delegation")) s += prompt_delegation_discipline();
+    s += prompt_code_change_format();
     s += prompt_inter_agent_format();
     return s;
 }
@@ -412,7 +434,7 @@ static std::string arbiter_prompt(Brevity level,
 // ─── Writer base prompt ───────────────────────────────────────────────────────
 
 static std::string writer_prompt() {
-    return
+    std::string s =
         "You are a skilled writer and content creator.\n"
         "You produce clear, engaging, polished written content tailored to the requested format.\n\n"
 
@@ -458,12 +480,14 @@ static std::string writer_prompt() {
         "- To inspect a codebase before writing docs: use /exec to read files and structure.\n"
         "- To gather facts before writing: use /agent research <query> or /fetch <url>.\n"
         "- To preserve an outline or draft across sessions: use /mem write.\n";
+    s += prompt_code_change_format();
+    return s;
 }
 
 // ─── Planner base prompt ──────────────────────────────────────────────────────
 
 static std::string planner_prompt() {
-    return
+    std::string s =
         "You are a planning agent. Your job is to decompose complex tasks into "
         "structured, executable plans — then write that plan to a file.\n\n"
 
@@ -525,6 +549,8 @@ static std::string planner_prompt() {
         "- Inspect the environment with /exec before writing the plan when task touches files or code.\n"
         "- Do not write the plan until you have enough context. Gather first, plan second.\n"
         "- After writing the plan, confirm the file path in your response.\n";
+    s += prompt_code_change_format();
+    return s;
 }
 
 // Simplified prompt for weak local models (ollama/*): leads with commands and examples
@@ -634,6 +660,7 @@ static std::string weak_executor_prompt(const Constitution& c) {
         for (auto& r : c.rules) ss << "- " << r << "\n";
     }
 
+    ss << prompt_code_change_format();
     return ss.str();
 }
 
@@ -770,7 +797,8 @@ Constitution master_constitution() {
         "When invoking an agent, build the brief from this structured template. Do not relay the "
         "user's raw words; extract intent and enrich. Preserve specific terms verbatim.",
         "  1. GOAL — one sentence stating the deliverable.",
-        "  2. FORMAT — file/markdown/shell output, length, structure.",
+        "  2. FORMAT — file/markdown/shell output, length, structure. For code edits, "
+        "require a ```diff fenced unified diff per changed file.",
         "  3. CONSTRAINTS — audience, tone, tech stack, budget, style, must-avoid.",
         "  4. VERBATIM — URLs, file paths, identifiers, code snippets, quoted text to preserve unchanged.",
         "  5. PRIOR FINDINGS — if a previous agent produced results for this pipeline, include key facts "
@@ -813,6 +841,8 @@ Constitution master_constitution() {
         "  - Lead with the answer, then supporting evidence. Never bury the deliverable under process.",
         "  - If agent outputs disagree or an answer is under-evidenced, flag the uncertainty "
         "    rather than smoothing it over.",
+        "When presenting or synthesizing code changes, include a ```diff fenced unified diff "
+        "for each edited file — not a prose description of line edits or an unlabeled code block.",
 
         // Artifact handoff — when a sub-agent has produced the deliverable
         "When a sub-agent has written a file or persisted an artifact, your output is the "

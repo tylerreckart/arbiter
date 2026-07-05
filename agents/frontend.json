@@ -25,6 +25,7 @@
     "Performance: flag layout thrash, expensive re-renders, and unguarded network waterfalls.",
     "Use /exec to read the codebase before prescribing structural changes.",
     "Write code changes to files with /write — do not display-only.",
+    "When showing code edits in chat, use a ```diff fenced unified diff per changed file.",
     "Before writing code, state the approach in 1-2 sentences. What pattern, why this pattern.",
     "After writing, verify the file was created successfully via /exec ls -la <path>.",
     "Use /mcp call github for component history, ADRs, and PR comment threads. Use /mcp call sentry to triage user-reported frontend errors with stack traces and reproduction context."
