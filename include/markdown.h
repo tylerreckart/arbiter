@@ -1,7 +1,10 @@
 #pragma once
 // arbiter/include/markdown.h — Markdown-to-ANSI terminal renderer
 
+#include "styled_text.h"
+
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,22 +18,29 @@ class MarkdownRenderer {
 public:
     using DiffSink = std::function<void(const std::string& patch)>;
 
-    // When set, ```diff fenced blocks are delivered here instead of as styled
-    // code lines.  The sink receives the raw unified-diff body (no fences).
     void set_diff_sink(DiffSink sink) { diff_sink_ = std::move(sink); }
 
-    // Feed a streaming chunk. Returns any complete styled lines ready to print.
+    using CodeOpenFn = std::function<void(std::string open_fence, std::string lang)>;
+    using CodeLineFn = std::function<void(const std::string& line)>;
+    using CodeCloseFn = std::function<void(std::string close_fence)>;
+    void set_code_sink(CodeOpenFn on_open, CodeLineFn on_line, CodeCloseFn on_close);
+
+    // Feed a streaming chunk. Returns styled lines ready to render.
+    std::vector<StyledLine> feed_styled(const std::string& chunk);
+
+    // Feed a streaming chunk. Returns ANSI for non-TUI callers (loop logs, etc.).
     std::string feed(const std::string& chunk);
 
-    // Flush any partial final line. Call once after the stream ends.
+    std::vector<StyledLine> flush_styled();
     std::string flush();
 
-    // Reset all state (call between independent responses if reusing).
     void reset();
 
 private:
     static bool is_diff_fence_lang(std::string_view lang);
-    std::string render_buffered_code_block(const std::string& close_fence);
+    std::vector<StyledLine> render_buffered_code_block_styled(const std::string& close_fence);
+    std::optional<StyledLine> process_line_styled(const std::string& line);
+    void finish_code_close(const std::string& close_fence, std::vector<StyledLine>& out);
 
     std::string line_buf_;
     bool        in_code_block_ = false;
@@ -38,27 +48,14 @@ private:
     std::string diff_buf_;
     std::vector<std::string> code_buf_;
     std::string code_open_fence_;
-    bool        code_preview_emitted_ = false;
     DiffSink    diff_sink_;
-    // Models often open with a leading blank line; the REPL already pushes a
-    // "\n" pad before the stream, so emitting another produces a double gap
-    // under the user's prompt.  Swallow leading empty lines until the first
-    // non-empty content arrives.
+    CodeOpenFn  code_open_;
+    CodeLineFn  code_line_;
+    CodeCloseFn code_close_;
     bool        seen_content_  = false;
-
-    std::string process_line(const std::string& line);
 };
 
-// Render a complete markdown string to ANSI-styled output.
 std::string render_markdown(const std::string& text);
-
-// Style a unified-diff patch for terminal scrollback (+ green, - red, @@ dim).
 std::string render_diff_ansi(const std::string& patch);
-
-// Collapse fenced blocks and cap line/char count for non-final delegation
-// progress shown dimmed in the TUI while sub-agents run.
-std::string truncate_interim_output(const std::string& text,
-                                      size_t max_lines = 8,
-                                      size_t max_chars = 480);
 
 } // namespace arbiter

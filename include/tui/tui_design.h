@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace arbiter {
 
@@ -69,12 +71,64 @@ struct TuiDesign {
         std::string footer_left_compact = "esc cancel  pg scroll";
         std::string footer_right_compact = "/help";
     } component;
+
+    // Markdown / scrollback content colors (OneDark defaults; overridable via
+    // the "content" group in tui.json).
+    struct Content {
+        std::array<TuiRgba, 4> heading{};
+        TuiRgba code{};
+        TuiRgba link{};
+        TuiRgba bullet{};
+        TuiRgba blockquote{};
+        TuiRgba rule{};
+        TuiRgba writ_line{};
+        TuiRgba diff_add{};
+        TuiRgba diff_remove{};
+        TuiRgba diff_hunk{};
+        TuiRgba diff_file{};
+        TuiRgba success{};
+        TuiRgba error{};
+        TuiRgba warning{};
+        TuiRgba info{};
+        TuiRgba text_dim{};
+        TuiRgba text_dimmer{};
+        TuiRgba accent_focused{};
+        TuiRgba accent_prompt{};
+        TuiRgba prompt_color{};
+        TuiRgba user_echo_arrow{};
+        TuiRgba user_echo_text{};
+        TuiRgba border_inactive{};
+        TuiRgba agent_master{};
+        std::array<TuiRgba, 12> agent_palette{};
+    } content;
+};
+
+// Readable sidebar text on `bg.header` (presets often set text.subtle too close).
+struct SidebarColors {
+    TuiRgba label{}; // KV keys, empty states, de-emphasized marks
+    TuiRgba value{}; // metrics, tool names, secondary lines
+    TuiRgba body{};  // agent id, tasks, todo subjects
 };
 
 TuiRgba tui_rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b,
                  std::uint8_t a = 255);
 
+[[nodiscard]] SidebarColors tui_sidebar_colors(const TuiDesign& d);
+
 const TuiDesign& tui_design();
-void load_tui_design(const std::string& config_dir);
+// `cli_preset` overrides `"preset"` in tui.json for this session; other
+// tui.json tokens still apply on top.
+void load_tui_design(const std::string& config_dir,
+                     std::string_view cli_preset = {});
+// Bumps when load_tui_design() completes — theme() uses this to invalidate cache.
+[[nodiscard]] std::uint32_t tui_design_generation();
+
+// Built-in full themes (chrome + scrollback content).  Set `"preset"` in
+// ~/.arbiter/tui.json — see docs/tui/index.md.
+inline constexpr const char* kDefaultTuiPreset = "onedark";
+
+[[nodiscard]] std::vector<std::string> tui_builtin_presets();
+[[nodiscard]] bool tui_preset_is_valid(std::string_view name);
+[[nodiscard]] TuiDesign tui_design_for_preset(std::string_view preset);
 
 } // namespace arbiter

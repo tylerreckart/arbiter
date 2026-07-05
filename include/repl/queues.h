@@ -1,16 +1,7 @@
 #pragma once
 // arbiter/include/repl/queues.h
-//
-// Two thread-safe queues used to decouple the REPL's readline-owning main
-// thread from the background execution thread(s):
-//
-//   • CommandQueue — user input lines waiting to run.  push() by the main
-//     thread as soon as the user hits Enter; pop() blocks in the exec thread.
-//     The user can queue up the next command while the current one is still
-//     streaming.
-//
-//   • OutputQueue — formatted text the exec / loop threads want rendered.
-//     Only the main thread calls drain_items() and writes to the scroll view.
+
+#include "styled_text.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -57,10 +48,14 @@ private:
 };
 
 struct OutputItem {
-    enum class Kind : std::uint8_t { Text, Diff };
+    enum class Kind : std::uint8_t { Text, Diff, Prose, Code };
+    enum class CodeOp : std::uint8_t { Open, Line, Close };
+
     Kind kind = Kind::Text;
     std::string data;
-    // When true, PaneScrollView inserts one blank row before this item.
+    std::vector<StyledLine> styled_lines;
+    CodeOp code_op = CodeOp::Open;
+    size_t code_preview_rows = 8;
     bool new_block = false;
 };
 
@@ -79,7 +74,16 @@ public:
     // Queue a diff patch.  Preserves stream order relative to text chunks.
     void push_diff(const std::string& patch);
 
-    // Drain all pending items in submission order.
+    // Queue styled markdown lines (ProseSegment path — no ANSI round trip).
+    void push_prose(const std::vector<StyledLine>& lines);
+
+    // Single styled status line (push_prose + end_message).
+    void push_prose_msg(const std::string& text, StyleId id = StyleId::Default);
+
+    void push_code_open(const std::string& open_fence, size_t preview_rows);
+    void push_code_line(const std::string& line);
+    void push_code_close(const std::string& close_fence);
+
     std::vector<OutputItem> drain_items();
 
     void set_notify_fn(std::function<void()> fn);
