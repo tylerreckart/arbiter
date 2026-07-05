@@ -32,6 +32,27 @@ void pane_history_push_diff(Pane& pane, std::string_view patch) {
     if (pane.scroll) pane.scroll->append_diff(patch);
 }
 
+void pane_history_push_prose(Pane& pane,
+                             const std::vector<StyledLine>& lines,
+                             bool new_block) {
+    if (pane.scroll) pane.scroll->append_prose(lines, new_block);
+}
+
+void pane_history_push_code_open(Pane& pane,
+                                 std::string_view open_fence,
+                                 size_t preview_rows,
+                                 bool new_block) {
+    if (pane.scroll) pane.scroll->append_code_open(open_fence, preview_rows, new_block);
+}
+
+void pane_history_push_code_line(Pane& pane, std::string_view line) {
+    if (pane.scroll) pane.scroll->append_code_line(line);
+}
+
+void pane_history_push_code_close(Pane& pane, std::string_view close_fence) {
+    if (pane.scroll) pane.scroll->append_code_close(close_fence);
+}
+
 int pane_history_total_rows(const Pane& pane) {
     if (pane.scroll) return pane.scroll->total_visual_rows();
     return 0;

@@ -74,42 +74,66 @@ Everything else (current pane layout, scrollback, in-flight turns) is in-memory 
 
 ## TUI design config
 
-Arbiter has a small CSS-like design layer for OpenTUI chrome. The built-in
-`modern` preset is loaded by default; `~/.arbiter/tui.json` can switch presets
-or override individual semantic tokens.
+Arbiter ships coordinated themes: pane chrome (`bg`, `text`, `accent`, `border`)
+and scrollback content (`content` — headings, code, diffs, status glyphs) are
+defined together per preset. Set `"preset"` in `~/.arbiter/tui.json`; individual
+tokens can still be overridden afterward.
 
-Example:
+`arbiter --init` writes `~/.arbiter/tui.json` with `"preset": "onedark"` if the
+file does not exist yet. Example presets live in the repo under `themes/`.
+
+### Built-in presets
+
+| Preset | Character |
+|--------|-----------|
+| `onedark` | **Default.** Atom OneDark — blue focus, warm code, green/red diffs. |
+| `modern` | Neutral black chrome with warm orange accent. |
+| `nord` | Cool arctic blues and muted frost tones. |
+| `dracula` | Purple/pink/cyan on `#282a36`. |
+| `solarized` | Ethan Schoonover Solarized Dark. |
+| `light` | Light background for bright terminals. |
+| `dense` | OneDark colors with tighter padding (small terminals). |
+
+Pick a preset:
 
 ```json
 {
-  "preset": "modern",
-  "bg": {
-    "base": "#080808",
-    "scroll": "#0c0c0c",
-    "header": "#1a1a1a",
-    "input": "#1f1f1f"
-  },
+  "preset": "nord"
+}
+```
+
+Copy a starter from the repo if you prefer a file reference:
+
+```bash
+cp themes/nord.json ~/.arbiter/tui.json
+```
+
+Or pick a preset for one session without editing config:
+
+```bash
+arbiter --theme nord
+```
+
+Override individual tokens on top of any preset:
+
+```json
+{
+  "preset": "onedark",
   "accent": {
-    "primary": "#f5a524"
+    "primary": "#c678dd"
+  },
+  "content": {
+    "code": "#e5c07b",
+    "heading": ["#61afef", "#c678dd", "#56b6c2", "#d19a66"]
   },
   "layout": {
     "pane_padding_x": 1,
     "input_padding_x": 2,
-    "status_inset_x": 2,
-    "show_footer": true,
-    "status_pill": true
-  },
-  "component": {
-    "prompt": "",
-    "continuation_prompt": "… ",
-    "inactive_prompt": "",
-    "footer_left_compact": "esc cancel  pg scroll",
-    "footer_right_compact": "/help"
+    "show_footer": true
   }
 }
 ```
 
-Supported color groups are `bg`, `text`, `accent`, and `border`, using
-`#RRGGBB` values. Supported spacing and visibility values live under `layout`.
-The `component` group controls small text atoms such as prompt and footer hints.
-Use `"preset": "dense"` for tighter padding on small terminals.
+Supported color groups are `bg`, `text`, `accent`, `border`, and `content`,
+using `#RRGGBB` values. Layout and component strings live under `layout` and
+`component` as before.

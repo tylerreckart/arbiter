@@ -1,7 +1,9 @@
-// arbiter/src/markdown.cpp — Markdown-to-ANSI terminal renderer
+// arbiter/src/markdown.cpp — Markdown renderer (styled spans + ANSI shim)
 
 #include "markdown.h"
+#include "styled_text.h"
 #include "theme.h"
+
 #include <cctype>
 #include <cstring>
 #include <sstream>
@@ -12,126 +14,107 @@ namespace arbiter {
 
 namespace {
 
-constexpr size_t kCodeBlockPreviewLines = 8;
-
-} // anonymous namespace
-
-// ─── ANSI primitives ─────────────────────────────────────────────────────────
-// Attribute-only escapes stay hard-coded — they're theme-agnostic (dim /
-// bold / italic / underline / strikethrough are character attributes, not
-// colors).  All foreground colors are pulled from the global Theme so
-// swapping theme recolors markdown rendering with no edits here.
-
-static const char* RST  = "\033[0m";
-static const char* BOLD = "\033[1m";
-static const char* DIM  = "\033[2m";
-static const char* ITAL = "\033[3m";
-static const char* UNDL = "\033[4m";
-static const char* STRK = "\033[9m";
-
-// Emit a bold-weight modifier in front of an already-painted foreground,
-// since terminals treat bold+SGR as independent attribute layers.
-static std::string bold_with(const std::string& fg_escape) {
-    return std::string(BOLD) + fg_escape;
+StyleId heading_style(size_t level) {
+    switch (level) {
+    case 1: return StyleId::Heading1;
+    case 2: return StyleId::Heading2;
+    case 3: return StyleId::Heading3;
+    default: return StyleId::Heading4;
+    }
 }
 
-// ─── Inline renderer ─────────────────────────────────────────────────────────
+void render_inline_styled(StyledLine& out, const std::string& text) {
+    auto flush_plain = [&](size_t from, size_t to) {
+        if (to > from) out.text.append(text, from, to - from);
+    };
 
-static std::string render_inline(const std::string& text) {
-    std::string result;
     size_t i = 0;
+    size_t plain_start = 0;
     const size_t n = text.size();
 
     while (i < n) {
-        // Bold: **text**
-        if (i + 2 < n && text[i] == '*' && text[i+1] == '*' && text[i+2] != '*') {
+        bool matched = false;
+
+        if (i + 2 < n && text[i] == '*' && text[i + 1] == '*' && text[i + 2] != '*') {
             size_t end = text.find("**", i + 2);
             if (end != std::string::npos && end > i + 2) {
-                result += BOLD;
-                result += text.substr(i + 2, end - i - 2);
-                result += RST;
+                flush_plain(plain_start, i);
+                styled_append(out, StyleId::Bold, text.substr(i + 2, end - i - 2));
                 i = end + 2;
-                continue;
+                plain_start = i;
+                matched = true;
             }
         }
-        // Italic: *text* (single star, not adjacent to another *)
-        if (text[i] == '*' && i + 1 < n && text[i+1] != '*' && text[i+1] != ' ') {
+        if (!matched && text[i] == '*' && i + 1 < n && text[i + 1] != '*' && text[i + 1] != ' ') {
             size_t end = i + 1;
             bool found = false;
             while (end < n) {
-                if (text[end] == '*' && text[end-1] != ' ' &&
-                    (end + 1 >= n || text[end+1] != '*')) {
+                if (text[end] == '*' && text[end - 1] != ' ' &&
+                    (end + 1 >= n || text[end + 1] != '*')) {
                     found = true;
                     break;
                 }
                 ++end;
             }
             if (found && end > i + 1) {
-                result += ITAL;
-                result += text.substr(i + 1, end - i - 1);
-                result += RST;
+                flush_plain(plain_start, i);
+                styled_append(out, StyleId::Italic, text.substr(i + 1, end - i - 1));
                 i = end + 1;
-                continue;
+                plain_start = i;
+                matched = true;
             }
         }
-        // Inline code: `text` or ``text``
-        if (text[i] == '`') {
-            if (i + 1 < n && text[i+1] == '`') {
-                // Double backtick
+        if (!matched && text[i] == '`') {
+            if (i + 1 < n && text[i + 1] == '`') {
                 size_t end = text.find("``", i + 2);
                 if (end != std::string::npos) {
-                    result += theme().md_code;
-                    result += text.substr(i + 2, end - i - 2);
-                    result += RST;
+                    flush_plain(plain_start, i);
+                    styled_append(out, StyleId::Code, text.substr(i + 2, end - i - 2));
                     i = end + 2;
-                    continue;
+                    plain_start = i;
+                    matched = true;
                 }
             } else {
                 size_t end = text.find('`', i + 1);
                 if (end != std::string::npos) {
-                    result += theme().md_code;
-                    result += text.substr(i + 1, end - i - 1);
-                    result += RST;
+                    flush_plain(plain_start, i);
+                    styled_append(out, StyleId::Code, text.substr(i + 1, end - i - 1));
                     i = end + 1;
-                    continue;
+                    plain_start = i;
+                    matched = true;
                 }
             }
         }
-        // Link: [text](url) — paint the visible text underlined in the
-        // theme's link color.  The (url) part is dropped from the output;
-        // terminals can't click on the bracket syntax anyway.
-        if (text[i] == '[') {
+        if (!matched && text[i] == '[') {
             size_t cb = text.find(']', i + 1);
-            if (cb != std::string::npos && cb + 1 < n && text[cb+1] == '(') {
+            if (cb != std::string::npos && cb + 1 < n && text[cb + 1] == '(') {
                 size_t cp = text.find(')', cb + 2);
                 if (cp != std::string::npos) {
-                    result += std::string(UNDL) + theme().md_link;
-                    result += text.substr(i + 1, cb - i - 1);
-                    result += RST;
+                    flush_plain(plain_start, i);
+                    styled_append(out, StyleId::Link, text.substr(i + 1, cb - i - 1));
                     i = cp + 1;
-                    continue;
+                    plain_start = i;
+                    matched = true;
                 }
             }
         }
-        // Strikethrough: ~~text~~
-        if (i + 2 < n && text[i] == '~' && text[i+1] == '~') {
+        if (!matched && i + 2 < n && text[i] == '~' && text[i + 1] == '~') {
             size_t end = text.find("~~", i + 2);
             if (end != std::string::npos) {
-                result += STRK;
-                result += text.substr(i + 2, end - i - 2);
-                result += RST;
+                flush_plain(plain_start, i);
+                styled_append(out, StyleId::Default, text.substr(i + 2, end - i - 2));
                 i = end + 2;
-                continue;
+                plain_start = i;
+                matched = true;
             }
         }
-        result += text[i++];
+
+        if (!matched) ++i;
     }
-    return result;
+    flush_plain(plain_start, n);
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-static bool is_hr(const std::string& line) {
+bool is_hr(const std::string& line) {
     if (line.size() < 3) return false;
     char c = line[0];
     if (c != '-' && c != '*' && c != '_') return false;
@@ -143,9 +126,7 @@ static bool is_hr(const std::string& line) {
     return count >= 3;
 }
 
-// ─── Line renderer ───────────────────────────────────────────────────────────
-
-static bool lang_eq_ci(std::string_view lang, std::string_view want) {
+bool lang_eq_ci(std::string_view lang, std::string_view want) {
     if (lang.size() != want.size()) return false;
     for (size_t i = 0; i < lang.size(); ++i) {
         const unsigned char a = static_cast<unsigned char>(lang[i]);
@@ -155,52 +136,94 @@ static bool lang_eq_ci(std::string_view lang, std::string_view want) {
     return true;
 }
 
-bool MarkdownRenderer::is_diff_fence_lang(std::string_view lang) {
-    lang = lang.substr(0, lang.find_first_of(" \t\r"));
-    return lang_eq_ci(lang, "diff") || lang_eq_ci(lang, "patch");
-}
-
-static size_t fence_ltrim(const std::string& line) {
+size_t fence_ltrim(const std::string& line) {
     size_t i = 0;
     while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
     return i;
 }
 
-static bool is_fence_line(const std::string& line) {
+bool is_fence_line(const std::string& line) {
     const size_t lead = fence_ltrim(line);
     const std::string_view view(line.data() + lead, line.size() - lead);
     return view.size() >= 3 &&
            (view.substr(0, 3) == "```" || view.substr(0, 3) == "~~~");
 }
 
-std::string MarkdownRenderer::render_buffered_code_block(const std::string& close_fence) {
-    std::string out;
+bool is_closing_fence_line(const std::string& line) {
+    if (!is_fence_line(line)) return false;
+    const size_t lead = fence_ltrim(line);
+    const std::string_view view(line.data() + lead, line.size() - lead);
+    return view.size() >= 3;
+}
+
+bool is_endwrite_line(const std::string& s) {
+    size_t end = s.size();
+    while (end > 0 && (s[end - 1] == ' ' || s[end - 1] == '\t' || s[end - 1] == '\r'))
+        --end;
+    return end == 9 && s.compare(0, 9, "/endwrite") == 0;
+}
+
+} // namespace
+
+bool MarkdownRenderer::is_diff_fence_lang(std::string_view lang) {
+    lang = lang.substr(0, lang.find_first_of(" \t\r"));
+    return lang_eq_ci(lang, "diff") || lang_eq_ci(lang, "patch");
+}
+
+void MarkdownRenderer::set_code_sink(CodeOpenFn on_open,
+                                    CodeLineFn on_line,
+                                    CodeCloseFn on_close) {
+    code_open_ = std::move(on_open);
+    code_line_ = std::move(on_line);
+    code_close_ = std::move(on_close);
+}
+
+static std::string fence_lang(std::string_view view) {
+    std::string lang(view.substr(3));
+    while (!lang.empty() && (lang.back() == ' ' || lang.back() == '\t' || lang.back() == '\r')) {
+        lang.pop_back();
+    }
+    return lang;
+}
+
+void MarkdownRenderer::finish_code_close(const std::string& close_fence,
+                                         std::vector<StyledLine>& out) {
+    if (code_close_) {
+        code_close_(close_fence);
+    } else {
+        auto block = render_buffered_code_block_styled(close_fence);
+        for (auto& ln : block) out.push_back(std::move(ln));
+    }
+    code_buf_.clear();
+    code_open_fence_.clear();
+    in_code_block_ = false;
+}
+
+std::vector<StyledLine> MarkdownRenderer::render_buffered_code_block_styled(
+    const std::string& close_fence) {
+    std::vector<StyledLine> out;
     if (!code_open_fence_.empty()) {
-        out += DIM;
-        out += code_open_fence_;
-        out += RST;
-        out += '\n';
+        StyledLine fence;
+        styled_append(fence, StyleId::Dim, code_open_fence_);
+        out.push_back(std::move(fence));
     }
     for (const auto& body : code_buf_) {
-        out += theme().md_code;
-        out += body;
-        out += RST;
-        out += '\n';
+        StyledLine line;
+        styled_append(line, StyleId::Code, body);
+        out.push_back(std::move(line));
     }
     if (!close_fence.empty()) {
-        out += DIM;
-        out += close_fence;
-        out += RST;
-        out += '\n';
+        StyledLine fence;
+        styled_append(fence, StyleId::Dim, close_fence);
+        out.push_back(std::move(fence));
     }
     return out;
 }
 
-std::string MarkdownRenderer::process_line(const std::string& line) {
+std::optional<StyledLine> MarkdownRenderer::process_line_styled(const std::string& line) {
     const size_t lead = fence_ltrim(line);
     const std::string_view view(line.data() + lead, line.size() - lead);
 
-    // Fenced code block toggle (``` or ~~~)
     if (view.size() >= 3 &&
         (view.substr(0, 3) == "```" || view.substr(0, 3) == "~~~")) {
         if (!in_code_block_) {
@@ -209,8 +232,10 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
             diff_buf_.clear();
             code_buf_.clear();
             code_open_fence_ = line;
-            code_preview_emitted_ = false;
-            return std::string{};
+            if (!in_diff_block_ && code_open_) {
+                code_open_(line, fence_lang(view.substr(3)));
+            }
+            return std::nullopt;
         }
         if (in_diff_block_) {
             if (diff_sink_ && !diff_buf_.empty()) diff_sink_(diff_buf_);
@@ -218,38 +243,28 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
             in_diff_block_ = false;
             in_code_block_ = false;
             code_open_fence_.clear();
-            return std::string{};
+            return std::nullopt;
         }
-        std::string out = render_buffered_code_block(line);
-        code_buf_.clear();
-        code_open_fence_.clear();
-        code_preview_emitted_ = false;
-        in_code_block_ = false;
-        return out;
+        // Non-diff closing fence: handled in feed_styled() so all body lines
+        // emit together.  Return nullopt here to avoid duplicate output.
+        return std::nullopt;
     }
     if (in_diff_block_) {
         if (!diff_buf_.empty()) diff_buf_ += '\n';
         diff_buf_ += line;
-        return std::string{};
+        return std::nullopt;
     }
-    // Non-diff fenced code block body — buffer until the closing fence.
     if (in_code_block_) {
-        code_buf_.push_back(line);
-        if (!code_preview_emitted_ &&
-            code_buf_.size() >= kCodeBlockPreviewLines) {
-            code_preview_emitted_ = true;
-            return std::string(DIM) + "  … (code block, " +
-                   std::to_string(code_buf_.size()) + "+ lines) …" + RST + "\n";
+        if (code_line_) {
+            code_line_(line);
+        } else {
+            code_buf_.push_back(line);
         }
-        return std::string{};
+        return std::nullopt;
     }
 
-    // Empty line
-    if (line.empty()) return line;
+    if (line.empty()) return StyledLine{};
 
-    // Agent-issued command lines (/fetch, /exec, /agent, /write, /mem, /endwrite).
-    // Render dim + the cmd-line color so these stand out from prose but
-    // don't compete with headings.
     if (!line.empty() && line[0] == '/') {
         static const char* kCmdPrefixes[] = {
             "/fetch ", "/exec ", "/agent ", "/pane ", "/write ", "/mem ", "/endwrite", nullptr
@@ -257,111 +272,104 @@ std::string MarkdownRenderer::process_line(const std::string& line) {
         for (auto** p = kCmdPrefixes; *p; ++p) {
             size_t plen = strlen(*p);
             if (line.size() >= plen && line.compare(0, plen, *p) == 0) {
-                return theme().md_cmd_line + std::string(DIM) +
-                       "> " + line + theme().md_bullet + RST + "\n";
+                StyledLine cmd;
+                styled_append(cmd, StyleId::WritLine, "> " + line);
+                return cmd;
             }
         }
     }
 
-    // Headings: # ## ### ####  —  paint with the theme's heading[lvl-1]
-    // color, bolded.  Levels 5/6 reuse the h4 slot rather than adding more.
     if (line[0] == '#') {
         size_t lvl = 0;
         while (lvl < line.size() && line[lvl] == '#') ++lvl;
         if (lvl < line.size() && line[lvl] == ' ') {
-            const auto& pal = theme().md_heading;
-            const std::string& color = pal[std::min(lvl - 1, pal.size() - 1)];
+            StyledLine heading;
             std::string hashes(lvl, '#');
-            std::string content = render_inline(line.substr(lvl + 1));
-            return bold_with(color) + hashes + " " + content + RST;
+            styled_append(heading, heading_style(lvl), hashes + " ");
+            render_inline_styled(heading, line.substr(lvl + 1));
+            return heading;
         }
     }
 
-    // Horizontal rule
     if (is_hr(line)) {
-        return std::string(DIM) + std::string(60, '-') + RST;
+        StyledLine rule;
+        styled_append(rule, StyleId::Rule, std::string(60, '-'));
+        return rule;
     }
 
-    // Blockquote: > text
     if (line[0] == '>' && (line.size() == 1 || line[1] == ' ')) {
+        StyledLine quote;
         std::string content = line.size() > 2 ? line.substr(2) : "";
-        return std::string(DIM) + "\u2502 " + render_inline(content) + RST;
+        styled_append(quote, StyleId::Blockquote, "\u2502 ");
+        render_inline_styled(quote, content);
+        return quote;
     }
 
-    // Bullet list item (-, *, +), possibly indented
     {
         size_t indent = 0;
         while (indent < line.size() && line[indent] == ' ') ++indent;
         if (indent < line.size() &&
             (line[indent] == '-' || line[indent] == '*' || line[indent] == '+') &&
-            indent + 1 < line.size() && line[indent+1] == ' ') {
-            std::string pad(indent, ' ');
-            // Alternate bullet symbol by indent level
-            const char* bullet = (indent == 0) ? "\xe2\x80\xa2"   // •
-                               : (indent <= 2)  ? "\xe2\x97\xa6"   // ◦
-                                                : "\xe2\x80\x93";  // –
-            std::string content = render_inline(line.substr(indent + 2));
-            return pad + theme().md_bullet + bullet + RST + " " + content;
+            indent + 1 < line.size() && line[indent + 1] == ' ') {
+            StyledLine bullet_line;
+            if (indent > 0) {
+                styled_append(bullet_line, StyleId::Default, std::string(indent, ' '));
+            }
+            const char* bullet = (indent == 0) ? "\xe2\x80\xa2"
+                               : (indent <= 2)  ? "\xe2\x97\xa6"
+                                                : "\xe2\x80\x93";
+            styled_append(bullet_line, StyleId::Bullet, bullet);
+            styled_append(bullet_line, StyleId::Default, " ");
+            render_inline_styled(bullet_line, line.substr(indent + 2));
+            return bullet_line;
         }
     }
 
-    // Indented code block (4 spaces or tab)
     if ((line.size() >= 4 && line.substr(0, 4) == "    ") ||
         (!line.empty() && line[0] == '\t')) {
         size_t skip = (line[0] == '\t') ? 1 : 4;
-        return std::string("    ") + theme().md_code + line.substr(skip) + RST;
+        StyledLine code_line;
+        styled_append(code_line, StyleId::Default, "    ");
+        styled_append(code_line, StyleId::Code, line.substr(skip));
+        return code_line;
     }
 
-    // Numbered list: 1. 2. 10. etc.
     if (!line.empty() && std::isdigit(static_cast<unsigned char>(line[0]))) {
         size_t dot = 0;
         while (dot < line.size() && std::isdigit(static_cast<unsigned char>(line[dot]))) ++dot;
         if (dot < line.size() && line[dot] == '.' &&
-            dot + 1 < line.size() && line[dot+1] == ' ') {
-            std::string num = line.substr(0, dot + 1);
-            std::string content = render_inline(line.substr(dot + 2));
-            return std::string(BOLD) + num + RST + " " + content;
+            dot + 1 < line.size() && line[dot + 1] == ' ') {
+            StyledLine numbered;
+            styled_append(numbered, StyleId::Bold, line.substr(0, dot + 1));
+            styled_append(numbered, StyleId::Default, " ");
+            render_inline_styled(numbered, line.substr(dot + 2));
+            return numbered;
         }
     }
 
-    // Plain text: apply inline styling only
-    return render_inline(line);
+    StyledLine plain;
+    render_inline_styled(plain, line);
+    return plain;
 }
 
-// ─── MarkdownRenderer methods ─────────────────────────────────────────────────
-
-// True if `s`, after trimming trailing whitespace, is exactly `/endwrite`.
-// The /endwrite sentinel closes a /write block but has no value to the human
-// reading the session — the file content itself is the informative part, and
-// the write result is reported via the subsequent [/write ...] tool block.
-static bool is_endwrite_line(const std::string& s) {
-    size_t end = s.size();
-    while (end > 0 && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\r'))
-        --end;
-    return end == 9 && s.compare(0, 9, "/endwrite") == 0;
-}
-
-std::string MarkdownRenderer::feed(const std::string& chunk) {
-    std::string result;
+std::vector<StyledLine> MarkdownRenderer::feed_styled(const std::string& chunk) {
+    std::vector<StyledLine> result;
     for (char c : chunk) {
         if (c == '\n') {
-            // Drop leading blank lines — the REPL already padded below the
-            // user prompt, so echoing another blank would stack them.
             if (!seen_content_ && line_buf_.empty()) continue;
-            // Hide the /endwrite sentinel from the session window.  It's a
-            // parser-facing marker, not content the user needs to see.
             if (is_endwrite_line(line_buf_)) {
                 line_buf_.clear();
                 continue;
             }
             seen_content_ = true;
             const bool was_in_diff = in_diff_block_;
-            const std::string line_out = process_line(line_buf_);
-            if (!line_out.empty()) {
-                result += line_out;
-                if (line_out.back() != '\n') result += '\n';
+
+            if (in_code_block_ && !in_diff_block_ && is_closing_fence_line(line_buf_)) {
+                finish_code_close(line_buf_, result);
+            } else if (auto line_out = process_line_styled(line_buf_)) {
+                result.push_back(std::move(*line_out));
             } else if (!was_in_diff && !in_code_block_ && line_buf_.empty()) {
-                result += '\n';
+                result.push_back(StyledLine{});
             }
             line_buf_.clear();
         } else if (c != '\r') {
@@ -371,12 +379,32 @@ std::string MarkdownRenderer::feed(const std::string& chunk) {
     return result;
 }
 
-std::string MarkdownRenderer::flush() {
+std::string MarkdownRenderer::feed(const std::string& chunk) {
+    const auto lines = feed_styled(chunk);
+    std::string result;
+    for (const StyledLine& line : lines) {
+        const std::string rendered = to_ansi(line);
+        if (rendered.empty()) {
+            result += '\n';
+        } else {
+            result += rendered;
+            if (result.back() != '\n') result += '\n';
+        }
+    }
+    return result;
+}
+
+std::vector<StyledLine> MarkdownRenderer::flush_styled() {
+    std::vector<StyledLine> result;
     if (!line_buf_.empty()) {
-        if (is_endwrite_line(line_buf_)) { line_buf_.clear(); return {}; }
-        std::string result = process_line(line_buf_);
+        if (is_endwrite_line(line_buf_)) {
+            line_buf_.clear();
+            return result;
+        }
+        if (auto line_out = process_line_styled(line_buf_)) {
+            result.push_back(std::move(*line_out));
+        }
         line_buf_.clear();
-        if (result.empty() || result.back() != '\n') result += '\n';
         return result;
     }
     if (in_diff_block_ && diff_sink_ && !diff_buf_.empty()) {
@@ -385,15 +413,22 @@ std::string MarkdownRenderer::flush() {
         in_diff_block_ = false;
         in_code_block_ = false;
         code_open_fence_.clear();
-    } else if (in_code_block_ && !code_buf_.empty()) {
-        std::string result = render_buffered_code_block("");
+    } else if (in_code_block_ && (!code_buf_.empty() || code_open_)) {
+        if (code_close_) {
+            code_close_("");
+        } else if (!code_buf_.empty()) {
+            auto block = render_buffered_code_block_styled("");
+            for (auto& ln : block) result.push_back(std::move(ln));
+        }
         code_buf_.clear();
         code_open_fence_.clear();
-        code_preview_emitted_ = false;
         in_code_block_ = false;
-        return result;
     }
-    return {};
+    return result;
+}
+
+std::string MarkdownRenderer::flush() {
+    return styled_lines_to_ansi(flush_styled());
 }
 
 void MarkdownRenderer::reset() {
@@ -403,16 +438,16 @@ void MarkdownRenderer::reset() {
     diff_buf_.clear();
     code_buf_.clear();
     code_open_fence_.clear();
-    code_preview_emitted_ = false;
-    seen_content_  = false;
+    code_open_ = nullptr;
+    code_line_ = nullptr;
+    code_close_ = nullptr;
+    seen_content_ = false;
 }
-
-// ─── Convenience: full-document render ───────────────────────────────────────
 
 std::string render_markdown(const std::string& text) {
     MarkdownRenderer r;
     std::string result = r.feed(text);
-    std::string tail   = r.flush();
+    std::string tail = r.flush();
     if (!tail.empty()) result += tail;
     return result;
 }
@@ -431,27 +466,27 @@ std::string render_diff_ansi(const std::string& patch) {
         if (line.size() >= 3 && line.substr(0, 3) == "+++") {
             out += t.accent_info;
             out += line;
-            out += RST;
+            out += t.reset;
         } else if (line.size() >= 3 && line.substr(0, 3) == "---") {
             out += t.accent_info;
             out += line;
-            out += RST;
+            out += t.reset;
         } else if (line.size() >= 2 && line.substr(0, 2) == "@@") {
-            out += DIM;
+            out += t.dim;
             out += line;
-            out += RST;
+            out += t.reset;
         } else if (!line.empty() && line[0] == '+') {
             out += t.accent_success;
             out += line;
-            out += RST;
+            out += t.reset;
         } else if (!line.empty() && line[0] == '-') {
             out += t.accent_error;
             out += line;
-            out += RST;
+            out += t.reset;
         } else {
             out += t.md_code;
             out += line;
-            out += RST;
+            out += t.reset;
         }
         out += '\n';
 
@@ -459,53 +494,6 @@ std::string render_diff_ansi(const std::string& patch) {
         start = end + 1;
     }
     return out;
-}
-
-std::string truncate_interim_output(const std::string& text,
-                                      size_t max_lines,
-                                      size_t max_chars) {
-    std::ostringstream out;
-    bool in_fence = false;
-    size_t lines = 0;
-    size_t chars = 0;
-    bool truncated = false;
-
-    std::istringstream ss(text);
-    std::string line;
-    while (std::getline(ss, line)) {
-        if (is_fence_line(line)) {
-            if (!in_fence) {
-                in_fence = true;
-                const std::string placeholder = "  … (fenced block) …";
-                if (lines >= max_lines || chars + placeholder.size() > max_chars) {
-                    truncated = true;
-                    break;
-                }
-                out << placeholder << '\n';
-                ++lines;
-                chars += placeholder.size() + 1;
-            } else {
-                in_fence = false;
-            }
-            continue;
-        }
-        if (in_fence) continue;
-
-        if (lines >= max_lines || chars + line.size() > max_chars) {
-            truncated = true;
-            break;
-        }
-        out << line << '\n';
-        ++lines;
-        chars += line.size() + 1;
-    }
-
-    std::string result = out.str();
-    if (truncated) {
-        if (!result.empty() && result.back() != '\n') result += '\n';
-        result += "  … [truncated — full result in synthesis turn]\n";
-    }
-    return result;
 }
 
 } // namespace arbiter

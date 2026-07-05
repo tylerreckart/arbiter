@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "markdown.h"
+#include "render_policy.h"
+#include "styled_text.h"
 
 using namespace arbiter;
 
@@ -72,42 +74,87 @@ TEST_CASE("MarkdownRenderer defers non-diff fenced blocks until close") {
     CHECK(out.find("```python") != std::string::npos);
 }
 
-TEST_CASE("MarkdownRenderer emits preview for long deferred code blocks") {
+TEST_CASE("MarkdownRenderer streams code body through code_sink") {
+    std::vector<std::string> captured;
     MarkdownRenderer md;
+    md.set_code_sink(
+        [](std::string /*open*/, std::string /*lang*/) {},
+        [&](const std::string& line) { captured.push_back(line); },
+        [](std::string /*close*/) {});
+
     std::string input = "lead\n```txt\n";
     for (int i = 0; i < 10; ++i) input += "body" + std::to_string(i) + "\n";
     input += "```\n";
 
     std::string mid = md.feed(input.substr(0, input.find("body9")));
-    CHECK(mid.find("… (code block, 8+ lines) …") != std::string::npos);
     CHECK(mid.find("body0") == std::string::npos);
+    CHECK(mid.find("… (code block") == std::string::npos);
+    CHECK(captured.size() >= 8);
 
-    std::string out = mid + md.feed(input.substr(input.find("body9")));
-    out += md.flush();
-    CHECK(out.find("body0") != std::string::npos);
-    CHECK(out.find("body9") != std::string::npos);
+    md.feed(input.substr(input.find("body9")));
+    md.flush();
+    CHECK(captured.size() == 10u);
 }
 
-TEST_CASE("truncate_interim_output collapses fenced blocks and caps length") {
-    const std::string input =
-        "summary line\n"
-        "```diff\n"
-        "--- a\n"
-        "+++ b\n"
-        "+lots\n"
-        "```\n"
-        "tail\n"
-        "extra1\n"
-        "extra2\n"
-        "extra3\n"
-        "extra4\n"
-        "extra5\n"
-        "extra6\n"
-        "extra7\n";
+TEST_CASE("kInterim policy collapses fences and caps length") {
+    std::vector<StyledLine> lines = {
+        styled_plain_line("summary line", StyleId::Default),
+        styled_plain_line("```diff", StyleId::Default),
+        styled_plain_line("--- a", StyleId::Default),
+        styled_plain_line("```", StyleId::Default),
+        styled_plain_line("tail", StyleId::Default),
+        styled_plain_line("extra1", StyleId::Default),
+        styled_plain_line("extra2", StyleId::Default),
+        styled_plain_line("extra3", StyleId::Default),
+        styled_plain_line("extra4", StyleId::Default),
+        styled_plain_line("extra5", StyleId::Default),
+        styled_plain_line("extra6", StyleId::Default),
+        styled_plain_line("extra7", StyleId::Default),
+    };
 
-    const std::string out = truncate_interim_output(input, 4, 200);
-    CHECK(out.find("summary line") != std::string::npos);
-    CHECK(out.find("… (fenced block) …") != std::string::npos);
-    CHECK(out.find("--- a") == std::string::npos);
-    CHECK(out.find("[truncated") != std::string::npos);
+    const auto out = apply_prose_policy(std::move(lines), kInterim);
+    CHECK(out.size() >= 2);
+    CHECK(out.front().text.find("summary line") != std::string::npos);
+    bool saw_fence_placeholder = false;
+    bool saw_truncated = false;
+    for (const auto& line : out) {
+        if (line.text.find("… (fenced block)") != std::string::npos) saw_fence_placeholder = true;
+        if (line.text.find("[truncated") != std::string::npos) saw_truncated = true;
+        CHECK(line.text.find("--- a") == std::string::npos);
+    }
+    CHECK(saw_fence_placeholder);
+    CHECK(saw_truncated);
+}
+
+TEST_CASE("feed_styled and feed produce equivalent ANSI") {
+    const char* input =
+        "# Title\n"
+        "plain **bold** and `code`\n"
+        "- bullet\n";
+
+    MarkdownRenderer md1;
+    MarkdownRenderer md2;
+    std::string ansi_from_feed = md1.feed(input) + md1.flush();
+
+    std::string ansi_from_styled;
+    for (const StyledLine& line : md2.feed_styled(input)) {
+        ansi_from_styled += to_ansi(line);
+        if (ansi_from_styled.empty() || ansi_from_styled.back() != '\n') {
+            ansi_from_styled += '\n';
+        }
+    }
+    for (const StyledLine& line : md2.flush_styled()) {
+        ansi_from_styled += to_ansi(line);
+        if (ansi_from_styled.empty() || ansi_from_styled.back() != '\n') {
+            ansi_from_styled += '\n';
+        }
+    }
+
+    CHECK(ansi_from_feed == ansi_from_styled);
+}
+
+TEST_CASE("display_width counts wide characters") {
+    CHECK(display_width("abc") == 3);
+    CHECK(display_width("\xe2\x80\xa2") == 1);  // bullet
+    CHECK(display_width("hello") == 5);
 }
