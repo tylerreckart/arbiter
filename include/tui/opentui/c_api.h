@@ -143,6 +143,42 @@ void editorViewSetWrapMode(OpenTuiHandle view, uint8_t mode);
 
 void bufferDrawEditorView(OpenTuiHandle buffer, OpenTuiHandle view, int32_t x, int32_t y);
 
+// --- DiffView (native DiffRenderable) ----------------------------------------
+// Parses unified diff text and renders with line numbers, +/- signs, and
+// added/removed/context backgrounds.  Composes existing TextBuffer draw paths.
+
+typedef struct OpenTuiDiffOptions {
+    uint8_t  view_mode;          // 0=unified, 1=split
+    uint8_t  wrap_mode;          // 0=none, 1=char, 2=word
+    bool     show_line_numbers;
+    uint16_t added_bg[4];
+    uint16_t removed_bg[4];
+    uint16_t context_bg[4];
+    uint16_t line_number_fg[4];
+    uint16_t added_sign_color[4];
+    uint16_t removed_sign_color[4];
+} OpenTuiDiffOptions;
+
+OpenTuiHandle createDiffView(const OpenTuiDiffOptions* opts);
+void destroyDiffView(OpenTuiHandle diff);
+
+bool diffViewSetPatch(OpenTuiHandle diff, const char* patch, uint32_t patch_len);
+bool diffViewSetViewMode(OpenTuiHandle diff, uint8_t mode);
+void diffViewSetWrapMode(OpenTuiHandle diff, uint8_t mode);
+void diffViewSetWrapWidth(OpenTuiHandle diff, uint32_t content_width);
+void diffViewSetScrollY(OpenTuiHandle diff, uint32_t offset);
+
+uint32_t diffViewGetVirtualLineCount(OpenTuiHandle diff);
+uint32_t diffViewGetHunkCount(OpenTuiHandle diff);
+uint32_t diffViewGetHunkStartLine(OpenTuiHandle diff, uint32_t hunk_index);
+
+void bufferDrawDiffView(OpenTuiHandle buffer,
+                        OpenTuiHandle diff,
+                        int32_t x,
+                        int32_t y,
+                        uint32_t width,
+                        uint32_t height);
+
 #ifdef __cplusplus
 }
 #endif
