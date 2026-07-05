@@ -2,9 +2,8 @@
 #
 # Enable with: cmake -DARBITER_ENABLE_OPENTUI=ON
 #
-# On macOS, prebuilt npm binaries are the default (Zig 0.15.2 often cannot run
-# `zig build` on newer host OS versions). On Linux, source builds via Zig are
-# attempted when prebuilts are disabled.
+# Prebuilt npm binaries are the default (no local opentui clone or Zig required).
+# Disable with -DARBITER_OPENTUI_USE_PREBUILT=OFF to compile from source.
 #
 # Override source tree:  -DARBITER_OPENTUI_ROOT=/path/to/opentui
 # Pin library path:       -DARBITER_OPENTUI_LIBRARY=/path/to/libopentui.dylib
@@ -17,14 +16,9 @@ if(NOT ARBITER_ENABLE_OPENTUI)
         "OpenTUI is required. Reconfigure with -DARBITER_ENABLE_OPENTUI=ON")
 endif()
 
-if(APPLE)
-    set(_opentui_prebuilt_default ON)
-else()
-    set(_opentui_prebuilt_default OFF)
-endif()
 option(ARBITER_OPENTUI_USE_PREBUILT
     "Fetch platform libopentui from npm instead of compiling with Zig"
-    ${_opentui_prebuilt_default})
+    ON)
 
 set(ARBITER_OPENTUI_VERSION "0.4.2" CACHE STRING
     "OpenTUI release version for npm prebuilt packages")
