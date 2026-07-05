@@ -2,12 +2,12 @@
 
 **The agent that runs anywhere.**
 
+![Release Version Shield](https://img.shields.io/github/v/release/tylerreckart/arbiter)
+![License Shield](https://img.shields.io/github/license/tylerreckart/arbiter)
+
 One small binary. Compile once and run it everywhere. A laptop, server, edge box,
 CI runner, or microcontroller. Feed it prompts, webhooks, and sensor events. 
 It reasons, delegates, acts, and streams every step back as structured SSE.
-
-**In:** prompts · events · API calls · scheduled jobs  
-**Out:** supervised actions · artifacts · memory · a live trace of every decision
 
 ![Arbiter interactive TUI](assets/output.gif)
 
