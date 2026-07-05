@@ -2,8 +2,8 @@
 
 **The agent that runs anywhere.**
 
-One small binary. Compile once and run it anywhere. laptop, server, edge box,
-CI runner, microcontroller. Feed it prompts, webhooks, and sensor events. 
+One small binary. Compile once and run it everywhere. A laptop, server, edge box,
+CI runner, or microcontroller. Feed it prompts, webhooks, and sensor events. 
 It reasons, delegates, acts, and streams every step back as structured SSE.
 
 **In:** prompts · events · API calls · scheduled jobs  
