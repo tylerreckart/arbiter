@@ -50,7 +50,6 @@
 
 namespace fs = std::filesystem;
 
-using arbiter::BANNER;
 using arbiter::agent_color;
 using arbiter::get_config_dir;
 using arbiter::get_memory_dir;
@@ -90,6 +89,31 @@ struct ReplGetcState {
 static ReplGetcState g_getc_state;
 static arbiter::UiContext* g_ui_ctx = nullptr;
 
+static void wire_markdown_diff_sink(arbiter::MarkdownRenderer& md, OutputQueue& oq) {
+    md.set_diff_sink([&oq](const std::string& patch) {
+        if (!patch.empty()) oq.push_diff(patch);
+    });
+}
+
+static void flush_pane_output(Pane& pane) {
+    auto items = pane.output_queue.drain_items();
+    if (items.empty()) return;
+
+    int before = (pane.scroll_offset > 0) ? pane_history_total_rows(pane) : 0;
+    for (const auto& item : items) {
+        if (item.kind == arbiter::OutputItem::Kind::Text) {
+            if (item.data.empty()) continue;
+            pane_history_push(pane, item.data, item.new_block);
+        } else {
+            pane_history_push_diff(pane, item.data);
+        }
+    }
+    if (pane.scroll_offset > 0) {
+        int after = pane_history_total_rows(pane);
+        pane.new_while_scrolled += (after - before);
+    }
+}
+
 // Set by each pane's exec thread at startup and left untouched thereafter.
 // Orchestrator callbacks (progress/tool-status/agent-start) run
 // synchronously from whichever exec thread invoked orch.send_streaming, so
@@ -113,18 +137,8 @@ static void update_pane_original_task(Pane& pane,
 static void getc_flush_output() {
     auto& S = g_getc_state;
     if (!S.pane) return;
-    Pane& pane = *S.pane;
-    std::string pending = pane.output_queue.drain();
-    if (pending.empty()) return;
-
-    int before = (pane.scroll_offset > 0) ? pane_history_total_rows(pane) : 0;
-    pane_history_push(pane, pending);
-
-    if (pane.scroll_offset > 0) {
-        int after = pane_history_total_rows(pane);
-        pane.new_while_scrolled += (after - before);
-    }
-    if (g_ui_ctx) pane_history_render(pane, *g_ui_ctx);
+    flush_pane_output(*S.pane);
+    if (g_ui_ctx) pane_history_render(*S.pane, *g_ui_ctx);
 }
 
 
@@ -443,12 +457,10 @@ static void cmd_interactive(bool exec_allowed_flag) {
         present_unlocked();
     };
 
-    // Initial pane shows the welcome overlay until the user types or splits.
     present_unlocked();
 
     // Exec-capability warning — list any agents that can run shell commands.
-    // Queued here so the pump thread renders it below the welcome card on its
-    // first tick.  Omitted when exec is globally disabled (--no-exec).
+    // Queued here so the pump thread renders it on its first tick.
     if (cfg.exec_allowed) {
         std::vector<std::string> exec_agents;
         for (const auto& id : orch.list_agents_all()) {
@@ -529,6 +541,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 try {
                     arbiter::MarkdownRenderer md;
+                    wire_markdown_diff_sink(md, output_queue);
                     if (!cfg.verbose) tool_indicator.begin();
                     StreamFilter filter(cfg,
                         [&md, &output_queue](const std::string& chunk) {
@@ -586,6 +599,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
                 try {
                     arbiter::MarkdownRenderer md;
+                    wire_markdown_diff_sink(md, output_queue);
                     if (!cfg.verbose) tool_indicator.begin();
                     StreamFilter filter(cfg,
                         [&md, &output_queue](const std::string& chunk) {
@@ -1002,6 +1016,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
         // Plain text → stream to current agent
         try {
             arbiter::MarkdownRenderer md;
+            wire_markdown_diff_sink(md, output_queue);
             tool_indicator.begin();
             StreamFilter filter(cfg,
                 [&md, &output_queue](const std::string& chunk) {
@@ -1086,17 +1101,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
         });
     };
 
-    auto dismiss_welcome_everywhere = [&]() {
-        layout.for_each_pane([&](Pane& p) {
-            if (p.welcome_visible) {
-                p.welcome_visible = false;
-                pane_history_clear(p);
-                p.scroll_offset = 0;
-                p.new_while_scrolled = 0;
-            }
-        });
-    };
-
     static constexpr size_t kMaxPanes = 8;
     spawn_pane_fn = [&](const std::string& req_agent,
                          const std::string& message) -> std::string {
@@ -1120,7 +1124,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 p->current_agent = captured_agent;
                 p->current_model = orch.get_agent_model(captured_agent);
                 refresh_pane_header(*p);
-                p->welcome_visible = false;
                 pane_history_clear(*p);
                 return p;
             },
@@ -1137,7 +1140,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
         start_pane_thread(new_pane);
         new_pane.cmd_queue.push(message);
 
-        dismiss_welcome_everywhere();
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
         });
@@ -1190,16 +1192,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
 
     std::atomic<bool> pump_stop{false};
     std::thread output_pump([&]() {
-        auto push_pane_output = [&](Pane& p) {
-            std::string pending = p.output_queue.drain();
-            if (pending.empty()) return;
-            int before = (p.scroll_offset > 0) ? pane_history_total_rows(p) : 0;
-            pane_history_push(p, pending);
-            if (p.scroll_offset > 0) {
-                int after = pane_history_total_rows(p);
-                p.new_while_scrolled += (after - before);
-            }
-        };
+        auto push_pane_output = [&](Pane& p) { flush_pane_output(p); };
         auto present_all = [&]() { present_unlocked(); };
         while (!pump_stop.load()) {
             {
@@ -1328,7 +1321,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
     // agent turn finishes or orch.cancel() aborts it).
     auto dispatch_chord = [&](char cmd) {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
-        bool spawned = false;
         switch (cmd) {
             case 'w':
             case 0x17:  // Ctrl-w Ctrl-w → next pane
@@ -1338,14 +1330,12 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 if (Pane* np = layout.split_focused(
                         LayoutTree::Orient::Horizontal, make_pane)) {
                     start_pane_thread(*np);
-                    spawned = true;
                 }
                 break;
             case 'v':
                 if (Pane* np = layout.split_focused(
                         LayoutTree::Orient::Vertical, make_pane)) {
                     start_pane_thread(*np);
-                    spawned = true;
                 }
                 break;
             case 'c':
@@ -1361,11 +1351,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 }
                 break;
         }
-        // Manual split dismisses the welcome too — user has committed to
-        // multi-pane work, don't leave the greeting on the original pane.
-        if (spawned) dismiss_welcome_everywhere();
-        // resize() inside split/close already set_rect on each pane; we
-        // repaint scrollback for every pane so their content survives the relayout.
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
         });
@@ -1432,13 +1417,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 layout.for_each_pane([&](Pane& p) { p.cmd_queue.drain(); });
                 break;
             }
-        }
-
-        if (focused.welcome_visible) {
-            focused.welcome_visible = false;
-            pane_history_clear(focused);
-            focused.scroll_offset      = 0;
-            focused.new_while_scrolled = 0;
         }
 
         focused.output_queue.push_msg(
@@ -1597,7 +1575,6 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (arg1 == "--help" || arg1 == "-h" || arg1 == "help") {
-            std::cout << BANNER;
             std::cout <<
                 "Usage:\n"
                 "  arbiter                            Interactive REPL\n"

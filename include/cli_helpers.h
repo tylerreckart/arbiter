@@ -2,7 +2,6 @@
 // arbiter/include/cli_helpers.h — Shared helpers for CLI entry points and the REPL.
 //
 // Covers:
-//   • BANNER — ASCII startup banner
 //   • agent_color — stable per-agent ANSI color
 //   • Config path helpers (~/.arbiter for config, $PWD/.arbiter/memory for memory,
 //     API key resolution)
@@ -14,8 +13,6 @@
 #include <string>
 
 namespace arbiter {
-
-extern const char* BANNER;
 
 // Stable ANSI color for a given agent id (hash-mapped into a fixed palette).
 // "index" always maps to orange.

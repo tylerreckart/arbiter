@@ -33,7 +33,8 @@ void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks);
 void pane_history_init(Pane& pane);
 void pane_history_set_cols(Pane& pane, int cols);
 void pane_history_clear(Pane& pane);
-void pane_history_push(Pane& pane, std::string_view text);
+void pane_history_push(Pane& pane, std::string_view text, bool new_block = false);
+void pane_history_push_diff(Pane& pane, std::string_view patch);
 [[nodiscard]] int pane_history_total_rows(const Pane& pane);
 [[nodiscard]] int pane_history_max_scroll(const Pane& pane);
 
