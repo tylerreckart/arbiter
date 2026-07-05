@@ -31,7 +31,6 @@ struct Pane {
     std::string       multiline_accum;
     int               scroll_offset       = 0;
     int               new_while_scrolled  = 0;
-    bool              welcome_visible     = true;
 
     Pane*             parent_pane         = nullptr;
     std::string       spawn_message;

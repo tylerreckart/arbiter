@@ -23,8 +23,12 @@ void pane_history_clear(Pane& pane) {
     if (pane.scroll) pane.scroll->clear();
 }
 
-void pane_history_push(Pane& pane, std::string_view text) {
-    if (pane.scroll) pane.scroll->append(text);
+void pane_history_push(Pane& pane, std::string_view text, bool new_block) {
+    if (pane.scroll) pane.scroll->append(text, new_block);
+}
+
+void pane_history_push_diff(Pane& pane, std::string_view patch) {
+    if (pane.scroll) pane.scroll->append_diff(patch);
 }
 
 int pane_history_total_rows(const Pane& pane) {
@@ -50,14 +54,10 @@ void pane_history_draw_pane(Pane& pane, UiContext& ctx) {
     if (frame == 0) return;
 
     opentui::draw_pane_chrome(frame, pane.tui);
-    if (pane.welcome_visible) {
-        opentui::draw_welcome_card(frame, pane.tui);
-    } else {
-        pane.scroll->draw(frame,
-                          pane.tui,
-                          pane.scroll_offset,
-                          pane.new_while_scrolled);
-    }
+    pane.scroll->draw(frame,
+                      pane.tui,
+                      pane.scroll_offset,
+                      pane.new_while_scrolled);
     const bool focused = (&pane == ctx.focused_pane);
     pane.editor.draw(frame, pane.tui, focused);
 }
