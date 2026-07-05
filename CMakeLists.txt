@@ -103,8 +103,13 @@ set(ARBITER_SOURCES
     src/cli.cpp
     src/starters.cpp
     src/theme.cpp
+    src/styled_text.cpp
+    src/render_policy.cpp
+    src/stream_renderer.cpp
     src/tui/tui.cpp
     src/tui/tui_design.cpp
+    src/tui/style_resolver.cpp
+    src/tui/block_parser.cpp
     src/tui/ansi_util.cpp
     src/tui/stream_filter.cpp
     src/api_client.cpp
@@ -209,6 +214,7 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/pane_scroll_view.cpp
     src/tui/opentui/diff_panel.cpp
     src/tui/opentui/ansi_scroll_append.cpp
+    src/tui/opentui/span_scroll_append.cpp
     src/tui/opentui/pane_input_editor.cpp
     src/tui/sidebar.cpp
     src/tui/sidebar_format.cpp
@@ -359,6 +365,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_stream_filter
         tests/test_stream_filter.cpp
         src/tui/stream_filter.cpp
+        src/tui/block_parser.cpp
     )
     target_include_directories(unit_stream_filter PRIVATE
         ${CMAKE_SOURCE_DIR}/include
@@ -369,7 +376,12 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_markdown_diff
         tests/test_markdown_diff.cpp
         src/markdown.cpp
+        src/styled_text.cpp
+        src/render_policy.cpp
         src/theme.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/json.cpp
     )
     target_include_directories(unit_markdown_diff PRIVATE
         ${CMAKE_SOURCE_DIR}/include
