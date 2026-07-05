@@ -25,7 +25,7 @@ struct UiContext {
 
 struct PaneFrameHooks {
     std::function<void(const std::function<void(Pane&)>&)> for_each_pane;
-    std::function<void(OpenTuiHandle frame)>               draw_overlays;
+    std::function<void(OpenTuiHandle frame, int cols, int rows)> draw_overlays;
 };
 
 void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks);

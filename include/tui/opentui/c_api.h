@@ -57,6 +57,9 @@ void bufferDrawText(OpenTuiHandle buffer,
 
 void setupTerminal(OpenTuiHandle renderer, bool use_alternate_screen);
 void restoreTerminalModes(OpenTuiHandle renderer);
+void processCapabilityResponse(OpenTuiHandle renderer,
+                               const char* response,
+                               uint32_t response_len);
 void resizeRenderer(OpenTuiHandle renderer, uint32_t width, uint32_t height);
 void setRenderOffset(OpenTuiHandle renderer, uint32_t offset);
 uint8_t render(OpenTuiHandle renderer, bool force);

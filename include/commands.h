@@ -150,7 +150,7 @@ using ConfirmFn = std::function<bool(const std::string& prompt)>;
 // exec non-zero exit status.  The REPL wires this to ToolCallIndicator so
 // the spinner's ✓/✗ summary reflects real post-exec status, not just a
 // count of /cmd lines in the stream.
-using ToolStatusFn = std::function<void(const std::string& kind, bool ok)>;
+using ToolStatusFn = std::function<void(const std::string& label, bool ok)>;
 
 // Spawn a new UI pane running `agent_id` with `message` as its first queued
 // input.  Fire-and-forget from the caller's perspective: the spawning agent
@@ -450,5 +450,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
 // Exposed for testing; callers normally just wire a ToolStatusFn and let
 // execute_agent_commands invoke it.
 bool is_tool_result_failure(const std::string& block);
+
+// Human-readable label for tool-status / sidebar activity (e.g. "exec: git status",
+// "mcp:playwright.browser_navigate").  Exposed for unit tests.
+std::string tool_status_label(const AgentCommand& cmd);
 
 } // namespace arbiter

@@ -43,7 +43,8 @@ Scrollback is **visual-row aware**: a wrapped paragraph counts as multiple rows 
 | Chord        | Action                                                                       |
 |--------------|------------------------------------------------------------------------------|
 | `^W v`       | Vertical split — the focused pane is split into left/right children.         |
-| `^W s`       | Horizontal split — focused pane split into top/bottom.                       |
+| `^W h`       | Horizontal split — focused pane split into top/bottom.                       |
+| `^W s`       | Toggle the session sidebar (wide terminals only).                            |
 | `^W w` / `^W ^W` | Cycle focus to the next pane (pre-order traversal of the layout tree).   |
 | `^W c`       | Close the focused pane. Its exec thread is joined; in-flight turn is cancelled. Last remaining pane cannot be closed. |
 

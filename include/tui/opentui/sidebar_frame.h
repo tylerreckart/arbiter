@@ -8,7 +8,8 @@ namespace arbiter::opentui {
 
 void draw_sidebar(OpenTuiHandle frame,
                   const SidebarSnapshot& snap,
-                  const Rect& rect,
-                  const TuiChromeSnapshot& chrome);
+                  const Rect& sidebar_rect,
+                  const Rect& pane_rect,
+                  int pane_input_rows);
 
 } // namespace arbiter::opentui
