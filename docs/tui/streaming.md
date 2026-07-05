@@ -24,7 +24,9 @@ This indicator runs in the output pump and updates at ~80 ms cadence. It clears 
 
 ### 2. Streaming output
 
-Model deltas land in the scroll region as they arrive — character by character for short responses, sentence by sentence for longer ones depending on provider buffering. Markdown rendering produces ANSI SGR sequences that `AnsiScrollAppender` maps to OpenTUI syntax highlights; PgUp redraw preserves colours.
+Model deltas land in the scroll region as they arrive. Prose and inline markdown render line-by-line; fenced blocks (including ` ```diff ` patches) buffer until the closing fence so long partial blocks do not flood scrollback mid-stream. Code blocks longer than eight lines may show a single dim `… (code block, N+ lines) …` placeholder while streaming; the fully styled block appears when the fence closes. Diff fences render as side-by-side before/after panels via the diff sink. Markdown rendering produces ANSI SGR sequences that `AnsiScrollAppender` maps to OpenTUI syntax highlights; PgUp redraw preserves colours.
+
+Sub-agent progress (dimmed lines emitted while delegated agents run) collapses fenced blocks and caps at eight lines — the master's synthesis turn carries the full styled result.
 
 ### 3. Tool calls
 
