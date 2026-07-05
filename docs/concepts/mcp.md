@@ -58,7 +58,7 @@ Arbiter speaks **stdio MCP only**. Hosted services that publish HTTP/SSE MCP end
 
 OAuth lifecycle: the first call to a hosted server triggers `mcp-remote` to print a login URL to stderr and wait for the browser callback. Tokens land at `~/.mcp-auth/` and persist across runs. For a daemonised `arbiter --api`, run `npx mcp-remote <url>` once interactively from a shell to seed the cache before launching the daemon.
 
-A ready-to-use registry covering GitHub, Sentry, Linear, and Slack ships at [`examples/mcp_servers.json`](../../examples/mcp_servers.json) — copy to `~/.arbiter/mcp_servers.json` and edit. The shipped `backend`, `devops`, `frontend`, `reviewer`, `planner`, and `research` agents declare `/mcp` in their capabilities and carry per-agent rules describing which servers to call for which work.
+The shipped `backend`, `devops`, `frontend`, `reviewer`, `planner`, and `research` agents declare `/mcp` in their capabilities and carry per-agent rules describing which servers to call for which work. Add servers to `~/.arbiter/mcp_servers.json` as needed — GitHub, Sentry, Linear, and Slack are common hosted targets via `mcp-remote`.
 
 ## Slash commands
 

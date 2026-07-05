@@ -65,15 +65,7 @@ Workspaces land at `~/.arbiter/workspaces/t<tenant_id>/` (one directory per tena
 
 The arbiter binary intentionally ships **no default image**. You bring your own so the toolbelt available behind `/exec` reflects your agents' actual needs.
 
-A ready-to-use starter ships in [`examples/sandbox/`](../../examples/sandbox/). One command builds it, tags it `arbiter/sandbox:latest`, and prints the env vars to plug into `arbiter --api`:
-
-```bash
-./examples/sandbox/setup.sh
-```
-
-The image is a debian-slim base with `bash`, `coreutils`, `curl`, `git`, `python3`, `jq`, and `build-essential` pre-installed. Edit `examples/sandbox/Dockerfile` to add what your agents actually need (a node toolchain, a Go compiler, your CLI, etc.) and re-run the script.
-
-If you'd rather hand-roll it, the contract is short:
+Build your own image to match what your agents need. The contract is short:
 
 ```dockerfile
 # Dockerfile
@@ -235,7 +227,6 @@ What it does not protect against:
 
 ## See also
 
-- [`examples/sandbox/`](../../examples/sandbox/) — ready-to-build starter image and `setup.sh` helper.
 - [`docs/concepts/writ.md`](writ.md) — the slash-command DSL `/exec`, `/write`, `/read` belong to.
 - [`docs/concepts/artifacts.md`](artifacts.md) — the persistent, conversation-scoped artifact store. Complementary to the workspace.
 - [`docs/concepts/mcp.md`](mcp.md) — MCP servers run in the arbiter process, not in the sandbox. `/mcp call` is unaffected by `--network=none`.
