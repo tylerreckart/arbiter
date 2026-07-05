@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.5.0 LANGUAGES CXX)
+project(arbiter VERSION 0.6.0 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
 # concatenated for the display string surfaced through INDEX_VERSION.
 # Leave empty (or unset) for a final release.
-set(ARBITER_VERSION_SUFFIX "-beta2")
+set(ARBITER_VERSION_SUFFIX "")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -211,6 +211,7 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/ansi_scroll_append.cpp
     src/tui/opentui/pane_input_editor.cpp
     src/tui/sidebar.cpp
+    src/tui/sidebar_format.cpp
     src/tui/opentui/sidebar_frame.cpp
     src/tui/opentui/pane_frame.cpp
 )
@@ -295,6 +296,23 @@ if(INDEX_BUILD_TESTS)
     # The tests spawn arbiter; they'll fail fast if the binary isn't built yet.
     add_dependencies(line_editor_tests arbiter)
 
+    add_executable(sidebar_tui_tests
+        tests/pty_harness.cpp
+        tests/test_sidebar_tui.cpp
+    )
+    target_include_directories(sidebar_tui_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/tests
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(sidebar_tui_tests PRIVATE
+        INDEX_TEST_BINARY="$<TARGET_FILE:arbiter>"
+    )
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(sidebar_tui_tests PRIVATE util)
+    endif()
+    add_test(NAME sidebar_tui COMMAND sidebar_tui_tests)
+    add_dependencies(sidebar_tui_tests arbiter)
+
     # --- Unit tests for security-critical command functions ---
     add_executable(unit_commands
         tests/test_commands.cpp
@@ -358,6 +376,28 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_markdown_diff COMMAND unit_markdown_diff)
+
+    add_executable(unit_sidebar_format
+        tests/test_sidebar_format.cpp
+        src/tui/sidebar_format.cpp
+    )
+    target_include_directories(unit_sidebar_format PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_sidebar_format COMMAND unit_sidebar_format)
+
+    add_executable(unit_sidebar
+        tests/test_sidebar.cpp
+        src/tui/sidebar.cpp
+        src/tui/sidebar_format.cpp
+    )
+    target_include_directories(unit_sidebar PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    add_test(NAME unit_sidebar COMMAND unit_sidebar)
 
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser

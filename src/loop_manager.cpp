@@ -243,6 +243,22 @@ int LoopManager::active_count() const {
     return n;
 }
 
+std::vector<LoopManager::LoopBrief> LoopManager::briefs() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    std::vector<LoopBrief> out;
+    out.reserve(loops_.size());
+    for (auto& [lid, e] : loops_) {
+        if (e->state == LoopState::Stopped) continue;
+        LoopBrief b;
+        b.id       = lid;
+        b.agent_id = e->agent_id;
+        b.state    = loop_state_str(e->state);
+        b.iter     = e->iter;
+        out.push_back(std::move(b));
+    }
+    return out;
+}
+
 void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
                            std::string initial_prompt) {
     const std::string original_task = initial_prompt;

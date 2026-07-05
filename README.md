@@ -9,6 +9,8 @@ It reasons, delegates, acts, and streams every step back as structured SSE.
 **In:** prompts · events · API calls · scheduled jobs  
 **Out:** supervised actions · artifacts · memory · a live trace of every decision
 
+![Arbiter interactive TUI](assets/output.gif)
+
 ## Run it anywhere
 
 Same agent, three interfaces:

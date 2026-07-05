@@ -358,6 +358,54 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     server.stop();
 }
 
+ApiServerOptions make_cli_api_options(const std::string& config_dir,
+                                      const std::map<std::string, std::string>& api_keys,
+                                      bool exec_allowed) {
+    ApiServerOptions opts;
+    opts.agents_dir    = config_dir + "/agents";
+    opts.memory_root   = config_dir + "/memory";
+    opts.api_keys      = api_keys;
+    opts.exec_disabled = !exec_allowed;
+    {
+        bool host_exec = exec_allowed;
+        if (!host_exec) {
+            const char* env = std::getenv("ARBITER_ALLOW_HOST_EXEC");
+            host_exec = (env && env[0] == '1' && env[1] == '\0');
+        }
+        if (host_exec) {
+            opts.host_exec_enabled = true;
+            opts.exec_disabled     = false;
+        }
+    }
+    opts.mcp_servers_path = config_dir + "/mcp_servers.json";
+    opts.a2a_agents_path  = config_dir + "/a2a_agents.json";
+    if (const char* p = std::getenv("ARBITER_SEARCH_PROVIDER"); p && *p) {
+        opts.search_provider = p;
+    }
+    if (const char* k = std::getenv("ARBITER_SEARCH_API_KEY"); k && *k) {
+        opts.search_api_key = k;
+    } else if (const char* k = std::getenv("BRAVE_SEARCH_API_KEY"); k && *k) {
+        opts.search_api_key = k;
+    }
+    return opts;
+}
+
+Tenant ensure_primary_tenant(TenantStore& store) {
+    auto all = store.list_tenants();
+    if (all.empty()) {
+        return store.create_tenant("default").tenant;
+    }
+    size_t best = 0;
+    for (size_t i = 1; i < all.size(); ++i) {
+        if (all[i].id < all[best].id) best = i;
+    }
+    if (all[best].disabled) {
+        store.set_disabled(std::to_string(all[best].id), false);
+        all[best].disabled = false;
+    }
+    return all[best];
+}
+
 void cmd_oneshot(const std::string& agent_id, const std::string& msg) {
     std::string dir = get_config_dir();
     auto api_keys = get_api_keys();

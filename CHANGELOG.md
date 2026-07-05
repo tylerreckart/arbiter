@@ -7,6 +7,36 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-05
+
+Minor release after the 0.5.0 beta line.  OpenTUI is now the sole TUI
+engine; the session sidebar tracks context, agent, todos, and schedules;
+hosted models route through OpenRouter; and the interactive REPL has
+full tool parity with the HTTP API (`/search`, `/todo`, `/schedule`,
+structured `/mem`, MCP, A2A, artifacts).  Streaming output renders
+unified-diff blocks inline; the pane chrome is stripped back to
+scrollback + an accent-styled input strip.
+
+### Added
+- **TUI/API command parity.**  The REPL wires the same tenant-scoped tool
+  invokers as `/v1/orchestrate` — web search, todos, schedules, structured
+  memory, MCP, A2A, exec, and conversation artifacts — and runs the
+  background scheduler while the TUI is open.
+- **Session sidebar.**  Context fill %, agent/model, task title, todos,
+  schedules, loops, and cost — toggled with `Ctrl-w s` on wide terminals.
+- **OpenRouter routing.**  Hosted model ids resolve through OpenRouter
+  instead of per-provider keys where configured.
+- **Inline diff rendering.**  Agent replies that emit ` ```diff ` fences
+  render as styled before/after blocks in the scroll region.
+
+### Changed
+- **OpenTUI cutover.**  Legacy TUI backend removed; design tokens live in
+  `~/.arbiter/tui_design.json`.
+- **TUI layout.**  Pane header chrome removed; user input uses the header
+  palette (dark background + orange accent strip).
+- **Constitution.**  Agent configs now require ` ```diff ` fences when
+  proposing code edits so the TUI can render patches.
+
 ## [0.5.0-beta2] — 2026-05-20
 
 Second **beta** in the 0.5.0 line.  Focus is the agent-facing todo
