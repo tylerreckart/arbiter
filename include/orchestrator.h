@@ -298,6 +298,12 @@ public:
     // exec thread is blocked in a streaming read.
     void cancel();
 
+    // Run a user-typed slash command through the same tool dispatch path
+    // agents use during a turn. Returns formatted tool-result text, or empty
+    // if the line didn't parse to any command.
+    std::string execute_slash_command(const std::string& line,
+                                      const std::string& agent_id);
+
     // Build an AdvisorInvoker bound to a specific caller.  Returns a lambda
     // that makes a one-shot, history-less call against the caller's
     // configured advisor_model (from the caller's Constitution).  If the

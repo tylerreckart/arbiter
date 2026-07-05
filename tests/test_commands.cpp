@@ -536,3 +536,31 @@ TEST_CASE("/help dispatch returns topic body or ERR for unknown topic") {
         CHECK(result.find("ERR:") == std::string::npos);
     }
 }
+
+TEST_CASE("tool_status_label emits accurate sidebar labels") {
+    AgentCommand cmd;
+
+    cmd.name = "exec";
+    cmd.args = "git status --short";
+    CHECK(tool_status_label(cmd) == "exec:git status --short");
+
+    cmd.name = "fetch";
+    cmd.args = "https://example.com/docs";
+    CHECK(tool_status_label(cmd) == "fetch:https://example.com/docs");
+
+    cmd.name = "mcp";
+    cmd.args = "call playwright browser_navigate {\"url\":\"x\"}";
+    CHECK(tool_status_label(cmd) == "mcp:playwright.browser_navigate");
+
+    cmd.name = "todo";
+    cmd.args = "add Fix auth middleware";
+    CHECK(tool_status_label(cmd) == "todo:add Fix auth middleware");
+
+    cmd.name = "schedule";
+    cmd.args = "in 1 hour: run nightly tests";
+    CHECK(tool_status_label(cmd) == "schedule:create in 1 hour: run nightly tests");
+
+    cmd.name = "write";
+    cmd.args = "--persist src/main.cpp";
+    CHECK(tool_status_label(cmd) == "write:src/main.cpp");
+}

@@ -1,37 +1,22 @@
 #pragma once
 // arbiter/include/tui/tui.h
 //
-// Terminal UI — per-pane chrome state (layout rects, status, title).  OpenTUI
+// Terminal UI — per-pane chrome state (layout rects, status).  OpenTUI
 // renders pixels via opentui::Session; this class holds the data pane_frame
 // reads each frame.
 //
 // Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
-//   row 1              top padding
-//   rows 2..4          identity + status block
-//                      left:  agent (bold, colored) · title (dim)
-//                      right: status (when active) — else stats (dim)
-//   rows 5..h-5        scroll region (streamed model output lives here)
-//   row  h-6           content padding / pre-input status
-//   rows h-6..h-3      input area (readline block)
-//   row  h-2           content padding below readline
-//   row  h-1           hint row (key / command hints)
+//   rows y..h-5        scroll region (streamed model output)
+//   row  h-6           mid separator (tool-call / thinking indicator)
+//   rows h-6..h-3      input area (dark bg + accent strip)
+//   row  h-2           hint row (key / command hints)
 //   row  h             bottom padding
 //
 // All `*_row()` accessors return absolute 1-indexed terminal rows — they fold
 // in rect_.y for scroll/input placement in OpenTUI draw calls.
 //
-// Status is on the same row as identity; when active it preempts stats on the
-// right side (stats are already dim and unimportant vs a live "thinking..."
-// indicator).
-//
-// The mid separator has a second use: while tool calls are streaming the
-// ToolCallIndicator paints its animated "⠋ N tool calls…" label onto this
-// row (via set_pre_input_status / clear_pre_input_status).  Keeping tool
-// output on its own row frees the header status for the thinking indicator
-// — previously both fought for row 1 at 80 ms, which flashed.
-//
-// set_title() holds header_mu_ so the async title-generation thread can update
-// the header safely.  Spinner frames advance in the output pump (no thread).
+// The mid separator shows tool-call or thinking spinners via
+// set_pre_input_status / set_status.
 
 #include <atomic>
 #include <functional>
@@ -43,9 +28,11 @@ namespace arbiter {
 struct Rect {
     int x = 0;
     int y = 0;
-    int w = 80;
-    int h = 24;
+    int w = 0;
+    int h = 0;
 };
+
+inline constexpr Rect kEmptyRect{0, 0, 0, 0};
 
 struct TuiChromeSnapshot {
     Rect rect;
@@ -53,18 +40,12 @@ struct TuiChromeSnapshot {
     bool status_active = false;
     bool focus_accent = false;
     bool footer_hint_visible = true;
-    std::string agent;
-    std::string title;
     std::string status;
-    std::string stats;
     std::string pre_input_status;
 };
 
 class TUI {
 public:
-    // Chrome layout offsets WITHIN a pane (not absolute terminal rows).
-    // Header is 4 rows: top padding, then a three-row header block.
-    static constexpr int kHeaderRows    = 4;
     static constexpr int kSepRows       = 1;   // mid separator above input area
     static constexpr int kMaxInputRows  = 7;
     static constexpr int kBottomPadRows = 3;   // input spacer + hint row + bottom padding
@@ -90,11 +71,6 @@ public:
     // No-op — terminal lifecycle is owned by opentui::Session.
     void shutdown();
 
-    void update(const std::string& agent,
-                const std::string& model,
-                const std::string& stats,
-                const std::string& color = "");
-
     void begin_input(std::function<int()> pending_fn = {});
     void grow_input(int needed);
     std::string build_prompt() const;
@@ -104,8 +80,8 @@ public:
         return rect_.y + rect_.h - kBottomPadRows - input_rows_ - kSepRows;
     }
 
-    // First row of the scroll region (just below the header separator).
-    int scroll_top_row() const { return rect_.y + kHeaderRows + 1; }
+    // First row of the scroll region (top of pane).
+    int scroll_top_row() const { return rect_.y + 1; }
 
     // Number of visible rows in the scroll region.
     int scroll_region_rows() const {
@@ -115,11 +91,7 @@ public:
     void set_status(const std::string& msg);
     void clear_status();
 
-    // Pre-input status — a dim label inlined with the mid-separator row just
-    // above the readline.  Used by ToolCallIndicator so its spinner doesn't
-    // share row 1 with the header thinking indicator.  An empty label (or
-    // clear) restores the plain dashed separator.  Cheap; safe to call from
-    // background threads (guarded by tty_mu_).
+    // Pre-input status — tool-call spinner label on the mid-separator row.
     void set_pre_input_status(const std::string& msg);
     void clear_pre_input_status();
 
@@ -146,9 +118,6 @@ public:
     int input_bottom_row_pub() const { return input_row(); }
     int input_rows() const { return input_rows_; }
 
-    // Thread-safe: called from the async title-generation thread.
-    void set_title(const std::string& title);
-
     [[nodiscard]] TuiChromeSnapshot chrome_snapshot() const;
 
     std::recursive_mutex& tty_mutex() { return tty_mu_; }
@@ -158,19 +127,13 @@ private:
     int  input_rows_ = 1;
     bool status_active_ = false;
     bool footer_hint_visible_ = true;  // flipped off in multi-pane layouts
-    bool focus_accent_ = false;        // accent header bottom border when focused
+    bool focus_accent_ = false;        // reserved for multi-pane chrome accents
     std::atomic<bool> queue_indicator_shown_{false};
-    std::string current_agent_ = "index";
-    std::string current_stats_;
-    std::string session_title_ = "Arbiter";
-    std::string current_status_;       // cached so resize() can redraw it
-    std::string current_pre_input_status_;  // inlined on sep_row() when non-empty
-    mutable std::mutex header_mu_;
+    std::string current_status_;
+    std::string current_pre_input_status_;
     mutable std::recursive_mutex tty_mu_;
 
     // Absolute 1-indexed terminal rows for each chrome slot within rect_.
-    int identity_row()   const { return rect_.y + 1; }
-    int header_sep_row() const { return rect_.y + 2; }
     int sep_row()        const { return rect_.y + rect_.h - kBottomPadRows - input_rows_; }
     int input_top_row()  const { return sep_row() + 1; }
     int input_row()      const { return rect_.y + rect_.h - kBottomPadRows; }

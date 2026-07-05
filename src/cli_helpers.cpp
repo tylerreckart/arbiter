@@ -891,18 +891,30 @@ std::map<std::string, std::string> get_api_keys() {
     return out;
 }
 
-int term_cols() {
+namespace {
+
+int winsize_dim(int which) {
     struct winsize ws{};
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        return ws.ws_col;
-    return 80;
+    const int fds[] = {STDOUT_FILENO, STDIN_FILENO, STDERR_FILENO};
+    for (int fd : fds) {
+        if (ioctl(fd, TIOCGWINSZ, &ws) == 0) {
+            const int v = (which == 0) ? ws.ws_col : ws.ws_row;
+            if (v > 0) return v;
+        }
+    }
+    return 0;
+}
+
+} // namespace
+
+int term_cols() {
+    const int cols = winsize_dim(0);
+    return cols > 0 ? cols : 80;
 }
 
 int term_rows() {
-    struct winsize ws{};
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
-        return ws.ws_row;
-    return 24;
+    const int rows = winsize_dim(1);
+    return rows > 0 ? rows : 24;
 }
 
 void drain_stdin_spurious(int max_wait_ms) {

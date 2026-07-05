@@ -11,11 +11,10 @@
 
 namespace arbiter {
 
-void TUI::init(const std::string& agent,
+void TUI::init(const std::string& /*agent*/,
                const std::string& /*model*/,
                const std::string& /*color*/) {
     rect_ = Rect{0, 0, term_cols(), term_rows()};
-    current_agent_ = agent;
 }
 
 void TUI::set_rect(const Rect& r) {
@@ -28,15 +27,6 @@ void TUI::resize() {
 }
 
 void TUI::shutdown() {}
-
-void TUI::update(const std::string& agent,
-                 const std::string& /*model*/,
-                 const std::string& stats,
-                 const std::string& /*color*/) {
-    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    current_agent_ = agent;
-    current_stats_ = stats;
-}
 
 void TUI::begin_input(std::function<int()> pending_fn) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
@@ -99,25 +89,15 @@ void TUI::clear_pre_input_status() {
     current_pre_input_status_.clear();
 }
 
-void TUI::set_title(const std::string& title) {
-    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    std::lock_guard<std::mutex> lk(header_mu_);
-    session_title_ = title;
-}
-
 TuiChromeSnapshot TUI::chrome_snapshot() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    std::lock_guard<std::mutex> lk(header_mu_);
     TuiChromeSnapshot s;
     s.rect = rect_;
     s.input_rows = input_rows_;
     s.status_active = status_active_;
     s.focus_accent = focus_accent_;
     s.footer_hint_visible = footer_hint_visible_;
-    s.agent = current_agent_;
-    s.title = session_title_;
     s.status = current_status_;
-    s.stats = current_stats_;
     s.pre_input_status = current_pre_input_status_;
     return s;
 }

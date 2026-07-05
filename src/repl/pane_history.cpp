@@ -1,6 +1,7 @@
 #include "repl/pane_history.h"
 
 #include "repl/pane.h"
+#include "tui/opentui/c_api.h"
 #include "tui/opentui/pane_frame.h"
 #include "tui/opentui/pane_scroll_view.h"
 #include "tui/opentui/session.h"
@@ -80,7 +81,12 @@ void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks) {
         });
     }
     if (hooks.draw_overlays) {
-        hooks.draw_overlays(ctx.session->frame());
+        OpenTuiHandle frame = ctx.session->frame();
+        if (frame != 0) {
+            hooks.draw_overlays(frame,
+                                static_cast<int>(getBufferWidth(frame)),
+                                static_cast<int>(getBufferHeight(frame)));
+        }
     }
     pane_history_end_frame(ctx);
 }

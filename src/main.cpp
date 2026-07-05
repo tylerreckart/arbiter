@@ -10,9 +10,13 @@
 #include "readline_wrapper.h"
 #include "markdown.h"
 #include "cli_helpers.h"
+#include "cli.h"
+#include "api_server.h"
+#include "tenant_store.h"
+#include "scheduler.h"
+#include "notification_bus.h"
 #include "repl/queues.h"
 #include "loop_manager.h"
-#include "title_generator.h"
 #include "cli.h"
 #include "tui/tui.h"
 #include "tui/tui_design.h"
@@ -50,12 +54,16 @@
 
 namespace fs = std::filesystem;
 
-using arbiter::agent_color;
+using arbiter::TenantStore;
+using arbiter::Tenant;
+using arbiter::ensure_primary_tenant;
+using arbiter::make_cli_api_options;
+using arbiter::ApiServerOptions;
+using arbiter::wire_orchestrator_tools;
+using arbiter::NotificationBus;
+using arbiter::Scheduler;
 using arbiter::get_config_dir;
-using arbiter::get_memory_dir;
 using arbiter::get_api_keys;
-using arbiter::write_memory;
-using arbiter::read_memory;
 using arbiter::fetch_url;
 using arbiter::theme;
 
@@ -78,6 +86,7 @@ using arbiter::LayoutTree;
 using arbiter::PaneFrameHooks;
 using arbiter::Rect;
 using arbiter::SidebarState;
+using arbiter::SidebarLoopEntry;
 
 // State the output-pump thread needs.  Points into cmd_interactive()'s stack
 // frame — lifetime is the REPL call.  Pane* is the only per-pane hook; the
@@ -157,7 +166,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
     g_ui_ctx = &ui_ctx;
 
     arbiter::Orchestrator orch(std::move(api_keys));
-    orch.set_memory_dir(get_memory_dir());
     orch.load_agents(dir + "/agents");
 
     // ── App-scope shared state ─────────────────────────────────────────────
@@ -177,7 +185,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
     } confirm_state;
 
     std::atomic<bool> quit_requested{false};
-    std::atomic<bool> title_generated{false};   // generated once per session
 
     // Signals the main thread to repaint the focused input after a layout mutation.
     std::atomic<bool> refresh_focused_input{false};
@@ -191,15 +198,17 @@ static void cmd_interactive(bool exec_allowed_flag) {
     std::vector<PendingClose> pending_closes;
 
     SidebarState sidebar;
-    auto layout_bounds = []() -> Rect {
+
+    // Forward declaration — layout_ptr lets lambdas registered before layout
+    // construction reach it safely (we set it once and never clear).
+    LayoutTree* layout_ptr = nullptr;
+
+    auto layout_bounds = [&sidebar, &layout_ptr]() -> Rect {
         const int cols = arbiter::term_cols();
         const int rows = arbiter::term_rows();
-        const int sw = SidebarState::width_for_terminal(cols);
+        const int panes = layout_ptr ? static_cast<int>(layout_ptr->pane_count()) : 1;
+        const int sw = sidebar.effective_width(cols, panes);
         return Rect{0, 0, std::max(1, cols - sw), rows};
-    };
-    auto refresh_pane_header = [&](Pane& p) {
-        p.tui.update(p.current_agent, p.current_model,
-                     sidebar.header_stats_line(), agent_color(p.current_agent));
     };
 
     // Session key is cwd-scoped so history doesn't bleed across repos.
@@ -215,7 +224,35 @@ static void cmd_interactive(bool exec_allowed_flag) {
     fs::create_directories(sessions_dir);
     std::string session_path = sessions_dir + "/" + cwd_session_key() + ".json";
     bool restored = orch.load_session(session_path);
-    (void)restored;
+    if (restored) sidebar.mark_prompt_started();
+
+    TenantStore tenants;
+    tenants.open(dir + "/tenants.db");
+    Tenant primary = ensure_primary_tenant(tenants);
+
+    std::string session_meta_path =
+        sessions_dir + "/" + cwd_session_key() + ".conv";
+    int64_t conversation_id = 0;
+    {
+        std::ifstream mf(session_meta_path);
+        if (mf) mf >> conversation_id;
+        if (conversation_id <= 0 ||
+            !tenants.get_conversation(primary.id, conversation_id)) {
+            auto conv = tenants.create_conversation(
+                primary.id, "TUI session", "index");
+            conversation_id = conv.id;
+            std::ofstream wf(session_meta_path);
+            wf << conversation_id << '\n';
+        }
+    }
+
+    ApiServerOptions api_opts =
+        make_cli_api_options(dir, get_api_keys(), exec_allowed_flag);
+    wire_orchestrator_tools(orch, api_opts, tenants, primary.id, conversation_id);
+
+    NotificationBus notifications;
+    Scheduler scheduler(&api_opts, &tenants, &notifications);
+    scheduler.start();
 
     // Load shared input history once — each pane's editor gets a copy.
     std::vector<std::string> shared_history;
@@ -243,25 +280,9 @@ static void cmd_interactive(bool exec_allowed_flag) {
         arbiter::drain_stdin_spurious(200);
     }
 
-    // Forward declaration — layout_ptr lets lambdas registered before layout
-    // construction reach it safely (we set it once and never clear).
-    LayoutTree* layout_ptr = nullptr;
-
-    // Title-gen helper — fires once per session, paints into the pane that
-    // triggered the response.
-    auto maybe_generate_title = [&](const std::string& user_msg,
-                                     const std::string& response_snippet) {
-        if (title_generated.exchange(true)) return;
-        Pane* target = g_active_pane;
-        if (!target) return;
-        TUI* target_tui = &target->tui;
-        arbiter::generate_title_async(orch.client(), user_msg, response_snippet,
-            [target_tui](const std::string& t){ target_tui->set_title(t); });
-    };
-
-    // ── Pane factory ───────────────────────────────────────────────────────
     std::function<void()> pump_notify;
 
+    // ── Pane factory ───────────────────────────────────────────────────────
     auto make_pane = [&]() -> std::unique_ptr<Pane> {
         auto p = std::make_unique<Pane>();
         // Wire pump wakeup so any output push wakes the drain thread
@@ -271,8 +292,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
         });
         p->current_agent = "index";
         p->current_model = orch.get_agent_model(p->current_agent);
-        p->tui.init(p->current_agent, p->current_model,
-                    agent_color(p->current_agent));
+        p->tui.init(p->current_agent, p->current_model);
         pane_history_init(*p);
         pane_history_set_cols(*p, p->tui.cols());
 
@@ -302,7 +322,10 @@ static void cmd_interactive(bool exec_allowed_flag) {
                                   "/pane",
                                   "/loop","/loops","/log","/watch",
                                   "/kill","/suspend","/resume","/inject",
-                                  "/fetch","/mem","/plan","/verbose","/quit","/help"});
+                                  "/fetch","/mem","/search","/browse",
+                                  "/todo","/schedule","/exec","/write",
+                                  "/read","/list","/mcp","/a2a","/lesson",
+                                  "/plan","/verbose","/quit","/help"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
                     cmd == "reset" || cmd == "pane") {
@@ -314,7 +337,12 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     cmd == "watch"   || cmd == "log"     || cmd == "inject") {
                     return match(loops.list_ids());
                 }
-                if (cmd == "mem") return match({"write","read","show","clear"});
+                if (cmd == "mem") return match({"write","read","show","clear","shared",
+                                                "search","entries","entry","add"});
+                if (cmd == "todo") return match({"list","add","start","done","cancel","reorder"});
+                if (cmd == "schedule") return match({"list","cancel","pause","resume"});
+                if (cmd == "mcp") return match({"tools","call"});
+                if (cmd == "a2a") return match({"list","call"});
                 return {};
             });
 
@@ -335,11 +363,11 @@ static void cmd_interactive(bool exec_allowed_flag) {
             raw->multiline_accum.clear();
             raw->output_queue.push_msg(theme().accent_error + "[interrupted]" + theme().reset + "");
         });
-        // Chord prefix: Ctrl-w.  Recognized follow-ups are w/s/v/c (+Ctrl-w
-        // itself as a synonym for 'w'); anything else drops the chord
-        // silently.  Dispatch happens in the REPL main loop via take_chord.
+        // Chord prefix: Ctrl-w.  Recognized follow-ups: w (next pane),
+        // h (horizontal split), v (vertical split), s (sidebar toggle),
+        // c (close pane); Ctrl-w itself is a synonym for 'w'.
         p->editor.set_chord_handler([](char cmd) -> bool {
-            return cmd == 'w' || cmd == 's' || cmd == 'v' || cmd == 'c'
+            return cmd == 'w' || cmd == 'h' || cmd == 's' || cmd == 'v' || cmd == 'c'
                 || cmd == 0x17;
         });
         return p;
@@ -431,29 +459,73 @@ static void cmd_interactive(bool exec_allowed_flag) {
     LayoutTree layout(make_pane(), layout_bounds());
     layout_ptr = &layout;
 
+    auto sync_layout_to_terminal = [&]() -> bool {
+        const Rect want = layout_bounds();
+        const Rect have = layout.outer_bounds();
+        if (want.w == have.w && want.h == have.h) return false;
+        layout.resize(want);
+        layout.for_each_pane([&](Pane& p) {
+            pane_history_set_cols(p, p.tui.cols());
+        });
+        return true;
+    };
+
+    auto reveal_sidebar = [&]() {
+        if (sidebar.session_started()) return;
+        sidebar.mark_prompt_started();
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        sync_layout_to_terminal();
+        refresh_focused_input.store(true);
+    };
+
     PaneFrameHooks pane_hooks;
     pane_hooks.for_each_pane = [&](const std::function<void(Pane&)>& fn) {
         layout.for_each_pane(fn);
     };
-    pane_hooks.draw_overlays = [&](OpenTuiHandle frame) {
+    pane_hooks.draw_overlays = [&](OpenTuiHandle frame, int cols, int rows) {
+        if (frame == 0 || cols <= 0 || rows <= 0) return;
         if (layout.pane_count() > 1) layout.draw_borders(frame);
-        const Rect sb = SidebarState::rect_for_terminal(arbiter::term_cols(),
-                                                        arbiter::term_rows());
-        if (sb.w > 0) {
-            Pane& focused = layout.focused();
-            sidebar.set_focus_context(focused.current_agent,
-                                      focused.current_model,
-                                      focused.original_task);
-            sidebar.set_active_tool_calls(focused.tool_indicator.total());
-            const arbiter::SidebarSnapshot snap = sidebar.snapshot();
-            arbiter::opentui::draw_sidebar(frame, snap, sb, focused.tui.chrome_snapshot());
+
+        const int panes = static_cast<int>(layout.pane_count());
+        int sw = sidebar.effective_width(cols, panes);
+        if (sw <= 0) return;
+
+        int pane_w = layout.outer_bounds().w;
+        int gap = cols - pane_w;
+        if (gap != sw) {
+            sync_layout_to_terminal();
+            pane_w = layout.outer_bounds().w;
+            gap = cols - pane_w;
+            sw = sidebar.effective_width(cols, panes);
         }
+        if (sw <= 0 || gap <= 0) return;
+
+        const Rect sb = {pane_w, 0, std::min(sw, gap), rows};
+        Pane& focused = layout.focused();
+        sidebar.set_focus_context(focused.current_agent,
+                                  focused.current_model,
+                                  focused.original_task);
+        sidebar.set_active_tool_calls(focused.tool_indicator.total());
+        std::vector<SidebarLoopEntry> loop_rows;
+        for (const auto& b : loops.briefs()) {
+            SidebarLoopEntry row;
+            row.id       = b.id;
+            row.agent_id = b.agent_id;
+            row.state    = b.state;
+            row.iter     = b.iter;
+            loop_rows.push_back(std::move(row));
+        }
+        sidebar.set_loops(std::move(loop_rows));
+            const arbiter::SidebarSnapshot snap = sidebar.snapshot();
+            const arbiter::TuiChromeSnapshot chrome = focused.tui.chrome_snapshot();
+            arbiter::opentui::draw_sidebar(frame, snap, sb, chrome.rect, chrome.input_rows);
     };
     auto present_unlocked = [&]() {
         pane_history_present(ui_ctx, pane_hooks);
     };
     ui_ctx.present_all = [&]() {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        if (sync_layout_to_terminal()) refresh_focused_input.store(true);
         present_unlocked();
     };
 
@@ -527,7 +599,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     current_agent = id;
                     current_model = orch.get_agent_model(id);
                     pane.original_task.clear();
-                    refresh_pane_header(pane);
                 } else {
                     output_queue.push_msg("ERR: no agent '" + id + "'");
                 }
@@ -539,6 +610,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 std::string msg;
                 std::getline(iss, msg);
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
+                reveal_sidebar();
                 try {
                     arbiter::MarkdownRenderer md;
                     wire_markdown_diff_sink(md, output_queue);
@@ -559,10 +631,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     // a `\n`, so one more gives exactly one blank line before
                     // the next message.
                     output_queue.end_message();
-                    if (resp.ok) {
-                        refresh_pane_header(pane);
-                        maybe_generate_title(msg, resp.content);
-                    } else {
+                    if (!resp.ok) {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
                     }
                 } catch (const std::exception& e) {
@@ -597,6 +666,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 std::string query;
                 std::getline(iss, query);
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
+                reveal_sidebar();
                 try {
                     arbiter::MarkdownRenderer md;
                     wire_markdown_diff_sink(md, output_queue);
@@ -614,10 +684,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     auto tool_summary = tool_indicator.finalize();
                     if (!tool_summary.empty()) output_queue.push(tool_summary);
                     output_queue.end_message();
-                    if (resp.ok) {
-                        refresh_pane_header(pane);
-                        maybe_generate_title(query, resp.content);
-                    } else {
+                    if (!resp.ok) {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
                     }
                 } catch (const std::exception& e) {
@@ -799,92 +866,12 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     thinking.stop();
                     if (resp.ok) {
                         output_queue.push_msg(arbiter::render_markdown(resp.content));
-                        refresh_pane_header(pane);
                     } else {
                         output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
                     }
                 } catch (const std::exception& ex) {
                     thinking.stop();
                     output_queue.push_msg(theme().accent_error + "ERR: " + std::string(ex.what()) + theme().reset + "");
-                }
-                return;
-            }
-            if (cmd == "mem") {
-                std::string subcmd;
-                iss >> subcmd;
-                if (subcmd == "shared") {
-                    std::string action;
-                    iss >> action;
-                    if (action == "write") {
-                        std::string text;
-                        std::getline(iss, text);
-                        if (!text.empty() && text[0] == ' ') text.erase(0, 1);
-                        if (text.empty()) {
-                            output_queue.push_msg("Usage: /mem shared write <text>");
-                            return;
-                        }
-                        std::string wr = arbiter::cmd_mem_shared_write(text, get_memory_dir());
-                        output_queue.push_msg(wr.substr(0, 3) == "ERR" ? wr : "Written to shared scratchpad");
-                    } else if (action == "read" || action == "show") {
-                        std::string mem = arbiter::cmd_mem_shared_read(get_memory_dir());
-                        if (mem.empty())
-                            output_queue.push_msg("Shared scratchpad is empty");
-                        else
-                            output_queue.push_msg(mem);
-                    } else if (action == "clear") {
-                        std::string cr = arbiter::cmd_mem_shared_clear(get_memory_dir());
-                        output_queue.push_msg(cr.substr(0, 3) == "ERR" ? cr : "Shared scratchpad cleared");
-                    } else {
-                        output_queue.push_msg("Usage: /mem shared write <text> | /mem shared read | /mem shared clear");
-                    }
-                } else if (subcmd == "write") {
-                    std::string text;
-                    std::getline(iss, text);
-                    if (!text.empty() && text[0] == ' ') text.erase(0, 1);
-                    if (text.empty()) {
-                        output_queue.push_msg("Usage: /mem write <text>");
-                        return;
-                    }
-                    std::string result = write_memory(current_agent, text);
-                    if (result.compare(0, 3, "ERR") == 0)
-                        output_queue.push_msg(theme().accent_error + result + theme().reset + "");
-                    else
-                        output_queue.push_msg("Memory written for " + current_agent);
-                } else if (subcmd == "read") {
-                    std::string mem = read_memory(current_agent);
-                    if (mem.empty()) {
-                        output_queue.push_msg("No memory for " + current_agent);
-                        return;
-                    }
-                    std::string msg = "[MEMORY for " + current_agent + "]:\n" +
-                                      mem + "\n[END MEMORY]\n";
-                    try {
-                        thinking.start();
-                        auto resp = orch.send(current_agent, msg);
-                        thinking.stop();
-                        if (resp.ok) {
-                            output_queue.push_msg(arbiter::render_markdown(resp.content));
-                            refresh_pane_header(pane);
-                        } else {
-                            output_queue.push_msg("ERR: " + resp.error);
-                        }
-                    } catch (const std::exception& ex) {
-                        thinking.stop();
-                        output_queue.push_msg("ERR: " + std::string(ex.what()));
-                    }
-                } else if (subcmd == "show") {
-                    std::string mem = read_memory(current_agent);
-                    if (mem.empty())
-                        output_queue.push_msg("No memory for " + current_agent);
-                    else
-                        output_queue.push_msg(mem);
-                } else if (subcmd == "clear") {
-                    std::string path = get_memory_dir() + "/" + current_agent + ".md";
-                    fs::remove(path);
-                    output_queue.push_msg("Memory cleared for " + current_agent);
-                } else {
-                    output_queue.push_msg("Usage: /mem write <text> | /mem read | /mem show | /mem clear\n"
-                                      "       /mem shared write <text> | /mem shared read | /mem shared clear");
                 }
                 return;
             }
@@ -938,6 +925,16 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 return;
             }
             if (cmd == "help") {
+                std::string topic;
+                std::getline(iss, topic);
+                if (!topic.empty() && topic[0] == ' ') topic.erase(0, 1);
+                if (!topic.empty()) {
+                    std::string result = orch.execute_slash_command(line, current_agent);
+                    output_queue.push_msg(result.empty()
+                        ? "Unknown help topic '" + topic + "'"
+                        : result);
+                    return;
+                }
                 output_queue.push_msg(
                     "Conversation\n"
                     "  <text>                           — send to the focused pane's agent\n"
@@ -958,7 +955,8 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     "  /pane <agent> <msg>              — spawn a parallel pane running the agent;\n"
                     "                                     result flows back to the spawner when done\n"
                     "  Ctrl-w v                         — split the focused pane vertically\n"
-                    "  Ctrl-w s                         — split the focused pane horizontally\n"
+                    "  Ctrl-w h                         — split the focused pane horizontally\n"
+                    "  Ctrl-w s                         — toggle the session sidebar\n"
                     "  Ctrl-w w                         — cycle focus to the next pane\n"
                     "  Ctrl-w c                         — close the focused pane\n"
                     "\n"
@@ -974,13 +972,23 @@ static void cmd_interactive(bool exec_allowed_flag) {
                     "\n"
                     "Fetch + memory\n"
                     "  /fetch <url>                     — fetch URL, send readable text to agent\n"
-                    "  /mem write <text>                — append note to agent's persistent memory\n"
-                    "  /mem read                        — load agent memory into context\n"
-                    "  /mem show                        — print raw memory file\n"
-                    "  /mem clear                       — delete agent memory file\n"
-                    "  /mem shared write <text>         — write to pipeline-shared scratchpad\n"
-                    "  /mem shared read                 — read shared scratchpad\n"
-                    "  /mem shared clear                — clear shared scratchpad\n"
+                    "  /mem write|read|show|clear       — scratchpad (same as API / agents)\n"
+                    "  /mem shared write|read|clear     — tenant shared scratchpad\n"
+                    "  /mem search|entries|entry|add    — structured memory graph\n"
+                    "\n"
+                    "Tools  (same dispatch as API agent turns)\n"
+                    "  /search <query> [top=N]          — web search (Brave; needs API key)\n"
+                    "  /browse <url>                    — fetch + extract readable text\n"
+                    "  /todo list|add|start|done|…      — conversation-scoped task list\n"
+                    "  /schedule list|<phrase>: <msg>   — schedule recurring/one-shot tasks\n"
+                    "  /schedule cancel|pause|resume    — manage scheduled tasks by id\n"
+                    "  /exec <cmd>                      — shell (confirm gate; off by default)\n"
+                    "  /write <path>                    — write file (confirm gate)\n"
+                    "  /read <path> | /list             — conversation artifacts\n"
+                    "  /mcp tools|call                  — MCP server registry\n"
+                    "  /a2a list|call                   — remote A2A agents\n"
+                    "  /lesson list|add                 — agent-scoped lessons\n"
+                    "  /help <topic>                    — detailed reference for one command\n"
                     "\n"
                     "Plans\n"
                     "  /plan execute <path>             — execute a planner-produced plan file\n"
@@ -1009,11 +1017,20 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 return;
             }
 
+            {
+                std::string result = orch.execute_slash_command(line, current_agent);
+                if (!result.empty()) {
+                    output_queue.push_msg(result);
+                    return;
+                }
+            }
+
             output_queue.push_msg("Unknown command. /help for list.");
             return;
         }
 
         // Plain text → stream to current agent
+        reveal_sidebar();
         try {
             arbiter::MarkdownRenderer md;
             wire_markdown_diff_sink(md, output_queue);
@@ -1041,10 +1058,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
             pane.last_response = resp.ok ? resp.content
                                          : ("ERR: " + resp.error);
             update_pane_original_task(pane, line, resp);
-            if (resp.ok) {
-                refresh_pane_header(pane);
-                maybe_generate_title(line, resp.content);
-            } else {
+            if (!resp.ok) {
                 output_queue.push_msg(theme().accent_error + "ERR: " + resp.error + theme().reset + "");
             }
         } catch (const std::exception& e) {
@@ -1123,7 +1137,6 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 if (!p) return p;
                 p->current_agent = captured_agent;
                 p->current_model = orch.get_agent_model(captured_agent);
-                refresh_pane_header(*p);
                 pane_history_clear(*p);
                 return p;
             },
@@ -1140,6 +1153,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
         start_pane_thread(new_pane);
         new_pane.cmd_queue.push(message);
 
+        sync_layout_to_terminal();
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
         });
@@ -1202,12 +1216,8 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 pump_notified = false;
             }
             std::unique_lock<std::recursive_mutex> lk(layout_mu);
-            if (g_winch) {
-                g_winch = 0;
-                layout.resize(layout_bounds());
-                layout.for_each_pane([&](Pane& p) {
-                    pane_history_set_cols(p, p.tui.cols());
-                });
+            if (g_winch) g_winch = 0;
+            if (sync_layout_to_terminal()) {
                 g_getc_state.pane = &layout.focused();
                 ui_ctx.focused_pane = &layout.focused();
                 refresh_focused_input.store(true);
@@ -1327,6 +1337,12 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 layout.focus_next();
                 break;
             case 's':
+                if (sidebar.session_started()) {
+                    sidebar.toggle_visible();
+                    sync_layout_to_terminal();
+                }
+                break;
+            case 'h':
                 if (Pane* np = layout.split_focused(
                         LayoutTree::Orient::Horizontal, make_pane)) {
                     start_pane_thread(*np);
@@ -1351,6 +1367,7 @@ static void cmd_interactive(bool exec_allowed_flag) {
                 }
                 break;
         }
+        sync_layout_to_terminal();
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
         });
@@ -1446,7 +1463,15 @@ static void cmd_interactive(bool exec_allowed_flag) {
     pump_cv.notify_one();   // unblock the pump's wait_for so it exits promptly
     output_pump.join();
 
+    // Discard any capability-query dribble before leaving raw mode.
+    arbiter::drain_stdin_spurious(0);
+
+    g_ui_ctx = nullptr;
+    ot_session.shutdown();
+
     if (stdin_is_tty) ::tcsetattr(STDIN_FILENO, TCSANOW, &orig_stdin_tm);
+
+    arbiter::drain_stdin_spurious(50);
 
     // Merge every pane's editor history into a single disk file, dropping
     // duplicates while preserving last-seen order.
@@ -1462,9 +1487,9 @@ static void cmd_interactive(bool exec_allowed_flag) {
     }
     orch.save_session(session_path);
 
-    g_ui_ctx = nullptr;
-    ot_session.shutdown();
-    std::cout << "\n";
+    scheduler.stop();
+
+    ::write(STDOUT_FILENO, "\n", 1);
 }
 
 int main(int argc, char* argv[]) {

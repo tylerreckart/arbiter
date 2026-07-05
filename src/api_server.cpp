@@ -7395,6 +7395,57 @@ A2AInvoker make_a2a_invoker(const ApiServerOptions& opts,
 // agent can chat and delegate; tool slash commands degrade to ERR for
 // the v1.0 message/send synchronous path, and PR-3 lifts both surfaces
 // to full parity.
+void wire_orch_tools_impl(Orchestrator& orch,
+                             const ApiServerOptions& opts,
+                             TenantStore& tenants,
+                             int64_t tenant_id,
+                             int64_t conversation_id) {
+    if (!opts.memory_root.empty()) {
+        orch.set_memory_dir(opts.memory_root + "/t" + std::to_string(tenant_id));
+    }
+    orch.set_exec_disabled(opts.exec_disabled);
+    if (auto exec_inv = make_exec_invoker_callback(opts, tenant_id)) {
+        orch.set_exec_invoker(std::move(exec_inv));
+    }
+
+    orch.set_memory_scratchpad(
+        make_memory_scratchpad_callback(tenant_id, &tenants));
+    orch.set_structured_memory_reader(
+        make_structured_memory_reader_callback(
+            tenants, tenant_id, conversation_id, &orch));
+    orch.set_structured_memory_writer(
+        make_structured_memory_writer_callback(
+            tenants, tenant_id, conversation_id, &orch));
+    orch.set_mcp_invoker(make_mcp_invoker_callback(make_mcp_manager(opts,
+        [](const std::string& m) {
+            std::fprintf(stderr, "[tools] %s\n", m.c_str());
+        })));
+    if (auto search_inv = make_search_invoker_callback(opts)) {
+        orch.set_search_invoker(std::move(search_inv));
+    }
+
+    Orchestrator::RemoteRosterProvider roster_cb;
+    if (auto inv = make_a2a_invoker(opts, &roster_cb)) {
+        orch.set_a2a_invoker(std::move(inv));
+        if (roster_cb) orch.set_remote_roster_provider(std::move(roster_cb));
+    }
+    orch.set_scheduler_invoker(
+        make_scheduler_invoker_callback(tenants, tenant_id, conversation_id));
+    orch.set_todo_invoker(
+        make_todo_invoker_callback(tenants, tenant_id, conversation_id));
+    orch.set_lesson_invoker(
+        make_lesson_invoker_callback(tenants, tenant_id));
+
+    if (conversation_id > 0) {
+        orch.set_artifact_writer(
+            make_artifact_writer_callback(tenant_id, conversation_id, &tenants));
+        orch.set_artifact_reader(
+            make_artifact_reader_callback(tenant_id, conversation_id, &tenants));
+        orch.set_artifact_lister(
+            make_artifact_lister_callback(tenant_id, conversation_id, &tenants));
+    }
+}
+
 std::unique_ptr<Orchestrator>
 build_a2a_orchestrator(const ApiServerOptions& opts,
                         TenantStore& tenants, const Tenant& tenant,
@@ -7405,14 +7456,6 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
     } catch (const std::exception& e) {
         err_out = std::string("orchestrator init failed: ") + e.what();
         return nullptr;
-    }
-    if (!opts.memory_root.empty()) {
-        orch->set_memory_dir(opts.memory_root + "/t" +
-                              std::to_string(tenant.id));
-    }
-    orch->set_exec_disabled(opts.exec_disabled);
-    if (auto exec_inv = make_exec_invoker_callback(opts, tenant.id)) {
-        orch->set_exec_invoker(std::move(exec_inv));
     }
     orch->client().set_circuit_breaker(opts.circuit_breaker);
     orch->client().set_metrics(opts.metrics);
@@ -7430,47 +7473,7 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
         }
     }
 
-    // Tool-callback parity with /v1/orchestrate.  These factories are
-    // shared with handle_orchestrate so /mem read|write|search|entries,
-    // /mcp tools|call, /search, and /a2a all work identically inside an
-    // A2A turn.  Artifact callbacks (/write --persist, /read, /list) are
-    // intentionally NOT wired here because A2A's contextId is opaque
-    // and not foreign-keyed against a conversation; agents using /write
-    // see captured-but-not-persisted bytes flowing as A2A artifacts in
-    // the streaming path.  Logging during MCP registry load goes to
-    // stderr because there's no SSE error sink at orchestrator-build
-    // time.
-    orch->set_memory_scratchpad(
-        make_memory_scratchpad_callback(tenant.id, &tenants));
-    orch->set_structured_memory_reader(
-        make_structured_memory_reader_callback(
-            tenants, tenant.id, /*conversation_id=*/0, orch.get()));
-    orch->set_structured_memory_writer(
-        make_structured_memory_writer_callback(
-            tenants, tenant.id, /*conversation_id=*/0, orch.get()));
-    orch->set_mcp_invoker(make_mcp_invoker_callback(make_mcp_manager(opts,
-        [](const std::string& m) {
-            std::fprintf(stderr, "[a2a] %s\n", m.c_str());
-        })));
-    if (auto search_inv = make_search_invoker_callback(opts)) {
-        orch->set_search_invoker(std::move(search_inv));
-    }
-
-    // Wire the /a2a slash command so a server-side master agent can
-    // delegate to remote A2A agents — symmetric to the /v1/orchestrate
-    // wiring.  Auto-routing into the master's catalog is on by default
-    // (the user's locked-in PR-8 decision).
-    Orchestrator::RemoteRosterProvider roster_cb;
-    if (auto inv = make_a2a_invoker(opts, &roster_cb)) {
-        orch->set_a2a_invoker(std::move(inv));
-        if (roster_cb) orch->set_remote_roster_provider(std::move(roster_cb));
-    }
-    orch->set_scheduler_invoker(
-        make_scheduler_invoker_callback(tenants, tenant.id, /*conversation_id=*/0));
-    orch->set_todo_invoker(
-        make_todo_invoker_callback(tenants, tenant.id, /*conversation_id=*/0));
-    orch->set_lesson_invoker(
-        make_lesson_invoker_callback(tenants, tenant.id));
+    wire_orch_tools_impl(*orch, opts, tenants, tenant.id, /*conversation_id=*/0);
     return orch;
 }
 
@@ -9373,6 +9376,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 }
 
 } // namespace
+
+void wire_orchestrator_tools(Orchestrator& orch,
+                             const ApiServerOptions& opts,
+                             TenantStore& tenants,
+                             int64_t tenant_id,
+                             int64_t conversation_id) {
+    wire_orch_tools_impl(orch, opts, tenants, tenant_id, conversation_id);
+}
 
 // Public wrapper exposing the (anon-namespace) builder so other TUs —
 // notably the background Scheduler — can construct an Orchestrator with
