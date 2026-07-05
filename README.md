@@ -1,135 +1,52 @@
 # Arbiter
 
-A reasoning runtime for software, devices, and machines.
+**The agent that runs anywhere.**
 
-Arbiter turns prompts and events into supervised, stateful actions. Route
-work to specialized agents, consult durable memory, execute permitted
-tools, and observe every decision as a live stream of structured SSE.
+One small binary. Compile once and run it anywhere. laptop, server, edge box,
+CI runner, microcontroller. Feed it prompts, webhooks, and sensor events. 
+It reasons, delegates, acts, and streams every step back as structured SSE.
 
-It runs in three shapes.
+**In:** prompts · events · API calls · scheduled jobs  
+**Out:** supervised actions · artifacts · memory · a live trace of every decision
 
-- `arbiter` — interactive terminal client. Multi-pane TUI, persistent
-  per-cwd session.
-- `arbiter --api` — multi-tenant HTTP+SSE server. Ingest events and direct
-  requests via `/v1/events` and `/v1/orchestrate`. OpenAPI 3.1,
-  Agent2Agent (A2A) v1.0 compatible.
-- `arbiter --send <agent> <message>` — one-shot dispatch for scripts and
-  cron jobs.
+## Run it anywhere
+
+Same agent, three interfaces:
+
+| Where | How |
+|-------|-----|
+| Locally | `arbiter` — interactive TUI, persistent per-cwd session |
+| A script or cron job | `arbiter --send <agent> "..."` — one-shot dispatch |
+| Your stack | `arbiter --api` — HTTP+SSE server; OpenAPI 3.1, A2A v1.0 |
+| A device or robot | POST events to `/v1/events` from firmware or a bridge |
+| A webhook or queue | Route structured events to the right agent — no glue code |
+
+No runtime to install beyond the binary itself. Provider keys (OpenRouter,
+Ollama, etc.) are the only external dependency for model calls.
 
 ## What it does
 
-**Orchestrate any task.** Send a prompt from the TUI, the one-shot CLI,
-or the HTTP API. The runtime fans work out to specialist agents, consults
-durable memory, and streams the full reasoning trace back to the caller.
+**Orchestrate any task.** Send a prompt from the TUI, one-shot CLI, or HTTP
+API. The runtime fans work out to specialist agents, consults durable memory,
+and streams the full reasoning trace back to the caller.
 
-**Route events from software and hardware.** Turn webhooks, queues,
-incidents, sensors, and edge devices into supervised actions — each event
-type routed to the right agent with no custom glue code.
+**Route events from software and hardware.** Turn GitHub webhooks, incident
+feeds, sensor readings, and edge telemetry into supervised actions. Know each
+event type is routed to the right agent.
 
-**Let it act — with supervision.** Constrain the tools each agent can use
-and enforce advisor gates before consequential actions leave the runtime.
+**Act with supervision.** Constrain the tools each agent can use and enforce
+advisor gates before consequential actions leave the runtime.
 
-## Example sessions
+## Example session
 
-All examples share the same stream shape. `/v1/orchestrate` takes a
-direct prompt; `/v1/events` routes structured events from software or
-hardware sources. Either way the full reasoning trace — delegation, tool
-calls, memory, gates — streams back as SSE.
+`/v1/orchestrate` takes a direct prompt; `/v1/events` routes structured
+events from software or hardware. Either way the full trace — routing,
+delegation, tool calls, memory, gates — streams back as SSE. More examples
+in the [API docs](https://arbiter.run/docs/api).
 
-**Direct orchestration** — a research prompt dispatches parallel specialist
-agents then hands their findings to a writer:
-
-```
-POST /v1/orchestrate
-agent=index · "write a report on Neanderthal gene flow into modern humans"
-─────────────────────────────────────────────────────────────────
-event:   request_received     req_7p2n
-event:   stream_start         index · depth 1
-
-index: dispatching parallel research; writer will synthesize
-
-event:   tool_call            /parallel genomics, archaeology, population-genetics
-event:   delegate             genomics, archaeology, population-genetics
-event:   stream_start         genomics · depth 2
-event:   tool_call            /search Neanderthal introgression modern human genome
-event:   tool_output          top results: Green et al. 2010, Prüfer et al. 2014
-event:   tool_call            /fetch https://doi.org/10.1126/science.1188021
-event:   tool_output          1–4% Neanderthal ancestry in non-African populations
-
-genomics: adaptive alleles confirmed in STAT2, BNC2, OCA2
-
-event:   stream_start         archaeology · depth 2
-event:   tool_call            /search Neanderthal modern human coexistence fossil sites
-event:   tool_output          key sites: Peștera cu Oase, Bacho Kiro, Zlatý kůň
-event:   tool_call            /search Châtelperronian transition Europe 40000 BP
-event:   tool_output          coexistence window ~50–40 ka; Oase 1 ~6–9% ancestry
-
-archaeology: overlap concentrated in Europe and western Asia
-
-event:   stream_start         population-genetics · depth 2
-event:   tool_call            /search Neanderthal introgression direction asymmetry
-event:   tool_output          Vernot & Akey 2014; Sankararaman et al. 2016
-event:   tool_call            /search Neanderthal desert low-introgression regions
-event:   tool_output          purifying selection reduced introgression near coding genes
-
-population-genetics: asymmetric flow; immunity and pigmentation pathways retained
-
-event:   join                 genomics, archaeology, population-genetics · ordered merge
-event:   tool_call            /agent writer
-event:   stream_start         writer · depth 2
-
-writer: composing report from research findings
-
-event:   tool_call            /write neanderthal-gene-flow.md
-event:   gate                 verdict: continue ✓
-
-writer: report complete — 1,840 words
-
-event:   artifact             neanderthal-gene-flow.md · 1,840 words
-event:   gate                 final review
-event:   gate                 verdict: continue ✓
-event:   done                 ok=true · 28.4s · $0.038
-```
-
-**Software event** — a GitHub PR webhook routes to a code review agent.
-It fetches the diff, checks it against conventions stored in memory, and
-produces a review artifact:
-
-```
-POST /v1/events · source=github/acme/api
-type=github.pull_request.opened · pr=481 · author=jsmith
-─────────────────────────────────────────────────────────────────
-event:   event_received       evt_5r8q · authenticated service
-event:   route_match          github.pull_request.* → reviewer
-event:   stream_start         reviewer · depth 1
-
-reviewer: fetching diff and checking against team conventions
-
-event:   tool_call            /fetch https://github.com/acme/api/pull/481.diff
-event:   tool_output          +312 −47 · 6 files · auth middleware, session handling
-event:   tool_call            /mem read acme/api review conventions
-event:   tool_output          require tests for auth changes · no direct session mutation
-event:   tool_call            /search OWASP session fixation
-event:   tool_output          session ID must be rotated on privilege change
-
-reviewer: session ID not rotated after login — flags against convention and OWASP guidance
-
-event:   tool_call            /write review-pr-481.md
-event:   gate                 verdict: continue ✓
-event:   tool_call            /mem write pr-481 review summary
-event:   tool_output          memory mem_7c3k saved
-
-reviewer: review complete — 1 blocking finding, 2 suggestions
-
-event:   artifact             review-pr-481.md
-event:   gate                 final review
-event:   gate                 verdict: continue ✓
-event:   done                 ok=true · 4.2s · action recorded
-```
-
-**Hardware event** — a temperature threshold breach on an edge device
-routes to the facilities agent, which delegates parallel diagnostics and
-operations sub-agents:
+**Hardware event** — a temperature threshold on an edge device routes to a
+facilities agent, which delegates parallel diagnostics and operations
+sub-agents:
 
 ```
 POST /v1/events · source=edge/rack-04
@@ -168,38 +85,10 @@ event:   gate                 verdict: continue ✓
 event:   done                 ok=true · 6.8s · action recorded
 ```
 
-Every step is visible on the wire: routing, delegation, tool calls, memory
-reads, gate verdicts, and the final outcome. Nothing happens off-stream.
-
-Arbiter is experimental. The event surface, agent constitutions, and HTTP
-shape are subject to change. `/exec` is unsandboxed; treat it accordingly.
-
-
-## Documentation
-
-- [`docs/getting-started`](https://arbiter.run/docs/getting-started/local) — quickstart paths — quickstart paths
-  to first agent reply.
-- [`docs/philosophy`](https://arbiter.run/docs/philosophy) — design philosophy: the six
-  themes that explain why arbiter is shaped the way it is.
-- [`docs/api/`](https://arbiter.run/docs/api) — full HTTP API reference: concept
-  pages (tenants, auth, SSE events, fleet streaming, MCP, A2A protocol,
-  artifacts, structured memory, operations) and one page per endpoint.
-- [`docs/cli/`](https://arbiter.run/docs/cli) — non-interactive command-line
-  reference: `--init`, `--send`, `--api`, tenant admin, environment
-  variables.
-- [`docs/tui/`](https://arbiter.run/docs/tui) — interactive terminal client:
-  screen anatomy, slash commands, keybindings, multi-pane layouts,
-  streaming and turn lifecycle, session persistence.
-- [`CHANGELOG.md`](CHANGELOG.md) — what changed, when. Breaking
-  changes are flagged.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, tests, PR conventions.
-- [`SECURITY.md`](SECURITY.md) — disclosure path for security
-  vulnerabilities and operator hardening notes.
-
+Nothing happens off-stream.
 
 ## Quick start
 
-Bare minimum for a local install:
 ```bash
 # Install (macOS arm64)
 curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
@@ -212,13 +101,31 @@ export OPENROUTER_API_KEY="sk-or-..."
 arbiter --init   # seed ~/.arbiter/ with starter agents
 arbiter          # launch the terminal client
 ```
-Linux binary, source builds, OpenRouter/Ollama setup, the API server, and one-shot mode are all in [getting-started/local](docs/getting-started/local.md).
 
+Linux binary, source builds, OpenRouter/Ollama setup, the API server, and
+one-shot mode are in [getting-started/local](docs/getting-started/local.md).
 
-## Examples
+## Documentation
 
-**[Newton](https://github.com/tylerreckart/newton)** — SwiftUI iOS app that wraps the arbiter HTTP+SSE API as a reference client. Points at any `arbiter --api` instance and demonstrates how to drive the runtime end-to-end from a mobile frontend: bearer-token auth, streaming responses parsed event-by-event, conversation persistence against `/v1/conversations`, and rendering the tool-call surface as inline UI. Useful as a starting point if you're building your own frontend on top of arbiter.
+- [`docs/getting-started`](https://arbiter.run/docs/getting-started/local) —
+  quickstart paths to first agent reply.
+- [`docs/philosophy`](https://arbiter.run/docs/philosophy) — design
+  philosophy: the six themes that explain why arbiter is shaped the way it is.
+- [`docs/api/`](https://arbiter.run/docs/api) — full HTTP API reference:
+  tenants, auth, SSE events, fleet streaming, MCP, A2A, artifacts, memory,
+  operations, and one page per endpoint.
+- [`docs/cli/`](https://arbiter.run/docs/cli) — non-interactive command-line
+  reference: `--init`, `--send`, `--api`, tenant admin, environment variables.
+- [`docs/tui/`](https://arbiter.run/docs/tui) — interactive terminal client:
+  screen anatomy, slash commands, keybindings, multi-pane layouts, streaming
+  and turn lifecycle, session persistence.
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed, when. Breaking changes are
+  flagged.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, tests, PR conventions.
+- [`SECURITY.md`](SECURITY.md) — disclosure path for security
+  vulnerabilities and operator hardening notes.
 
-**[3bo](examples/3bo/)** — small stationary robot that uses arbiter as its reasoning layer. An Arduino Nano ESP32 handles the physical interface: I2S microphone capture, wake-word detection, LED states, and speaker playback. A Jetson Orin Nano runs whisper.cpp for STT, Piper for TTS, and arbiter for reasoning. The firmware holds only a per-device bridge secret; cloud provider keys and arbiter tokens never leave the Jetson. A reference build for connecting hardware to arbiter over a local voice bridge.
+Arbiter is experimental. The event surface, agent constitutions, and HTTP
+shape are subject to change. `/exec` is unsandboxed; treat it accordingly.
 
 Licensed under the [Apache License 2.0](LICENSE).
