@@ -1,5 +1,6 @@
 #include "tui/opentui/pane_scroll_view.h"
 
+#include "code_highlighter.h"
 #include "markdown.h"
 #include "tui/style_resolver.h"
 #include "tui/tui_design.h"
@@ -14,6 +15,58 @@ namespace arbiter::opentui {
 namespace {
 
 constexpr std::uint8_t kWrapWord = 2;
+
+int cell_width(std::string_view s) {
+    int w = 0;
+    for (unsigned char c : s) {
+        if ((c & 0xC0) != 0x80) ++w;
+    }
+    return w;
+}
+
+std::string trim_to_cells(std::string s, int max_cells) {
+    if (max_cells <= 0) return {};
+    while (!s.empty() && cell_width(s) > max_cells) {
+        s.pop_back();
+        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
+            s.pop_back();
+        }
+    }
+    return s;
+}
+
+void fill_rect(OpenTuiHandle frame,
+               int x,
+               int y,
+               int w,
+               int h,
+               const TuiRgba& bg) {
+    if (w <= 0 || h <= 0) return;
+    bufferFillRect(frame,
+                   static_cast<std::uint32_t>(x),
+                   static_cast<std::uint32_t>(y),
+                   static_cast<std::uint32_t>(w),
+                   static_cast<std::uint32_t>(h),
+                   bg.data());
+}
+
+void draw_text(OpenTuiHandle frame,
+               int x,
+               int y,
+               std::string_view text,
+               const TuiRgba& fg,
+               const TuiRgba& bg,
+               std::uint32_t attrs = 0) {
+    if (text.empty()) return;
+    bufferDrawText(frame,
+                   text.data(),
+                   static_cast<std::uint32_t>(text.size()),
+                   static_cast<std::uint32_t>(x),
+                   static_cast<std::uint32_t>(y),
+                   fg.data(),
+                   bg.data(),
+                   attrs);
+}
 
 } // namespace
 
@@ -41,12 +94,22 @@ PaneScrollView::ProseSegment::~ProseSegment() {
 void PaneScrollView::ProseSegment::append(const std::vector<StyledLine>& lines) {
     if (!span_append_) return;
     for (const StyledLine& line : lines) {
+        source_.push_back(line);
         span_append_->append_line(line);
     }
 }
 
 void PaneScrollView::ProseSegment::clear() {
+    source_.clear();
     if (span_append_) span_append_->clear();
+}
+
+void PaneScrollView::ProseSegment::retheme() {
+    if (!span_append_) return;
+    span_append_->clear();
+    for (const StyledLine& line : source_) {
+        span_append_->append_line(line);
+    }
 }
 
 bool PaneScrollView::ProseSegment::is_empty() const {
@@ -108,11 +171,19 @@ PaneScrollView::TextSegment::~TextSegment() {
 
 void PaneScrollView::TextSegment::append(std::string_view text) {
     if (text.empty() || !styled_append_) return;
+    source_.append(text.data(), text.size());
     styled_append_->append(text);
 }
 
 void PaneScrollView::TextSegment::clear() {
+    source_.clear();
     if (styled_append_) styled_append_->clear();
+}
+
+void PaneScrollView::TextSegment::retheme() {
+    if (!styled_append_ || source_.empty()) return;
+    styled_append_->clear();
+    styled_append_->append(source_);
 }
 
 bool PaneScrollView::TextSegment::is_empty() const {
@@ -151,89 +222,205 @@ void PaneScrollView::TextSegment::draw(OpenTuiHandle frame,
                              static_cast<std::uint32_t>(y));
 }
 
-// --- CodeSegment (draw-time collapsed code blocks) ---------------------------
+// --- CodeSegment (panel-style fenced code blocks) ------------------------------
 
-void PaneScrollView::CodeSegment::open(std::string open_fence, size_t preview_rows) {
-    open_fence_ = std::move(open_fence);
+void PaneScrollView::CodeSegment::open(std::string lang, size_t preview_rows) {
+    lang_ = normalize_code_lang(lang);
     preview_rows_ = preview_rows;
     lines_.clear();
+    highlighted_.clear();
     close_fence_.clear();
     closed_ = false;
+    expanded_ = false;
     cached_rows_ = -1;
 }
 
 void PaneScrollView::CodeSegment::append_line(std::string line) {
     lines_.push_back(std::move(line));
+    highlighted_.push_back(highlight_code_line(lang_, lines_.back()));
     cached_rows_ = -1;
 }
 
 void PaneScrollView::CodeSegment::close(std::string close_fence) {
     close_fence_ = std::move(close_fence);
     closed_ = true;
+    highlighted_ = highlight_code_block(lang_, lines_);
     cached_rows_ = -1;
 }
 
 size_t PaneScrollView::CodeSegment::visible_body_count() const {
-    if (preview_rows_ == 0) return lines_.size();
+    if (expanded_ || preview_rows_ == 0) return lines_.size();
     return std::min(lines_.size(), preview_rows_);
+}
+
+void PaneScrollView::CodeSegment::toggle_expanded() {
+    if (!is_truncated() && !expanded_) return;
+    expanded_ = !expanded_;
+    cached_rows_ = -1;
+}
+
+void PaneScrollView::CodeSegment::rehighlight() {
+    highlighted_.clear();
+    for (const auto& line : lines_) {
+        highlighted_.push_back(highlight_code_line(lang_, line));
+    }
+    cached_rows_ = -1;
+}
+
+int PaneScrollView::CodeSegment::gutter_width() const {
+    const std::uint32_t max_line = static_cast<std::uint32_t>(
+        std::max<std::size_t>(lines_.size(), 1));
+    std::uint32_t digits = 1;
+    std::uint32_t n = max_line;
+    while (n >= 10) {
+        n /= 10;
+        ++digits;
+    }
+    return static_cast<int>(digits) + 2;
 }
 
 int PaneScrollView::CodeSegment::visual_rows(int /*content_w*/) const {
     if (cached_rows_ >= 0) return cached_rows_;
     int rows = 1;
     rows += static_cast<int>(visible_body_count());
-    if (preview_rows_ > 0 && lines_.size() > preview_rows_) rows += 1;
-    if (closed_ && !close_fence_.empty()) rows += 1;
+    if (!expanded_ && preview_rows_ > 0 && lines_.size() > preview_rows_) rows += 1;
     cached_rows_ = rows;
     return rows;
 }
 
 void PaneScrollView::CodeSegment::set_wrap_cols(int /*cols*/) {
     cached_rows_ = -1;
-    cached_width_ = -1;
 }
 
 void PaneScrollView::CodeSegment::draw(OpenTuiHandle frame,
                                        int x,
                                        int y,
                                        int w,
-                                       int /*h*/,
+                                       int h,
                                        int skip_rows) const {
-    if (w <= 0) return;
+    if (w <= 0 || h <= 0) return;
 
-    auto draw_text_row = [&](const std::string& text, StyleId id, int& screen_row) {
+    const TuiDesign& d = tui_design();
+    const int gutter = gutter_width();
+    const int content_x = x + gutter;
+    const int content_w = std::max(1, w - gutter);
+
+    auto draw_plain_row = [&](const std::string& text,
+                              const TuiRgba& fg,
+                              const TuiRgba& bg,
+                              int& screen_row) -> bool {
         if (screen_row < skip_rows) {
             ++screen_row;
-            return;
+            return true;
         }
-        const ResolvedStyle rs = resolve_style(id);
-        bufferDrawText(frame,
-                       text.data(),
-                       static_cast<std::uint32_t>(text.size()),
-                       static_cast<std::uint32_t>(x),
-                       static_cast<std::uint32_t>(y + (screen_row - skip_rows)),
-                       rs.fg ? rs.fg->data() : nullptr,
-                       nullptr,
-                       rs.attrs);
+        const int drawn = screen_row - skip_rows;
+        if (drawn >= h) return false;
+
+        fill_rect(frame, x, y + drawn, w, 1, bg);
+        draw_text(frame, content_x, y + drawn, trim_to_cells(text, content_w), fg, bg);
         ++screen_row;
+        return true;
+    };
+
+    auto draw_styled_row = [&](const StyledLine& line,
+                               std::uint32_t line_num,
+                               const TuiRgba& bg,
+                               int& screen_row) -> bool {
+        if (screen_row < skip_rows) {
+            ++screen_row;
+            return true;
+        }
+        const int drawn = screen_row - skip_rows;
+        if (drawn >= h) return false;
+
+        fill_rect(frame, x, y + drawn, w, 1, bg);
+
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%*u ",
+                      gutter - 2,
+                      line_num);
+        draw_text(frame, x + 1, y + drawn, buf, d.text.muted, bg);
+
+        int col = 0;
+        const auto fg_for = [&](StyleId id) -> const TuiRgba& {
+            if (id == StyleId::Code) return d.text.primary;
+            const ResolvedStyle rs = resolve_style(id);
+            return rs.fg ? *rs.fg : d.text.primary;
+        };
+        const auto attrs_for = [&](StyleId id) -> std::uint32_t {
+            const ResolvedStyle rs = resolve_style(id);
+            return rs.attrs;
+        };
+
+        const auto emit_span = [&](std::size_t begin, std::size_t end, StyleId id) {
+            if (begin >= line.text.size() || end <= begin) return;
+            const std::size_t end_clamped = std::min(end, line.text.size());
+            const std::string chunk = trim_to_cells(line.text.substr(begin, end_clamped - begin),
+                                                    content_w - col);
+            if (chunk.empty()) return;
+            draw_text(frame,
+                      content_x + col,
+                      y + drawn,
+                      chunk,
+                      fg_for(id),
+                      bg,
+                      attrs_for(id));
+            col += cell_width(chunk);
+        };
+
+        if (line.spans.empty()) {
+            emit_span(0, line.text.size(), StyleId::Code);
+        } else {
+            std::size_t cursor = 0;
+            for (const StyleSpan& span : line.spans) {
+                if (span.begin > line.text.size()) break;
+                if (span.begin > cursor) {
+                    emit_span(cursor, span.begin, StyleId::Code);
+                }
+                const std::size_t end = std::min(static_cast<std::size_t>(span.end), line.text.size());
+                if (end > span.begin) emit_span(span.begin, end, span.id);
+                cursor = end;
+            }
+            if (cursor < line.text.size()) emit_span(cursor, line.text.size(), StyleId::Code);
+        }
+
+        ++screen_row;
+        return true;
     };
 
     int row = 0;
-    draw_text_row(open_fence_, StyleId::Dim, row);
+
+    if (row >= skip_rows) {
+        const int drawn = row - skip_rows;
+        if (drawn < h) {
+            fill_rect(frame, x, y + drawn, w, 1, d.bg.header);
+            const std::string title = lang_.empty() ? "code" : lang_;
+            draw_text(frame,
+                      x + 1,
+                      y + drawn,
+                      title,
+                      d.text.primary,
+                      d.bg.header);
+        }
+    }
+    ++row;
+    if (row - skip_rows >= h) return;
 
     const size_t show = visible_body_count();
     for (size_t i = 0; i < show; ++i) {
-        draw_text_row(lines_[i], StyleId::Code, row);
+        if (i >= highlighted_.size()) continue;
+        if (!draw_styled_row(highlighted_[i],
+                             static_cast<std::uint32_t>(i + 1),
+                             d.bg.scroll,
+                             row)) {
+            return;
+        }
     }
 
-    if (preview_rows_ > 0 && lines_.size() > preview_rows_) {
+    if (!expanded_ && preview_rows_ > 0 && lines_.size() > preview_rows_) {
         const std::string summary =
-            "  … (code block, " + std::to_string(lines_.size()) + "+ lines) …";
-        draw_text_row(summary, StyleId::Dim, row);
-    }
-
-    if (closed_ && !close_fence_.empty()) {
-        draw_text_row(close_fence_, StyleId::Dim, row);
+            "… (" + std::to_string(lines_.size()) + " lines, ^O expand) …";
+        if (!draw_plain_row(summary, d.text.muted, d.bg.panel, row)) return;
     }
 }
 
@@ -411,6 +598,7 @@ void PaneScrollView::append_prose(const std::vector<StyledLine>& lines, bool new
 }
 
 void PaneScrollView::append_code_open(std::string_view open_fence,
+                                      std::string_view lang,
                                       size_t preview_rows,
                                       bool new_block) {
     if (open_fence.empty()) return;
@@ -418,7 +606,7 @@ void PaneScrollView::append_code_open(std::string_view open_fence,
         start_block();
     }
     auto& code = current_code();
-    code.open(std::string(open_fence), preview_rows);
+    code.open(std::string(lang), preview_rows);
 }
 
 void PaneScrollView::append_code_line(std::string_view line) {
@@ -460,6 +648,47 @@ void PaneScrollView::append_diff(std::string_view patch) {
 void PaneScrollView::clear() {
     segments_.clear();
     segments_.push_back(std::make_unique<ProseSegment>());
+}
+
+void PaneScrollView::retheme() {
+    for (auto& seg : segments_) {
+        if (auto* prose = dynamic_cast<ProseSegment*>(seg.get())) {
+            prose->retheme();
+        } else if (auto* text = dynamic_cast<TextSegment*>(seg.get())) {
+            text->retheme();
+        } else if (auto* code = dynamic_cast<CodeSegment*>(seg.get())) {
+            code->rehighlight();
+        }
+    }
+}
+
+bool PaneScrollView::toggle_code_block_in_view(int scroll_offset) {
+    const int total = total_visual_rows();
+    int first_visible = 0;
+    if (total > viewport_h_) {
+        first_visible = total - viewport_h_ - scroll_offset;
+        if (first_visible < 0) first_visible = 0;
+    }
+    const int last_visible = first_visible + viewport_h_;
+
+    CodeSegment* target = nullptr;
+    int row = 0;
+    for (const auto& seg : segments_) {
+        const int h = seg->visual_rows(wrap_cols_);
+        const int seg_end = row + h;
+        if (seg_end > first_visible && row < last_visible) {
+            if (auto* code = dynamic_cast<CodeSegment*>(seg.get())) {
+                if (code->is_truncated() || code->expanded_) {
+                    target = code;
+                    break;
+                }
+            }
+        }
+        row = seg_end;
+    }
+    if (!target) return false;
+    target->toggle_expanded();
+    return true;
 }
 
 int PaneScrollView::total_visual_rows() const {

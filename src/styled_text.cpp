@@ -77,6 +77,12 @@ std::string style_open(StyleId id) {
     case StyleId::Error:     return t.accent_error;
     case StyleId::Warning:   return t.accent_warning;
     case StyleId::Info:      return t.accent_info;
+    case StyleId::CodeKeyword:  return t.md_code_keyword;
+    case StyleId::CodeString:   return t.md_code_string;
+    case StyleId::CodeComment:  return t.dim + t.md_code_comment;
+    case StyleId::CodeNumber:   return t.md_code_number;
+    case StyleId::CodeType:     return t.md_code_type;
+    case StyleId::CodeFunction: return t.md_code_function;
     }
     return {};
 }

@@ -32,6 +32,12 @@ enum class StyleId : std::uint8_t {
     Error,
     Warning,
     Info,
+    CodeKeyword,
+    CodeString,
+    CodeComment,
+    CodeNumber,
+    CodeType,
+    CodeFunction,
 };
 
 struct StyleSpan {

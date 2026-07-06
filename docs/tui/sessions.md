@@ -1,54 +1,57 @@
 # Sessions
 
-A session captures the *agents' memory of the conversation* — every message exchanged, the active model per agent, per-pane scratchpad pointers. Restoring a session means the agent picks up the conversation where it left off; the **rendered scrollback** (what you saw painted on screen) is not preserved.
+A session captures the *agents' memory of the conversation* — every message exchanged. Restoring a session means the agent picks up the conversation where it left off; the **rendered scrollback** (what you saw painted on screen) is not preserved.
+
+## Global conversations
+
+The TUI stores **multiple conversations globally** (not per working directory). Each conversation has its own agent message histories and title. Use the left-hand **conversation sidebar** (`Ctrl-w b`) to switch threads or start a new one.
+
+Storage layout:
+
+```
+~/.arbiter/conversations/
+  manifest.json     # [{id, title, cwd, created_at, updated_at}]
+  active            # UUID of the last-open conversation
+  <uuid>.json       # agent histories (index + loaded agents)
+```
+
+On first launch after upgrading, legacy per-cwd session files under `~/.arbiter/sessions/*.json` are imported into the global store automatically. Legacy files are left in place; new saves go only to `conversations/`.
 
 ## When sessions save and load
 
 | Event             | What happens                                                       |
 |-------------------|--------------------------------------------------------------------|
-| `arbiter` startup | The session for the current cwd is loaded if one exists. Conversation histories are restored to each agent before the first prompt. |
-| `/quit` / Ctrl-D  | The current state is written to disk. Pane layout is **not** saved (always single-pane on next start). |
+| `arbiter` startup | The last active conversation is loaded. Agent histories are restored before the first prompt. |
+| Switch conversation (`Ctrl-w b` → Enter) | Current conversation is saved; selected thread is loaded. UI collapses to a single pane with cleared scrollback. |
+| `/quit` / Ctrl-D  | The active conversation is written to disk. Pane layout is **not** saved. |
 | `/reset [agent]`  | Clears the named (or focused) agent's history in memory only. The next save snapshots the new state. |
 
-Saves are not incremental — `/quit` writes the full snapshot. A hard kill (`SIGKILL`, terminal close, power loss) loses any history accumulated since the last save.
+Saves are not incremental — `/quit` and conversation switches write the full snapshot. A hard kill (`SIGKILL`, terminal close, power loss) loses any history accumulated since the last save.
 
-## Per-cwd scoping
+## What's in a conversation file
 
-Session files are keyed by the current working directory's hash:
+Each `<uuid>.json` is a snapshot of the orchestrator's agent histories:
 
-```
-~/.arbiter/sessions/<cwd-hash>.json
-```
+- **Index master history** — messages for the default `index` agent.
+- **Loaded agent histories** — any sub-agents that had non-empty history when saved.
 
-`cwd` here is the directory you launched arbiter from. The same agents in two different project directories see two completely separate conversation histories — switch into `~/projects/foo` and the `index` agent has zero memory of yesterday's `~/projects/bar` session.
+Per-agent scratchpads (`/mem write`) live in `~/.arbiter/memory/<agent>/notes.md` independent of any conversation — they survive across conversation switches.
 
-This scoping is the right default for multi-project work: each project gets its own pristine context, and you don't have to manage explicit "session names." If you want a single shared session across projects, launch arbiter from the same directory each time (e.g. `~`).
-
-## What's in a session file
-
-Each `<cwd-hash>.json` is a snapshot of the orchestrator's state:
-
-- **Per-agent conversation history** — the full message list (user, assistant, tool result roles) the agent will see in its next turn's context.
-- **Per-agent model override** — anything `/model <agent> <model-id>` set, so the next launch keeps the same model choice.
-- **Per-agent token / cost ledger** — running totals for `/tokens` and the header status.
-- **The shared scratchpad** — what `/mem shared` wrote during the session.
-- **Session title** — auto-generated from the first message (visible in the header).
-
-Per-agent scratchpads (`/mem write`) live in `~/.arbiter/memory/<agent>/notes.md` independent of any session — they're not in the session file, and they survive across cwd changes.
+Conversation **titles** are auto-generated from the first exchange (visible in the header and sidebar). Titles are stored in `manifest.json`.
 
 ## What's not persisted
 
-- **Pane layout.** Always single-pane on restart. If you had a 4-pane layout, you start over.
-- **Scrollback.** The painted history is gone. Type a follow-up and the agent answers in context, but you can't PgUp to yesterday's session.
-- **In-flight turns.** A turn streaming when you `/quit` is dropped — the partial response isn't in the saved history.
-- **Background loops.** `/loop`-spawned processes are killed on exit. Restarting doesn't bring them back; you re-issue the loop commands.
+- **Pane layout.** Switching conversations or restarting always collapses to a single pane.
+- **Scrollback.** The painted history is gone. Type a follow-up and the agent answers in context, but you can't PgUp to prior scrollback.
+- **In-flight turns.** A turn streaming when you quit or switch is dropped — the partial response isn't in the saved history.
+- **Background loops.** `/loop`-spawned processes are killed on exit.
 - **Queue depth.** Any queued user inputs are dropped on exit.
 
 ## Cleaning up
 
-Delete `~/.arbiter/sessions/<cwd-hash>.json` to start fresh from a directory. There's no UI for this in the TUI — `/reset` only clears history in memory and the next save overwrites the file.
+Use the sidebar to start fresh (`+ New conversation`) or delete individual files under `~/.arbiter/conversations/`. `/reset` only clears history in memory for the active conversation.
 
-To purge everything: `rm -rf ~/.arbiter/sessions/`.
+To purge everything: `rm -rf ~/.arbiter/conversations/`.
 
 ## Context Length
 
@@ -60,9 +63,9 @@ clear that agent's history.
 
 ## Sessions vs the structured memory graph
 
-The session file is per-conversation continuity. The **structured memory graph** (HTTP API only — `POST /v1/memory/entries`, FTS-ranked search, typed nodes + relations, temporal validity windows) is per-tenant durable knowledge. Two different tools:
+The conversation file is per-thread continuity. The **structured memory graph** (HTTP API only — `POST /v1/memory/entries`, FTS-ranked search, typed nodes + relations, temporal validity windows) is per-tenant durable knowledge. Two different tools:
 
-- Session: "what did we just talk about, in this directory" — restored automatically.
+- Conversation: "what did we just talk about in this thread" — restored when you switch back.
 - Memory graph: "what facts has the agent recorded over time" — queried explicitly via `/v1/memory/entries?q=…`.
 
 The TUI's `/mem write` writes to the per-agent scratchpad (a flat file), not the memory graph. The graph is the API surface for richer retrieval; see [`docs/concepts/structured-memory.md`](../concepts/structured-memory.md).

@@ -178,12 +178,9 @@ void MarkdownRenderer::set_code_sink(CodeOpenFn on_open,
     code_close_ = std::move(on_close);
 }
 
-static std::string fence_lang(std::string_view view) {
-    std::string lang(view.substr(3));
-    while (!lang.empty() && (lang.back() == ' ' || lang.back() == '\t' || lang.back() == '\r')) {
-        lang.pop_back();
-    }
-    return lang;
+static std::string fence_lang(std::string_view tag) {
+    tag = tag.substr(0, tag.find_first_of(" \t\r"));
+    return std::string(tag);
 }
 
 void MarkdownRenderer::finish_code_close(const std::string& close_fence,

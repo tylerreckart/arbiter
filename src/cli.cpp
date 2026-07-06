@@ -187,8 +187,22 @@ void cmd_init(bool force) {
             tf << "{\n  \"preset\": \"" << arbiter::kDefaultTuiPreset << "\"\n}\n";
             std::cout << "\nWrote " << tui_path << " (preset: "
                       << arbiter::kDefaultTuiPreset << ")\n";
-            std::cout << "  Other presets: onedark, modern, nord, dracula, "
-                         "solarized, light, dense\n";
+            std::cout << "  Customize: arbiter --export-theme onedark > "
+                      << dir << "/themes/mine.json\n";
+            std::cout << "  Then set \"theme_file\": \"themes/mine.json\" in tui.json\n";
+        }
+    }
+
+    const std::string themes_dir = arbiter::tui_themes_dir(dir);
+    fs::create_directories(themes_dir);
+    arbiter::tui_install_bundled_themes(dir, force);
+    const std::string example_path = themes_dir + "/example.json";
+    if (!fs::exists(example_path)) {
+        if (arbiter::tui_write_theme_file(
+                example_path,
+                arbiter::tui_design_for_preset(arbiter::kDefaultTuiPreset),
+                "")) {
+            std::cout << "Wrote " << example_path << " (editable theme starter)\n";
         }
     }
 }

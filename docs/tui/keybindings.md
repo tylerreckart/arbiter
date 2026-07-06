@@ -27,6 +27,7 @@ Arbiter ships its own line editor. Bindings below are the complete set the edito
 |-----------|------------------------------------------------------------------------------|
 | `PgUp`    | Scroll the focused pane's scroll region up by ~half a screen.                |
 | `PgDn`    | Scroll back down. At the live tail, PgDn is a no-op.                         |
+| `^O`      | Expand or collapse the truncated code block visible in the scroll region.      |
 
 Scrollback is **visual-row aware**: a wrapped paragraph counts as multiple rows for navigation, matching what the terminal actually drew. The scrollback ring is bounded (default 20k logical lines) — older content is evicted when the buffer fills.
 
@@ -47,5 +48,17 @@ Scrollback is **visual-row aware**: a wrapped paragraph counts as multiple rows 
 | `^W s`       | Toggle the session sidebar (wide terminals only).                            |
 | `^W w` / `^W ^W` | Cycle focus to the next pane (pre-order traversal of the layout tree).   |
 | `^W c`       | Close the focused pane. Its exec thread is joined; in-flight turn is cancelled. Last remaining pane cannot be closed. |
+| `^W t`       | Toggle the conversation-history sidebar (left rail). Preference is saved to `~/.arbiter/tui.json`. |
+| `^W b`       | Enter the conversation sidebar for selection. Auto-shows the sidebar if hidden. Use `↑`/`↓` and `Enter`; `Esc` cancels. |
 
 If the chord byte doesn't match any of the above, it's silently dropped — the editor returns to the normal input state. `^W` followed by a regular character does *not* fall through to insertion; the chord window always consumes its byte.
+
+## Conversation sidebar (when focused via `^W b`)
+
+| Key       | Action                                                                       |
+|-----------|------------------------------------------------------------------------------|
+| `↑` / `↓` | Move selection (`+ New conversation` at top, then prior threads newest-first). |
+| `Enter`   | Switch to the selected conversation or start a new one. Scrollback clears; agent histories load from disk. |
+| `Esc`     | Cancel and return focus to the pane input.                                   |
+
+The sidebar requires at least 72 terminal columns when enabled. Below that width it auto-hides even if toggled on.

@@ -34,11 +34,20 @@ public:
 
     void append(std::string_view text, bool new_block = false);
     void append_prose(const std::vector<StyledLine>& lines, bool new_block = false);
-    void append_code_open(std::string_view open_fence, size_t preview_rows, bool new_block = false);
+    void append_code_open(std::string_view open_fence,
+                          std::string_view lang,
+                          size_t preview_rows,
+                          bool new_block = false);
     void append_code_line(std::string_view line);
     void append_code_close(std::string_view close_fence);
     void append_diff(std::string_view patch);
     void clear();
+
+    // Re-resolve scrollback colors after a TUI preset change.
+    void retheme();
+
+    // Toggle expand/collapse on a truncated code block in the current viewport.
+    bool toggle_code_block_in_view(int scroll_offset);
 
     [[nodiscard]] int total_visual_rows() const;
     [[nodiscard]] int max_scroll_offset() const;
@@ -67,6 +76,7 @@ private:
         OpenTuiHandle buffer_{0};
         OpenTuiHandle view_{0};
         std::unique_ptr<SpanScrollAppender> span_append_;
+        std::vector<StyledLine> source_;
         int wrap_cols_{80};
 
         ProseSegment();
@@ -76,6 +86,7 @@ private:
 
         void append(const std::vector<StyledLine>& lines);
         void clear();
+        void retheme();
         [[nodiscard]] bool is_empty() const;
 
         [[nodiscard]] int visual_rows(int content_w) const override;
@@ -92,6 +103,7 @@ private:
         OpenTuiHandle buffer_{0};
         OpenTuiHandle view_{0};
         std::unique_ptr<AnsiScrollAppender> styled_append_;
+        std::string source_;
         int wrap_cols_{80};
 
         TextSegment();
@@ -101,6 +113,7 @@ private:
 
         void append(std::string_view text);
         void clear();
+        void retheme();
         [[nodiscard]] bool is_empty() const;
 
         [[nodiscard]] int visual_rows(int content_w) const override;
@@ -125,22 +138,28 @@ private:
     };
 
     struct CodeSegment final : Segment {
-        std::string open_fence_;
+        std::string lang_;
         std::string close_fence_;
         std::vector<std::string> lines_;
+        std::vector<StyledLine> highlighted_;
         bool closed_ = false;
+        bool expanded_ = false;
         size_t preview_rows_ = 8;
         mutable int cached_rows_{-1};
-        mutable int cached_width_{-1};
 
-        void open(std::string open_fence, size_t preview_rows);
+        void open(std::string lang, size_t preview_rows);
         void append_line(std::string line);
         void close(std::string close_fence);
+        void toggle_expanded();
+        void rehighlight();
 
-        [[nodiscard]] bool has_content() const {
-            return !open_fence_.empty() || !lines_.empty();
+        [[nodiscard]] bool is_truncated() const {
+            return preview_rows_ > 0 && lines_.size() > preview_rows_;
         }
+
+        [[nodiscard]] bool has_content() const { return !lines_.empty() || !lang_.empty(); }
         [[nodiscard]] size_t visible_body_count() const;
+        [[nodiscard]] int gutter_width() const;
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
         void draw(OpenTuiHandle frame,

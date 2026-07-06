@@ -16,14 +16,18 @@ ResolvedStyle resolve_style(StyleId id) {
     ResolvedStyle rs;
     switch (id) {
     case StyleId::Default:
+        rs.fg = &d.text.primary;
         break;
     case StyleId::Dim:
+        rs.fg = &d.content.text_dim;
         rs.attrs = kAttrDim;
         break;
     case StyleId::Bold:
+        rs.fg = &d.text.primary;
         rs.attrs = kAttrBold;
         break;
     case StyleId::Italic:
+        rs.fg = &d.text.primary;
         rs.attrs = kAttrItalic;
         break;
     case StyleId::Heading1:
@@ -89,6 +93,25 @@ ResolvedStyle resolve_style(StyleId id) {
         break;
     case StyleId::Info:
         rs.fg = &d.content.info;
+        break;
+    case StyleId::CodeKeyword:
+        rs.fg = &d.content.code_keyword;
+        break;
+    case StyleId::CodeString:
+        rs.fg = &d.content.code_string;
+        break;
+    case StyleId::CodeComment:
+        rs.fg = &d.content.code_comment;
+        rs.attrs = kAttrDim;
+        break;
+    case StyleId::CodeNumber:
+        rs.fg = &d.content.code_number;
+        break;
+    case StyleId::CodeType:
+        rs.fg = &d.content.code_type;
+        break;
+    case StyleId::CodeFunction:
+        rs.fg = &d.content.code_function;
         break;
     }
     return rs;

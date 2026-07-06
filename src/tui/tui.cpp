@@ -14,16 +14,61 @@ namespace arbiter {
 void TUI::init(const std::string& /*agent*/,
                const std::string& /*model*/,
                const std::string& /*color*/) {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     rect_ = Rect{0, 0, term_cols(), term_rows()};
 }
 
 void TUI::set_rect(const Rect& r) {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     rect_ = r;
 }
 
 void TUI::resize() {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     rect_.w = term_cols();
     rect_.h = term_rows();
+}
+
+int TUI::cols() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return rect_.w;
+}
+
+int TUI::left_col() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return rect_.x + 1;
+}
+
+int TUI::input_top_row_pub() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return input_top_row();
+}
+
+int TUI::input_bottom_row_pub() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return input_row();
+}
+
+int TUI::input_rows() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return input_rows_;
+}
+
+int TUI::last_scroll_row() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return rect_.y + rect_.h - kBottomPadRows - input_rows_ - kSepRows;
+}
+
+int TUI::scroll_top_row() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return rect_.y + 1;
+}
+
+int TUI::scroll_region_rows() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    const int last = rect_.y + rect_.h - kBottomPadRows - input_rows_ - kSepRows;
+    const int top  = rect_.y + 1;
+    return last - top + 1;
 }
 
 void TUI::shutdown() {}
@@ -75,8 +120,22 @@ void TUI::clear_status() {
     queue_indicator_shown_ = false;
 }
 
+void TUI::show_queue_depth(int pending) {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%d queued", pending);
+    current_status_ = buf;
+    status_active_ = true;
+    queue_indicator_shown_ = true;
+}
+
 void TUI::clear_queue_indicator() {
     if (queue_indicator_shown_) clear_status();
+}
+
+bool TUI::queue_indicator_active() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return queue_indicator_shown_;
 }
 
 void TUI::set_pre_input_status(const std::string& msg) {
@@ -151,6 +210,7 @@ void ThinkingIndicator::stop() {
 
 void ThinkingIndicator::tick() {
     if (!active_.load() || !tui_) return;
+    if (tui_->queue_indicator_active()) return;
     const int i = spinner_frame_index();
     tui_->set_status(label_ + " " + kSpinnerFrames[i]);
 }

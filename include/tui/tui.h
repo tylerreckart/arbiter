@@ -76,20 +76,19 @@ public:
     std::string build_prompt() const;
 
     // Last usable row of the scroll region (where streamed output lands).
-    int last_scroll_row() const {
-        return rect_.y + rect_.h - kBottomPadRows - input_rows_ - kSepRows;
-    }
+    int last_scroll_row() const;
 
     // First row of the scroll region (top of pane).
-    int scroll_top_row() const { return rect_.y + 1; }
+    int scroll_top_row() const;
 
     // Number of visible rows in the scroll region.
-    int scroll_region_rows() const {
-        return last_scroll_row() - scroll_top_row() + 1;
-    }
+    int scroll_region_rows() const;
 
     void set_status(const std::string& msg);
     void clear_status();
+
+    // Show the queue-depth pill and suppress thinking spinner overwrites.
+    void show_queue_depth(int pending);
 
     // Pre-input status — tool-call spinner label on the mid-separator row.
     void set_pre_input_status(const std::string& msg);
@@ -97,6 +96,9 @@ public:
 
     // Clear only the "N queued" indicator without disturbing an active spinner.
     void clear_queue_indicator();
+
+    // True while begin_input is showing the queue-depth pill ("N queued").
+    [[nodiscard]] bool queue_indicator_active() const;
 
     // Show / hide the two-row footer hint at the bottom of the pane.  In
     // single-pane mode the hint ("esc interrupt, pgup/dn scroll, /agents,
@@ -112,11 +114,11 @@ public:
     // every focus or structural change.  In single-pane mode it is unused.
     void set_focus_accent(bool active);
 
-    int cols() const { return rect_.w; }
-    int left_col() const { return rect_.x + 1; }  // 1-indexed leftmost col
-    int input_top_row_pub() const { return input_top_row(); }
-    int input_bottom_row_pub() const { return input_row(); }
-    int input_rows() const { return input_rows_; }
+    int cols() const;
+    int left_col() const;  // 1-indexed leftmost col
+    int input_top_row_pub() const;
+    int input_bottom_row_pub() const;
+    int input_rows() const;
 
     [[nodiscard]] TuiChromeSnapshot chrome_snapshot() const;
 

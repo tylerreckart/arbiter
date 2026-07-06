@@ -304,6 +304,7 @@ void draw_sidebar(OpenTuiHandle frame,
     const int panel_top_y = sidebar_top + kTopPadRows;
     const int sep_y = pr.y + pr.h - TUI::kBottomPadRows - pane_input_rows - TUI::kSepRows;
     const int input_bottom_y = pr.y + pr.h - TUI::kBottomPadRows - 1;
+    const int hint_y = pr.y + pr.h - 2;
     if (input_bottom_y < panel_top_y) return;
 
     const std::uint32_t px = static_cast<std::uint32_t>(r.x);
@@ -348,6 +349,20 @@ void draw_sidebar(OpenTuiHandle frame,
               pw,
               1,
               d.bg.base);
+    fill_rect(frame,
+              px,
+              static_cast<std::uint32_t>(hint_y),
+              pw,
+              1,
+              d.bg.scroll);
+    if (hint_y + 1 < pr.y + pr.h) {
+        fill_rect(frame,
+                  px,
+                  static_cast<std::uint32_t>(hint_y + 1),
+                  pw,
+                  1,
+                  d.bg.base);
+    }
 
     int y = panel_top_y + 1;
     const int scroll_bottom = sep_y;
@@ -478,7 +493,7 @@ void draw_sidebar(OpenTuiHandle frame,
                        snap.mcp, "(none yet)", bg);
     }
 
-    draw_version_tag(frame, sc, content_x, content_w, input_bottom_y, bg);
+    draw_version_tag(frame, sc, content_x, content_w, hint_y, d.bg.scroll);
 }
 
 } // namespace arbiter::opentui

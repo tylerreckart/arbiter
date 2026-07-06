@@ -51,7 +51,12 @@ void fill_rect(OpenTuiHandle frame,
 
 std::string trim_to_cells(std::string s, int max_cells) {
     if (max_cells <= 0) return {};
-    while (!s.empty() && cell_width(s) > max_cells) s.pop_back();
+    while (!s.empty() && cell_width(s) > max_cells) {
+        s.pop_back();
+        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
+            s.pop_back();
+        }
+    }
     return s;
 }
 
@@ -96,7 +101,6 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
     const int raw_pad = (r.w <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
     const int pad = std::min(raw_pad, std::max(0, (r.w - 1) / 2));
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
-    const int status_inset = std::max(0, d.layout.status_inset_x);
 
     const std::uint32_t px = static_cast<std::uint32_t>(r.x);
     const std::uint32_t pw = static_cast<std::uint32_t>(r.w);
@@ -124,19 +128,19 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
 
     fill_rect(frame, block_x, static_cast<std::uint32_t>(sep_y), block_w, 1, d.bg.scroll);
     if (!chrome.pre_input_status.empty()) {
-        std::string pre = " " + chrome.pre_input_status + " ";
-        pre = trim_to_cells(pre, std::max(0, content_w - status_inset));
+        std::string pre = trim_to_cells(chrome.pre_input_status,
+                                        std::max(0, content_w - header_pad));
         draw_text(frame,
-                  block_x + static_cast<std::uint32_t>(status_inset),
+                  block_x + static_cast<std::uint32_t>(header_pad),
                   static_cast<std::uint32_t>(sep_y),
                   pre,
                   d.accent.info,
                   d.bg.scroll);
     } else if (chrome.status_active && !chrome.status.empty()) {
-        std::string status = " " + chrome.status + " ";
-        status = trim_to_cells(status, std::max(0, content_w - status_inset));
+        std::string status = trim_to_cells(chrome.status,
+                                           std::max(0, content_w - header_pad));
         draw_text(frame,
-                  block_x + static_cast<std::uint32_t>(status_inset),
+                  block_x + static_cast<std::uint32_t>(header_pad),
                   static_cast<std::uint32_t>(sep_y),
                   status,
                   d.accent.info,

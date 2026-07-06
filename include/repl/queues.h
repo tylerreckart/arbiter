@@ -56,6 +56,7 @@ struct OutputItem {
     std::vector<StyledLine> styled_lines;
     CodeOp code_op = CodeOp::Open;
     size_t code_preview_rows = 8;
+    std::string code_lang;
     bool new_block = false;
 };
 
@@ -80,7 +81,9 @@ public:
     // Single styled status line (push_prose + end_message).
     void push_prose_msg(const std::string& text, StyleId id = StyleId::Default);
 
-    void push_code_open(const std::string& open_fence, size_t preview_rows);
+    void push_code_open(const std::string& open_fence,
+                        const std::string& lang,
+                        size_t preview_rows);
     void push_code_line(const std::string& line);
     void push_code_close(const std::string& close_fence);
 

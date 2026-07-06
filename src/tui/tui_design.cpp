@@ -5,9 +5,17 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
 
 namespace arbiter {
 
@@ -16,6 +24,8 @@ namespace {
 TuiDesign g_design;
 bool g_design_ready = false;
 std::uint32_t g_design_generation = 0;
+std::string g_active_preset = kDefaultTuiPreset;
+std::string g_active_theme_file;
 
 int clamp_byte(int v) {
     return std::max(0, std::min(255, v));
@@ -124,471 +134,106 @@ void string_value(const JsonValue& root, const char* group, const char* key, std
     if (v && v->is_string()) out = v->as_string();
 }
 
-using ContentFillFn = void (*)(TuiDesign::Content&);
-
-void fill_content_onedark(TuiDesign::Content& c) {
-    c.heading = {
-        tui_rgba(97, 175, 239),
-        tui_rgba(198, 120, 221),
-        tui_rgba(86, 182, 194),
-        tui_rgba(209, 154, 102),
-    };
-    c.code        = tui_rgba(209, 154, 102);
-    c.link        = tui_rgba(97, 175, 239);
-    c.bullet      = tui_rgba(92, 99, 112);
-    c.blockquote  = tui_rgba(92, 99, 112);
-    c.rule        = tui_rgba(92, 99, 112);
-    c.writ_line   = tui_rgba(209, 154, 102);
-    c.diff_add    = tui_rgba(152, 195, 121);
-    c.diff_remove = tui_rgba(224, 108, 117);
-    c.diff_hunk   = tui_rgba(92, 99, 112);
-    c.diff_file   = tui_rgba(97, 175, 239);
-    c.success     = tui_rgba(152, 195, 121);
-    c.error       = tui_rgba(224, 108, 117);
-    c.warning     = tui_rgba(229, 192, 123);
-    c.info        = tui_rgba(97, 175, 239);
-    c.text_dim    = tui_rgba(92, 99, 112);
-    c.text_dimmer = tui_rgba(62, 68, 82);
-    c.accent_focused   = tui_rgba(97, 175, 239);
-    c.accent_prompt    = tui_rgba(229, 192, 123);
-    c.prompt_color     = tui_rgba(92, 99, 112);
-    c.user_echo_arrow  = tui_rgba(92, 99, 112);
-    c.user_echo_text   = tui_rgba(171, 178, 191);
-    c.border_inactive  = tui_rgba(62, 68, 82);
-    c.agent_master     = tui_rgba(209, 154, 102);
-    c.agent_palette = {
-        tui_rgba(224, 108, 117), tui_rgba(229, 192, 123), tui_rgba(209, 154, 102),
-        tui_rgba(152, 195, 121), tui_rgba(97, 175, 239), tui_rgba(198, 120, 221),
-        tui_rgba(86, 182, 194),  tui_rgba(171, 178, 191), tui_rgba(190, 80, 70),
-        tui_rgba(181, 141, 206), tui_rgba(68, 136, 199),  tui_rgba(184, 228, 151),
-    };
+void derive_code_syntax_colors(TuiDesign::Content& c) {
+    c.code_string   = c.diff_add;
+    c.code_comment  = c.text_dim;
+    c.code_number   = c.warning;
+    c.code_keyword  = c.heading[1];
+    c.code_type     = c.heading[2];
+    c.code_function = c.heading[0];
 }
 
-void fill_content_modern(TuiDesign::Content& c) {
-    c.heading = {
-        tui_rgba(245, 165, 36),
-        tui_rgba(200, 200, 200),
-        tui_rgba(182, 215, 182),
-        tui_rgba(196, 196, 196),
-    };
-    c.code        = tui_rgba(245, 165, 36);
-    c.link        = tui_rgba(245, 165, 36);
-    c.bullet      = tui_rgba(154, 154, 154);
-    c.blockquote  = tui_rgba(154, 154, 154);
-    c.rule        = tui_rgba(99, 99, 99);
-    c.writ_line   = tui_rgba(245, 165, 36);
-    c.diff_add    = tui_rgba(182, 215, 182);
-    c.diff_remove = tui_rgba(215, 168, 168);
-    c.diff_hunk   = tui_rgba(154, 154, 154);
-    c.diff_file   = tui_rgba(196, 196, 196);
-    c.success     = tui_rgba(182, 215, 182);
-    c.error       = tui_rgba(215, 168, 168);
-    c.warning     = tui_rgba(215, 200, 160);
-    c.info        = tui_rgba(196, 196, 196);
-    c.text_dim    = tui_rgba(154, 154, 154);
-    c.text_dimmer = tui_rgba(99, 99, 99);
-    c.accent_focused   = tui_rgba(245, 165, 36);
-    c.accent_prompt    = tui_rgba(245, 165, 36);
-    c.prompt_color     = tui_rgba(154, 154, 154);
-    c.user_echo_arrow  = tui_rgba(154, 154, 154);
-    c.user_echo_text   = tui_rgba(232, 232, 232);
-    c.border_inactive  = tui_rgba(99, 99, 99);
-    c.agent_master     = tui_rgba(245, 165, 36);
-    c.agent_palette = {
-        tui_rgba(215, 168, 168), tui_rgba(245, 165, 36),  tui_rgba(215, 200, 160),
-        tui_rgba(182, 215, 182), tui_rgba(196, 196, 196), tui_rgba(184, 184, 184),
-        tui_rgba(160, 160, 160), tui_rgba(232, 232, 232), tui_rgba(200, 140, 140),
-        tui_rgba(210, 210, 210), tui_rgba(170, 170, 170), tui_rgba(200, 220, 200),
-    };
+std::string executable_dir() {
+#if defined(__APPLE__)
+    char path[4096];
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) != 0) return {};
+    return std::filesystem::path(path).parent_path().string();
+#elif defined(__linux__)
+    char path[4096];
+    const ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (len <= 0) return {};
+    path[len] = '\0';
+    return std::filesystem::path(path).parent_path().string();
+#else
+    return {};
+#endif
 }
 
-void fill_content_nord(TuiDesign::Content& c) {
-    c.heading = {
-        tui_rgba(136, 192, 208),
-        tui_rgba(180, 142, 173),
-        tui_rgba(143, 188, 187),
-        tui_rgba(208, 135, 112),
-    };
-    c.code        = tui_rgba(235, 203, 139);
-    c.link        = tui_rgba(136, 192, 208);
-    c.bullet      = tui_rgba(76, 86, 106);
-    c.blockquote  = tui_rgba(76, 86, 106);
-    c.rule        = tui_rgba(76, 86, 106);
-    c.writ_line   = tui_rgba(235, 203, 139);
-    c.diff_add    = tui_rgba(163, 190, 140);
-    c.diff_remove = tui_rgba(191, 97, 106);
-    c.diff_hunk   = tui_rgba(76, 86, 106);
-    c.diff_file   = tui_rgba(136, 192, 208);
-    c.success     = tui_rgba(163, 190, 140);
-    c.error       = tui_rgba(191, 97, 106);
-    c.warning     = tui_rgba(235, 203, 139);
-    c.info        = tui_rgba(136, 192, 208);
-    c.text_dim    = tui_rgba(97, 110, 136);
-    c.text_dimmer = tui_rgba(76, 86, 106);
-    c.accent_focused   = tui_rgba(136, 192, 208);
-    c.accent_prompt    = tui_rgba(235, 203, 139);
-    c.prompt_color     = tui_rgba(97, 110, 136);
-    c.user_echo_arrow  = tui_rgba(97, 110, 136);
-    c.user_echo_text   = tui_rgba(236, 239, 244);
-    c.border_inactive  = tui_rgba(67, 76, 94);
-    c.agent_master     = tui_rgba(208, 135, 112);
-    c.agent_palette = {
-        tui_rgba(191, 97, 106),  tui_rgba(235, 203, 139), tui_rgba(208, 135, 112),
-        tui_rgba(163, 190, 140), tui_rgba(136, 192, 208), tui_rgba(180, 142, 173),
-        tui_rgba(143, 188, 187), tui_rgba(236, 239, 244), tui_rgba(180, 100, 110),
-        tui_rgba(160, 130, 180), tui_rgba(110, 150, 190), tui_rgba(150, 190, 150),
-    };
-}
+std::string bundled_themes_dir() {
+    static std::string cached;
+    static bool tried = false;
+    if (tried) return cached;
+    tried = true;
 
-void fill_content_dracula(TuiDesign::Content& c) {
-    c.heading = {
-        tui_rgba(189, 147, 249),
-        tui_rgba(255, 121, 198),
-        tui_rgba(139, 233, 253),
-        tui_rgba(255, 184, 108),
-    };
-    c.code        = tui_rgba(255, 184, 108);
-    c.link        = tui_rgba(139, 233, 253);
-    c.bullet      = tui_rgba(98, 114, 164);
-    c.blockquote  = tui_rgba(98, 114, 164);
-    c.rule        = tui_rgba(98, 114, 164);
-    c.writ_line   = tui_rgba(255, 184, 108);
-    c.diff_add    = tui_rgba(80, 250, 123);
-    c.diff_remove = tui_rgba(255, 85, 85);
-    c.diff_hunk   = tui_rgba(98, 114, 164);
-    c.diff_file   = tui_rgba(139, 233, 253);
-    c.success     = tui_rgba(80, 250, 123);
-    c.error       = tui_rgba(255, 85, 85);
-    c.warning     = tui_rgba(241, 250, 140);
-    c.info        = tui_rgba(139, 233, 253);
-    c.text_dim    = tui_rgba(98, 114, 164);
-    c.text_dimmer = tui_rgba(68, 71, 90);
-    c.accent_focused   = tui_rgba(189, 147, 249);
-    c.accent_prompt    = tui_rgba(241, 250, 140);
-    c.prompt_color     = tui_rgba(98, 114, 164);
-    c.user_echo_arrow  = tui_rgba(98, 114, 164);
-    c.user_echo_text   = tui_rgba(248, 248, 242);
-    c.border_inactive  = tui_rgba(68, 71, 90);
-    c.agent_master     = tui_rgba(255, 184, 108);
-    c.agent_palette = {
-        tui_rgba(255, 85, 85),   tui_rgba(241, 250, 140), tui_rgba(255, 184, 108),
-        tui_rgba(80, 250, 123),  tui_rgba(139, 233, 253), tui_rgba(189, 147, 249),
-        tui_rgba(255, 121, 198), tui_rgba(248, 248, 242), tui_rgba(200, 70, 70),
-        tui_rgba(200, 150, 240), tui_rgba(100, 180, 230), tui_rgba(120, 230, 150),
-    };
-}
-
-void fill_content_solarized(TuiDesign::Content& c) {
-    c.heading = {
-        tui_rgba(38, 139, 210),
-        tui_rgba(211, 54, 130),
-        tui_rgba(42, 161, 152),
-        tui_rgba(203, 75, 22),
-    };
-    c.code        = tui_rgba(203, 75, 22);
-    c.link        = tui_rgba(38, 139, 210);
-    c.bullet      = tui_rgba(88, 110, 117);
-    c.blockquote  = tui_rgba(88, 110, 117);
-    c.rule        = tui_rgba(88, 110, 117);
-    c.writ_line   = tui_rgba(203, 75, 22);
-    c.diff_add    = tui_rgba(133, 153, 0);
-    c.diff_remove = tui_rgba(220, 50, 47);
-    c.diff_hunk   = tui_rgba(88, 110, 117);
-    c.diff_file   = tui_rgba(38, 139, 210);
-    c.success     = tui_rgba(133, 153, 0);
-    c.error       = tui_rgba(220, 50, 47);
-    c.warning     = tui_rgba(181, 137, 0);
-    c.info        = tui_rgba(38, 139, 210);
-    c.text_dim    = tui_rgba(88, 110, 117);
-    c.text_dimmer = tui_rgba(7, 54, 66);
-    c.accent_focused   = tui_rgba(38, 139, 210);
-    c.accent_prompt    = tui_rgba(181, 137, 0);
-    c.prompt_color     = tui_rgba(88, 110, 117);
-    c.user_echo_arrow  = tui_rgba(88, 110, 117);
-    c.user_echo_text   = tui_rgba(147, 161, 161);
-    c.border_inactive  = tui_rgba(7, 54, 66);
-    c.agent_master     = tui_rgba(203, 75, 22);
-    c.agent_palette = {
-        tui_rgba(220, 50, 47),  tui_rgba(181, 137, 0),  tui_rgba(203, 75, 22),
-        tui_rgba(133, 153, 0), tui_rgba(38, 139, 210), tui_rgba(211, 54, 130),
-        tui_rgba(42, 161, 152), tui_rgba(147, 161, 161), tui_rgba(190, 60, 50),
-        tui_rgba(160, 90, 150), tui_rgba(50, 120, 170), tui_rgba(120, 160, 80),
-    };
-}
-
-void fill_content_light(TuiDesign::Content& c) {
-    c.heading = {
-        tui_rgba(32, 99, 165),
-        tui_rgba(142, 68, 173),
-        tui_rgba(22, 128, 120),
-        tui_rgba(180, 90, 20),
-    };
-    c.code        = tui_rgba(180, 90, 20);
-    c.link        = tui_rgba(32, 99, 165);
-    c.bullet      = tui_rgba(120, 130, 140);
-    c.blockquote  = tui_rgba(120, 130, 140);
-    c.rule        = tui_rgba(180, 185, 190);
-    c.writ_line   = tui_rgba(180, 90, 20);
-    c.diff_add    = tui_rgba(40, 130, 70);
-    c.diff_remove = tui_rgba(190, 50, 50);
-    c.diff_hunk   = tui_rgba(120, 130, 140);
-    c.diff_file   = tui_rgba(32, 99, 165);
-    c.success     = tui_rgba(40, 130, 70);
-    c.error       = tui_rgba(190, 50, 50);
-    c.warning     = tui_rgba(170, 120, 20);
-    c.info        = tui_rgba(32, 99, 165);
-    c.text_dim    = tui_rgba(120, 130, 140);
-    c.text_dimmer = tui_rgba(160, 165, 170);
-    c.accent_focused   = tui_rgba(32, 99, 165);
-    c.accent_prompt    = tui_rgba(170, 120, 20);
-    c.prompt_color     = tui_rgba(120, 130, 140);
-    c.user_echo_arrow  = tui_rgba(120, 130, 140);
-    c.user_echo_text   = tui_rgba(30, 35, 40);
-    c.border_inactive  = tui_rgba(200, 205, 210);
-    c.agent_master     = tui_rgba(180, 90, 20);
-    c.agent_palette = {
-        tui_rgba(190, 50, 50),  tui_rgba(170, 120, 20), tui_rgba(180, 90, 20),
-        tui_rgba(40, 130, 70),  tui_rgba(32, 99, 165), tui_rgba(142, 68, 173),
-        tui_rgba(22, 128, 120), tui_rgba(30, 35, 40),   tui_rgba(160, 60, 60),
-        tui_rgba(130, 90, 160), tui_rgba(50, 100, 150), tui_rgba(60, 140, 90),
-    };
-}
-
-TuiDesign base_design(ContentFillFn fill_content) {
-    TuiDesign d;
-    d.component.prompt.clear();
-    d.component.continuation_prompt = "\u2026 ";
-    d.component.inactive_prompt.clear();
-    d.component.agent_prefix.clear();
-    d.component.agent_suffix.clear();
-    d.component.status_prefix = " ";
-    d.component.status_suffix = " ";
-    if (fill_content) fill_content(d.content);
-    return d;
-}
-
-TuiDesign onedark_design() {
-    TuiDesign d = base_design(fill_content_onedark);
-    d.bg.base   = tui_rgba(0x28, 0x2c, 0x34);
-    d.bg.panel  = tui_rgba(0x21, 0x25, 0x2b);
-    d.bg.header = tui_rgba(0x2c, 0x32, 0x3c);
-    d.bg.scroll = tui_rgba(0x28, 0x2c, 0x34);
-    d.bg.status = tui_rgba(0x21, 0x25, 0x2b);
-    d.bg.input  = tui_rgba(0x1e, 0x21, 0x27);
-    d.bg.footer = tui_rgba(0x21, 0x25, 0x2b);
-    d.bg.gutter = d.bg.scroll;
-
-    d.text.primary = tui_rgba(0xab, 0xb2, 0xbf);
-    d.text.muted   = tui_rgba(0x5c, 0x63, 0x70);
-    d.text.subtle  = tui_rgba(0x3e, 0x44, 0x52);
-    d.text.inverse = tui_rgba(0x28, 0x2c, 0x34);
-
-    d.accent.primary   = tui_rgba(0x61, 0xaf, 0xef);
-    d.accent.secondary = tui_rgba(0x98, 0xc3, 0x79);
-    d.accent.success   = tui_rgba(0x98, 0xc3, 0x79);
-    d.accent.warning   = tui_rgba(0xe5, 0xc0, 0x7b);
-    d.accent.error     = tui_rgba(0xe0, 0x6c, 0x75);
-    d.accent.info      = tui_rgba(0x61, 0xaf, 0xef);
-
-    d.border.subtle = tui_rgba(0x3e, 0x44, 0x52);
-    d.border.focus  = tui_rgba(0x61, 0xaf, 0xef);
-    d.border.gutter = d.bg.gutter;
-    return d;
-}
-
-TuiDesign modern_design() {
-    TuiDesign d = base_design(fill_content_modern);
-    d.bg.base   = tui_rgba(0x08, 0x08, 0x08);
-    d.bg.panel  = tui_rgba(0x10, 0x10, 0x10);
-    d.bg.header = tui_rgba(0x1a, 0x1a, 0x1a);
-    d.bg.scroll = tui_rgba(0x0c, 0x0c, 0x0c);
-    d.bg.status = tui_rgba(0x15, 0x15, 0x15);
-    d.bg.input  = tui_rgba(0x1f, 0x1f, 0x1f);
-    d.bg.footer = tui_rgba(0x12, 0x12, 0x12);
-    d.bg.gutter = d.bg.scroll;
-
-    d.text.primary = tui_rgba(0xe8, 0xe8, 0xe8);
-    d.text.muted   = tui_rgba(0x9a, 0x9a, 0x9a);
-    d.text.subtle  = tui_rgba(0x63, 0x63, 0x63);
-    d.text.inverse = tui_rgba(0x0a, 0x0a, 0x0a);
-
-    d.accent.primary   = tui_rgba(0xf5, 0xa5, 0x24);
-    d.accent.secondary = tui_rgba(0xb8, 0xb8, 0xb8);
-    d.accent.success   = tui_rgba(0xb6, 0xd7, 0xb6);
-    d.accent.warning   = tui_rgba(0xd7, 0xc8, 0xa0);
-    d.accent.error     = tui_rgba(0xd7, 0xa8, 0xa8);
-    d.accent.info      = tui_rgba(0xc4, 0xc4, 0xc4);
-
-    d.border.subtle = d.bg.scroll;
-    d.border.focus  = d.accent.primary;
-    d.border.gutter = d.bg.gutter;
-    d.layout.input_padding_x = 2;
-    d.layout.footer_gap = 2;
-    return d;
-}
-
-TuiDesign nord_design() {
-    TuiDesign d = base_design(fill_content_nord);
-    d.bg.base   = tui_rgba(0x2e, 0x34, 0x40);
-    d.bg.panel  = tui_rgba(0x3b, 0x42, 0x52);
-    d.bg.header = tui_rgba(0x43, 0x4c, 0x5e);
-    d.bg.scroll = tui_rgba(0x2e, 0x34, 0x40);
-    d.bg.status = tui_rgba(0x3b, 0x42, 0x52);
-    d.bg.input  = tui_rgba(0x24, 0x29, 0x34);
-    d.bg.footer = tui_rgba(0x3b, 0x42, 0x52);
-    d.bg.gutter = d.bg.scroll;
-
-    d.text.primary = tui_rgba(0xec, 0xef, 0xf4);
-    d.text.muted   = tui_rgba(0x81, 0x8a, 0x9a);
-    d.text.subtle  = tui_rgba(0x4c, 0x56, 0x6a);
-    d.text.inverse = tui_rgba(0x2e, 0x34, 0x40);
-
-    d.accent.primary   = tui_rgba(0x88, 0xc0, 0xd0);
-    d.accent.secondary = tui_rgba(0xa3, 0xbe, 0x8c);
-    d.accent.success   = tui_rgba(0xa3, 0xbe, 0x8c);
-    d.accent.warning   = tui_rgba(0xeb, 0xcb, 0x8b);
-    d.accent.error     = tui_rgba(0xbf, 0x61, 0x6a);
-    d.accent.info      = tui_rgba(0x88, 0xc0, 0xd0);
-
-    d.border.subtle = tui_rgba(0x4c, 0x56, 0x6a);
-    d.border.focus  = tui_rgba(0x88, 0xc0, 0xd0);
-    d.border.gutter = d.bg.gutter;
-    return d;
-}
-
-TuiDesign dracula_design() {
-    TuiDesign d = base_design(fill_content_dracula);
-    d.bg.base   = tui_rgba(0x28, 0x2a, 0x36);
-    d.bg.panel  = tui_rgba(0x21, 0x22, 0x2c);
-    d.bg.header = tui_rgba(0x44, 0x47, 0x5a);
-    d.bg.scroll = tui_rgba(0x28, 0x2a, 0x36);
-    d.bg.status = tui_rgba(0x21, 0x22, 0x2c);
-    d.bg.input  = tui_rgba(0x1a, 0x1b, 0x24);
-    d.bg.footer = tui_rgba(0x21, 0x22, 0x2c);
-    d.bg.gutter = d.bg.scroll;
-
-    d.text.primary = tui_rgba(0xf8, 0xf8, 0xf2);
-    d.text.muted   = tui_rgba(0x62, 0x72, 0xa4);
-    d.text.subtle  = tui_rgba(0x7a, 0x7d, 0x96);
-    d.text.inverse = tui_rgba(0x28, 0x2a, 0x36);
-
-    d.accent.primary   = tui_rgba(0xbd, 0x93, 0xf9);
-    d.accent.secondary = tui_rgba(0xff, 0x79, 0xc6);
-    d.accent.success   = tui_rgba(0x50, 0xfa, 0x7b);
-    d.accent.warning   = tui_rgba(0xf1, 0xfa, 0x8c);
-    d.accent.error     = tui_rgba(0xff, 0x55, 0x55);
-    d.accent.info      = tui_rgba(0x8b, 0xe9, 0xfd);
-
-    d.border.subtle = tui_rgba(0x44, 0x47, 0x5a);
-    d.border.focus  = tui_rgba(0xbd, 0x93, 0xf9);
-    d.border.gutter = d.bg.gutter;
-    return d;
-}
-
-TuiDesign solarized_design() {
-    TuiDesign d = base_design(fill_content_solarized);
-    d.bg.base   = tui_rgba(0x00, 0x2b, 0x36);
-    d.bg.panel  = tui_rgba(0x07, 0x36, 0x42);
-    d.bg.header = tui_rgba(0x07, 0x36, 0x42);
-    d.bg.scroll = tui_rgba(0x00, 0x2b, 0x36);
-    d.bg.status = tui_rgba(0x07, 0x36, 0x42);
-    d.bg.input  = tui_rgba(0x00, 0x1f, 0x27);
-    d.bg.footer = tui_rgba(0x07, 0x36, 0x42);
-    d.bg.gutter = d.bg.scroll;
-
-    d.text.primary = tui_rgba(0x93, 0xa1, 0xa1);
-    d.text.muted   = tui_rgba(0x65, 0x7b, 0x83);
-    d.text.subtle  = tui_rgba(0x58, 0x6e, 0x75);
-    d.text.inverse = tui_rgba(0x00, 0x2b, 0x36);
-
-    d.accent.primary   = tui_rgba(0x26, 0x8b, 0xd2);
-    d.accent.secondary = tui_rgba(0x2a, 0xa1, 0x98);
-    d.accent.success   = tui_rgba(0x85, 0x99, 0x00);
-    d.accent.warning   = tui_rgba(0xb5, 0x89, 0x00);
-    d.accent.error     = tui_rgba(0xdc, 0x32, 0x2f);
-    d.accent.info      = tui_rgba(0x26, 0x8b, 0xd2);
-
-    d.border.subtle = tui_rgba(0x07, 0x36, 0x42);
-    d.border.focus  = tui_rgba(0x26, 0x8b, 0xd2);
-    d.border.gutter = d.bg.gutter;
-    return d;
-}
-
-TuiDesign light_design() {
-    TuiDesign d = base_design(fill_content_light);
-    d.bg.base   = tui_rgba(0xf8, 0xf9, 0xfa);
-    d.bg.panel  = tui_rgba(0xff, 0xff, 0xff);
-    d.bg.header = tui_rgba(0xef, 0xf1, 0xf3);
-    d.bg.scroll = tui_rgba(0xf8, 0xf9, 0xfa);
-    d.bg.status = tui_rgba(0xef, 0xf1, 0xf3);
-    d.bg.input  = tui_rgba(0xff, 0xff, 0xff);
-    d.bg.footer = tui_rgba(0xef, 0xf1, 0xf3);
-    d.bg.gutter = tui_rgba(0xef, 0xf1, 0xf3);
-
-    d.text.primary = tui_rgba(0x1e, 0x23, 0x28);
-    d.text.muted   = tui_rgba(0x78, 0x82, 0x8c);
-    d.text.subtle  = tui_rgba(0xad, 0xb5, 0xbd);
-    d.text.inverse = tui_rgba(0xf8, 0xf9, 0xfa);
-
-    d.accent.primary   = tui_rgba(0x20, 0x63, 0xa5);
-    d.accent.secondary = tui_rgba(0x28, 0x82, 0x80);
-    d.accent.success   = tui_rgba(0x28, 0x82, 0x80);
-    d.accent.warning   = tui_rgba(0xaa, 0x78, 0x14);
-    d.accent.error     = tui_rgba(0xbe, 0x32, 0x32);
-    d.accent.info      = tui_rgba(0x20, 0x63, 0xa5);
-
-    d.border.subtle = tui_rgba(0xde, 0xe2, 0xe6);
-    d.border.focus  = tui_rgba(0x20, 0x63, 0xa5);
-    d.border.gutter = d.bg.gutter;
-    return d;
-}
-
-TuiDesign apply_dense_layout(TuiDesign d) {
-    d.layout.pane_padding_x = 0;
-    d.layout.header_padding_x = 1;
-    d.layout.status_inset_x = 1;
-    d.layout.input_padding_x = 0;
-    d.layout.footer_gap = 1;
-    d.layout.compact_cols = 80;
-    d.layout.dense_cols = 96;
-    d.layout.status_pill = false;
-    d.component.agent_prefix.clear();
-    d.component.agent_suffix.clear();
-    d.component.status_prefix.clear();
-    d.component.status_suffix.clear();
-    return d;
-}
-
-TuiDesign dense_design() {
-    return apply_dense_layout(onedark_design());
-}
-
-using PresetFn = TuiDesign (*)();
-
-const std::unordered_map<std::string, PresetFn>& preset_table() {
-    static const std::unordered_map<std::string, PresetFn> kTable = {
-        {"onedark", onedark_design},
-        {"modern", modern_design},
-        {"nord", nord_design},
-        {"dracula", dracula_design},
-        {"solarized", solarized_design},
-        {"light", light_design},
-        {"dense", dense_design},
-    };
-    return kTable;
-}
-
-void apply_overrides(TuiDesign& d, const JsonValue& root, bool apply_preset = true) {
-    if (apply_preset) {
-        const std::string preset = root.get_string("preset", "");
-        if (!preset.empty()) {
-            const auto& table = preset_table();
-            if (const auto it = table.find(preset); it != table.end()) {
-                d = it->second();
+    if (const char* env = std::getenv("ARBITER_THEMES_DIR")) {
+        if (std::filesystem::is_directory(env)) {
+            cached = env;
+            return cached;
+        }
+    }
+#ifdef ARBITER_THEMES_DIR
+    if (std::filesystem::is_directory(ARBITER_THEMES_DIR)) {
+        cached = ARBITER_THEMES_DIR;
+        return cached;
+    }
+#endif
+    const std::string exe = executable_dir();
+    if (!exe.empty()) {
+        const std::filesystem::path base(exe);
+        const std::filesystem::path candidates[] = {
+            base / "../share/arbiter/themes",
+            base / "../../share/arbiter/themes",
+            base / "../../../share/arbiter/themes",
+            base / "themes",
+            base / "../themes",
+        };
+        for (const auto& candidate : candidates) {
+            std::error_code ec;
+            const auto resolved = std::filesystem::weakly_canonical(candidate, ec);
+            if (!ec && std::filesystem::is_directory(resolved)) {
+                cached = resolved.string();
+                return cached;
             }
         }
     }
+    return cached;
+}
 
+std::string resolve_theme_path(const std::string& config_dir, std::string_view name) {
+    if (name.empty()) return {};
+    const std::string stem(name);
+    if (!config_dir.empty()) {
+        const std::string user = config_dir + "/themes/" + stem + ".json";
+        if (std::filesystem::exists(user)) return user;
+    }
+    const std::string bundled = bundled_themes_dir() + "/" + stem + ".json";
+    if (std::filesystem::exists(bundled)) return bundled;
+    return {};
+}
+
+std::vector<std::string> list_bundled_theme_names() {
+    std::vector<std::string> out;
+    const std::string dir = bundled_themes_dir();
+    if (dir.empty() || !std::filesystem::is_directory(dir)) return out;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() != ".json") continue;
+        out.push_back(entry.path().stem().string());
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::shared_ptr<JsonValue> parse_json_file(const std::string& path);
+bool apply_theme_from_path(TuiDesign& d,
+                           const std::string& path,
+                           const std::string& config_dir);
+bool resolve_and_apply_theme(TuiDesign& d,
+                             const std::string& config_dir,
+                             std::string_view name);
+
+void apply_color_overrides(TuiDesign& d, const JsonValue& root) {
     color(root, "bg", "base", d.bg.base);
     color(root, "bg", "panel", d.bg.panel);
     color(root, "bg", "header", d.bg.header);
@@ -613,30 +258,6 @@ void apply_overrides(TuiDesign& d, const JsonValue& root, bool apply_preset = tr
     color(root, "border", "subtle", d.border.subtle);
     color(root, "border", "focus", d.border.focus);
     color(root, "border", "gutter", d.border.gutter);
-    string_value(root, "border", "vertical", d.border.vertical);
-    string_value(root, "border", "horizontal", d.border.horizontal);
-
-    number(root, "layout", "pane_padding_x", d.layout.pane_padding_x);
-    number(root, "layout", "header_padding_x", d.layout.header_padding_x);
-    number(root, "layout", "status_inset_x", d.layout.status_inset_x);
-    number(root, "layout", "input_padding_x", d.layout.input_padding_x);
-    number(root, "layout", "footer_gap", d.layout.footer_gap);
-    number(root, "layout", "compact_cols", d.layout.compact_cols);
-    number(root, "layout", "dense_cols", d.layout.dense_cols);
-    boolean(root, "layout", "show_footer", d.layout.show_footer);
-    boolean(root, "layout", "status_pill", d.layout.status_pill);
-
-    string_value(root, "component", "prompt", d.component.prompt);
-    string_value(root, "component", "continuation_prompt", d.component.continuation_prompt);
-    string_value(root, "component", "inactive_prompt", d.component.inactive_prompt);
-    string_value(root, "component", "agent_prefix", d.component.agent_prefix);
-    string_value(root, "component", "agent_suffix", d.component.agent_suffix);
-    string_value(root, "component", "status_prefix", d.component.status_prefix);
-    string_value(root, "component", "status_suffix", d.component.status_suffix);
-    string_value(root, "component", "footer_left", d.component.footer_left);
-    string_value(root, "component", "footer_right", d.component.footer_right);
-    string_value(root, "component", "footer_left_compact", d.component.footer_left_compact);
-    string_value(root, "component", "footer_right_compact", d.component.footer_right_compact);
 
     color(root, "content", "code", d.content.code);
     color(root, "content", "link", d.content.link);
@@ -652,6 +273,12 @@ void apply_overrides(TuiDesign& d, const JsonValue& root, bool apply_preset = tr
     color(root, "content", "error", d.content.error);
     color(root, "content", "warning", d.content.warning);
     color(root, "content", "info", d.content.info);
+    color(root, "content", "code_keyword", d.content.code_keyword);
+    color(root, "content", "code_string", d.content.code_string);
+    color(root, "content", "code_comment", d.content.code_comment);
+    color(root, "content", "code_number", d.content.code_number);
+    color(root, "content", "code_type", d.content.code_type);
+    color(root, "content", "code_function", d.content.code_function);
     color(root, "content", "text_dim", d.content.text_dim);
     color(root, "content", "text_dimmer", d.content.text_dimmer);
     color(root, "content", "accent_focused", d.content.accent_focused);
@@ -683,6 +310,34 @@ void apply_overrides(TuiDesign& d, const JsonValue& root, bool apply_preset = tr
             }
         }
     }
+}
+
+void apply_layout_component_overrides(TuiDesign& d, const JsonValue& root) {
+    string_value(root, "border", "vertical", d.border.vertical);
+    string_value(root, "border", "horizontal", d.border.horizontal);
+
+    number(root, "layout", "pane_padding_x", d.layout.pane_padding_x);
+    number(root, "layout", "header_padding_x", d.layout.header_padding_x);
+    number(root, "layout", "status_inset_x", d.layout.status_inset_x);
+    number(root, "layout", "input_padding_x", d.layout.input_padding_x);
+    number(root, "layout", "footer_gap", d.layout.footer_gap);
+    number(root, "layout", "compact_cols", d.layout.compact_cols);
+    number(root, "layout", "dense_cols", d.layout.dense_cols);
+    boolean(root, "layout", "show_footer", d.layout.show_footer);
+    boolean(root, "layout", "status_pill", d.layout.status_pill);
+    boolean(root, "layout", "show_history_sidebar", d.layout.show_history_sidebar);
+
+    string_value(root, "component", "prompt", d.component.prompt);
+    string_value(root, "component", "continuation_prompt", d.component.continuation_prompt);
+    string_value(root, "component", "inactive_prompt", d.component.inactive_prompt);
+    string_value(root, "component", "agent_prefix", d.component.agent_prefix);
+    string_value(root, "component", "agent_suffix", d.component.agent_suffix);
+    string_value(root, "component", "status_prefix", d.component.status_prefix);
+    string_value(root, "component", "status_suffix", d.component.status_suffix);
+    string_value(root, "component", "footer_left", d.component.footer_left);
+    string_value(root, "component", "footer_right", d.component.footer_right);
+    string_value(root, "component", "footer_left_compact", d.component.footer_left_compact);
+    string_value(root, "component", "footer_right_compact", d.component.footer_right_compact);
 
     d.layout.pane_padding_x = clamp_byte(d.layout.pane_padding_x);
     d.layout.header_padding_x = clamp_byte(d.layout.header_padding_x);
@@ -691,6 +346,253 @@ void apply_overrides(TuiDesign& d, const JsonValue& root, bool apply_preset = tr
     d.layout.footer_gap = std::max(0, d.layout.footer_gap);
     d.layout.compact_cols = std::max(20, d.layout.compact_cols);
     d.layout.dense_cols = std::max(20, d.layout.dense_cols);
+}
+
+void apply_overrides(TuiDesign& d,
+                     const JsonValue& root,
+                     const std::string& config_dir,
+                     bool apply_preset = true,
+                     bool apply_colors = true) {
+    if (apply_preset) {
+        const std::string preset = root.get_string("preset", "");
+        if (!preset.empty()) {
+            TuiDesign base;
+            if (resolve_and_apply_theme(base, config_dir, preset)) {
+                d = base;
+            }
+        }
+    }
+    if (apply_colors) apply_color_overrides(d, root);
+    apply_layout_component_overrides(d, root);
+}
+
+void strip_color_overrides(JsonObject& root) {
+    root.erase("bg");
+    root.erase("text");
+    root.erase("accent");
+    root.erase("border");
+    root.erase("content");
+}
+
+std::string rgba_to_hex(const TuiRgba& c) {
+    char buf[8];
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "#%02x%02x%02x",
+                  static_cast<unsigned>(c[0]),
+                  static_cast<unsigned>(c[1]),
+                  static_cast<unsigned>(c[2]));
+    return buf;
+}
+
+std::shared_ptr<JsonValue> parse_json_file(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) return nullptr;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    try {
+        auto root = json_parse(ss.str());
+        if (root && root->is_object()) return root;
+    } catch (...) {
+    }
+    return nullptr;
+}
+
+std::string resolve_config_relative_path(const std::string& config_dir,
+                                         std::string_view rel) {
+    if (rel.empty()) return {};
+    if (rel.front() == '/') return std::string(rel);
+    if (rel.size() >= 2 && rel[0] == '~' && rel[1] == '/') {
+        const char* home = std::getenv("HOME");
+        if (home) return std::string(home) + std::string(rel.substr(1));
+    }
+    return config_dir + "/" + std::string(rel);
+}
+
+TuiDesign default_design() {
+    TuiDesign d;
+    const std::string path = resolve_theme_path("", kDefaultTuiPreset);
+    if (!path.empty()) {
+        if (auto root = parse_json_file(path)) {
+            apply_color_overrides(d, *root);
+            apply_layout_component_overrides(d, *root);
+            if (!child(*root, "content", "code_keyword")) {
+                derive_code_syntax_colors(d.content);
+            }
+        }
+    }
+    return d;
+}
+
+void apply_theme_document(TuiDesign& d,
+                          const JsonValue& doc,
+                          const std::string& config_dir,
+                          int depth = 0) {
+    if (depth > 8) return;
+    const std::string preset = doc.get_string("preset", "");
+    if (!preset.empty()) {
+        const std::string base_path = resolve_theme_path(config_dir, preset);
+        if (!base_path.empty()) {
+            if (auto nested = parse_json_file(base_path)) {
+                apply_theme_document(d, *nested, config_dir, depth + 1);
+            }
+        }
+    }
+    apply_color_overrides(d, doc);
+    apply_layout_component_overrides(d, doc);
+    if (!child(doc, "content", "code_keyword")) {
+        derive_code_syntax_colors(d.content);
+    }
+}
+
+bool apply_theme_from_path(TuiDesign& d,
+                           const std::string& path,
+                           const std::string& config_dir) {
+    if (auto root = parse_json_file(path)) {
+        apply_theme_document(d, *root, config_dir);
+        return true;
+    }
+    return false;
+}
+
+bool resolve_and_apply_theme(TuiDesign& d,
+                             const std::string& config_dir,
+                             std::string_view name) {
+    if (name.empty()) return false;
+
+    const std::string as_path = resolve_config_relative_path(config_dir, name);
+    if (as_path.size() > 5 && as_path.substr(as_path.size() - 5) == ".json") {
+        return apply_theme_from_path(d, as_path, config_dir);
+    }
+
+    const std::string theme_path = resolve_theme_path(config_dir, name);
+    if (!theme_path.empty()) {
+        return apply_theme_from_path(d, theme_path, config_dir);
+    }
+    return false;
+}
+
+std::shared_ptr<JsonValue> rgba_json(const TuiRgba& c) {
+    return jstr(rgba_to_hex(c));
+}
+
+std::shared_ptr<JsonValue> make_color_group(
+    const std::vector<std::pair<const char*, TuiRgba>>& fields) {
+    JsonObject obj;
+    for (const auto& [key, color] : fields) {
+        obj[key] = rgba_json(color);
+    }
+    return jobj(std::move(obj));
+}
+
+std::shared_ptr<JsonValue> design_to_json_value(const TuiDesign& d,
+                                                std::string_view preset) {
+    JsonObject root;
+    if (!preset.empty()) root["preset"] = jstr(std::string(preset));
+
+    root["bg"] = make_color_group({
+        {"base", d.bg.base},
+        {"panel", d.bg.panel},
+        {"header", d.bg.header},
+        {"scroll", d.bg.scroll},
+        {"status", d.bg.status},
+        {"input", d.bg.input},
+        {"footer", d.bg.footer},
+        {"gutter", d.bg.gutter},
+    });
+    root["text"] = make_color_group({
+        {"primary", d.text.primary},
+        {"muted", d.text.muted},
+        {"subtle", d.text.subtle},
+        {"inverse", d.text.inverse},
+    });
+    root["accent"] = make_color_group({
+        {"primary", d.accent.primary},
+        {"secondary", d.accent.secondary},
+        {"success", d.accent.success},
+        {"warning", d.accent.warning},
+        {"error", d.accent.error},
+        {"info", d.accent.info},
+    });
+    root["border"] = make_color_group({
+        {"subtle", d.border.subtle},
+        {"focus", d.border.focus},
+        {"gutter", d.border.gutter},
+    });
+    root["border"]->as_object_mut()["vertical"] = jstr(d.border.vertical);
+    root["border"]->as_object_mut()["horizontal"] = jstr(d.border.horizontal);
+
+    JsonObject content;
+    JsonArray heading;
+    for (const TuiRgba& h : d.content.heading) heading.push_back(rgba_json(h));
+    content["heading"] = jarr(std::move(heading));
+    const std::vector<std::pair<const char*, TuiRgba>> content_fields = {
+        {"code", d.content.code},
+        {"link", d.content.link},
+        {"bullet", d.content.bullet},
+        {"blockquote", d.content.blockquote},
+        {"rule", d.content.rule},
+        {"writ_line", d.content.writ_line},
+        {"diff_add", d.content.diff_add},
+        {"diff_remove", d.content.diff_remove},
+        {"diff_hunk", d.content.diff_hunk},
+        {"diff_file", d.content.diff_file},
+        {"success", d.content.success},
+        {"error", d.content.error},
+        {"warning", d.content.warning},
+        {"info", d.content.info},
+        {"code_keyword", d.content.code_keyword},
+        {"code_string", d.content.code_string},
+        {"code_comment", d.content.code_comment},
+        {"code_number", d.content.code_number},
+        {"code_type", d.content.code_type},
+        {"code_function", d.content.code_function},
+        {"text_dim", d.content.text_dim},
+        {"text_dimmer", d.content.text_dimmer},
+        {"accent_focused", d.content.accent_focused},
+        {"accent_prompt", d.content.accent_prompt},
+        {"prompt_color", d.content.prompt_color},
+        {"user_echo_arrow", d.content.user_echo_arrow},
+        {"user_echo_text", d.content.user_echo_text},
+        {"border_inactive", d.content.border_inactive},
+        {"agent_master", d.content.agent_master},
+    };
+    for (const auto& [key, color] : content_fields) {
+        content[key] = rgba_json(color);
+    }
+    JsonArray palette;
+    for (const TuiRgba& c : d.content.agent_palette) palette.push_back(rgba_json(c));
+    content["agent_palette"] = jarr(std::move(palette));
+    root["content"] = jobj(std::move(content));
+
+    JsonObject layout;
+    layout["pane_padding_x"] = jnum(d.layout.pane_padding_x);
+    layout["header_padding_x"] = jnum(d.layout.header_padding_x);
+    layout["status_inset_x"] = jnum(d.layout.status_inset_x);
+    layout["input_padding_x"] = jnum(d.layout.input_padding_x);
+    layout["footer_gap"] = jnum(d.layout.footer_gap);
+    layout["compact_cols"] = jnum(d.layout.compact_cols);
+    layout["dense_cols"] = jnum(d.layout.dense_cols);
+    layout["show_footer"] = jbool(d.layout.show_footer);
+    layout["status_pill"] = jbool(d.layout.status_pill);
+    layout["show_history_sidebar"] = jbool(d.layout.show_history_sidebar);
+    root["layout"] = jobj(std::move(layout));
+
+    JsonObject component;
+    component["prompt"] = jstr(d.component.prompt);
+    component["continuation_prompt"] = jstr(d.component.continuation_prompt);
+    component["inactive_prompt"] = jstr(d.component.inactive_prompt);
+    component["agent_prefix"] = jstr(d.component.agent_prefix);
+    component["agent_suffix"] = jstr(d.component.agent_suffix);
+    component["status_prefix"] = jstr(d.component.status_prefix);
+    component["status_suffix"] = jstr(d.component.status_suffix);
+    component["footer_left"] = jstr(d.component.footer_left);
+    component["footer_right"] = jstr(d.component.footer_right);
+    component["footer_left_compact"] = jstr(d.component.footer_left_compact);
+    component["footer_right_compact"] = jstr(d.component.footer_right_compact);
+    root["component"] = jobj(std::move(component));
+
+    return jobj(std::move(root));
 }
 
 } // namespace
@@ -713,59 +615,75 @@ SidebarColors tui_sidebar_colors(const TuiDesign& d) {
 }
 
 std::vector<std::string> tui_builtin_presets() {
-    return {"onedark", "modern", "nord", "dracula", "solarized", "light", "dense"};
+    return list_bundled_theme_names();
 }
 
 bool tui_preset_is_valid(std::string_view name) {
-    return preset_table().count(std::string(name)) != 0;
+    const std::string bundled = bundled_themes_dir() + "/" + std::string(name) + ".json";
+    return std::filesystem::exists(bundled);
 }
 
 TuiDesign tui_design_for_preset(std::string_view preset) {
-    const auto& table = preset_table();
-    if (const auto it = table.find(std::string(preset)); it != table.end()) {
-        return it->second();
-    }
-    return onedark_design();
+    TuiDesign d;
+    if (resolve_and_apply_theme(d, "", preset)) return d;
+    return default_design();
 }
 
 const TuiDesign& tui_design() {
     if (!g_design_ready) {
-        g_design = onedark_design();
+        g_design = default_design();
         g_design_ready = true;
     }
     return g_design;
 }
 
 void load_tui_design(const std::string& config_dir, std::string_view cli_preset) {
-    g_design = onedark_design();
+    g_design = default_design();
     g_design_ready = true;
+    g_active_preset = kDefaultTuiPreset;
+    g_active_theme_file.clear();
 
     std::shared_ptr<JsonValue> file_root;
     const std::string path = config_dir + "/tui.json";
-    std::ifstream f(path);
-    if (f) {
-        std::ostringstream ss;
-        ss << f.rdbuf();
-        try {
-            file_root = json_parse(ss.str());
-            if (file_root && !file_root->is_object()) file_root.reset();
-        } catch (...) {
-            g_design = onedark_design();
-        }
+    if (auto root = parse_json_file(path)) {
+        file_root = std::move(root);
     }
 
     const bool cli_override = !cli_preset.empty();
-    std::string preset = cli_override ? std::string(cli_preset)
-                                      : (file_root ? file_root->get_string("preset", "") : "");
-    if (!preset.empty() && tui_preset_is_valid(preset)) {
-        g_design = tui_design_for_preset(preset);
+    const std::string theme_file = file_root ? file_root->get_string("theme_file", "") : "";
+
+    if (cli_override) {
+        if (resolve_and_apply_theme(g_design, config_dir, cli_preset)) {
+            g_active_preset = std::string(cli_preset);
+            g_active_theme_file.clear();
+        }
+    } else if (!theme_file.empty()) {
+        const std::string resolved = resolve_config_relative_path(config_dir, theme_file);
+        if (apply_theme_from_path(g_design, resolved, config_dir)) {
+            g_active_theme_file = resolved;
+            g_active_preset.clear();
+        }
+    } else if (file_root) {
+        const std::string preset = file_root->get_string("preset", "");
+        if (!preset.empty() && resolve_and_apply_theme(g_design, config_dir, preset)) {
+            if (tui_preset_is_valid(preset)) {
+                g_active_preset = preset;
+                g_active_theme_file.clear();
+            } else {
+                g_active_preset.clear();
+                g_active_theme_file = config_dir + "/themes/" + preset + ".json";
+            }
+        }
     }
 
     if (file_root) {
         try {
-            apply_overrides(g_design, *file_root, /*apply_preset=*/!cli_override);
+            apply_color_overrides(g_design, *file_root);
+            apply_layout_component_overrides(g_design, *file_root);
         } catch (...) {
-            g_design = onedark_design();
+            g_design = default_design();
+            g_active_preset = kDefaultTuiPreset;
+            g_active_theme_file.clear();
         }
     }
     ++g_design_generation;
@@ -773,6 +691,165 @@ void load_tui_design(const std::string& config_dir, std::string_view cli_preset)
 
 std::uint32_t tui_design_generation() {
     return g_design_generation;
+}
+
+std::string tui_active_preset() {
+    return g_active_preset;
+}
+
+std::string tui_active_theme_file() {
+    return g_active_theme_file;
+}
+
+std::string tui_themes_dir(const std::string& config_dir) {
+    return config_dir + "/themes";
+}
+
+std::string tui_bundled_themes_dir() {
+    return bundled_themes_dir();
+}
+
+void tui_install_bundled_themes(const std::string& config_dir, bool force) {
+    const std::string src = bundled_themes_dir();
+    const std::string dest = tui_themes_dir(config_dir);
+    if (src.empty() || !std::filesystem::is_directory(src)) return;
+    std::filesystem::create_directories(dest);
+    for (const auto& entry : std::filesystem::directory_iterator(src)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() != ".json") continue;
+        const auto out = std::filesystem::path(dest) / entry.path().filename();
+        std::error_code ec;
+        if (force) {
+            std::filesystem::copy_file(
+                entry.path(), out, std::filesystem::copy_options::overwrite_existing, ec);
+        } else if (!std::filesystem::exists(out)) {
+            std::filesystem::copy_file(
+                entry.path(), out, std::filesystem::copy_options::skip_existing, ec);
+        }
+    }
+}
+
+std::vector<std::string> tui_user_theme_names(const std::string& config_dir) {
+    std::vector<std::string> out;
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::path(config_dir) / "themes";
+    if (!fs::is_directory(dir)) return out;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() != ".json") continue;
+        out.push_back(entry.path().stem().string());
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+std::vector<std::string> tui_list_available_themes(const std::string& config_dir) {
+    std::vector<std::string> out = tui_builtin_presets();
+    for (const auto& name : tui_user_theme_names(config_dir)) {
+        if (!tui_preset_is_valid(name)) out.push_back(name);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+bool tui_theme_name_is_valid(const std::string& config_dir, std::string_view name) {
+    if (tui_preset_is_valid(name)) return true;
+    if (name.find('/') != std::string_view::npos || name.ends_with(".json")) {
+        return parse_json_file(resolve_config_relative_path(config_dir, name)) != nullptr;
+    }
+    return !resolve_theme_path(config_dir, name).empty();
+}
+
+std::string tui_design_to_json(const TuiDesign& design, std::string_view preset) {
+    return json_serialize(*design_to_json_value(design, preset));
+}
+
+bool tui_write_theme_file(const std::string& path,
+                          const TuiDesign& design,
+                          std::string_view preset) {
+    std::ofstream out(path);
+    if (!out) return false;
+    out << tui_design_to_json(design, preset) << '\n';
+    return static_cast<bool>(out);
+}
+
+static void write_tui_json_root(const std::string& path, JsonObject root_obj) {
+    auto root = jobj(std::move(root_obj));
+    std::ofstream out(path);
+    if (out) out << json_serialize(*root);
+}
+
+void set_tui_preset(const std::string& config_dir, std::string_view preset) {
+    if (!tui_theme_name_is_valid(config_dir, preset)) return;
+
+    const std::string path = config_dir + "/tui.json";
+    JsonObject root_obj;
+    if (auto parsed = parse_json_file(path)) {
+        root_obj = parsed->as_object();
+    }
+
+    if (tui_preset_is_valid(preset)) {
+        root_obj["preset"] = jstr(std::string(preset));
+        root_obj.erase("theme_file");
+    } else {
+        root_obj.erase("preset");
+        root_obj["theme_file"] = jstr("themes/" + std::string(preset) + ".json");
+    }
+
+    write_tui_json_root(path, std::move(root_obj));
+    load_tui_design(config_dir);
+}
+
+bool set_tui_theme_file(const std::string& config_dir, std::string_view theme_file) {
+    const std::string resolved = resolve_config_relative_path(config_dir, theme_file);
+    if (!parse_json_file(resolved)) return false;
+
+    const std::string path = config_dir + "/tui.json";
+    JsonObject root_obj;
+    if (auto parsed = parse_json_file(path)) {
+        root_obj = parsed->as_object();
+    }
+    root_obj["theme_file"] = jstr(std::string(theme_file));
+    root_obj.erase("preset");
+    write_tui_json_root(path, std::move(root_obj));
+    load_tui_design(config_dir);
+    return true;
+}
+
+void set_show_history_sidebar(const std::string& config_dir, bool show) {
+    g_design.layout.show_history_sidebar = show;
+    if (!g_design_ready) g_design_ready = true;
+
+    const std::string path = config_dir + "/tui.json";
+    JsonObject root_obj;
+    {
+        std::ifstream f(path);
+        if (f) {
+            std::ostringstream ss;
+            ss << f.rdbuf();
+            try {
+                auto parsed = json_parse(ss.str());
+                if (parsed && parsed->is_object()) root_obj = parsed->as_object();
+            } catch (...) {
+                root_obj.clear();
+            }
+        }
+    }
+
+    auto layout_it = root_obj.find("layout");
+    std::shared_ptr<JsonValue> layout_val;
+    if (layout_it != root_obj.end() && layout_it->second && layout_it->second->is_object()) {
+        layout_val = layout_it->second;
+    } else {
+        layout_val = jobj();
+        root_obj["layout"] = layout_val;
+    }
+    layout_val->as_object_mut()["show_history_sidebar"] = jbool(show);
+
+    auto root = jobj(std::move(root_obj));
+    std::ofstream out(path);
+    if (out) out << json_serialize(*root);
 }
 
 } // namespace arbiter

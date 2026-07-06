@@ -6,7 +6,7 @@ Rendering uses [OpenTUI](https://github.com/anomalyco/opentui) (native cell-buff
 
 A pane is to a conversation what a tab is to a browser. A new pane is a new conversation against an agent of your choosing; multiple panes run side-by-side or stacked, each independently typing, streaming, and waiting for its agent. Background loops (long-running agent processes) live alongside; foreground panes can spawn child panes (`/pane <agent> <msg>`) whose results land back in the spawner when done.
 
-Start with `arbiter`. The default layout is a single pane covering the main terminal area; a right-hand **sidebar** shows session usage, the focused pane's active task, and recent tool/MCP activity when the terminal is wide enough (≥96 columns). `Ctrl-w v` / `Ctrl-w h` split the main area; `Ctrl-w s` toggles the sidebar.
+Start with `arbiter`. The default layout is a single pane covering the main terminal area. A **left-hand conversation sidebar** lists prior threads and lets you start a new one (`Ctrl-w b` to enter, `Ctrl-w t` to toggle visibility). A **right-hand sidebar** shows session usage, the focused pane's active task, and recent tool/MCP activity when the terminal is wide enough; `Ctrl-w s` toggles it. `Ctrl-w v` / `Ctrl-w h` split the main area.
 
 ## Screen anatomy
 
@@ -74,15 +74,17 @@ Everything else (current pane layout, scrollback, in-flight turns) is in-memory 
 
 ## TUI design config
 
-Arbiter ships coordinated themes: pane chrome (`bg`, `text`, `accent`, `border`)
-and scrollback content (`content` — headings, code, diffs, status glyphs) are
-defined together per preset. Set `"preset"` in `~/.arbiter/tui.json`; individual
-tokens can still be overridden afterward.
+Themes are JSON-driven. See **[themes.md](themes.md)** for the full schema, export workflow, and custom theme files.
 
-`arbiter --init` writes `~/.arbiter/tui.json` with `"preset": "onedark"` if the
-file does not exist yet. Example presets live in the repo under `themes/`.
+Summary:
 
-### Built-in presets
+- **`~/.arbiter/tui.json`** — `"preset": "nord"` or `"theme_file": "themes/mine.json"`, plus optional per-token overrides.
+- **`themes/*.json`** (in the repo / `share/arbiter/themes/` when installed) — all built-in presets as editable JSON; copied to `~/.arbiter/themes/` on `arbiter --init`.
+- **`~/.arbiter/themes/*.json`** — your custom themes or edited copies of built-ins.
+- **`arbiter --export-theme PRESET`** — dump a complete theme JSON to stdout (starter for editing).
+- **`/theme`**, **`/theme save`**, **`/theme file`** — switch, export, or load themes in-session.
+
+Built-in presets:
 
 | Preset | Character |
 |--------|-----------|
@@ -92,9 +94,20 @@ file does not exist yet. Example presets live in the repo under `themes/`.
 | `dracula` | Purple/pink/cyan on `#282a36`. |
 | `solarized` | Ethan Schoonover Solarized Dark. |
 | `light` | Light background for bright terminals. |
-| `dense` | OneDark colors with tighter padding (small terminals). |
+| `gruvbox` | Warm retro groove — orange/green on earthy browns. |
+| `catppuccin` | Mocha pastels — lavender and pink on deep plum. |
+| `tokyo-night` | Night city blues and soft purple accents. |
+| `monokai` | Classic editor — yellow/green on olive black. |
+| `rose-pine` | Muted rose and iris on midnight violet. |
+| `ayu` | High-contrast dark — orange and cyan pops. |
+| `cobalt` | Deep navy chrome with electric blue focus. |
+| `everforest` | Forest greens and soft sage on charcoal. |
+| `github` | GitHub-dark neutrals with blue links. |
+| `palenight` | Material purple and soft blue-gray panels. |
+| `synthwave` | Neon magenta and cyan on ultraviolet black. |
+| `zenburn` | Low-contrast olive-gray with sage accents. |
 
-Pick a preset:
+Pick a preset in `tui.json`:
 
 ```json
 {
@@ -102,38 +115,10 @@ Pick a preset:
 }
 ```
 
-Copy a starter from the repo if you prefer a file reference:
+Export and customize:
 
 ```bash
-cp themes/nord.json ~/.arbiter/tui.json
+arbiter --export-theme nord > ~/.arbiter/themes/my-nord.json
 ```
 
-Or pick a preset for one session without editing config:
-
-```bash
-arbiter --theme nord
-```
-
-Override individual tokens on top of any preset:
-
-```json
-{
-  "preset": "onedark",
-  "accent": {
-    "primary": "#c678dd"
-  },
-  "content": {
-    "code": "#e5c07b",
-    "heading": ["#61afef", "#c678dd", "#56b6c2", "#d19a66"]
-  },
-  "layout": {
-    "pane_padding_x": 1,
-    "input_padding_x": 2,
-    "show_footer": true
-  }
-}
-```
-
-Supported color groups are `bg`, `text`, `accent`, `border`, and `content`,
-using `#RRGGBB` values. Layout and component strings live under `layout` and
-`component` as before.
+Then set `"theme_file": "themes/my-nord.json"` or edit colors inline — see [themes.md](themes.md).
