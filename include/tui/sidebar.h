@@ -78,9 +78,12 @@ public:
     [[nodiscard]] bool session_started() const;
     [[nodiscard]] bool visible() const;
     // pane_count > 1 hides the sidebar (multi-pane layouts need full width).
-    [[nodiscard]] int effective_width(int cols, int pane_count = 1) const;
+    // leading_cols: width reserved by the history sidebar on the left.
+    [[nodiscard]] int effective_width(int cols, int pane_count = 1,
+                                      int leading_cols = 0) const;
     [[nodiscard]] Rect rect_for_terminal(int cols, int rows,
-                                         int pane_count = 1) const;
+                                         int pane_count = 1,
+                                         int leading_cols = 0) const;
 
     void record_turn(const std::string& agent_id,
                      const std::string& model,
