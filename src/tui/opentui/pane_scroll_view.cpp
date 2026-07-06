@@ -650,6 +650,65 @@ void PaneScrollView::clear() {
     segments_.push_back(std::make_unique<ProseSegment>());
 }
 
+void PaneScrollView::HistoryGapSegment::draw(OpenTuiHandle frame,
+                                             int x,
+                                             int y,
+                                             int w,
+                                             int h,
+                                             int /*skip_rows*/) const {
+    if (w <= 0 || h <= 0) return;
+    const TuiDesign& d = tui_design();
+    fill_rect(frame, x, y, w, 1, d.bg.base);
+    char buf[96];
+    std::snprintf(buf, sizeof(buf),
+                  "── %d earlier message%s · press PgUp to load ──",
+                  remaining, remaining == 1 ? "" : "s");
+    std::string text = trim_to_cells(buf, w);
+    const int off = std::max(0, (w - cell_width(text)) / 2);
+    draw_text(frame, x + off, y, text, d.text.subtle, d.bg.base);
+}
+
+bool PaneScrollView::has_gap() const {
+    return !segments_.empty()
+        && dynamic_cast<const HistoryGapSegment*>(segments_.front().get()) != nullptr;
+}
+
+int PaneScrollView::gap_remaining() const {
+    if (segments_.empty()) return 0;
+    if (const auto* gap = dynamic_cast<const HistoryGapSegment*>(segments_.front().get())) {
+        return gap->remaining;
+    }
+    return 0;
+}
+
+void PaneScrollView::set_gap(int remaining) {
+    const bool front_is_gap = has_gap();
+    if (remaining <= 0) {
+        if (front_is_gap) segments_.erase(segments_.begin());
+        return;
+    }
+    if (front_is_gap) {
+        static_cast<HistoryGapSegment&>(*segments_.front()).remaining = remaining;
+    } else {
+        segments_.insert(segments_.begin(), std::make_unique<HistoryGapSegment>(remaining));
+    }
+}
+
+std::vector<std::unique_ptr<PaneScrollView::Segment>> PaneScrollView::take_segments() {
+    auto out = std::move(segments_);
+    segments_.clear();
+    segments_.push_back(std::make_unique<ProseSegment>());
+    return out;
+}
+
+void PaneScrollView::splice_front(std::vector<std::unique_ptr<Segment>> segs) {
+    if (segs.empty()) return;
+    for (auto& s : segs) s->set_wrap_cols(wrap_cols_);
+    segments_.insert(segments_.begin(),
+                     std::make_move_iterator(segs.begin()),
+                     std::make_move_iterator(segs.end()));
+}
+
 void PaneScrollView::retheme() {
     for (auto& seg : segments_) {
         if (auto* prose = dynamic_cast<ProseSegment*>(seg.get())) {

@@ -33,11 +33,13 @@
 #include "repl/repl_argv.h"
 #include "repl/conversation_store.h"
 #include "repl/conversation_titling.h"
+#include "repl/transcript_replay.h"
 #include "tui/opentui/session.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
+#include "tui/opentui/top_header_frame.h"
 
 #include <iostream>
 #include <string>
@@ -123,44 +125,6 @@ static arbiter::RenderPolicy master_stream_policy(const arbiter::Config& cfg) {
     return cfg.verbose ? arbiter::kVerbose : arbiter::kMasterStream;
 }
 
-static void flush_pane_output(Pane& pane) {
-    auto items = pane.output_queue.drain_items();
-    if (items.empty()) return;
-
-    int before = (pane.scroll_offset > 0) ? pane_history_total_rows(pane) : 0;
-    for (const auto& item : items) {
-        switch (item.kind) {
-        case arbiter::OutputItem::Kind::Text:
-            if (!item.data.empty()) {
-                pane_history_push(pane, item.data, item.new_block);
-            }
-            break;
-        case arbiter::OutputItem::Kind::Prose:
-            if (!item.styled_lines.empty()) {
-                pane_history_push_prose(pane, item.styled_lines, item.new_block);
-            }
-            break;
-        case arbiter::OutputItem::Kind::Code:
-            if (item.code_op == arbiter::OutputItem::CodeOp::Open) {
-                pane_history_push_code_open(
-                    pane, item.data, item.code_lang, item.code_preview_rows, item.new_block);
-            } else if (item.code_op == arbiter::OutputItem::CodeOp::Line) {
-                pane_history_push_code_line(pane, item.data);
-            } else {
-                pane_history_push_code_close(pane, item.data);
-            }
-            break;
-        case arbiter::OutputItem::Kind::Diff:
-            pane_history_push_diff(pane, item.data);
-            break;
-        }
-    }
-    if (pane.scroll_offset > 0) {
-        int after = pane_history_total_rows(pane);
-        pane.new_while_scrolled += (after - before);
-    }
-}
-
 // Set by each pane's exec thread at startup and left untouched thereafter.
 // Orchestrator callbacks (progress/tool-status/agent-start) run
 // synchronously from whichever exec thread invoked orch.send_streaming, so
@@ -184,7 +148,7 @@ static void update_pane_original_task(Pane& pane,
 static void getc_flush_output() {
     auto& S = g_getc_state;
     if (!S.pane) return;
-    flush_pane_output(*S.pane);
+    pane_history_drain_queue(*S.pane);
     if (g_ui_ctx) pane_history_render(*S.pane, *g_ui_ctx);
 }
 
@@ -252,7 +216,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             cols, history_sidebar.enabled());
         const int panes = layout_ptr ? static_cast<int>(layout_ptr->pane_count()) : 1;
         const int trailing = sidebar.effective_width(cols, panes);
-        return Rect{leading, 0, std::max(1, cols - leading - trailing), rows};
+        // Row 0 is reserved for the top header bar.
+        return Rect{leading, 1, std::max(1, cols - leading - trailing), std::max(1, rows - 1)};
     };
 
     bool restored = conversation_store.load(conversation_store.active_id(), orch);
@@ -390,10 +355,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             });
 
         Pane* raw = p.get();
-        p->editor.set_scroll_handler([raw, &pump_notify](int direction, int step) {
+        p->editor.set_scroll_handler([raw, &pump_notify, &orch](int direction, int step) {
             const int max_off = pane_history_max_scroll(*raw);
             if (direction < 0) {
                 raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
+                // Hit the top of currently-loaded scrollback: pull in the
+                // next chunk of older transcript history, if any is behind
+                // the gap marker (see replay_transcript/kReplayTailMessages).
+                if (raw->scroll_offset >= max_off && raw->scroll && raw->scroll->has_gap()) {
+                    const auto history = orch.get_agent_history("index");
+                    arbiter::replay_load_previous_chunk(*raw, history);
+                }
             } else {
                 raw->scroll_offset = std::max(0, raw->scroll_offset - step);
                 raw->new_while_scrolled = 0;
@@ -539,6 +511,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     pane_hooks.draw_overlays = [&](OpenTuiHandle frame, int cols, int rows) {
         if (frame == 0 || cols <= 0 || rows <= 0) return;
 
+        arbiter::opentui::draw_top_header(frame, cols);
+
         const Rect hb = HistorySidebarState::rect_for_terminal(
             cols, rows, history_sidebar.enabled());
         if (hb.w > 0) {
@@ -561,7 +535,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         int gap = cols - pane_x - pane_w;
         if (sw <= 0 || gap <= 0) return;
 
-        const Rect sb = {pane_x + pane_w, 0, std::min(sw, gap), rows};
+        const Rect sb = {pane_x + pane_w, 1, std::min(sw, gap), std::max(1, rows - 1)};
         Pane& focused = layout.focused();
         sidebar.set_focus_context(focused.current_agent,
                                   focused.current_model,
@@ -1387,7 +1361,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     std::atomic<bool> pump_stop{false};
     std::thread output_pump([&]() {
-        auto push_pane_output = [&](Pane& p) { flush_pane_output(p); };
+        auto push_pane_output = [&](Pane& p) { pane_history_drain_queue(p); };
         auto present_all = [&]() { present_unlocked(); };
         while (!pump_stop.load()) {
             {
@@ -1570,9 +1544,36 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         ui_ctx.focused_pane = &layout.focused();
     };
 
+    auto any_turn_in_flight = [&]() {
+        bool busy = false;
+        layout.for_each_pane([&](Pane& p) { if (p.cmd_queue.is_busy()) busy = true; });
+        return busy;
+    };
+
     auto switch_conversation = [&](bool create_new) {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
+
+        if (any_turn_in_flight()) {
+            layout.focused().tui.set_status("Turn in progress — switch anyway? [y/N]");
+            present_unlocked();
+            char csi = 0;
+            const int key = read_history_sidebar_key(csi);
+            layout.focused().tui.clear_status();
+            if (key != 'y' && key != 'Y') {
+                history_sidebar.exit_focus();
+                present_unlocked();
+                return;
+            }
+        }
+
         orch.cancel();
+        // Wait for every pane's exec thread to actually return to queue-pop
+        // before touching orch's histories — cancel() only unblocks the
+        // in-flight API call, it doesn't wait for the thread to unwind.
+        while (any_turn_in_flight()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
         // Drain any in-flight autosave before we mutate orch's histories
         // below — otherwise a queued save from the previous turn could run
         // after reset_all_histories()/load_session() and clobber the old
@@ -1580,6 +1581,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         conversation_store.flush();
         conversation_store.save(conversation_store.active_id(), orch);
 
+        bool did_switch = false;
         if (create_new) {
             const std::string before = conversation_store.active_id();
             const std::string after = conversation_store.create_or_reuse(fs::current_path().string());
@@ -1601,6 +1603,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             conversation_store.set_active(picked);
             orch.reset_all_histories();
             conversation_store.load(picked, orch);
+            did_switch = true;
         }
 
         while (layout.pane_count() > 1) {
@@ -1619,11 +1622,22 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         focused.new_while_scrolled = 0;
         focused.tui.clear_status();
         sync_layout_to_terminal();
-        history_sidebar.exit_focus();
-        history_sidebar.refresh_entries(conversation_store);
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
         });
+
+        // Replay the tail of the restored conversation's transcript through
+        // the same streaming pipeline live turns use, so the switch doesn't
+        // leave the pane looking blank even though the agent's context was
+        // restored. Older history stays behind a gap marker (PgUp loads it).
+        if (did_switch) {
+            const auto history = orch.get_agent_history("index");
+            const size_t total = history.size();
+            arbiter::replay_transcript(focused, history, arbiter::replay_tail_begin(total), total);
+        }
+
+        history_sidebar.exit_focus();
+        history_sidebar.refresh_entries(conversation_store);
         present_unlocked();
         g_getc_state.pane = &layout.focused();
         ui_ctx.focused_pane = &layout.focused();

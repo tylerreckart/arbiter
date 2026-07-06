@@ -100,6 +100,8 @@ set(ARBITER_SOURCES
     src/repl/pane_history.cpp
     src/repl/conversation_store.cpp
     src/repl/conversation_titling.cpp
+    src/repl/transcript_replay.cpp
+    src/repl/transcript_replay_predicates.cpp
     src/atomic_file.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
@@ -225,6 +227,7 @@ target_sources(arbiter PRIVATE
     src/tui/history_sidebar.cpp
     src/tui/opentui/sidebar_frame.cpp
     src/tui/opentui/history_sidebar_frame.cpp
+    src/tui/opentui/top_header_frame.cpp
     src/tui/opentui/pane_frame.cpp
 )
 target_link_libraries(arbiter PRIVATE OpenTUI::core)
@@ -328,6 +331,23 @@ if(INDEX_BUILD_TESTS)
         target_link_libraries(sidebar_tui_tests PRIVATE util)
     endif()
     add_test(NAME sidebar_tui COMMAND sidebar_tui_tests)
+
+    add_executable(transcript_replay_tui_tests
+        tests/pty_harness.cpp
+        tests/test_transcript_replay_tui.cpp
+    )
+    target_include_directories(transcript_replay_tui_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/tests
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(transcript_replay_tui_tests PRIVATE
+        INDEX_TEST_BINARY="$<TARGET_FILE:arbiter>"
+    )
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(transcript_replay_tui_tests PRIVATE util)
+    endif()
+    add_test(NAME transcript_replay_tui COMMAND transcript_replay_tui_tests)
+    add_dependencies(transcript_replay_tui_tests arbiter)
     add_dependencies(sidebar_tui_tests arbiter)
 
     # --- Unit tests for security-critical command functions ---
@@ -534,6 +554,19 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_conversation_titling COMMAND unit_conversation_titling)
+
+    # --- Unit tests for transcript-replay's pure logic (tail-window math,
+    # tool-result/pane-result noise filtering) — no OpenTUI dependency.
+    add_executable(unit_transcript_replay_predicates
+        tests/test_transcript_replay_predicates.cpp
+        src/repl/transcript_replay_predicates.cpp
+    )
+    target_include_directories(unit_transcript_replay_predicates PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    add_test(NAME unit_transcript_replay_predicates COMMAND unit_transcript_replay_predicates)
 
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser

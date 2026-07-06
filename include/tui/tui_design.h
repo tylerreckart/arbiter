@@ -122,6 +122,10 @@ TuiRgba tui_rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b,
 
 [[nodiscard]] SidebarColors tui_sidebar_colors(const TuiDesign& d);
 
+// Sidebar panel background — deliberately darker than `bg.base` so both
+// sidebars read as recessed relative to the main pane, regardless of theme.
+[[nodiscard]] TuiRgba tui_sidebar_bg(const TuiDesign& d);
+
 const TuiDesign& tui_design();
 // `cli_preset` overrides `"preset"` in tui.json for this session; other
 // tui.json tokens still apply on top.

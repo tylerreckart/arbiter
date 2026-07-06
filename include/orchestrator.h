@@ -247,6 +247,12 @@ public:
     // sub-agent.  Throws std::out_of_range for unknown ids.
     void set_agent_history(const std::string& id, std::vector<Message> history);
 
+    // Returns a copy of the agent's current message history ("index" for
+    // the master). Used by transcript replay to render the conversation's
+    // transcript on a TUI conversation switch. Throws std::out_of_range for
+    // unknown ids.
+    std::vector<Message> get_agent_history(const std::string& id) const;
+
     // Global stats
     std::string global_status() const;
 
