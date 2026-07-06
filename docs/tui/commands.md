@@ -37,6 +37,8 @@ Each pane is an independent conversation view. See [panes.md](panes.md) for the 
 | `Ctrl-w s`                 | Toggle the session sidebar (wide terminals).                            |
 | `Ctrl-w w` / `Ctrl-w Ctrl-w` | Cycle focus to the next pane (pre-order traversal).                   |
 | `Ctrl-w c`                 | Close the focused pane. The pane's exec thread is joined cleanly; in-flight turn is cancelled. |
+| `Ctrl-w t`                 | Toggle the conversation-history sidebar (left rail).                    |
+| `Ctrl-w b`                 | Enter the sidebar to pick a prior conversation or start a new one.    |
 
 ## Background loops
 

@@ -98,6 +98,7 @@ set(ARBITER_SOURCES
     src/repl/queues.cpp
     src/repl/layout.cpp
     src/repl/pane_history.cpp
+    src/repl/conversation_store.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
     src/cli.cpp
@@ -218,7 +219,9 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/pane_input_editor.cpp
     src/tui/sidebar.cpp
     src/tui/sidebar_format.cpp
+    src/tui/history_sidebar.cpp
     src/tui/opentui/sidebar_frame.cpp
+    src/tui/opentui/history_sidebar_frame.cpp
     src/tui/opentui/pane_frame.cpp
 )
 target_link_libraries(arbiter PRIVATE OpenTUI::core)
