@@ -32,6 +32,11 @@ public:
     using ScrollHandler = std::function<void(int direction, int step)>;
     void set_scroll_handler(ScrollHandler fn) { scroll_handler_ = std::move(fn); }
 
+    using CodeExpandHandler = std::function<void()>;
+    void set_code_expand_handler(CodeExpandHandler fn) {
+        code_expand_handler_ = std::move(fn);
+    }
+
     using CancelHandler = std::function<void()>;
     void set_cancel_handler(CancelHandler fn) { cancel_handler_ = std::move(fn); }
 
@@ -85,6 +90,7 @@ private:
     TUI& tui_;
     CompletionFn    completer_;
     ScrollHandler   scroll_handler_;
+    CodeExpandHandler code_expand_handler_;
     CancelHandler   cancel_handler_;
     ChordHandler    chord_handler_;
     std::function<void()> present_fn_;

@@ -69,7 +69,7 @@ struct TuiDesign {
         std::string status_suffix = " ";
         std::string footer_left = "esc interrupt  pgup/dn scroll";
         std::string footer_right = "/agents list agents  /help list commands";
-        std::string footer_left_compact = "esc cancel  pg scroll";
+        std::string footer_left_compact = "pg scroll";
         std::string footer_right_compact = "/help";
     } component;
 
@@ -91,6 +91,12 @@ struct TuiDesign {
         TuiRgba error{};
         TuiRgba warning{};
         TuiRgba info{};
+        TuiRgba code_keyword{};
+        TuiRgba code_string{};
+        TuiRgba code_comment{};
+        TuiRgba code_number{};
+        TuiRgba code_type{};
+        TuiRgba code_function{};
         TuiRgba text_dim{};
         TuiRgba text_dimmer{};
         TuiRgba accent_focused{};
@@ -124,13 +130,28 @@ void load_tui_design(const std::string& config_dir,
 // Bumps when load_tui_design() completes — theme() uses this to invalidate cache.
 [[nodiscard]] std::uint32_t tui_design_generation();
 
-// Built-in full themes (chrome + scrollback content).  Set `"preset"` in
-// ~/.arbiter/tui.json — see docs/tui/index.md.
+// Built-in themes ship as JSON in share/arbiter/themes (or ARBITER_THEMES_DIR at
+// build time). Set `"preset"` or `"theme_file"` in ~/.arbiter/tui.json.
 inline constexpr const char* kDefaultTuiPreset = "onedark";
 
+[[nodiscard]] std::string tui_bundled_themes_dir();
 [[nodiscard]] std::vector<std::string> tui_builtin_presets();
+[[nodiscard]] std::vector<std::string> tui_user_theme_names(const std::string& config_dir);
+[[nodiscard]] std::vector<std::string> tui_list_available_themes(const std::string& config_dir);
+[[nodiscard]] std::string tui_themes_dir(const std::string& config_dir);
 [[nodiscard]] bool tui_preset_is_valid(std::string_view name);
+[[nodiscard]] bool tui_theme_name_is_valid(const std::string& config_dir, std::string_view name);
 [[nodiscard]] TuiDesign tui_design_for_preset(std::string_view preset);
+[[nodiscard]] std::string tui_active_preset();
+[[nodiscard]] std::string tui_active_theme_file();
+[[nodiscard]] std::string tui_design_to_json(const TuiDesign& design,
+                                             std::string_view preset = {});
+[[nodiscard]] bool tui_write_theme_file(const std::string& path,
+                                        const TuiDesign& design,
+                                        std::string_view preset = {});
+void tui_install_bundled_themes(const std::string& config_dir, bool force = false);
+void set_tui_preset(const std::string& config_dir, std::string_view preset);
+bool set_tui_theme_file(const std::string& config_dir, std::string_view theme_file);
 void set_show_history_sidebar(const std::string& config_dir, bool show);
 
 } // namespace arbiter

@@ -24,6 +24,10 @@ void pane_history_clear(Pane& pane) {
     if (pane.scroll) pane.scroll->clear();
 }
 
+void pane_history_retheme(Pane& pane) {
+    if (pane.scroll) pane.scroll->retheme();
+}
+
 void pane_history_push(Pane& pane, std::string_view text, bool new_block) {
     if (pane.scroll) pane.scroll->append(text, new_block);
 }
@@ -40,9 +44,12 @@ void pane_history_push_prose(Pane& pane,
 
 void pane_history_push_code_open(Pane& pane,
                                  std::string_view open_fence,
+                                 std::string_view lang,
                                  size_t preview_rows,
                                  bool new_block) {
-    if (pane.scroll) pane.scroll->append_code_open(open_fence, preview_rows, new_block);
+    if (pane.scroll) {
+        pane.scroll->append_code_open(open_fence, lang, preview_rows, new_block);
+    }
 }
 
 void pane_history_push_code_line(Pane& pane, std::string_view line) {
@@ -51,6 +58,11 @@ void pane_history_push_code_line(Pane& pane, std::string_view line) {
 
 void pane_history_push_code_close(Pane& pane, std::string_view close_fence) {
     if (pane.scroll) pane.scroll->append_code_close(close_fence);
+}
+
+bool pane_history_toggle_code_block(Pane& pane, int scroll_offset) {
+    if (!pane.scroll) return false;
+    return pane.scroll->toggle_code_block_in_view(scroll_offset);
 }
 
 int pane_history_total_rows(const Pane& pane) {
@@ -64,16 +76,15 @@ int pane_history_max_scroll(const Pane& pane) {
 }
 
 void pane_history_begin_frame(UiContext& ctx) {
+    // Legacy entry point — prefer pane_history_present / Session::with_frame.
     if (!ctx.session || !ctx.session->active()) return;
     const OpenTuiHandle frame = ctx.session->begin_frame();
     if (frame == 0) return;
     bufferClear(frame, tui_design().bg.base.data());
 }
 
-void pane_history_draw_pane(Pane& pane, UiContext& ctx) {
-    if (!ctx.session || !pane.scroll) return;
-    const OpenTuiHandle frame = ctx.session->frame();
-    if (frame == 0) return;
+void pane_history_draw_pane(Pane& pane, UiContext& ctx, OpenTuiHandle frame) {
+    if (!ctx.session || !pane.scroll || frame == 0) return;
 
     opentui::draw_pane_chrome(frame, pane.tui);
     pane.scroll->draw(frame,
@@ -91,25 +102,25 @@ void pane_history_end_frame(UiContext& ctx) {
 
 void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks) {
     if (!ctx.session || !ctx.session->active()) return;
-    pane_history_begin_frame(ctx);
-    if (hooks.for_each_pane) {
-        hooks.for_each_pane([](Pane& p) {
-            p.thinking.tick();
-            p.tool_indicator.tick();
-        });
-        hooks.for_each_pane([&](Pane& p) {
-            pane_history_draw_pane(p, ctx);
-        });
-    }
-    if (hooks.draw_overlays) {
-        OpenTuiHandle frame = ctx.session->frame();
-        if (frame != 0) {
+    ctx.session->with_frame([&](OpenTuiHandle frame) {
+        if (frame == 0) return;
+        bufferClear(frame, tui_design().bg.base.data());
+
+        if (hooks.for_each_pane) {
+            hooks.for_each_pane([](Pane& p) {
+                p.thinking.tick();
+                p.tool_indicator.tick();
+            });
+            hooks.for_each_pane([&](Pane& p) {
+                pane_history_draw_pane(p, ctx, frame);
+            });
+        }
+        if (hooks.draw_overlays) {
             hooks.draw_overlays(frame,
                                 static_cast<int>(getBufferWidth(frame)),
                                 static_cast<int>(getBufferHeight(frame)));
         }
-    }
-    pane_history_end_frame(ctx);
+    });
 }
 
 void pane_history_render(Pane& pane, UiContext& ctx) {

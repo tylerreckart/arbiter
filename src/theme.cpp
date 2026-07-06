@@ -52,6 +52,12 @@ Theme build_theme_from_design() {
     }
 
     t.md_code     = fg_rgba(c.code);
+    t.md_code_keyword  = fg_rgba(c.code_keyword);
+    t.md_code_string   = fg_rgba(c.code_string);
+    t.md_code_comment  = fg_rgba(c.code_comment);
+    t.md_code_number   = fg_rgba(c.code_number);
+    t.md_code_type     = fg_rgba(c.code_type);
+    t.md_code_function = fg_rgba(c.code_function);
     t.md_link     = fg_rgba(c.link);
     t.md_bullet   = fg_rgba(c.bullet);
     t.md_cmd_line = fg_rgba(c.writ_line);

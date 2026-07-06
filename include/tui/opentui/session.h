@@ -3,6 +3,7 @@
 #include "tui/opentui/engine.h"
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 
 namespace arbiter::opentui {
@@ -25,6 +26,14 @@ public:
 
     OpenTuiHandle begin_frame();
     void end_frame();
+
+    // Run draw_fn while holding the frame lock (begin → draw → render).
+    void with_frame(const std::function<void(OpenTuiHandle)>& fn);
+
+    // Re-apply terminal background + cursor from the active TuiDesign.
+    void apply_design();
+    void flush_display();
+
     [[nodiscard]] OpenTuiHandle frame() const { return in_frame_ ? frame_ : 0; }
 
 private:

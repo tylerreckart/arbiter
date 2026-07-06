@@ -22,6 +22,8 @@
 #include "cli.h"
 #include "tui/tui.h"
 #include "tui/tui_design.h"
+
+#include <filesystem>
 #include "tui/stream_filter.h"
 #include "repl/pane.h"
 #include "repl/layout.h"
@@ -139,7 +141,7 @@ static void flush_pane_output(Pane& pane) {
         case arbiter::OutputItem::Kind::Code:
             if (item.code_op == arbiter::OutputItem::CodeOp::Open) {
                 pane_history_push_code_open(
-                    pane, item.data, item.code_preview_rows, item.new_block);
+                    pane, item.data, item.code_lang, item.code_preview_rows, item.new_block);
             } else if (item.code_op == arbiter::OutputItem::CodeOp::Line) {
                 pane_history_push_code_line(pane, item.data);
             } else {
@@ -331,16 +333,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         });
         p->current_agent = "index";
         p->current_model = orch.get_agent_model(p->current_agent);
-        p->tui.init(p->current_agent, p->current_model);
         pane_history_init(*p);
-        pane_history_set_cols(*p, p->tui.cols());
 
         p->editor.set_max_history(1000);
         p->editor.set_history(shared_history);  // copy per-pane
         p->editor.set_present_fn([&]() { if (pump_notify) pump_notify(); });
 
         p->editor.set_completion_provider(
-            [&orch, &loops](const std::string& buf, const std::string& tok)
+            [&orch, &loops, &dir](const std::string& buf, const std::string& tok)
             -> std::vector<std::string> {
                 auto match = [&](const std::vector<std::string>& candidates) {
                     std::vector<std::string> out;
@@ -364,7 +364,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                   "/fetch","/mem","/search","/browse",
                                   "/todo","/schedule","/exec","/write",
                                   "/read","/list","/mcp","/a2a","/lesson",
-                                  "/plan","/verbose","/quit","/help"});
+                                  "/plan","/theme","/verbose","/quit","/help"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
                     cmd == "reset" || cmd == "pane") {
@@ -382,6 +382,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (cmd == "schedule") return match({"list","cancel","pause","resume"});
                 if (cmd == "mcp") return match({"tools","call"});
                 if (cmd == "a2a") return match({"list","call"});
+                if (cmd == "theme") return match(arbiter::tui_list_available_themes(dir));
                 return {};
             });
 
@@ -396,6 +397,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (raw->scroll_offset == 0) raw->tui.clear_status();
             }
             if (pump_notify) pump_notify();
+        });
+        p->editor.set_code_expand_handler([raw, &pump_notify]() {
+            if (pane_history_toggle_code_block(*raw, raw->scroll_offset) && pump_notify) {
+                pump_notify();
+            }
         });
         p->editor.set_cancel_handler([raw, &orch]() {
             orch.cancel();
@@ -486,11 +492,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // ── Layout + initial pane ──────────────────────────────────────────────
     LayoutTree layout(make_pane(), layout_bounds());
     layout_ptr = &layout;
+    layout.for_each_pane([&](Pane& p) {
+        pane_history_set_cols(p, p.tui.cols());
+    });
 
     auto sync_layout_to_terminal = [&]() -> bool {
         const Rect want = layout_bounds();
         const Rect have = layout.outer_bounds();
-        if (want.w == have.w && want.h == have.h) return false;
+        if (want.x == have.x && want.y == have.y
+            && want.w == have.w && want.h == have.h) {
+            return false;
+        }
         layout.resize(want);
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
@@ -504,6 +516,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
         sync_layout_to_terminal();
         refresh_focused_input.store(true);
+        layout.focused().editor.interrupt();
+    };
+
+    auto refresh_chrome = [&]() {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        layout.for_each_pane([&](Pane& p) { pane_history_retheme(p); });
+        ot_session.apply_design();
+        if (ui_ctx.present_all) ui_ctx.present_all();
+        ot_session.flush_display();
+        refresh_focused_input.store(true);
+        layout.focused().editor.interrupt();
     };
 
     PaneFrameHooks pane_hooks;
@@ -519,7 +542,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             history_sidebar.refresh_entries(conversation_store);
             HistorySidebarSnapshot hs = history_sidebar.snapshot();
             hs.active_id = conversation_store.active_id();
-            arbiter::opentui::draw_history_sidebar(frame, hs, hb);
+            const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
+            arbiter::opentui::draw_history_sidebar(
+                frame, hs, hb, chrome.rect, chrome.input_rows);
         }
 
         if (layout.pane_count() > 1) layout.draw_borders(frame);
@@ -1027,6 +1052,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /plan execute <path>             — execute a planner-produced plan file\n"
                     "\n"
                     "Session\n"
+                    "  /theme [list]|<preset>           — switch TUI color theme in-session\n"
                     "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
                     "  /help                            — this list\n"
                     "  /quit                            — exit\n"
@@ -1047,6 +1073,82 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 }
                 output_queue.push_msg(std::string("verbose: ") +
                                       (cfg.verbose ? "on" : "off"));
+                return;
+            }
+                if (cmd == "theme") {
+                std::string arg;
+                iss >> arg;
+                if (arg.empty() || arg == "list") {
+                    const std::string active_preset = arbiter::tui_active_preset();
+                    const std::string active_file = arbiter::tui_active_theme_file();
+                    std::ostringstream out;
+                    out << "Themes";
+                    if (!active_preset.empty()) {
+                        out << " (active preset: " << active_preset << ")";
+                    } else if (!active_file.empty()) {
+                        out << " (active file: " << active_file << ")";
+                    }
+                    out << ":\n";
+                    for (const auto& preset : arbiter::tui_list_available_themes(dir)) {
+                        out << "  " << preset;
+                        if (preset == active_preset) out << "  *";
+                        out << '\n';
+                    }
+                    out << "\nUsage:\n"
+                           "  /theme <preset>           — built-in or ~/.arbiter/themes/<name>.json\n"
+                           "  /theme save <name>        — export current look to themes/<name>.json\n"
+                           "  /theme file <path>        — load theme JSON (sets theme_file in tui.json)\n"
+                           "\nConfig (~/.arbiter/tui.json):\n"
+                           "  { \"preset\": \"nord\" }   or   { \"theme_file\": \"themes/mine.json\" }\n"
+                           "Override any token with bg/text/accent/border/content groups (#RRGGBB).\n"
+                           "Export a starter: arbiter --export-theme onedark > ~/.arbiter/themes/mine.json";
+                    output_queue.push_msg(out.str());
+                    return;
+                }
+                if (arg == "save") {
+                    std::string name;
+                    iss >> name;
+                    if (name.empty()) {
+                        output_queue.push_msg("Usage: /theme save <name>");
+                        return;
+                    }
+                    namespace fs = std::filesystem;
+                    const std::string themes_dir = arbiter::tui_themes_dir(dir);
+                    fs::create_directories(themes_dir);
+                    const std::string path = themes_dir + "/" + name + ".json";
+                    const std::string preset_hint = arbiter::tui_active_preset();
+                    if (!arbiter::tui_write_theme_file(path,
+                                                       arbiter::tui_design(),
+                                                       preset_hint)) {
+                        output_queue.push_msg("ERR: could not write " + path);
+                        return;
+                    }
+                    output_queue.push_msg("saved theme: " + path);
+                    return;
+                }
+                if (arg == "file") {
+                    std::string path_arg;
+                    iss >> path_arg;
+                    if (path_arg.empty()) {
+                        output_queue.push_msg("Usage: /theme file <path>\n"
+                                            "  Path is relative to ~/.arbiter/ unless absolute.");
+                        return;
+                    }
+                    if (!arbiter::set_tui_theme_file(dir, path_arg)) {
+                        output_queue.push_msg("ERR: could not load theme file '" + path_arg + "'");
+                        return;
+                    }
+                    refresh_chrome();
+                    output_queue.push_msg("theme file: " + path_arg);
+                    return;
+                }
+                if (!arbiter::tui_theme_name_is_valid(dir, arg)) {
+                    output_queue.push_msg("ERR: unknown theme '" + arg + "' (/theme list)");
+                    return;
+                }
+                arbiter::set_tui_preset(dir, arg);
+                refresh_chrome();
+                output_queue.push_msg("theme: " + arg);
                 return;
             }
 
@@ -1473,10 +1575,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
         if (history_sidebar.focused()) {
             if (pump_notify) pump_notify();
+            const int cols = arbiter::term_cols();
             const int rows = arbiter::term_rows();
-            const Rect hb = HistorySidebarState::rect_for_terminal(
-                arbiter::term_cols(), rows, true);
-            const int visible_rows = std::max(1, (hb.h - 6) / 2);
+            const Rect hb = HistorySidebarState::rect_for_terminal(cols, rows, true);
+            const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
+            const int visible_rows = arbiter::opentui::history_sidebar_visible_rows(
+                hb, chrome.rect, chrome.input_rows, true);
 
             char csi = 0;
             const int key = read_history_sidebar_key(csi);
@@ -1563,11 +1667,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         focused.output_queue.push_msg(
             theme().user_echo_arrow + "> " + theme().user_echo_text + line + theme().reset + "");
 
-        bool was_busy = focused.cmd_queue.is_busy();
         focused.cmd_queue.push(line);
-        if (was_busy) {
-            focused.tui.set_status("queued (" +
-                std::to_string(focused.cmd_queue.pending()) + " waiting)");
+        if (focused.cmd_queue.is_busy()) {
+            focused.tui.show_queue_depth(focused.cmd_queue.pending());
+            if (pump_notify) pump_notify();
         }
     }
 
@@ -1618,6 +1721,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
 int main(int argc, char* argv[]) {
     try {
+        if (argc >= 3 && std::string_view(argv[1]) == "--export-theme") {
+            const std::string name = argv[2];
+            if (!arbiter::tui_preset_is_valid(name)) {
+                std::cerr << "Unknown preset: " << name << "\n";
+                return 1;
+            }
+            std::cout << arbiter::tui_design_to_json(
+                arbiter::tui_design_for_preset(name), "") << '\n';
+            return 0;
+        }
+
         if (arbiter::argv_has_theme_flag(argc, argv) &&
             arbiter::argv_repl_theme(argc, argv).empty()) {
             std::cerr << "Usage: arbiter [--no-exec] [--theme PRESET]\n";
@@ -1626,13 +1740,14 @@ int main(int argc, char* argv[]) {
 
         if (arbiter::argv_launches_interactive(argc, argv)) {
             const std::string theme = arbiter::argv_repl_theme(argc, argv);
-            if (!theme.empty() && !arbiter::tui_preset_is_valid(theme)) {
+            const std::string dir = get_config_dir();
+            if (!theme.empty() && !arbiter::tui_theme_name_is_valid(dir, theme)) {
                 std::cerr << "Unknown theme: " << theme << "\n";
-                std::cerr << "Valid themes:";
+                std::cerr << "Built-in:";
                 for (const auto& p : arbiter::tui_builtin_presets()) {
                     std::cerr << ' ' << p;
                 }
-                std::cerr << "\n";
+                std::cerr << "\nCustom: place JSON in " << arbiter::tui_themes_dir(dir) << "/\n";
                 return 1;
             }
             cmd_interactive(!arbiter::argv_has_no_exec(argc, argv), theme);
@@ -1643,7 +1758,8 @@ int main(int argc, char* argv[]) {
 
         if (arg1 == "--no-exec") {
             const std::string theme = arbiter::argv_repl_theme(argc, argv);
-            if (!theme.empty() && !arbiter::tui_preset_is_valid(theme)) {
+            const std::string dir = get_config_dir();
+            if (!theme.empty() && !arbiter::tui_theme_name_is_valid(dir, theme)) {
                 std::cerr << "Unknown theme: " << theme << "\n";
                 return 1;
             }
@@ -1751,7 +1867,9 @@ int main(int argc, char* argv[]) {
                 "  arbiter --no-exec [--theme PRESET] Interactive REPL with /exec disabled\n"
                 "                                     (agents cannot run shell commands)\n"
                 "                                     --theme: onedark (default), modern, nord,\n"
-                "                                     dracula, solarized, light, dense\n"
+                "                                     dracula, solarized, light, gruvbox,\n"
+                "                                     catppuccin, tokyo-night, monokai, …\n"
+                "                                     (/theme list for all presets)\n"
                 "  arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]\n"
                 "                                     HTTP+SSE orchestration API (default 127.0.0.1:8080).\n"
                 "                                     --verbose mirrors every SSE event (text deltas, tool calls,\n"
@@ -1760,6 +1878,7 @@ int main(int argc, char* argv[]) {
                 "                                     the host via popen().  WARNING: agents run as this process's\n"
                 "                                     user.  Also: ARBITER_ALLOW_HOST_EXEC=1.\n"
                 "  arbiter --send <agent> <msg>       One-shot message\n"
+                "  arbiter --export-theme PRESET      Write full theme JSON to stdout\n"
                 "  arbiter --init [--force]           Initialize config + example agents\n"
                 "                                     --force overwrites existing ~/.arbiter/agents/*.json files;\n"
                 "                                     omit it to preserve user-edited agent definitions.\n"
@@ -1774,7 +1893,8 @@ int main(int argc, char* argv[]) {
                 "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n"
                 "Config: ~/.arbiter/\n"
                 "  openrouter_api_key                 OpenRouter key file\n"
-                "  tui.json                           TUI theme preset + overrides\n"
+                "  tui.json                           Theme preset, theme_file, or overrides\n"
+                "  themes/*.json                      Custom theme documents\n"
                 "  tenants.db                         Tenant identity store (--api)\n"
                 "  agents/*.json                      Agent constitutions\n";
             return 0;

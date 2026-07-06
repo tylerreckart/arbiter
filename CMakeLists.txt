@@ -146,6 +146,7 @@ set(ARBITER_SOURCES
     src/a2a/manager.cpp
     src/readline_wrapper.cpp
     src/markdown.cpp
+    src/code_highlighter.cpp
 )
 
 # --- Starter agent definitions: embed agents/*.json into the binary -------
@@ -273,6 +274,11 @@ endif()
 install(TARGETS arbiter RUNTIME DESTINATION bin)
 install(DIRECTORY agents/ DESTINATION share/arbiter/agents
         FILES_MATCHING PATTERN "*.json")
+install(DIRECTORY themes/ DESTINATION share/arbiter/themes
+        FILES_MATCHING PATTERN "*.json")
+
+target_compile_definitions(arbiter PRIVATE
+    ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
 
 # --- Tests ---
 # PTY-based integration tests that drive the real `arbiter` binary through
@@ -391,6 +397,34 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_markdown_diff COMMAND unit_markdown_diff)
+
+    add_executable(unit_code_highlighter
+        tests/test_code_highlighter.cpp
+        src/code_highlighter.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_code_highlighter PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_code_highlighter COMMAND unit_code_highlighter)
+
+    add_executable(unit_tui_theme_json
+        tests/test_tui_theme_json.cpp
+        src/tui/tui_design.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_tui_theme_json PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(unit_tui_theme_json PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    add_test(NAME unit_tui_theme_json COMMAND unit_tui_theme_json)
 
     add_executable(unit_sidebar_format
         tests/test_sidebar_format.cpp
