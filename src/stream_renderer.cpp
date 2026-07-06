@@ -20,8 +20,8 @@ StreamRenderer::StreamRenderer(RenderPolicy policy, OutputQueue& queue)
             [](std::string /*close_fence*/) {});
     } else {
         md_.set_code_sink(
-            [this](std::string open_fence, std::string /*lang*/) {
-                queue_.push_code_open(open_fence, policy_.code_preview_rows);
+            [this](std::string open_fence, std::string lang) {
+                queue_.push_code_open(open_fence, lang, policy_.code_preview_rows);
             },
             [this](const std::string& line) { queue_.push_code_line(line); },
             [this](std::string close_fence) { queue_.push_code_close(close_fence); });

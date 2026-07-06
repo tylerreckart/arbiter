@@ -1,3 +1,109 @@
 {
-  "preset": "onedark"
+  "accent": {
+    "error": "#e06c75",
+    "info": "#61afef",
+    "primary": "#61afef",
+    "secondary": "#98c379",
+    "success": "#98c379",
+    "warning": "#e5c07b"
+  },
+  "bg": {
+    "base": "#282c34",
+    "footer": "#21252b",
+    "gutter": "#282c34",
+    "header": "#2c323c",
+    "input": "#1e2127",
+    "panel": "#21252b",
+    "scroll": "#282c34",
+    "status": "#21252b"
+  },
+  "border": {
+    "focus": "#61afef",
+    "gutter": "#282c34",
+    "horizontal": "\u2500",
+    "subtle": "#3e4452",
+    "vertical": "\u2502"
+  },
+  "component": {
+    "agent_prefix": "",
+    "agent_suffix": "",
+    "continuation_prompt": "\u2026 ",
+    "footer_left": "esc interrupt  pgup/dn scroll",
+    "footer_left_compact": "pg scroll",
+    "footer_right": "/agents list agents  /help list commands",
+    "footer_right_compact": "/help",
+    "inactive_prompt": "",
+    "prompt": "",
+    "status_prefix": " ",
+    "status_suffix": " "
+  },
+  "content": {
+    "accent_focused": "#61afef",
+    "accent_prompt": "#e5c07b",
+    "agent_master": "#d19a66",
+    "agent_palette": [
+      "#e06c75",
+      "#e5c07b",
+      "#d19a66",
+      "#98c379",
+      "#61afef",
+      "#c678dd",
+      "#56b6c2",
+      "#abb2bf",
+      "#be5046",
+      "#b58dce",
+      "#4488c7",
+      "#b8e497"
+    ],
+    "blockquote": "#5c6370",
+    "border_inactive": "#3e4452",
+    "bullet": "#5c6370",
+    "code": "#d19a66",
+    "code_comment": "#5c6370",
+    "code_function": "#61afef",
+    "code_keyword": "#c678dd",
+    "code_number": "#e5c07b",
+    "code_string": "#98c379",
+    "code_type": "#56b6c2",
+    "diff_add": "#98c379",
+    "diff_file": "#61afef",
+    "diff_hunk": "#5c6370",
+    "diff_remove": "#e06c75",
+    "error": "#e06c75",
+    "heading": [
+      "#61afef",
+      "#c678dd",
+      "#56b6c2",
+      "#d19a66"
+    ],
+    "info": "#61afef",
+    "link": "#61afef",
+    "prompt_color": "#5c6370",
+    "rule": "#5c6370",
+    "success": "#98c379",
+    "text_dim": "#5c6370",
+    "text_dimmer": "#3e4452",
+    "user_echo_arrow": "#5c6370",
+    "user_echo_text": "#abb2bf",
+    "warning": "#e5c07b",
+    "writ_line": "#d19a66"
+  },
+  "layout": {
+    "compact_cols": 72,
+    "dense_cols": 88,
+    "footer_gap": 1,
+    "header_padding_x": 1,
+    "input_padding_x": 1,
+    "pane_padding_x": 1,
+    "show_footer": true,
+    "show_history_sidebar": true,
+    "status_inset_x": 2,
+    "status_pill": true
+  },
+  "text": {
+    "inverse": "#282c34",
+    "muted": "#5c6370",
+    "primary": "#abb2bf",
+    "subtle": "#3e4452"
+  }
 }

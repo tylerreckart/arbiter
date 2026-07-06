@@ -37,6 +37,8 @@ Each pane is an independent conversation view. See [panes.md](panes.md) for the 
 | `Ctrl-w s`                 | Toggle the session sidebar (wide terminals).                            |
 | `Ctrl-w w` / `Ctrl-w Ctrl-w` | Cycle focus to the next pane (pre-order traversal).                   |
 | `Ctrl-w c`                 | Close the focused pane. The pane's exec thread is joined cleanly; in-flight turn is cancelled. |
+| `Ctrl-w t`                 | Toggle the conversation-history sidebar (left rail).                    |
+| `Ctrl-w b`                 | Enter the sidebar to pick a prior conversation or start a new one.    |
 
 ## Background loops
 
@@ -91,6 +93,7 @@ These commands use the same dispatch path as agent tool calls during `/v1/orches
 
 | Command                        | Effect                                                              |
 |--------------------------------|---------------------------------------------------------------------|
+| `/theme [list\|`<name>`]` | Switch theme. Built-in presets or `~/.arbiter/themes/<name>.json`. `/theme save <name>` exports current colors; `/theme file <path>` loads a JSON file. See [themes.md](themes.md). |
 | `/verbose [on\|off]`           | Toggle raw `/cmd` line streaming. Off (default): tool-call lines are swallowed and replaced by the spinner on the mid-separator. On: every `/fetch`, `/exec`, `/agent`, `/mem` line lands in the scroll region as the agent emits it. |
 | `/help`                        | Print this command reference.                                       |
 | `/help <topic>`                | Detailed reference for one slash command (same text agents see).    |

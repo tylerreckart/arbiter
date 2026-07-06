@@ -35,6 +35,7 @@ void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks);
 void pane_history_init(Pane& pane);
 void pane_history_set_cols(Pane& pane, int cols);
 void pane_history_clear(Pane& pane);
+void pane_history_retheme(Pane& pane);
 void pane_history_push(Pane& pane, std::string_view text, bool new_block = false);
 void pane_history_push_diff(Pane& pane, std::string_view patch);
 
@@ -43,15 +44,17 @@ void pane_history_push_prose(Pane& pane,
                              bool new_block);
 void pane_history_push_code_open(Pane& pane,
                                  std::string_view open_fence,
+                                 std::string_view lang,
                                  size_t preview_rows,
                                  bool new_block = false);
 void pane_history_push_code_line(Pane& pane, std::string_view line);
 void pane_history_push_code_close(Pane& pane, std::string_view close_fence);
+bool pane_history_toggle_code_block(Pane& pane, int scroll_offset);
 [[nodiscard]] int pane_history_total_rows(const Pane& pane);
 [[nodiscard]] int pane_history_max_scroll(const Pane& pane);
 
 void pane_history_begin_frame(UiContext& ctx);
-void pane_history_draw_pane(Pane& pane, UiContext& ctx);
+void pane_history_draw_pane(Pane& pane, UiContext& ctx, OpenTuiHandle frame);
 void pane_history_end_frame(UiContext& ctx);
 
 // Convenience: single-pane immediate present.

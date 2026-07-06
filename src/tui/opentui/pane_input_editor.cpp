@@ -675,6 +675,10 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
                     kill_prev_word();
                 }
                 continue;
+            case 0x0F: {
+                if (code_expand_handler_) code_expand_handler_();
+                continue;
+            }
             case 0x09: {
                 std::lock_guard<std::mutex> lk(mu_);
                 tab_complete();
