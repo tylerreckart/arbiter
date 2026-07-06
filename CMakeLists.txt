@@ -99,6 +99,7 @@ set(ARBITER_SOURCES
     src/repl/layout.cpp
     src/repl/pane_history.cpp
     src/repl/conversation_store.cpp
+    src/atomic_file.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
     src/cli.cpp
@@ -447,6 +448,25 @@ if(INDEX_BUILD_TESTS)
         ${OPENSSL_INCLUDE_DIR}
     )
     add_test(NAME unit_sidebar COMMAND unit_sidebar)
+
+    # --- Unit tests for the conversation-history store (persistence, atomic
+    # writes, manifest recovery, soft delete). Links a stub for the two
+    # Orchestrator methods it calls instead of the full orchestrator.cpp
+    # dependency chain — see tests/orchestrator_session_stub.cpp.
+    add_executable(unit_conversation_store
+        tests/test_conversation_store.cpp
+        tests/orchestrator_session_stub.cpp
+        src/repl/conversation_store.cpp
+        src/atomic_file.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_conversation_store PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_conversation_store PRIVATE Threads::Threads)
+    add_test(NAME unit_conversation_store COMMAND unit_conversation_store)
 
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser

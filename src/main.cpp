@@ -1528,7 +1528,15 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         conversation_store.save(conversation_store.active_id(), orch);
 
         if (create_new) {
-            conversation_store.create(fs::current_path().string());
+            const std::string before = conversation_store.active_id();
+            const std::string after = conversation_store.create_or_reuse(fs::current_path().string());
+            if (after == before) {
+                // Active conversation had no turns yet — reuse it instead of
+                // leaving another empty "Untitled" entry behind.
+                history_sidebar.exit_focus();
+                present_unlocked();
+                return;
+            }
             orch.reset_all_histories();
         } else {
             const std::string picked = history_sidebar.selected_conversation_id();
