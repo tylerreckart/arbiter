@@ -79,15 +79,18 @@ bool SidebarState::visible() const {
     return user_visible_;
 }
 
-int SidebarState::effective_width(int cols, int pane_count) const {
+int SidebarState::effective_width(int cols, int pane_count,
+                                  int leading_cols) const {
     std::lock_guard<std::mutex> lk(mu_);
     if (!prompt_started_ || !user_visible_) return 0;
     if (pane_count > 1) return 0;
-    return breakpoint_width(cols);
+    const int available = cols - std::max(0, leading_cols);
+    return breakpoint_width(available);
 }
 
-Rect SidebarState::rect_for_terminal(int cols, int rows, int pane_count) const {
-    const int w = effective_width(cols, pane_count);
+Rect SidebarState::rect_for_terminal(int cols, int rows, int pane_count,
+                                     int leading_cols) const {
+    const int w = effective_width(cols, pane_count, leading_cols);
     if (w <= 0 || cols <= w || rows <= 0) return kEmptyRect;
     return Rect{cols - w, 0, w, rows};
 }
