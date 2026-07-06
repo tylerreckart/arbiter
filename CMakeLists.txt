@@ -468,6 +468,34 @@ if(INDEX_BUILD_TESTS)
     target_link_libraries(unit_conversation_store PRIVATE Threads::Threads)
     add_test(NAME unit_conversation_store COMMAND unit_conversation_store)
 
+    # --- Autosave tests: exercise save_async/flush against a real (but
+    # network-inert) Orchestrator. Needs ApiClient's real constructor, so
+    # this links api_client.cpp + its own deps — see
+    # tests/orchestrator_constructible_stub.cpp for why that's still far
+    # short of the full orchestrator.cpp dependency chain.
+    add_executable(unit_conversation_store_autosave
+        tests/test_conversation_store_autosave.cpp
+        tests/orchestrator_constructible_stub.cpp
+        src/repl/conversation_store.cpp
+        src/atomic_file.cpp
+        src/json.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+    )
+    target_include_directories(unit_conversation_store_autosave PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_conversation_store_autosave PRIVATE
+        Threads::Threads
+        CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    add_test(NAME unit_conversation_store_autosave COMMAND unit_conversation_store_autosave)
+
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser
         tests/test_schedule_parser.cpp

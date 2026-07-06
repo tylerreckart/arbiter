@@ -1,8 +1,10 @@
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace arbiter {
@@ -24,6 +26,7 @@ struct ConversationEntry {
 class ConversationStore {
 public:
     explicit ConversationStore(std::string config_dir);
+    ~ConversationStore();
 
     [[nodiscard]] std::string active_id() const;
 
@@ -41,6 +44,15 @@ public:
 
     bool load(const std::string& id, Orchestrator& orch);
     void save(const std::string& id, Orchestrator& orch);
+
+    // Marshal a save onto the store's single background thread. A one-deep
+    // "latest wins" queue: if a save is already pending, this replaces it
+    // rather than piling up. Call after every completed turn so nothing is
+    // lost on crash; the blocking flush() below drains it on exit.
+    void save_async(const std::string& id, Orchestrator& orch);
+
+    // Blocks until any pending/in-flight save_async() call has completed.
+    void flush();
 
     void set_active(const std::string& id);
     void set_title(const std::string& id, const std::string& title);
@@ -76,12 +88,24 @@ private:
     bool session_is_empty_unlocked(const std::string& id) const;
     void remove_and_reassign_active_unlocked(const std::string& id,
                                              bool delete_file);
+    void save_worker_loop();
 
     mutable std::mutex mu_;
     std::string config_dir_;
     std::string store_dir_;
     std::string active_id_;
     std::vector<ConversationEntry> entries_;
+
+    // Background autosave: a single pending slot (not a real queue) so a
+    // burst of turn-completions coalesces into one save of the latest state.
+    std::thread save_thread_;
+    std::mutex async_mu_;
+    std::condition_variable async_cv_;
+    bool pending_ = false;
+    bool busy_ = false;
+    bool stop_ = false;
+    std::string pending_id_;
+    Orchestrator* pending_orch_ = nullptr;
 };
 
 } // namespace arbiter

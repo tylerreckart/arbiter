@@ -67,6 +67,59 @@ ConversationStore::ConversationStore(std::string config_dir)
     : config_dir_(std::move(config_dir)),
       store_dir_(config_dir_ + "/conversations") {
     ensure_initialized();
+    save_thread_ = std::thread(&ConversationStore::save_worker_loop, this);
+}
+
+ConversationStore::~ConversationStore() {
+    {
+        std::lock_guard<std::mutex> lk(async_mu_);
+        stop_ = true;
+    }
+    async_cv_.notify_all();
+    if (save_thread_.joinable()) save_thread_.join();
+}
+
+void ConversationStore::save_worker_loop() {
+    for (;;) {
+        std::string id;
+        Orchestrator* orch = nullptr;
+        {
+            std::unique_lock<std::mutex> lk(async_mu_);
+            async_cv_.wait(lk, [&] { return pending_ || stop_; });
+            if (pending_) {
+                id = pending_id_;
+                orch = pending_orch_;
+                pending_ = false;
+                pending_orch_ = nullptr;
+                busy_ = true;
+            } else {
+                return;
+            }
+        }
+
+        save(id, *orch);
+
+        {
+            std::lock_guard<std::mutex> lk(async_mu_);
+            busy_ = false;
+        }
+        async_cv_.notify_all();
+    }
+}
+
+void ConversationStore::save_async(const std::string& id, Orchestrator& orch) {
+    {
+        std::lock_guard<std::mutex> lk(async_mu_);
+        pending_id_ = id;
+        pending_orch_ = &orch;
+        pending_ = true;
+    }
+    async_cv_.notify_all();
+}
+
+void ConversationStore::flush() {
+    std::unique_lock<std::mutex> lk(async_mu_);
+    async_cv_.wait(lk, [&] { return !pending_ && !busy_; });
 }
 
 void ConversationStore::ensure_initialized() {

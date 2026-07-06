@@ -1,7 +1,7 @@
 // Minimal stand-in for the two Orchestrator methods ConversationStore calls
 // (load_session/save_session). Keeps unit_conversation_store from having to
 // link the full orchestrator.cpp dependency chain (agent, api_client,
-// advisor, commands, ...) since the store tests never construct a real
+// advisor, commands, ...) since those tests never construct a real
 // Orchestrator — they only need these two symbols to resolve at link time.
 #include "orchestrator.h"
 
