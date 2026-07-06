@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -21,7 +22,7 @@ class ConversationStore {
 public:
     explicit ConversationStore(std::string config_dir);
 
-    [[nodiscard]] const std::string& active_id() const { return active_id_; }
+    [[nodiscard]] std::string active_id() const;
 
     [[nodiscard]] std::vector<ConversationEntry> list() const;
 
@@ -36,6 +37,10 @@ public:
 
     [[nodiscard]] std::string session_path(const std::string& id) const;
 
+    std::string session_path_unlocked(const std::string& id) const {
+        return store_dir_ + "/" + id + ".json";
+    }
+
 private:
     void ensure_initialized();
     void migrate_legacy_sessions();
@@ -45,6 +50,7 @@ private:
                                    const std::string& cwd_hint,
                                    bool set_active);
 
+    mutable std::mutex mu_;
     std::string config_dir_;
     std::string store_dir_;
     std::string active_id_;

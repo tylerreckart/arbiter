@@ -197,14 +197,22 @@ void ConversationStore::save_manifest() const {
 }
 
 std::vector<ConversationEntry> ConversationStore::list() const {
+    std::lock_guard<std::mutex> lk(mu_);
     return entries_;
 }
 
+std::string ConversationStore::active_id() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return active_id_;
+}
+
 std::string ConversationStore::session_path(const std::string& id) const {
-    return store_dir_ + "/" + id + ".json";
+    std::lock_guard<std::mutex> lk(mu_);
+    return session_path_unlocked(id);
 }
 
 std::string ConversationStore::create(const std::string& cwd) {
+    std::lock_guard<std::mutex> lk(mu_);
     const std::string id = new_conversation_id();
     const std::int64_t ts = now_epoch();
 
@@ -220,7 +228,7 @@ std::string ConversationStore::create(const std::string& cwd) {
     empty->as_object_mut()["version"] = jnum(1);
     empty->as_object_mut()["index"] = jarr();
     empty->as_object_mut()["agents"] = jobj();
-    write_file(session_path(id), json_serialize(*empty));
+    write_file(session_path_unlocked(id), json_serialize(*empty));
 
     save_manifest();
     set_active(id);
@@ -228,11 +236,22 @@ std::string ConversationStore::create(const std::string& cwd) {
 }
 
 bool ConversationStore::load(const std::string& id, Orchestrator& orch) {
-    return orch.load_session(session_path(id));
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        path = session_path_unlocked(id);
+    }
+    return orch.load_session(path);
 }
 
 void ConversationStore::save(const std::string& id, Orchestrator& orch) {
-    orch.save_session(session_path(id));
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        path = session_path_unlocked(id);
+    }
+    orch.save_session(path);
+    std::lock_guard<std::mutex> lk(mu_);
     const std::int64_t ts = now_epoch();
     for (auto& e : entries_) {
         if (e.id == id) {
@@ -248,12 +267,14 @@ void ConversationStore::save(const std::string& id, Orchestrator& orch) {
 }
 
 void ConversationStore::set_active(const std::string& id) {
+    std::lock_guard<std::mutex> lk(mu_);
     active_id_ = id;
     write_file(store_dir_ + "/active", id + "\n");
 }
 
 void ConversationStore::set_title(const std::string& id, const std::string& title) {
     if (title.empty()) return;
+    std::lock_guard<std::mutex> lk(mu_);
     for (auto& e : entries_) {
         if (e.id == id) {
             e.title = title;
