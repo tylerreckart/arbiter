@@ -1848,6 +1848,15 @@ void Orchestrator::cancel() {
     for (ApiClient* c : parallel_clients_) c->cancel();
 }
 
+void Orchestrator::reset_all_histories() {
+    index_master_->reset_history();
+    std::lock_guard<std::mutex> lk(agents_mutex_);
+    for (auto& [id, agent] : agents_) {
+        (void)id;
+        agent->reset_history();
+    }
+}
+
 static constexpr size_t kSessionWarnBytes = 4 * 1024 * 1024;  // 4 MB total
 static constexpr size_t kAgentWarnBytes   = 512 * 1024;        // per-agent
 

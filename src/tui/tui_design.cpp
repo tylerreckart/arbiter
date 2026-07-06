@@ -625,6 +625,7 @@ void apply_overrides(TuiDesign& d, const JsonValue& root, bool apply_preset = tr
     number(root, "layout", "dense_cols", d.layout.dense_cols);
     boolean(root, "layout", "show_footer", d.layout.show_footer);
     boolean(root, "layout", "status_pill", d.layout.status_pill);
+    boolean(root, "layout", "show_history_sidebar", d.layout.show_history_sidebar);
 
     string_value(root, "component", "prompt", d.component.prompt);
     string_value(root, "component", "continuation_prompt", d.component.continuation_prompt);
@@ -773,6 +774,41 @@ void load_tui_design(const std::string& config_dir, std::string_view cli_preset)
 
 std::uint32_t tui_design_generation() {
     return g_design_generation;
+}
+
+void set_show_history_sidebar(const std::string& config_dir, bool show) {
+    g_design.layout.show_history_sidebar = show;
+    if (!g_design_ready) g_design_ready = true;
+
+    const std::string path = config_dir + "/tui.json";
+    JsonObject root_obj;
+    {
+        std::ifstream f(path);
+        if (f) {
+            std::ostringstream ss;
+            ss << f.rdbuf();
+            try {
+                auto parsed = json_parse(ss.str());
+                if (parsed && parsed->is_object()) root_obj = parsed->as_object();
+            } catch (...) {
+                root_obj.clear();
+            }
+        }
+    }
+
+    auto layout_it = root_obj.find("layout");
+    std::shared_ptr<JsonValue> layout_val;
+    if (layout_it != root_obj.end() && layout_it->second && layout_it->second->is_object()) {
+        layout_val = layout_it->second;
+    } else {
+        layout_val = jobj();
+        root_obj["layout"] = layout_val;
+    }
+    layout_val->as_object_mut()["show_history_sidebar"] = jbool(show);
+
+    auto root = jobj(std::move(root_obj));
+    std::ofstream out(path);
+    if (out) out << json_serialize(*root);
 }
 
 } // namespace arbiter

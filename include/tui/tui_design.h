@@ -56,6 +56,7 @@ struct TuiDesign {
         int dense_cols = 88;
         bool show_footer = true;
         bool status_pill = true;
+        bool show_history_sidebar = true;
     } layout;
 
     struct Component {
@@ -130,5 +131,6 @@ inline constexpr const char* kDefaultTuiPreset = "onedark";
 [[nodiscard]] std::vector<std::string> tui_builtin_presets();
 [[nodiscard]] bool tui_preset_is_valid(std::string_view name);
 [[nodiscard]] TuiDesign tui_design_for_preset(std::string_view preset);
+void set_show_history_sidebar(const std::string& config_dir, bool show);
 
 } // namespace arbiter

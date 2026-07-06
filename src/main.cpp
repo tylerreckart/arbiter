@@ -29,9 +29,12 @@
 #include "theme.h"
 #include "config.h"
 #include "repl/repl_argv.h"
+#include "repl/conversation_store.h"
 #include "tui/opentui/session.h"
 #include "tui/sidebar.h"
+#include "tui/history_sidebar.h"
 #include "tui/opentui/sidebar_frame.h"
+#include "tui/opentui/history_sidebar_frame.h"
 
 #include <iostream>
 #include <string>
@@ -90,6 +93,11 @@ using arbiter::PaneFrameHooks;
 using arbiter::Rect;
 using arbiter::SidebarState;
 using arbiter::SidebarLoopEntry;
+using arbiter::ConversationStore;
+using arbiter::HistorySidebarState;
+using arbiter::HistorySidebarKey;
+using arbiter::HistorySidebarSnapshot;
+using arbiter::read_history_sidebar_key;
 
 // State the output-pump thread needs.  Points into cmd_interactive()'s stack
 // frame — lifetime is the REPL call.  Pane* is the only per-pane hook; the
@@ -212,6 +220,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     std::atomic<bool> quit_requested{false};
 
+    ConversationStore conversation_store(dir);
+    HistorySidebarState history_sidebar;
+    history_sidebar.set_enabled(arbiter::tui_design().layout.show_history_sidebar, dir);
+
     // Signals the main thread to repaint the focused input after a layout mutation.
     std::atomic<bool> refresh_focused_input{false};
 
@@ -229,15 +241,23 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // construction reach it safely (we set it once and never clear).
     LayoutTree* layout_ptr = nullptr;
 
-    auto layout_bounds = [&sidebar, &layout_ptr]() -> Rect {
+    auto layout_bounds = [&sidebar, &layout_ptr, &history_sidebar]() -> Rect {
         const int cols = arbiter::term_cols();
         const int rows = arbiter::term_rows();
+        const int leading = HistorySidebarState::width_for_terminal(
+            cols, history_sidebar.enabled());
         const int panes = layout_ptr ? static_cast<int>(layout_ptr->pane_count()) : 1;
-        const int sw = sidebar.effective_width(cols, panes);
-        return Rect{0, 0, std::max(1, cols - sw), rows};
+        const int trailing = sidebar.effective_width(cols, panes);
+        return Rect{leading, 0, std::max(1, cols - leading - trailing), rows};
     };
 
-    // Session key is cwd-scoped so history doesn't bleed across repos.
+    bool restored = conversation_store.load(conversation_store.active_id(), orch);
+    if (restored) sidebar.mark_prompt_started();
+
+    TenantStore tenants;
+    tenants.open(dir + "/tenants.db");
+    Tenant primary = ensure_primary_tenant(tenants);
+
     auto cwd_session_key = []() -> std::string {
         std::string cwd = fs::current_path().string();
         uint32_t h = 2166136261u;
@@ -248,13 +268,6 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     };
     std::string sessions_dir = dir + "/sessions";
     fs::create_directories(sessions_dir);
-    std::string session_path = sessions_dir + "/" + cwd_session_key() + ".json";
-    bool restored = orch.load_session(session_path);
-    if (restored) sidebar.mark_prompt_started();
-
-    TenantStore tenants;
-    tenants.open(dir + "/tenants.db");
-    Tenant primary = ensure_primary_tenant(tenants);
 
     std::string session_meta_path =
         sessions_dir + "/" + cwd_session_key() + ".conv";
@@ -394,6 +407,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         // c (close pane); Ctrl-w itself is a synonym for 'w'.
         p->editor.set_chord_handler([](char cmd) -> bool {
             return cmd == 'w' || cmd == 'h' || cmd == 's' || cmd == 'v' || cmd == 'c'
+                || cmd == 't' || cmd == 'b'
                 || cmd == 0x17;
         });
         return p;
@@ -498,23 +512,35 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     };
     pane_hooks.draw_overlays = [&](OpenTuiHandle frame, int cols, int rows) {
         if (frame == 0 || cols <= 0 || rows <= 0) return;
+
+        const Rect hb = HistorySidebarState::rect_for_terminal(
+            cols, rows, history_sidebar.enabled());
+        if (hb.w > 0) {
+            history_sidebar.refresh_entries(conversation_store);
+            HistorySidebarSnapshot hs = history_sidebar.snapshot();
+            hs.active_id = conversation_store.active_id();
+            arbiter::opentui::draw_history_sidebar(frame, hs, hb);
+        }
+
         if (layout.pane_count() > 1) layout.draw_borders(frame);
 
         const int panes = static_cast<int>(layout.pane_count());
         int sw = sidebar.effective_width(cols, panes);
         if (sw <= 0) return;
 
+        int pane_x = layout.outer_bounds().x;
         int pane_w = layout.outer_bounds().w;
-        int gap = cols - pane_w;
+        int gap = cols - pane_x - pane_w;
         if (gap != sw) {
             sync_layout_to_terminal();
+            pane_x = layout.outer_bounds().x;
             pane_w = layout.outer_bounds().w;
-            gap = cols - pane_w;
+            gap = cols - pane_x - pane_w;
             sw = sidebar.effective_width(cols, panes);
         }
         if (sw <= 0 || gap <= 0) return;
 
-        const Rect sb = {pane_w, 0, std::min(sw, gap), rows};
+        const Rect sb = {pane_x + pane_w, 0, std::min(sw, gap), rows};
         Pane& focused = layout.focused();
         sidebar.set_focus_context(focused.current_agent,
                                   focused.current_model,
@@ -530,9 +556,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             loop_rows.push_back(std::move(row));
         }
         sidebar.set_loops(std::move(loop_rows));
-            const arbiter::SidebarSnapshot snap = sidebar.snapshot();
-            const arbiter::TuiChromeSnapshot chrome = focused.tui.chrome_snapshot();
-            arbiter::opentui::draw_sidebar(frame, snap, sb, chrome.rect, chrome.input_rows);
+        const arbiter::SidebarSnapshot snap = sidebar.snapshot();
+        const arbiter::TuiChromeSnapshot chrome = focused.tui.chrome_snapshot();
+        arbiter::opentui::draw_sidebar(frame, snap, sb, chrome.rect, chrome.input_rows);
     };
     auto present_unlocked = [&]() {
         pane_history_present(ui_ctx, pane_hooks);
@@ -971,6 +997,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  Ctrl-w s                         — toggle the session sidebar\n"
                     "  Ctrl-w w                         — cycle focus to the next pane\n"
                     "  Ctrl-w c                         — close the focused pane\n"
+                    "  Ctrl-w t                         — toggle conversation history sidebar\n"
+                    "  Ctrl-w b                         — enter sidebar to pick a conversation\n"
                     "\n"
                     "Background loops\n"
                     "  /loop <agent> <prompt>           — run agent in a background loop\n"
@@ -1367,17 +1395,75 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             case 'c':
                 if (layout.pane_count() > 1) {
                     layout.close_focused([&](Pane& p) {
-                        // Stop queue so pop() returns, join the exec thread,
-                        // then let the Pane destructor run with a quiesced
-                        // thread.  Any pending output is dropped — a pane
-                        // being closed doesn't need one last render.
                         p.cmd_queue.stop();
                         if (p.exec_thread.joinable()) p.exec_thread.join();
                     });
                 }
                 break;
+            case 't':
+                history_sidebar.toggle_enabled(dir);
+                break;
+            case 'b': {
+                const int cols = arbiter::term_cols();
+                if (HistorySidebarState::width_for_terminal(cols, true) <= 0) {
+                    layout.focused().tui.set_status(
+                        "History sidebar needs a wider terminal (>=72 cols)");
+                    break;
+                }
+                if (!history_sidebar.enabled()) {
+                    history_sidebar.set_enabled(true, dir);
+                }
+                history_sidebar.enter_focus(conversation_store,
+                                            conversation_store.active_id());
+                break;
+            }
         }
         sync_layout_to_terminal();
+        layout.for_each_pane([&](Pane& p) {
+            pane_history_set_cols(p, p.tui.cols());
+        });
+        present_unlocked();
+        g_getc_state.pane = &layout.focused();
+        ui_ctx.focused_pane = &layout.focused();
+    };
+
+    auto switch_conversation = [&](bool create_new) {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        orch.cancel();
+        conversation_store.save(conversation_store.active_id(), orch);
+
+        if (create_new) {
+            conversation_store.create(fs::current_path().string());
+            orch.reset_all_histories();
+        } else {
+            const std::string picked = history_sidebar.selected_conversation_id();
+            if (picked.empty() || picked == conversation_store.active_id()) {
+                history_sidebar.exit_focus();
+                present_unlocked();
+                return;
+            }
+            conversation_store.set_active(picked);
+            orch.reset_all_histories();
+            conversation_store.load(picked, orch);
+        }
+
+        while (layout.pane_count() > 1) {
+            layout.close_focused([&](Pane& p) {
+                p.cmd_queue.stop();
+                if (p.exec_thread.joinable()) p.exec_thread.join();
+            });
+        }
+
+        Pane& focused = layout.focused();
+        pane_history_clear(focused);
+        focused.current_agent = "index";
+        focused.current_model = orch.get_agent_model("index");
+        focused.original_task.clear();
+        focused.scroll_offset = 0;
+        focused.new_while_scrolled = 0;
+        focused.tui.init(focused.current_agent, focused.current_model);
+        history_sidebar.exit_focus();
+        history_sidebar.refresh_entries(conversation_store);
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
         });
@@ -1390,6 +1476,38 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     while (!quit_requested) {
         while (service_confirm()) {}
         while (service_pending_closes()) {}
+
+        if (history_sidebar.focused()) {
+            ui_ctx.present_all();
+            const int rows = arbiter::term_rows();
+            const Rect hb = HistorySidebarState::rect_for_terminal(
+                arbiter::term_cols(), rows, true);
+            const int visible_rows = std::max(1, (hb.h - 6) / 2);
+
+            char csi = 0;
+            const int key = read_history_sidebar_key(csi);
+            if (key < 0) break;
+
+            const HistorySidebarKey action = history_sidebar.handle_key(key, csi);
+            if (action == HistorySidebarKey::Up) {
+                history_sidebar.move_selection(-1, visible_rows);
+                continue;
+            }
+            if (action == HistorySidebarKey::Down) {
+                history_sidebar.move_selection(1, visible_rows);
+                continue;
+            }
+            if (action == HistorySidebarKey::Escape) {
+                history_sidebar.exit_focus();
+                ui_ctx.present_all();
+                continue;
+            }
+            if (action == HistorySidebarKey::Enter) {
+                switch_conversation(history_sidebar.is_new_selected());
+                continue;
+            }
+            continue;
+        }
 
         Pane& focused = layout.focused();
         ui_ctx.focused_pane = &focused;
@@ -1495,7 +1613,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         });
         for (auto& h : merged) hf << h << '\n';
     }
-    orch.save_session(session_path);
+    conversation_store.save(conversation_store.active_id(), orch);
 
     scheduler.stop();
 

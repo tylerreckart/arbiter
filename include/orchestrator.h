@@ -284,6 +284,9 @@ public:
     void save_session(const std::string& path) const;
     bool load_session(const std::string& path);  // returns true if anything loaded
 
+    // Clear index master and all loaded agent histories.
+    void reset_all_histories();
+
     // Token tracking — counts the shared client only.  Per-child ApiClients
     // created for /parallel turns track their own counters independently, so
     // these totals undercount tokens spent in parallel turns.  Per-turn cost
