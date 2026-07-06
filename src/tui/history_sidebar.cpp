@@ -61,9 +61,34 @@ bool HistorySidebarState::focused() const {
     return focused_;
 }
 
+int HistorySidebarState::index_for_pin_locked() const {
+    if (pinned_new_) return 0;
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        if (entries_[i].id == pinned_id_) return static_cast<int>(i) + 1;
+    }
+    // Pinned conversation vanished from the list (e.g. deleted elsewhere).
+    return 0;
+}
+
+void HistorySidebarState::set_pin_from_index_locked(int idx) {
+    const size_t entry_idx = static_cast<size_t>(idx - 1);
+    if (idx <= 0 || entry_idx >= entries_.size()) {
+        pinned_new_ = true;
+        pinned_id_.clear();
+    } else {
+        pinned_new_ = false;
+        pinned_id_ = entries_[entry_idx].id;
+    }
+}
+
+int HistorySidebarState::selected_index() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return index_for_pin_locked();
+}
+
 bool HistorySidebarState::is_new_selected() const {
     std::lock_guard<std::mutex> lk(mu_);
-    return selected_ == 0;
+    return pinned_new_;
 }
 
 void HistorySidebarState::set_enabled(bool on, const std::string& config_dir) {
@@ -80,10 +105,12 @@ void HistorySidebarState::enter_focus(const ConversationStore& store,
     focused_ = true;
     active_id_ = active_id;
     entries_ = store.list();
-    selected_ = 0;
-    for (size_t i = 0; i < entries_.size(); ++i) {
-        if (entries_[i].id == active_id_) {
-            selected_ = static_cast<int>(i) + 1;
+    pinned_new_ = true;
+    pinned_id_.clear();
+    for (const auto& e : entries_) {
+        if (e.id == active_id_) {
+            pinned_new_ = false;
+            pinned_id_ = e.id;
             break;
         }
     }
@@ -100,36 +127,31 @@ void HistorySidebarState::refresh_entries(const ConversationStore& store) {
     entries_ = store.list();
 }
 
-void HistorySidebarState::clamp_selection(int visible_rows) {
-    const int max_sel = static_cast<int>(entries_.size());
-    selected_ = std::max(0, std::min(selected_, max_sel));
+void HistorySidebarState::clamp_scroll_locked(int idx, int visible_rows) {
     if (visible_rows <= 0) return;
-    if (selected_ < scroll_offset_) scroll_offset_ = selected_;
-    if (selected_ >= scroll_offset_ + visible_rows) {
-        scroll_offset_ = selected_ - visible_rows + 1;
+    if (idx < scroll_offset_) scroll_offset_ = idx;
+    if (idx >= scroll_offset_ + visible_rows) {
+        scroll_offset_ = idx - visible_rows + 1;
     }
 }
 
 void HistorySidebarState::move_selection(int delta, int visible_rows) {
     std::lock_guard<std::mutex> lk(mu_);
     const int max_sel = static_cast<int>(entries_.size());
-    selected_ = std::max(0, std::min(selected_ + delta, max_sel));
-    clamp_selection(visible_rows);
+    int idx = std::max(0, std::min(index_for_pin_locked() + delta, max_sel));
+    set_pin_from_index_locked(idx);
+    clamp_scroll_locked(idx, visible_rows);
 }
 
 std::string HistorySidebarState::selected_conversation_id() const {
     std::lock_guard<std::mutex> lk(mu_);
-    if (selected_ <= 0) return {};
-    const size_t idx = static_cast<size_t>(selected_ - 1);
-    if (idx >= entries_.size()) return {};
-    return entries_[idx].id;
+    return pinned_new_ ? std::string{} : pinned_id_;
 }
 
 HistorySidebarKey HistorySidebarState::handle_key(int key_byte, char csi_final) {
     if (csi_final == 'A') return HistorySidebarKey::Up;
     if (csi_final == 'B') return HistorySidebarKey::Down;
     if (key_byte == '\r' || key_byte == '\n') return HistorySidebarKey::Enter;
-    if (key_byte == 0x1B && csi_final == 0) return HistorySidebarKey::Escape;
     if (key_byte == 0x1B) return HistorySidebarKey::Escape;
     return HistorySidebarKey::None;
 }
@@ -139,7 +161,7 @@ HistorySidebarSnapshot HistorySidebarState::snapshot() const {
     HistorySidebarSnapshot s;
     s.enabled = enabled_;
     s.focused = focused_;
-    s.selected = selected_;
+    s.selected = index_for_pin_locked();
     s.scroll_offset = scroll_offset_;
     s.active_id = active_id_;
     s.entries = entries_;

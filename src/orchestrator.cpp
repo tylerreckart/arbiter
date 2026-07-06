@@ -1,6 +1,7 @@
 // arbiter/src/orchestrator.cpp
 #include "orchestrator.h"
 #include "advisor.h"
+#include "atomic_file.h"
 #include "commands.h"
 #include "config.h"
 #include "tui/stream_filter.h"
@@ -1906,8 +1907,7 @@ void Orchestrator::save_session(const std::string& path) const {
             over_limit.empty() ? "" : (" — large agents: " + over_limit).c_str());
     }
 
-    std::ofstream f(path);
-    if (f.is_open()) f << serialized;
+    atomic_write_file(path, serialized);
 }
 
 bool Orchestrator::load_session(const std::string& path) {
