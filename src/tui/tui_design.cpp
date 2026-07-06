@@ -50,6 +50,16 @@ double contrast_ratio(const TuiRgba& fg, const TuiRgba& bg) {
     return (lighter + 0.05) / (darker + 0.05);
 }
 
+TuiRgba darken(const TuiRgba& c, double factor) {
+    TuiRgba out = c;
+    for (int i = 0; i < 3; ++i) {
+        out[static_cast<size_t>(i)] = static_cast<std::uint16_t>(
+            std::clamp(static_cast<int>(c[static_cast<size_t>(i)] * factor), 0, 255));
+    }
+    out[3] = 255;
+    return out;
+}
+
 TuiRgba blend_rgb(const TuiRgba& a, const TuiRgba& b, double t) {
     TuiRgba out = a;
     for (int i = 0; i < 3; ++i) {
@@ -601,16 +611,21 @@ TuiRgba tui_rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a)
     return {r, g, b, a};
 }
 
+TuiRgba tui_sidebar_bg(const TuiDesign& d) {
+    return darken(d.bg.base, 0.85);
+}
+
 SidebarColors tui_sidebar_colors(const TuiDesign& d) {
-    const bool light_bg = relative_luminance(d.bg.header) > 0.5;
-    const TuiRgba soft_target = contrast_target_on(d.bg.header, light_bg);
-    const TuiRgba strong_target = contrast_target_emphasis_on(d.bg.header, light_bg);
+    const TuiRgba sbg = tui_sidebar_bg(d);
+    const bool light_bg = relative_luminance(sbg) > 0.5;
+    const TuiRgba soft_target = contrast_target_on(sbg, light_bg);
+    const TuiRgba strong_target = contrast_target_emphasis_on(sbg, light_bg);
 
     SidebarColors c;
     const TuiRgba label_seed = blend_rgb(d.text.muted, d.text.primary, 0.45);
-    c.label = ensure_contrast(label_seed, d.bg.header, 4.5, soft_target);
-    c.value = ensure_contrast(d.text.primary, d.bg.header, 4.5, strong_target);
-    c.body = ensure_contrast(d.text.primary, d.bg.header, 4.5, strong_target);
+    c.label = ensure_contrast(label_seed, sbg, 4.5, soft_target);
+    c.value = ensure_contrast(d.text.primary, sbg, 4.5, strong_target);
+    c.body = ensure_contrast(d.text.primary, sbg, 4.5, strong_target);
     return c;
 }
 

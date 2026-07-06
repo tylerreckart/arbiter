@@ -40,8 +40,8 @@ int HistorySidebarState::width_for_terminal(int cols, bool enabled) {
 
 Rect HistorySidebarState::rect_for_terminal(int cols, int rows, bool enabled) {
     const int w = width_for_terminal(cols, enabled);
-    if (w <= 0 || cols <= w || rows <= 0) return {};
-    return Rect{0, 0, w, rows};
+    if (w <= 0 || cols <= w || rows <= 1) return {};
+    return Rect{0, 1, w, rows - 1};
 }
 
 void HistorySidebarState::toggle_enabled(const std::string& config_dir) {

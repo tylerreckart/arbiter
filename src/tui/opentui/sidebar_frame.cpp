@@ -16,8 +16,6 @@ namespace {
 
 constexpr std::uint32_t kAttrBold = 1u << 0;
 constexpr int kEdgePad = 1;
-// Blank row above the sidebar panel — matches the main pane scroll area (bg.scroll).
-constexpr int kTopPadRows = 1;
 
 std::string capitalize_label(std::string_view s) {
     if (s.empty()) return {};
@@ -297,76 +295,43 @@ void draw_sidebar(OpenTuiHandle frame,
     if (pr.h <= 0) return;
 
     const TuiDesign& d = tui_design();
+    const TuiRgba sbg = tui_sidebar_bg(d);
     const SidebarColors sc = tui_sidebar_colors(d);
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
 
     const int sidebar_top = r.y;
-    const int panel_top_y = sidebar_top + kTopPadRows;
+    const int panel_top_y = sidebar_top;
     const int sep_y = pr.y + pr.h - TUI::kBottomPadRows - pane_input_rows - TUI::kSepRows;
     const int input_bottom_y = pr.y + pr.h - TUI::kBottomPadRows - 1;
     const int hint_y = pr.y + pr.h - 2;
     if (input_bottom_y < panel_top_y) return;
 
     const std::uint32_t px = static_cast<std::uint32_t>(r.x);
-    const std::uint32_t pw = static_cast<std::uint32_t>(r.w);
     const int block_x = r.x;
     const int block_w = std::max(1, r.w - kEdgePad);
     const int content_x = block_x + header_pad;
     const int content_w = std::max(1, block_w - (header_pad * 2));
 
-    const int edge_bottom_y = input_bottom_y + 1;
-    const int edge_h = std::max(0, edge_bottom_y - sidebar_top + 1);
-
-    const int block_h = std::max(1, input_bottom_y - panel_top_y + 1);
-
-    if (kTopPadRows > 0) {
-        fill_rect(frame,
-                  px,
-                  static_cast<std::uint32_t>(sidebar_top),
-                  pw,
-                  static_cast<std::uint32_t>(kTopPadRows),
-                  d.bg.scroll);
-    }
+    const int panel_bottom_y = pr.y + pr.h - 1;
+    const int block_h = std::max(1, panel_bottom_y - panel_top_y + 1);
 
     fill_rect(frame,
               static_cast<std::uint32_t>(block_x),
               static_cast<std::uint32_t>(panel_top_y),
               static_cast<std::uint32_t>(block_w),
               static_cast<std::uint32_t>(block_h),
-              d.bg.header);
+              sbg);
 
-    if (edge_h > 0) {
-        fill_rect(frame,
-                  static_cast<std::uint32_t>(r.x + r.w - 1),
-                  static_cast<std::uint32_t>(sidebar_top),
-                  1,
-                  static_cast<std::uint32_t>(edge_h),
-                  d.bg.base);
-    }
     fill_rect(frame,
-              px,
-              static_cast<std::uint32_t>(edge_bottom_y),
-              pw,
+              static_cast<std::uint32_t>(r.x + r.w - 1),
+              static_cast<std::uint32_t>(panel_top_y),
               1,
+              static_cast<std::uint32_t>(block_h),
               d.bg.base);
-    fill_rect(frame,
-              px,
-              static_cast<std::uint32_t>(hint_y),
-              pw,
-              1,
-              d.bg.scroll);
-    if (hint_y + 1 < pr.y + pr.h) {
-        fill_rect(frame,
-                  px,
-                  static_cast<std::uint32_t>(hint_y + 1),
-                  pw,
-                  1,
-                  d.bg.base);
-    }
 
     int y = panel_top_y + 1;
     const int scroll_bottom = sep_y;
-    const TuiRgba& bg = d.bg.header;
+    const TuiRgba& bg = sbg;
 
     y = draw_section_label(frame, d, content_x, content_w, y, "Context", bg);
     if (snap.context_pct_current >= 0) {
@@ -493,7 +458,7 @@ void draw_sidebar(OpenTuiHandle frame,
                        snap.mcp, "(none yet)", bg);
     }
 
-    draw_version_tag(frame, sc, content_x, content_w, hint_y, d.bg.scroll);
+    draw_version_tag(frame, sc, content_x, content_w, hint_y, sbg);
 }
 
 } // namespace arbiter::opentui
