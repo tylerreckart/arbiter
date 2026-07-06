@@ -1194,9 +1194,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             if (!resp.ok) {
                 output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
             }
+            // Durable per-turn autosave: coalesces onto the store's
+            // background thread so a crash never loses more than the
+            // in-flight turn, without stalling the input loop on JSON I/O.
+            conversation_store.save_async(conversation_store.active_id(), orch);
         } catch (const std::exception& e) {
             output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
             pane.last_response = std::string("ERR: ") + e.what();
+            conversation_store.save_async(conversation_store.active_id(), orch);
         }
         thinking.stop();
     };  // end handle lambda
@@ -1525,6 +1530,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     auto switch_conversation = [&](bool create_new) {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
         orch.cancel();
+        // Drain any in-flight autosave before we mutate orch's histories
+        // below — otherwise a queued save from the previous turn could run
+        // after reset_all_histories()/load_session() and clobber the old
+        // conversation's file with the new one's (or empty) state.
+        conversation_store.flush();
         conversation_store.save(conversation_store.active_id(), orch);
 
         if (create_new) {
@@ -1720,6 +1730,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         });
         for (auto& h : merged) hf << h << '\n';
     }
+    // Drain any autosave still in flight, then do one last synchronous save
+    // to capture anything that happened after the final turn's autosave.
+    conversation_store.flush();
     conversation_store.save(conversation_store.active_id(), orch);
 
     scheduler.stop();
