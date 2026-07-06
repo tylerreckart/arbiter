@@ -3,6 +3,7 @@
 #include "tui/opentui/engine.h"
 
 #include <cstdint>
+#include <mutex>
 
 namespace arbiter::opentui {
 
@@ -32,6 +33,7 @@ private:
     std::uint32_t height_{0};
     OpenTuiHandle frame_{0};
     bool in_frame_{false};
+    std::mutex frame_mu_;
 };
 
 } // namespace arbiter::opentui

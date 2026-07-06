@@ -44,22 +44,42 @@ Rect HistorySidebarState::rect_for_terminal(int cols, int rows, bool enabled) {
     return Rect{0, 0, w, rows};
 }
 
+void HistorySidebarState::toggle_enabled(const std::string& config_dir) {
+    std::lock_guard<std::mutex> lk(mu_);
+    enabled_ = !enabled_;
+    if (!enabled_) focused_ = false;
+    set_show_history_sidebar(config_dir, enabled_);
+}
+
+bool HistorySidebarState::enabled() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return enabled_;
+}
+
+bool HistorySidebarState::focused() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return focused_;
+}
+
+bool HistorySidebarState::is_new_selected() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return selected_ == 0;
+}
+
 void HistorySidebarState::set_enabled(bool on, const std::string& config_dir) {
+    std::lock_guard<std::mutex> lk(mu_);
     enabled_ = on;
     if (!enabled_) focused_ = false;
     set_show_history_sidebar(config_dir, on);
 }
 
-void HistorySidebarState::toggle_enabled(const std::string& config_dir) {
-    set_enabled(!enabled_, config_dir);
-}
-
 void HistorySidebarState::enter_focus(const ConversationStore& store,
                                       const std::string& active_id) {
+    std::lock_guard<std::mutex> lk(mu_);
     if (!enabled_) return;
     focused_ = true;
     active_id_ = active_id;
-    refresh_entries(store);
+    entries_ = store.list();
     selected_ = 0;
     for (size_t i = 0; i < entries_.size(); ++i) {
         if (entries_[i].id == active_id_) {
@@ -71,10 +91,12 @@ void HistorySidebarState::enter_focus(const ConversationStore& store,
 }
 
 void HistorySidebarState::exit_focus() {
+    std::lock_guard<std::mutex> lk(mu_);
     focused_ = false;
 }
 
 void HistorySidebarState::refresh_entries(const ConversationStore& store) {
+    std::lock_guard<std::mutex> lk(mu_);
     entries_ = store.list();
 }
 
@@ -89,12 +111,14 @@ void HistorySidebarState::clamp_selection(int visible_rows) {
 }
 
 void HistorySidebarState::move_selection(int delta, int visible_rows) {
+    std::lock_guard<std::mutex> lk(mu_);
     const int max_sel = static_cast<int>(entries_.size());
     selected_ = std::max(0, std::min(selected_ + delta, max_sel));
     clamp_selection(visible_rows);
 }
 
 std::string HistorySidebarState::selected_conversation_id() const {
+    std::lock_guard<std::mutex> lk(mu_);
     if (selected_ <= 0) return {};
     const size_t idx = static_cast<size_t>(selected_ - 1);
     if (idx >= entries_.size()) return {};
@@ -111,6 +135,7 @@ HistorySidebarKey HistorySidebarState::handle_key(int key_byte, char csi_final) 
 }
 
 HistorySidebarSnapshot HistorySidebarState::snapshot() const {
+    std::lock_guard<std::mutex> lk(mu_);
     HistorySidebarSnapshot s;
     s.enabled = enabled_;
     s.focused = focused_;

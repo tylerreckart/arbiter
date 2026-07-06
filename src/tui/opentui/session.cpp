@@ -34,6 +34,7 @@ void Session::resize(std::uint32_t width, std::uint32_t height) {
 }
 
 OpenTuiHandle Session::begin_frame() {
+    std::lock_guard<std::mutex> lk(frame_mu_);
     if (!engine_) return 0;
     const std::uint32_t w = static_cast<std::uint32_t>(term_cols());
     const std::uint32_t h = static_cast<std::uint32_t>(term_rows());
@@ -45,6 +46,7 @@ OpenTuiHandle Session::begin_frame() {
 }
 
 void Session::end_frame() {
+    std::lock_guard<std::mutex> lk(frame_mu_);
     if (!engine_ || !in_frame_) return;
     engine_->render(false);
     in_frame_ = false;

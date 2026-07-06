@@ -531,13 +531,6 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         int pane_x = layout.outer_bounds().x;
         int pane_w = layout.outer_bounds().w;
         int gap = cols - pane_x - pane_w;
-        if (gap != sw) {
-            sync_layout_to_terminal();
-            pane_x = layout.outer_bounds().x;
-            pane_w = layout.outer_bounds().w;
-            gap = cols - pane_x - pane_w;
-            sw = sidebar.effective_width(cols, panes);
-        }
         if (sw <= 0 || gap <= 0) return;
 
         const Rect sb = {pane_x + pane_w, 0, std::min(sw, gap), rows};
@@ -1461,7 +1454,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         focused.original_task.clear();
         focused.scroll_offset = 0;
         focused.new_while_scrolled = 0;
-        focused.tui.init(focused.current_agent, focused.current_model);
+        focused.tui.clear_status();
+        sync_layout_to_terminal();
         history_sidebar.exit_focus();
         history_sidebar.refresh_entries(conversation_store);
         layout.for_each_pane([&](Pane& p) {
@@ -1478,7 +1472,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         while (service_pending_closes()) {}
 
         if (history_sidebar.focused()) {
-            ui_ctx.present_all();
+            if (pump_notify) pump_notify();
             const int rows = arbiter::term_rows();
             const Rect hb = HistorySidebarState::rect_for_terminal(
                 arbiter::term_cols(), rows, true);
@@ -1491,15 +1485,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             const HistorySidebarKey action = history_sidebar.handle_key(key, csi);
             if (action == HistorySidebarKey::Up) {
                 history_sidebar.move_selection(-1, visible_rows);
+                if (pump_notify) pump_notify();
                 continue;
             }
             if (action == HistorySidebarKey::Down) {
                 history_sidebar.move_selection(1, visible_rows);
+                if (pump_notify) pump_notify();
                 continue;
             }
             if (action == HistorySidebarKey::Escape) {
                 history_sidebar.exit_focus();
-                ui_ctx.present_all();
+                if (pump_notify) pump_notify();
                 continue;
             }
             if (action == HistorySidebarKey::Enter) {

@@ -3,6 +3,7 @@
 #include "repl/conversation_store.h"
 #include "tui/tui.h"
 
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -36,17 +37,16 @@ public:
 
     void set_enabled(bool on, const std::string& config_dir);
     void toggle_enabled(const std::string& config_dir);
-    [[nodiscard]] bool enabled() const { return enabled_; }
-
+    [[nodiscard]] bool enabled() const;
     void enter_focus(const ConversationStore& store, const std::string& active_id);
     void exit_focus();
-    [[nodiscard]] bool focused() const { return focused_; }
+    [[nodiscard]] bool focused() const;
 
     void refresh_entries(const ConversationStore& store);
     void move_selection(int delta, int visible_rows);
     [[nodiscard]] int selected_index() const { return selected_; }
     // 0 = "+ New conversation"; 1..N = entries[selected-1]
-    [[nodiscard]] bool is_new_selected() const { return selected_ == 0; }
+    [[nodiscard]] bool is_new_selected() const;
     [[nodiscard]] std::string selected_conversation_id() const;
 
     HistorySidebarKey handle_key(int key_byte, char csi_final = 0);
@@ -55,6 +55,7 @@ public:
 private:
     void clamp_selection(int visible_rows);
 
+    mutable std::mutex mu_;
     bool enabled_ = true;
     bool focused_ = false;
     int  selected_ = 0;
