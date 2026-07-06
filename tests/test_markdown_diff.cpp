@@ -74,6 +74,24 @@ TEST_CASE("MarkdownRenderer defers non-diff fenced blocks until close") {
     CHECK(out.find("```python") != std::string::npos);
 }
 
+TEST_CASE("MarkdownRenderer code_sink receives fence lang tag") {
+    std::string captured_lang;
+    MarkdownRenderer md;
+    md.set_code_sink(
+        [&](std::string /*open*/, std::string lang) { captured_lang = std::move(lang); },
+        [](const std::string& /*line*/) {},
+        [](std::string /*close*/) {});
+
+    md.feed("```go\nx\n```\n");
+    md.flush();
+    CHECK(captured_lang == "go");
+
+    captured_lang.clear();
+    md.feed("```rust\nx\n```\n");
+    md.flush();
+    CHECK(captured_lang == "rust");
+}
+
 TEST_CASE("MarkdownRenderer streams code body through code_sink") {
     std::vector<std::string> captured;
     MarkdownRenderer md;

@@ -59,6 +59,12 @@ struct Theme {
     // (headings, inline code, links, list bullets, agent command lines)
     // with these; swap in a different theme and markdown recolors with it.
     std::string                    md_code;        // `code` + ```code blocks```
+    std::string                    md_code_keyword;
+    std::string                    md_code_string;
+    std::string                    md_code_comment;
+    std::string                    md_code_number;
+    std::string                    md_code_type;
+    std::string                    md_code_function;
     std::string                    md_link;        // [link]() — underline + this color
     std::string                    md_bullet;      // list bullets (• ◦ –)
     std::string                    md_cmd_line;    // /fetch, /exec, … display-color

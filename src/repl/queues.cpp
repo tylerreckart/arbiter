@@ -83,7 +83,7 @@ void OutputQueue::push(const std::string& s) {
                 trim_trailing_newlines(items_.back().data);
             }
             items_.push_back(
-                {OutputItem::Kind::Text, s, {}, OutputItem::CodeOp::Open, 0, new_block});
+                {OutputItem::Kind::Text, s, {}, OutputItem::CodeOp::Open, 0, {}, new_block});
         }
         fn = notify_fn_;
     }
@@ -115,7 +115,7 @@ void OutputQueue::push_diff(const std::string& patch) {
             trim_trailing_newlines(items_.back().data);
         }
         items_.push_back(
-            {OutputItem::Kind::Diff, patch, {}, OutputItem::CodeOp::Open, 0, false});
+            {OutputItem::Kind::Diff, patch, {}, OutputItem::CodeOp::Open, 0, {}, false});
         split_after_diff_ = true;
         fn = notify_fn_;
     }
@@ -142,14 +142,16 @@ void OutputQueue::push_prose(const std::vector<StyledLine>& lines) {
             back.insert(back.end(), lines.begin(), lines.end());
         } else {
             items_.push_back(
-                {OutputItem::Kind::Prose, {}, lines, OutputItem::CodeOp::Open, 0, new_block});
+                {OutputItem::Kind::Prose, {}, lines, OutputItem::CodeOp::Open, 0, {}, new_block});
         }
         fn = notify_fn_;
     }
     if (fn) fn();
 }
 
-void OutputQueue::push_code_open(const std::string& open_fence, size_t preview_rows) {
+void OutputQueue::push_code_open(const std::string& open_fence,
+                                 const std::string& lang,
+                                 size_t preview_rows) {
     if (open_fence.empty()) return;
     std::function<void()> fn;
     {
@@ -162,6 +164,7 @@ void OutputQueue::push_code_open(const std::string& open_fence, size_t preview_r
                           {},
                           OutputItem::CodeOp::Open,
                           preview_rows,
+                          lang,
                           new_block});
         fn = notify_fn_;
     }
@@ -177,6 +180,7 @@ void OutputQueue::push_code_line(const std::string& line) {
                           {},
                           OutputItem::CodeOp::Line,
                           0,
+                          {},
                           false});
         fn = notify_fn_;
     }
@@ -192,6 +196,7 @@ void OutputQueue::push_code_close(const std::string& close_fence) {
                           {},
                           OutputItem::CodeOp::Close,
                           0,
+                          {},
                           false});
         split_after_diff_ = true;
         fn = notify_fn_;

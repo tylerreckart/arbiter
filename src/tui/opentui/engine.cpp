@@ -141,4 +141,8 @@ void Engine::render(bool force) {
     ::render(renderer_, force);
 }
 
+void Engine::flush_display() {
+    render(true);
+}
+
 } // namespace arbiter::opentui

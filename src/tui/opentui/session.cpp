@@ -4,6 +4,8 @@
 #include "cli_helpers.h"
 #include "tui/tui_design.h"
 
+#include <functional>
+
 namespace arbiter::opentui {
 
 Session::~Session() {
@@ -51,6 +53,39 @@ void Session::end_frame() {
     engine_->render(false);
     in_frame_ = false;
     frame_ = 0;
+}
+
+void Session::with_frame(const std::function<void(OpenTuiHandle)>& fn) {
+    std::lock_guard<std::mutex> lk(frame_mu_);
+    if (!engine_) return;
+    const std::uint32_t w = static_cast<std::uint32_t>(term_cols());
+    const std::uint32_t h = static_cast<std::uint32_t>(term_rows());
+    if (w != width_ || h != height_) resize(w, h);
+
+    frame_ = getNextBuffer(engine_->handle());
+    in_frame_ = frame_ != 0;
+    if (frame_ == 0) return;
+
+    fn(frame_);
+
+    engine_->render(false);
+    in_frame_ = false;
+    frame_ = 0;
+}
+
+void Session::apply_design() {
+    if (!engine_) return;
+    setBackgroundColor(engine_->handle(), tui_design().bg.base.data());
+    OpenTuiCursorStyleOptions cursor{};
+    cursor.style = 0;
+    cursor.blinking = true;
+    cursor.color = tui_design().accent.primary.data();
+    cursor.cursor = 0;
+    setCursorStyleOptions(engine_->handle(), &cursor);
+}
+
+void Session::flush_display() {
+    if (engine_) engine_->flush_display();
 }
 
 void Session::shutdown() {

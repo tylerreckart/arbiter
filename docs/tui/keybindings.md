@@ -27,6 +27,7 @@ Arbiter ships its own line editor. Bindings below are the complete set the edito
 |-----------|------------------------------------------------------------------------------|
 | `PgUp`    | Scroll the focused pane's scroll region up by ~half a screen.                |
 | `PgDn`    | Scroll back down. At the live tail, PgDn is a no-op.                         |
+| `^O`      | Expand or collapse the truncated code block visible in the scroll region.      |
 
 Scrollback is **visual-row aware**: a wrapped paragraph counts as multiple rows for navigation, matching what the terminal actually drew. The scrollback ring is bounded (default 20k logical lines) — older content is evicted when the buffer fills.
 

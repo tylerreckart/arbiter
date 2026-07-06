@@ -33,6 +33,7 @@ public:
     using DrawFn = std::function<void(OpenTuiHandle buffer, std::uint32_t width, std::uint32_t height)>;
     void draw(const DrawFn& draw);
     void render(bool force = false);
+    void flush_display();
 
     [[nodiscard]] std::uint32_t width() const { return width_; }
     [[nodiscard]] std::uint32_t height() const { return height_; }
