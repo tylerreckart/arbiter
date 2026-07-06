@@ -2,6 +2,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -20,6 +21,10 @@ struct ConversationEntry {
     // 0 = not deleted. Soft-deleted entries are filtered out of list() but
     // their session file stays on disk until purge().
     std::int64_t deleted_at = 0;
+    // True once the title is locked against further auto-titling: either a
+    // model-generated title landed (success or exhausted attempt) or the
+    // user renamed it manually via /chat title.
+    bool titled = false;
 };
 
 // Global conversation registry under ~/.arbiter/conversations/.
@@ -55,7 +60,35 @@ public:
     void flush();
 
     void set_active(const std::string& id);
+
+    // Sets the title without locking it — used for the instant deterministic
+    // title so the async model-generated title can still land afterward.
     void set_title(const std::string& id, const std::string& title);
+
+    // Sets the title AND locks it against further auto-titling. Used by the
+    // manual /chat title command and by a successful model-generated title.
+    void set_title_locked(const std::string& id, const std::string& title);
+
+    // Locks the current title without changing it — used when the model
+    // title job fails/times out, so restarts don't retry it forever
+    // ("one attempt per conversation, ever").
+    void lock_title(const std::string& id);
+
+    [[nodiscard]] bool is_titled(const std::string& id) const;
+
+    // Enqueues a best-effort, one-shot model call to refine `id`'s title.
+    // Runs on the store's title worker thread (FIFO, separate from the
+    // autosave thread so a slow title call never delays a save). On success
+    // the sanitized reply replaces the title via set_title_locked(); on
+    // failure/timeout (10s) the title is left as-is and lock_title() is
+    // still called so this conversation is never retried. No-ops if `id`
+    // is already titled. `orch` must outlive the job (same lifetime
+    // assumption as save_async's Orchestrator&).
+    void enqueue_title_job(const std::string& id,
+                           const std::string& user_msg,
+                           const std::string& assistant_msg,
+                           const std::string& model,
+                           Orchestrator& orch);
 
     // Soft delete: marks the entry deleted (filtered from list()), leaves
     // the session file on disk. If `id` was active, switches to the next
@@ -90,6 +123,16 @@ private:
                                              bool delete_file);
     void save_worker_loop();
 
+    struct TitleJob {
+        std::string id;
+        std::string user_msg;
+        std::string assistant_msg;
+        std::string model;
+        Orchestrator* orch = nullptr;
+    };
+    void title_worker_loop();
+    void run_title_job(const TitleJob& job);
+
     mutable std::mutex mu_;
     std::string config_dir_;
     std::string store_dir_;
@@ -106,6 +149,16 @@ private:
     bool stop_ = false;
     std::string pending_id_;
     Orchestrator* pending_orch_ = nullptr;
+
+    // Background titling: a real FIFO (unlike the autosave slot) since each
+    // conversation's title job must run at most once, ever — dropping one
+    // to a "latest wins" slot would strand that conversation on its
+    // deterministic title forever.
+    std::thread title_thread_;
+    std::mutex title_mu_;
+    std::condition_variable title_cv_;
+    std::deque<TitleJob> title_queue_;
+    bool title_stop_ = false;
 };
 
 } // namespace arbiter

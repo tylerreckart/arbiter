@@ -32,6 +32,7 @@
 #include "config.h"
 #include "repl/repl_argv.h"
 #include "repl/conversation_store.h"
+#include "repl/conversation_titling.h"
 #include "tui/opentui/session.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
@@ -42,6 +43,7 @@
 #include <string>
 #include <cstdlib>
 #include <csignal>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -364,7 +366,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                   "/fetch","/mem","/search","/browse",
                                   "/todo","/schedule","/exec","/write",
                                   "/read","/list","/mcp","/a2a","/lesson",
-                                  "/plan","/theme","/verbose","/quit","/help"});
+                                  "/plan","/theme","/verbose","/chat","/quit","/help"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
                     cmd == "reset" || cmd == "pane") {
@@ -380,6 +382,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                                 "search","entries","entry","add"});
                 if (cmd == "todo") return match({"list","add","start","done","cancel","reorder"});
                 if (cmd == "schedule") return match({"list","cancel","pause","resume"});
+                if (cmd == "chat") return match({"title"});
                 if (cmd == "mcp") return match({"tools","call"});
                 if (cmd == "a2a") return match({"list","call"});
                 if (cmd == "theme") return match(arbiter::tui_list_available_themes(dir));
@@ -1054,11 +1057,32 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "Session\n"
                     "  /theme [list]|<preset>           — switch TUI color theme in-session\n"
                     "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
+                    "  /chat title <text>               — rename the active conversation (locks title)\n"
                     "  /help                            — this list\n"
                     "  /quit                            — exit\n"
                     "\n"
                     "Scroll: PgUp / PgDn scroll the focused pane's history.  Esc cancels\n"
                     "any in-flight agent turn.");
+                return;
+            }
+            if (cmd == "chat") {
+                std::string sub;
+                iss >> sub;
+                if (sub == "title") {
+                    std::string text;
+                    std::getline(iss, text);
+                    size_t a = 0;
+                    while (a < text.size() && std::isspace(static_cast<unsigned char>(text[a]))) ++a;
+                    text = text.substr(a);
+                    if (text.empty()) {
+                        output_queue.push_msg("Usage: /chat title <text>");
+                        return;
+                    }
+                    conversation_store.set_title_locked(conversation_store.active_id(), text);
+                    output_queue.push_msg("title: " + text);
+                    return;
+                }
+                output_queue.push_msg("Usage: /chat title <text>");
                 return;
             }
             if (cmd == "verbose") {
@@ -1193,6 +1217,25 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             update_pane_original_task(pane, line, resp);
             if (!resp.ok) {
                 output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+            } else {
+                // First turn of a still-"Untitled" conversation: set an
+                // instant deterministic title from the user's message, then
+                // best-effort refine it with a small model call in the
+                // background. Both are no-ops once the conversation already
+                // has a real (or locked) title.
+                const std::string active_id = conversation_store.active_id();
+                for (auto& e : conversation_store.list()) {
+                    if (e.id != active_id || e.title != "Untitled") continue;
+                    const std::string det = arbiter::deterministic_conversation_title(line);
+                    if (!det.empty()) {
+                        conversation_store.set_title(active_id, det);
+                        std::string title_model = arbiter::load_title_model_override(dir);
+                        if (title_model.empty()) title_model = orch.get_agent_model("index");
+                        conversation_store.enqueue_title_job(active_id, line, resp.content,
+                                                             title_model, orch);
+                    }
+                    break;
+                }
             }
             // Durable per-turn autosave: coalesces onto the store's
             // background thread so a crash never loses more than the

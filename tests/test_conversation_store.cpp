@@ -172,3 +172,58 @@ TEST_CASE("create_or_reuse reuses an empty active conversation instead of creati
 
     fs::remove_all(dir);
 }
+
+TEST_CASE("set_title does not lock; set_title_locked and lock_title do") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string id = store.active_id();
+
+    CHECK_FALSE(store.is_titled(id));
+
+    store.set_title(id, "deterministic title");
+    CHECK(store.list().front().title == "deterministic title");
+    CHECK_FALSE(store.is_titled(id));
+
+    store.set_title(id, "deterministic title v2");
+    CHECK(store.list().front().title == "deterministic title v2");
+    CHECK_FALSE(store.is_titled(id));
+
+    store.set_title_locked(id, "model refined title");
+    CHECK(store.list().front().title == "model refined title");
+    CHECK(store.is_titled(id));
+
+    // Once locked, a plain set_title (as the deterministic path would issue
+    // on a later, unrelated turn) must not silently unlock it.
+    store.set_title(id, "should not apply");
+    CHECK(store.list().front().title == "model refined title");
+    CHECK(store.is_titled(id));
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("lock_title locks without changing the title text") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string id = store.active_id();
+
+    store.set_title(id, "deterministic title");
+    store.lock_title(id); // simulates the model-title job failing/timing out
+    CHECK(store.list().front().title == "deterministic title");
+    CHECK(store.is_titled(id));
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("titled flag round-trips through the manifest on disk") {
+    const std::string dir = make_temp_dir();
+    {
+        ConversationStore store(dir);
+        store.set_title_locked(store.active_id(), "locked title");
+    }
+    {
+        ConversationStore store(dir); // fresh instance re-reads manifest.json
+        CHECK(store.is_titled(store.active_id()));
+        CHECK(store.list().front().title == "locked title");
+    }
+    fs::remove_all(dir);
+}

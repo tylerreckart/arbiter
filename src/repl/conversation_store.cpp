@@ -3,6 +3,7 @@
 #include "atomic_file.h"
 #include "json.h"
 #include "orchestrator.h"
+#include "repl/conversation_titling.h"
 
 #include <algorithm>
 #include <atomic>
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -68,6 +70,7 @@ ConversationStore::ConversationStore(std::string config_dir)
       store_dir_(config_dir_ + "/conversations") {
     ensure_initialized();
     save_thread_ = std::thread(&ConversationStore::save_worker_loop, this);
+    title_thread_ = std::thread(&ConversationStore::title_worker_loop, this);
 }
 
 ConversationStore::~ConversationStore() {
@@ -77,6 +80,17 @@ ConversationStore::~ConversationStore() {
     }
     async_cv_.notify_all();
     if (save_thread_.joinable()) save_thread_.join();
+
+    // Titling is best-effort metadata, not durability-critical like saves —
+    // don't make shutdown wait on a queue of network calls. Any job already
+    // mid-flight when we set the flag finishes on its own (see
+    // run_title_job's timeout comment for why that's an acceptable risk).
+    {
+        std::lock_guard<std::mutex> lk(title_mu_);
+        title_stop_ = true;
+    }
+    title_cv_.notify_all();
+    if (title_thread_.joinable()) title_thread_.join();
 }
 
 void ConversationStore::save_worker_loop() {
@@ -230,6 +244,7 @@ void ConversationStore::load_manifest_unlocked() {
                     e.created_at = static_cast<std::int64_t>(v->get_number("created_at"));
                     e.updated_at = static_cast<std::int64_t>(v->get_number("updated_at"));
                     e.deleted_at = static_cast<std::int64_t>(v->get_number("deleted_at"));
+                    e.titled = v->get_bool("titled", false);
                     if (e.id.empty()) continue;
                     entries_.push_back(std::move(e));
                 }
@@ -286,6 +301,7 @@ void ConversationStore::save_manifest_unlocked() const {
         m["created_at"] = jnum(static_cast<double>(e.created_at));
         m["updated_at"] = jnum(static_cast<double>(e.updated_at));
         if (e.deleted_at != 0) m["deleted_at"] = jnum(static_cast<double>(e.deleted_at));
+        if (e.titled) m["titled"] = jbool(true);
         arr.push_back(obj);
     }
     auto root = jobj();
@@ -436,6 +452,7 @@ void ConversationStore::set_title(const std::string& id, const std::string& titl
     std::lock_guard<std::mutex> lk(mu_);
     for (auto& e : entries_) {
         if (e.id == id) {
+            if (e.titled) return; // locked — the deterministic path never overwrites a real title
             e.title = title;
             e.updated_at = now_epoch();
             break;
@@ -443,6 +460,40 @@ void ConversationStore::set_title(const std::string& id, const std::string& titl
     }
     sort_entries(entries_);
     save_manifest_unlocked();
+}
+
+void ConversationStore::set_title_locked(const std::string& id, const std::string& title) {
+    if (title.empty()) return;
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto& e : entries_) {
+        if (e.id == id) {
+            e.title = title;
+            e.titled = true;
+            e.updated_at = now_epoch();
+            break;
+        }
+    }
+    sort_entries(entries_);
+    save_manifest_unlocked();
+}
+
+void ConversationStore::lock_title(const std::string& id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto& e : entries_) {
+        if (e.id == id) {
+            e.titled = true;
+            break;
+        }
+    }
+    save_manifest_unlocked();
+}
+
+bool ConversationStore::is_titled(const std::string& id) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& e : entries_) {
+        if (e.id == id) return e.titled;
+    }
+    return false;
 }
 
 void ConversationStore::remove_and_reassign_active_unlocked(const std::string& id,
@@ -481,6 +532,93 @@ void ConversationStore::soft_delete(const std::string& id) {
 void ConversationStore::purge(const std::string& id) {
     std::lock_guard<std::mutex> lk(mu_);
     remove_and_reassign_active_unlocked(id, /*delete_file=*/true);
+}
+
+void ConversationStore::enqueue_title_job(const std::string& id,
+                                          const std::string& user_msg,
+                                          const std::string& assistant_msg,
+                                          const std::string& model,
+                                          Orchestrator& orch) {
+    if (is_titled(id)) return;
+    {
+        std::lock_guard<std::mutex> lk(title_mu_);
+        title_queue_.push_back(TitleJob{id, user_msg, assistant_msg, model, &orch});
+    }
+    title_cv_.notify_all();
+}
+
+void ConversationStore::title_worker_loop() {
+    for (;;) {
+        TitleJob job;
+        {
+            std::unique_lock<std::mutex> lk(title_mu_);
+            title_cv_.wait(lk, [&] { return !title_queue_.empty() || title_stop_; });
+            if (!title_queue_.empty()) {
+                job = std::move(title_queue_.front());
+                title_queue_.pop_front();
+            } else {
+                return;
+            }
+        }
+        if (!is_titled(job.id)) run_title_job(job);
+    }
+}
+
+namespace {
+
+std::string build_title_prompt(const std::string& user_msg, const std::string& assistant_msg) {
+    constexpr size_t kMaxTotal = 2000;
+    std::string prompt = "User: " + user_msg + "\n\nAssistant: " + assistant_msg;
+    if (prompt.size() > kMaxTotal) prompt.resize(kMaxTotal);
+    return prompt;
+}
+
+} // namespace
+
+void ConversationStore::run_title_job(const TitleJob& job) {
+    const std::string prompt = build_title_prompt(job.user_msg, job.assistant_msg);
+    const std::string model = job.model;
+    Orchestrator* orch = job.orch;
+
+    // The one-shot completion runs on its own detached thread so we can
+    // enforce the 10s timeout from our side (ApiClient has no per-request
+    // timeout of its own). The promise is heap-allocated and captured by
+    // the detached thread, so if we give up waiting, that thread can still
+    // safely call set_value() later — a std::promise's destructor (unlike
+    // std::async's shared state) never blocks. The narrow residual risk is
+    // a title call still in flight at process exit touching `orch` after
+    // it's destroyed; titling is best-effort metadata, not worth adding
+    // real request cancellation for.
+    auto prom = std::make_shared<std::promise<std::string>>();
+    std::future<std::string> fut = prom->get_future();
+    std::thread worker([orch, model, prompt, prom]() {
+        ApiRequest req;
+        req.model = model;
+        req.system_prompt =
+            "Reply with only a 3-6 word title for this conversation. "
+            "No quotes, no punctuation at the end.";
+        req.max_tokens = 32;
+        req.temperature = 0.3;
+        req.messages = {Message{"user", prompt}};
+        ApiResponse resp = orch->client().complete(req);
+        try {
+            prom->set_value(resp.ok ? resp.content : std::string());
+        } catch (...) {
+        }
+    });
+    worker.detach();
+
+    std::string raw;
+    if (fut.wait_for(std::chrono::seconds(10)) == std::future_status::ready) {
+        raw = fut.get();
+    }
+
+    const std::string sanitized = sanitize_model_title(raw);
+    if (!sanitized.empty()) {
+        set_title_locked(job.id, sanitized);
+    } else {
+        lock_title(job.id);
+    }
 }
 
 } // namespace arbiter
