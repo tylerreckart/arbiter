@@ -99,6 +99,7 @@ set(ARBITER_SOURCES
     src/repl/layout.cpp
     src/repl/pane_history.cpp
     src/repl/conversation_store.cpp
+    src/repl/conversation_titling.cpp
     src/atomic_file.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
@@ -450,22 +451,38 @@ if(INDEX_BUILD_TESTS)
     add_test(NAME unit_sidebar COMMAND unit_sidebar)
 
     # --- Unit tests for the conversation-history store (persistence, atomic
-    # writes, manifest recovery, soft delete). Links a stub for the two
-    # Orchestrator methods it calls instead of the full orchestrator.cpp
-    # dependency chain — see tests/orchestrator_session_stub.cpp.
+    # writes, manifest recovery, soft delete, titling). Links a stub for the
+    # two Orchestrator methods it calls instead of the full orchestrator.cpp
+    # dependency chain — see tests/orchestrator_session_stub.cpp. Still
+    # needs api_client.cpp + friends because conversation_store.cpp's title
+    # job calls ApiClient::complete() directly (no Orchestrator construction
+    # required for that symbol to resolve).
     add_executable(unit_conversation_store
         tests/test_conversation_store.cpp
         tests/orchestrator_session_stub.cpp
         src/repl/conversation_store.cpp
+        src/repl/conversation_titling.cpp
         src/atomic_file.cpp
         src/json.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
     )
     target_include_directories(unit_conversation_store PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
         ${OPENSSL_INCLUDE_DIR}
     )
-    target_link_libraries(unit_conversation_store PRIVATE Threads::Threads)
+    target_link_libraries(unit_conversation_store PRIVATE
+        Threads::Threads
+        CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
     add_test(NAME unit_conversation_store COMMAND unit_conversation_store)
 
     # --- Autosave tests: exercise save_async/flush against a real (but
@@ -477,11 +494,16 @@ if(INDEX_BUILD_TESTS)
         tests/test_conversation_store_autosave.cpp
         tests/orchestrator_constructible_stub.cpp
         src/repl/conversation_store.cpp
+        src/repl/conversation_titling.cpp
         src/atomic_file.cpp
         src/json.cpp
         src/api_client.cpp
         src/circuit_breaker.cpp
         src/metrics.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
     )
     target_include_directories(unit_conversation_store_autosave PRIVATE
         ${CMAKE_SOURCE_DIR}/include
@@ -495,6 +517,23 @@ if(INDEX_BUILD_TESTS)
         OpenSSL::Crypto
     )
     add_test(NAME unit_conversation_store_autosave COMMAND unit_conversation_store_autosave)
+
+    # --- Unit tests for conversation titling (deterministic title, model-
+    # reply sanitizer) — pure string functions, no Orchestrator needed.
+    add_executable(unit_conversation_titling
+        tests/test_conversation_titling.cpp
+        src/repl/conversation_titling.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_conversation_titling PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_conversation_titling COMMAND unit_conversation_titling)
 
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser
