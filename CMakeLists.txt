@@ -350,6 +350,23 @@ if(INDEX_BUILD_TESTS)
     add_dependencies(transcript_replay_tui_tests arbiter)
     add_dependencies(sidebar_tui_tests arbiter)
 
+    add_executable(chat_command_tui_tests
+        tests/pty_harness.cpp
+        tests/test_chat_command_tui.cpp
+    )
+    target_include_directories(chat_command_tui_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/tests
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(chat_command_tui_tests PRIVATE
+        INDEX_TEST_BINARY="$<TARGET_FILE:arbiter>"
+    )
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(chat_command_tui_tests PRIVATE util)
+    endif()
+    add_test(NAME chat_command_tui COMMAND chat_command_tui_tests)
+    add_dependencies(chat_command_tui_tests arbiter)
+
     # --- Unit tests for security-critical command functions ---
     add_executable(unit_commands
         tests/test_commands.cpp
@@ -469,6 +486,39 @@ if(INDEX_BUILD_TESTS)
         ${OPENSSL_INCLUDE_DIR}
     )
     add_test(NAME unit_sidebar COMMAND unit_sidebar)
+
+    # --- Unit tests for the history sidebar (id-pinned selection across
+    # reorder, key->action table including rename/delete/PgUp/PgDn). Same
+    # dependency set as unit_conversation_store since HistorySidebarState
+    # holds a ConversationStore reference.
+    add_executable(unit_history_sidebar
+        tests/test_history_sidebar.cpp
+        tests/orchestrator_session_stub.cpp
+        src/tui/history_sidebar.cpp
+        src/repl/conversation_store.cpp
+        src/repl/conversation_titling.cpp
+        src/atomic_file.cpp
+        src/json.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+    )
+    target_include_directories(unit_history_sidebar PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_history_sidebar PRIVATE
+        Threads::Threads
+        CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    add_test(NAME unit_history_sidebar COMMAND unit_history_sidebar)
 
     # --- Unit tests for the conversation-history store (persistence, atomic
     # writes, manifest recovery, soft delete, titling). Links a stub for the
