@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <memory>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -578,20 +579,26 @@ std::string build_title_prompt(const std::string& user_msg, const std::string& a
 void ConversationStore::run_title_job(const TitleJob& job) {
     const std::string prompt = build_title_prompt(job.user_msg, job.assistant_msg);
     const std::string model = job.model;
-    Orchestrator* orch = job.orch;
 
-    // The one-shot completion runs on its own detached thread so we can
-    // enforce the 10s timeout from our side (ApiClient has no per-request
-    // timeout of its own). The promise is heap-allocated and captured by
-    // the detached thread, so if we give up waiting, that thread can still
-    // safely call set_value() later — a std::promise's destructor (unlike
-    // std::async's shared state) never blocks. The narrow residual risk is
-    // a title call still in flight at process exit touching `orch` after
-    // it's destroyed; titling is best-effort metadata, not worth adding
-    // real request cancellation for.
+    // Mint a standalone client for this one-shot call *now*, synchronously,
+    // while we're still on the title worker thread (which ~ConversationStore
+    // joins before the Orchestrator that owns job.orch is destroyed).  The
+    // detached worker below then captures only this owned client — never
+    // job.orch — so if the title call is still in flight past our 10s wait
+    // when the process exits or the Orchestrator is torn down, the worker
+    // keeps using its own client and destroys it when it returns, instead of
+    // dereferencing a dangling Orchestrator (issue #51).
+    std::shared_ptr<ApiClient> client = job.orch->make_side_client();
+
+    // The completion runs on its own detached thread so we can enforce the
+    // 10s timeout from our side (ApiClient has no per-request timeout of its
+    // own). The promise is heap-allocated and captured by the detached
+    // thread, so if we give up waiting, that thread can still safely call
+    // set_value() later — a std::promise's destructor (unlike std::async's
+    // shared state) never blocks.
     auto prom = std::make_shared<std::promise<std::string>>();
     std::future<std::string> fut = prom->get_future();
-    std::thread worker([orch, model, prompt, prom]() {
+    std::thread worker([client, model, prompt, prom]() {
         ApiRequest req;
         req.model = model;
         req.system_prompt =
@@ -600,7 +607,7 @@ void ConversationStore::run_title_job(const TitleJob& job) {
         req.max_tokens = 32;
         req.temperature = 0.3;
         req.messages = {Message{"user", prompt}};
-        ApiResponse resp = orch->client().complete(req);
+        ApiResponse resp = client->complete(req);
         try {
             prom->set_value(resp.ok ? resp.content : std::string());
         } catch (...) {
@@ -611,6 +618,13 @@ void ConversationStore::run_title_job(const TitleJob& job) {
     std::string raw;
     if (fut.wait_for(std::chrono::seconds(10)) == std::future_status::ready) {
         raw = fut.get();
+    } else {
+        // Timed out: abandon the result, but interrupt the abandoned request
+        // so the detached worker returns promptly and drops its client rather
+        // than lingering on a slow/hung provider connection.  Safe because the
+        // worker holds its own shared_ptr to `client`, keeping it alive across
+        // this cancel().
+        client->cancel();
     }
 
     const std::string sanitized = sanitize_model_title(raw);

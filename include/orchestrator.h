@@ -302,6 +302,18 @@ public:
 
     ApiClient& client() { return client_; }
 
+    // Mint a standalone ApiClient from this orchestrator's provider keys, for
+    // best-effort side work (e.g. conversation titling) that runs on a
+    // detached worker.  The returned client is fully independent and holds no
+    // back-reference to this Orchestrator, so a worker that outlives us — a
+    // title call still in flight at process exit — keeps using its own client
+    // and cleans it up when it returns, instead of dereferencing a destroyed
+    // Orchestrator (issue #51).  Same construction as make_parallel_invoker's
+    // per-child clients.
+    std::unique_ptr<ApiClient> make_side_client() const {
+        return std::make_unique<ApiClient>(api_keys_);
+    }
+
     // Interrupt any in-progress API call across the master and all agents.
     // Thread-safe — can be called from the readline/main thread while the
     // exec thread is blocked in a streaming read.
