@@ -30,20 +30,25 @@ void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
     while (resp.ok && resp.stop_reason == "max_tokens" && continues < kMaxContinues) {
         ++continues;
 
-        history_.push_back(Message{"assistant", resp.content});
-        history_.push_back(Message{"user", kContinuePrompt});
-
         ApiRequest req;
         req.model         = config_.model;
         req.system_prompt = config_.build_system_prompt();
         req.max_tokens    = config_.max_tokens;
         req.temperature   = config_.temperature;
-        req.messages      = history_;
+        {
+            std::lock_guard<std::mutex> lk(history_mu_);
+            history_.push_back(Message{"assistant", resp.content});
+            history_.push_back(Message{"user", kContinuePrompt});
+            req.messages = history_;
+        }
 
         ApiResponse more = cb ? client_.stream(req, cb) : client_.complete(req);
 
-        history_.pop_back();   // remove continue prompt
-        history_.pop_back();   // remove partial assistant
+        {
+            std::lock_guard<std::mutex> lk(history_mu_);
+            history_.pop_back();   // remove continue prompt
+            history_.pop_back();   // remove partial assistant
+        }
 
         if (!more.ok) {
             // Keep whatever we already accumulated; stop_reason stays
@@ -104,7 +109,6 @@ ApiResponse Agent::send(std::vector<ContentPart> parts) {
         user_msg.content = concatenate_text(parts);
         user_msg.parts   = std::move(parts);
     }
-    history_.push_back(std::move(user_msg));
 
     // Build request
     ApiRequest req;
@@ -112,13 +116,18 @@ ApiResponse Agent::send(std::vector<ContentPart> parts) {
     req.system_prompt = config_.build_system_prompt();
     req.max_tokens    = config_.max_tokens;
     req.temperature   = config_.temperature;
-    req.messages      = history_;
+    {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        history_.push_back(std::move(user_msg));
+        req.messages = history_;
+    }
 
     auto resp = client_.complete(req);
 
     if (resp.ok) {
         continue_until_done(resp, nullptr);
         // Add assistant response to history
+        std::lock_guard<std::mutex> lk(history_mu_);
         history_.push_back(Message{"assistant", resp.content});
         stats_.total_input_tokens  += resp.input_tokens;
         stats_.total_output_tokens += resp.output_tokens;
@@ -150,19 +159,23 @@ ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
         user_msg.content = concatenate_text(parts);
         user_msg.parts   = std::move(parts);
     }
-    history_.push_back(std::move(user_msg));
 
     ApiRequest req;
     req.model         = config_.model;
     req.system_prompt = config_.build_system_prompt();
     req.max_tokens    = config_.max_tokens;
     req.temperature   = config_.temperature;
-    req.messages      = history_;
+    {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        history_.push_back(std::move(user_msg));
+        req.messages = history_;
+    }
 
     auto resp = client_.stream(req, cb);
 
     if (resp.ok) {
         continue_until_done(resp, cb);
+        std::lock_guard<std::mutex> lk(history_mu_);
         history_.push_back(Message{"assistant", resp.content});
         stats_.total_input_tokens  += resp.input_tokens;
         stats_.total_output_tokens += resp.output_tokens;
@@ -173,13 +186,19 @@ ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
 }
 
 void Agent::reset_history() {
+    std::lock_guard<std::mutex> lk(history_mu_);
     history_.clear();
 }
 
 std::string Agent::status_summary() const {
+    size_t msg_count;
+    {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        msg_count = history_.size();
+    }
     std::ostringstream ss;
     ss << id_ << " | " << config_.role
-       << " | msgs:" << history_.size()
+       << " | msgs:" << msg_count
        << " | in:" << stats_.total_input_tokens
        << " out:" << stats_.total_output_tokens
        << " | reqs:" << stats_.total_requests;
@@ -195,11 +214,14 @@ std::string Agent::to_json() const {
     m["config"] = json_parse(config_.to_json());
 
     auto hist = jarr();
-    for (auto& msg : history_) {
-        auto mo = jobj();
-        mo->as_object_mut()["role"] = jstr(msg.role);
-        mo->as_object_mut()["content"] = jstr(msg.content);
-        hist->as_array_mut().push_back(mo);
+    {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        for (auto& msg : history_) {
+            auto mo = jobj();
+            mo->as_object_mut()["role"] = jstr(msg.role);
+            mo->as_object_mut()["content"] = jstr(msg.content);
+            hist->as_array_mut().push_back(mo);
+        }
     }
     m["history"] = hist;
 

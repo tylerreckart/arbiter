@@ -32,6 +32,12 @@ struct PaneFrameHooks {
 
 void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks);
 
+// Drains pane.output_queue into pane.scroll (the on-screen scrollback). The
+// single consumer of OutputQueue's item stream — both live turns (via the
+// getc pump) and transcript replay funnel through here so replayed output
+// goes through the exact same code path as live output.
+void pane_history_drain_queue(Pane& pane);
+
 void pane_history_init(Pane& pane);
 void pane_history_set_cols(Pane& pane, int cols);
 void pane_history_clear(Pane& pane);

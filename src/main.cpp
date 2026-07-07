@@ -32,16 +32,20 @@
 #include "config.h"
 #include "repl/repl_argv.h"
 #include "repl/conversation_store.h"
+#include "repl/conversation_titling.h"
+#include "repl/transcript_replay.h"
 #include "tui/opentui/session.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
+#include "tui/opentui/top_header_frame.h"
 
 #include <iostream>
 #include <string>
 #include <cstdlib>
 #include <csignal>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -121,44 +125,6 @@ static arbiter::RenderPolicy master_stream_policy(const arbiter::Config& cfg) {
     return cfg.verbose ? arbiter::kVerbose : arbiter::kMasterStream;
 }
 
-static void flush_pane_output(Pane& pane) {
-    auto items = pane.output_queue.drain_items();
-    if (items.empty()) return;
-
-    int before = (pane.scroll_offset > 0) ? pane_history_total_rows(pane) : 0;
-    for (const auto& item : items) {
-        switch (item.kind) {
-        case arbiter::OutputItem::Kind::Text:
-            if (!item.data.empty()) {
-                pane_history_push(pane, item.data, item.new_block);
-            }
-            break;
-        case arbiter::OutputItem::Kind::Prose:
-            if (!item.styled_lines.empty()) {
-                pane_history_push_prose(pane, item.styled_lines, item.new_block);
-            }
-            break;
-        case arbiter::OutputItem::Kind::Code:
-            if (item.code_op == arbiter::OutputItem::CodeOp::Open) {
-                pane_history_push_code_open(
-                    pane, item.data, item.code_lang, item.code_preview_rows, item.new_block);
-            } else if (item.code_op == arbiter::OutputItem::CodeOp::Line) {
-                pane_history_push_code_line(pane, item.data);
-            } else {
-                pane_history_push_code_close(pane, item.data);
-            }
-            break;
-        case arbiter::OutputItem::Kind::Diff:
-            pane_history_push_diff(pane, item.data);
-            break;
-        }
-    }
-    if (pane.scroll_offset > 0) {
-        int after = pane_history_total_rows(pane);
-        pane.new_while_scrolled += (after - before);
-    }
-}
-
 // Set by each pane's exec thread at startup and left untouched thereafter.
 // Orchestrator callbacks (progress/tool-status/agent-start) run
 // synchronously from whichever exec thread invoked orch.send_streaming, so
@@ -182,7 +148,7 @@ static void update_pane_original_task(Pane& pane,
 static void getc_flush_output() {
     auto& S = g_getc_state;
     if (!S.pane) return;
-    flush_pane_output(*S.pane);
+    pane_history_drain_queue(*S.pane);
     if (g_ui_ctx) pane_history_render(*S.pane, *g_ui_ctx);
 }
 
@@ -237,6 +203,20 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     std::mutex                pending_closes_mu;
     std::vector<PendingClose> pending_closes;
 
+    // Conversation switch/delete requests queued by /chat (which runs on a
+    // pane's exec thread) for the main thread to process — the actual
+    // switch touches `layout`/stdin-adjacent state that isn't safe to
+    // drive from a background thread. Mirrors pending_closes above.
+    struct PendingConversationOp {
+        bool switch_op = false;   // vs delete_op
+        bool create_new = false; // only meaningful when switch_op
+        std::string target_id;   // empty + create_new=false + switch_op=true means "use sidebar selection"
+        bool delete_op = false;
+        bool hard_delete = false;
+    };
+    std::mutex                          pending_conv_mu;
+    std::vector<PendingConversationOp>  pending_conv_ops;
+
     SidebarState sidebar;
 
     // Forward declaration — layout_ptr lets lambdas registered before layout
@@ -250,7 +230,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             cols, history_sidebar.enabled());
         const int panes = layout_ptr ? static_cast<int>(layout_ptr->pane_count()) : 1;
         const int trailing = sidebar.effective_width(cols, panes);
-        return Rect{leading, 0, std::max(1, cols - leading - trailing), rows};
+        // Row 0 is reserved for the top header bar.
+        return Rect{leading, 1, std::max(1, cols - leading - trailing), std::max(1, rows - 1)};
     };
 
     bool restored = conversation_store.load(conversation_store.active_id(), orch);
@@ -364,7 +345,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                   "/fetch","/mem","/search","/browse",
                                   "/todo","/schedule","/exec","/write",
                                   "/read","/list","/mcp","/a2a","/lesson",
-                                  "/plan","/theme","/verbose","/quit","/help"});
+                                  "/plan","/theme","/verbose","/chat","/quit","/help"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
                     cmd == "reset" || cmd == "pane") {
@@ -380,6 +361,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                                 "search","entries","entry","add"});
                 if (cmd == "todo") return match({"list","add","start","done","cancel","reorder"});
                 if (cmd == "schedule") return match({"list","cancel","pause","resume"});
+                if (cmd == "chat") return match({"list", "new", "switch", "title", "delete", "purge"});
                 if (cmd == "mcp") return match({"tools","call"});
                 if (cmd == "a2a") return match({"list","call"});
                 if (cmd == "theme") return match(arbiter::tui_list_available_themes(dir));
@@ -387,10 +369,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             });
 
         Pane* raw = p.get();
-        p->editor.set_scroll_handler([raw, &pump_notify](int direction, int step) {
+        p->editor.set_scroll_handler([raw, &pump_notify, &orch](int direction, int step) {
             const int max_off = pane_history_max_scroll(*raw);
             if (direction < 0) {
                 raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
+                // Hit the top of currently-loaded scrollback: pull in the
+                // next chunk of older transcript history, if any is behind
+                // the gap marker (see replay_transcript/kReplayTailMessages).
+                if (raw->scroll_offset >= max_off && raw->scroll && raw->scroll->has_gap()) {
+                    const auto history = orch.get_agent_history("index");
+                    arbiter::replay_load_previous_chunk(*raw, history);
+                }
             } else {
                 raw->scroll_offset = std::max(0, raw->scroll_offset - step);
                 raw->new_while_scrolled = 0;
@@ -536,6 +525,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     pane_hooks.draw_overlays = [&](OpenTuiHandle frame, int cols, int rows) {
         if (frame == 0 || cols <= 0 || rows <= 0) return;
 
+        arbiter::opentui::draw_top_header(frame, cols);
+
         const Rect hb = HistorySidebarState::rect_for_terminal(
             cols, rows, history_sidebar.enabled());
         if (hb.w > 0) {
@@ -558,7 +549,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         int gap = cols - pane_x - pane_w;
         if (sw <= 0 || gap <= 0) return;
 
-        const Rect sb = {pane_x + pane_w, 0, std::min(sw, gap), rows};
+        const Rect sb = {pane_x + pane_w, 1, std::min(sw, gap), std::max(1, rows - 1)};
         Pane& focused = layout.focused();
         sidebar.set_focus_context(focused.current_agent,
                                   focused.current_model,
@@ -1054,11 +1045,126 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "Session\n"
                     "  /theme [list]|<preset>           — switch TUI color theme in-session\n"
                     "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
+                    "  /chat title <text>               — rename the active conversation (locks title)\n"
                     "  /help                            — this list\n"
                     "  /quit                            — exit\n"
                     "\n"
                     "Scroll: PgUp / PgDn scroll the focused pane's history.  Esc cancels\n"
                     "any in-flight agent turn.");
+                return;
+            }
+            if (cmd == "chat") {
+                std::string sub;
+                iss >> sub;
+
+                // Resolves "<n>" (1-based index into /chat list's order) or
+                // an id-prefix to a real conversation id. Empty on no match.
+                auto resolve_chat_target = [&](const std::string& arg) -> std::string {
+                    if (arg.empty()) return {};
+                    const auto entries = conversation_store.list();
+                    const bool all_digits = std::all_of(arg.begin(), arg.end(),
+                        [](unsigned char c) { return std::isdigit(c) != 0; });
+                    if (all_digits) {
+                        const unsigned long idx = std::stoul(arg);
+                        if (idx >= 1 && idx <= entries.size()) return entries[idx - 1].id;
+                        return {};
+                    }
+                    for (const auto& e : entries) {
+                        if (e.id.rfind(arg, 0) == 0) return e.id;
+                    }
+                    return {};
+                };
+
+                if (sub == "list") {
+                    const auto entries = conversation_store.list();
+                    if (entries.empty()) {
+                        output_queue.push_msg("(no conversations)");
+                        return;
+                    }
+                    const std::string active = conversation_store.active_id();
+                    std::ostringstream out;
+                    int n = 1;
+                    for (const auto& e : entries) {
+                        out << (e.id == active ? "* " : "  ") << n << ". "
+                            << (e.title.empty() ? "Untitled" : e.title)
+                            << "  [" << e.id.substr(0, std::min<size_t>(8, e.id.size())) << "]\n";
+                        ++n;
+                    }
+                    output_queue.push_msg(out.str());
+                    return;
+                }
+                if (sub == "new") {
+                    {
+                        std::lock_guard<std::mutex> lk(pending_conv_mu);
+                        pending_conv_ops.push_back({true, true, "", false, false});
+                    }
+                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    output_queue.push_msg("switching to a new conversation...");
+                    return;
+                }
+                if (sub == "switch") {
+                    std::string arg;
+                    iss >> arg;
+                    const std::string id = resolve_chat_target(arg);
+                    if (id.empty()) {
+                        output_queue.push_msg("Usage: /chat switch <n | id-prefix> (see /chat list)");
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(pending_conv_mu);
+                        pending_conv_ops.push_back({true, false, id, false, false});
+                    }
+                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    output_queue.push_msg("switching...");
+                    return;
+                }
+                if (sub == "title") {
+                    std::string text;
+                    std::getline(iss, text);
+                    size_t a = 0;
+                    while (a < text.size() && std::isspace(static_cast<unsigned char>(text[a]))) ++a;
+                    text = text.substr(a);
+                    if (text.empty()) {
+                        output_queue.push_msg("Usage: /chat title <text>");
+                        return;
+                    }
+                    conversation_store.set_title_locked(conversation_store.active_id(), text);
+                    output_queue.push_msg("title: " + text);
+                    return;
+                }
+                if (sub == "delete") {
+                    std::string arg;
+                    iss >> arg;
+                    const std::string id = resolve_chat_target(arg);
+                    if (id.empty()) {
+                        output_queue.push_msg("Usage: /chat delete <n | id-prefix> (see /chat list)");
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(pending_conv_mu);
+                        pending_conv_ops.push_back({false, false, id, true, false});
+                    }
+                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    output_queue.push_msg("deleted (session file kept — /chat purge removes it)");
+                    return;
+                }
+                if (sub == "purge") {
+                    std::string arg;
+                    iss >> arg;
+                    const std::string id = resolve_chat_target(arg);
+                    if (id.empty()) {
+                        output_queue.push_msg("Usage: /chat purge <n | id-prefix> (see /chat list)");
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(pending_conv_mu);
+                        pending_conv_ops.push_back({false, false, id, true, true});
+                    }
+                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    output_queue.push_msg("purged");
+                    return;
+                }
+                output_queue.push_msg("Usage: /chat list|new|switch|title|delete|purge");
                 return;
             }
             if (cmd == "verbose") {
@@ -1193,10 +1299,34 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             update_pane_original_task(pane, line, resp);
             if (!resp.ok) {
                 output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+            } else {
+                // First turn of a still-"Untitled" conversation: set an
+                // instant deterministic title from the user's message, then
+                // best-effort refine it with a small model call in the
+                // background. Both are no-ops once the conversation already
+                // has a real (or locked) title.
+                const std::string active_id = conversation_store.active_id();
+                for (auto& e : conversation_store.list()) {
+                    if (e.id != active_id || e.title != "Untitled") continue;
+                    const std::string det = arbiter::deterministic_conversation_title(line);
+                    if (!det.empty()) {
+                        conversation_store.set_title(active_id, det);
+                        std::string title_model = arbiter::load_title_model_override(dir);
+                        if (title_model.empty()) title_model = orch.get_agent_model("index");
+                        conversation_store.enqueue_title_job(active_id, line, resp.content,
+                                                             title_model, orch);
+                    }
+                    break;
+                }
             }
+            // Durable per-turn autosave: coalesces onto the store's
+            // background thread so a crash never loses more than the
+            // in-flight turn, without stalling the input loop on JSON I/O.
+            conversation_store.save_async(conversation_store.active_id(), orch);
         } catch (const std::exception& e) {
             output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
             pane.last_response = std::string("ERR: ") + e.what();
+            conversation_store.save_async(conversation_store.active_id(), orch);
         }
         thinking.stop();
     };  // end handle lambda
@@ -1339,7 +1469,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     std::atomic<bool> pump_stop{false};
     std::thread output_pump([&]() {
-        auto push_pane_output = [&](Pane& p) { flush_pane_output(p); };
+        auto push_pane_output = [&](Pane& p) { pane_history_drain_queue(p); };
         auto present_all = [&]() { present_unlocked(); };
         while (!pump_stop.load()) {
             {
@@ -1502,7 +1632,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 const int cols = arbiter::term_cols();
                 if (HistorySidebarState::width_for_terminal(cols, true) <= 0) {
                     layout.focused().tui.set_status(
-                        "History sidebar needs a wider terminal (>=72 cols)");
+                        "History sidebar needs a wider terminal (>=72 cols) — try /chat list");
                     break;
                 }
                 if (!history_sidebar.enabled()) {
@@ -1522,25 +1652,21 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         ui_ctx.focused_pane = &layout.focused();
     };
 
-    auto switch_conversation = [&](bool create_new) {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
-        orch.cancel();
-        conversation_store.save(conversation_store.active_id(), orch);
+    auto any_turn_in_flight = [&]() {
+        bool busy = false;
+        layout.for_each_pane([&](Pane& p) { if (p.cmd_queue.is_busy()) busy = true; });
+        return busy;
+    };
 
-        if (create_new) {
-            conversation_store.create(fs::current_path().string());
-            orch.reset_all_histories();
-        } else {
-            const std::string picked = history_sidebar.selected_conversation_id();
-            if (picked.empty() || picked == conversation_store.active_id()) {
-                history_sidebar.exit_focus();
-                present_unlocked();
-                return;
-            }
-            conversation_store.set_active(picked);
-            orch.reset_all_histories();
-            conversation_store.load(picked, orch);
-        }
+    // Collapses to one pane, resets its state, and — if `replay` — restores
+    // the now-active conversation's context and replays its transcript
+    // tail. Shared by switch_conversation (below) and the "deleted the
+    // active conversation" reassignment path. Caller must hold layout_mu,
+    // have already cancelled/drained any in-flight turn, and (if `replay`)
+    // have already pointed conversation_store's active id at the target
+    // and called orch.reset_all_histories().
+    auto apply_active_conversation = [&](bool replay) {
+        if (replay) conversation_store.load(conversation_store.active_id(), orch);
 
         while (layout.pane_count() > 1) {
             layout.close_focused([&](Pane& p) {
@@ -1558,20 +1684,143 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         focused.new_while_scrolled = 0;
         focused.tui.clear_status();
         sync_layout_to_terminal();
-        history_sidebar.exit_focus();
-        history_sidebar.refresh_entries(conversation_store);
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
         });
+
+        // Replay the tail of the restored conversation's transcript through
+        // the same streaming pipeline live turns use, so the switch doesn't
+        // leave the pane looking blank even though the agent's context was
+        // restored. Older history stays behind a gap marker (PgUp loads it).
+        if (replay) {
+            const auto history = orch.get_agent_history("index");
+            const size_t total = history.size();
+            arbiter::replay_transcript(focused, history, arbiter::replay_tail_begin(total), total);
+        }
+
+        history_sidebar.refresh_entries(conversation_store);
         present_unlocked();
         g_getc_state.pane = &layout.focused();
         ui_ctx.focused_pane = &layout.focused();
+    };
+
+    // `explicit_id`: switch straight to this id, bypassing the sidebar's
+    // current selection (used by /chat switch). Empty + !create_new reads
+    // history_sidebar.selected_conversation_id() instead (sidebar Enter).
+    auto switch_conversation = [&](bool create_new, std::string explicit_id = {}) {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+
+        if (any_turn_in_flight()) {
+            layout.focused().tui.set_status("Turn in progress — switch anyway? [y/N]");
+            present_unlocked();
+            char csi = 0;
+            std::string csi_params;
+            const int key = read_history_sidebar_key(csi, csi_params);
+            layout.focused().tui.clear_status();
+            if (key != 'y' && key != 'Y') {
+                history_sidebar.exit_focus();
+                present_unlocked();
+                return;
+            }
+        }
+
+        orch.cancel();
+        // Wait for every pane's exec thread to actually return to queue-pop
+        // before touching orch's histories — cancel() only unblocks the
+        // in-flight API call, it doesn't wait for the thread to unwind.
+        while (any_turn_in_flight()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        // Drain any in-flight autosave before we mutate orch's histories
+        // below — otherwise a queued save from the previous turn could run
+        // after reset_all_histories()/load_session() and clobber the old
+        // conversation's file with the new one's (or empty) state.
+        conversation_store.flush();
+        conversation_store.save(conversation_store.active_id(), orch);
+
+        if (create_new) {
+            const std::string before = conversation_store.active_id();
+            const std::string after = conversation_store.create_or_reuse(fs::current_path().string());
+            if (after == before) {
+                // Active conversation had no turns yet — reuse it instead of
+                // leaving another empty "Untitled" entry behind.
+                history_sidebar.exit_focus();
+                present_unlocked();
+                return;
+            }
+            orch.reset_all_histories();
+            history_sidebar.exit_focus();
+            apply_active_conversation(/*replay=*/false);
+            return;
+        }
+
+        const std::string picked = !explicit_id.empty() ? explicit_id
+                                                         : history_sidebar.selected_conversation_id();
+        if (picked.empty() || picked == conversation_store.active_id()) {
+            history_sidebar.exit_focus();
+            present_unlocked();
+            return;
+        }
+        conversation_store.set_active(picked);
+        orch.reset_all_histories();
+        history_sidebar.exit_focus();
+        apply_active_conversation(/*replay=*/true);
+    };
+
+    // Soft/hard-deletes `id`. If it was the active conversation,
+    // ConversationStore already reassigned active internally — bring the
+    // pane in sync with whatever that new active conversation is.
+    auto delete_conversation = [&](const std::string& id, bool hard) {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        const bool was_active = (id == conversation_store.active_id());
+
+        if (was_active) {
+            orch.cancel();
+            while (any_turn_in_flight()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            conversation_store.flush();
+        }
+
+        if (hard) conversation_store.purge(id);
+        else conversation_store.soft_delete(id);
+
+        if (was_active) {
+            orch.reset_all_histories();
+            apply_active_conversation(/*replay=*/true);
+        } else {
+            history_sidebar.refresh_entries(conversation_store);
+            present_unlocked();
+        }
+    };
+
+    // Drains /chat-queued switch/delete requests (see PendingConversationOp)
+    // onto the main thread — /chat itself runs on a pane's exec thread and
+    // must not drive `layout`/stdin directly.
+    auto service_pending_conv_ops = [&]() -> bool {
+        std::vector<PendingConversationOp> snapshot;
+        {
+            std::lock_guard<std::mutex> lk(pending_conv_mu);
+            snapshot.swap(pending_conv_ops);
+        }
+        if (snapshot.empty()) return false;
+
+        for (auto& op : snapshot) {
+            if (op.switch_op) {
+                switch_conversation(op.create_new, op.target_id);
+            } else if (op.delete_op) {
+                delete_conversation(op.target_id, op.hard_delete);
+            }
+        }
+        return true;
     };
 
     // ── Main readline loop ──────────────────────────────────────────────────
     while (!quit_requested) {
         while (service_confirm()) {}
         while (service_pending_closes()) {}
+        while (service_pending_conv_ops()) {}
 
         if (history_sidebar.focused()) {
             if (pump_notify) pump_notify();
@@ -1583,10 +1832,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 hb, chrome.rect, chrome.input_rows, true);
 
             char csi = 0;
-            const int key = read_history_sidebar_key(csi);
+            std::string csi_params;
+            const int key = read_history_sidebar_key(csi, csi_params);
             if (key < 0) break;
 
-            const HistorySidebarKey action = history_sidebar.handle_key(key, csi);
+            const HistorySidebarKey action = history_sidebar.handle_key(key, csi, csi_params);
             if (action == HistorySidebarKey::Up) {
                 history_sidebar.move_selection(-1, visible_rows);
                 if (pump_notify) pump_notify();
@@ -1604,6 +1854,43 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             if (action == HistorySidebarKey::Enter) {
                 switch_conversation(history_sidebar.is_new_selected());
+                continue;
+            }
+            if (action == HistorySidebarKey::New) {
+                switch_conversation(true);
+                continue;
+            }
+            if (action == HistorySidebarKey::PageUp) {
+                history_sidebar.page_selection(-1, visible_rows);
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == HistorySidebarKey::PageDown) {
+                history_sidebar.page_selection(1, visible_rows);
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == HistorySidebarKey::RenameStart) {
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == HistorySidebarKey::RenameCommit) {
+                const std::string id = history_sidebar.selected_conversation_id();
+                const std::string text = history_sidebar.take_rename_buffer();
+                if (!id.empty() && !text.empty()) {
+                    conversation_store.set_title_locked(id, text);
+                }
+                history_sidebar.refresh_entries(conversation_store);
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == HistorySidebarKey::DeleteStart) {
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == HistorySidebarKey::DeleteConfirmed) {
+                const std::string id = history_sidebar.selected_conversation_id();
+                if (!id.empty()) delete_conversation(id, /*hard=*/false);
                 continue;
             }
             continue;
@@ -1628,6 +1915,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             if (service_confirm()) continue;
             if (service_pending_closes()) continue;
+            if (service_pending_conv_ops()) continue;
             // Layout mutation woke us up just to repaint the focused
             // pane's prompt — loop back so begin_input paints a fresh
             // one.  Without this, read_line returning false here would
@@ -1712,6 +2000,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         });
         for (auto& h : merged) hf << h << '\n';
     }
+    // Drain any autosave still in flight, then do one last synchronous save
+    // to capture anything that happened after the final turn's autosave.
+    conversation_store.flush();
     conversation_store.save(conversation_store.active_id(), orch);
 
     scheduler.stop();

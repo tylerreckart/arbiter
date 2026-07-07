@@ -4,6 +4,7 @@
 #include "constitution.h"
 #include "api_client.h"
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <chrono>
@@ -34,14 +35,24 @@ public:
     // Clear conversation history (keep constitution)
     void reset_history();
     // Replace history (used for session restore)
-    void set_history(std::vector<Message> h) { history_ = std::move(h); }
+    void set_history(std::vector<Message> h) {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        history_ = std::move(h);
+    }
 
     // Accessors
     const std::string& id() const { return id_; }
     const Constitution& config() const { return config_; }
     Constitution& config_mut() { return config_; }
     const AgentStats& stats() const { return stats_; }
-    const std::vector<Message>& history() const { return history_; }
+    // Returns a copy, not a reference: a background save (ConversationStore's
+    // autosave thread) reads this concurrently with a pane's exec thread
+    // appending to history_ mid-turn, so callers must not hold a reference
+    // into live state.
+    std::vector<Message> history() const {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        return history_;
+    }
 
     std::string status_summary() const;
 
@@ -51,6 +62,7 @@ private:
     std::string id_;
     Constitution config_;
     ApiClient& client_;
+    mutable std::mutex history_mu_;
     std::vector<Message> history_;
     AgentStats stats_;
 
