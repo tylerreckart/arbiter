@@ -160,10 +160,29 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     arbiter::load_tui_design(dir, theme_override);
     auto api_keys = get_api_keys();
 
+    // ── Raw stdin ──────────────────────────────────────────────────────────
+    // Must happen before Session::start() below: setupTerminal() sends
+    // capability queries (OSC 10/11, DECRQM, DA/XTVERSION, CPR) and the
+    // terminal's replies land on stdin. With ECHO still enabled (inherited
+    // cooked mode), the kernel line discipline echoes those bytes to the
+    // screen the instant they arrive — reading them later doesn't undo
+    // that. Raw mode has to be in effect *before* the queries go out.
+    struct termios orig_stdin_tm;
+    bool stdin_is_tty = (::tcgetattr(STDIN_FILENO, &orig_stdin_tm) == 0);
+    if (stdin_is_tty) {
+        struct termios raw = orig_stdin_tm;
+        raw.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
+        raw.c_iflag &= ~(IXON | ICRNL | BRKINT | INPCK | ISTRIP);
+        raw.c_cc[VMIN]  = 1;
+        raw.c_cc[VTIME] = 0;
+        ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+    }
+
     arbiter::opentui::Session ot_session;
     arbiter::UiContext ui_ctx;
     ot_session.start(static_cast<std::uint32_t>(arbiter::term_cols()),
                      static_cast<std::uint32_t>(arbiter::term_rows()));
+    if (stdin_is_tty) arbiter::drain_stdin_spurious(200);
     ui_ctx.session = &ot_session;
     g_ui_ctx = &ui_ctx;
 
@@ -288,19 +307,6 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     std::cout.flush();
 
     signal(SIGWINCH, sigwinch_handler);
-
-    // ── Raw stdin ──────────────────────────────────────────────────────────
-    struct termios orig_stdin_tm;
-    bool stdin_is_tty = (::tcgetattr(STDIN_FILENO, &orig_stdin_tm) == 0);
-    if (stdin_is_tty) {
-        struct termios raw = orig_stdin_tm;
-        raw.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
-        raw.c_iflag &= ~(IXON | ICRNL | BRKINT | INPCK | ISTRIP);
-        raw.c_cc[VMIN]  = 1;
-        raw.c_cc[VTIME] = 0;
-        ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-        arbiter::drain_stdin_spurious(200);
-    }
 
     std::function<void()> pump_notify;
 
@@ -1978,15 +1984,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     pump_cv.notify_one();   // unblock the pump's wait_for so it exits promptly
     output_pump.join();
 
-    // Discard any capability-query dribble before leaving raw mode.
-    arbiter::drain_stdin_spurious(0);
-
     g_ui_ctx = nullptr;
     ot_session.shutdown();
 
-    if (stdin_is_tty) ::tcsetattr(STDIN_FILENO, TCSANOW, &orig_stdin_tm);
+    // Discard any capability-query dribble while still in raw/no-echo mode.
+    // This must run *before* tcsetattr restores ECHO below — bytes that
+    // arrive after ECHO is back on get echoed to the screen by the kernel
+    // the instant they're received, and reading them afterward doesn't
+    // undo that.
+    arbiter::drain_stdin_spurious(150);
 
-    arbiter::drain_stdin_spurious(50);
+    if (stdin_is_tty) ::tcsetattr(STDIN_FILENO, TCSANOW, &orig_stdin_tm);
 
     // Merge every pane's editor history into a single disk file, dropping
     // duplicates while preserving last-seen order.
