@@ -7,6 +7,37 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-06
+
+Minor release focused on durable conversation history in the TUI.  Sessions
+autosave after every turn, appear in a leading history sidebar with
+model-refined titles, and replay their transcript when you switch back.
+The `/chat` command family covers list/new/switch/title/delete/purge from
+the REPL.
+
+### Added
+- **Per-turn autosave.**  ConversationStore persists each completed turn on a
+  background save thread with a one-deep "latest wins" queue; `flush()` drains
+  on exit.
+- **Conversation titling.**  Deterministic titles land instantly; an async
+  model call refines them once per conversation.  Manual `/chat title` locks
+  the title against further auto-titling.
+- **Transcript replay.**  Switching conversations in the TUI replays the
+  saved transcript into the scroll region instead of starting blank.
+- **History sidebar UX.**  Entry layout, inline rename/delete confirm, page
+  up/down, and keyboard navigation (`Ctrl-w h` toggle, `Ctrl-w H` focus).
+- **`/chat` command family.**  `list`, `new`, `switch`, `title`, `delete`,
+  and `purge` for conversation management from the REPL.
+
+### Changed
+- **Sidebar separators.**  History and stats sidebars use dithered shade glyphs
+  (▏/▕) instead of thin vertical rules so pane seams don't show gaps.
+
+### Fixed
+- **ConversationStore.**  Deadlock fix, atomic session-file writes,
+  id-pinned selection across reloads, and soft delete (filter from list,
+  keep file until purge).
+
 ## [0.6.0] — 2026-07-05
 
 Minor release after the 0.5.0 beta line.  OpenTUI is now the sole TUI
