@@ -81,6 +81,14 @@ void HistorySidebarState::set_pin_from_index_locked(int idx) {
     }
 }
 
+std::string HistorySidebarState::current_title_locked() const {
+    if (pinned_new_) return {};
+    for (const auto& e : entries_) {
+        if (e.id == pinned_id_) return e.title;
+    }
+    return {};
+}
+
 int HistorySidebarState::selected_index() const {
     std::lock_guard<std::mutex> lk(mu_);
     return index_for_pin_locked();
@@ -103,6 +111,8 @@ void HistorySidebarState::enter_focus(const ConversationStore& store,
     std::lock_guard<std::mutex> lk(mu_);
     if (!enabled_) return;
     focused_ = true;
+    mode_ = Mode::Normal;
+    rename_buffer_.clear();
     active_id_ = active_id;
     entries_ = store.list();
     pinned_new_ = true;
@@ -120,6 +130,8 @@ void HistorySidebarState::enter_focus(const ConversationStore& store,
 void HistorySidebarState::exit_focus() {
     std::lock_guard<std::mutex> lk(mu_);
     focused_ = false;
+    mode_ = Mode::Normal;
+    rename_buffer_.clear();
 }
 
 void HistorySidebarState::refresh_entries(const ConversationStore& store) {
@@ -143,16 +155,77 @@ void HistorySidebarState::move_selection(int delta, int visible_rows) {
     clamp_scroll_locked(idx, visible_rows);
 }
 
+void HistorySidebarState::page_selection(int direction, int visible_rows) {
+    const int page = std::max(1, visible_rows);
+    move_selection(direction < 0 ? -page : page, visible_rows);
+}
+
 std::string HistorySidebarState::selected_conversation_id() const {
     std::lock_guard<std::mutex> lk(mu_);
     return pinned_new_ ? std::string{} : pinned_id_;
 }
 
-HistorySidebarKey HistorySidebarState::handle_key(int key_byte, char csi_final) {
+std::string HistorySidebarState::take_rename_buffer() {
+    std::lock_guard<std::mutex> lk(mu_);
+    std::string out = std::move(rename_buffer_);
+    rename_buffer_.clear();
+    return out;
+}
+
+HistorySidebarKey HistorySidebarState::handle_key(int key_byte,
+                                                  char csi_final,
+                                                  const std::string& csi_params) {
+    std::lock_guard<std::mutex> lk(mu_);
+
+    if (mode_ == Mode::Renaming) {
+        if (key_byte == '\r' || key_byte == '\n') {
+            mode_ = Mode::Normal;
+            return HistorySidebarKey::RenameCommit;
+        }
+        if (key_byte == 0x1B) {
+            mode_ = Mode::Normal;
+            rename_buffer_.clear();
+            return HistorySidebarKey::Escape;
+        }
+        if (key_byte == 127 || key_byte == 8) {
+            if (!rename_buffer_.empty()) rename_buffer_.pop_back();
+            return HistorySidebarKey::None;
+        }
+        if (key_byte >= 0x20 && key_byte < 0x7F) {
+            rename_buffer_ += static_cast<char>(key_byte);
+            return HistorySidebarKey::None;
+        }
+        return HistorySidebarKey::None;
+    }
+
+    if (mode_ == Mode::ConfirmDelete) {
+        mode_ = Mode::Normal;
+        if (key_byte == 'y' || key_byte == 'Y') return HistorySidebarKey::DeleteConfirmed;
+        return HistorySidebarKey::None;
+    }
+
+    if (csi_final == '~' && csi_params == "5") return HistorySidebarKey::PageUp;
+    if (csi_final == '~' && csi_params == "6") return HistorySidebarKey::PageDown;
     if (csi_final == 'A') return HistorySidebarKey::Up;
     if (csi_final == 'B') return HistorySidebarKey::Down;
     if (key_byte == '\r' || key_byte == '\n') return HistorySidebarKey::Enter;
     if (key_byte == 0x1B) return HistorySidebarKey::Escape;
+    if (key_byte == 'k') return HistorySidebarKey::Up;
+    if (key_byte == 'j') return HistorySidebarKey::Down;
+    if (key_byte == 'n') return HistorySidebarKey::New;
+
+    if (key_byte == 'r') {
+        if (pinned_new_) return HistorySidebarKey::None;
+        mode_ = Mode::Renaming;
+        rename_buffer_ = current_title_locked();
+        return HistorySidebarKey::RenameStart;
+    }
+    if (key_byte == 'd') {
+        if (pinned_new_) return HistorySidebarKey::None;
+        mode_ = Mode::ConfirmDelete;
+        return HistorySidebarKey::DeleteStart;
+    }
+
     return HistorySidebarKey::None;
 }
 
@@ -165,11 +238,15 @@ HistorySidebarSnapshot HistorySidebarState::snapshot() const {
     s.scroll_offset = scroll_offset_;
     s.active_id = active_id_;
     s.entries = entries_;
+    s.renaming = (mode_ == Mode::Renaming);
+    s.rename_buffer = rename_buffer_;
+    s.confirming_delete = (mode_ == Mode::ConfirmDelete);
     return s;
 }
 
-int read_history_sidebar_key(char& csi_final) {
+int read_history_sidebar_key(char& csi_final, std::string& csi_params) {
     csi_final = 0;
+    csi_params.clear();
     int b = read_byte_blocking();
     if (b < 0) return -1;
     if (b != 0x1B) return b;
@@ -195,6 +272,7 @@ int read_history_sidebar_key(char& csi_final) {
         }
         if (final) {
             csi_final = final;
+            csi_params = params;
             return 0x1B;
         }
         return 0x1B;
