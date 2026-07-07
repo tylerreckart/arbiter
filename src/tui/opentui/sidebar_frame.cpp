@@ -257,8 +257,14 @@ int draw_loop_list(OpenTuiHandle frame,
     return row;
 }
 
+// A dithered shade block, not a thin rule (d.border.vertical) or a solid
+// block (too heavy) — a single-cell-wide glyph only covers part of the
+// cell, so whichever side of the seam it lands on, the other side still
+// reads as a gap. This still fills the whole column so it touches both
+// neighbors, but at partial density so it doesn't read as a solid wall.
+constexpr const char* kBorderGlyph = "▕";
+
 void draw_vertical_border(OpenTuiHandle frame,
-                          const TuiDesign& d,
                           int x,
                           int y0,
                           int h,
@@ -268,7 +274,7 @@ void draw_vertical_border(OpenTuiHandle frame,
         draw_text(frame,
                   static_cast<std::uint32_t>(x),
                   static_cast<std::uint32_t>(yy),
-                  d.border.vertical,
+                  kBorderGlyph,
                   fg,
                   bg);
     }
@@ -324,7 +330,7 @@ void draw_sidebar(OpenTuiHandle frame,
     // own padding gap, so it touches the content area with no dead space.
     const int pane_pad = pane_edge_pad(d, pr.w);
     const int border_x = pr.x + pr.w - 1 - std::max(0, pane_pad - 1);
-    draw_vertical_border(frame, d, border_x, panel_top_y, block_h, d.text.muted, d.bg.scroll);
+    draw_vertical_border(frame, border_x, panel_top_y, block_h, d.bg.status, d.bg.scroll);
 
     int y = panel_top_y + 1;
     const int scroll_bottom = sep_y;
