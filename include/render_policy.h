@@ -23,6 +23,14 @@ inline constexpr RenderPolicy kInterim{
     false, 0, 8, 480, true, StyleId::Dim};
 inline constexpr RenderPolicy kVerbose{
     true, 0, 0, 0, false, StyleId::Default};
+// Replaying past turns into scrollback on a conversation switch: writs and
+// tool-result frames are never shown (there's no verbose replay) and code
+// blocks render through the same collapsible/expandable segment live turns
+// use, so a switch doesn't dump megabytes of code into view at once.
+// Numerically identical to kMasterStream today — kept as its own preset so
+// replay's behavior can diverge later without touching live streaming.
+inline constexpr RenderPolicy kReplay{
+    false, 8, 0, 0, false, StyleId::Default};
 
 void apply_base_style(StyledLine& line, StyleId base);
 [[nodiscard]] std::vector<StyledLine> apply_prose_policy(

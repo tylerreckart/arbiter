@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <ctime>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -14,8 +16,6 @@ namespace arbiter::opentui {
 namespace {
 
 constexpr std::uint32_t kAttrBold = 1u << 0;
-constexpr int kEdgePad = 1;
-constexpr int kTopPadRows = 1;
 constexpr int kRowHeight = 2;
 
 int cell_width(std::string_view s) {
@@ -96,9 +96,29 @@ std::string basename_hint(std::string_view path) {
     return std::string(path.substr(pos + 1));
 }
 
+// "now" / "5m ago" / "2h ago" / "3d ago" / "Jun 12" (calendar date once it's
+// been more than a week, since "40d ago" stops being a useful at-a-glance
+// unit).
+std::string relative_time(std::int64_t updated_at, std::int64_t now) {
+    const std::int64_t delta = std::max<std::int64_t>(0, now - updated_at);
+    if (delta < 60) return "now";
+    if (delta < 3600) return std::to_string(delta / 60) + "m ago";
+    if (delta < 86400) return std::to_string(delta / 3600) + "h ago";
+    if (delta < 7 * 86400) return std::to_string(delta / 86400) + "d ago";
+
+    static constexpr const char* kMonths[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    const std::time_t t = static_cast<std::time_t>(updated_at);
+    std::tm tmv{};
+    localtime_r(&t, &tmv);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%s %d", kMonths[tmv.tm_mon % 12], tmv.tm_mday);
+    return buf;
+}
+
 int list_top_y(const Rect& r, bool /*focused*/) {
-    const int panel_top_y = r.y + kTopPadRows;
-    return panel_top_y + 2; // section label row, then list
+    return r.y + 2; // section label row, then list
 }
 
 int scroll_bottom_y(const Rect& pane_rect, int pane_input_rows) {
@@ -115,6 +135,9 @@ void draw_row(OpenTuiHandle frame,
               std::string_view subtitle,
               bool selected,
               bool active,
+              bool editing,
+              std::string_view edit_text,
+              bool confirming,
               const TuiRgba& bg) {
     const TuiRgba& row_bg = selected ? d.accent.primary : bg;
     const TuiRgba& title_fg = selected ? d.text.inverse : sc.body;
@@ -129,22 +152,52 @@ void draw_row(OpenTuiHandle frame,
                   row_bg);
     }
 
-    std::string line = std::string(title);
-    if (active) line = "\u25cf " + line;
+    // 1-col accent bar in the gutter marks the active conversation, leaving
+    // every row's title starting at the same column regardless of state.
+    constexpr int kGutterW = 1;
+    if (active) {
+        fill_rect(frame,
+                  static_cast<std::uint32_t>(x),
+                  static_cast<std::uint32_t>(y),
+                  static_cast<std::uint32_t>(kGutterW),
+                  1,
+                  d.accent.primary);
+    }
+    const int text_x = x + kGutterW;
+    const int text_w = std::max(0, w - kGutterW);
 
-    draw_text(frame,
-              static_cast<std::uint32_t>(x),
-              static_cast<std::uint32_t>(y),
-              trim_to_cells(line, w),
-              title_fg,
-              row_bg,
-              (selected || active) ? kAttrBold : 0);
-
-    if (!subtitle.empty()) {
+    if (editing) {
+        std::string line = std::string(edit_text) + "\u2588";
         draw_text(frame,
-                  static_cast<std::uint32_t>(x + 1),
+                  static_cast<std::uint32_t>(text_x),
+                  static_cast<std::uint32_t>(y),
+                  trim_to_cells(line, text_w),
+                  title_fg,
+                  row_bg,
+                  kAttrBold);
+    } else {
+        draw_text(frame,
+                  static_cast<std::uint32_t>(text_x),
+                  static_cast<std::uint32_t>(y),
+                  trim_to_cells(std::string(title), text_w),
+                  title_fg,
+                  row_bg,
+                  (selected || active) ? kAttrBold : 0);
+    }
+
+    if (confirming) {
+        draw_text(frame,
+                  static_cast<std::uint32_t>(text_x),
                   static_cast<std::uint32_t>(y + 1),
-                  trim_to_cells(std::string(subtitle), std::max(0, w - 1)),
+                  trim_to_cells("Delete? [y/N]", text_w),
+                  d.accent.error,
+                  bg,
+                  kAttrBold);
+    } else if (!subtitle.empty()) {
+        draw_text(frame,
+                  static_cast<std::uint32_t>(text_x),
+                  static_cast<std::uint32_t>(y + 1),
+                  trim_to_cells(std::string(subtitle), text_w),
                   sub_fg,
                   bg);
     }
@@ -155,7 +208,8 @@ void draw_hint_text(OpenTuiHandle frame,
                     std::uint32_t y,
                     int max_cells,
                     std::string_view text,
-                    const TuiDesign& d) {
+                    const TuiDesign& d,
+                    const TuiRgba& bg) {
     std::string trimmed = trim_to_cells(std::string(text), max_cells);
     size_t i = 0;
     std::uint32_t cx = x;
@@ -174,10 +228,41 @@ void draw_hint_text(OpenTuiHandle frame,
                   y,
                   part,
                   command ? d.text.primary : d.text.subtle,
-                  d.bg.scroll,
+                  bg,
                   command ? kAttrBold : 0);
         cx += static_cast<std::uint32_t>(cell_width(part));
     }
+}
+
+// A dithered shade block, not a thin rule (d.border.vertical) or a solid
+// block (too heavy) — a single-cell-wide glyph only covers part of the
+// cell, so whichever side of the seam it lands on, the other side still
+// reads as a gap. This still fills the whole column so it touches both
+// neighbors, but at partial density so it doesn't read as a solid wall.
+constexpr const char* kBorderGlyph = "▏";
+
+void draw_vertical_border(OpenTuiHandle frame,
+                          int x,
+                          int y0,
+                          int h,
+                          const TuiRgba& fg,
+                          const TuiRgba& bg) {
+    for (int yy = y0; yy < y0 + h; ++yy) {
+        draw_text(frame,
+                  static_cast<std::uint32_t>(x),
+                  static_cast<std::uint32_t>(yy),
+                  kBorderGlyph,
+                  fg,
+                  bg);
+    }
+}
+
+// Pane content is inset from its own rect by pane_padding_x (see
+// draw_pane_chrome); the border needs to sit in that gap, flush against
+// the pane's real content edge, or it reads as floating in dead space.
+int pane_edge_pad(const TuiDesign& d, int pane_w) {
+    const int raw_pad = (pane_w <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
+    return std::min(raw_pad, std::max(0, (pane_w - 1) / 2));
 }
 
 } // namespace
@@ -204,72 +289,37 @@ void draw_history_sidebar(OpenTuiHandle frame,
     if (pr.h <= 0) return;
 
     const TuiDesign& d = tui_design();
+    const TuiRgba sbg = tui_sidebar_bg(d);
     const SidebarColors sc = tui_sidebar_colors(d);
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
 
     const int sidebar_top = r.y;
-    const int panel_top_y = sidebar_top + kTopPadRows;
+    const int panel_top_y = sidebar_top;
     const int sep_y = scroll_bottom_y(pr, pane_input_rows);
     const int input_bottom_y = pr.y + pr.h - TUI::kBottomPadRows - 1;
     const int hint_y = pr.y + pr.h - 2;
     if (input_bottom_y < panel_top_y) return;
 
-    const std::uint32_t px = static_cast<std::uint32_t>(r.x);
-    const std::uint32_t pw = static_cast<std::uint32_t>(r.w);
-    const int block_x = r.x + kEdgePad;
-    const int block_w = std::max(1, r.w - kEdgePad);
+    const int block_x = r.x;
+    const int block_w = r.w;
     const int content_x = block_x + header_pad;
     const int content_w = std::max(1, block_w - (header_pad * 2));
 
-    const int edge_bottom_y = input_bottom_y + 1;
-    const int edge_h = std::max(0, edge_bottom_y - sidebar_top + 1);
-    const int block_h = std::max(1, input_bottom_y - panel_top_y + 1);
-
-    if (kTopPadRows > 0) {
-        fill_rect(frame,
-                  px,
-                  static_cast<std::uint32_t>(sidebar_top),
-                  pw,
-                  static_cast<std::uint32_t>(kTopPadRows),
-                  d.bg.scroll);
-    }
-
-    if (edge_h > 0) {
-        fill_rect(frame,
-                  px,
-                  static_cast<std::uint32_t>(sidebar_top),
-                  1,
-                  static_cast<std::uint32_t>(edge_h),
-                  d.bg.base);
-    }
+    const int panel_bottom_y = pr.y + pr.h - 1;
+    const int block_h = std::max(1, panel_bottom_y - panel_top_y + 1);
 
     fill_rect(frame,
               static_cast<std::uint32_t>(block_x),
               static_cast<std::uint32_t>(panel_top_y),
               static_cast<std::uint32_t>(block_w),
               static_cast<std::uint32_t>(block_h),
-              d.bg.header);
+              sbg);
 
-    fill_rect(frame,
-              px,
-              static_cast<std::uint32_t>(edge_bottom_y),
-              pw,
-              1,
-              d.bg.base);
-    fill_rect(frame,
-              px,
-              static_cast<std::uint32_t>(hint_y),
-              pw,
-              1,
-              d.bg.scroll);
-    if (hint_y + 1 < pr.y + pr.h) {
-        fill_rect(frame,
-                  px,
-                  static_cast<std::uint32_t>(hint_y + 1),
-                  pw,
-                  1,
-                  d.bg.base);
-    }
+    // Border sits flush against the pane's real content edge, inside its
+    // own padding gap, so it touches the content area with no dead space.
+    const int pane_pad = pane_edge_pad(d, pr.w);
+    const int border_x = pr.x + std::max(0, pane_pad - 1);
+    draw_vertical_border(frame, border_x, panel_top_y, block_h, d.bg.status, d.bg.scroll);
 
     const std::string_view sidebar_hint = snap.focused
         ? "\u2191\u2193 select  enter"
@@ -279,11 +329,21 @@ void draw_history_sidebar(OpenTuiHandle frame,
                    static_cast<std::uint32_t>(hint_y),
                    content_w,
                    sidebar_hint,
-                   d);
+                   d,
+                   sbg);
 
-    const TuiRgba& bg = d.bg.header;
+    const TuiRgba& bg = sbg;
     int y = panel_top_y + 1;
     y = draw_section_label(frame, d, content_x, content_w, y, "Conversations", bg);
+
+    if (snap.entries.empty()) {
+        draw_text(frame,
+                  static_cast<std::uint32_t>(content_x),
+                  static_cast<std::uint32_t>(y + 1),
+                  trim_to_cells("No conversations yet", content_w),
+                  d.text.subtle,
+                  bg);
+    }
 
     struct RowItem {
         std::string title;
@@ -291,12 +351,13 @@ void draw_history_sidebar(OpenTuiHandle frame,
         bool is_new = false;
         std::string conv_id;
     };
+    const std::int64_t now = static_cast<std::int64_t>(std::time(nullptr));
     std::vector<RowItem> rows;
     rows.push_back({"+ New conversation", {}, true, {}});
     for (const auto& e : snap.entries) {
         RowItem ri;
         ri.title = e.title.empty() ? "Untitled" : e.title;
-        ri.subtitle = basename_hint(e.cwd);
+        ri.subtitle = relative_time(e.updated_at, now) + " · " + basename_hint(e.cwd);
         ri.conv_id = e.id;
         rows.push_back(std::move(ri));
     }
@@ -309,6 +370,8 @@ void draw_history_sidebar(OpenTuiHandle frame,
         const bool selected = snap.focused && (i == snap.selected);
         const bool active = !rows[static_cast<size_t>(i)].is_new
             && rows[static_cast<size_t>(i)].conv_id == snap.active_id;
+        const bool editing = selected && snap.renaming;
+        const bool confirming = selected && snap.confirming_delete;
         draw_row(frame,
                  d,
                  sc,
@@ -319,6 +382,9 @@ void draw_history_sidebar(OpenTuiHandle frame,
                  rows[static_cast<size_t>(i)].subtitle,
                  selected,
                  active,
+                 editing,
+                 snap.rename_buffer,
+                 confirming,
                  bg);
         row_y += kRowHeight;
     }

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Random Number Generator</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e5e7eb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    main {
+      width: min(100%, 460px);
+      padding: 28px;
+      border: 1px solid #334155;
+      border-radius: 18px;
+      background: #111827;
+      box-shadow: 0 20px 60px rgb(0 0 0 / 0.35);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.6rem;
+    }
+
+    p {
+      margin: 0 0 24px;
+      color: #94a3b8;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 0.9rem;
+      color: #cbd5e1;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #475569;
+      border-radius: 10px;
+      background: #020617;
+      color: #f8fafc;
+      font: inherit;
+    }
+
+    input:focus {
+      outline: 2px solid #38bdf8;
+      outline-offset: 2px;
+    }
+
+    button {
+      width: 100%;
+      padding: 12px 14px;
+      border: 0;
+      border-radius: 10px;
+      background: #38bdf8;
+      color: #082f49;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #7dd3fc;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    .result {
+      margin-top: 22px;
+      padding: 24px;
+      border-radius: 14px;
+      background: #020617;
+      text-align: center;
+      border: 1px solid #1e293b;
+    }
+
+    .result span {
+      display: block;
+      font-size: clamp(2.5rem, 10vw, 4.5rem);
+      font-weight: 800;
+      line-height: 1;
+      color: #f8fafc;
+    }
+
+    .error {
+      min-height: 1.25rem;
+      margin-top: 12px;
+      color: #f87171;
+      font-size: 0.92rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Random Number Generator</h1>
+    <p>Choose a range. Generate an integer inside it.</p>
+
+    <section class="controls" aria-label="Range controls">
+      <label>
+        Minimum
+        <input id="minInput" type="number" value="1" />
+      </label>
+
+      <label>
+        Maximum
+        <input id="maxInput" type="number" value="100" />
+      </label>
+    </section>
+
+    <button id="generateButton" type="button">Generate</button>
+
+    <div class="error" id="errorMessage" role="alert"></div>
+
+    <section class="result" aria-live="polite">
+      <span id="resultValue">—</span>
+    </section>
+  </main>
+
+  <script>
+    const minInput = document.querySelector("#minInput");
+    const maxInput = document.querySelector("#maxInput");
+    const generateButton = document.querySelector("#generateButton");
+    const resultValue = document.querySelector("#resultValue");
+    const errorMessage = document.querySelector("#errorMessage");
+
+    function parseIntegerInput(input, label) {
+      const value = Number(input.value);
+
+      if (!Number.isInteger(value)) {
+        throw new Error(`${label} must be an integer.`);
+      }
+
+      return value;
+    }
+
+    function getRandomIntegerInclusive(min, max) {
+      const randomDecimal = Math.random();
+      const rangeSize = max - min + 1;
+
+      return Math.floor(randomDecimal * rangeSize) + min;
+    }
+
+    function generateAndRenderRandomNumber() {
+      errorMessage.textContent = "";
+
+      try {
+        const min = parseIntegerInput(minInput, "Minimum");
+        const max = parseIntegerInput(maxInput, "Maximum");
+
+        if (min > max) {
+          throw new Error("Minimum must be less than or equal to maximum.");
+        }
+
+        const generatedNumber = getRandomIntegerInclusive(min, max);
+        resultValue.textContent = String(generatedNumber);
+      } catch (error) {
+        resultValue.textContent = "—";
+        errorMessage.textContent =
+          error instanceof Error ? error.message : "Invalid input.";
+      }
+    }
+
+    generateButton.addEventListener("click", generateAndRenderRandomNumber);
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        generateAndRenderRandomNumber();
+      }
+    });
+  </script>
+</body>
+</html>

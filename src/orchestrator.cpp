@@ -1,6 +1,7 @@
 // arbiter/src/orchestrator.cpp
 #include "orchestrator.h"
 #include "advisor.h"
+#include "atomic_file.h"
 #include "commands.h"
 #include "config.h"
 #include "tui/stream_filter.h"
@@ -1504,6 +1505,15 @@ void Orchestrator::set_agent_history(const std::string& id,
     it->second->set_history(std::move(history));
 }
 
+std::vector<Message> Orchestrator::get_agent_history(const std::string& id) const {
+    if (id == "index") return index_master_->history();
+    std::lock_guard<std::mutex> lock(agents_mutex_);
+    auto it = agents_.find(id);
+    if (it == agents_.end())
+        throw std::out_of_range("unknown agent: " + id);
+    return it->second->history();
+}
+
 static std::string short_model(const std::string& model) {
     std::string s = model;
     if (s.size() > 7 && s.substr(0, 7) == "claude-")
@@ -1906,8 +1916,7 @@ void Orchestrator::save_session(const std::string& path) const {
             over_limit.empty() ? "" : (" — large agents: " + over_limit).c_str());
     }
 
-    std::ofstream f(path);
-    if (f.is_open()) f << serialized;
+    atomic_write_file(path, serialized);
 }
 
 bool Orchestrator::load_session(const std::string& path) {

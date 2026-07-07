@@ -49,6 +49,12 @@ public:
     // Toggle expand/collapse on a truncated code block in the current viewport.
     bool toggle_code_block_in_view(int scroll_offset);
 
+    [[nodiscard]] bool has_gap() const;
+    [[nodiscard]] int gap_remaining() const;
+    // Creates/updates/removes the front-of-scrollback gap marker.
+    // `remaining <= 0` removes it.
+    void set_gap(int remaining);
+
     [[nodiscard]] int total_visual_rows() const;
     [[nodiscard]] int max_scroll_offset() const;
 
@@ -137,6 +143,22 @@ private:
                   int /*skip_rows*/) const override {}
     };
 
+    // One-line marker sitting at the very front of scrollback when older
+    // transcript history hasn't been replayed yet (see prepend_history /
+    // set_gap below).
+    struct HistoryGapSegment final : Segment {
+        int remaining = 0;
+        explicit HistoryGapSegment(int r) : remaining(r) {}
+        [[nodiscard]] int visual_rows(int /*content_w*/) const override { return 1; }
+        void set_wrap_cols(int /*cols*/) override {}
+        void draw(OpenTuiHandle frame,
+                  int x,
+                  int y,
+                  int w,
+                  int h,
+                  int skip_rows) const override;
+    };
+
     struct CodeSegment final : Segment {
         std::string lang_;
         std::string close_fence_;
@@ -206,6 +228,18 @@ private:
     };
 #endif
 
+public:
+    // --- Lazy transcript replay (Part 3.2) ---------------------------------
+    // Moves the current segments out (leaving this view freshly empty, like
+    // clear()) — used to render an older chunk of history into a scratch
+    // PaneScrollView and transplant the result. Segments own their OpenTUI
+    // buffers independent of which view/vector they sit in, so moving them
+    // between instances is safe.
+    std::vector<std::unique_ptr<Segment>> take_segments();
+    // Inserts `segs` at the very front, re-applying this view's wrap_cols.
+    void splice_front(std::vector<std::unique_ptr<Segment>> segs);
+
+private:
     TextSegment& current_text();
     ProseSegment& current_prose();
     CodeSegment& current_code();

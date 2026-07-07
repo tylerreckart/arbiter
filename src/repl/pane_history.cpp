@@ -11,6 +11,44 @@
 
 namespace arbiter {
 
+void pane_history_drain_queue(Pane& pane) {
+    auto items = pane.output_queue.drain_items();
+    if (items.empty()) return;
+
+    int before = (pane.scroll_offset > 0) ? pane_history_total_rows(pane) : 0;
+    for (const auto& item : items) {
+        switch (item.kind) {
+        case OutputItem::Kind::Text:
+            if (!item.data.empty()) {
+                pane_history_push(pane, item.data, item.new_block);
+            }
+            break;
+        case OutputItem::Kind::Prose:
+            if (!item.styled_lines.empty()) {
+                pane_history_push_prose(pane, item.styled_lines, item.new_block);
+            }
+            break;
+        case OutputItem::Kind::Code:
+            if (item.code_op == OutputItem::CodeOp::Open) {
+                pane_history_push_code_open(
+                    pane, item.data, item.code_lang, item.code_preview_rows, item.new_block);
+            } else if (item.code_op == OutputItem::CodeOp::Line) {
+                pane_history_push_code_line(pane, item.data);
+            } else {
+                pane_history_push_code_close(pane, item.data);
+            }
+            break;
+        case OutputItem::Kind::Diff:
+            pane_history_push_diff(pane, item.data);
+            break;
+        }
+    }
+    if (pane.scroll_offset > 0) {
+        int after = pane_history_total_rows(pane);
+        pane.new_while_scrolled += (after - before);
+    }
+}
+
 void pane_history_init(Pane& pane) {
     pane.scroll = std::make_unique<opentui::PaneScrollView>();
     pane.scroll->bind(pane.tui);
