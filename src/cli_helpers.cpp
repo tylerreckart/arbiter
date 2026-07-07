@@ -198,12 +198,15 @@ public:
     }
 
     ~SetupTui() {
-        drain_stdin_spurious(100);
         engine_.shutdown_terminal();
+        // Must finish draining before restoring ECHO below — bytes that
+        // arrive after ECHO is back on get echoed to the screen by the
+        // kernel the instant they're received; reading them afterward
+        // doesn't undo that.
+        drain_stdin_spurious(300);
         if (have_saved_stdin_) {
             ::tcsetattr(STDIN_FILENO, TCSANOW, &saved_stdin_);
         }
-        drain_stdin_spurious(300);
     }
 
     void message(const std::string& title,
