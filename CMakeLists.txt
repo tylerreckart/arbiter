@@ -407,6 +407,28 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_api_client COMMAND unit_api_client)
 
+    # Concurrency regression test for issue #48 — its own binary so the
+    # provider registry initializes against this test's loopback OLLAMA_HOST
+    # rather than a default already pinned by unit_api_client.
+    add_executable(unit_api_client_pool
+        tests/test_api_client_pool.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_api_client_pool PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_api_client_pool PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+    )
+    add_test(NAME unit_api_client_pool COMMAND unit_api_client_pool)
+
     # --- Unit tests for the tool-call stream filter ---
     # Exercises line-buffered reassembly, /cmd swallow rules, and the
     # verbose pass-through path without needing a TUI or the real orchestrator.
