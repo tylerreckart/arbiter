@@ -11,6 +11,8 @@
 #include <vector>
 #include <map>
 #include <mutex>
+#include <condition_variable>
+#include <memory>
 #include <functional>
 #include <atomic>
 
@@ -199,8 +201,55 @@ private:
     std::string unmask_api_key(const std::string& provider) const;
     SSL_CTX* ssl_ctx_ = nullptr;
 
-    std::mutex conn_mutex_;
-    std::map<std::string, Conn> conns_;   // keyed by provider name
+    // Per-provider connection pool.  The original design guarded a single
+    // keep-alive Conn per provider with one global mutex (conn_mutex_) held
+    // for the *entire* request — including the full streaming read — so only
+    // one upstream call could be in flight across the whole process at a
+    // time.  Every pane and sub-agent shares one ApiClient (Orchestrator has
+    // exactly one), so they all serialized behind that lock even when talking
+    // to different providers (issue #48).  Now each provider owns a small
+    // pool: concurrent callers lease distinct Conns and do their socket I/O
+    // with no shared lock held, so different panes — and different providers
+    // — stream in parallel.  pool_mutex_ guards only the provider→pool map
+    // lookup; ProviderPool::mu guards that pool's lease bookkeeping.  Neither
+    // is ever held during network I/O.
+    struct ProviderPool {
+        std::mutex mu;
+        std::condition_variable cv;
+        std::vector<std::unique_ptr<Conn>> conns;  // every Conn (leased or idle)
+        std::vector<Conn*> idle;                    // subset available to lease
+    };
+
+    // Cap on concurrent connections per provider.  Bounds socket/fd growth
+    // under heavy fan-out; callers past the cap briefly wait on the pool's
+    // condition variable for a lease to free up rather than opening unbounded
+    // sockets.  Comfortably exceeds kMaxPanes (8) plus the advisor / title /
+    // a2a side calls that share this client.
+    static constexpr int kMaxConnsPerProvider = 16;
+
+    std::mutex pool_mutex_;                                       // guards pools_
+    std::map<std::string, std::unique_ptr<ProviderPool>> pools_;
+
+    // Find-or-create the pool for a provider (brief pool_mutex_ hold).
+    ProviderPool& pool_for(const std::string& provider);
+
+    // RAII connection lease.  Checks a Conn out of its provider pool on
+    // construction (blocking on the pool CV if every slot is leased and the
+    // cap is reached) and returns it to the idle set on destruction.  All
+    // socket I/O runs on the leased Conn with no pool lock held, so leases on
+    // different Conns proceed fully concurrently.  Nested so it can reach the
+    // private Conn / ProviderPool types.
+    class ConnLease {
+    public:
+        ConnLease(ApiClient& owner, const std::string& provider);
+        ~ConnLease();
+        ConnLease(const ConnLease&) = delete;
+        ConnLease& operator=(const ConnLease&) = delete;
+        Conn& conn() { return *conn_; }
+    private:
+        ProviderPool& pool_;
+        Conn* conn_;
+    };
 
     std::atomic<int>  total_in_{0};
     std::atomic<int>  total_out_{0};

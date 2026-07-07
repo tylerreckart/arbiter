@@ -74,6 +74,30 @@ without a hand-written dispatcher.
 a suggestion in the system prompt. Layer an advisor gate on top and
 consequential turns get a second model's sign-off before they reach you.
 
+## Themeable
+
+No color is compiled into the binary — the TUI reads a JSON theme document
+at startup. 18 presets ship in the box (Nord, Dracula, Catppuccin, Gruvbox,
+Tokyo Night, Solarized, and more); export one as a starting point and edit
+hex values to make your own:
+
+```bash
+arbiter --export-theme onedark > ~/.arbiter/themes/mine.json
+```
+
+```
+/theme list           # built-in presets + your custom themes
+/theme mine           # switch instantly, no restart
+/theme save mine      # write the current look back to disk
+```
+
+Backgrounds, text, borders, markdown and diff syntax colors, even the
+12-color agent palette are all keyed in one schema — down to the padding
+and column breakpoints. Full reference in
+[`docs/tui/themes.md`](docs/tui/themes.md).
+
+![Arbiter theme presets](assets/themes.jpg)
+
 ## Quick start
 
 ```bash

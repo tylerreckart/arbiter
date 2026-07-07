@@ -233,7 +233,9 @@ ApiClient::~ApiClient() {
         }
     }
     api_keys_.clear();
-    for (auto& [_, c] : conns_) close_connection(c);
+    for (auto& [_, pool] : pools_) {
+        for (auto& c : pool->conns) close_connection(*c);
+    }
     if (ssl_ctx_) SSL_CTX_free(ssl_ctx_);
 }
 
@@ -368,11 +370,54 @@ void ApiClient::close_connection(Conn& c) {
     c.connected = false;
 }
 
+ApiClient::ProviderPool& ApiClient::pool_for(const std::string& provider) {
+    std::lock_guard<std::mutex> lk(pool_mutex_);
+    auto& slot = pools_[provider];
+    if (!slot) slot = std::make_unique<ProviderPool>();
+    return *slot;
+}
+
+// Lease a Conn out of the provider's pool.  Prefer an idle Conn (reuse its
+// keep-alive socket); otherwise open a new slot up to the cap; otherwise wait
+// for a lease to be returned.  The leased Conn stays owned by the pool (via
+// unique_ptr) so cancel() and ~ApiClient can still reach its socket while it's
+// in use — the lease only hands out exclusive *use* of it, not ownership.
+ApiClient::ConnLease::ConnLease(ApiClient& owner, const std::string& provider)
+    : pool_(owner.pool_for(provider)), conn_(nullptr) {
+    std::unique_lock<std::mutex> lk(pool_.mu);
+    pool_.cv.wait(lk, [&] {
+        return !pool_.idle.empty() ||
+               static_cast<int>(pool_.conns.size()) < kMaxConnsPerProvider;
+    });
+    if (!pool_.idle.empty()) {
+        conn_ = pool_.idle.back();
+        pool_.idle.pop_back();
+    } else {
+        pool_.conns.push_back(std::make_unique<Conn>());
+        conn_ = pool_.conns.back().get();
+    }
+}
+
+ApiClient::ConnLease::~ConnLease() {
+    {
+        std::lock_guard<std::mutex> lk(pool_.mu);
+        pool_.idle.push_back(conn_);
+    }
+    pool_.cv.notify_one();
+}
+
 void ApiClient::cancel() {
     cancelled_.store(true);
-    std::lock_guard<std::mutex> lk(conn_mutex_);
-    for (auto& [_, c] : conns_) {
-        if (c.sock >= 0) ::shutdown(c.sock, SHUT_RDWR);
+    // Shut down every open socket across every provider pool so an in-flight
+    // SSL_read / read returns immediately.  Lock order is pool_mutex_ then the
+    // per-pool mu; leases only ever take the per-pool mu (pool_for releases
+    // pool_mutex_ before the lease locks mu), so this ordering can't deadlock.
+    std::lock_guard<std::mutex> lk(pool_mutex_);
+    for (auto& [_, pool] : pools_) {
+        std::lock_guard<std::mutex> plk(pool->mu);
+        for (auto& c : pool->conns) {
+            if (c->sock >= 0) ::shutdown(c->sock, SHUT_RDWR);
+        }
     }
 }
 
@@ -1024,6 +1069,13 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     }
     if (metrics_) metrics_->inc_provider_call(prov.name);
 
+    // Lease one connection for the whole call (kept across retries so a
+    // reconnect reuses the same pool slot).  The lease is exclusive, so no
+    // lock is held around the socket I/O below — concurrent callers on other
+    // leased Conns run fully in parallel.
+    ConnLease lease(*this, prov.name);
+    Conn& c = lease.conn();
+
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
         if (attempt > 0) {
             usleep((1 << (attempt - 1)) * 1000000);
@@ -1034,8 +1086,6 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
         bool threw = false;
 
         {
-            std::lock_guard<std::mutex> lock(conn_mutex_);
-            Conn& c = conns_[prov.name];
             try {
                 if (!ensure_connection(prov, c)) {
                     ApiResponse r;
@@ -1411,6 +1461,13 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     }
     if (metrics_) metrics_->inc_provider_call(prov.name);
 
+    // Lease one connection for the whole streaming call (see complete()).
+    // The lease is exclusive to this thread, so the full SSE read runs with
+    // no shared lock held — other panes streaming from their own leased Conns
+    // proceed concurrently instead of blocking behind a single mutex.
+    ConnLease lease(*this, prov.name);
+    Conn& c = lease.conn();
+
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
         if (attempt > 0) {
             usleep((1 << (attempt - 1)) * 1000000);
@@ -1421,8 +1478,6 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
         bool threw = false;
 
         {
-            std::lock_guard<std::mutex> lock(conn_mutex_);
-            Conn& c = conns_[prov.name];
             try {
                 if (!ensure_connection(prov, c)) {
                     resp.ok    = false;
@@ -1474,10 +1529,7 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
             return resp;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(conn_mutex_);
-            close_connection(conns_[prov.name]);
-        }
+        close_connection(c);
     }
 
     if (breaker_) breaker_->record_failure(prov.name);
