@@ -58,9 +58,19 @@ std::string cwd_session_hash(const std::string& cwd) {
 }
 
 void sort_entries(std::vector<ConversationEntry>& entries) {
+    // updated_at has second resolution, so two conversations touched in the
+    // same second tie constantly (e.g. save-then-create during a switch).
+    // Without a tie-break, std::sort's unspecified ordering of equal keys
+    // makes the history sidebar's row order nondeterministic — keyboard
+    // navigation in tests (and muscle memory in real use) lands on the
+    // wrong row.  Ids are fixed-width hex of (epoch seconds, per-process
+    // counter), so comparing them descending breaks ties by creation order.
     std::sort(entries.begin(), entries.end(),
               [](const ConversationEntry& a, const ConversationEntry& b) {
-                  return a.updated_at > b.updated_at;
+                  if (a.updated_at != b.updated_at) {
+                      return a.updated_at > b.updated_at;
+                  }
+                  return a.id > b.id;
               });
 }
 

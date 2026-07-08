@@ -63,17 +63,22 @@ const char* loop_state_str(LoopState s) {
 }
 
 LoopManager::~LoopManager() {
-    std::unique_lock<std::mutex> lk(mu_);
-    for (auto& [id, e] : loops_) {
-        std::lock_guard<std::mutex> ek(e->mu);
-        e->stop_req = true;
+    // Take ownership of every entry under the map lock, then signal and
+    // join outside it.  Owning the entries locally means a concurrent
+    // kill()/reap_stopped() can't erase (and destroy) an entry while we
+    // still hold a pointer to its thread.
+    std::map<std::string, std::unique_ptr<LoopEntry>> loops;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        loops.swap(loops_);
+    }
+    for (auto& [id, e] : loops) {
+        { std::lock_guard<std::mutex> ek(e->mu); e->stop_req = true; }
         e->cv.notify_all();
     }
-    // Collect threads to join outside the lock.
-    std::vector<std::thread*> threads;
-    for (auto& [id, e] : loops_) threads.push_back(&e->thread);
-    lk.unlock();
-    for (auto* t : threads) if (t->joinable()) t->join();
+    for (auto& [id, e] : loops) {
+        if (e->thread.joinable()) e->thread.join();
+    }
 }
 
 std::string LoopManager::start(Orchestrator& orch,
@@ -94,17 +99,19 @@ std::string LoopManager::start(Orchestrator& orch,
 }
 
 bool LoopManager::kill(const std::string& lid) {
-    std::unique_lock<std::mutex> lk(mu_);
-    auto it = loops_.find(lid);
-    if (it == loops_.end()) return false;
-    auto* e = it->second.get();
+    // Move the entry out of the map first so a second concurrent kill()
+    // (or the destructor) can't find it and race the join/destroy below.
+    std::unique_ptr<LoopEntry> e;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = loops_.find(lid);
+        if (it == loops_.end()) return false;
+        e = std::move(it->second);
+        loops_.erase(it);
+    }
     { std::lock_guard<std::mutex> ek(e->mu); e->stop_req = true; }
     e->cv.notify_all();
-    auto& t = e->thread;
-    lk.unlock();
-    if (t.joinable()) t.join();
-    lk.lock();
-    loops_.erase(lid);
+    if (e->thread.joinable()) e->thread.join();
     return true;
 }
 
@@ -112,8 +119,9 @@ bool LoopManager::suspend(const std::string& lid) {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = loops_.find(lid);
     if (it == loops_.end()) return false;
+    std::lock_guard<std::mutex> ek(it->second->mu);
     if (it->second->state != LoopState::Running) return false;
-    { std::lock_guard<std::mutex> ek(it->second->mu); it->second->suspend_req = true; }
+    it->second->suspend_req = true;
     it->second->state = LoopState::Suspended;
     return true;
 }
@@ -122,9 +130,12 @@ bool LoopManager::resume(const std::string& lid) {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = loops_.find(lid);
     if (it == loops_.end()) return false;
-    if (it->second->state != LoopState::Suspended) return false;
-    { std::lock_guard<std::mutex> ek(it->second->mu); it->second->suspend_req = false; }
-    it->second->state = LoopState::Running;
+    {
+        std::lock_guard<std::mutex> ek(it->second->mu);
+        if (it->second->state != LoopState::Suspended) return false;
+        it->second->suspend_req = false;
+        it->second->state = LoopState::Running;
+    }
     it->second->cv.notify_all();
     return true;
 }
@@ -146,23 +157,21 @@ std::string LoopManager::list() const {
     for (auto& [lid, e] : loops_) {
         long secs = std::chrono::duration_cast<std::chrono::seconds>(
             now - e->started).count();
+        std::lock_guard<std::mutex> ek(e->mu);
         ss << "  " << lid
            << "  agent:" << e->agent_id
            << "  state:" << loop_state_str(e->state)
            << "  iter:" << e->iter
            << "  elapsed:" << secs << "s\n";
-        {
-            std::lock_guard<std::mutex> ek(e->mu);
-            if (e->state == LoopState::Stopped && !e->stop_reason.empty()) {
-                ss << "    stop: " << e->stop_reason << "\n";
-            } else if (!e->last_output.empty()) {
-                std::string preview = e->last_output.substr(
-                    0, std::min<size_t>(120, e->last_output.size()));
-                for (char& c : preview) if (c == '\n') c = ' ';
-                ss << "    last: " << preview;
-                if (e->last_output.size() > 120) ss << "...";
-                ss << "\n";
-            }
+        if (e->state == LoopState::Stopped && !e->stop_reason.empty()) {
+            ss << "    stop: " << e->stop_reason << "\n";
+        } else if (!e->last_output.empty()) {
+            std::string preview = e->last_output.substr(
+                0, std::min<size_t>(120, e->last_output.size()));
+            for (char& c : preview) if (c == '\n') c = ' ';
+            ss << "    last: " << preview;
+            if (e->last_output.size() > 120) ss << "...";
+            ss << "\n";
         }
     }
     return ss.str();
@@ -172,6 +181,7 @@ std::string LoopManager::log(const std::string& lid, int last_n) const {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = loops_.find(lid);
     if (it == loops_.end()) return "ERR: no loop '" + lid + "'\n";
+    std::lock_guard<std::mutex> ek(it->second->mu);
     const auto& entries = it->second->output_log;
     if (entries.empty()) return "  (no output yet)\n";
 
@@ -188,6 +198,7 @@ size_t LoopManager::log_count(const std::string& lid) const {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = loops_.find(lid);
     if (it == loops_.end()) return 0;
+    std::lock_guard<std::mutex> ek(it->second->mu);
     return it->second->output_log.size();
 }
 
@@ -195,6 +206,7 @@ std::string LoopManager::log_since(const std::string& lid, size_t offset) const 
     std::lock_guard<std::mutex> lk(mu_);
     auto it = loops_.find(lid);
     if (it == loops_.end()) return "";
+    std::lock_guard<std::mutex> ek(it->second->mu);
     const auto& entries = it->second->output_log;
     std::ostringstream ss;
     for (size_t i = offset; i < entries.size(); ++i)
@@ -206,18 +218,33 @@ bool LoopManager::is_stopped(const std::string& lid) const {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = loops_.find(lid);
     if (it == loops_.end()) return true;
+    std::lock_guard<std::mutex> ek(it->second->mu);
     return it->second->state == LoopState::Stopped;
 }
 
 void LoopManager::reap_stopped() {
-    std::lock_guard<std::mutex> lk(mu_);
-    for (auto it = loops_.begin(); it != loops_.end(); ) {
-        if (it->second->state == LoopState::Stopped) {
-            if (it->second->thread.joinable()) it->second->thread.join();
-            it = loops_.erase(it);
-        } else {
-            ++it;
+    // Move stopped entries out of the map under the lock, join outside it
+    // (join of a finished thread is quick, but there's no reason to make
+    // other API calls wait on it).
+    std::vector<std::unique_ptr<LoopEntry>> stopped;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (auto it = loops_.begin(); it != loops_.end(); ) {
+            bool is_stopped;
+            {
+                std::lock_guard<std::mutex> ek(it->second->mu);
+                is_stopped = it->second->state == LoopState::Stopped;
+            }
+            if (is_stopped) {
+                stopped.push_back(std::move(it->second));
+                it = loops_.erase(it);
+            } else {
+                ++it;
+            }
         }
+    }
+    for (auto& e : stopped) {
+        if (e->thread.joinable()) e->thread.join();
     }
 }
 
@@ -230,16 +257,20 @@ std::vector<std::string> LoopManager::list_ids() const {
 
 bool LoopManager::has_active() const {
     std::lock_guard<std::mutex> lk(mu_);
-    for (auto& [_, e] : loops_)
+    for (auto& [_, e] : loops_) {
+        std::lock_guard<std::mutex> ek(e->mu);
         if (e->state != LoopState::Stopped) return true;
+    }
     return false;
 }
 
 int LoopManager::active_count() const {
     std::lock_guard<std::mutex> lk(mu_);
     int n = 0;
-    for (auto& [_, e] : loops_)
+    for (auto& [_, e] : loops_) {
+        std::lock_guard<std::mutex> ek(e->mu);
         if (e->state != LoopState::Stopped) ++n;
+    }
     return n;
 }
 
@@ -248,6 +279,7 @@ std::vector<LoopManager::LoopBrief> LoopManager::briefs() const {
     std::vector<LoopBrief> out;
     out.reserve(loops_.size());
     for (auto& [lid, e] : loops_) {
+        std::lock_guard<std::mutex> ek(e->mu);
         if (e->state == LoopState::Stopped) continue;
         LoopBrief b;
         b.id       = lid;
@@ -273,12 +305,14 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
 
     while (true) {
         if (total_iters >= kMaxIters) {
-            e->stop_reason = "max iterations reached (" + std::to_string(kMaxIters) + ")";
+            std::string reason =
+                "max iterations reached (" + std::to_string(kMaxIters) + ")";
+            { std::lock_guard<std::mutex> ek(e->mu); e->stop_reason = reason; }
             if (e->oq) {
                 e->oq->push("\n" + theme().accent_warning + "[" +
                             e->loop_id + "/" + e->agent_id +
                             " MAX ITERS]" + theme().reset + " " +
-                            e->stop_reason +
+                            reason +
                             "\n  Use /log " + e->loop_id + " to review.\n");
             }
             break;
@@ -308,7 +342,8 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
         // Pin original_task on every iteration so the in-loop advisor gate
         // evaluates against the loop's real goal, not the continuation prompt.
         auto resp = orch.send(e->agent_id, prompt, original_task);
-        e->iter++;
+        int iter_now;
+        { std::lock_guard<std::mutex> ek(e->mu); iter_now = ++e->iter; }
         total_iters++;
 
         if (resp.ok) {
@@ -319,7 +354,7 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
         {
             std::ostringstream entry;
             entry << "[" << e->loop_id << "/" << e->agent_id
-                  << " #" << e->iter << "]\n";
+                  << " #" << iter_now << "]\n";
             if (resp.ok) {
                 entry << render_markdown(resp.content) << "\n";
                 entry << "  [in:" << resp.input_tokens
@@ -399,6 +434,7 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
     }
 
     (void)stopped_by_request;
+    std::lock_guard<std::mutex> ek(e->mu);
     e->state = LoopState::Stopped;
 }
 

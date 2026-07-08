@@ -70,8 +70,14 @@ Theme build_theme_from_design() {
 } // namespace
 
 const Theme& theme() {
-    static Theme cached = build_theme_from_design();
-    static std::uint32_t generation = tui_design_generation();
+    // Per-thread cache: loop threads, pane exec threads, and the output
+    // pump all call theme() while a `/theme` switch can rebuild the design
+    // concurrently.  A shared static Theme would be rebuilt in place under
+    // readers' feet (a data race on its std::strings); a thread_local copy
+    // is only ever mutated by the thread that reads it.  Cost is one Theme
+    // rebuild per thread per theme switch — negligible.
+    thread_local Theme cached;
+    thread_local std::uint32_t generation = ~0u;
     const std::uint32_t current = tui_design_generation();
     if (generation != current) {
         cached = build_theme_from_design();

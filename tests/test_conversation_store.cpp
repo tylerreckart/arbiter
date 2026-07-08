@@ -227,3 +227,36 @@ TEST_CASE("titled flag round-trips through the manifest on disk") {
     }
     fs::remove_all(dir);
 }
+
+TEST_CASE("equal updated_at ties break by id so list order is deterministic") {
+    // updated_at has second resolution, so conversations created/saved in
+    // the same second tie constantly.  The sidebar's keyboard navigation
+    // depends on list() order being stable — with no tie-break, std::sort's
+    // handling of equal keys made row order (and therefore which
+    // conversation Enter switched to) nondeterministic on fast machines.
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    // Three conversations created back-to-back land in the same epoch
+    // second (ids embed a per-process counter, so they stay distinct and
+    // monotonically increasing).
+    const std::string first = store.active_id();
+    const std::string second = store.create(dir);
+    const std::string third = store.create(dir);
+
+    const auto entries = store.list();
+    REQUIRE(entries.size() == 3);
+    // Later-created conversations sort first on an updated_at tie.
+    CHECK(entries[0].id == third);
+    CHECK(entries[1].id == second);
+    CHECK(entries[2].id == first);
+    for (size_t i = 1; i < entries.size(); ++i) {
+        const bool ordered =
+            entries[i - 1].updated_at > entries[i].updated_at ||
+            (entries[i - 1].updated_at == entries[i].updated_at &&
+             entries[i - 1].id > entries[i].id);
+        CHECK(ordered);
+    }
+
+    fs::remove_all(dir);
+}
