@@ -12,6 +12,8 @@
 #include "doctest.h"
 #include "pty_harness.h"
 
+#include <cctype>
+#include <cstddef>
 #include <string>
 #include <algorithm>
 
@@ -297,6 +299,57 @@ TEST_CASE("Ctrl-P palette inserts the selected command; Esc closes it") {
     s.read_for(600);
     CHECK(PtySession::strip_ansi(s.output().substr(after_esc.size()))
               .find("/agents") != std::string::npos);
+
+    s.terminate();
+}
+
+TEST_CASE("kitty keyboard protocol push is popped so ctrl keys stay legacy") {
+    // Impersonate a kitty-class terminal: answer the startup capability
+    // queries the way kitty/ghostty do, including "kitty keyboard protocol
+    // supported" (ESC[?0u).  OpenTUI's handshake responds by pushing
+    // CSI > 5 u (disambiguate escape codes), which would make the terminal
+    // re-encode every ctrl+letter as CSI-u — sequences the input layer
+    // doesn't decode.  setup_terminal must pop that entry (CSI < 1 u)
+    // after the handshake so the whole ctrl-key surface keeps working.
+    PtySession s(24, 80);
+    s.spawn({ INDEX_TEST_BINARY });
+    s.read_until("\033[?1049h", 10000);
+    s.send("\x1b[?0u");            // kitty keyboard: supported, flags 0
+    s.send("\x1b[24;1R");          // cursor position report
+    s.send("\x1b[?62;22c");        // DA1
+    s.send("\x1b[?2026;2$y");      // DECRPM: synchronized output supported
+    s.read_for(2500);
+
+    // Scan the raw byte stream for kitty keyboard pushes (CSI > ... u) and
+    // pops (CSI < ... u).  The pop must come after the last push.
+    const std::string out = s.output();
+    auto find_last = [&](const std::string& intro) -> std::size_t {
+        std::size_t last = std::string::npos;
+        std::size_t pos = 0;
+        while ((pos = out.find(intro, pos)) != std::string::npos) {
+            std::size_t j = pos + intro.size();
+            while (j < out.size() && (std::isdigit((unsigned char)out[j]) || out[j] == ';'))
+                ++j;
+            if (j < out.size() && out[j] == 'u') last = pos;
+            pos += intro.size();
+        }
+        return last;
+    };
+    const std::size_t last_push = find_last("\x1b[>");
+    const std::size_t last_pop  = find_last("\x1b[<");
+    REQUIRE(last_pop != std::string::npos);
+    if (last_push != std::string::npos) {
+        CHECK(last_pop > last_push);
+    }
+
+    // And legacy control bytes still drive the app end-to-end.
+    s.send("\x10");        // Ctrl-P opens the palette
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(300);
+    s.send("\r\r");        // accept, then submit "/agents "
+    s.read_for(800);
+    CHECK(PtySession::strip_ansi(s.output()).find("/agents") != std::string::npos);
 
     s.terminate();
 }
