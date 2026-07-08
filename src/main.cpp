@@ -725,7 +725,18 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                    + std::to_string(r.hit) + "/" + std::to_string(r.total)
                                    + "  /find next|prev");
                 }
-                if (pump_notify) pump_notify();
+                // Back-to-back /find and /find next calls are the only case
+                // in the app where the *entire* visible delta is a one-line
+                // status-bar change with no accompanying scrollback content
+                // change (jump_to_row can also leave scroll_offset
+                // unchanged, e.g. cycling between two matches that map to
+                // the same visual row).  OpenTUI's diffed render occasionally
+                // fails to pick up such a narrow change from the normal
+                // pump-driven cadence — same class of issue /theme already
+                // works around (via refresh_chrome()) by forcing a full
+                // repaint instead of relying on pump_notify()'s diffed redraw.
+                if (ui_ctx.present_all) ui_ctx.present_all();
+                ot_session.flush_display();
                 return;
             }
             if (cmd == "tokens") {

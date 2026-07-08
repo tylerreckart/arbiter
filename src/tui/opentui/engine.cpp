@@ -111,6 +111,22 @@ Engine::~Engine() {
 void Engine::setup_terminal(bool alternate_screen) {
     setupTerminal(renderer_, alternate_screen);
     sync_terminal_capability_responses(renderer_);
+
+    // OpenTUI's capability handshake opts into the kitty keyboard protocol
+    // (it pushes `CSI > 5 u` — disambiguate escape codes — once the terminal
+    // reports support).  Under that protocol, terminals like kitty, ghostty,
+    // WezTerm, and foot encode every ctrl+letter (and Esc) as CSI-u escape
+    // sequences instead of legacy control bytes, which arbiter's input layer
+    // does not decode — every ctrl-key binding (Ctrl-W chords, Ctrl-P,
+    // Ctrl-R, line-editing keys) and Esc-cancel would go dead.  Pop the
+    // pushed entry to restore legacy encoding.  The pop is safe everywhere:
+    // the push only happened synchronously inside the handshake above, and
+    // popping an empty stack (terminals that never pushed) resets flags to
+    // zero, which is also legacy encoding.  Remove this once the input
+    // layer understands CSI-u key events.
+    static constexpr char kKittyKeyboardPop[] = "\x1b[<1u";
+    (void)::write(STDOUT_FILENO, kKittyKeyboardPop, sizeof(kKittyKeyboardPop) - 1);
+
     terminal_ready_ = true;
 }
 

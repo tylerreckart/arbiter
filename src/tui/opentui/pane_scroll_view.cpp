@@ -810,6 +810,18 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
     std::string needle = term;
     for (char& c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
+    // The echoed "> /find <term>" line that invoked this very search is
+    // itself a segment by the time this runs (the REPL echoes every typed
+    // line into scrollback before dispatching it), and it trivially
+    // contains `term` by construction.  Without excluding it, every /find
+    // call always finds itself as an extra, meaningless match — and
+    // because the echo's arrival in scrollback races the pump thread that
+    // drains it, whether that self-match is counted at all is
+    // nondeterministic (one run sees N matches, the next sees N+1).  A
+    // user's own /find invocations are UI chrome, not content they're
+    // searching for, so skip them unconditionally.
+    static constexpr std::string_view kEchoPrefix = "> /find";
+
     int base = 0;
     std::vector<std::string> lines;
     for (const auto& seg : segments_) {
@@ -817,6 +829,8 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
         lines.clear();
         seg->collect_lines(lines);
         for (size_t k = 0; k < lines.size(); ++k) {
+            std::string_view line_sv = lines[k];
+            if (line_sv.substr(0, kEchoPrefix.size()) == kEchoPrefix) continue;
             std::string hay = std::move(lines[k]);
             for (char& c : hay) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             if (hay.find(needle) == std::string::npos) continue;
