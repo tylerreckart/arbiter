@@ -113,19 +113,15 @@ void Engine::setup_terminal(bool alternate_screen) {
     sync_terminal_capability_responses(renderer_);
 
     // OpenTUI's capability handshake opts into the kitty keyboard protocol
-    // (it pushes `CSI > 5 u` — disambiguate escape codes — once the terminal
-    // reports support).  Under that protocol, terminals like kitty, ghostty,
-    // WezTerm, and foot encode every ctrl+letter (and Esc) as CSI-u escape
-    // sequences instead of legacy control bytes, which arbiter's input layer
-    // does not decode — every ctrl-key binding (Ctrl-W chords, Ctrl-P,
-    // Ctrl-R, line-editing keys) and Esc-cancel would go dead.  Pop the
-    // pushed entry to restore legacy encoding.  The pop is safe everywhere:
-    // the push only happened synchronously inside the handshake above, and
-    // popping an empty stack (terminals that never pushed) resets flags to
-    // zero, which is also legacy encoding.  Remove this once the input
-    // layer understands CSI-u key events.
-    static constexpr char kKittyKeyboardPop[] = "\x1b[<1u";
-    (void)::write(STDOUT_FILENO, kKittyKeyboardPop, sizeof(kKittyKeyboardPop) - 1);
+    // (pushes `CSI > 5 u` — disambiguate escape codes — once the terminal
+    // confirms support).  Under that protocol, terminals like kitty,
+    // ghostty, WezTerm, and foot encode every ctrl+letter (and Esc) as
+    // CSI-u escape sequences instead of legacy control bytes, which
+    // arbiter's input layer does not decode — every ctrl-key binding
+    // (Ctrl-W chords, Ctrl-P, Ctrl-R, line-editing keys) and Esc-cancel
+    // goes dead.  One-shot disable here for the common case — but see
+    // Engine::render() for why this alone isn't sufficient.
+    disableKittyKeyboard(renderer_);
 
     terminal_ready_ = true;
 }
@@ -154,6 +150,19 @@ void Engine::draw(const DrawFn& draw_fn) {
 }
 
 void Engine::render(bool force) {
+    // The one-shot disableKittyKeyboard() in setup_terminal() only undoes an
+    // enable that already landed *before* that call returns.  The terminal's
+    // "kitty keyboard supported" reply is asynchronous — real round-trip
+    // latency (as opposed to this process's own capability-response read
+    // loop timeout) can land it after setup_terminal() has already moved on,
+    // so the protocol comes back on with no further correction. Rather than
+    // chase that timing (which varies by terminal and connection), simply
+    // re-assert "disabled" on every render tick: disableKittyKeyboard() is a
+    // few comparisons and a zero-length write when already off (see its
+    // disassembly — checked, not guessed), so calling it unconditionally
+    // here costs nothing while guaranteeing the protocol can never stay on
+    // longer than one frame (~30ms) regardless of when it was (re-)enabled.
+    disableKittyKeyboard(renderer_);
     ::render(renderer_, force);
 }
 
