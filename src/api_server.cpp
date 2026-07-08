@@ -9754,6 +9754,19 @@ void ApiServer::stop() {
 }
 
 void ApiServer::accept_loop() {
+    // Bound the thread-per-connection model: every accepted socket costs
+    // a detached thread (an 8 MB stack reservation on most platforms), so
+    // an unbounded accept loop lets a connection flood exhaust threads and
+    // memory.  Past the cap we answer 503 + Retry-After and close instead
+    // of spawning.
+    int max_connections = 256;
+    if (const char* e = std::getenv("ARBITER_MAX_CONNECTIONS"); e && *e) {
+        try {
+            int v = std::stoi(e);
+            if (v > 0) max_connections = v;
+        } catch (...) { /* keep default */ }
+    }
+
     while (running_.load()) {
         int client = ::accept(listen_fd_, nullptr, nullptr);
         if (client < 0) {
@@ -9762,6 +9775,18 @@ void ApiServer::accept_loop() {
         }
         int flag = 1;
         ::setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+        if (active_connections_.load(std::memory_order_acquire) >= max_connections) {
+            static const std::string kBusy =
+                "HTTP/1.1 503 Service Unavailable\r\n"
+                "Content-Type: text/plain\r\n"
+                "Retry-After: 1\r\n"
+                "Content-Length: 20\r\n"
+                "Connection: close\r\n\r\n"
+                "server at capacity\r\n";
+            write_all(client, kBusy);
+            ::close(client);
+            continue;
+        }
         // Bump the in-flight counter before detaching so a shutdown
         // racing the spawn always sees the worker.  Decrement + notify
         // happens in the worker's exit path.

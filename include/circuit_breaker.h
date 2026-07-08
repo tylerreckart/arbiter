@@ -72,6 +72,14 @@ public:
     void record_success(const std::string& provider);
     void record_failure(const std::string& provider);
 
+    // An admitted call that finished without a provider verdict (user
+    // cancel, caller abort).  Must be called instead of the two above so
+    // a HalfOpen probe doesn't leak: an unresolved probe would keep
+    // `probe_in_flight` set forever and permanently reject the provider.
+    // HalfOpen → back to Open (cooldown restarts, no metrics bump: the
+    // provider wasn't proven bad, just unprobed).  Closed → no-op.
+    void record_abandoned(const std::string& provider);
+
     // Inspection for /metrics + tests.  Returns Closed for unknown
     // providers (lazy-init on first allow/record).
     State state(const std::string& provider) const;

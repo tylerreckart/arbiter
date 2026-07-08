@@ -1052,6 +1052,11 @@ static bool is_retryable(const std::string& error_type) {
 // ─── Blocking complete() ─────────────────────────────────────────────────────
 
 ApiResponse ApiClient::complete(const ApiRequest& req) {
+    // New call — clear any cancellation left over from a previous turn
+    // (mirrors stream()).  Checked at every attempt boundary below so a
+    // cancel() aborts this call instead of burning the retry budget
+    // reconnecting through sockets it just shut down.
+    cancelled_.store(false);
     static const int kMaxAttempts = 4;
     const Provider& prov = provider_for(req.model);
 
@@ -1077,6 +1082,18 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        if (cancelled_.load()) {
+            // record_abandoned (not record_failure): the provider wasn't
+            // proven bad, and a leaked HalfOpen probe would otherwise
+            // reject the provider forever.
+            if (breaker_) breaker_->record_abandoned(prov.name);
+            ApiResponse r;
+            r.ok         = false;
+            r.error_type = "cancelled";
+            r.error      = "request cancelled";
+            return r;
+        }
+
         if (attempt > 0) {
             usleep((1 << (attempt - 1)) * 1000000);
             if (metrics_) metrics_->inc_provider_retry(prov.name);
@@ -1088,6 +1105,11 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
         {
             try {
                 if (!ensure_connection(prov, c)) {
+                    // Counts as a provider failure so a HalfOpen probe
+                    // admitted by allow() above is resolved rather than
+                    // leaked (a leaked probe pins the breaker in HalfOpen
+                    // and rejects the provider until process restart).
+                    if (breaker_) breaker_->record_failure(prov.name);
                     ApiResponse r;
                     r.ok    = false;
                     r.error = c.last_error.empty() ? "Connection failed" : c.last_error;
