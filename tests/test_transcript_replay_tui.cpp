@@ -33,14 +33,6 @@ std::string plain(const PtySession& s) {
     return PtySession::strip_ansi(s.output());
 }
 
-// Dummy OpenRouter key fails with an auth error once the turn completes.
-// We can't wait on "ERR:" — the error style is clipped at the pane edge so
-// the PTY stream shows "RR: …" instead. Slow CI runners need headroom
-// (see test_line_editor.cpp).
-void wait_turn_done(PtySession& s) {
-    s.read_until("Authentication header", 20000);
-}
-
 // Poll until `needle` appears only in bytes written after `offset`.
 void wait_for_new_bytes(PtySession& s, std::size_t offset, const std::string& needle, int timeout_ms) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -53,6 +45,25 @@ void wait_for_new_bytes(PtySession& s, std::size_t offset, const std::string& ne
     throw std::runtime_error("timeout waiting for new output containing '" + needle + "'");
 }
 
+// Dummy OpenRouter key fails with an auth error once the turn completes.
+// We can't wait on "ERR:" — the error style is clipped at the pane edge so
+// the PTY stream shows "RR: …" instead. Slow CI runners need headroom
+// (see test_line_editor.cpp).
+//
+// `PtySession::output()` is cumulative and never shrinks, so a bare
+// `s.read_until("Authentication header", ...)` would happily match the
+// *first* turn's error text again on every later call — returning near-
+// instantly without actually waiting for a subsequent turn to finish.
+// That premature return raced the real network round-trip: the caller
+// would proceed to switch conversations while the turn was still
+// genuinely in flight, hitting the "Turn in progress — switch anyway?"
+// gate and hanging forever on a confirmation keystroke nothing ever
+// sends. Search only bytes written after `offset` so each call waits for
+// *that* turn's own completion.
+void wait_turn_done(PtySession& s, std::size_t offset) {
+    wait_for_new_bytes(s, offset, "Authentication header", 20000);
+}
+
 } // namespace
 
 TEST_CASE("switching back to an earlier conversation replays its transcript") {
@@ -63,9 +74,10 @@ TEST_CASE("switching back to an earlier conversation replays its transcript") {
     // artifact that turns "ERR:" into "RR:" in the PTY stream), so assert
     // on an interior substring rather than the full marker.
     const std::string marker_probe = "conversation-marker-xyz";
+    const std::string before_first_turn = s.output();
     s.send(marker + "\r");
     s.read_until(marker_probe, 5000);
-    wait_turn_done(s);
+    wait_turn_done(s, before_first_turn.size());
 
     // Enter the history sidebar. With only one conversation, focus pins to
     // it (the active entry) rather than row 0 — move up once to land on
@@ -77,8 +89,9 @@ TEST_CASE("switching back to an earlier conversation replays its transcript") {
     s.send("\r");
     s.read_for(800);
 
+    const std::string before_second_turn = s.output();
     s.send("second-conversation-text\r");
-    wait_turn_done(s);
+    wait_turn_done(s, before_second_turn.size());
 
     const std::string before_switch_back = s.output();
 
