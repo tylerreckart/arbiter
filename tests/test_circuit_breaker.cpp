@@ -108,6 +108,38 @@ TEST_CASE("half-open probe failure reopens with fresh cooldown") {
     CHECK(!cb.allow("p"));
 }
 
+TEST_CASE("abandoned half-open probe reopens instead of leaking") {
+    // Regression: a probe admitted in HalfOpen that ends without a
+    // provider verdict (user cancel, connect failure path that returns
+    // early) used to leave probe_in_flight set forever, rejecting the
+    // provider until process restart.
+    ProviderCircuitBreaker cb(CircuitBreakerConfig{1, 0});
+    cb.record_failure("p");
+    CHECK(cb.allow("p"));    // HalfOpen probe admitted
+    cb.record_abandoned("p");
+    CHECK(cb.state("p") == ProviderCircuitBreaker::State::Open);
+
+    // cooldown=0 → the next allow becomes a fresh probe rather than
+    // being rejected by the leaked one.
+    CHECK(cb.allow("p"));
+    CHECK(cb.state("p") == ProviderCircuitBreaker::State::HalfOpen);
+    cb.record_success("p");
+    CHECK(cb.state("p") == ProviderCircuitBreaker::State::Closed);
+}
+
+TEST_CASE("record_abandoned in Closed is a no-op") {
+    ProviderCircuitBreaker cb(CircuitBreakerConfig{2, 60});
+    cb.record_failure("p");
+    cb.record_abandoned("p");   // must not count toward the threshold
+    cb.record_failure("p");
+    CHECK(cb.state("p") == ProviderCircuitBreaker::State::Open);
+
+    ProviderCircuitBreaker cb2(CircuitBreakerConfig{2, 60});
+    cb2.record_abandoned("q");
+    CHECK(cb2.state("q") == ProviderCircuitBreaker::State::Closed);
+    CHECK(cb2.allow("q"));
+}
+
 TEST_CASE("providers are tracked independently") {
     ProviderCircuitBreaker cb(CircuitBreakerConfig{2, 60});
     cb.record_failure("anthropic");

@@ -3,13 +3,17 @@
 #include "json.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -21,11 +25,29 @@ namespace arbiter {
 
 namespace {
 
-TuiDesign g_design;
-bool g_design_ready = false;
-std::uint32_t g_design_generation = 0;
-std::string g_active_preset = kDefaultTuiPreset;
-std::string g_active_theme_file;
+// The active design is published as an immutable snapshot: writers build a
+// new TuiDesign and swap the pointer; readers (`tui_design()`) do a lock-free
+// atomic load.  Every snapshot ever published is retained in g_design_history
+// for the life of the process, so a `const TuiDesign&` handed out before a
+// theme switch can never dangle.  Theme switches are rare and user-driven, so
+// the retained copies are a few KB total in practice.
+//
+// Writers (load_tui_design, set_show_history_sidebar) and the string state
+// below are serialized by g_design_mu.  Loop threads, pane exec threads, and
+// the output pump all read concurrently via tui_design()/theme().
+std::mutex g_design_mu;
+std::vector<std::shared_ptr<const TuiDesign>> g_design_history;  // under g_design_mu
+std::atomic<const TuiDesign*> g_design_current{nullptr};
+std::atomic<std::uint32_t> g_design_generation{0};
+std::string g_active_preset = kDefaultTuiPreset;   // under g_design_mu
+std::string g_active_theme_file;                   // under g_design_mu
+
+// Publish `d` as the new active design.  Caller must hold g_design_mu.
+void publish_design_locked(TuiDesign d) {
+    auto snap = std::make_shared<const TuiDesign>(std::move(d));
+    g_design_current.store(snap.get(), std::memory_order_release);
+    g_design_history.push_back(std::move(snap));
+}
 
 int clamp_byte(int v) {
     return std::max(0, std::min(255, v));
@@ -645,16 +667,21 @@ TuiDesign tui_design_for_preset(std::string_view preset) {
 }
 
 const TuiDesign& tui_design() {
-    if (!g_design_ready) {
-        g_design = default_design();
-        g_design_ready = true;
+    const TuiDesign* cur = g_design_current.load(std::memory_order_acquire);
+    if (cur) return *cur;
+    // First use before load_tui_design() — publish the default lazily.
+    std::lock_guard<std::mutex> lk(g_design_mu);
+    cur = g_design_current.load(std::memory_order_acquire);
+    if (!cur) {
+        publish_design_locked(default_design());
+        cur = g_design_current.load(std::memory_order_acquire);
     }
-    return g_design;
+    return *cur;
 }
 
 void load_tui_design(const std::string& config_dir, std::string_view cli_preset) {
-    g_design = default_design();
-    g_design_ready = true;
+    std::lock_guard<std::mutex> lk(g_design_mu);
+    TuiDesign design = default_design();
     g_active_preset = kDefaultTuiPreset;
     g_active_theme_file.clear();
 
@@ -668,19 +695,19 @@ void load_tui_design(const std::string& config_dir, std::string_view cli_preset)
     const std::string theme_file = file_root ? file_root->get_string("theme_file", "") : "";
 
     if (cli_override) {
-        if (resolve_and_apply_theme(g_design, config_dir, cli_preset)) {
+        if (resolve_and_apply_theme(design, config_dir, cli_preset)) {
             g_active_preset = std::string(cli_preset);
             g_active_theme_file.clear();
         }
     } else if (!theme_file.empty()) {
         const std::string resolved = resolve_config_relative_path(config_dir, theme_file);
-        if (apply_theme_from_path(g_design, resolved, config_dir)) {
+        if (apply_theme_from_path(design, resolved, config_dir)) {
             g_active_theme_file = resolved;
             g_active_preset.clear();
         }
     } else if (file_root) {
         const std::string preset = file_root->get_string("preset", "");
-        if (!preset.empty() && resolve_and_apply_theme(g_design, config_dir, preset)) {
+        if (!preset.empty() && resolve_and_apply_theme(design, config_dir, preset)) {
             if (tui_preset_is_valid(preset)) {
                 g_active_preset = preset;
                 g_active_theme_file.clear();
@@ -693,26 +720,29 @@ void load_tui_design(const std::string& config_dir, std::string_view cli_preset)
 
     if (file_root) {
         try {
-            apply_color_overrides(g_design, *file_root);
-            apply_layout_component_overrides(g_design, *file_root);
+            apply_color_overrides(design, *file_root);
+            apply_layout_component_overrides(design, *file_root);
         } catch (...) {
-            g_design = default_design();
+            design = default_design();
             g_active_preset = kDefaultTuiPreset;
             g_active_theme_file.clear();
         }
     }
-    ++g_design_generation;
+    publish_design_locked(std::move(design));
+    g_design_generation.fetch_add(1, std::memory_order_release);
 }
 
 std::uint32_t tui_design_generation() {
-    return g_design_generation;
+    return g_design_generation.load(std::memory_order_acquire);
 }
 
 std::string tui_active_preset() {
+    std::lock_guard<std::mutex> lk(g_design_mu);
     return g_active_preset;
 }
 
 std::string tui_active_theme_file() {
+    std::lock_guard<std::mutex> lk(g_design_mu);
     return g_active_theme_file;
 }
 
@@ -833,8 +863,15 @@ bool set_tui_theme_file(const std::string& config_dir, std::string_view theme_fi
 }
 
 void set_show_history_sidebar(const std::string& config_dir, bool show) {
-    g_design.layout.show_history_sidebar = show;
-    if (!g_design_ready) g_design_ready = true;
+    {
+        // Copy-modify-publish so concurrent readers never observe a
+        // half-written design.
+        std::lock_guard<std::mutex> lk(g_design_mu);
+        const TuiDesign* cur = g_design_current.load(std::memory_order_acquire);
+        TuiDesign design = cur ? *cur : default_design();
+        design.layout.show_history_sidebar = show;
+        publish_design_locked(std::move(design));
+    }
 
     const std::string path = config_dir + "/tui.json";
     JsonObject root_obj;

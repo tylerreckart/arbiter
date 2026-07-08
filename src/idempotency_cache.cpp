@@ -27,6 +27,15 @@ bool IdempotencyCache::put(int64_t tenant_id, const std::string& key,
     auto now = std::chrono::steady_clock::now();
 
     std::lock_guard<std::mutex> lk(mu_);
+    // Amortized sweep: well-behaved clients send a fresh key per request,
+    // so expired entries are almost never revisited by get() and would
+    // otherwise accumulate for the life of the process.  An O(N) sweep
+    // every kPruneEvery inserts keeps the table bounded at roughly the
+    // insert rate × TTL without a dedicated timer thread.
+    if (++puts_since_prune_ >= kPruneEvery) {
+        puts_since_prune_ = 0;
+        prune_expired_locked(now);
+    }
     auto it = table_.find(k);
     if (it != table_.end()) {
         if (now - it->second.created_at >= ttl_) {
@@ -45,6 +54,11 @@ bool IdempotencyCache::put(int64_t tenant_id, const std::string& key,
 void IdempotencyCache::prune_expired() {
     auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lk(mu_);
+    prune_expired_locked(now);
+}
+
+void IdempotencyCache::prune_expired_locked(
+        std::chrono::steady_clock::time_point now) {
     for (auto it = table_.begin(); it != table_.end(); ) {
         if (now - it->second.created_at >= ttl_) {
             it = table_.erase(it);
