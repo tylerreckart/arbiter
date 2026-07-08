@@ -295,13 +295,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     Scheduler scheduler(&api_opts, &tenants, &notifications);
     scheduler.start();
 
-    // Load shared input history once — each pane's editor gets a copy.
-    std::vector<std::string> shared_history;
+    // Load input history into one live store shared by every pane's editor:
+    // a command typed in any pane is instantly in every pane's Up-arrow /
+    // Ctrl-R history.
+    auto shared_history = std::make_shared<arbiter::opentui::SharedInputHistory>();
     {
+        std::vector<std::string> loaded;
         std::ifstream hf(get_config_dir() + "/history");
         std::string line;
         while (std::getline(hf, line))
-            if (!line.empty()) shared_history.push_back(std::move(line));
+            if (!line.empty()) loaded.push_back(std::move(line));
+        shared_history->replace(std::move(loaded));
     }
 
     std::cout.flush();
@@ -322,8 +326,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         p->current_model = orch.get_agent_model(p->current_agent);
         pane_history_init(*p);
 
+        p->editor.set_shared_history(shared_history);
         p->editor.set_max_history(1000);
-        p->editor.set_history(shared_history);  // copy per-pane
         p->editor.set_present_fn([&]() { if (pump_notify) pump_notify(); });
 
         p->editor.set_completion_provider(
@@ -2061,16 +2065,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     if (stdin_is_tty) ::tcsetattr(STDIN_FILENO, TCSANOW, &orig_stdin_tm);
 
-    // Merge every pane's editor history into a single disk file, dropping
-    // duplicates while preserving last-seen order.
+    // Persist the shared history, dropping duplicates while preserving
+    // last-seen order (all panes share one store, so no merge needed).
     {
         std::ofstream hf(get_config_dir() + "/history");
         std::vector<std::string> merged;
         std::set<std::string> seen;
-        layout.for_each_pane([&](Pane& p) {
-            for (auto& h : p.editor.history())
-                if (seen.insert(h).second) merged.push_back(h);
-        });
+        for (auto& h : shared_history->snapshot())
+            if (seen.insert(h).second) merged.push_back(h);
         for (auto& h : merged) hf << h << '\n';
     }
     // Drain any autosave still in flight, then do one last synchronous save

@@ -194,3 +194,70 @@ TEST_CASE("left/right arrow cursor navigation allows mid-string insertion") {
 
     CHECK(PtySession::strip_ansi(s.output()).find("/agents") != std::string::npos);
 }
+
+TEST_CASE("Ctrl-R reverse-i-search recalls and submits; Esc cancels") {
+    PtySession s = ready_editor();
+
+    // Seed history with two instant commands (no agent turn involved).
+    s.send("/agents\r");
+    s.read_for(500);
+    s.send("/tokens\r");
+    s.read_for(500);
+
+    // Ctrl-R opens the search prompt.  (Per-keystroke buffer assertions
+    // don't work here: the framebuffer diff renderer re-emits only changed
+    // cells, so the query never appears contiguously in the byte stream —
+    // assert functionally on what Enter submits instead.)
+    const std::string before_accept = s.output();
+    s.send("\x12");
+    s.read_for(300);
+    CHECK(PtySession::strip_ansi(s.output().substr(before_accept.size()))
+              .find("reverse-i-search") != std::string::npos);
+
+    // Query matches the older entry; Enter accepts and submits it, so its
+    // echo lands in the scroll region again.
+    s.send("agen");
+    s.read_for(400);
+    s.send("\r");
+    s.read_for(700);
+    CHECK(PtySession::strip_ansi(s.output().substr(before_accept.size()))
+              .find("/agents") != std::string::npos);
+
+    // Esc cancels: the pre-search (empty) buffer is restored, so Enter
+    // submits nothing.  Snapshot after the Esc — the match preview itself
+    // legitimately painted "/tokens" into the input row before it.
+    s.send("\x12");
+    s.read_for(200);
+    s.send("token");
+    s.read_for(300);
+    s.send("\033");
+    s.read_for(400);
+    const std::string after_esc = s.output();
+    s.send("\r");
+    s.read_for(600);
+    CHECK(PtySession::strip_ansi(s.output().substr(after_esc.size()))
+              .find("/tokens") == std::string::npos);
+
+    s.terminate();
+}
+
+TEST_CASE("history is shared live across panes") {
+    PtySession s = ready_editor();
+
+    // Type a command in the first pane, then split; the new (focused) pane
+    // must see it in its own history immediately.
+    s.send("/agents\r");
+    s.read_for(500);
+    s.send("\x17" "v");   // Ctrl-W v: vertical split, focuses the new pane
+    s.read_for(600);
+
+    const std::string before = s.output();
+    s.send("\033[A");     // Up arrow: recall /agents in the new pane
+    s.read_for(400);
+    s.send("\r");
+    s.read_for(600);
+    const std::string new_bytes = PtySession::strip_ansi(s.output().substr(before.size()));
+    CHECK(new_bytes.find("/agents") != std::string::npos);
+
+    s.terminate();
+}
