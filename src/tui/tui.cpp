@@ -110,6 +110,11 @@ void TUI::set_status(const std::string& msg) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     current_status_ = msg;
     status_active_ = true;
+    // An explicit status supersedes a queue-depth indicator; without this,
+    // the exec thread's post-command clear_queue_indicator() would wipe a
+    // status the command itself just set (e.g. /find's match position when
+    // /find was queued behind a running turn).
+    queue_indicator_shown_ = false;
 }
 
 void TUI::clear_status() {

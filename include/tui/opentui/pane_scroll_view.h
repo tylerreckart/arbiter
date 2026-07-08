@@ -58,6 +58,14 @@ public:
     [[nodiscard]] int total_visual_rows() const;
     [[nodiscard]] int max_scroll_offset() const;
 
+    // Visual rows (0 = top of scrollback) whose source line contains `term`,
+    // case-insensitively, in top-to-bottom order.  Rows are approximate for
+    // wrapped lines (the match reports the source line's position, clamped
+    // into the owning segment) — good enough to jump the viewport to the
+    // match.  Collapsed code-block bodies still match; their hits clamp to
+    // the block's visible rows.
+    [[nodiscard]] std::vector<int> find_rows(const std::string& term) const;
+
     void draw(OpenTuiHandle frame,
               TUI& tui,
               int scroll_offset,
@@ -70,6 +78,10 @@ private:
         [[nodiscard]] virtual bool is_prose() const { return false; }
         [[nodiscard]] virtual int visual_rows(int content_w) const = 0;
         virtual void set_wrap_cols(int cols) = 0;
+        // Append this segment's plain source lines (ANSI stripped) for
+        // find_rows(); line k maps approximately to the segment's k-th
+        // visual row.  Default: nothing searchable.
+        virtual void collect_lines(std::vector<std::string>& /*out*/) const {}
         virtual void draw(OpenTuiHandle frame,
                           int x,
                           int y,
@@ -97,6 +109,7 @@ private:
 
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
+        void collect_lines(std::vector<std::string>& out) const override;
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,
@@ -124,6 +137,7 @@ private:
 
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
+        void collect_lines(std::vector<std::string>& out) const override;
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,
@@ -184,6 +198,7 @@ private:
         [[nodiscard]] int gutter_width() const;
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
+        void collect_lines(std::vector<std::string>& out) const override;
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,
@@ -201,6 +216,7 @@ private:
         explicit DiffSegment(std::string patch);
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
+        void collect_lines(std::vector<std::string>& out) const override;
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,

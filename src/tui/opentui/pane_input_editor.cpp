@@ -66,20 +66,13 @@ PaneInputEditor::~PaneInputEditor() {
     if (edit_ != 0) destroyEditBuffer(edit_);
 }
 
-void PaneInputEditor::set_history(std::vector<std::string> h) {
+void PaneInputEditor::set_shared_history(std::shared_ptr<SharedInputHistory> h) {
     std::lock_guard<std::mutex> lk(mu_);
-    history_ = std::move(h);
-    while ((int)history_.size() > max_history_)
-        history_.erase(history_.begin());
+    if (h) history_ = std::move(h);
 }
 
-void PaneInputEditor::add_to_history(const std::string& line) {
-    std::lock_guard<std::mutex> lk(mu_);
-    if (line.empty()) return;
-    if (!history_.empty() && history_.back() == line) return;
-    history_.push_back(line);
-    while ((int)history_.size() > max_history_)
-        history_.erase(history_.begin());
+void PaneInputEditor::set_history(std::vector<std::string> h) {
+    history_->replace(std::move(h));
 }
 
 void PaneInputEditor::interrupt() {
@@ -377,6 +370,10 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
                             kAttrBold);
         }
     }
+
+    // Command palette overlays the rows above the input strip; drawn last
+    // so it paints over scroll content.
+    if (palette_active_) draw_palette(frame, tui);
 }
 
 void PaneInputEditor::move_cursor_to_insertion() {
@@ -489,16 +486,17 @@ void PaneInputEditor::kill_prev_word() {
 }
 
 void PaneInputEditor::history_prev() {
-    if (history_.empty()) return;
+    const int n = history_->size();
+    if (n == 0) return;
     if (history_idx_ == -1) {
         saved_live_ = buffer_;
-        history_idx_ = static_cast<int>(history_.size()) - 1;
+        history_idx_ = n - 1;
     } else if (history_idx_ > 0) {
         --history_idx_;
     } else {
         return;
     }
-    buffer_ = history_[static_cast<size_t>(history_idx_)];
+    buffer_ = history_->at(history_idx_);
     cursor_ = static_cast<int>(buffer_.size());
     update_input_rows();
     sync_edit_buffer();
@@ -508,16 +506,179 @@ void PaneInputEditor::history_prev() {
 void PaneInputEditor::history_next() {
     if (history_idx_ == -1) return;
     ++history_idx_;
-    if (history_idx_ >= static_cast<int>(history_.size())) {
+    if (history_idx_ >= history_->size()) {
         history_idx_ = -1;
         buffer_ = saved_live_;
     } else {
-        buffer_ = history_[static_cast<size_t>(history_idx_)];
+        buffer_ = history_->at(history_idx_);
     }
     cursor_ = static_cast<int>(buffer_.size());
     update_input_rows();
     sync_edit_buffer();
     request_present();
+}
+
+// ─── Reverse incremental search (Ctrl-R) ────────────────────────────────────
+
+void PaneInputEditor::rsearch_refresh() {
+    // Re-run the query from the current position (inclusive) so a growing
+    // query keeps the same match while it still matches, like readline.
+    const int n = history_->size();
+    const int from = rsearch_idx_ >= 0 ? rsearch_idx_ : n - 1;
+    const int found = history_->rfind(rsearch_query_, from);
+    if (found >= 0) {
+        rsearch_idx_ = found;
+        buffer_ = history_->at(found);
+        cursor_ = static_cast<int>(buffer_.size());
+    }
+    // No match: keep the previous buffer; the "failed" prefix in the
+    // prompt tells the user the trailing keystroke found nothing.
+    const bool failed = !rsearch_query_.empty() && found < 0;
+    prompt_ = std::string(failed ? "(failed reverse-i-search)`"
+                                 : "(reverse-i-search)`")
+            + rsearch_query_ + "': ";
+    prompt_cols_ = visible_width(prompt_);
+    update_input_rows();
+    sync_edit_buffer();
+    request_present();
+}
+
+void PaneInputEditor::rsearch_begin() {
+    if (rsearch_active_) return;
+    rsearch_active_ = true;
+    rsearch_query_.clear();
+    rsearch_idx_ = -1;
+    rsearch_saved_prompt_ = prompt_;
+    rsearch_saved_prompt_cols_ = prompt_cols_;
+    rsearch_saved_live_ = buffer_;
+    rsearch_refresh();
+}
+
+void PaneInputEditor::rsearch_feed(char c) {
+    rsearch_query_ += c;
+    rsearch_refresh();
+}
+
+void PaneInputEditor::rsearch_backspace() {
+    if (rsearch_query_.empty()) return;
+    rsearch_query_.pop_back();
+    // Widening the query may re-match from the newest entry again.
+    rsearch_idx_ = -1;
+    rsearch_refresh();
+}
+
+void PaneInputEditor::rsearch_cycle() {
+    if (rsearch_query_.empty()) return;
+    const int from = rsearch_idx_ > 0 ? rsearch_idx_ - 1 : -1;
+    if (from < 0) return;   // already at the oldest match
+    const int found = history_->rfind(rsearch_query_, from);
+    if (found >= 0) rsearch_idx_ = found;
+    rsearch_refresh();
+}
+
+void PaneInputEditor::rsearch_end(bool accept) {
+    if (!rsearch_active_) return;
+    rsearch_active_ = false;
+    prompt_ = rsearch_saved_prompt_;
+    prompt_cols_ = rsearch_saved_prompt_cols_;
+    if (!accept) {
+        buffer_ = rsearch_saved_live_;
+        cursor_ = static_cast<int>(buffer_.size());
+    }
+    rsearch_query_.clear();
+    rsearch_idx_ = -1;
+    update_input_rows();
+    sync_edit_buffer();
+    request_present();
+}
+
+// ─── Command palette (Ctrl-P) ────────────────────────────────────────────────
+
+void PaneInputEditor::set_palette_items(std::vector<arbiter::PaletteItem> items) {
+    std::lock_guard<std::mutex> lk(mu_);
+    palette_items_ = std::move(items);
+}
+
+void PaneInputEditor::palette_refresh() {
+    palette_matches_ = arbiter::palette_filter(palette_items_, palette_query_);
+    const int n = static_cast<int>(palette_matches_.size());
+    palette_sel_ = std::clamp(palette_sel_, 0, std::max(0, n - 1));
+    request_present();
+}
+
+void PaneInputEditor::palette_open() {
+    if (palette_active_ || palette_items_.empty()) return;
+    palette_active_ = true;
+    palette_query_.clear();
+    palette_sel_ = 0;
+    palette_refresh();
+}
+
+void PaneInputEditor::palette_close(bool accept) {
+    if (!palette_active_) return;
+    palette_active_ = false;
+    if (accept && palette_sel_ < static_cast<int>(palette_matches_.size())) {
+        buffer_ = palette_matches_[static_cast<size_t>(palette_sel_)].name + " ";
+        cursor_ = static_cast<int>(buffer_.size());
+        update_input_rows();
+        sync_edit_buffer();
+    }
+    palette_query_.clear();
+    palette_matches_.clear();
+    request_present();
+}
+
+void PaneInputEditor::draw_palette(OpenTuiHandle frame, const TUI& tui) const {
+    constexpr int kMaxRows = 8;
+    const TuiDesign& d = tui_design();
+    const int cols = std::max(1, tui.cols());
+    const int px = tui.left_col() - 1;
+    const int input_top = tui.input_top_row_pub();
+
+    const int n = static_cast<int>(palette_matches_.size());
+    const int list_rows = std::min({kMaxRows, n, std::max(0, input_top - 2)});
+    // +1 header row with the query.
+    const int top = input_top - list_rows - 1;
+    if (top < 1) return;
+
+    const int w = std::min(cols, 64);
+    const int x = px + 1;
+
+    // Keep the selection inside the window.
+    int first = 0;
+    if (palette_sel_ >= list_rows) first = palette_sel_ - list_rows + 1;
+
+    auto pad_to = [&](std::string s) {
+        if (static_cast<int>(s.size()) > w) s.resize(static_cast<size_t>(w));
+        s.resize(static_cast<size_t>(w), ' ');
+        return s;
+    };
+
+    std::string header = " > " + palette_query_;
+    if (n == 0) header += "   (no matching commands)";
+    draw_plain_text(frame,
+                    static_cast<std::uint32_t>(x),
+                    static_cast<std::uint32_t>(top),
+                    pad_to(header),
+                    d.accent.primary,
+                    &d.bg.header,
+                    kAttrBold);
+
+    for (int i = 0; i < list_rows; ++i) {
+        const int idx = first + i;
+        if (idx >= n) break;
+        const auto& item = palette_matches_[static_cast<size_t>(idx)];
+        std::string row = " " + item.name;
+        if (!item.description.empty()) row += "  - " + item.description;
+        const bool selected = idx == palette_sel_;
+        draw_plain_text(frame,
+                        static_cast<std::uint32_t>(x),
+                        static_cast<std::uint32_t>(top + 1 + i),
+                        pad_to(row),
+                        selected ? d.text.inverse : d.text.primary,
+                        selected ? &d.accent.primary : &d.bg.header,
+                        selected ? kAttrBold : 0);
+    }
 }
 
 void PaneInputEditor::tab_complete() {
@@ -556,6 +717,23 @@ void PaneInputEditor::tab_complete() {
 }
 
 void PaneInputEditor::handle_csi(char final, const std::string& params) {
+    // Palette owns Up/Down while open; other nav keys are ignored so the
+    // overlay doesn't fight the buffer underneath it.
+    if (palette_active_) {
+        if (params.empty() && final == 'A') {
+            palette_sel_ = std::max(0, palette_sel_ - 1);
+            request_present();
+        } else if (params.empty() && final == 'B') {
+            palette_sel_ = std::min(
+                std::max(0, static_cast<int>(palette_matches_.size()) - 1),
+                palette_sel_ + 1);
+            request_present();
+        }
+        return;
+    }
+    // Arrow/nav keys during reverse-i-search accept the current match and
+    // then apply normally (readline behavior).
+    if (rsearch_active_) rsearch_end(true);
     if (params.empty()) {
         switch (final) {
             case 'A': history_prev(); return;
@@ -592,6 +770,8 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
         prompt_cols_ = visible_width(prompt);
         history_idx_ = -1;
         saved_live_.clear();
+        rsearch_active_ = false;
+        palette_active_ = false;
         update_input_rows();
         sync_edit_buffer();
     }
@@ -602,6 +782,43 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
         if (b < 0) {
             out.clear();
             return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (palette_active_) {
+                if (b >= 0x20 && b != 0x7F) {
+                    palette_query_ += static_cast<char>(b);
+                    palette_refresh();
+                    continue;
+                }
+                if (b == 0x7F || b == 0x08) {
+                    if (!palette_query_.empty()) palette_query_.pop_back();
+                    palette_refresh();
+                    continue;
+                }
+                if (b == '\r' || b == '\n' || b == 0x09) {
+                    palette_close(/*accept=*/true);
+                    continue;
+                }
+                if (b == 0x1B || b == 0x07 || b == 0x10) {
+                    palette_close(/*accept=*/false);
+                    continue;
+                }
+                continue;   // swallow everything else while the overlay is up
+            }
+            if (rsearch_active_) {
+                if (b >= 0x20 && b != 0x7F) {
+                    rsearch_feed(static_cast<char>(b));
+                    continue;
+                }
+                if (b == 0x12) { rsearch_cycle(); continue; }
+                if (b == 0x7F || b == 0x08) { rsearch_backspace(); continue; }
+                if (b == 0x1B || b == 0x07) { rsearch_end(false); continue; }
+                // Enter (and any other control key) accepts the match and
+                // then applies normally in the dispatch below.
+                rsearch_end(true);
+            }
         }
 
         if (b >= 0x20 && b != 0x7F) {
@@ -677,6 +894,16 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
                 continue;
             case 0x0F: {
                 if (code_expand_handler_) code_expand_handler_();
+                continue;
+            }
+            case 0x12: {
+                std::lock_guard<std::mutex> lk(mu_);
+                rsearch_begin();
+                continue;
+            }
+            case 0x10: {
+                std::lock_guard<std::mutex> lk(mu_);
+                palette_open();
                 continue;
             }
             case 0x09: {
