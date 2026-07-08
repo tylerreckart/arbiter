@@ -12,10 +12,12 @@
 #include "doctest.h"
 #include "pty_harness.h"
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <string>
-#include <algorithm>
+#include <thread>
 
 using namespace index_tests;
 
@@ -348,6 +350,42 @@ TEST_CASE("kitty keyboard protocol push is popped so ctrl keys stay legacy") {
     s.send("agents");
     s.read_for(300);
     s.send("\r\r");        // accept, then submit "/agents "
+    s.read_for(800);
+    CHECK(PtySession::strip_ansi(s.output()).find("/agents") != std::string::npos);
+
+    s.terminate();
+}
+
+TEST_CASE("ctrl keys survive a kitty-support reply that lands after the startup handshake window") {
+    // Regression: the one-shot disableKittyKeyboard() call in
+    // setup_terminal() only undoes an enable that already happened by the
+    // time that call returns. The terminal's "kitty keyboard supported"
+    // reply is asynchronous — real round-trip latency can land it after
+    // arbiter's own capability-response read loop (~1s budget) has already
+    // moved on, so the protocol comes back on with nothing left to correct
+    // it. Simulate exactly that: answer the kitty query well past that
+    // window (as if flags 5 — disambiguate + report events — were already
+    // active), and confirm ctrl keys still work, proving Engine::render()
+    // re-asserts "disabled" on every tick rather than relying on the
+    // one-shot call alone.
+    PtySession s(24, 80);
+    s.spawn({ INDEX_TEST_BINARY });
+    s.read_until("\033[?1049h", 10000);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    s.send("\x1b[?5u");
+    s.send("\x1b[24;1R");
+    s.send("\x1b[?62;22c");
+    s.send("\x1b[?2026;2$y");
+    s.read_for(2000);
+    // A couple more render ticks for the periodic re-assert to catch up.
+    s.read_for(200);
+
+    s.send("\x10");
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(300);
+    s.send("\r\r");
     s.read_for(800);
     CHECK(PtySession::strip_ansi(s.output()).find("/agents") != std::string::npos);
 
