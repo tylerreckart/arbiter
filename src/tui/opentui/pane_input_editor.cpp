@@ -66,20 +66,13 @@ PaneInputEditor::~PaneInputEditor() {
     if (edit_ != 0) destroyEditBuffer(edit_);
 }
 
-void PaneInputEditor::set_history(std::vector<std::string> h) {
+void PaneInputEditor::set_shared_history(std::shared_ptr<SharedInputHistory> h) {
     std::lock_guard<std::mutex> lk(mu_);
-    history_ = std::move(h);
-    while ((int)history_.size() > max_history_)
-        history_.erase(history_.begin());
+    if (h) history_ = std::move(h);
 }
 
-void PaneInputEditor::add_to_history(const std::string& line) {
-    std::lock_guard<std::mutex> lk(mu_);
-    if (line.empty()) return;
-    if (!history_.empty() && history_.back() == line) return;
-    history_.push_back(line);
-    while ((int)history_.size() > max_history_)
-        history_.erase(history_.begin());
+void PaneInputEditor::set_history(std::vector<std::string> h) {
+    history_->replace(std::move(h));
 }
 
 void PaneInputEditor::interrupt() {
@@ -489,16 +482,17 @@ void PaneInputEditor::kill_prev_word() {
 }
 
 void PaneInputEditor::history_prev() {
-    if (history_.empty()) return;
+    const int n = history_->size();
+    if (n == 0) return;
     if (history_idx_ == -1) {
         saved_live_ = buffer_;
-        history_idx_ = static_cast<int>(history_.size()) - 1;
+        history_idx_ = n - 1;
     } else if (history_idx_ > 0) {
         --history_idx_;
     } else {
         return;
     }
-    buffer_ = history_[static_cast<size_t>(history_idx_)];
+    buffer_ = history_->at(history_idx_);
     cursor_ = static_cast<int>(buffer_.size());
     update_input_rows();
     sync_edit_buffer();
@@ -508,13 +502,87 @@ void PaneInputEditor::history_prev() {
 void PaneInputEditor::history_next() {
     if (history_idx_ == -1) return;
     ++history_idx_;
-    if (history_idx_ >= static_cast<int>(history_.size())) {
+    if (history_idx_ >= history_->size()) {
         history_idx_ = -1;
         buffer_ = saved_live_;
     } else {
-        buffer_ = history_[static_cast<size_t>(history_idx_)];
+        buffer_ = history_->at(history_idx_);
     }
     cursor_ = static_cast<int>(buffer_.size());
+    update_input_rows();
+    sync_edit_buffer();
+    request_present();
+}
+
+// ─── Reverse incremental search (Ctrl-R) ────────────────────────────────────
+
+void PaneInputEditor::rsearch_refresh() {
+    // Re-run the query from the current position (inclusive) so a growing
+    // query keeps the same match while it still matches, like readline.
+    const int n = history_->size();
+    const int from = rsearch_idx_ >= 0 ? rsearch_idx_ : n - 1;
+    const int found = history_->rfind(rsearch_query_, from);
+    if (found >= 0) {
+        rsearch_idx_ = found;
+        buffer_ = history_->at(found);
+        cursor_ = static_cast<int>(buffer_.size());
+    }
+    // No match: keep the previous buffer; the "failed" prefix in the
+    // prompt tells the user the trailing keystroke found nothing.
+    const bool failed = !rsearch_query_.empty() && found < 0;
+    prompt_ = std::string(failed ? "(failed reverse-i-search)`"
+                                 : "(reverse-i-search)`")
+            + rsearch_query_ + "': ";
+    prompt_cols_ = visible_width(prompt_);
+    update_input_rows();
+    sync_edit_buffer();
+    request_present();
+}
+
+void PaneInputEditor::rsearch_begin() {
+    if (rsearch_active_) return;
+    rsearch_active_ = true;
+    rsearch_query_.clear();
+    rsearch_idx_ = -1;
+    rsearch_saved_prompt_ = prompt_;
+    rsearch_saved_prompt_cols_ = prompt_cols_;
+    rsearch_saved_live_ = buffer_;
+    rsearch_refresh();
+}
+
+void PaneInputEditor::rsearch_feed(char c) {
+    rsearch_query_ += c;
+    rsearch_refresh();
+}
+
+void PaneInputEditor::rsearch_backspace() {
+    if (rsearch_query_.empty()) return;
+    rsearch_query_.pop_back();
+    // Widening the query may re-match from the newest entry again.
+    rsearch_idx_ = -1;
+    rsearch_refresh();
+}
+
+void PaneInputEditor::rsearch_cycle() {
+    if (rsearch_query_.empty()) return;
+    const int from = rsearch_idx_ > 0 ? rsearch_idx_ - 1 : -1;
+    if (from < 0) return;   // already at the oldest match
+    const int found = history_->rfind(rsearch_query_, from);
+    if (found >= 0) rsearch_idx_ = found;
+    rsearch_refresh();
+}
+
+void PaneInputEditor::rsearch_end(bool accept) {
+    if (!rsearch_active_) return;
+    rsearch_active_ = false;
+    prompt_ = rsearch_saved_prompt_;
+    prompt_cols_ = rsearch_saved_prompt_cols_;
+    if (!accept) {
+        buffer_ = rsearch_saved_live_;
+        cursor_ = static_cast<int>(buffer_.size());
+    }
+    rsearch_query_.clear();
+    rsearch_idx_ = -1;
     update_input_rows();
     sync_edit_buffer();
     request_present();
@@ -556,6 +624,9 @@ void PaneInputEditor::tab_complete() {
 }
 
 void PaneInputEditor::handle_csi(char final, const std::string& params) {
+    // Arrow/nav keys during reverse-i-search accept the current match and
+    // then apply normally (readline behavior).
+    if (rsearch_active_) rsearch_end(true);
     if (params.empty()) {
         switch (final) {
             case 'A': history_prev(); return;
@@ -592,6 +663,7 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
         prompt_cols_ = visible_width(prompt);
         history_idx_ = -1;
         saved_live_.clear();
+        rsearch_active_ = false;
         update_input_rows();
         sync_edit_buffer();
     }
@@ -602,6 +674,22 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
         if (b < 0) {
             out.clear();
             return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (rsearch_active_) {
+                if (b >= 0x20 && b != 0x7F) {
+                    rsearch_feed(static_cast<char>(b));
+                    continue;
+                }
+                if (b == 0x12) { rsearch_cycle(); continue; }
+                if (b == 0x7F || b == 0x08) { rsearch_backspace(); continue; }
+                if (b == 0x1B || b == 0x07) { rsearch_end(false); continue; }
+                // Enter (and any other control key) accepts the match and
+                // then applies normally in the dispatch below.
+                rsearch_end(true);
+            }
         }
 
         if (b >= 0x20 && b != 0x7F) {
@@ -677,6 +765,11 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
                 continue;
             case 0x0F: {
                 if (code_expand_handler_) code_expand_handler_();
+                continue;
+            }
+            case 0x12: {
+                std::lock_guard<std::mutex> lk(mu_);
+                rsearch_begin();
                 continue;
             }
             case 0x09: {
