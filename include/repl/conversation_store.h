@@ -27,6 +27,16 @@ struct ConversationEntry {
     bool titled = false;
 };
 
+// One conversation matching a cross-conversation search.  `snippet` is a
+// flattened excerpt around the first match; `match_count` totals matches
+// across every message in that conversation.
+struct ConversationSearchHit {
+    std::string id;
+    std::string title;
+    int match_count = 0;
+    std::string snippet;
+};
+
 // Global conversation registry under ~/.arbiter/conversations/.
 class ConversationStore {
 public:
@@ -37,6 +47,15 @@ public:
 
     // Non-deleted conversations, most-recently-updated first.
     [[nodiscard]] std::vector<ConversationEntry> list() const;
+
+    // Case-insensitive substring search across every non-deleted
+    // conversation's saved messages (index master + agents).  Returns hits
+    // in list() order (most-recently-updated first), capped at max_hits.
+    // Reads session files without holding the store lock, so it can run
+    // while autosaves land; a conversation saved mid-scan just reflects
+    // whichever version the read caught.
+    [[nodiscard]] std::vector<ConversationSearchHit>
+    search(const std::string& term, size_t max_hits = 20) const;
 
     // Create a new empty conversation and make it active.
     std::string create(const std::string& cwd);

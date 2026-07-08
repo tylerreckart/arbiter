@@ -367,7 +367,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                                 "search","entries","entry","add"});
                 if (cmd == "todo") return match({"list","add","start","done","cancel","reorder"});
                 if (cmd == "schedule") return match({"list","cancel","pause","resume"});
-                if (cmd == "chat") return match({"list", "new", "switch", "title", "delete", "purge"});
+                if (cmd == "chat") return match({"list", "new", "switch", "search", "title", "delete", "purge"});
                 if (cmd == "mcp") return match({"tools","call"});
                 if (cmd == "a2a") return match({"list","call"});
                 if (cmd == "theme") return match(arbiter::tui_list_available_themes(dir));
@@ -1052,6 +1052,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /theme [list]|<preset>           — switch TUI color theme in-session\n"
                     "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
                     "  /chat title <text>               — rename the active conversation (locks title)\n"
+                    "  /chat search <text>              — find text across saved conversations\n"
                     "  /help                            — this list\n"
                     "  /quit                            — exit\n"
                     "\n"
@@ -1170,7 +1171,39 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     output_queue.push_msg("purged");
                     return;
                 }
-                output_queue.push_msg("Usage: /chat list|new|switch|title|delete|purge");
+                if (sub == "search") {
+                    std::string term;
+                    std::getline(iss, term);
+                    size_t a = 0;
+                    while (a < term.size() && std::isspace(static_cast<unsigned char>(term[a]))) ++a;
+                    term = term.substr(a);
+                    if (term.empty()) {
+                        output_queue.push_msg("Usage: /chat search <text>");
+                        return;
+                    }
+                    // Flush the coalesced autosave first so the active
+                    // conversation's newest turns are searchable too.
+                    conversation_store.flush();
+                    const auto hits = conversation_store.search(term);
+                    if (hits.empty()) {
+                        output_queue.push_msg("(no conversations match \"" + term + "\")");
+                        return;
+                    }
+                    const std::string active = conversation_store.active_id();
+                    std::ostringstream out;
+                    for (const auto& h : hits) {
+                        out << (h.id == active ? "* " : "  ")
+                            << (h.title.empty() ? "Untitled" : h.title)
+                            << "  [" << h.id.substr(0, std::min<size_t>(8, h.id.size())) << "]"
+                            << "  (" << h.match_count
+                            << (h.match_count == 1 ? " match)" : " matches)") << "\n";
+                        if (!h.snippet.empty()) out << "      " << h.snippet << "\n";
+                    }
+                    out << "  Switch with /chat switch <id-prefix>.\n";
+                    output_queue.push_msg(out.str());
+                    return;
+                }
+                output_queue.push_msg("Usage: /chat list|new|switch|search|title|delete|purge");
                 return;
             }
             if (cmd == "verbose") {

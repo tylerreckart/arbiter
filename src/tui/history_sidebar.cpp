@@ -3,6 +3,7 @@
 #include "tui/tui_design.h"
 
 #include <algorithm>
+#include <cctype>
 #include <unistd.h>
 #include <sys/select.h>
 
@@ -29,6 +30,19 @@ int read_byte_blocking() {
     unsigned char b = 0;
     if (::read(STDIN_FILENO, &b, 1) != 1) return -1;
     return b;
+}
+
+std::string lowercase(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// Case-insensitive substring match on the fields the sidebar row shows:
+// title and working directory.
+bool entry_matches(const ConversationEntry& e, const std::string& filter_lc) {
+    if (filter_lc.empty()) return true;
+    return lowercase(e.title).find(filter_lc) != std::string::npos
+        || lowercase(e.cwd).find(filter_lc) != std::string::npos;
 }
 
 } // namespace
@@ -61,23 +75,54 @@ bool HistorySidebarState::focused() const {
     return focused_;
 }
 
+std::vector<ConversationEntry> HistorySidebarState::visible_entries_locked() const {
+    if (filter_.empty()) return entries_;
+    const std::string filter_lc = lowercase(filter_);
+    std::vector<ConversationEntry> out;
+    out.reserve(entries_.size());
+    for (const auto& e : entries_) {
+        if (entry_matches(e, filter_lc)) out.push_back(e);
+    }
+    return out;
+}
+
+void HistorySidebarState::repin_after_filter_locked() {
+    const auto visible = visible_entries_locked();
+    if (!pinned_new_) {
+        for (const auto& e : visible) {
+            if (e.id == pinned_id_) return;   // still visible — keep it
+        }
+    }
+    if (!visible.empty()) {
+        pinned_new_ = false;
+        pinned_id_ = visible.front().id;
+    } else {
+        pinned_new_ = true;
+        pinned_id_.clear();
+    }
+    scroll_offset_ = 0;
+}
+
 int HistorySidebarState::index_for_pin_locked() const {
     if (pinned_new_) return 0;
-    for (size_t i = 0; i < entries_.size(); ++i) {
-        if (entries_[i].id == pinned_id_) return static_cast<int>(i) + 1;
+    const auto visible = visible_entries_locked();
+    for (size_t i = 0; i < visible.size(); ++i) {
+        if (visible[i].id == pinned_id_) return static_cast<int>(i) + 1;
     }
-    // Pinned conversation vanished from the list (e.g. deleted elsewhere).
+    // Pinned conversation vanished from the list (e.g. deleted elsewhere,
+    // or excluded by the filter).
     return 0;
 }
 
 void HistorySidebarState::set_pin_from_index_locked(int idx) {
+    const auto visible = visible_entries_locked();
     const size_t entry_idx = static_cast<size_t>(idx - 1);
-    if (idx <= 0 || entry_idx >= entries_.size()) {
+    if (idx <= 0 || entry_idx >= visible.size()) {
         pinned_new_ = true;
         pinned_id_.clear();
     } else {
         pinned_new_ = false;
-        pinned_id_ = entries_[entry_idx].id;
+        pinned_id_ = visible[entry_idx].id;
     }
 }
 
@@ -113,6 +158,7 @@ void HistorySidebarState::enter_focus(const ConversationStore& store,
     focused_ = true;
     mode_ = Mode::Normal;
     rename_buffer_.clear();
+    filter_.clear();
     active_id_ = active_id;
     entries_ = store.list();
     pinned_new_ = true;
@@ -132,6 +178,7 @@ void HistorySidebarState::exit_focus() {
     focused_ = false;
     mode_ = Mode::Normal;
     rename_buffer_.clear();
+    filter_.clear();
 }
 
 void HistorySidebarState::refresh_entries(const ConversationStore& store) {
@@ -149,7 +196,7 @@ void HistorySidebarState::clamp_scroll_locked(int idx, int visible_rows) {
 
 void HistorySidebarState::move_selection(int delta, int visible_rows) {
     std::lock_guard<std::mutex> lk(mu_);
-    const int max_sel = static_cast<int>(entries_.size());
+    const int max_sel = static_cast<int>(visible_entries_locked().size());
     int idx = std::max(0, std::min(index_for_pin_locked() + delta, max_sel));
     set_pin_from_index_locked(idx);
     clamp_scroll_locked(idx, visible_rows);
@@ -204,15 +251,57 @@ HistorySidebarKey HistorySidebarState::handle_key(int key_byte,
         return HistorySidebarKey::None;
     }
 
+    if (mode_ == Mode::Filtering) {
+        // Arrows still navigate the (filtered) list while typing.
+        if (csi_final == 'A') return HistorySidebarKey::Up;
+        if (csi_final == 'B') return HistorySidebarKey::Down;
+        if (key_byte == '\r' || key_byte == '\n') {
+            // Commit: filter stays applied, keys return to normal meaning.
+            mode_ = Mode::Normal;
+            return HistorySidebarKey::None;
+        }
+        if (key_byte == 0x1B) {
+            mode_ = Mode::Normal;
+            filter_.clear();
+            repin_after_filter_locked();
+            return HistorySidebarKey::None;
+        }
+        if (key_byte == 127 || key_byte == 8) {
+            if (!filter_.empty()) {
+                filter_.pop_back();
+                repin_after_filter_locked();
+            }
+            return HistorySidebarKey::None;
+        }
+        if (key_byte >= 0x20 && key_byte < 0x7F) {
+            filter_ += static_cast<char>(key_byte);
+            repin_after_filter_locked();
+            return HistorySidebarKey::None;
+        }
+        return HistorySidebarKey::None;
+    }
+
     if (csi_final == '~' && csi_params == "5") return HistorySidebarKey::PageUp;
     if (csi_final == '~' && csi_params == "6") return HistorySidebarKey::PageDown;
     if (csi_final == 'A') return HistorySidebarKey::Up;
     if (csi_final == 'B') return HistorySidebarKey::Down;
     if (key_byte == '\r' || key_byte == '\n') return HistorySidebarKey::Enter;
-    if (key_byte == 0x1B) return HistorySidebarKey::Escape;
+    if (key_byte == 0x1B) {
+        // First Esc clears an applied filter; a second closes the sidebar.
+        if (!filter_.empty()) {
+            filter_.clear();
+            repin_after_filter_locked();
+            return HistorySidebarKey::None;
+        }
+        return HistorySidebarKey::Escape;
+    }
     if (key_byte == 'k') return HistorySidebarKey::Up;
     if (key_byte == 'j') return HistorySidebarKey::Down;
     if (key_byte == 'n') return HistorySidebarKey::New;
+    if (key_byte == '/') {
+        mode_ = Mode::Filtering;
+        return HistorySidebarKey::None;
+    }
 
     if (key_byte == 'r') {
         if (pinned_new_) return HistorySidebarKey::None;
@@ -237,10 +326,12 @@ HistorySidebarSnapshot HistorySidebarState::snapshot() const {
     s.selected = index_for_pin_locked();
     s.scroll_offset = scroll_offset_;
     s.active_id = active_id_;
-    s.entries = entries_;
+    s.entries = visible_entries_locked();
     s.renaming = (mode_ == Mode::Renaming);
     s.rename_buffer = rename_buffer_;
     s.confirming_delete = (mode_ == Mode::ConfirmDelete);
+    s.filtering = (mode_ == Mode::Filtering);
+    s.filter = filter_;
     return s;
 }
 

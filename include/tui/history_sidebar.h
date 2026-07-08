@@ -38,12 +38,18 @@ struct HistorySidebarSnapshot {
     int  selected = 0;
     int  scroll_offset = 0;
     std::string active_id;
+    // Entries surviving the active filter (all entries when no filter).
     std::vector<ConversationEntry> entries;
     // Inline edit/confirm state for the frame drawer to render on the
     // selected row instead of its normal title/subtitle.
     bool renaming = false;
     std::string rename_buffer;
     bool confirming_delete = false;
+    // Type-to-filter state: `filtering` while the filter line is being
+    // edited ('/'), `filter` is the applied text (persists after Enter
+    // commits the filter until Esc clears it or focus is re-entered).
+    bool filtering = false;
+    std::string filter;
 };
 
 // Leading (left) conversation-history sidebar state.
@@ -82,13 +88,18 @@ public:
     [[nodiscard]] HistorySidebarSnapshot snapshot() const;
 
 private:
-    enum class Mode { Normal, Renaming, ConfirmDelete };
+    enum class Mode { Normal, Renaming, ConfirmDelete, Filtering };
 
     // Assumes mu_ is already held by the caller.
     int index_for_pin_locked() const;
     void set_pin_from_index_locked(int idx);
     void clamp_scroll_locked(int idx, int visible_rows);
     std::string current_title_locked() const;
+    // Entries surviving filter_ (all of entries_ when filter_ is empty).
+    std::vector<ConversationEntry> visible_entries_locked() const;
+    // Re-pin after a filter edit: keep the pinned id if it's still
+    // visible, otherwise pin the first visible entry (or "+ New").
+    void repin_after_filter_locked();
 
     mutable std::mutex mu_;
     bool enabled_ = true;
@@ -104,6 +115,7 @@ private:
 
     Mode mode_ = Mode::Normal;
     std::string rename_buffer_;
+    std::string filter_;
 };
 
 // Read one key for sidebar navigation (arrows, enter, esc, PgUp/PgDn).
