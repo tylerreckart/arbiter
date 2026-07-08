@@ -314,6 +314,55 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     std::function<void()> pump_notify;
 
+    // Ctrl-P command palette: one shared table of every REPL command with a
+    // one-line hint.  Kept in sync with /help by review (both live in this
+    // file); Enter inserts the name into the input buffer.
+    const std::vector<arbiter::PaletteItem> palette_items = {
+        {"/ask",          "ask the index master"},
+        {"/send",         "send a message to a specific agent"},
+        {"/use",          "switch the focused pane's current agent"},
+        {"/agents",       "list loaded agents"},
+        {"/status",       "orchestrator status"},
+        {"/tokens",       "token usage report"},
+        {"/create",       "create agent with default config"},
+        {"/remove",       "remove agent"},
+        {"/reset",        "clear an agent's history"},
+        {"/model",        "change agent model at runtime"},
+        {"/pane",         "spawn a parallel pane running an agent"},
+        {"/find",         "search the focused pane's scrollback"},
+        {"/loop",         "run agent in a background loop"},
+        {"/loops",        "list running / suspended loops"},
+        {"/log",          "show buffered loop output"},
+        {"/watch",        "follow loop output"},
+        {"/kill",         "stop a loop"},
+        {"/suspend",      "pause a loop"},
+        {"/resume",       "resume a paused loop"},
+        {"/inject",       "inject a message into a running loop"},
+        {"/fetch",        "fetch URL, send readable text to agent"},
+        {"/browse",       "fetch + extract readable text"},
+        {"/search",       "web search"},
+        {"/mem",          "structured memory + scratchpad"},
+        {"/todo",         "todo tracker"},
+        {"/schedule",     "schedule recurring/one-shot tasks"},
+        {"/exec",         "shell command (confirm gate)"},
+        {"/write",        "write a file"},
+        {"/read",         "conversation artifacts"},
+        {"/list",         "list conversation artifacts"},
+        {"/mcp",          "MCP server registry"},
+        {"/a2a",          "remote A2A agents"},
+        {"/lesson",       "agent-scoped lessons"},
+        {"/plan",         "execute a planner-produced plan file"},
+        {"/theme",        "switch TUI color theme in-session"},
+        {"/verbose",      "toggle raw /cmd line streaming"},
+        {"/chat list",    "list conversations"},
+        {"/chat new",     "start a new conversation"},
+        {"/chat switch",  "switch conversation"},
+        {"/chat search",  "find text across saved conversations"},
+        {"/chat title",   "rename the active conversation"},
+        {"/help",         "command reference"},
+        {"/quit",         "exit"},
+    };
+
     // ── Pane factory ───────────────────────────────────────────────────────
     auto make_pane = [&]() -> std::unique_ptr<Pane> {
         auto p = std::make_unique<Pane>();
@@ -328,6 +377,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
         p->editor.set_shared_history(shared_history);
         p->editor.set_max_history(1000);
+        p->editor.set_palette_items(palette_items);
         p->editor.set_present_fn([&]() { if (pump_notify) pump_notify(); });
 
         p->editor.set_completion_provider(
@@ -1093,7 +1143,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /quit                            — exit\n"
                     "\n"
                     "Scroll: PgUp / PgDn scroll the focused pane's history.  Esc cancels\n"
-                    "any in-flight agent turn.");
+                    "any in-flight agent turn.\n"
+                    "Keys: Ctrl-P command palette, Ctrl-R reverse history search,\n"
+                    "Ctrl-W pane chords (w/h/v/c/t/b).");
                 return;
             }
             if (cmd == "chat") {
