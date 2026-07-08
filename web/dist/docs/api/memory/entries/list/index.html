@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Arbiter documentation: `GET /v1/memory/entries`.">
+    <title>`GET /v1/memory/entries` - Arbiter Docs</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="/"><span class="brand-mark">⛮</span></a>
+        <div class="nav-links">
+          <a href="/#platform">Platform</a>
+          <a href="/#workflow">Workflow</a>
+          <a href="/docs/">Docs</a>
+          <a href="https://github.com/tylerreckart/arbiter">GitHub</a>
+          <a class="button" href="/docs/getting-started/">Start</a>
+        </div>
+      </nav>
+    </header>
+    
+      <div class="docs-layout">
+        <aside class="docs-sidebar"><h2>Docs</h2><div class="docs-group"><p class="docs-group-title">Getting Started</p><a class="docs-link" href="/docs/getting-started/">Getting started</a><a class="docs-link" href="/docs/getting-started/local/">Local Install</a></div><div class="docs-group"><p class="docs-group-title">Concepts</p><a class="docs-link" href="/docs/concepts/a2a/">Agent2Agent (A2A) protocol</a><a class="docs-link" href="/docs/concepts/advisor/">Advisor</a><a class="docs-link" href="/docs/concepts/artifacts/">Artifacts</a><a class="docs-link" href="/docs/concepts/authentication/">Authentication</a><a class="docs-link" href="/docs/concepts/data-model/">Data model</a><a class="docs-link" href="/docs/concepts/durable-execution/">Durable in-flight execution</a><a class="docs-link" href="/docs/concepts/fleet-streaming/">Fleet streaming</a><a class="docs-link" href="/docs/concepts/lessons/">Lessons (self-reflection)</a><a class="docs-link" href="/docs/concepts/mcp/">MCP servers</a><a class="docs-link" href="/docs/concepts/operations/">Operational notes</a><a class="docs-link" href="/docs/concepts/sandbox/">Per-tenant sandbox</a><a class="docs-link" href="/docs/concepts/scheduler/">Scheduler</a><a class="docs-link" href="/docs/concepts/search/">Web search</a><a class="docs-link" href="/docs/concepts/sse-events/">SSE event catalog</a><a class="docs-link" href="/docs/concepts/structured-memory/">Structured memory</a><a class="docs-link" href="/docs/concepts/tenants/">Tenants</a><a class="docs-link" href="/docs/concepts/todos/">Todos</a><a class="docs-link" href="/docs/concepts/writ/">Writ</a></div><div class="docs-group"><p class="docs-group-title">CLI</p><a class="docs-link" href="/docs/cli/">Arbiter CLI</a><a class="docs-link" href="/docs/cli/a2a-agents/">Outbound A2A</a><a class="docs-link" href="/docs/cli/api/">`arbiter --api`</a><a class="docs-link" href="/docs/cli/environment/">Environment</a><a class="docs-link" href="/docs/cli/init/">`arbiter --init`</a><a class="docs-link" href="/docs/cli/send/">`arbiter --send`</a><a class="docs-link" href="/docs/cli/tenants/">Tenant admin</a></div><div class="docs-group"><p class="docs-group-title">TUI</p><a class="docs-link" href="/docs/tui/">Arbiter TUI</a><a class="docs-link" href="/docs/tui/commands/">Slash commands</a><a class="docs-link" href="/docs/tui/keybindings/">Keybindings</a><a class="docs-link" href="/docs/tui/panes/">Panes</a><a class="docs-link" href="/docs/tui/sessions/">Sessions</a><a class="docs-link" href="/docs/tui/streaming/">Streaming and turn lifecycle</a><a class="docs-link" href="/docs/tui/themes/">TUI theme JSON</a></div><div class="docs-group"><p class="docs-group-title">API Reference</p><a class="docs-link" href="/docs/api/">Arbiter HTTP API</a><a class="docs-link" href="/docs/api/a2a/agent-card/">`GET /v1/a2a/agents/:id/agent-card.json`</a><a class="docs-link" href="/docs/api/a2a/dispatch/">`POST /v1/a2a/agents/:id`</a><a class="docs-link" href="/docs/api/a2a/well-known/">`GET /.well-known/agent-card.json`</a><a class="docs-link" href="/docs/api/admin/audit/">`GET /v1/admin/audit`</a><a class="docs-link" href="/docs/api/admin/tenants-create/">`POST /v1/admin/tenants`</a><a class="docs-link" href="/docs/api/admin/tenants-get/">`GET /v1/admin/tenants/:id`</a><a class="docs-link" href="/docs/api/admin/tenants-list/">`GET /v1/admin/tenants`</a><a class="docs-link" href="/docs/api/admin/tenants-patch/">`PATCH /v1/admin/tenants/:id`</a><a class="docs-link" href="/docs/api/agents/chat/">`POST /v1/agents/:id/chat`</a><a class="docs-link" href="/docs/api/agents/create/">`POST /v1/agents`</a><a class="docs-link" href="/docs/api/agents/delete/">`DELETE /v1/agents/:id`</a><a class="docs-link" href="/docs/api/agents/get/">`GET /v1/agents/:id`</a><a class="docs-link" href="/docs/api/agents/list/">`GET /v1/agents`</a><a class="docs-link" href="/docs/api/agents/patch/">`PATCH /v1/agents/:id`</a><a class="docs-link" href="/docs/api/artifacts/conversations-create/">`POST /v1/conversations/:id/artifacts`</a><a class="docs-link" href="/docs/api/artifacts/conversations-delete/">`DELETE /v1/conversations/:id/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/conversations-get/">`GET /v1/conversations/:id/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/conversations-list/">`GET /v1/conversations/:id/artifacts`</a><a class="docs-link" href="/docs/api/artifacts/conversations-raw/">`GET /v1/conversations/:id/artifacts/:aid/raw`</a><a class="docs-link" href="/docs/api/artifacts/delete/">`DELETE /v1/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/get/">`GET /v1/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/list/">`GET /v1/artifacts`</a><a class="docs-link" href="/docs/api/artifacts/raw/">`GET /v1/artifacts/:aid/raw`</a><a class="docs-link" href="/docs/api/conversations/create/">`POST /v1/conversations`</a><a class="docs-link" href="/docs/api/conversations/delete/">`DELETE /v1/conversations/:id`</a><a class="docs-link" href="/docs/api/conversations/get/">`GET /v1/conversations/:id`</a><a class="docs-link" href="/docs/api/conversations/list/">`GET /v1/conversations`</a><a class="docs-link" href="/docs/api/conversations/messages-list/">`GET /v1/conversations/:id/messages`</a><a class="docs-link" href="/docs/api/conversations/messages-post/">`POST /v1/conversations/:id/messages`</a><a class="docs-link" href="/docs/api/conversations/patch/">`PATCH /v1/conversations/:id`</a><a class="docs-link" href="/docs/api/events/">`POST /v1/events`</a><a class="docs-link" href="/docs/api/health/">`GET /v1/health`</a><a class="docs-link" href="/docs/api/lessons/create/">`POST /v1/lessons`</a><a class="docs-link" href="/docs/api/lessons/delete/">`DELETE /v1/lessons/:id`</a><a class="docs-link" href="/docs/api/lessons/get/">`GET /v1/lessons/:id`</a><a class="docs-link" href="/docs/api/lessons/list/">`GET /v1/lessons`</a><a class="docs-link" href="/docs/api/lessons/patch/">`PATCH /v1/lessons/:id`</a><a class="docs-link" href="/docs/api/memory/entries/create/">`POST /v1/memory/entries`</a><a class="docs-link" href="/docs/api/memory/entries/delete/">`DELETE /v1/memory/entries/:id`</a><a class="docs-link" href="/docs/api/memory/entries/get/">`GET /v1/memory/entries/:id`</a><a class="docs-link" href="/docs/api/memory/entries/invalidate/">`POST /v1/memory/entries/:id/invalidate`</a><a class="docs-link active" href="/docs/api/memory/entries/list/">`GET /v1/memory/entries`</a><a class="docs-link" href="/docs/api/memory/entries/patch/">`PATCH /v1/memory/entries/:id`</a><a class="docs-link" href="/docs/api/memory/get-scratchpad/">`GET /v1/memory/:agent_id`</a><a class="docs-link" href="/docs/api/memory/graph/">`GET /v1/memory/graph`</a><a class="docs-link" href="/docs/api/memory/list-scratchpads/">`GET /v1/memory`</a><a class="docs-link" href="/docs/api/memory/relations/create/">`POST /v1/memory/relations`</a><a class="docs-link" href="/docs/api/memory/relations/delete/">`DELETE /v1/memory/relations/:id`</a><a class="docs-link" href="/docs/api/memory/relations/list/">`GET /v1/memory/relations`</a><a class="docs-link" href="/docs/api/metrics/">`GET /v1/metrics`</a><a class="docs-link" href="/docs/api/models/">`GET /v1/models`</a><a class="docs-link" href="/docs/api/notifications/stream/">`GET /v1/notifications/stream`</a><a class="docs-link" href="/docs/api/orchestrate/">`POST /v1/orchestrate`</a><a class="docs-link" href="/docs/api/requests-cancel/">`POST /v1/requests/:id/cancel`</a><a class="docs-link" href="/docs/api/requests/events/">`GET /v1/requests/:id/events`</a><a class="docs-link" href="/docs/api/requests/get/">`GET /v1/requests/:id`</a><a class="docs-link" href="/docs/api/requests/list/">`GET /v1/requests`</a><a class="docs-link" href="/docs/api/runs/get/">`GET /v1/runs/:id`</a><a class="docs-link" href="/docs/api/runs/list/">`GET /v1/runs`</a><a class="docs-link" href="/docs/api/schedules/create/">`POST /v1/schedules`</a><a class="docs-link" href="/docs/api/schedules/delete/">`DELETE /v1/schedules/:id`</a><a class="docs-link" href="/docs/api/schedules/get/">`GET /v1/schedules/:id`</a><a class="docs-link" href="/docs/api/schedules/list/">`GET /v1/schedules`</a><a class="docs-link" href="/docs/api/schedules/patch/">`PATCH /v1/schedules/:id`</a><a class="docs-link" href="/docs/api/schedules/runs/">`GET /v1/schedules/:id/runs`</a><a class="docs-link" href="/docs/api/todos/create/">`POST /v1/todos`</a><a class="docs-link" href="/docs/api/todos/delete/">`DELETE /v1/todos/:id`</a><a class="docs-link" href="/docs/api/todos/get/">`GET /v1/todos/:id`</a><a class="docs-link" href="/docs/api/todos/list/">`GET /v1/todos`</a><a class="docs-link" href="/docs/api/todos/patch/">`PATCH /v1/todos/:id`</a></div><div class="docs-group"><p class="docs-group-title">Philosophy</p><a class="docs-link" href="/docs/philosophy/">Philosophy</a></div></aside>
+        <main class="docs-main">
+          <article class="doc-shell">
+            <div class="breadcrumbs">API Reference / `GET /v1/memory/entries`</div>
+            <div class="doc-content"><h1 id="get-v1-memory-entries"><code>GET /v1/memory/entries</code></h1>
+<p><strong>Auth:</strong> tenant — _Status:_ stable</p>
+<p>List entries for the authenticated tenant. Two modes:</p>
+<ul><li><strong>Browse</strong> (no <code>q</code>): rows ordered by <code>updated_at DESC</code>. <code>type</code> and <code>tag</code> act as hard <code>WHERE</code> filters.</li><li><strong>Search</strong> (<code>q</code> present): rows ranked by Okapi-BM25 over an FTS5 index on <code>(title, content, tags, source)</code>. <code>type</code> and <code>tag</code> become <strong>score boosts</strong> (mismatched rows still appear, just lower in the order). See <a href="/docs/concepts/structured-memory/#retrieval">Structured memory → Retrieval</a> for the layered ranking pipeline.</li></ul>
+<p>Invalidated rows (those with a non-null <code>valid_to</code>) are excluded by default; pass <code>as_of=&lt;epoch&gt;</code> to read historical state.</p>
+<h2 id="request">Request</h2>
+<h3 id="query-parameters">Query parameters</h3>
+<table><thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>type</code></td><td>csv string</td><td><code>?type=project,reference</code> — OR-filter on the enum in browse mode; OR-boost in search mode. Unknown values reject 400.</td></tr><tr><td><code>tag</code></td><td>string</td><td>Single-tag substring match against the serialized JSON. Hard filter in browse mode; boost in search mode.</td></tr><tr><td><code>q</code></td><td>string</td><td>FTS5 query. When set, switches to ranked-search mode; tokens are AND-combined with stemming and case-folding.</td></tr><tr><td><code>conversation_id</code></td><td>int</td><td>Scope results to one conversation. Returns rows pinned to this conversation <strong>plus</strong> unscoped rows (<code>conversation_id IS NULL</code>). Cross-tenant ids are silently dropped.</td></tr><tr><td><code>graduated</code></td><td>bool-ish</td><td>Only meaningful with <code>q</code> + <code>conversation_id</code>. Routes search through <code>search_entries_graduated</code>: runs both a conversation-scoped pass and a tenant-wide pass, then <a href="/docs/concepts/structured-memory/#retrieval">reciprocal-rank-fuses</a> the rankings (conversation pass weighted at 1.5×, tenant-wide at 1.0×). A strong tenant-wide hit can therefore outrank a weaker conversation-local one, fixing the multi-session case where the answer lives in another conversation.</td></tr><tr><td><code>intent</code></td><td>string</td><td><code>intent=off</code> disables the heuristic question-intent classifier. Default behavior (and <code>intent=auto</code>) uses keyword cues in <code>q</code> (&quot;favorite&quot;, &quot;when&quot;, &quot;how to&quot;, etc.) to soft-boost matching memory types via the existing 1.3× BM25 multiplier. Caller-supplied <code>type=…</code> always wins; intent boosts only apply when <code>type</code> is unset. Zero LLM cost.</td></tr><tr><td><code>expand</code></td><td>string (model)</td><td>When set, the server calls this model once per request to generate 2 alternative phrasings of <code>q</code>, runs each through the full FTS pipeline (with its own intent classification), and reciprocal-rank-fuses the rankings (original at weight 1.0, paraphrases at 0.7). The no-embedding analogue of dense retrieval — closes the recall gap on paraphrased queries. Costs ~150 ms + ~$0.0001 per request. Failures (advisor unavailable, unparseable response) are benign: search proceeds with the original query alone and a <code>note</code> is surfaced in the <code>expansion</code> response block.</td></tr><tr><td><code>rerank</code></td><td>string (model)</td><td>When set, takes the top-N FTS candidates and routes them through the model for a final reorder. The rerank prompt enriches each candidate row with <code>(type · YYYY-MM-DD · superseded)</code> metadata so the model can pick the most-recent non-superseded entry on temporal/knowledge-update questions.</td></tr><tr><td><code>rerank_fine</code></td><td>string (model)</td><td>Two-stage rerank — pass 1 uses the cheaper <code>rerank</code> model on the wide pool, top 8 advance to pass 2 with this stronger model and bigger excerpts. Doubles LLM cost; typically lifts R@1.</td></tr><tr><td><code>as_of</code></td><td>int (epoch)</td><td>Historical-window read. Returns rows whose validity window covers the given timestamp: <code>valid_from ≤ as_of AND (valid_to IS NULL OR valid_to &gt; as_of)</code>. Default 0 = &quot;active rows only.&quot;</td></tr><tr><td><code>since</code></td><td>int (epoch)</td><td><code>created_at &gt;= since</code>.</td></tr><tr><td><code>before_updated_at</code></td><td>int (epoch)</td><td><code>updated_at &lt; before_updated_at</code>. Use for cursor pagination in browse mode.</td></tr><tr><td><code>limit</code></td><td>int</td><td>Default 50, hard max 200.</td></tr></tbody></table>
+<pre><code class="language-bash"># Browse: latest 50 references
+curl -H &quot;Authorization: Bearer atr_…&quot; \
+  &quot;http://arbiter.example.com/v1/memory/entries?type=reference&amp;limit=50&quot;
+
+# Search: ranked, conversation-scoped graduated
+curl -H &quot;Authorization: Bearer atr_…&quot; \
+  &quot;http://arbiter.example.com/v1/memory/entries?q=deployment+notes&amp;conversation_id=17&amp;graduated=true&quot;
+
+# Audit: what was active at the start of last quarter
+curl -H &quot;Authorization: Bearer atr_…&quot; \
+  &quot;http://arbiter.example.com/v1/memory/entries?as_of=1735689600&quot;
+
+# Full ranking stack: graduated + query expansion + two-stage rerank
+curl -H &quot;Authorization: Bearer atr_…&quot; \
+  &quot;http://arbiter.example.com/v1/memory/entries?q=Postgres+performance+regression&amp;conversation_id=17&amp;graduated=true&amp;expand=claude-haiku-4-5&amp;rerank=claude-haiku-4-5&amp;rerank_fine=claude-sonnet-4-6&amp;limit=10&quot;</code></pre>
+<h2 id="response">Response</h2>
+<h3 id="200-ok">200 OK</h3>
+<pre><code class="language-json">{
+  &quot;count&quot;: 1,
+  &quot;entries&quot;: [
+    {
+      &quot;id&quot;: 42,
+      &quot;tenant_id&quot;: 1,
+      &quot;type&quot;: &quot;reference&quot;,
+      &quot;title&quot;: &quot;Findings report&quot;,
+      &quot;content&quot;: &quot;...&quot;,
+      &quot;source&quot;: &quot;agent&quot;,
+      &quot;tags&quot;: [&quot;report&quot;],
+      &quot;artifact_id&quot;: 88,
+      &quot;conversation_id&quot;: 17,
+      &quot;valid_from&quot;: 1777058449,
+      &quot;valid_to&quot;: null,
+      &quot;created_at&quot;: 1777058449,
+      &quot;updated_at&quot;: 1777058449
+    }
+  ]
+}</code></pre>
+<p><code>valid_to</code> is <code>null</code> for active rows, an epoch when invalidated. <code>conversation_id</code> is <code>null</code> when the entry is unscoped (visible from every conversation).</p>
+<p>List responses include the bare <code>artifact_id</code> (no nested <code>artifact</code> block) to keep pagination cheap. Hit <a href="/docs/api/memory/entries/get/"><code>GET /v1/memory/entries/:id</code></a> for the hydrated form.</p>
+<p>When <code>expand</code> was passed, the response gains an <code>expansion</code> block:</p>
+<pre><code class="language-json">{
+  &quot;count&quot;: 10,
+  &quot;entries&quot;: [/* ... */],
+  &quot;expansion&quot;: {
+    &quot;model&quot;: &quot;claude-haiku-4-5&quot;,
+    &quot;applied&quot;: true,
+    &quot;queries&quot;: [
+      &quot;Postgres slow query analysis&quot;,
+      &quot;database performance issue Postgres&quot;
+    ],
+    &quot;note&quot;: &quot;&quot;
+  },
+  &quot;rerank&quot;: {
+    &quot;applied&quot;: true,
+    &quot;model&quot;: &quot;claude-haiku-4-5&quot;,
+    &quot;fine_model&quot;: &quot;claude-sonnet-4-6&quot;,
+    &quot;fine_applied&quot;: true,
+    &quot;stages&quot;: 2
+  }
+}</code></pre>
+<p><code>expansion.applied</code> is <code>false</code> (with a populated <code>note</code>) when the advisor errored or returned no usable paraphrases — the search still ran on the original query.</p>
+<h2 id="failure-modes">Failure modes</h2>
+<table><thead><tr><th>Status</th><th>When</th><th>Body</th></tr></thead><tbody><tr><td>400</td><td>Unknown <code>type</code> value.</td><td><code>{&quot;error&quot;: &quot;...&quot;}</code></td></tr><tr><td>401</td><td>Missing / invalid bearer.</td><td><code>{&quot;error&quot;: &quot;...&quot;}</code></td></tr></tbody></table>
+<h2 id="see-also">See also</h2>
+<ul><li><a href="/docs/api/memory/entries/create/"><code>POST /v1/memory/entries</code></a>, <a href="/docs/api/memory/entries/get/"><code>GET /v1/memory/entries/:id</code></a>, <a href="/docs/api/memory/entries/patch/"><code>PATCH /v1/memory/entries/:id</code></a>, <a href="/docs/api/memory/entries/delete/"><code>DELETE /v1/memory/entries/:id</code></a>, <a href="/docs/api/memory/entries/invalidate/"><code>POST /v1/memory/entries/:id/invalidate</code></a>.</li><li><a href="/docs/api/memory/graph/"><code>GET /v1/memory/graph</code></a> — bulk fetch including relations.</li><li><a href="/docs/concepts/structured-memory/#retrieval">Structured memory → Retrieval</a> — the ranking pipeline.</li><li><a href="/docs/concepts/structured-memory/#temporal-model">Structured memory → Temporal model</a> — <code>valid_from</code> / <code>valid_to</code> semantics.</li></ul></div>
+            <nav class="doc-nav" aria-label="Documentation pagination">
+              <a href="/docs/api/memory/entries/invalidate/"><span>Previous</span>`POST /v1/memory/entries/:id/invalidate`</a>
+              <a href="/docs/api/memory/entries/patch/"><span>Next</span>`PATCH /v1/memory/entries/:id`</a>
+            </nav>
+          </article>
+        </main>
+      </div>
+    
+    <footer class="site-footer">
+      <div class="site-footer-inner">
+        <span>Arbiter is experimental open-source infrastructure.</span>
+        <a href="/docs/philosophy/">Philosophy</a>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Arbiter documentation: Fleet streaming.">
+    <title>Fleet streaming - Arbiter Docs</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="/"><span class="brand-mark">⛮</span></a>
+        <div class="nav-links">
+          <a href="/#platform">Platform</a>
+          <a href="/#workflow">Workflow</a>
+          <a href="/docs/">Docs</a>
+          <a href="https://github.com/tylerreckart/arbiter">GitHub</a>
+          <a class="button" href="/docs/getting-started/">Start</a>
+        </div>
+      </nav>
+    </header>
+    
+      <div class="docs-layout">
+        <aside class="docs-sidebar"><h2>Docs</h2><div class="docs-group"><p class="docs-group-title">Getting Started</p><a class="docs-link" href="/docs/getting-started/">Getting started</a><a class="docs-link" href="/docs/getting-started/local/">Local Install</a></div><div class="docs-group"><p class="docs-group-title">Concepts</p><a class="docs-link" href="/docs/concepts/a2a/">Agent2Agent (A2A) protocol</a><a class="docs-link" href="/docs/concepts/advisor/">Advisor</a><a class="docs-link" href="/docs/concepts/artifacts/">Artifacts</a><a class="docs-link" href="/docs/concepts/authentication/">Authentication</a><a class="docs-link" href="/docs/concepts/data-model/">Data model</a><a class="docs-link" href="/docs/concepts/durable-execution/">Durable in-flight execution</a><a class="docs-link active" href="/docs/concepts/fleet-streaming/">Fleet streaming</a><a class="docs-link" href="/docs/concepts/lessons/">Lessons (self-reflection)</a><a class="docs-link" href="/docs/concepts/mcp/">MCP servers</a><a class="docs-link" href="/docs/concepts/operations/">Operational notes</a><a class="docs-link" href="/docs/concepts/sandbox/">Per-tenant sandbox</a><a class="docs-link" href="/docs/concepts/scheduler/">Scheduler</a><a class="docs-link" href="/docs/concepts/search/">Web search</a><a class="docs-link" href="/docs/concepts/sse-events/">SSE event catalog</a><a class="docs-link" href="/docs/concepts/structured-memory/">Structured memory</a><a class="docs-link" href="/docs/concepts/tenants/">Tenants</a><a class="docs-link" href="/docs/concepts/todos/">Todos</a><a class="docs-link" href="/docs/concepts/writ/">Writ</a></div><div class="docs-group"><p class="docs-group-title">CLI</p><a class="docs-link" href="/docs/cli/">Arbiter CLI</a><a class="docs-link" href="/docs/cli/a2a-agents/">Outbound A2A</a><a class="docs-link" href="/docs/cli/api/">`arbiter --api`</a><a class="docs-link" href="/docs/cli/environment/">Environment</a><a class="docs-link" href="/docs/cli/init/">`arbiter --init`</a><a class="docs-link" href="/docs/cli/send/">`arbiter --send`</a><a class="docs-link" href="/docs/cli/tenants/">Tenant admin</a></div><div class="docs-group"><p class="docs-group-title">TUI</p><a class="docs-link" href="/docs/tui/">Arbiter TUI</a><a class="docs-link" href="/docs/tui/commands/">Slash commands</a><a class="docs-link" href="/docs/tui/keybindings/">Keybindings</a><a class="docs-link" href="/docs/tui/panes/">Panes</a><a class="docs-link" href="/docs/tui/sessions/">Sessions</a><a class="docs-link" href="/docs/tui/streaming/">Streaming and turn lifecycle</a><a class="docs-link" href="/docs/tui/themes/">TUI theme JSON</a></div><div class="docs-group"><p class="docs-group-title">API Reference</p><a class="docs-link" href="/docs/api/">Arbiter HTTP API</a><a class="docs-link" href="/docs/api/a2a/agent-card/">`GET /v1/a2a/agents/:id/agent-card.json`</a><a class="docs-link" href="/docs/api/a2a/dispatch/">`POST /v1/a2a/agents/:id`</a><a class="docs-link" href="/docs/api/a2a/well-known/">`GET /.well-known/agent-card.json`</a><a class="docs-link" href="/docs/api/admin/audit/">`GET /v1/admin/audit`</a><a class="docs-link" href="/docs/api/admin/tenants-create/">`POST /v1/admin/tenants`</a><a class="docs-link" href="/docs/api/admin/tenants-get/">`GET /v1/admin/tenants/:id`</a><a class="docs-link" href="/docs/api/admin/tenants-list/">`GET /v1/admin/tenants`</a><a class="docs-link" href="/docs/api/admin/tenants-patch/">`PATCH /v1/admin/tenants/:id`</a><a class="docs-link" href="/docs/api/agents/chat/">`POST /v1/agents/:id/chat`</a><a class="docs-link" href="/docs/api/agents/create/">`POST /v1/agents`</a><a class="docs-link" href="/docs/api/agents/delete/">`DELETE /v1/agents/:id`</a><a class="docs-link" href="/docs/api/agents/get/">`GET /v1/agents/:id`</a><a class="docs-link" href="/docs/api/agents/list/">`GET /v1/agents`</a><a class="docs-link" href="/docs/api/agents/patch/">`PATCH /v1/agents/:id`</a><a class="docs-link" href="/docs/api/artifacts/conversations-create/">`POST /v1/conversations/:id/artifacts`</a><a class="docs-link" href="/docs/api/artifacts/conversations-delete/">`DELETE /v1/conversations/:id/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/conversations-get/">`GET /v1/conversations/:id/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/conversations-list/">`GET /v1/conversations/:id/artifacts`</a><a class="docs-link" href="/docs/api/artifacts/conversations-raw/">`GET /v1/conversations/:id/artifacts/:aid/raw`</a><a class="docs-link" href="/docs/api/artifacts/delete/">`DELETE /v1/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/get/">`GET /v1/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/list/">`GET /v1/artifacts`</a><a class="docs-link" href="/docs/api/artifacts/raw/">`GET /v1/artifacts/:aid/raw`</a><a class="docs-link" href="/docs/api/conversations/create/">`POST /v1/conversations`</a><a class="docs-link" href="/docs/api/conversations/delete/">`DELETE /v1/conversations/:id`</a><a class="docs-link" href="/docs/api/conversations/get/">`GET /v1/conversations/:id`</a><a class="docs-link" href="/docs/api/conversations/list/">`GET /v1/conversations`</a><a class="docs-link" href="/docs/api/conversations/messages-list/">`GET /v1/conversations/:id/messages`</a><a class="docs-link" href="/docs/api/conversations/messages-post/">`POST /v1/conversations/:id/messages`</a><a class="docs-link" href="/docs/api/conversations/patch/">`PATCH /v1/conversations/:id`</a><a class="docs-link" href="/docs/api/events/">`POST /v1/events`</a><a class="docs-link" href="/docs/api/health/">`GET /v1/health`</a><a class="docs-link" href="/docs/api/lessons/create/">`POST /v1/lessons`</a><a class="docs-link" href="/docs/api/lessons/delete/">`DELETE /v1/lessons/:id`</a><a class="docs-link" href="/docs/api/lessons/get/">`GET /v1/lessons/:id`</a><a class="docs-link" href="/docs/api/lessons/list/">`GET /v1/lessons`</a><a class="docs-link" href="/docs/api/lessons/patch/">`PATCH /v1/lessons/:id`</a><a class="docs-link" href="/docs/api/memory/entries/create/">`POST /v1/memory/entries`</a><a class="docs-link" href="/docs/api/memory/entries/delete/">`DELETE /v1/memory/entries/:id`</a><a class="docs-link" href="/docs/api/memory/entries/get/">`GET /v1/memory/entries/:id`</a><a class="docs-link" href="/docs/api/memory/entries/invalidate/">`POST /v1/memory/entries/:id/invalidate`</a><a class="docs-link" href="/docs/api/memory/entries/list/">`GET /v1/memory/entries`</a><a class="docs-link" href="/docs/api/memory/entries/patch/">`PATCH /v1/memory/entries/:id`</a><a class="docs-link" href="/docs/api/memory/get-scratchpad/">`GET /v1/memory/:agent_id`</a><a class="docs-link" href="/docs/api/memory/graph/">`GET /v1/memory/graph`</a><a class="docs-link" href="/docs/api/memory/list-scratchpads/">`GET /v1/memory`</a><a class="docs-link" href="/docs/api/memory/relations/create/">`POST /v1/memory/relations`</a><a class="docs-link" href="/docs/api/memory/relations/delete/">`DELETE /v1/memory/relations/:id`</a><a class="docs-link" href="/docs/api/memory/relations/list/">`GET /v1/memory/relations`</a><a class="docs-link" href="/docs/api/metrics/">`GET /v1/metrics`</a><a class="docs-link" href="/docs/api/models/">`GET /v1/models`</a><a class="docs-link" href="/docs/api/notifications/stream/">`GET /v1/notifications/stream`</a><a class="docs-link" href="/docs/api/orchestrate/">`POST /v1/orchestrate`</a><a class="docs-link" href="/docs/api/requests-cancel/">`POST /v1/requests/:id/cancel`</a><a class="docs-link" href="/docs/api/requests/events/">`GET /v1/requests/:id/events`</a><a class="docs-link" href="/docs/api/requests/get/">`GET /v1/requests/:id`</a><a class="docs-link" href="/docs/api/requests/list/">`GET /v1/requests`</a><a class="docs-link" href="/docs/api/runs/get/">`GET /v1/runs/:id`</a><a class="docs-link" href="/docs/api/runs/list/">`GET /v1/runs`</a><a class="docs-link" href="/docs/api/schedules/create/">`POST /v1/schedules`</a><a class="docs-link" href="/docs/api/schedules/delete/">`DELETE /v1/schedules/:id`</a><a class="docs-link" href="/docs/api/schedules/get/">`GET /v1/schedules/:id`</a><a class="docs-link" href="/docs/api/schedules/list/">`GET /v1/schedules`</a><a class="docs-link" href="/docs/api/schedules/patch/">`PATCH /v1/schedules/:id`</a><a class="docs-link" href="/docs/api/schedules/runs/">`GET /v1/schedules/:id/runs`</a><a class="docs-link" href="/docs/api/todos/create/">`POST /v1/todos`</a><a class="docs-link" href="/docs/api/todos/delete/">`DELETE /v1/todos/:id`</a><a class="docs-link" href="/docs/api/todos/get/">`GET /v1/todos/:id`</a><a class="docs-link" href="/docs/api/todos/list/">`GET /v1/todos`</a><a class="docs-link" href="/docs/api/todos/patch/">`PATCH /v1/todos/:id`</a></div><div class="docs-group"><p class="docs-group-title">Philosophy</p><a class="docs-link" href="/docs/philosophy/">Philosophy</a></div></aside>
+        <main class="docs-main">
+          <article class="doc-shell">
+            <div class="breadcrumbs">Concepts / Fleet streaming</div>
+            <div class="doc-content"><h1 id="fleet-streaming">Fleet streaming</h1>
+<p>Every agent turn — master, delegated, or parallel child — is assigned a monotonically-increasing <strong><code>stream_id</code></strong> (the master is <code>0</code>; children increment from <code>1</code>). Every SSE event carries its stream id, so when the master calls <code>/parallel</code> and three sub-agents run concurrently, their <code>text</code> deltas interleave on one HTTP connection and the consumer routes each event into the right UI slot.</p>
+<h2 id="consumer-routing-rule">Consumer routing rule</h2>
+<p>Open a UI slot on <code>stream_start</code>, route every subsequent event with matching <code>stream_id</code> to that slot, close the slot on <code>stream_end</code>. Read <code>depth</code> to decide slot layout:</p>
+<table><thead><tr><th><code>depth</code></th><th>Meaning</th></tr></thead><tbody><tr><td>0</td><td>The master orchestrator turn.</td></tr><tr><td>1</td><td>A delegated sub-agent (via <code>/agent</code> or <code>/parallel</code>).</td></tr><tr><td>2</td><td>A sub-sub-agent (delegation by a depth-1 agent).</td></tr></tbody></table>
+<p>The depth cap is 2; attempts to delegate past depth 2 surface to the requesting agent as an <code>ERR:</code> tool result.</p>
+<h2 id="when-parallel-is-in-play">When <code>/parallel</code> is in play</h2>
+<p>The master emits a <code>/parallel … /endparallel</code> block with N <code>/agent</code> lines inside. Arbiter:</p>
+<ol><li>Spawns one thread per child at <code>depth + 1</code>, each with a fresh <code>stream_id</code>.</li><li>All children start concurrently — <code>stream_start</code> for each fires near-simultaneously, in thread-start order (not necessarily input order).</li><li>Each child streams independently through its lifecycle: <code>text</code>, <code>tool_call</code>, <code>token_usage</code>, <code>sub_agent_response</code>, <code>stream_end</code>.</li><li>Arbiter joins every child thread, aggregates the results into one tool-result block, and hands it back to the master.</li><li>The master resumes on its original <code>stream_id</code>, emits its synthesis turn, and closes.</li></ol>
+<h3 id="example-event-sequence-master-3-way-fan-out">Example event sequence (master + 3-way fan-out)</h3>
+<pre><code>request_received
+stream_start      stream_id=0 depth=0 agent=&quot;index&quot;
+text              stream_id=0 agent=&quot;index&quot; delta=&quot;Plan: fan out three...&quot;
+text              stream_id=0 agent=&quot;index&quot; delta=&quot;/endparallel\n&quot;
+stream_start      stream_id=1 depth=1 agent=&quot;researcher_a&quot;
+stream_start      stream_id=2 depth=1 agent=&quot;researcher_b&quot;
+stream_start      stream_id=3 depth=1 agent=&quot;researcher_c&quot;
+agent_start       stream_id=3 agent=&quot;researcher_c&quot;
+agent_start       stream_id=2 agent=&quot;researcher_b&quot;
+agent_start       stream_id=1 agent=&quot;researcher_a&quot;
+text              stream_id=3 agent=&quot;researcher_c&quot; delta=&quot;RESULT: Rome...&quot;
+text              stream_id=2 agent=&quot;researcher_b&quot; delta=&quot;RESULT: Berlin...&quot;
+text              stream_id=1 agent=&quot;researcher_a&quot; delta=&quot;RESULT: Paris...&quot;
+sub_agent_response stream_id=3 agent=&quot;researcher_c&quot;
+token_usage       stream_id=3 agent=&quot;researcher_c&quot; input_tokens=842 output_tokens=126
+stream_end        stream_id=3 ok=true
+sub_agent_response stream_id=2 agent=&quot;researcher_b&quot;
+token_usage       stream_id=2 agent=&quot;researcher_b&quot; input_tokens=910 output_tokens=143
+stream_end        stream_id=2 ok=true
+sub_agent_response stream_id=1 agent=&quot;researcher_a&quot;
+token_usage       stream_id=1 agent=&quot;researcher_a&quot; input_tokens=803 output_tokens=131
+stream_end        stream_id=1 ok=true
+tool_call         stream_id=0 tool=&quot;parallel&quot; ok=true
+token_usage       stream_id=0 agent=&quot;index&quot; input_tokens=1240 output_tokens=210
+text              stream_id=0 agent=&quot;index&quot; delta=&quot;Paris, Berlin, and Rome...&quot;
+stream_end        stream_id=0 ok=true
+done              ok=true</code></pre>
+<h2 id="parallel-safety-rails">Parallel safety rails</h2>
+<ul><li><strong>Same <code>agent_id</code> reused in <code>/parallel</code> is allowed.</strong> Each child runs on an ephemeral <code>Agent</code> instance built from the canonical agent's <code>Constitution</code>, so siblings have independent <code>history_</code> vectors and don't race. (This was a constraint pre-2026-04 but is now lifted.)</li><li><strong>Depth cap.</strong> A depth-2 turn cannot <code>/parallel</code>; attempts return an ERR tool result.</li><li><strong>Each parallel child gets its own dedup cache.</strong> Sibling threads fetching the same URL both fetch — accept the duplicate over a <code>std::map</code> data race.</li><li><strong>SSE writes are serialized.</strong> A shared mutex on the wire-writer means events interleave cleanly even when N threads emit at once.</li></ul>
+<h2 id="master-text-gating">Master text gating</h2>
+<p>The master orchestrator's text deltas during a delegation iteration are <strong>suppressed</strong> — only a one-line <code>→ delegating: …</code> status line is emitted, and the master's prose lands only in the final synthesis iteration (after all children complete). This keeps &quot;the orchestrator is answering before its sub-agents finished&quot; out of the live UI. Sub-agent text continues to stream live in their own slots.</p>
+<h2 id="see-also">See also</h2>
+<ul><li><a href="/docs/concepts/sse-events/">SSE event catalog</a></li><li><a href="/docs/api/orchestrate/"><code>POST /v1/orchestrate</code></a></li></ul></div>
+            <nav class="doc-nav" aria-label="Documentation pagination">
+              <a href="/docs/concepts/durable-execution/"><span>Previous</span>Durable in-flight execution</a>
+              <a href="/docs/concepts/lessons/"><span>Next</span>Lessons (self-reflection)</a>
+            </nav>
+          </article>
+        </main>
+      </div>
+    
+    <footer class="site-footer">
+      <div class="site-footer-inner">
+        <span>Arbiter is experimental open-source infrastructure.</span>
+        <a href="/docs/philosophy/">Philosophy</a>
+      </div>
+    </footer>
+  </body>
+</html>
