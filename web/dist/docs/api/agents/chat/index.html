@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Arbiter documentation: `POST /v1/agents/:id/chat`.">
+    <title>`POST /v1/agents/:id/chat` - Arbiter Docs</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="/"><span class="brand-mark">⛮</span></a>
+        <div class="nav-links">
+          <a href="/#platform">Platform</a>
+          <a href="/#workflow">Workflow</a>
+          <a href="/docs/">Docs</a>
+          <a href="https://github.com/tylerreckart/arbiter">GitHub</a>
+          <a class="button" href="/docs/getting-started/">Start</a>
+        </div>
+      </nav>
+    </header>
+    
+      <div class="docs-layout">
+        <aside class="docs-sidebar"><h2>Docs</h2><div class="docs-group"><p class="docs-group-title">Getting Started</p><a class="docs-link" href="/docs/getting-started/">Getting started</a><a class="docs-link" href="/docs/getting-started/local/">Local Install</a></div><div class="docs-group"><p class="docs-group-title">Concepts</p><a class="docs-link" href="/docs/concepts/a2a/">Agent2Agent (A2A) protocol</a><a class="docs-link" href="/docs/concepts/advisor/">Advisor</a><a class="docs-link" href="/docs/concepts/artifacts/">Artifacts</a><a class="docs-link" href="/docs/concepts/authentication/">Authentication</a><a class="docs-link" href="/docs/concepts/data-model/">Data model</a><a class="docs-link" href="/docs/concepts/durable-execution/">Durable in-flight execution</a><a class="docs-link" href="/docs/concepts/fleet-streaming/">Fleet streaming</a><a class="docs-link" href="/docs/concepts/lessons/">Lessons (self-reflection)</a><a class="docs-link" href="/docs/concepts/mcp/">MCP servers</a><a class="docs-link" href="/docs/concepts/operations/">Operational notes</a><a class="docs-link" href="/docs/concepts/sandbox/">Per-tenant sandbox</a><a class="docs-link" href="/docs/concepts/scheduler/">Scheduler</a><a class="docs-link" href="/docs/concepts/search/">Web search</a><a class="docs-link" href="/docs/concepts/sse-events/">SSE event catalog</a><a class="docs-link" href="/docs/concepts/structured-memory/">Structured memory</a><a class="docs-link" href="/docs/concepts/tenants/">Tenants</a><a class="docs-link" href="/docs/concepts/todos/">Todos</a><a class="docs-link" href="/docs/concepts/writ/">Writ</a></div><div class="docs-group"><p class="docs-group-title">CLI</p><a class="docs-link" href="/docs/cli/">Arbiter CLI</a><a class="docs-link" href="/docs/cli/a2a-agents/">Outbound A2A</a><a class="docs-link" href="/docs/cli/api/">`arbiter --api`</a><a class="docs-link" href="/docs/cli/environment/">Environment</a><a class="docs-link" href="/docs/cli/init/">`arbiter --init`</a><a class="docs-link" href="/docs/cli/send/">`arbiter --send`</a><a class="docs-link" href="/docs/cli/tenants/">Tenant admin</a></div><div class="docs-group"><p class="docs-group-title">TUI</p><a class="docs-link" href="/docs/tui/">Arbiter TUI</a><a class="docs-link" href="/docs/tui/commands/">Slash commands</a><a class="docs-link" href="/docs/tui/keybindings/">Keybindings</a><a class="docs-link" href="/docs/tui/panes/">Panes</a><a class="docs-link" href="/docs/tui/sessions/">Sessions</a><a class="docs-link" href="/docs/tui/streaming/">Streaming and turn lifecycle</a><a class="docs-link" href="/docs/tui/themes/">TUI theme JSON</a></div><div class="docs-group"><p class="docs-group-title">API Reference</p><a class="docs-link" href="/docs/api/">Arbiter HTTP API</a><a class="docs-link" href="/docs/api/a2a/agent-card/">`GET /v1/a2a/agents/:id/agent-card.json`</a><a class="docs-link" href="/docs/api/a2a/dispatch/">`POST /v1/a2a/agents/:id`</a><a class="docs-link" href="/docs/api/a2a/well-known/">`GET /.well-known/agent-card.json`</a><a class="docs-link" href="/docs/api/admin/audit/">`GET /v1/admin/audit`</a><a class="docs-link" href="/docs/api/admin/tenants-create/">`POST /v1/admin/tenants`</a><a class="docs-link" href="/docs/api/admin/tenants-get/">`GET /v1/admin/tenants/:id`</a><a class="docs-link" href="/docs/api/admin/tenants-list/">`GET /v1/admin/tenants`</a><a class="docs-link" href="/docs/api/admin/tenants-patch/">`PATCH /v1/admin/tenants/:id`</a><a class="docs-link active" href="/docs/api/agents/chat/">`POST /v1/agents/:id/chat`</a><a class="docs-link" href="/docs/api/agents/create/">`POST /v1/agents`</a><a class="docs-link" href="/docs/api/agents/delete/">`DELETE /v1/agents/:id`</a><a class="docs-link" href="/docs/api/agents/get/">`GET /v1/agents/:id`</a><a class="docs-link" href="/docs/api/agents/list/">`GET /v1/agents`</a><a class="docs-link" href="/docs/api/agents/patch/">`PATCH /v1/agents/:id`</a><a class="docs-link" href="/docs/api/artifacts/conversations-create/">`POST /v1/conversations/:id/artifacts`</a><a class="docs-link" href="/docs/api/artifacts/conversations-delete/">`DELETE /v1/conversations/:id/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/conversations-get/">`GET /v1/conversations/:id/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/conversations-list/">`GET /v1/conversations/:id/artifacts`</a><a class="docs-link" href="/docs/api/artifacts/conversations-raw/">`GET /v1/conversations/:id/artifacts/:aid/raw`</a><a class="docs-link" href="/docs/api/artifacts/delete/">`DELETE /v1/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/get/">`GET /v1/artifacts/:aid`</a><a class="docs-link" href="/docs/api/artifacts/list/">`GET /v1/artifacts`</a><a class="docs-link" href="/docs/api/artifacts/raw/">`GET /v1/artifacts/:aid/raw`</a><a class="docs-link" href="/docs/api/conversations/create/">`POST /v1/conversations`</a><a class="docs-link" href="/docs/api/conversations/delete/">`DELETE /v1/conversations/:id`</a><a class="docs-link" href="/docs/api/conversations/get/">`GET /v1/conversations/:id`</a><a class="docs-link" href="/docs/api/conversations/list/">`GET /v1/conversations`</a><a class="docs-link" href="/docs/api/conversations/messages-list/">`GET /v1/conversations/:id/messages`</a><a class="docs-link" href="/docs/api/conversations/messages-post/">`POST /v1/conversations/:id/messages`</a><a class="docs-link" href="/docs/api/conversations/patch/">`PATCH /v1/conversations/:id`</a><a class="docs-link" href="/docs/api/events/">`POST /v1/events`</a><a class="docs-link" href="/docs/api/health/">`GET /v1/health`</a><a class="docs-link" href="/docs/api/lessons/create/">`POST /v1/lessons`</a><a class="docs-link" href="/docs/api/lessons/delete/">`DELETE /v1/lessons/:id`</a><a class="docs-link" href="/docs/api/lessons/get/">`GET /v1/lessons/:id`</a><a class="docs-link" href="/docs/api/lessons/list/">`GET /v1/lessons`</a><a class="docs-link" href="/docs/api/lessons/patch/">`PATCH /v1/lessons/:id`</a><a class="docs-link" href="/docs/api/memory/entries/create/">`POST /v1/memory/entries`</a><a class="docs-link" href="/docs/api/memory/entries/delete/">`DELETE /v1/memory/entries/:id`</a><a class="docs-link" href="/docs/api/memory/entries/get/">`GET /v1/memory/entries/:id`</a><a class="docs-link" href="/docs/api/memory/entries/invalidate/">`POST /v1/memory/entries/:id/invalidate`</a><a class="docs-link" href="/docs/api/memory/entries/list/">`GET /v1/memory/entries`</a><a class="docs-link" href="/docs/api/memory/entries/patch/">`PATCH /v1/memory/entries/:id`</a><a class="docs-link" href="/docs/api/memory/get-scratchpad/">`GET /v1/memory/:agent_id`</a><a class="docs-link" href="/docs/api/memory/graph/">`GET /v1/memory/graph`</a><a class="docs-link" href="/docs/api/memory/list-scratchpads/">`GET /v1/memory`</a><a class="docs-link" href="/docs/api/memory/relations/create/">`POST /v1/memory/relations`</a><a class="docs-link" href="/docs/api/memory/relations/delete/">`DELETE /v1/memory/relations/:id`</a><a class="docs-link" href="/docs/api/memory/relations/list/">`GET /v1/memory/relations`</a><a class="docs-link" href="/docs/api/metrics/">`GET /v1/metrics`</a><a class="docs-link" href="/docs/api/models/">`GET /v1/models`</a><a class="docs-link" href="/docs/api/notifications/stream/">`GET /v1/notifications/stream`</a><a class="docs-link" href="/docs/api/orchestrate/">`POST /v1/orchestrate`</a><a class="docs-link" href="/docs/api/requests-cancel/">`POST /v1/requests/:id/cancel`</a><a class="docs-link" href="/docs/api/requests/events/">`GET /v1/requests/:id/events`</a><a class="docs-link" href="/docs/api/requests/get/">`GET /v1/requests/:id`</a><a class="docs-link" href="/docs/api/requests/list/">`GET /v1/requests`</a><a class="docs-link" href="/docs/api/runs/get/">`GET /v1/runs/:id`</a><a class="docs-link" href="/docs/api/runs/list/">`GET /v1/runs`</a><a class="docs-link" href="/docs/api/schedules/create/">`POST /v1/schedules`</a><a class="docs-link" href="/docs/api/schedules/delete/">`DELETE /v1/schedules/:id`</a><a class="docs-link" href="/docs/api/schedules/get/">`GET /v1/schedules/:id`</a><a class="docs-link" href="/docs/api/schedules/list/">`GET /v1/schedules`</a><a class="docs-link" href="/docs/api/schedules/patch/">`PATCH /v1/schedules/:id`</a><a class="docs-link" href="/docs/api/schedules/runs/">`GET /v1/schedules/:id/runs`</a><a class="docs-link" href="/docs/api/todos/create/">`POST /v1/todos`</a><a class="docs-link" href="/docs/api/todos/delete/">`DELETE /v1/todos/:id`</a><a class="docs-link" href="/docs/api/todos/get/">`GET /v1/todos/:id`</a><a class="docs-link" href="/docs/api/todos/list/">`GET /v1/todos`</a><a class="docs-link" href="/docs/api/todos/patch/">`PATCH /v1/todos/:id`</a></div><div class="docs-group"><p class="docs-group-title">Philosophy</p><a class="docs-link" href="/docs/philosophy/">Philosophy</a></div></aside>
+        <main class="docs-main">
+          <article class="doc-shell">
+            <div class="breadcrumbs">API Reference / `POST /v1/agents/:id/chat`</div>
+            <div class="doc-content"><h1 id="post-v1-agents-id-chat"><code>POST /v1/agents/:id/chat</code></h1>
+<p><strong>Auth:</strong> tenant — _Status:_ stable</p>
+<p>RESTful equivalent of <a href="/docs/api/orchestrate/"><code>POST /v1/orchestrate</code></a> with a path-bound agent id. Same SSE shape, same billing-service gating, same safety policies.</p>
+<p>The path <code>:id</code> resolves through the same chain as <code>/v1/orchestrate</code> — inline <code>agent_def</code> first, then the tenant's stored catalog, then the built-in <code>index</code>. So you can hit a stored agent with no body beyond <code>message</code>.</p>
+<h2 id="request">Request</h2>
+<table><thead><tr><th>Path param</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>id</code></td><td>string</td><td>Agent id. Same resolution rules as <code>/v1/orchestrate</code>.</td></tr></tbody></table>
+<h3 id="body">Body</h3>
+<table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody><tr><td><code>message</code></td><td>string</td><td>yes</td><td>The prompt.</td></tr><tr><td><code>agent_def</code></td><td>object</td><td>no</td><td>Inline agent definition. If present, its <code>id</code> MUST match the path <code>:id</code>.</td></tr><tr><td><code>agent</code></td><td>string</td><td>—</td><td><strong>Ignored</strong> — the path wins.</td></tr></tbody></table>
+<pre><code class="language-bash">curl -N \
+  -H &quot;Authorization: Bearer atr_…&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;message&quot;:&quot;write a haiku about SQLite&quot;}' \
+  http://arbiter.example.com/v1/agents/researcher/chat</code></pre>
+<h3 id="headers">Headers</h3>
+<p><code>Idempotency-Key</code> is honoured here with the same semantics as <a href="/docs/api/orchestrate/#idempotency"><code>POST /v1/orchestrate</code></a>: a retry with the same key replays the original execution as SSE rather than triggering a second one.</p>
+<p>With an inline <code>agent_def</code> (UUID-keyed memory persistence):</p>
+<pre><code class="language-bash">curl -N \
+  -H &quot;Authorization: Bearer atr_…&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d '{
+    &quot;message&quot;: &quot;what did we decide about the migration last time?&quot;,
+    &quot;agent_def&quot;: {
+      &quot;id&quot;: &quot;550e8400-e29b-41d4-a716-446655440000&quot;,
+      &quot;name&quot;: &quot;Migration Reviewer&quot;,
+      &quot;role&quot;: &quot;reviewer&quot;,
+      &quot;model&quot;: &quot;claude-haiku-4-5&quot;,
+      &quot;goal&quot;: &quot;review migrations and remember decisions&quot;
+    }
+  }' \
+  http://arbiter.example.com/v1/agents/550e8400-e29b-41d4-a716-446655440000/chat</code></pre>
+<h2 id="response">Response</h2>
+<p>Identical SSE stream to <a href="/docs/api/orchestrate/"><code>POST /v1/orchestrate</code></a>. See the <a href="/docs/concepts/sse-events/">SSE event catalog</a> for shapes.</p>
+<h2 id="failure-modes">Failure modes</h2>
+<p>Identical to <a href="/docs/api/orchestrate/"><code>POST /v1/orchestrate</code></a>, plus:</p>
+<table><thead><tr><th>Status</th><th>When</th><th>Body</th></tr></thead><tbody><tr><td>400</td><td>Body's <code>agent_def.id</code> ≠ path <code>:id</code>.</td><td><code>{&quot;error&quot;: &quot;agent_def.id must match path :id&quot;}</code></td></tr></tbody></table>
+<h2 id="see-also">See also</h2>
+<ul><li><a href="/docs/api/orchestrate/"><code>POST /v1/orchestrate</code></a> — body-bound variant.</li><li><a href="/docs/api/conversations/messages-post/"><code>POST /v1/conversations/:id/messages</code></a> — multi-turn variant with history replay.</li><li><a href="/docs/concepts/sse-events/">SSE event catalog</a>.</li></ul></div>
+            <nav class="doc-nav" aria-label="Documentation pagination">
+              <a href="/docs/api/admin/tenants-patch/"><span>Previous</span>`PATCH /v1/admin/tenants/:id`</a>
+              <a href="/docs/api/agents/create/"><span>Next</span>`POST /v1/agents`</a>
+            </nav>
+          </article>
+        </main>
+      </div>
+    
+    <footer class="site-footer">
+      <div class="site-footer-inner">
+        <span>Arbiter is experimental open-source infrastructure.</span>
+        <a href="/docs/philosophy/">Philosophy</a>
+      </div>
+    </footer>
+  </body>
+</html>
