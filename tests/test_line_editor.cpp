@@ -261,3 +261,42 @@ TEST_CASE("history is shared live across panes") {
 
     s.terminate();
 }
+
+TEST_CASE("Ctrl-P palette inserts the selected command; Esc closes it") {
+    PtySession s = ready_editor();
+
+    // Open the palette, narrow to /agents, accept, submit.  (Overlay pixels
+    // are diff-rendered, so assert functionally on what Enter produces.)
+    const std::string before = s.output();
+    s.send("\x10");
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(400);
+    s.send("\r");        // accept: buffer becomes "/agents "
+    s.read_for(300);
+    s.send("\r");        // submit it
+    s.read_for(600);
+    CHECK(PtySession::strip_ansi(s.output().substr(before.size()))
+              .find("/agents") != std::string::npos);
+
+    // Esc closes without touching the buffer: the follow-up Enter submits
+    // an empty line, so no command echo appears afterward.
+    s.send("\x10");
+    s.read_for(200);
+    s.send("quit");      // selects /quit but never accepts it
+    s.read_for(300);
+    s.send("\033");
+    s.read_for(400);
+    const std::string after_esc = s.output();
+    s.send("\r");
+    s.read_for(500);
+    CHECK(PtySession::strip_ansi(s.output().substr(after_esc.size()))
+              .find("/quit") == std::string::npos);
+    // And the app is still running (Esc didn't leak /quit through).
+    s.send("/agents\r");
+    s.read_for(600);
+    CHECK(PtySession::strip_ansi(s.output().substr(after_esc.size()))
+              .find("/agents") != std::string::npos);
+
+    s.terminate();
+}

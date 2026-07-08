@@ -2,6 +2,7 @@
 
 #include "tui/opentui/c_api.h"
 #include "tui/opentui/shared_input_history.h"
+#include "tui/palette.h"
 #include "tui/tui.h"
 
 #include <atomic>
@@ -25,6 +26,10 @@ public:
     using CompletionFn = std::function<std::vector<std::string>(
         const std::string& buffer, const std::string& token)>;
     void set_completion_provider(CompletionFn fn) { completer_ = std::move(fn); }
+
+    // Ctrl-P command palette: a fuzzy-filtered overlay over these items.
+    // Enter replaces the input buffer with the selection; Esc closes.
+    void set_palette_items(std::vector<arbiter::PaletteItem> items);
 
     // Attach a history store shared with other editors — commands typed in
     // any pane become visible to every pane's Up-arrow / Ctrl-R instantly.
@@ -97,6 +102,13 @@ private:
     void rsearch_end(bool accept);
     void rsearch_refresh();   // re-run query, update buffer + prompt
 
+    // Ctrl-P palette (all assume mu_ held).  accept=true replaces the
+    // buffer with the selected item's name.
+    void palette_open();
+    void palette_close(bool accept);
+    void palette_refresh();   // re-filter matches, clamp selection
+    void draw_palette(OpenTuiHandle frame, const TUI& tui) const;
+
     int  read_key_event();
     void discard_osc();
     void discard_string_terminated();
@@ -136,6 +148,13 @@ private:
     std::string rsearch_saved_prompt_;
     int         rsearch_saved_prompt_cols_ = 0;
     std::string rsearch_saved_live_;
+
+    // Command palette state (valid while palette_active_).
+    bool        palette_active_ = false;
+    std::string palette_query_;
+    int         palette_sel_ = 0;           // index into palette_matches_
+    std::vector<arbiter::PaletteItem> palette_items_;
+    std::vector<arbiter::PaletteItem> palette_matches_;
 
     std::atomic<bool> interrupt_flag_{false};
 };
