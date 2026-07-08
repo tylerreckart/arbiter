@@ -142,3 +142,120 @@ TEST_CASE("rename/delete are no-ops on the '+ New conversation' row") {
     CHECK(sidebar.handle_key('d', 0, "") == HistorySidebarKey::None);
     CHECK_FALSE(sidebar.snapshot().confirming_delete);
 }
+
+TEST_CASE("'/' filters entries; Enter commits; Esc clears") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    const std::string alpha = store.active_id();
+    const std::string beta = store.create(dir);
+    const std::string gamma = store.create(dir);
+    store.set_title(alpha, "alpha task");
+    store.set_title(beta, "beta task");
+    store.set_title(gamma, "gamma other");
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, gamma);
+
+    CHECK(sidebar.handle_key('/') == HistorySidebarKey::None);
+    CHECK(sidebar.snapshot().filtering);
+
+    sidebar.handle_key('t');
+    sidebar.handle_key('a');
+    sidebar.handle_key('s');
+    sidebar.handle_key('k');
+    auto snap = sidebar.snapshot();
+    CHECK(snap.filter == "task");
+    REQUIRE(snap.entries.size() == 2);
+    // gamma was pinned but "task" filters it out — pin moves to the first
+    // visible entry.
+    const std::string selected = sidebar.selected_conversation_id();
+    CHECK((selected == alpha || selected == beta));
+    CHECK(selected != gamma);
+
+    // Enter commits: filter stays applied, edit mode ends.
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::None);
+    snap = sidebar.snapshot();
+    CHECK_FALSE(snap.filtering);
+    CHECK(snap.filter == "task");
+    CHECK(snap.entries.size() == 2);
+
+    // First Esc clears the applied filter instead of closing the sidebar;
+    // the second Esc surfaces Escape as usual.
+    CHECK(sidebar.handle_key(0x1B) == HistorySidebarKey::None);
+    snap = sidebar.snapshot();
+    CHECK(snap.filter.empty());
+    CHECK(snap.entries.size() == 3);
+    CHECK(sidebar.handle_key(0x1B) == HistorySidebarKey::Escape);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("filter edit: backspace re-widens; Esc while typing cancels") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    const std::string alpha = store.active_id();
+    const std::string beta = store.create(dir);
+    store.set_title(alpha, "deploy pipeline");
+    store.set_title(beta, "deploy docs");
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, alpha);
+
+    sidebar.handle_key('/');
+    for (char c : std::string("deploy p")) sidebar.handle_key(c);
+    CHECK(sidebar.snapshot().entries.size() == 1);
+
+    sidebar.handle_key(127);   // backspace: "deploy " matches both again
+    sidebar.handle_key(127);
+    CHECK(sidebar.snapshot().entries.size() == 2);
+
+    // Esc while editing cancels filtering entirely.
+    CHECK(sidebar.handle_key(0x1B) == HistorySidebarKey::None);
+    auto snap = sidebar.snapshot();
+    CHECK_FALSE(snap.filtering);
+    CHECK(snap.filter.empty());
+    CHECK(snap.entries.size() == 2);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("arrows navigate the filtered list while typing") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    const std::string alpha = store.active_id();
+    const std::string beta = store.create(dir);
+    (void)store.create(dir);   // unrelated third entry
+    store.set_title(alpha, "fix login bug");
+    store.set_title(beta, "fix logout bug");
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, alpha);
+
+    sidebar.handle_key('/');
+    for (char c : std::string("fix")) sidebar.handle_key(c);
+    REQUIRE(sidebar.snapshot().entries.size() == 2);
+
+    // Arrow keys surface Up/Down while filtering.
+    CHECK(sidebar.handle_key(0x1B, 'B') == HistorySidebarKey::Down);
+    CHECK(sidebar.handle_key(0x1B, 'A') == HistorySidebarKey::Up);
+
+    // enter_focus pinned the active conversation (alpha), which sorts last
+    // of the two matches — walk up to the other match, then back down.
+    REQUIRE(sidebar.selected_conversation_id() == alpha);
+    sidebar.move_selection(-1, 10);
+    CHECK(sidebar.selected_conversation_id() == beta);
+    sidebar.move_selection(1, 10);
+    CHECK(sidebar.selected_conversation_id() == alpha);
+    // A further Down clamps at the last filtered row: the third (unfiltered)
+    // conversation is never reachable while the filter is applied.
+    sidebar.move_selection(1, 10);
+    CHECK(sidebar.selected_conversation_id() == alpha);
+
+    fs::remove_all(dir);
+}
