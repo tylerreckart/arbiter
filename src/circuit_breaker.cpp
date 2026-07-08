@@ -71,6 +71,18 @@ void ProviderCircuitBreaker::record_failure(const std::string& provider) {
     }
 }
 
+void ProviderCircuitBreaker::record_abandoned(const std::string& provider) {
+    std::lock_guard<std::mutex> lk(mu_);
+    Entry& e = entry_locked(provider);
+    if (e.state == State::HalfOpen) {
+        // Probe never resolved — return to Open so the next cooldown
+        // expiry admits a fresh probe instead of rejecting forever.
+        e.state           = State::Open;
+        e.opened_at       = std::chrono::steady_clock::now();
+        e.probe_in_flight = false;
+    }
+}
+
 ProviderCircuitBreaker::State
 ProviderCircuitBreaker::state(const std::string& provider) const {
     std::lock_guard<std::mutex> lk(mu_);
