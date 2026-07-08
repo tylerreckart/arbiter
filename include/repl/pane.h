@@ -32,6 +32,12 @@ struct Pane {
     int               scroll_offset       = 0;
     int               new_while_scrolled  = 0;
 
+    // /find state: the active term and which hit (index into the recomputed
+    // hit list) the viewport was last jumped to.  Guarded by layout_mu like
+    // scroll_offset.
+    std::string       find_term;
+    int               find_idx            = -1;
+
     Pane*             parent_pane         = nullptr;
     std::string       spawn_message;
     std::string       last_response;

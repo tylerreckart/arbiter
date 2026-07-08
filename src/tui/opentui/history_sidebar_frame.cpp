@@ -322,7 +322,8 @@ void draw_history_sidebar(OpenTuiHandle frame,
     draw_vertical_border(frame, border_x, panel_top_y, block_h, d.bg.status, d.bg.scroll);
 
     const std::string_view sidebar_hint = snap.focused
-        ? "\u2191\u2193 select  enter"
+        ? (snap.filtering ? "type to filter  esc clear"
+                          : "\u2191\u2193 select  enter  / filter")
         : "^W b focus";
     draw_hint_text(frame,
                    static_cast<std::uint32_t>(content_x),
@@ -336,11 +337,27 @@ void draw_history_sidebar(OpenTuiHandle frame,
     int y = panel_top_y + 1;
     y = draw_section_label(frame, d, content_x, content_w, y, "Conversations", bg);
 
+    // Filter line: shown while typing ('/') and as long as a committed
+    // filter is still narrowing the list.
+    if (snap.filtering || !snap.filter.empty()) {
+        std::string line = "/" + snap.filter;
+        if (snap.filtering) line += "▏";   // caret while editing
+        draw_text(frame,
+                  static_cast<std::uint32_t>(content_x),
+                  static_cast<std::uint32_t>(y),
+                  trim_to_cells(line, content_w),
+                  snap.filtering ? d.accent.primary : d.text.subtle,
+                  bg);
+        y += 1;
+    }
+
     if (snap.entries.empty()) {
+        const bool filtered = snap.filtering || !snap.filter.empty();
         draw_text(frame,
                   static_cast<std::uint32_t>(content_x),
                   static_cast<std::uint32_t>(y + 1),
-                  trim_to_cells("No conversations yet", content_w),
+                  trim_to_cells(filtered ? "No matches" : "No conversations yet",
+                                content_w),
                   d.text.subtle,
                   bg);
     }
