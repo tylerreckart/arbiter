@@ -7,6 +7,7 @@
 #include "tui/opentui/session.h"
 #include "tui/tui_design.h"
 
+#include <algorithm>
 #include <functional>
 
 namespace arbiter {
@@ -111,6 +112,51 @@ int pane_history_total_rows(const Pane& pane) {
 int pane_history_max_scroll(const Pane& pane) {
     if (pane.scroll) return pane.scroll->max_scroll_offset();
     return 0;
+}
+
+namespace {
+
+// Position the viewport so the match row is visible: scroll_offset counts
+// rows up from the live tail, and draw() computes
+// first_visible = total - viewport_h - scroll_offset, so offsetting by
+// (max_scroll - row) puts the match on the viewport's first line (clamped
+// at the ends).
+void jump_to_row(Pane& pane, int row) {
+    const int max_off = pane_history_max_scroll(pane);
+    pane.scroll_offset = std::clamp(max_off - row, 0, max_off);
+    pane.new_while_scrolled = 0;
+}
+
+} // namespace
+
+PaneFindResult pane_history_find(Pane& pane, const std::string& term) {
+    pane.find_term = term;
+    pane.find_idx = -1;
+    if (!pane.scroll || term.empty()) return {};
+    const auto rows = pane.scroll->find_rows(term);
+    if (rows.empty()) return {};
+    // Start at the most recent match — searching typically targets output
+    // that just scrolled away.
+    pane.find_idx = static_cast<int>(rows.size()) - 1;
+    jump_to_row(pane, rows[static_cast<size_t>(pane.find_idx)]);
+    return {pane.find_idx + 1, static_cast<int>(rows.size())};
+}
+
+PaneFindResult pane_history_find_step(Pane& pane, int delta) {
+    if (!pane.scroll || pane.find_term.empty()) return {};
+    // Re-run the term: new output may have shifted rows or added matches.
+    const auto rows = pane.scroll->find_rows(pane.find_term);
+    if (rows.empty()) {
+        pane.find_idx = -1;
+        return {};
+    }
+    const int n = static_cast<int>(rows.size());
+    int idx = pane.find_idx < 0 ? n - 1 : pane.find_idx + delta;
+    // Wrap around so cycling never dead-ends.
+    idx = ((idx % n) + n) % n;
+    pane.find_idx = idx;
+    jump_to_row(pane, rows[static_cast<size_t>(idx)]);
+    return {idx + 1, n};
 }
 
 void pane_history_begin_frame(UiContext& ctx) {

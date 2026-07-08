@@ -345,7 +345,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (only_cmd || buf.empty()) {
                     return match({"/send","/ask","/use","/agents","/status","/tokens",
                                   "/create","/remove","/reset","/model",
-                                  "/pane",
+                                  "/pane","/find",
                                   "/loop","/loops","/log","/watch",
                                   "/kill","/suspend","/resume","/inject",
                                   "/fetch","/mem","/search","/browse",
@@ -641,6 +641,37 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             if (cmd == "status") {
                 output_queue.push_msg(orch.global_status());
+                return;
+            }
+            if (cmd == "find") {
+                std::string rest;
+                std::getline(iss, rest);
+                size_t a = 0;
+                while (a < rest.size() && std::isspace(static_cast<unsigned char>(rest[a]))) ++a;
+                rest = rest.substr(a);
+                while (!rest.empty() && std::isspace(static_cast<unsigned char>(rest.back())))
+                    rest.pop_back();
+
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                arbiter::PaneFindResult r;
+                if (rest == "next" || (rest.empty() && !pane.find_term.empty())) {
+                    r = pane_history_find_step(pane, +1);
+                } else if (rest == "prev") {
+                    r = pane_history_find_step(pane, -1);
+                } else if (rest.empty()) {
+                    output_queue.push_msg("Usage: /find <text>, then /find next|prev to cycle");
+                    return;
+                } else {
+                    r = pane_history_find(pane, rest);
+                }
+                if (r.total == 0) {
+                    tui.set_status("find \"" + pane.find_term + "\": no matches");
+                } else {
+                    tui.set_status("find \"" + pane.find_term + "\": "
+                                   + std::to_string(r.hit) + "/" + std::to_string(r.total)
+                                   + "  /find next|prev");
+                }
+                if (pump_notify) pump_notify();
                 return;
             }
             if (cmd == "tokens") {
@@ -1053,6 +1084,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
                     "  /chat title <text>               — rename the active conversation (locks title)\n"
                     "  /chat search <text>              — find text across saved conversations\n"
+                    "  /find <text> | next | prev       — search the focused pane's scrollback\n"
                     "  /help                            — this list\n"
                     "  /quit                            — exit\n"
                     "\n"
