@@ -429,3 +429,47 @@ TEST_CASE("ctrl keys still work when the terminal sends raw kitty CSI-u reports"
     s.read_for(1000);
     CHECK(s.wait_exited(3000));
 }
+
+TEST_CASE("ctrl keys decode when the kitty report carries alternate-key/event-type subfields") {
+    // Regression: OpenTUI pushes kitty flags 5 (disambiguate + *report
+    // alternate keys*), so a real terminal's report isn't the bare
+    // `CSI 112;5 u` the previous test used — it's
+    // `CSI 112:80;5 u` (base codepoint : shifted-key alternate). The raw
+    // CSI tokenizer in read_key_event() didn't accept ':' as a parameter
+    // byte, so any sequence with a colon in it never reached
+    // decode_kitty_csi_u at all — every real kitty-protocol terminal's
+    // ctrl-key reports were silently dropped even though the decoder
+    // itself handled colons correctly. Exercise the actual shape a real
+    // terminal sends. (Event-type/release-event filtering is covered
+    // directly, without PTY/UI-text fragility, in
+    // test_kitty_key_decode.cpp.)
+    PtySession s = ready_editor();
+
+    // Ctrl-P: codepoint 'p'=112, shifted alternate 'P'=80, mods=5 (ctrl).
+    const std::string before = s.output();
+    s.send("\x1b[112:80;5u");
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(300);
+    s.send("\r\r");
+    s.read_for(800);
+    CHECK(PtySession::strip_ansi(s.output().substr(before.size()))
+              .find("/agents") != std::string::npos);
+
+    // Ctrl-W chord (base 'w'=119, shifted 'W'=87) followed by 'b' opens the
+    // history sidebar — proves the chord path also survives colon subfields.
+    // The sidebar's row content ("Conversations", "Untitled", ...) is drawn
+    // once at startup regardless of focus, so it won't reappear in this
+    // diff window; key on the "enter  / filter" footer hint instead, which
+    // only paints once the sidebar actually gains keyboard focus.
+    const std::string before_chord = s.output();
+    s.send("\x1b[119:87;5u");
+    s.send("b");
+    s.read_for(400);
+    CHECK(PtySession::strip_ansi(s.output().substr(before_chord.size()))
+              .find("filt") != std::string::npos);
+    s.send("\x1b");
+    s.read_for(200);
+
+    s.terminate();
+}
