@@ -115,12 +115,15 @@ void Engine::setup_terminal(bool alternate_screen) {
     // OpenTUI's capability handshake opts into the kitty keyboard protocol
     // (pushes `CSI > 5 u` — disambiguate escape codes — once the terminal
     // confirms support).  Under that protocol, terminals like kitty,
-    // ghostty, WezTerm, and foot encode every ctrl+letter (and Esc) as
-    // CSI-u escape sequences instead of legacy control bytes, which
-    // arbiter's input layer does not decode — every ctrl-key binding
-    // (Ctrl-W chords, Ctrl-P, Ctrl-R, line-editing keys) and Esc-cancel
-    // goes dead.  One-shot disable here for the common case — but see
-    // Engine::render() for why this alone isn't sufficient.
+    // ghostty, WezTerm, and foot encode ctrl+letter and Esc as CSI-u escape
+    // sequences instead of legacy control bytes.  Best-effort disable here
+    // (and again every render tick, see Engine::render()) so the protocol
+    // stays off as much as possible — but the terminal's capability reply
+    // is asynchronous and can re-enable it at any time relative to these
+    // calls, so this is defense-in-depth, not the actual fix: correctness
+    // comes from PaneInputEditor::read_key_event() decoding CSI-u key
+    // reports directly (see kitty_key_decode.h), so ctrl-key bindings and
+    // Esc-cancel work whether or not the protocol is actually off.
     disableKittyKeyboard(renderer_);
 
     terminal_ready_ = true;
