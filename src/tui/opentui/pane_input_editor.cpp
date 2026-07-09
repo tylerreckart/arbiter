@@ -1,6 +1,7 @@
 #include "tui/opentui/pane_input_editor.h"
 
 #include "tui/opentui/engine.h"
+#include "tui/opentui/kitty_key_decode.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
@@ -181,6 +182,15 @@ int PaneInputEditor::read_key_event() {
             }
             if (final) {
                 if (is_terminal_response_csi(params, final)) continue;
+                if (final == 'u') {
+                    // Kitty-protocol key report — decode back to the legacy
+                    // byte so it flows through the same dispatch as a
+                    // directly-typed control code, regardless of whether the
+                    // terminal ever honors our attempts to turn the protocol
+                    // off (see kitty_key_decode.h).
+                    if (auto legacy = decode_kitty_csi_u(params)) return *legacy;
+                    continue;
+                }
                 std::lock_guard<std::mutex> lk(mu_);
                 handle_csi(final, params);
             }
