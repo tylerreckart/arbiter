@@ -60,6 +60,11 @@ void restoreTerminalModes(OpenTuiHandle renderer);
 void processCapabilityResponse(OpenTuiHandle renderer,
                                const char* response,
                                uint32_t response_len);
+// Pops one level off the kitty keyboard protocol stack (CSI < u) if the
+// renderer's own tracking says the protocol is currently active; otherwise
+// a cheap no-op.  See Engine::render()'s call site for why this needs to be
+// asserted repeatedly rather than once.
+void disableKittyKeyboard(OpenTuiHandle renderer);
 void resizeRenderer(OpenTuiHandle renderer, uint32_t width, uint32_t height);
 void setRenderOffset(OpenTuiHandle renderer, uint32_t offset);
 uint8_t render(OpenTuiHandle renderer, bool force);
