@@ -498,6 +498,15 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_palette COMMAND unit_palette)
 
+    add_executable(unit_kitty_key_decode
+        tests/test_kitty_key_decode.cpp
+    )
+    target_include_directories(unit_kitty_key_decode PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_kitty_key_decode COMMAND unit_kitty_key_decode)
+
     add_executable(unit_sidebar_format
         tests/test_sidebar_format.cpp
         src/tui/sidebar_format.cpp
