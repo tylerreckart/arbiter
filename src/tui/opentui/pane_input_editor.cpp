@@ -169,8 +169,17 @@ int PaneInputEditor::read_key_event() {
             while (true) {
                 int b3 = 0;
                 if (!read_byte_timed(b3, 50)) break;
-                if ((b3 >= '0' && b3 <= '9') || b3 == ';' || b3 == '?'
-                    || b3 == '$' || b3 == '>' || b3 == '=') {
+                // ANSI parameter bytes span 0x30-0x3F ('0'-'9', ':', ';',
+                // '<', '=', '>', '?'). Kitty CSI-u reports use ':' inside
+                // both the codepoint field (shifted/base-layout alternates,
+                // sent because OpenTUI's pushed flags include "report
+                // alternate keys") and the modifier field (event type) —
+                // dropping it here means the whole sequence never reaches
+                // decode_kitty_csi_u below, silently eating every kitty
+                // key report that carries an alternate-key or event-type
+                // subfield (i.e. most of them).
+                if ((b3 >= '0' && b3 <= '9') || b3 == ':' || b3 == ';' || b3 == '?'
+                    || b3 == '$' || b3 == '>' || b3 == '=' || b3 == '<') {
                     params += static_cast<char>(b3);
                     continue;
                 }
