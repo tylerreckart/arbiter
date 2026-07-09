@@ -391,3 +391,41 @@ TEST_CASE("ctrl keys survive a kitty-support reply that lands after the startup 
 
     s.terminate();
 }
+
+TEST_CASE("ctrl keys still work when the terminal sends raw kitty CSI-u reports") {
+    // The two tests above only ever prove that legacy control bytes
+    // (0x10, 0x12, 0x17, ...) keep working after our disable attempts.
+    // Neither actually exercises the case a real user hit in Ghostty: a
+    // terminal that keeps the kitty keyboard protocol on regardless (e.g.
+    // it doesn't honor CSI < u pops the way this harness's fake terminal
+    // does, or some other program re-enables it) and sends every
+    // ctrl+letter as `CSI <codepoint>;<mods> u` instead of a single C0
+    // byte. Send those reports directly and confirm the app still responds
+    // correctly — this is what proves the *decode* is the real fix, not
+    // just the suppression timing.
+    PtySession s = ready_editor();
+
+    // Ctrl-P (codepoint 'p' = 112, mods = 5 = 1 + ctrl(4)) opens the palette.
+    const std::string before = s.output();
+    s.send("\x1b[112;5u");
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(300);
+    s.send("\r\r");   // accept, then submit "/agents "
+    s.read_for(800);
+    CHECK(PtySession::strip_ansi(s.output().substr(before.size()))
+              .find("/agents") != std::string::npos);
+
+    // Esc under the "disambiguate" flag arrives as a bare `CSI 27 u` rather
+    // than 0x1B; it must still clear an in-progress line. Same technique as
+    // the plain-ESC test: if the buffer is cleared, Ctrl-D on the now-empty
+    // line exits the app; if ESC was a no-op, Ctrl-D just deletes a char and
+    // the app keeps running.
+    s.send("willbe-cancelled");
+    s.read_for(200);
+    s.send("\x1b[27u");
+    s.read_for(300);
+    s.send("\x04");
+    s.read_for(1000);
+    CHECK(s.wait_exited(3000));
+}
