@@ -7,6 +7,39 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-07-09
+
+Adds TUI search and command-discovery surfaces, and fixes ctrl-key
+bindings and Esc going dead under terminals that speak the kitty
+keyboard protocol.
+
+### Added
+- **Conversation search.**  `/chat search <term>` and a live type-to-filter
+  (`/` in the history sidebar) find matching conversations by title or
+  content.
+- **In-pane scrollback search.**  `/find <term>` searches the focused
+  pane's scroll buffer and jumps between matches.
+- **Command palette.**  Ctrl-P opens a fuzzy-matched palette covering
+  every `/`-command, ranked by prefix/substring/description/subsequence
+  match quality.
+- **Reverse history search.**  Ctrl-R starts a readline-style
+  reverse-incremental search over input history, now shared live across
+  panes.
+
+### Fixed
+- **Ctrl-key bindings and Esc dead under the kitty keyboard protocol.**
+  Terminals that speak the protocol (kitty, Ghostty, WezTerm, foot)
+  re-encode ctrl+letter and Esc as `CSI ... u` escape sequences instead
+  of legacy control bytes once OpenTUI's capability handshake opts in.
+  Rather than only trying to suppress the terminal's use of the
+  protocol — inherently racy, since the terminal's capability reply is
+  asynchronous relative to arbiter's setup window — the input layer now
+  decodes these reports directly back into the legacy bytes its
+  dispatch already understands. Also handles the alternate-key and
+  event-type colon subfields real terminals send once "report alternate
+  keys" is active, which a first pass at the decoder missed, silently
+  dropping every real-world report.
+
 ## [0.7.2] — 2026-07-08
 
 Patch release: a thread-safety and performance sweep across the loop
