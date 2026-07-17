@@ -105,12 +105,8 @@ and column breakpoints. Full reference in
 curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
   | tar xz -C /usr/local/bin
 
-# Configure hosted models through OpenRouter
-export OPENROUTER_API_KEY="sk-or-..."
-
-# Run
-arbiter --init   # seed ~/.arbiter/ with starter agents
-arbiter          # launch the terminal client
+# Launch the terminal client
+arbiter
 ```
 
 Linux binary, source builds, OpenRouter/Ollama setup, the API server, and
