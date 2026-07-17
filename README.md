@@ -2,8 +2,8 @@
 
 **The agent that runs anywhere.**
 
-![Release Version Shield](https://img.shields.io/github/v/release/tylerreckart/arbiter)
-![License Shield](https://img.shields.io/github/license/tylerreckart/arbiter)
+![Release Version Shield](https://img.shields.io/github/v/release/electron-dynamics/arbiter)
+![License Shield](https://img.shields.io/github/license/electron-dynamics/arbiter)
 
 One small binary. Compile once, run it on a laptop, a server, an edge box, or
 a CI runner. Feed it prompts, webhooks, or events from firmware and sensors —
@@ -102,7 +102,7 @@ and column breakpoints. Full reference in
 
 ```bash
 # Install (macOS arm64)
-curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
+curl -L https://github.com/electron-dynamics/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
   | tar xz -C /usr/local/bin
 
 # Configure hosted models through OpenRouter
