@@ -146,19 +146,27 @@ function renderHome(docs) {
     ogImage: '/assets/terminal.jpg',
     body: `
       <section class="hero">
-        <div class="hero-media" aria-hidden="true">
-          <img src="/assets/terminal.jpg" alt="">
-          <div class="hero-shade"></div>
-        </div>
         <div class="hero-inner">
-          <div class="hero-copy">
-            <p class="brand-lockup">Arbiter</p>
-            <h1 class="hero-title">The agent that runs anywhere.</h1>
-            <p class="hero-lede">One small binary for laptops, servers, CI, and edge — supervised agents with durable memory and a live event stream.</p>
-            <div class="install-callout" aria-label="Install command">
-              <span>Install Arbiter</span>
-              <code>${escapeHtml(installCommand)}</code>
-              <button class="button" type="button" data-copy-install="${escapeAttribute(installCommand)}">Copy</button>
+          <p class="brand-lockup">Arbiter</p>
+          <h1 class="hero-title">The agent that runs anywhere.</h1>
+          <p class="hero-lede">One small binary for laptops, servers, CI, and edge — supervised agents with durable memory and a live event stream.</p>
+          <div class="install-callout" aria-label="Install command">
+            <span>Install</span>
+            <code>${escapeHtml(installCommand)}</code>
+            <button class="button" type="button" data-copy-install="${escapeAttribute(installCommand)}">Copy</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="product-stage reveal" id="product">
+        <div class="product-stage-inner">
+          <p class="eyebrow">Terminal interface</p>
+          <h2>Multi-pane sessions. Inline diffs. Live streams.</h2>
+          <div class="product-frame">
+            <img src="/assets/terminal.jpg" alt="Arbiter terminal interface with sessions and inline diff rendering" width="1600" height="1000">
+            <div class="product-meta">
+              <span>arbiter — interactive TUI</span>
+              <span>same runtime as CLI + HTTP API</span>
             </div>
           </div>
         </div>
@@ -169,7 +177,7 @@ function renderHome(docs) {
           <p class="eyebrow">Platform</p>
           <h2>Route. Supervise. Replay.</h2>
           <p class="section-lede">Map real events to the right agent, constrain tools with advisor gates, and keep every stream reconnectable.</p>
-          <div class="feature-grid">
+          <div class="feature-rail">
             <article class="feature">
               <h3>Route</h3>
               <p>Prompts, webhooks, incidents, schedules, and hardware events land on agents with explicit constitutions.</p>
@@ -186,12 +194,12 @@ function renderHome(docs) {
         </div>
       </section>
 
-      <section class="section section-contrast reveal" id="workflow">
+      <section class="section section-band reveal" id="workflow">
         <div class="section-inner split-section">
           <div>
             <p class="eyebrow">How it works</p>
             <h2>One event stream from request to result.</h2>
-            <p class="section-lede">Arbiter makes routing, delegation, tool calls, memory reads, advisor gates, and token use visible as structured events.</p>
+            <p class="section-lede">Routing, delegation, tool calls, memory reads, advisor gates, and token use stay visible as structured events.</p>
           </div>
           <div class="steps">
             <div class="step"><span>01</span><strong>Receive</strong><p>Accept a prompt, CLI send, HTTP request, webhook, schedule, or device event.</p></div>
@@ -207,7 +215,7 @@ function renderHome(docs) {
           <p class="eyebrow">Surfaces</p>
           <h2>Same runtime. Optional interfaces.</h2>
           <p class="section-lede">Drive agents from the TUI, one-shot CLI, HTTP API, or Agent2Agent clients without changing the binary underneath.</p>
-          <div class="feature-grid">
+          <div class="feature-rail">
             <article class="feature">
               <h3>Operators</h3>
               <p>Route production incidents, scheduled checks, queue messages, and service webhooks into supervised runs.</p>
@@ -224,7 +232,7 @@ function renderHome(docs) {
         </div>
       </section>
 
-      <section class="section reveal" id="themes">
+      <section class="section section-band reveal" id="themes">
         <div class="section-inner">
           <p class="eyebrow">Themeable</p>
           <h2>No color compiled into the binary.</h2>
@@ -270,8 +278,9 @@ async function copyAssets() {
 
 async function writeFavicon() {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
-  <rect width="64" height="64" fill="#10141c"/>
-  <text x="32" y="44" text-anchor="middle" font-family="ui-monospace, monospace" font-size="36" fill="#9fe8d4">⛮</text>
+  <rect width="64" height="64" fill="#0c0c0c"/>
+  <rect x="12" y="12" width="40" height="40" fill="#b8ff3c"/>
+  <text x="32" y="41" text-anchor="middle" font-family="ui-monospace, monospace" font-size="26" fill="#0c0c0c">⛮</text>
 </svg>`
   await writeFile('favicon.svg', svg)
 }
@@ -298,66 +307,129 @@ function renderDocsIndex(docs) {
     title: 'Arbiter Documentation',
     description: 'Install, operate, and extend the Arbiter self-hosted agent runtime.',
     canonicalPath: '/docs/',
+    variant: 'docs',
     body: `
-      <section class="section docs-index">
-        <div class="section-inner">
-          <p class="eyebrow">Documentation</p>
-          <h1>Build, operate, and extend Arbiter.</h1>
-          <p class="hero-copy">These pages are generated from the repository Markdown so implementation and documentation evolve together.</p>
-          <div class="flow">${cards}</div>
-        </div>
-      </section>
-    `,
-  })
-}
-
-function renderDocPage({ doc, docs, html, next, prev }) {
-  const nav = renderDocsSidebar(docs, doc)
-  const breadcrumbs = `${escapeHtml(sectionLabels[doc.section] ?? titleCase(doc.section))} / ${escapeHtml(doc.title)}`
-  return layout({
-    title: `${doc.title} — Arbiter Docs`,
-    description: doc.description,
-    canonicalPath: doc.href,
-    body: `
-      <div class="docs-layout">
-        ${nav}
+      <div class="docs-shell">
+        ${renderDocsSidebar(docs, { href: '/docs/', section: 'getting-started' })}
         <main class="docs-main" id="main">
-          <article class="doc-shell">
-            <div class="breadcrumbs">${breadcrumbs}</div>
-            <div class="doc-content">${html}</div>
-            <nav class="doc-nav" aria-label="Documentation pagination">
-              ${prev ? `<a href="${prev.href}"><span>Previous</span>${escapeHtml(prev.title)}</a>` : '<span></span>'}
-              ${next ? `<a href="${next.href}"><span>Next</span>${escapeHtml(next.title)}</a>` : '<span></span>'}
-            </nav>
-          </article>
+          <div class="docs-main-inner">
+            <div class="doc-shell docs-index-inner">
+              <p class="eyebrow">Documentation</p>
+              <h1>Build, operate, and extend Arbiter.</h1>
+              <p class="lead">Generated from repository Markdown so implementation and documentation stay on the same path.</p>
+              <div class="flow">${cards}</div>
+            </div>
+          </div>
         </main>
       </div>
     `,
   })
 }
 
+function renderDocPage({ doc, docs, html, next, prev }) {
+  const toc = extractToc(doc.source)
+  const breadcrumbs = `${escapeHtml(sectionLabels[doc.section] ?? titleCase(doc.section))} / ${escapeHtml(doc.title)}`
+  return layout({
+    title: `${doc.title} — Arbiter Docs`,
+    description: doc.description,
+    canonicalPath: doc.href,
+    variant: 'docs',
+    body: `
+      <div class="docs-shell">
+        ${renderDocsSidebar(docs, doc)}
+        <main class="docs-main" id="main">
+          <div class="docs-main-inner">
+            <article class="doc-shell">
+              <div class="breadcrumbs">${breadcrumbs}</div>
+              <div class="doc-content">${html}</div>
+              <nav class="doc-nav" aria-label="Documentation pagination">
+                ${prev ? `<a href="${prev.href}"><span>Previous</span>${escapeHtml(prev.title)}</a>` : '<span></span>'}
+                ${next ? `<a href="${next.href}"><span>Next</span>${escapeHtml(next.title)}</a>` : '<span></span>'}
+              </nav>
+            </article>
+            ${renderToc(toc)}
+          </div>
+        </main>
+      </div>
+    `,
+  })
+}
+
+function extractToc(markdown) {
+  const toc = []
+  for (const line of markdown.replace(/\r\n/g, '\n').split('\n')) {
+    const match = line.match(/^(#{2,3})\s+(.+)$/)
+    if (!match) continue
+    const text = stripHashes(match[2])
+    toc.push({
+      id: slugify(text),
+      level: match[1].length,
+      text,
+    })
+  }
+  return toc
+}
+
+function renderToc(toc) {
+  if (toc.length < 3) return ''
+  const links = toc
+    .map((entry) => `<a href="#${escapeAttribute(entry.id)}">${escapeHtml(entry.text)}</a>`)
+    .join('')
+  return `<nav class="doc-toc" aria-label="On this page"><p>On this page</p>${links}</nav>`
+}
+
 function renderDocsSidebar(docs, activeDoc) {
   const groups = groupDocs(docs)
-  const body = [...groups.entries()]
-    .map(([section, sectionDocs]) => {
-      if (section === 'api') {
-        return renderApiSidebarGroup(sectionDocs, activeDoc)
-      }
-
-      const links = sectionDocs
-        .map((doc) => {
-          const active = doc.href === activeDoc.href ? ' active' : ''
-          return `<a class="docs-link${active}" href="${doc.href}">${escapeHtml(doc.title)}</a>`
-        })
-        .join('')
-
-      return `<div class="docs-group"><p class="docs-group-title">${escapeHtml(
-        sectionLabels[section] ?? titleCase(section),
-      )}</p>${links}</div>`
+  const tabs = [...groups.keys()]
+    .map((section) => {
+      const active = section === activeDoc.section ? ' active' : ''
+      const sectionDocs = groups.get(section) ?? []
+      const indexDoc = sectionDocs.find((doc) => doc.relative.endsWith('/index.md') || doc.relative === `${section}.md`)
+      const href = indexDoc?.href ?? sectionDocs[0]?.href ?? '/docs/'
+      return `<a class="${active.trim()}" href="${href}">${escapeHtml(sectionLabels[section] ?? titleCase(section))}</a>`
     })
     .join('')
 
-  return `<aside class="docs-sidebar" aria-label="Documentation"><h2>Docs</h2>${body}</aside>`
+  const activeSection = activeDoc.section
+  const sectionDocs = groups.get(activeSection) ?? []
+  let body = ''
+
+  if (activeSection === 'api') {
+    body = renderApiSidebarGroup(sectionDocs, activeDoc)
+  } else if (sectionDocs.length > 0) {
+    const links = sectionDocs
+      .map((doc) => {
+        const active = doc.href === activeDoc.href ? ' active' : ''
+        const label = doc.relative.endsWith('/index.md') ? 'Overview' : doc.title
+        return `<a class="docs-link${active}" href="${doc.href}">${escapeHtml(label)}</a>`
+      })
+      .join('')
+    body = `<div class="docs-group"><p class="docs-group-title">${escapeHtml(
+      sectionLabels[activeSection] ?? titleCase(activeSection),
+    )}</p>${links}</div>`
+  } else {
+    body = [...groups.entries()]
+      .map(([section, docsInSection]) => {
+        const links = docsInSection
+          .map((doc) => {
+            const active = doc.href === activeDoc.href ? ' active' : ''
+            return `<a class="docs-link${active}" href="${doc.href}">${escapeHtml(doc.title)}</a>`
+          })
+          .join('')
+        return `<div class="docs-group"><p class="docs-group-title">${escapeHtml(
+          sectionLabels[section] ?? titleCase(section),
+        )}</p>${links}</div>`
+      })
+      .join('')
+  }
+
+  return `<aside class="docs-sidebar" aria-label="Documentation">
+    <div class="docs-side-head">
+      <h2>Docs</h2>
+      <div class="docs-section-tabs">${tabs}</div>
+    </div>
+    <div class="docs-nav">${body}</div>
+  </aside>`
 }
 
 function renderApiSidebarGroup(sectionDocs, activeDoc) {
@@ -421,15 +493,38 @@ function groupDocs(docs) {
   return groups
 }
 
-function layout({ title, description, body, canonicalPath = '/', ogImage = '/assets/terminal.jpg' }) {
+function layout({
+  title,
+  description,
+  body,
+  canonicalPath = '/',
+  ogImage = '/assets/terminal.jpg',
+  variant = 'marketing',
+}) {
   const canonical = `${siteOrigin}${canonicalPath}`
+  const bodyClass = variant === 'docs' ? ' class="docs"' : ''
+  const themeColor = variant === 'docs' ? '#0c0c0c' : '#ffffff'
+  const navLinks =
+    variant === 'docs'
+      ? `
+          <a href="/">Home</a>
+          <a href="/docs/">Docs</a>
+          <a href="https://github.com/tylerreckart/arbiter">GitHub</a>
+          <a class="button" href="/docs/getting-started/">Start</a>`
+      : `
+          <a href="/#product">Product</a>
+          <a href="/#platform">Platform</a>
+          <a href="/docs/">Docs</a>
+          <a href="https://github.com/tylerreckart/arbiter">GitHub</a>
+          <a class="button" href="/docs/getting-started/">Start</a>`
+
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="${escapeHtml(description)}">
-    <meta name="theme-color" content="#10141c">
+    <meta name="theme-color" content="${themeColor}">
     <link rel="canonical" href="${escapeAttribute(canonical)}">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Arbiter">
@@ -445,10 +540,10 @@ function layout({ title, description, body, canonicalPath = '/', ogImage = '/ass
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Public+Sans:wght@400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
   </head>
-  <body>
+  <body${bodyClass}>
     <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header">
       <nav class="nav" aria-label="Main navigation">
@@ -456,12 +551,7 @@ function layout({ title, description, body, canonicalPath = '/', ogImage = '/ass
           <span class="brand-mark" aria-hidden="true">⛮</span>
           <span class="brand-name">Arbiter</span>
         </a>
-        <div class="nav-links">
-          <a href="/#platform">Platform</a>
-          <a href="/#workflow">Workflow</a>
-          <a href="/docs/">Docs</a>
-          <a href="https://github.com/tylerreckart/arbiter">GitHub</a>
-          <a class="button" href="/docs/getting-started/">Start</a>
+        <div class="nav-links">${navLinks}
         </div>
       </nav>
     </header>
