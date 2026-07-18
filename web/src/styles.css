@@ -6,8 +6,9 @@
   --muted: #5f5f5a;
   --line: #e6e6e2;
   --line-strong: #111111;
-  --signal: #b8ff3c;
+  --signal: #ff5800;
   --signal-ink: #111111;
+  --signal-soft: rgba(255, 88, 0, 0.14);
   --panel: #111111;
   --panel-fg: #f3f3ef;
   --panel-muted: #9b9b94;
@@ -87,7 +88,7 @@ a:hover {
   position: fixed;
   top: var(--header-offset);
   transform: translateX(-50%);
-  width: min(640px, calc(100vw - 28px));
+  width: min(var(--max), calc(100vw - 48px));
   z-index: 40;
 }
 
@@ -175,7 +176,7 @@ a:hover {
 }
 
 .button.signal:hover {
-  background: #d4ff6a;
+  background: #ff7a33;
 }
 
 /* ——— Marketing ——— */
