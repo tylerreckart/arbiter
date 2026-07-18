@@ -129,11 +129,57 @@ void styled_append_char(StyledLine& line, StyleId id, char c) {
     styled_append(line, id, std::string_view(&c, 1));
 }
 
+namespace {
+
+std::string user_echo_payload(const StyledLine& line) {
+    std::string text = line.text;
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+    return text;
+}
+
+StyledLine padded_user_echo_line(std::string_view text, int cols) {
+    const int width = cols < 1 ? 1 : cols;
+    std::string body(text);
+    const int w = static_cast<int>(display_width(body));
+    if (w < width) {
+        body.append(static_cast<size_t>(width - w), ' ');
+    }
+    // Longer turns wrap naturally; do not truncate payload.
+    StyledLine line;
+    styled_append(line, StyleId::UserEchoText, body);
+    return line;
+}
+
+} // namespace
+
 StyledLine styled_user_echo(std::string_view text) {
     StyledLine line;
-    styled_append(line, StyleId::UserEchoArrow, "> ");
+    // No caret — differentiation is the input-matching background strip.
     styled_append(line, StyleId::UserEchoText, text);
     return line;
+}
+
+bool is_styled_user_echo_line(const StyledLine& line) {
+    if (line.spans.empty()) return false;
+    for (const StyleSpan& span : line.spans) {
+        if (span.id != StyleId::UserEchoText && span.id != StyleId::UserEchoArrow) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool resize_styled_user_echo_lines(std::vector<StyledLine>& lines, int cols) {
+    const int width = cols < 1 ? 1 : cols;
+    bool changed = false;
+    for (StyledLine& line : lines) {
+        if (!is_styled_user_echo_line(line)) continue;
+        StyledLine next = padded_user_echo_line(user_echo_payload(line), width);
+        if (next.text == line.text) continue;
+        line = std::move(next);
+        changed = true;
+    }
+    return changed;
 }
 
 bool is_styled_rule_line(const StyledLine& line) {

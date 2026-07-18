@@ -193,12 +193,20 @@ TEST_CASE("MarkdownRenderer styles strikethrough spans") {
     CHECK(saw_strike);
 }
 
-TEST_CASE("styled_user_echo builds arrow and text spans") {
+TEST_CASE("styled_user_echo has no caret and pads to wrap width") {
     const StyledLine line = styled_user_echo("hello");
-    CHECK(line.text == "> hello");
-    REQUIRE(line.spans.size() >= 2);
-    CHECK(line.spans[0].id == StyleId::UserEchoArrow);
-    CHECK(line.spans[1].id == StyleId::UserEchoText);
+    CHECK(line.text == "hello");
+    REQUIRE(line.spans.size() == 1);
+    CHECK(line.spans[0].id == StyleId::UserEchoText);
+    CHECK(is_styled_user_echo_line(line));
+
+    std::vector<StyledLine> lines{line};
+    CHECK(resize_styled_user_echo_lines(lines, 10));
+    CHECK(lines[0].text == "hello     ");
+    CHECK(is_styled_user_echo_line(lines[0]));
+    // Payload preserved across resize (trailing pad stripped then reapplied).
+    CHECK(resize_styled_user_echo_lines(lines, 8));
+    CHECK(lines[0].text == "hello   ");
 }
 
 TEST_CASE("resize_styled_rule_lines rewrites HR width") {

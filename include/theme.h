@@ -48,7 +48,7 @@ struct Theme {
     std::string text_dimmer;       // sub-agent progress, dimmer than text_dim
     std::string system_fg;         // StyleId::System / status prose (content.system_fg)
     std::string prompt_color;      // the "> " readline prompt arrow
-    std::string user_echo_arrow;   // "> " prefix on echoed user input
+    std::string user_echo_arrow;   // legacy caret color (echoes no longer use a caret)
     std::string user_echo_text;    // echoed user-typed text
 
     // Stable per-agent color.  "index" master always gets `agent_master`;

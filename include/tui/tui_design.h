@@ -120,6 +120,9 @@ struct TuiDesign {
         TuiRgba prompt_color{};
         TuiRgba user_echo_arrow{};
         TuiRgba user_echo_text{};
+        // Scrollback strip behind echoed user turns — defaults to bg.header
+        // (same surface as the live readline input block).
+        TuiRgba user_echo_bg{};
         TuiRgba border_inactive{};
         TuiRgba agent_master{};
         std::array<TuiRgba, 12> agent_palette{};
