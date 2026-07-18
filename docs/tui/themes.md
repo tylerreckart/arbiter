@@ -66,7 +66,7 @@ Top-level keys:
 | `accent` | `primary`, `secondary`, `success`, `warning`, `error`, `info` |
 | `border` | `subtle`, `focus`, `gutter`, plus optional `vertical` / `horizontal` strings |
 | `content` | Markdown/scrollback: `heading` (array of 4), `code`, `link`, diff colors, syntax tokens, `agent_palette` (array of 12), … |
-| `layout` | Padding, column breakpoints, `show_footer`, `show_history_sidebar`, … |
+| `layout` | Padding, column breakpoints, `show_footer`, `show_history_sidebar`, `mouse`, … |
 | `component` | Prompt/footer strings |
 
 Example partial override on a preset (in `tui.json` or a theme file):

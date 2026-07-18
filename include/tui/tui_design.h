@@ -57,6 +57,9 @@ struct TuiDesign {
         bool show_footer = true;
         bool status_pill = true;
         bool show_history_sidebar = true;
+        // SGR mouse tracking: click-to-focus, wheel scroll, drag-resize.
+        // Set false in tui.json to keep keyboard-only input.
+        bool mouse = true;
     } layout;
 
     struct Component {

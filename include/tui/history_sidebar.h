@@ -72,6 +72,8 @@ public:
     void move_selection(int delta, int visible_rows);
     // PgUp (direction < 0) / PgDn (direction > 0): move a full page.
     void page_selection(int direction, int visible_rows);
+    // Absolute list-row index (0 = "+ New"); clamps and updates scroll.
+    void select_at_index(int index, int visible_rows);
     // Index into the drawn row list: 0 = "+ New conversation"; 1..N =
     // entries[selected-1]. Recomputed on every call from the id-pinned
     // selection so it stays correct even if entries_ was re-sorted since
@@ -79,6 +81,7 @@ public:
     [[nodiscard]] int selected_index() const;
     [[nodiscard]] bool is_new_selected() const;
     [[nodiscard]] std::string selected_conversation_id() const;
+    [[nodiscard]] int scroll_offset() const;
 
     // Valid only immediately after handle_key() returns RenameCommit —
     // returns the edited text and clears the internal buffer.

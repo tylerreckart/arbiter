@@ -64,9 +64,22 @@ Shared across all panes:
 - The shared scratchpad (`/mem shared`)
 - Session restore key (one snapshot per cwd, see [sessions.md](sessions.md))
 
+## Mouse
+
+When `layout.mouse` is enabled in `~/.arbiter/tui.json` (the default), the TUI enables SGR mouse tracking and consumes:
+
+| Action | Effect |
+|--------|--------|
+| Left-click a pane | Focus that pane |
+| Left-click the input row | Focus the pane and place the caret |
+| Wheel over scrollback | Scroll that pane (does not steal keyboard focus) |
+| Left-click a conversation in the history sidebar | Select and switch to it |
+| Drag a split gutter | Resize the two adjacent panes asymmetrically |
+
+Set `"layout": { "mouse": false }` to keep keyboard-only input (useful inside tmux without `set -g mouse on`, or when the host terminal fights with mouse capture).
+
 ## Limits
 
-- No keyboard shortcut to resize a split asymmetrically. Children share their parent's dimension equally; if you want a small reader pane next to a wide writer pane, the chord-based layout doesn't express it.
+- No keyboard shortcut yet to resize a split asymmetrically (mouse drag works; see above). Chord-based weights are tracked as #44.
 - No "zoom" / temporary maximise.
-- No drag-to-resize (terminal mouse events are not consumed).
 - Layout is not persisted — relaunching restores the focused pane's session (history, agent, conversation state) but always starts as a single pane. Sessions only restore content; layouts are ephemeral.
