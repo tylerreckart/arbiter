@@ -19,11 +19,12 @@ void push_loop_banner(OutputQueue* oq,
                       const std::string& detail,
                       const std::string& hint) {
     if (!oq) return;
+    // Separation from prior output comes from OutputQueue::end_message /
+    // block_gap — do not insert a leading blank StyledLine (that double-gaps).
     StyledLine line;
     styled_append(line, style, tag);
     if (!detail.empty()) styled_append(line, StyleId::System, " " + detail);
     std::vector<StyledLine> lines;
-    lines.push_back(StyledLine{});
     lines.push_back(std::move(line));
     if (!hint.empty()) {
         StyledLine h;
