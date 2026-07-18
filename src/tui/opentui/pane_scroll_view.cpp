@@ -40,6 +40,14 @@ std::vector<StyledLine> prepare_prose_lines(std::vector<StyledLine> lines,
             out.push_back(arbiter::styled_rule_line(wrap_cols));
             continue;
         }
+        if (arbiter::is_styled_user_echo_line(line)) {
+            empties = 0;
+            std::vector<StyledLine> one;
+            one.push_back(std::move(line));
+            arbiter::resize_styled_user_echo_lines(one, wrap_cols);
+            out.push_back(std::move(one.front()));
+            continue;
+        }
         if (line.text.empty()) {
             if (empties < paragraph_gap) {
                 out.push_back(std::move(line));
@@ -153,12 +161,13 @@ int PaneScrollView::ProseSegment::visual_rows(int content_w) const {
 void PaneScrollView::ProseSegment::set_wrap_cols(int cols) {
     const int next = std::max(1, cols);
     const bool rules_resized = arbiter::resize_styled_rule_lines(source_, next);
+    const bool echo_resized = arbiter::resize_styled_user_echo_lines(source_, next);
     wrap_cols_ = next;
     if (view_ != 0) {
         textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(wrap_cols_));
     }
-    // Rule text lives in the TextBuffer; rebuild highlights when width changes.
-    if (rules_resized) retheme();
+    // Rule / user-echo padding lives in the TextBuffer; rebuild when width changes.
+    if (rules_resized || echo_resized) retheme();
 }
 
 void PaneScrollView::ProseSegment::collect_lines(std::vector<std::string>& out) const {
@@ -864,7 +873,7 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
     std::string needle = term;
     for (char& c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-    // The echoed "> /find <term>" line that invoked this very search is
+    // The echoed "/find <term>" line that invoked this very search is
     // itself a segment by the time this runs (the REPL echoes every typed
     // line into scrollback before dispatching it), and it trivially
     // contains `term` by construction.  Without excluding it, every /find
@@ -874,7 +883,7 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
     // nondeterministic (one run sees N matches, the next sees N+1).  A
     // user's own /find invocations are UI chrome, not content they're
     // searching for, so skip them unconditionally.
-    static constexpr std::string_view kEchoPrefix = "> /find";
+    static constexpr std::string_view kEchoPrefix = "/find";
 
     int base = 0;
     std::vector<std::string> lines;
@@ -884,7 +893,14 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
         seg->collect_lines(lines);
         for (size_t k = 0; k < lines.size(); ++k) {
             std::string_view line_sv = lines[k];
-            if (line_sv.substr(0, kEchoPrefix.size()) == kEchoPrefix) continue;
+            while (!line_sv.empty() && line_sv.back() == ' ') {
+                line_sv.remove_suffix(1);
+            }
+            if (line_sv.size() >= kEchoPrefix.size()
+                && line_sv.substr(0, kEchoPrefix.size()) == kEchoPrefix
+                && (line_sv.size() == kEchoPrefix.size() || line_sv[kEchoPrefix.size()] == ' ')) {
+                continue;
+            }
             std::string hay = std::move(lines[k]);
             for (char& c : hay) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             if (hay.find(needle) == std::string::npos) continue;

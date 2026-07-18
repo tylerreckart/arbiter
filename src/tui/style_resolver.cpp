@@ -124,9 +124,11 @@ ResolvedStyle resolve_style(StyleId id) {
         break;
     case StyleId::UserEchoArrow:
         rs.fg = &d.content.user_echo_arrow;
+        rs.bg = &d.content.user_echo_bg;
         break;
     case StyleId::UserEchoText:
         rs.fg = &d.content.user_echo_text;
+        rs.bg = &d.content.user_echo_bg;
         break;
     }
     return rs;

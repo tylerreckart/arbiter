@@ -204,13 +204,14 @@ defaults):
     "diff_bg_add": "#0d3316",
     "diff_bg_remove": "#4a1212",
     "diff_bg_empty": "#101010",
-    "system_fg": "#5c6370"    // [interrupted], tool summary rest, status prose
+    "system_fg": "#5c6370",   // [interrupted], tool summary rest, status prose
+    "user_echo_bg": null      // defaults to bg.header (readline input strip)
   }
 }
 ```
 
-Add `StyleId::Strike`, `StyleId::System`, `StyleId::UserEchoArrow` /
-`StyleId::UserEchoText`.
+Add `StyleId::Strike`, `StyleId::System`, `StyleId::UserEchoText`
+(caret-less echoed turns with `user_echo_bg` strip).
 
 ## Phased plan
 

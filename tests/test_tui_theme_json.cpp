@@ -81,6 +81,7 @@ TEST_CASE("tui_design_to_json exports panel surface and rhythm tokens") {
     CHECK(json.find("\"code_bg\"") != std::string::npos);
     CHECK(json.find("\"diff_bg_add\"") != std::string::npos);
     CHECK(json.find("\"system_fg\"") != std::string::npos);
+    CHECK(json.find("\"user_echo_bg\"") != std::string::npos);
     CHECK(json.find("\"block_gap\"") != std::string::npos);
     CHECK(json.find("\"panel_gap\"") != std::string::npos);
     CHECK(json.find("\"prose_paragraph_gap\"") != std::string::npos);
@@ -213,6 +214,13 @@ TEST_CASE("tui.json bg.base override refreshes derived diff surfaces") {
     CHECK(tui_design().bg.base[0] == 0xf8);
     // Diff add tint should flip to the light-theme green, not stay dark.
     CHECK(tui_design().content.diff_bg_add[1] > 0x80);
+}
+
+TEST_CASE("user_echo_bg defaults to bg.header like the readline input") {
+    const TuiDesign d = tui_design_for_preset("onedark");
+    CHECK(d.content.user_echo_bg[0] == d.bg.header[0]);
+    CHECK(d.content.user_echo_bg[1] == d.bg.header[1]);
+    CHECK(d.content.user_echo_bg[2] == d.bg.header[2]);
 }
 
 TEST_CASE("scroll wrap width accounts for edge pad and gutter") {

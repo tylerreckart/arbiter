@@ -214,6 +214,8 @@ void derive_unset_panel_surfaces(TuiDesign& d) {
     if (rgba_unset(c.code_header_bg)) c.code_header_bg = d.bg.header;
     if (rgba_unset(c.code_gutter)) c.code_gutter = d.text.muted;
     if (rgba_unset(c.system_fg)) c.system_fg = c.text_dim;
+    // Match the live readline input block (pane_frame fills with bg.header).
+    if (rgba_unset(c.user_echo_bg)) c.user_echo_bg = d.bg.header;
 
     const DiffBgSet fill = diff_bg_for_base(d.bg.base);
     if (rgba_unset(c.diff_bg_context)) c.diff_bg_context = fill.context;
@@ -250,6 +252,11 @@ void sync_surfaces_for_chrome_overrides(TuiDesign& d,
     if (child(doc, "bg", "header") && !child(doc, "content", "code_header_bg")) {
         if (rgba_unset(c.code_header_bg) || c.code_header_bg == before.header) {
             c.code_header_bg = d.bg.header;
+        }
+    }
+    if (child(doc, "bg", "header") && !child(doc, "content", "user_echo_bg")) {
+        if (rgba_unset(c.user_echo_bg) || c.user_echo_bg == before.header) {
+            c.user_echo_bg = d.bg.header;
         }
     }
     if (child(doc, "text", "muted") && !child(doc, "content", "code_gutter")) {
@@ -442,6 +449,7 @@ void apply_color_overrides(TuiDesign& d, const JsonValue& root) {
     color(root, "content", "prompt_color", d.content.prompt_color);
     color(root, "content", "user_echo_arrow", d.content.user_echo_arrow);
     color(root, "content", "user_echo_text", d.content.user_echo_text);
+    color(root, "content", "user_echo_bg", d.content.user_echo_bg);
     color(root, "content", "border_inactive", d.content.border_inactive);
     color(root, "content", "agent_master", d.content.agent_master);
     if (auto h = child(root, "content", "heading"); h && h->is_array()) {
@@ -732,6 +740,7 @@ std::shared_ptr<JsonValue> design_to_json_value(const TuiDesign& d,
         {"prompt_color", d.content.prompt_color},
         {"user_echo_arrow", d.content.user_echo_arrow},
         {"user_echo_text", d.content.user_echo_text},
+        {"user_echo_bg", d.content.user_echo_bg},
         {"border_inactive", d.content.border_inactive},
         {"agent_master", d.content.agent_master},
     };
