@@ -37,17 +37,19 @@ inline bool rect_contains(const Rect& r, int x, int y) {
 
 // Map a 0-based y into a history-sidebar list row index, or -1 if outside
 // the painted list band. `visible_rows` is the number of row slots currently
-// drawn; `list_row_count` is 1 ("+ New") + visible entries. Clicks on empty
+// drawn; `list_row_count` is 1 ("+ New") + visible entries. When
+// `filter_line_visible` is true the list starts one row lower (after the
+// "/" filter line), matching history_sidebar_frame.cpp. Clicks on empty
 // slots past the last real row return -1 (do not clamp to the last entry).
 inline int history_sidebar_row_at(const Rect& sidebar_rect,
                                   int y,
                                   int scroll_offset,
                                   int visible_rows,
-                                  int list_row_count) {
-    // Matches history_sidebar_frame.cpp: list starts at sidebar_rect.y + 2.
-    constexpr int kListTopOffset = 2;
+                                  int list_row_count,
+                                  bool filter_line_visible = false) {
     constexpr int kRowHeight = 2;
-    const int top = sidebar_rect.y + kListTopOffset;
+    // Section label at y+1, then optional filter line, then list.
+    const int top = sidebar_rect.y + 2 + (filter_line_visible ? 1 : 0);
     if (y < top) return -1;
     if (visible_rows <= 0 || list_row_count <= 0) return -1;
     const int rel = y - top;
@@ -69,6 +71,7 @@ inline HitTarget hit_test(LayoutTree& layout,
                           int history_scroll_offset,
                           int history_visible_rows,
                           int history_list_row_count,
+                          bool history_filter_line_visible,
                           int x,
                           int y) {
     HitTarget hit;
@@ -77,7 +80,7 @@ inline HitTarget hit_test(LayoutTree& layout,
         hit.kind = HitKind::HistorySidebar;
         hit.history_row = history_sidebar_row_at(
             history_rect, y, history_scroll_offset, history_visible_rows,
-            history_list_row_count);
+            history_list_row_count, history_filter_line_visible);
         return hit;
     }
     if (right_rect.w > 0 && rect_contains(right_rect, x, y)) {
