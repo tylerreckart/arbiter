@@ -99,6 +99,12 @@ Engine::Engine(std::uint32_t width, std::uint32_t height)
 
 Engine::~Engine() {
     if (renderer_ != 0) {
+        // Always drop mouse tracking before destroy so a hard exit cannot
+        // leave the host shell printing raw SGR reports on every click.
+        if (mouse_enabled_) {
+            disableMouse(renderer_);
+            mouse_enabled_ = false;
+        }
         // destroyRenderer runs performShutdownSequence (alt-screen exit,
         // cursor restore).  Do not call restoreTerminalModes here — that
         // helper re-enables mouse/focus modes for focus-in events, not exit.
@@ -106,6 +112,17 @@ Engine::~Engine() {
         renderer_ = 0;
     }
     terminal_ready_ = false;
+}
+
+void Engine::set_mouse_enabled(bool enabled, bool enable_movement) {
+    if (renderer_ == 0) return;
+    if (enabled) {
+        enableMouse(renderer_, enable_movement);
+        mouse_enabled_ = true;
+    } else if (mouse_enabled_) {
+        disableMouse(renderer_);
+        mouse_enabled_ = false;
+    }
 }
 
 void Engine::setup_terminal(bool alternate_screen) {

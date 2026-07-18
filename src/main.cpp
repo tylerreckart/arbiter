@@ -40,6 +40,8 @@
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
 #include "tui/opentui/top_header_frame.h"
+#include "tui/opentui/mouse_decode.h"
+#include "tui/opentui/mouse_hit.h"
 
 #include <iostream>
 #include <string>
@@ -52,6 +54,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <mutex>
 #include <set>
@@ -182,6 +185,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     arbiter::UiContext ui_ctx;
     ot_session.start(static_cast<std::uint32_t>(arbiter::term_cols()),
                      static_cast<std::uint32_t>(arbiter::term_rows()));
+    // Button+drag+wheel tracking without any-event motion (?1003).
+    if (arbiter::tui_design().layout.mouse) {
+        ot_session.engine().set_mouse_enabled(true, /*enable_movement=*/false);
+    }
     if (stdin_is_tty) arbiter::drain_stdin_spurious(200);
     ui_ctx.session = &ot_session;
     g_ui_ctx = &ui_ctx;
@@ -241,6 +248,15 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // Forward declaration — layout_ptr lets lambdas registered before layout
     // construction reach it safely (we set it once and never clear).
     LayoutTree* layout_ptr = nullptr;
+
+    // Filled in after switch_conversation exists; make_pane editors call through.
+    std::function<bool(const arbiter::opentui::MouseEvent&)> route_mouse;
+
+    // Active separator drag (mouse button held on a split gutter).
+    struct MouseDragState {
+        bool active = false;
+        LayoutTree::SeparatorHit sep{};
+    } mouse_drag;
 
     auto layout_bounds = [&sidebar, &layout_ptr, &history_sidebar]() -> Rect {
         const int cols = arbiter::term_cols();
@@ -464,6 +480,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             return cmd == 'w' || cmd == 'h' || cmd == 's' || cmd == 'v' || cmd == 'c'
                 || cmd == 't' || cmd == 'b'
                 || cmd == 0x17;
+        });
+        p->editor.set_mouse_handler([&route_mouse](const arbiter::opentui::MouseEvent& ev) {
+            return route_mouse ? route_mouse(ev) : false;
         });
         return p;
     };
@@ -1954,6 +1973,146 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         return true;
     };
 
+    auto scroll_pane = [&](Pane& pane, int direction, int step) {
+        const int max_off = pane_history_max_scroll(pane);
+        if (direction < 0) {
+            pane.scroll_offset = std::min(pane.scroll_offset + step, max_off);
+            if (pane.scroll_offset >= max_off && pane.scroll && pane.scroll->has_gap()) {
+                const auto history = orch.get_agent_history("index");
+                arbiter::replay_load_previous_chunk(pane, history);
+            }
+        } else {
+            pane.scroll_offset = std::max(0, pane.scroll_offset - step);
+            pane.new_while_scrolled = 0;
+            if (pane.scroll_offset == 0) pane.tui.clear_status();
+        }
+        if (pump_notify) pump_notify();
+    };
+
+    auto right_sidebar_rect = [&]() -> Rect {
+        const int cols = arbiter::term_cols();
+        const int rows = arbiter::term_rows();
+        const int panes = static_cast<int>(layout.pane_count());
+        const int sw = sidebar.effective_width(cols, panes);
+        if (sw <= 0) return {};
+        const int pane_x = layout.outer_bounds().x;
+        const int pane_w = layout.outer_bounds().w;
+        const int gap = cols - pane_x - pane_w;
+        if (gap <= 0) return {};
+        return Rect{pane_x + pane_w, 1, std::min(sw, gap), std::max(1, rows - 1)};
+    };
+
+    auto history_visible_rows = [&](const Rect& hb) -> int {
+        const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
+        return arbiter::opentui::history_sidebar_visible_rows(
+            hb, chrome.rect, chrome.input_rows, history_sidebar.focused());
+    };
+
+    // Returns true when the focused editor should exit read_line (focus moved).
+    route_mouse = [&](const arbiter::opentui::MouseEvent& ev) -> bool {
+        using arbiter::opentui::HitKind;
+        using arbiter::opentui::MouseButton;
+        using arbiter::opentui::MouseType;
+        using arbiter::opentui::ScrollDir;
+
+        if (!arbiter::tui_design().layout.mouse) return false;
+
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+
+        // Separator drag: track motion until button release.
+        if (mouse_drag.active) {
+            if (ev.type == MouseType::Up
+                || (ev.type == MouseType::Drag && ev.button == MouseButton::Left)
+                || (ev.type == MouseType::Down && ev.button == MouseButton::Left)) {
+                if (ev.type != MouseType::Up) {
+                    layout.drag_separator(mouse_drag.sep, ev.x, ev.y);
+                    layout.for_each_pane([&](Pane& p) {
+                        pane_history_set_cols(p, p.tui.cols());
+                    });
+                    if (pump_notify) pump_notify();
+                }
+                if (ev.type == MouseType::Up) mouse_drag.active = false;
+                return false;
+            }
+            if (ev.type == MouseType::Move) return false;
+        }
+
+        const int cols = arbiter::term_cols();
+        const int rows = arbiter::term_rows();
+        const Rect hb = HistorySidebarState::rect_for_terminal(
+            cols, rows, history_sidebar.enabled());
+        const Rect rb = right_sidebar_rect();
+        const auto hit = arbiter::opentui::hit_test(
+            layout, hb, rb, history_sidebar.scroll_offset(), ev.x, ev.y);
+
+        if (ev.type == MouseType::Scroll) {
+            const int dir = (ev.scroll == ScrollDir::Up || ev.scroll == ScrollDir::Left)
+                ? -1 : +1;
+            if (hit.kind == HitKind::HistorySidebar && hb.w > 0) {
+                const int vis = history_visible_rows(hb);
+                history_sidebar.page_selection(dir, vis);
+                if (pump_notify) pump_notify();
+                return false;
+            }
+            Pane* target = hit.pane ? hit.pane : layout.focused_ptr();
+            if (target) {
+                const int step = std::max(1, target->tui.scroll_region_rows() / 4);
+                scroll_pane(*target, dir, step * std::max(1, ev.scroll_delta));
+            }
+            return false;
+        }
+
+        if (ev.type == MouseType::Down && ev.button == MouseButton::Left) {
+            if (hit.kind == HitKind::SplitSeparator) {
+                mouse_drag.active = true;
+                mouse_drag.sep = LayoutTree::SeparatorHit{
+                    hit.split, hit.sep_index, hit.sep_orient};
+                return false;
+            }
+            if (hit.kind == HitKind::HistorySidebar) {
+                if (!history_sidebar.focused()) {
+                    history_sidebar.enter_focus(conversation_store,
+                                                conversation_store.active_id());
+                }
+                const int vis = history_visible_rows(hb);
+                if (hit.history_row >= 0) {
+                    history_sidebar.select_at_index(hit.history_row, vis);
+                    // Activate the clicked row (same as Enter).
+                    switch_conversation(history_sidebar.is_new_selected());
+                }
+                refresh_focused_input.store(true);
+                if (pump_notify) pump_notify();
+                return true;
+            }
+            if (hit.kind == HitKind::PaneInput && hit.pane) {
+                const bool focus_changed = (hit.pane != layout.focused_ptr());
+                layout.focus_pane(hit.pane);
+                hit.pane->editor.set_cursor_from_click(ev.x, ev.y);
+                if (focus_changed) {
+                    refresh_focused_input.store(true);
+                    if (pump_notify) pump_notify();
+                    return true;
+                }
+                return false;
+            }
+            if ((hit.kind == HitKind::PaneScroll || hit.kind == HitKind::PaneChrome)
+                && hit.pane) {
+                const bool focus_changed = (hit.pane != layout.focused_ptr());
+                if (history_sidebar.focused()) history_sidebar.exit_focus();
+                layout.focus_pane(hit.pane);
+                if (focus_changed) {
+                    refresh_focused_input.store(true);
+                    if (pump_notify) pump_notify();
+                    return true;
+                }
+                if (pump_notify) pump_notify();
+                return false;
+            }
+        }
+
+        return false;
+    };
+
     // ── Main readline loop ──────────────────────────────────────────────────
     while (!quit_requested) {
         while (service_confirm()) {}
@@ -1973,6 +2132,15 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             std::string csi_params;
             const int key = read_history_sidebar_key(csi, csi_params);
             if (key < 0) break;
+
+            // Mouse reports while the history sidebar owns stdin.
+            if (key == 0x1B && (csi == 'M' || csi == 'm')
+                && !csi_params.empty() && csi_params[0] == '<') {
+                if (auto ev = arbiter::opentui::decode_sgr_mouse(csi_params, csi)) {
+                    (void)route_mouse(*ev);
+                }
+                continue;
+            }
 
             const HistorySidebarKey action = history_sidebar.handle_key(key, csi, csi_params);
             if (action == HistorySidebarKey::Up) {

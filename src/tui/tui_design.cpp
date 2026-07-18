@@ -358,6 +358,7 @@ void apply_layout_component_overrides(TuiDesign& d, const JsonValue& root) {
     boolean(root, "layout", "show_footer", d.layout.show_footer);
     boolean(root, "layout", "status_pill", d.layout.status_pill);
     boolean(root, "layout", "show_history_sidebar", d.layout.show_history_sidebar);
+    boolean(root, "layout", "mouse", d.layout.mouse);
 
     string_value(root, "component", "prompt", d.component.prompt);
     string_value(root, "component", "continuation_prompt", d.component.continuation_prompt);
@@ -608,6 +609,7 @@ std::shared_ptr<JsonValue> design_to_json_value(const TuiDesign& d,
     layout["show_footer"] = jbool(d.layout.show_footer);
     layout["status_pill"] = jbool(d.layout.status_pill);
     layout["show_history_sidebar"] = jbool(d.layout.show_history_sidebar);
+    layout["mouse"] = jbool(d.layout.mouse);
     root["layout"] = jobj(std::move(layout));
 
     JsonObject component;
