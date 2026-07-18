@@ -36,15 +36,26 @@ struct Rect {
 
 inline constexpr Rect kEmptyRect{0, 0, 0, 0};
 
+enum class FooterHintMode {
+    Hidden,   // blank reserved row (unfocused multi-pane)
+    Compact,  // short chord-only hint (focused multi-pane)
+    Full,     // single-pane full hint
+};
+
 struct TuiChromeSnapshot {
     Rect rect;
     int  input_rows = 1;
     int  bottom_pad_rows = 3;
     bool status_active = false;
     bool focus_accent = false;
+    FooterHintMode footer_hint_mode = FooterHintMode::Full;
+    // True when mode is Full or Compact (hint text may still be empty when
+    // show_footer is off). Used with chrome_compact_rows to reclaim pad.
     bool footer_hint_visible = true;
     std::string status;
     std::string pre_input_status;
+    // Unfocused activity badge drawn on the mid-separator when set.
+    std::string activity_badge;
 };
 
 class TUI {
@@ -107,19 +118,21 @@ public:
     // True while begin_input is showing the queue-depth pill ("N queued").
     [[nodiscard]] bool queue_indicator_active() const;
 
-    // Show / hide the footer hint at the bottom of the pane.  In single-pane
-    // mode the hint ("esc interrupt, pgup/dn scroll, /agents, /help") is
-    // useful; in multi-pane layouts it becomes clutter on every pane.
-    // LayoutTree::resize toggles this for every leaf whenever the pane
-    // count crosses the 1/>1 boundary.  When layout.chrome_compact_rows is
-    // true, hiding the hint also reclaims those rows for the scroll region;
-    // otherwise the rows stay blank so the input row does not shift.
-    void set_footer_hint_visible(bool visible);
+    // Footer hint presentation.  Single-pane uses Full; multi-pane focused
+    // uses Compact (chord-only); multi-pane unfocused uses Hidden.  When
+    // layout.chrome_compact_rows is true, Hidden also reclaims those rows
+    // for the scroll region; otherwise the rows stay blank so the input
+    // row does not shift.
+    void set_footer_hint_mode(FooterHintMode mode);
 
     // Accent split separators when this pane is focused in a multi-pane layout.
     // LayoutTree flips this on the focused leaf and off on all others after
     // every focus or structural change.  In single-pane mode it is unused.
     void set_focus_accent(bool active);
+
+    // Short badge for unfocused panes (e.g. "●", "✓", "✗"). Cleared on focus.
+    void set_activity_badge(const std::string& badge);
+    void clear_activity_badge();
 
     int cols() const;
     int left_col() const;  // 1-indexed leftmost col
@@ -135,11 +148,12 @@ private:
     Rect rect_{0, 0, 80, 24};          // area of the terminal this TUI owns
     int  input_rows_ = 1;
     bool status_active_ = false;
-    bool footer_hint_visible_ = true;  // flipped off in multi-pane layouts
+    FooterHintMode footer_hint_mode_ = FooterHintMode::Full;
     bool focus_accent_ = false;        // reserved for multi-pane chrome accents
     std::atomic<bool> queue_indicator_shown_{false};
     std::string current_status_;
     std::string current_pre_input_status_;
+    std::string activity_badge_;
     mutable std::recursive_mutex tty_mu_;
 
     // Absolute 1-indexed terminal rows for each chrome slot within rect_.

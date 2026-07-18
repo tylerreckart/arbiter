@@ -103,7 +103,8 @@ public:
     void focus_prev();
 
     // Focus a specific leaf.  No-op (returns false) if `pane` is not in the
-    // tree. Used by click-to-focus mouse routing.
+    // tree. Used by click-to-focus mouse routing. Clears unfocused-activity
+    // badges on the newly focused pane; exits zoom if focusing a sibling.
     bool focus_pane(Pane* pane);
 
     // Hit-test helpers. Coordinates are 0-based terminal cells.
@@ -149,10 +150,19 @@ public:
     bool close_pane(Pane* target,
                     const std::function<void(Pane&)>& on_destroy = {});
 
+    // Temporarily give the focused pane the full content rect (tmux zoom /
+    // vim Ctrl-w _).  Second call restores the prior split arrangement.
+    // Closing or splitting while zoomed clears zoom first.
+    void toggle_zoom_focused();
+    [[nodiscard]] bool zoomed() const { return zoomed_ != nullptr; }
+    [[nodiscard]] Pane* zoomed_pane() const { return zoomed_; }
+    void clear_zoom();
+
 private:
     void compute_bounds(Node& n, const Rect& r);
     void collect_leaves(const Node& n, std::vector<Pane*>& out) const;
     void draw_borders_(const Node& n, OpenTuiHandle frame) const;
+    void apply_chrome_flags();
     std::optional<SeparatorRef> hit_separator_(Node& n,
                                                int x,
                                                int y,
@@ -161,6 +171,7 @@ private:
 
     std::unique_ptr<Node> root_;
     Pane*                 focused_ = nullptr;
+    Pane*                 zoomed_  = nullptr;  // nullptr = not zoomed
     Rect                  bounds_{};
 };
 

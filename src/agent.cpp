@@ -37,17 +37,19 @@ void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
         req.temperature   = config_.temperature;
         {
             std::lock_guard<std::mutex> lk(history_mu_);
-            history_.push_back(Message{"assistant", resp.content});
-            history_.push_back(Message{"user", kContinuePrompt});
-            req.messages = history_;
+            auto& hist = histories_[agent_conversation_key()];
+            hist.push_back(Message{"assistant", resp.content});
+            hist.push_back(Message{"user", kContinuePrompt});
+            req.messages = hist;
         }
 
         ApiResponse more = cb ? client_.stream(req, cb) : client_.complete(req);
 
         {
             std::lock_guard<std::mutex> lk(history_mu_);
-            history_.pop_back();   // remove continue prompt
-            history_.pop_back();   // remove partial assistant
+            auto& hist = histories_[agent_conversation_key()];
+            hist.pop_back();   // remove continue prompt
+            hist.pop_back();   // remove partial assistant
         }
 
         if (!more.ok) {
@@ -118,8 +120,9 @@ ApiResponse Agent::send(std::vector<ContentPart> parts) {
     req.temperature   = config_.temperature;
     {
         std::lock_guard<std::mutex> lk(history_mu_);
-        history_.push_back(std::move(user_msg));
-        req.messages = history_;
+        auto& hist = histories_[agent_conversation_key()];
+        hist.push_back(std::move(user_msg));
+        req.messages = hist;
     }
 
     auto resp = client_.complete(req);
@@ -128,7 +131,8 @@ ApiResponse Agent::send(std::vector<ContentPart> parts) {
         continue_until_done(resp, nullptr);
         // Add assistant response to history
         std::lock_guard<std::mutex> lk(history_mu_);
-        history_.push_back(Message{"assistant", resp.content});
+        histories_[agent_conversation_key()].push_back(
+            Message{"assistant", resp.content});
         stats_.total_input_tokens  += resp.input_tokens;
         stats_.total_output_tokens += resp.output_tokens;
         stats_.total_requests++;
@@ -167,8 +171,9 @@ ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
     req.temperature   = config_.temperature;
     {
         std::lock_guard<std::mutex> lk(history_mu_);
-        history_.push_back(std::move(user_msg));
-        req.messages = history_;
+        auto& hist = histories_[agent_conversation_key()];
+        hist.push_back(std::move(user_msg));
+        req.messages = hist;
     }
 
     auto resp = client_.stream(req, cb);
@@ -176,7 +181,8 @@ ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
     if (resp.ok) {
         continue_until_done(resp, cb);
         std::lock_guard<std::mutex> lk(history_mu_);
-        history_.push_back(Message{"assistant", resp.content});
+        histories_[agent_conversation_key()].push_back(
+            Message{"assistant", resp.content});
         stats_.total_input_tokens  += resp.input_tokens;
         stats_.total_output_tokens += resp.output_tokens;
         stats_.total_requests++;
@@ -187,14 +193,25 @@ ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
 
 void Agent::reset_history() {
     std::lock_guard<std::mutex> lk(history_mu_);
-    history_.clear();
+    histories_[agent_conversation_key()].clear();
+}
+
+void Agent::reset_all_histories() {
+    std::lock_guard<std::mutex> lk(history_mu_);
+    histories_.clear();
+}
+
+void Agent::erase_conversation(const std::string& conversation_id) {
+    std::lock_guard<std::mutex> lk(history_mu_);
+    histories_.erase(conversation_id);
 }
 
 std::string Agent::status_summary() const {
     size_t msg_count;
     {
         std::lock_guard<std::mutex> lk(history_mu_);
-        msg_count = history_.size();
+        auto it = histories_.find(agent_conversation_key());
+        msg_count = (it == histories_.end()) ? 0 : it->second.size();
     }
     std::ostringstream ss;
     ss << id_ << " | " << config_.role
@@ -216,11 +233,14 @@ std::string Agent::to_json() const {
     auto hist = jarr();
     {
         std::lock_guard<std::mutex> lk(history_mu_);
-        for (auto& msg : history_) {
-            auto mo = jobj();
-            mo->as_object_mut()["role"] = jstr(msg.role);
-            mo->as_object_mut()["content"] = jstr(msg.content);
-            hist->as_array_mut().push_back(mo);
+        auto it = histories_.find(agent_conversation_key());
+        if (it != histories_.end()) {
+            for (auto& msg : it->second) {
+                auto mo = jobj();
+                mo->as_object_mut()["role"] = jstr(msg.role);
+                mo->as_object_mut()["content"] = jstr(msg.content);
+                hist->as_array_mut().push_back(mo);
+            }
         }
     }
     m["history"] = hist;

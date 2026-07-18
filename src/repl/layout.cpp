@@ -124,17 +124,63 @@ void LayoutTree::compute_bounds(Node& n, const Rect& r) {
     }
 }
 
-void LayoutTree::resize(const Rect& bounds) {
-    bounds_ = bounds;
-    compute_bounds(*root_, bounds);
-
+void LayoutTree::apply_chrome_flags() {
     std::vector<Pane*> leaves;
     collect_leaves(*root_, leaves);
-    const bool multi = leaves.size() > 1;
+    const bool multi = leaves.size() > 1 || zoomed_ != nullptr;
     for (auto* p : leaves) {
-        p->tui.set_footer_hint_visible(!multi);
+        // Zoomed: only the zoomed pane is visible → Full hint.
+        // Multi: focused gets Compact chord hint; others Hidden (row reserved).
+        // Single: Full.
+        FooterHintMode mode = FooterHintMode::Full;
+        if (zoomed_) {
+            mode = (p == zoomed_) ? FooterHintMode::Full : FooterHintMode::Hidden;
+        } else if (multi) {
+            mode = (p == focused_) ? FooterHintMode::Compact : FooterHintMode::Hidden;
+        }
+        p->tui.set_footer_hint_mode(mode);
         p->tui.set_focus_accent(multi && p == focused_);
     }
+}
+
+void LayoutTree::resize(const Rect& bounds) {
+    bounds_ = bounds;
+    if (zoomed_ && root_) {
+        // Zoom: focused (zoomed) pane gets the full outer rect; siblings keep
+        // their tree slots but are assigned a degenerate off-screen rect so
+        // they don't paint over the zoomed pane.
+        std::vector<Pane*> leaves;
+        collect_leaves(*root_, leaves);
+        for (auto* p : leaves) {
+            if (p == zoomed_) {
+                p->tui.set_rect(bounds);
+            } else {
+                p->tui.set_rect(Rect{bounds.x, bounds.y, 0, 0});
+            }
+        }
+        // Keep Node::bounds in sync for the zoomed leaf so draw_borders skips
+        // (no visible separators while zoomed).
+        root_->bounds = bounds;
+    } else {
+        compute_bounds(*root_, bounds);
+    }
+    apply_chrome_flags();
+}
+
+void LayoutTree::clear_zoom() {
+    if (!zoomed_) return;
+    zoomed_ = nullptr;
+    resize(bounds_);
+}
+
+void LayoutTree::toggle_zoom_focused() {
+    if (!focused_ || pane_count() < 2) return;
+    if (zoomed_ == focused_) {
+        clear_zoom();
+        return;
+    }
+    zoomed_ = focused_;
+    resize(bounds_);
 }
 
 void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
@@ -172,7 +218,7 @@ void LayoutTree::draw_borders_(const Node& n, OpenTuiHandle frame) const {
 }
 
 void LayoutTree::draw_borders(OpenTuiHandle frame) const {
-    if (!root_ || frame == 0) return;
+    if (!root_ || frame == 0 || zoomed_) return;
     draw_borders_(*root_, frame);
 }
 
@@ -198,17 +244,27 @@ Pane& LayoutTree::focused() const {
 }
 
 namespace {
-// Refresh focus-accent colors on every leaf.  The incoming focused pane's
-// PaneInputEditor repaints on the next present tick; unfocused panes draw
-// a dim idle stub in draw().
-void apply_focus_change(const std::vector<Pane*>& leaves,
-                        Pane* /*old_focused*/, Pane* new_focused) {
-    const bool multi = leaves.size() > 1;
-    for (auto* p : leaves) {
-        p->tui.set_focus_accent(multi && p == new_focused);
-    }
+void clear_pane_activity(Pane* p) {
+    if (!p) return;
+    p->activity_unfocused.store(false);
+    p->completed_unfocused.store(false);
+    p->tui.clear_activity_badge();
 }
 } // namespace
+
+bool LayoutTree::focus_pane(Pane* pane) {
+    if (!pane || !root_) return false;
+    std::vector<Pane*> leaves;
+    collect_leaves(*root_, leaves);
+    if (std::find(leaves.begin(), leaves.end(), pane) == leaves.end()) return false;
+    if (focused_ == pane) return true;
+    // Focusing a different pane while zoomed exits zoom so the target is visible.
+    if (zoomed_ && zoomed_ != pane) clear_zoom();
+    focused_ = pane;
+    clear_pane_activity(focused_);
+    apply_chrome_flags();
+    return true;
+}
 
 void LayoutTree::focus_next() {
     std::vector<Pane*> leaves;
@@ -216,9 +272,15 @@ void LayoutTree::focus_next() {
     if (leaves.size() < 2) return;
     auto it = std::find(leaves.begin(), leaves.end(), focused_);
     size_t idx = (it == leaves.end()) ? 0 : static_cast<size_t>(it - leaves.begin());
-    Pane* old = focused_;
     focused_ = leaves[(idx + 1) % leaves.size()];
-    apply_focus_change(leaves, old, focused_);
+    if (zoomed_) {
+        zoomed_ = focused_;
+        resize(bounds_);
+        clear_pane_activity(focused_);
+        return;
+    }
+    clear_pane_activity(focused_);
+    apply_chrome_flags();
 }
 
 void LayoutTree::focus_prev() {
@@ -227,21 +289,15 @@ void LayoutTree::focus_prev() {
     if (leaves.size() < 2) return;
     auto it = std::find(leaves.begin(), leaves.end(), focused_);
     size_t idx = (it == leaves.end()) ? 0 : static_cast<size_t>(it - leaves.begin());
-    Pane* old = focused_;
     focused_ = leaves[(idx + leaves.size() - 1) % leaves.size()];
-    apply_focus_change(leaves, old, focused_);
-}
-
-bool LayoutTree::focus_pane(Pane* pane) {
-    if (!pane || !root_) return false;
-    std::vector<Pane*> leaves;
-    collect_leaves(*root_, leaves);
-    if (std::find(leaves.begin(), leaves.end(), pane) == leaves.end()) return false;
-    if (pane == focused_) return true;
-    Pane* old = focused_;
-    focused_ = pane;
-    apply_focus_change(leaves, old, focused_);
-    return true;
+    if (zoomed_) {
+        zoomed_ = focused_;
+        resize(bounds_);
+        clear_pane_activity(focused_);
+        return;
+    }
+    clear_pane_activity(focused_);
+    apply_chrome_flags();
 }
 
 Pane* LayoutTree::pane_at(int x, int y) const {
@@ -345,6 +401,7 @@ bool LayoutTree::drag_separator(const SeparatorRef& sep,
 Pane* LayoutTree::split_focused(Orient orient, const PaneFactory& make_pane,
                                  bool focus_new) {
     if (!focused_) return nullptr;
+    if (zoomed_) clear_zoom();
     auto* slot = find_leaf_slot(root_, focused_);
     if (!slot) return nullptr;
 
@@ -408,6 +465,8 @@ bool LayoutTree::close_pane(Pane* target,
     if (!target) return false;
     if (pane_count() <= 1) return false;
 
+    if (zoomed_) clear_zoom();
+
     auto parent_loc = find_parent(*root_, target);
     if (!parent_loc.parent) return false;  // target is root but count>1 → impossible
 
@@ -438,6 +497,7 @@ bool LayoutTree::close_pane(Pane* target,
         std::vector<Pane*> leaves;
         collect_leaves(*root_, leaves);
         focused_ = leaves.empty() ? nullptr : leaves.front();
+        clear_pane_activity(focused_);
     }
 
     resize(bounds_);

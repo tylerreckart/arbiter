@@ -284,14 +284,24 @@ public:
     PlanResult execute_plan(const std::string& plan_path,
                             std::function<void(const std::string&)> progress = nullptr);
 
-    // Session persistence — save/restore all agent conversation histories.
+    // Session persistence — save/restore all agent conversation histories
+    // for the *current* ConversationScope (see agent_conversation.h).
     // Histories are stored as JSON at the given path; agent configs come from
     // the normal .json files and are not duplicated in the session file.
     void save_session(const std::string& path) const;
     bool load_session(const std::string& path);  // returns true if anything loaded
 
-    // Clear index master and all loaded agent histories.
+    // Clear index master and all loaded agent histories for the current
+    // ConversationScope only.  Other conversation slots stay intact.
     void reset_all_histories();
+
+    // Drop every agent's history slot for `conversation_id` (used when a
+    // conversation is deleted from the TUI).
+    void erase_conversation_histories(const std::string& conversation_id);
+
+    // True if the master already has non-empty history under this id
+    // (avoids reloading a session already resident in memory).
+    [[nodiscard]] bool has_conversation_loaded(const std::string& conversation_id) const;
 
     // Token tracking — counts the shared client only.  Per-child ApiClients
     // created for /parallel turns track their own counters independently, so
