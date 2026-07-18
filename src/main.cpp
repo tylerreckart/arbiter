@@ -223,6 +223,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     arbiter::UiContext ui_ctx;
     ot_session.start(static_cast<std::uint32_t>(arbiter::term_cols()),
                      static_cast<std::uint32_t>(arbiter::term_rows()));
+    // Install fatal handlers BEFORE enabling mouse so a SIGTERM/HUP during
+    // the rest of startup cannot leave the host shell in SGR mouse mode.
+    signal(SIGTERM, fatal_signal_handler);
+    signal(SIGHUP, fatal_signal_handler);
+    signal(SIGINT, fatal_signal_handler);
     // Button+drag+wheel tracking without any-event motion (?1003).
     if (arbiter::tui_design().layout.mouse) {
         ot_session.engine().set_mouse_enabled(true, /*enable_movement=*/false);
@@ -377,11 +382,6 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     std::cout.flush();
 
     signal(SIGWINCH, sigwinch_handler);
-    // Best-effort mouse/alt-screen cleanup if we die without running
-    // Engine::~Engine (SIGTERM/HUP; SIGINT is usually blocked via ~ISIG).
-    signal(SIGTERM, fatal_signal_handler);
-    signal(SIGHUP, fatal_signal_handler);
-    signal(SIGINT, fatal_signal_handler);
 
     std::function<void()> pump_notify;
 
@@ -2001,13 +2001,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // ConversationStore already reassigned active internally — bring the
     // pane in sync with whatever that new active conversation is.
     auto delete_conversation = [&](const std::string& id, bool hard) {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        std::unique_lock<std::recursive_mutex> lk(layout_mu);
+        clear_mouse_drag();
         const bool was_active = (id == conversation_store.active_id());
 
         if (was_active) {
             orch.cancel();
+            // Drop the lock while waiting so the output pump can keep painting.
             while (any_turn_in_flight()) {
+                lk.unlock();
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                lk.lock();
             }
             conversation_store.flush();
         }
@@ -2121,8 +2125,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             cols, rows, history_sidebar.enabled());
         const Rect rb = right_sidebar_rect();
         const int hist_vis = (hb.w > 0) ? history_visible_rows(hb) : 0;
+        const int hist_len = (hb.w > 0) ? history_sidebar.list_row_count() : 0;
         const auto hit = arbiter::opentui::hit_test(
-            layout, hb, rb, history_sidebar.scroll_offset(), hist_vis,
+            layout, hb, rb, history_sidebar.scroll_offset(), hist_vis, hist_len,
             ev.x, ev.y);
 
         if (ev.type == MouseType::Scroll) {
@@ -2381,8 +2386,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     output_pump.join();
 
     g_ui_ctx = nullptr;
-    g_mouse_tracking = 0;
     ot_session.shutdown();
+    // Clear after Engine disables mouse so a fatal signal in the tiny
+    // shutdown window still emits DECRST.
+    g_mouse_tracking = 0;
 
     // Discard any capability-query dribble while still in raw/no-echo mode.
     // This must run *before* tcsetattr restores ECHO below — bytes that
