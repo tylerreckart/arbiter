@@ -50,6 +50,7 @@ struct Theme {
     std::string prompt_color;      // the "> " readline prompt arrow
     std::string user_echo_arrow;   // legacy caret color (echoes no longer use a caret)
     std::string user_echo_text;    // echoed user-typed text
+    std::string user_echo_bg;      // background strip (\033[48;2;…m), matches input
 
     // Stable per-agent color.  "index" master always gets `agent_master`;
     // other agents hash their id into `agent_palette` to pick a color.

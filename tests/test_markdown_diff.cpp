@@ -200,13 +200,33 @@ TEST_CASE("styled_user_echo has no caret and pads to wrap width") {
     CHECK(line.spans[0].id == StyleId::UserEchoText);
     CHECK(is_styled_user_echo_line(line));
 
-    std::vector<StyledLine> lines{line};
-    CHECK(resize_styled_user_echo_lines(lines, 10));
-    CHECK(lines[0].text == "hello     ");
-    CHECK(is_styled_user_echo_line(lines[0]));
-    // Payload preserved across resize (trailing pad stripped then reapplied).
-    CHECK(resize_styled_user_echo_lines(lines, 8));
-    CHECK(lines[0].text == "hello   ");
+    const StyledLine padded = pad_styled_user_echo_line(line, 10);
+    CHECK(padded.text == "hello     ");
+    CHECK(line.text == "hello");  // source stays unpadded
+
+    // Intentional trailing spaces in the payload survive pad.
+    const StyledLine spaced = styled_user_echo("hi  ");
+    CHECK(spaced.text == "hi  ");
+    CHECK(pad_styled_user_echo_line(spaced, 6).text == "hi    ");
+}
+
+TEST_CASE("styled_user_echo_lines splits multiline turns") {
+    const auto lines = styled_user_echo_lines("one\ntwo\n");
+    REQUIRE(lines.size() == 3);
+    CHECK(lines[0].text == "one");
+    CHECK(lines[1].text == "two");
+    CHECK(lines[2].text.empty());
+    CHECK(is_styled_user_echo_line(lines[2]));
+    CHECK(pad_styled_user_echo_line(lines[2], 4).text == "    ");
+}
+
+TEST_CASE("to_ansi UserEchoText includes background strip") {
+    load_tui_design("");
+    const StyledLine line = styled_user_echo("hi");
+    const std::string ansi = to_ansi(line);
+    CHECK(ansi.find(theme().user_echo_bg) != std::string::npos);
+    CHECK(ansi.find(theme().user_echo_text) != std::string::npos);
+    CHECK(ansi.find("hi") != std::string::npos);
 }
 
 TEST_CASE("resize_styled_rule_lines rewrites HR width") {

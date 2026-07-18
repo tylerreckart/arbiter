@@ -257,7 +257,7 @@ keep a little air.
 ### Phase 3 — Unify TUI emit path
 
 - Migrate user echo, `[interrupted]`, advisor/loop banners, and tool
-  summaries to `push_prose` / `push_prose_msg` with `StyleId::UserEcho`
+  summaries to `push_prose` / `push_prose_msg` with `StyleId::UserEchoText`
   / `System` / existing Success|Error.
 - Prefer `push_prose_msg` over ANSI `push_msg` in `main.cpp` command
   paths that target the focused pane.
