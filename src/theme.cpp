@@ -19,6 +19,15 @@ std::string fg_rgba(const TuiRgba& c) {
     return buf;
 }
 
+std::string bg_rgba(const TuiRgba& c) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "\033[48;2;%u;%u;%um",
+                  static_cast<unsigned>(c[0]),
+                  static_cast<unsigned>(c[1]),
+                  static_cast<unsigned>(c[2]));
+    return buf;
+}
+
 Theme build_theme_from_design() {
     const TuiDesign& d = tui_design();
     const auto& c = d.content;
@@ -42,9 +51,11 @@ Theme build_theme_from_design() {
     t.border_active   = t.accent_focused;
     t.text_dim        = fg_rgba(c.text_dim);
     t.text_dimmer     = fg_rgba(c.text_dimmer);
+    t.system_fg       = fg_rgba(c.system_fg);
     t.prompt_color    = fg_rgba(c.prompt_color);
     t.user_echo_arrow = fg_rgba(c.user_echo_arrow);
     t.user_echo_text  = fg_rgba(c.user_echo_text);
+    t.user_echo_bg    = bg_rgba(c.user_echo_bg);
 
     t.agent_master = fg_rgba(c.agent_master);
     for (size_t i = 0; i < t.agent_palette.size(); ++i) {
@@ -60,6 +71,7 @@ Theme build_theme_from_design() {
     t.md_code_function = fg_rgba(c.code_function);
     t.md_link     = fg_rgba(c.link);
     t.md_bullet   = fg_rgba(c.bullet);
+    t.md_rule     = fg_rgba(c.rule);
     t.md_cmd_line = fg_rgba(c.writ_line);
     for (size_t i = 0; i < t.md_heading.size(); ++i) {
         t.md_heading[i] = fg_rgba(c.heading[i]);

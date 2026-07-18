@@ -313,9 +313,8 @@ void PaneInputEditor::update_input_rows() {
     int cols = tui_.cols();
     if (cols <= 0) cols = 80;
     const TuiDesign& d = tui_design();
-    const int raw_outer = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
-    const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
-    const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
+    const int outer_pad = tui_pane_edge_pad(cols, d);
+    const int raw_inner = tui_input_pad_x(cols, d);
     const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
     const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
     const int content_cols = std::max(1, cols - (outer_pad * 2) - chrome_inset);
@@ -345,9 +344,8 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     const std::uint32_t py = static_cast<std::uint32_t>(tui.input_top_row_pub());
     const TuiDesign& d = tui_design();
     const int cols = std::max(1, tui.cols());
-    const int raw_outer = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
-    const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
-    const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
+    const int outer_pad = tui_pane_edge_pad(cols, d);
+    const int raw_inner = tui_input_pad_x(cols, d);
     const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
     const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
     const std::uint32_t content_x = px

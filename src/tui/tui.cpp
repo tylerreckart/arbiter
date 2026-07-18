@@ -54,9 +54,14 @@ int TUI::input_rows() const {
     return input_rows_;
 }
 
+int TUI::bottom_pad_rows() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return tui_bottom_pad_rows(footer_hint_visible_, tui_design());
+}
+
 int TUI::last_scroll_row() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    return rect_.y + rect_.h - kBottomPadRows - input_rows_ - kSepRows;
+    return rect_.y + rect_.h - bottom_pad_rows() - input_rows_ - kSepRows;
 }
 
 int TUI::scroll_top_row() const {
@@ -66,7 +71,7 @@ int TUI::scroll_top_row() const {
 
 int TUI::scroll_region_rows() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    const int last = rect_.y + rect_.h - kBottomPadRows - input_rows_ - kSepRows;
+    const int last = rect_.y + rect_.h - bottom_pad_rows() - input_rows_ - kSepRows;
     const int top  = rect_.y + 1;
     return last - top + 1;
 }
@@ -158,6 +163,7 @@ TuiChromeSnapshot TUI::chrome_snapshot() const {
     TuiChromeSnapshot s;
     s.rect = rect_;
     s.input_rows = input_rows_;
+    s.bottom_pad_rows = tui_bottom_pad_rows(footer_hint_visible_, tui_design());
     s.status_active = status_active_;
     s.focus_accent = focus_accent_;
     s.footer_hint_visible = footer_hint_visible_;

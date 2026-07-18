@@ -8,6 +8,7 @@ constexpr std::uint32_t kAttrBold          = 1u << 0;
 constexpr std::uint32_t kAttrDim           = 1u << 1;
 constexpr std::uint32_t kAttrItalic        = 1u << 2;
 constexpr std::uint32_t kAttrUnderline     = 1u << 3;
+constexpr std::uint32_t kAttrStrikethrough = 1u << 7;
 
 } // namespace
 
@@ -29,6 +30,10 @@ ResolvedStyle resolve_style(StyleId id) {
     case StyleId::Italic:
         rs.fg = &d.text.primary;
         rs.attrs = kAttrItalic;
+        break;
+    case StyleId::Strike:
+        rs.fg = &d.content.text_dim;
+        rs.attrs = kAttrStrikethrough | kAttrDim;
         break;
     case StyleId::Heading1:
         rs.fg = &d.content.heading[0];
@@ -112,6 +117,18 @@ ResolvedStyle resolve_style(StyleId id) {
         break;
     case StyleId::CodeFunction:
         rs.fg = &d.content.code_function;
+        break;
+    case StyleId::System:
+        rs.fg = &d.content.system_fg;
+        rs.attrs = kAttrDim;
+        break;
+    case StyleId::UserEchoArrow:
+        rs.fg = &d.content.user_echo_arrow;
+        rs.bg = &d.content.user_echo_bg;
+        break;
+    case StyleId::UserEchoText:
+        rs.fg = &d.content.user_echo_text;
+        rs.bg = &d.content.user_echo_bg;
         break;
     }
     return rs;
