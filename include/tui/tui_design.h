@@ -65,6 +65,9 @@ struct TuiDesign {
         // When true, reclaim the blank hint/pad rows in multi-pane (or when
         // show_footer is false) so scroll gets the vertical space back.
         bool chrome_compact_rows = true;
+        // SGR mouse tracking: click-to-focus, wheel scroll, drag-resize.
+        // Set false in tui.json to keep keyboard-only input.
+        bool mouse = true;
     } layout;
 
     struct Component {

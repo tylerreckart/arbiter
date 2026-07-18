@@ -12,9 +12,10 @@
 //       - Vertical   → children side-by-side; separator between each pair is
 //                      a one-column │.
 //       - Horizontal → children stacked top/bottom; separator is a one-row ─.
-//   • All children of a split share the orientation dimension equally:
-//     N children → each gets 1/N of (total − (N−1) separator cells), with
-//     any rounding remainder spread across the leading children.
+//   • Children of a split share the orientation dimension by weight
+//     (default 1.0 each → equal split). Mouse drag on a separator adjusts
+//     the two adjacent weights; keyboard asymmetric resize (#44) can reuse
+//     the same weight field.
 //
 // Focus:
 //   • Exactly one leaf is focused at any time.
@@ -40,6 +41,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace arbiter {
@@ -48,6 +50,31 @@ class LayoutTree {
 public:
     enum class Orient { Vertical, Horizontal };
     using PaneFactory = std::function<std::unique_ptr<Pane>()>;
+
+    // Public so layout.cpp's free-function helpers can name the type
+    // without friend declarations.  Treat as opaque outside layout.cpp.
+    struct Node {
+        // Leaf:  pane non-null, children empty.
+        // Split: pane null,     children.size() ≥ 2.
+        std::unique_ptr<Pane>                   pane;
+        std::vector<std::unique_ptr<Node>>      children;
+        Orient                                   orient = Orient::Vertical;
+        Rect                                     bounds;
+        // Share of this node within its parent split. Ignored for the root.
+        double                                   weight = 1.0;
+
+        bool is_leaf() const { return pane != nullptr; }
+    };
+
+    // Stable separator identity: path of child indices from the root to the
+    // split node, plus the separator's child index. Survives pointer
+    // invalidation as long as the caller re-resolves under layout_mu; a
+    // mutated tree simply fails resolve and the drag ends cleanly.
+    struct SeparatorRef {
+        std::vector<int> path;
+        int              index = -1;  // child left/above the separator
+        Orient           orient = Orient::Vertical;
+    };
 
     // Build a tree with a single leaf covering `bounds`.  The pane's
     // tui.set_rect(bounds) is called immediately, so the caller only needs
@@ -74,6 +101,20 @@ public:
     // Switch focus to the next/previous leaf in pre-order.  No-op if < 2.
     void focus_next();
     void focus_prev();
+
+    // Focus a specific leaf.  No-op (returns false) if `pane` is not in the
+    // tree. Used by click-to-focus mouse routing.
+    bool focus_pane(Pane* pane);
+
+    // Hit-test helpers. Coordinates are 0-based terminal cells.
+    [[nodiscard]] Pane* pane_at(int x, int y) const;
+    [[nodiscard]] std::optional<SeparatorRef> hit_separator(int x, int y);
+
+    // Drag a separator so the cell under the pointer becomes the new
+    // separator position. Adjusts the two adjacent children's weights and
+    // recomputes bounds. Returns false if the ref is stale or clamping
+    // refuses the move (min pane size).
+    bool drag_separator(const SeparatorRef& sep, int pointer_x, int pointer_y);
 
     // Split the focused leaf and return a pointer to the newly created
     // pane (or nullptr if the split was refused — e.g. the focused leaf
@@ -108,23 +149,15 @@ public:
     bool close_pane(Pane* target,
                     const std::function<void(Pane&)>& on_destroy = {});
 
-    // Public so layout.cpp's free-function helpers can name the type
-    // without friend declarations.  Treat as opaque outside layout.cpp.
-    struct Node {
-        // Leaf:  pane non-null, children empty.
-        // Split: pane null,     children.size() ≥ 2.
-        std::unique_ptr<Pane>                   pane;
-        std::vector<std::unique_ptr<Node>>      children;
-        Orient                                   orient = Orient::Vertical;
-        Rect                                     bounds;
-
-        bool is_leaf() const { return pane != nullptr; }
-    };
-
 private:
     void compute_bounds(Node& n, const Rect& r);
-    void collect_leaves(Node& n, std::vector<Pane*>& out) const;
+    void collect_leaves(const Node& n, std::vector<Pane*>& out) const;
     void draw_borders_(const Node& n, OpenTuiHandle frame) const;
+    std::optional<SeparatorRef> hit_separator_(Node& n,
+                                               int x,
+                                               int y,
+                                               std::vector<int>& path);
+    [[nodiscard]] Node* resolve_split_(const SeparatorRef& sep);
 
     std::unique_ptr<Node> root_;
     Pane*                 focused_ = nullptr;
