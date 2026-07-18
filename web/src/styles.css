@@ -1,19 +1,22 @@
 :root {
   color-scheme: light;
-  --bg: #ffffff;
-  --bg-mute: #f4f4f2;
-  --ink: #111111;
-  --muted: #5f5f5a;
-  --line: #e6e6e2;
-  --line-strong: #111111;
-  --signal: #ff7a1a;
-  --signal-ink: #111111;
-  --signal-soft: rgba(255, 122, 26, 0.14);
-  --panel: #111111;
-  --panel-fg: #f3f3ef;
-  --panel-muted: #9b9b94;
-  --code: #161616;
-  --code-bg: #efefe9;
+  --bg: #f4f0e8;
+  --bg-mute: #eae4da;
+  --ink: #191510;
+  --muted: #686056;
+  --line: #d8d0c4;
+  --line-strong: #191510;
+  --signal: #ff8a24;
+  --signal-hover: #ffa34f;
+  --signal-ink: #191510;
+  --signal-soft: rgba(255, 138, 36, 0.14);
+  --panel: #17130f;
+  --panel-raised: #201a14;
+  --panel-line: #3b3127;
+  --panel-fg: #f4f0e8;
+  --panel-muted: #b6aa9b;
+  --code: #17130f;
+  --code-bg: #e6dfd3;
   --max: 1080px;
   --docs-side: 280px;
   --header-offset: 18px;
@@ -35,7 +38,6 @@ html {
   font-size: 17px;
   font-weight: 400;
   line-height: 1.6;
-  scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -51,6 +53,7 @@ body {
 
 img {
   display: block;
+  height: auto;
   max-width: 100%;
 }
 
@@ -71,7 +74,7 @@ a:hover {
 
 .skip-link {
   background: var(--ink);
-  color: #fff;
+  color: var(--panel-fg);
   left: 12px;
   padding: 10px 14px;
   position: absolute;
@@ -86,8 +89,7 @@ a:hover {
 /* ——— Floating header ——— */
 
 .site-header {
-  animation: header-in 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  background: #000;
+  background: var(--panel);
   left: 50%;
   position: fixed;
   top: var(--header-offset);
@@ -107,7 +109,7 @@ a:hover {
 
 .brand {
   align-items: center;
-  color: #fff;
+  color: var(--panel-fg);
   display: inline-flex;
   gap: 10px;
   text-decoration: none;
@@ -136,7 +138,7 @@ a:hover {
 }
 
 .nav-links a {
-  color: rgba(255, 255, 255, 0.68);
+  color: var(--panel-muted);
   font-family: var(--font-body);
   font-size: 0.84rem;
   font-weight: 500;
@@ -147,16 +149,16 @@ a:hover {
 }
 
 .nav-links a:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: var(--panel-raised);
+  color: var(--panel-fg);
 }
 
 .nav-links .button,
 .button {
   align-items: center;
-  background: #fff;
+  background: var(--panel-fg);
   border: 0;
-  color: #111;
+  color: var(--ink);
   cursor: pointer;
   display: inline-flex;
   font-family: var(--font-body);
@@ -180,7 +182,7 @@ a:hover {
 }
 
 .button.signal:hover {
-  background: #ff9a3d;
+  background: var(--signal-hover);
 }
 
 /* ——— Marketing ——— */
@@ -202,7 +204,6 @@ a:hover {
   letter-spacing: -0.03em;
   line-height: 0.94;
   margin: 0 0 22px;
-  animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .hero-title {
@@ -214,7 +215,6 @@ a:hover {
   line-height: 1.12;
   margin: 0 0 18px;
   max-width: 18ch;
-  animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both;
 }
 
 .hero-lede {
@@ -224,7 +224,6 @@ a:hover {
   line-height: 1.55;
   margin: 0 0 30px;
   max-width: 38ch;
-  animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) 140ms both;
 }
 
 .hero-actions,
@@ -255,7 +254,6 @@ a:hover {
 
 .install-callout {
   align-items: center;
-  animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) 200ms both;
   background: var(--panel);
   color: var(--panel-fg);
   display: grid;
@@ -291,7 +289,7 @@ a:hover {
 
 .install-callout .button:hover,
 .install-callout .button[data-copied="true"] {
-  background: #fff;
+  background: var(--panel-fg);
   color: var(--ink);
 }
 
@@ -311,7 +309,7 @@ a:hover {
 }
 
 .product-stage h2 {
-  color: #fff;
+  color: var(--panel-fg);
   font-family: var(--font-display);
   font-size: clamp(2rem, 3.4vw, 3rem);
   font-weight: 400;
@@ -330,19 +328,22 @@ a:hover {
 }
 
 .product-frame {
-  border: 1px solid #2a2a2a;
+  border: 1px solid var(--panel-line);
   margin-top: 28px;
   overflow: hidden;
   position: relative;
 }
 
 .product-frame img {
+  aspect-ratio: 2250 / 1540;
+  height: auto;
+  object-fit: contain;
   width: 100%;
 }
 
 .product-meta {
   align-items: center;
-  border-top: 1px solid #2a2a2a;
+  border-top: 1px solid var(--panel-line);
   color: var(--panel-muted);
   display: flex;
   font-family: var(--font-mono);
@@ -353,7 +354,7 @@ a:hover {
 }
 
 .product-features {
-  border-top: 1px solid #2a2a2a;
+  border-top: 1px solid var(--panel-line);
   display: grid;
   gap: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -361,7 +362,7 @@ a:hover {
 }
 
 .product-features article {
-  border-right: 1px solid #2a2a2a;
+  border-right: 1px solid var(--panel-line);
   padding: 22px 24px 0 0;
 }
 
@@ -374,7 +375,7 @@ a:hover {
 }
 
 .product-features h3 {
-  color: #fff;
+  color: var(--panel-fg);
   font-size: 1rem;
   margin: 0 0 8px;
 }
@@ -524,6 +525,8 @@ h4 {
 
 .themes-panel img {
   border: 1px solid var(--line-strong);
+  height: auto;
+  object-fit: contain;
   width: 100%;
 }
 
@@ -541,7 +544,6 @@ h4 {
   grid-template-columns: minmax(140px, 200px) 1fr;
   padding: 18px 0;
   text-decoration: none;
-  transition: color 160ms ease;
 }
 
 .flow-row:last-child {
@@ -573,21 +575,21 @@ h4 {
 }
 
 .trust-section h2 {
-  color: #fff;
+  color: var(--panel-fg);
   font-size: clamp(2.25rem, 4.2vw, 3.4rem);
   margin: 0 0 36px;
 }
 
 .trust-grid {
-  border-top: 1px solid #333;
+  border-top: 1px solid var(--panel-line);
   display: grid;
   gap: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .trust-grid p {
-  border-right: 1px solid #333;
-  color: #bdbdb5;
+  border-right: 1px solid var(--panel-line);
+  color: var(--panel-muted);
   font-size: 0.95rem;
   margin: 0;
   padding: 22px 24px 0 0;
@@ -602,24 +604,25 @@ h4 {
 }
 
 .trust-grid code {
-  color: #fff;
+  color: var(--panel-fg);
   font-family: var(--font-mono);
   font-size: 0.88em;
 }
 
 .trust-section .text-link {
-  color: #fff;
+  color: var(--panel-fg);
 }
 
 .install-section {
-  background: var(--signal);
+  background: var(--bg-mute);
+  border-top: 6px solid var(--signal);
   color: var(--signal-ink);
   padding: 88px 24px;
 }
 
 .install-section .eyebrow,
 .install-section .section-lede {
-  color: rgba(17, 17, 17, 0.66);
+  color: var(--muted);
 }
 
 .install-section h2 {
@@ -628,8 +631,8 @@ h4 {
 }
 
 .install-steps {
-  background: #111;
-  color: #fff;
+  background: var(--panel);
+  color: var(--panel-fg);
   display: grid;
   gap: 0;
   margin-top: 38px;
@@ -637,7 +640,7 @@ h4 {
 
 .install-step {
   align-items: center;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--panel-line);
   display: grid;
   gap: 10px 18px;
   grid-template-columns: 36px minmax(0, 1fr) auto;
@@ -656,30 +659,30 @@ h4 {
 
 .install-step > code {
   background: transparent;
-  color: #fff;
+  color: var(--panel-fg);
   font-family: var(--font-mono);
   font-size: 0.9rem;
   overflow-wrap: anywhere;
 }
 
 .install-step small {
-  color: #999;
+  color: var(--panel-muted);
   font-size: 0.78rem;
   grid-column: 2 / -1;
 }
 
 .install-step .button {
   background: var(--signal);
-  color: #111;
+  color: var(--signal-ink);
 }
 
 .install-step .button:hover,
 .install-step .button[data-copied="true"] {
-  background: #fff;
+  background: var(--panel-fg);
 }
 
 .first-prompt {
-  border-left: 2px solid #111;
+  border-left: 2px solid var(--signal);
   margin-top: 34px;
   max-width: 760px;
   padding-left: 18px;
@@ -701,20 +704,7 @@ h4 {
 }
 
 .install-section .text-link {
-  color: #111;
-}
-
-.reveal {
-  opacity: 0;
-  transform: translateY(16px);
-  transition:
-    opacity 650ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 650ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.reveal.is-visible {
-  opacity: 1;
-  transform: none;
+  color: var(--ink);
 }
 
 /* ——— Docs shell ——— */
@@ -739,7 +729,7 @@ body.docs .site-footer {
 
 .docs-sidebar {
   background: var(--panel);
-  border-right: 1px solid #222;
+  border-right: 1px solid var(--panel-line);
   color: var(--panel-fg);
   display: flex;
   flex-direction: column;
@@ -750,7 +740,7 @@ body.docs .site-footer {
 }
 
 .docs-side-head {
-  border-bottom: 1px solid #222;
+  border-bottom: 1px solid var(--panel-line);
   padding: 20px 18px 16px;
 }
 
@@ -769,7 +759,7 @@ body.docs .site-footer {
 }
 
 .docs-section-tabs a {
-  border: 1px solid #333;
+  border: 1px solid var(--panel-line);
   color: var(--panel-muted);
   font-family: var(--font-mono);
   font-size: 0.68rem;
@@ -839,7 +829,7 @@ body.docs .site-footer {
 }
 
 .docs-link {
-  color: #d8d8d2;
+  color: var(--panel-fg);
   display: block;
   font-size: 0.88rem;
   line-height: 1.35;
@@ -848,7 +838,7 @@ body.docs .site-footer {
 }
 
 .docs-link:hover {
-  color: #fff;
+  color: var(--signal);
 }
 
 .docs-link.active {
@@ -921,7 +911,7 @@ body.docs .site-footer {
 }
 
 .doc-content {
-  color: #242424;
+  color: var(--ink);
   font-size: 1rem;
   line-height: 1.65;
 }
@@ -961,7 +951,7 @@ body.docs .site-footer {
 
 .doc-content p,
 .doc-content li {
-  color: #3d3d3a;
+  color: var(--ink);
 }
 
 .doc-content ul,
@@ -986,7 +976,7 @@ body.docs .site-footer {
 
 .doc-content pre {
   background: var(--code);
-  color: #f2f2ec;
+  color: var(--panel-fg);
   font-size: 0.9rem;
   line-height: 1.55;
   overflow-x: auto;
@@ -1037,12 +1027,15 @@ body.docs .site-footer {
 
 .doc-content img {
   border: 1px solid var(--line);
+  height: auto;
   margin: 20px 0;
+  object-fit: contain;
+  width: auto;
 }
 
 .doc-content a {
   text-decoration: underline;
-  text-decoration-color: rgba(17, 17, 17, 0.28);
+  text-decoration-color: rgba(25, 21, 16, 0.28);
 }
 
 .doc-content a:hover {
@@ -1122,28 +1115,6 @@ body.docs .site-footer {
   text-decoration: underline;
 }
 
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(18px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes header-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -12px);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0);
-  }
-}
-
 @media (max-width: 920px) {
   .feature,
   .split-section,
@@ -1158,7 +1129,7 @@ body.docs .site-footer {
   .product-features article + article,
   .trust-grid p,
   .trust-grid p + p {
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--panel-line);
     border-right: 0;
     padding: 20px 0;
   }
@@ -1169,7 +1140,7 @@ body.docs .site-footer {
   }
 
   .docs-sidebar {
-    border-bottom: 1px solid #222;
+    border-bottom: 1px solid var(--panel-line);
     border-right: 0;
     max-height: 300px;
     position: static;
@@ -1233,17 +1204,3 @@ body.docs .site-footer {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation: none !important;
-    scroll-behavior: auto !important;
-    transition: none !important;
-  }
-
-  .reveal {
-    opacity: 1;
-    transform: none;
-  }
-}
