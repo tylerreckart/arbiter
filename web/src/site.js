@@ -1,5 +1,5 @@
-const copyButton = document.querySelector('[data-copy-install]')
-if (copyButton) {
+const copyButtons = document.querySelectorAll('[data-copy-install]')
+for (const copyButton of copyButtons) {
   const command = copyButton.getAttribute('data-copy-install') || ''
   copyButton.addEventListener('click', async () => {
     try {

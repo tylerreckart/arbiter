@@ -1,11 +1,12 @@
 # Getting started
 
-Run arbiter on your own machine. You bring the provider keys; you
-control the binary. Free, open-source, fully featured. Ten minutes
-from `curl` to first agent reply.
+Arbiter is an open-source, local-first multi-agent workspace for the terminal.
+Run parallel conversations, inspect tool activity and diffs as work streams,
+and return to saved threads without leaving your shell.
 
-Start with the [local install](local.md), then choose the surface you
-want: interactive TUI, one-shot CLI, or the HTTP+SSE server.
+Start with the [local install](local.md) and the interactive TUI. The same
+runtime also supports one-shot CLI calls and an HTTP+SSE server when you want
+to automate it.
 
 ## See also
 
