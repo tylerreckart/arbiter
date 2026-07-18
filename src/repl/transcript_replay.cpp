@@ -4,7 +4,7 @@
 #include "repl/pane.h"
 #include "repl/pane_history.h"
 #include "stream_renderer.h"
-#include "theme.h"
+#include "styled_text.h"
 
 #include <algorithm>
 
@@ -52,8 +52,8 @@ void render_messages(opentui::PaneScrollView& view,
         if (is_replay_noise(m)) continue;
 
         if (m.role == "user") {
-            queue.push_msg(theme().user_echo_arrow + "> " + theme().user_echo_text
-                          + m.content + theme().reset + "");
+            queue.push_prose(styled_user_echo_lines(m.content));
+            queue.end_message();
             continue;
         }
 

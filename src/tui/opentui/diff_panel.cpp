@@ -1,5 +1,6 @@
 #include "tui/opentui/diff_panel.h"
 
+#include "styled_text.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
@@ -130,29 +131,46 @@ enum class BgLine : std::uint8_t { context, add, remove, empty };
 TuiRgba bg_for_line(BgLine line, const TuiDesign& d) {
     switch (line) {
     case BgLine::add:
-        return tui_rgba(0x0d, 0x33, 0x16);
+        return d.content.diff_bg_add;
     case BgLine::remove:
-        return tui_rgba(0x4a, 0x12, 0x12);
+        return d.content.diff_bg_remove;
     case BgLine::empty:
-        return tui_rgba(0x10, 0x10, 0x10);
+        return d.content.diff_bg_empty;
     case BgLine::context:
     default:
-        return tui_rgba(0x18, 0x18, 0x18);
+        return d.content.diff_bg_context;
     }
 }
 
 std::string truncate_cells(std::string_view text, int max_cells) {
     if (max_cells <= 0) return {};
+    // Walk by UTF-8 code points using display_width (wcwidth) so CJK/emoji
+    // truncate on the same cell budget as prose scrollback.
+    std::string out;
+    out.reserve(static_cast<size_t>(max_cells));
+    size_t i = 0;
     int w = 0;
-    std::size_t i = 0;
     while (i < text.size()) {
+        const size_t start = i;
         const unsigned char c = static_cast<unsigned char>(text[i]);
-        const int cw = (c < 0x80) ? 1 : 2;
+        if (c < 0x80) {
+            ++i;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < text.size()) {
+            i += 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < text.size()) {
+            i += 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < text.size()) {
+            i += 4;
+        } else {
+            ++i;
+        }
+        const std::string_view cluster = text.substr(start, i - start);
+        const int cw = static_cast<int>(arbiter::display_width(cluster));
         if (w + cw > max_cells) break;
+        out.append(cluster);
         w += cw;
-        i += (c < 0x80) ? 1 : ((c < 0xE0) ? 2 : ((c < 0xF0) ? 3 : 4));
     }
-    return std::string(text.substr(0, i));
+    return out;
 }
 
 } // namespace
@@ -244,12 +262,14 @@ void DiffPanel::draw(OpenTuiHandle frame,
     const int right_x = x + left_w;
     const int right_w = w - left_w;
 
+    const TuiRgba& panel_bg = d.content.code_bg;
+    const TuiRgba& header_bg = d.content.code_header_bg;
     fill_rect(frame,
               static_cast<std::uint32_t>(x),
               static_cast<std::uint32_t>(y),
               static_cast<std::uint32_t>(w),
               static_cast<std::uint32_t>(draw_rows),
-              d.bg.panel);
+              panel_bg);
 
     for (int row = 0; row < draw_rows; ++row) {
         const int global = first_row + row;
@@ -260,7 +280,7 @@ void DiffPanel::draw(OpenTuiHandle frame,
                       static_cast<std::uint32_t>(py),
                       static_cast<std::uint32_t>(w),
                       1,
-                      d.bg.header);
+                      header_bg);
 
             const std::string old_title = trim_filename(header_old_);
             const std::string new_title = trim_filename(header_new_);
@@ -268,14 +288,14 @@ void DiffPanel::draw(OpenTuiHandle frame,
                       static_cast<std::uint32_t>(x + 1),
                       static_cast<std::uint32_t>(py),
                       truncate_cells(old_title, left_w - 2),
-                      d.text.primary,
-                      d.bg.header);
+                      d.content.diff_file,
+                      header_bg);
             draw_text(frame,
                       static_cast<std::uint32_t>(right_x + 1),
                       static_cast<std::uint32_t>(py),
                       truncate_cells(new_title, right_w - 2),
-                      d.text.primary,
-                      d.bg.header);
+                      d.content.diff_file,
+                      header_bg);
             continue;
         }
 

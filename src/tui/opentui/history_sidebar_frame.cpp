@@ -1,5 +1,6 @@
 #include "tui/opentui/history_sidebar_frame.h"
 
+#include "styled_text.h"
 #include "tui/opentui/engine.h"
 #include "tui/tui_design.h"
 
@@ -19,11 +20,7 @@ constexpr std::uint32_t kAttrBold = 1u << 0;
 constexpr int kRowHeight = 2;
 
 int cell_width(std::string_view s) {
-    int w = 0;
-    for (unsigned char c : s) {
-        if ((c & 0xC0) != 0x80) ++w;
-    }
-    return w;
+    return static_cast<int>(arbiter::display_width(s));
 }
 
 void draw_text(OpenTuiHandle frame,
@@ -55,14 +52,7 @@ void fill_rect(OpenTuiHandle frame,
 }
 
 std::string trim_to_cells(std::string s, int max_cells) {
-    if (max_cells <= 0) return {};
-    while (!s.empty() && cell_width(s) > max_cells) {
-        s.pop_back();
-        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
-            s.pop_back();
-        }
-    }
-    return s;
+    return arbiter::trim_to_display_cols(std::move(s), max_cells);
 }
 
 std::string capitalize_label(std::string_view s) {
@@ -121,8 +111,9 @@ int list_top_y(const Rect& r, bool /*focused*/) {
     return r.y + 2; // section label row, then list
 }
 
-int scroll_bottom_y(const Rect& pane_rect, int pane_input_rows) {
-    return pane_rect.y + pane_rect.h - TUI::kBottomPadRows - pane_input_rows - TUI::kSepRows;
+int scroll_bottom_y(const Rect& pane_rect, int pane_input_rows, int pane_bottom_pad_rows) {
+    const int bottom_pad = std::max(1, pane_bottom_pad_rows);
+    return pane_rect.y + pane_rect.h - bottom_pad - pane_input_rows - TUI::kSepRows;
 }
 
 void draw_row(OpenTuiHandle frame,
@@ -261,8 +252,7 @@ void draw_vertical_border(OpenTuiHandle frame,
 // draw_pane_chrome); the border needs to sit in that gap, flush against
 // the pane's real content edge, or it reads as floating in dead space.
 int pane_edge_pad(const TuiDesign& d, int pane_w) {
-    const int raw_pad = (pane_w <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
-    return std::min(raw_pad, std::max(0, (pane_w - 1) / 2));
+    return tui_pane_edge_pad(pane_w, d);
 }
 
 } // namespace
@@ -270,10 +260,11 @@ int pane_edge_pad(const TuiDesign& d, int pane_w) {
 int history_sidebar_visible_rows(const Rect& sidebar_rect,
                                  const Rect& pane_rect,
                                  int pane_input_rows,
-                                 bool focused) {
+                                 bool focused,
+                                 int pane_bottom_pad_rows) {
     if (sidebar_rect.h <= 0 || pane_rect.h <= 0) return 1;
     const int top = list_top_y(sidebar_rect, focused);
-    const int bottom = scroll_bottom_y(pane_rect, pane_input_rows);
+    const int bottom = scroll_bottom_y(pane_rect, pane_input_rows, pane_bottom_pad_rows);
     const int list_h = std::max(0, bottom - top + 1);
     return std::max(1, list_h / kRowHeight);
 }
@@ -282,7 +273,8 @@ void draw_history_sidebar(OpenTuiHandle frame,
                           const HistorySidebarSnapshot& snap,
                           const Rect& r,
                           const Rect& pane_rect,
-                          int pane_input_rows) {
+                          int pane_input_rows,
+                          int pane_bottom_pad_rows) {
     if (frame == 0 || r.w <= 0 || r.h <= 0) return;
 
     const Rect& pr = pane_rect;
@@ -292,12 +284,14 @@ void draw_history_sidebar(OpenTuiHandle frame,
     const TuiRgba sbg = tui_sidebar_bg(d);
     const SidebarColors sc = tui_sidebar_colors(d);
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
+    const int bottom_pad = std::max(1, pane_bottom_pad_rows);
 
     const int sidebar_top = r.y;
     const int panel_top_y = sidebar_top;
-    const int sep_y = scroll_bottom_y(pr, pane_input_rows);
-    const int input_bottom_y = pr.y + pr.h - TUI::kBottomPadRows - 1;
-    const int hint_y = pr.y + pr.h - 2;
+    const int sep_y = scroll_bottom_y(pr, pane_input_rows, bottom_pad);
+    const int input_bottom_y = pr.y + pr.h - bottom_pad - 1;
+    // Prefer the classic hint row when it exists; otherwise the trailing pad.
+    const int hint_y = pr.y + pr.h - (bottom_pad >= TUI::kBottomPadRows ? 2 : 1);
     if (input_bottom_y < panel_top_y) return;
 
     const int block_x = r.x;

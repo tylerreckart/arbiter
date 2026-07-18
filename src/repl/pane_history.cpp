@@ -55,8 +55,10 @@ void pane_history_init(Pane& pane) {
     pane.scroll->bind(pane.tui);
 }
 
-void pane_history_set_cols(Pane& pane, int cols) {
-    if (pane.scroll) pane.scroll->set_wrap_cols(cols);
+void pane_history_set_cols(Pane& pane, int /*cols*/) {
+    // Rebind from the pane's live TUI rect so wrap width matches
+    // edge pad + scroll_gutter_cols (raw cols would over-wrap).
+    if (pane.scroll) pane.scroll->bind(pane.tui);
 }
 
 void pane_history_clear(Pane& pane) {
