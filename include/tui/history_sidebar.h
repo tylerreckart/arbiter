@@ -82,6 +82,8 @@ public:
     [[nodiscard]] bool is_new_selected() const;
     [[nodiscard]] std::string selected_conversation_id() const;
     [[nodiscard]] int scroll_offset() const;
+    // Painted list length including the leading "+ New" row.
+    [[nodiscard]] int list_row_count() const;
 
     // Valid only immediately after handle_key() returns RenameCommit —
     // returns the edited text and clears the internal buffer.

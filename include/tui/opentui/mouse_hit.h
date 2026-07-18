@@ -37,33 +37,38 @@ inline bool rect_contains(const Rect& r, int x, int y) {
 
 // Map a 0-based y into a history-sidebar list row index, or -1 if outside
 // the painted list band. `visible_rows` is the number of row slots currently
-// drawn (from history_sidebar_visible_rows); clicks below that band return -1
-// so empty chrome does not activate the last conversation.
+// drawn; `list_row_count` is 1 ("+ New") + visible entries. Clicks on empty
+// slots past the last real row return -1 (do not clamp to the last entry).
 inline int history_sidebar_row_at(const Rect& sidebar_rect,
                                   int y,
                                   int scroll_offset,
-                                  int visible_rows) {
+                                  int visible_rows,
+                                  int list_row_count) {
     // Matches history_sidebar_frame.cpp: list starts at sidebar_rect.y + 2.
     constexpr int kListTopOffset = 2;
     constexpr int kRowHeight = 2;
     const int top = sidebar_rect.y + kListTopOffset;
     if (y < top) return -1;
-    if (visible_rows <= 0) return -1;
+    if (visible_rows <= 0 || list_row_count <= 0) return -1;
     const int rel = y - top;
     const int row_in_view = rel / kRowHeight;
     if (row_in_view < 0 || row_in_view >= visible_rows) return -1;
     if (rel >= visible_rows * kRowHeight) return -1;
-    return scroll_offset + row_in_view;
+    const int abs_row = scroll_offset + row_in_view;
+    if (abs_row < 0 || abs_row >= list_row_count) return -1;
+    return abs_row;
 }
 
 // Classify which interactive region contains (x, y).
 // `history_rect` / `right_rect` may be empty (w==0) when those sidebars are off.
-// `history_visible_rows` clamps history list hits to painted rows only.
+// `history_visible_rows` / `history_list_row_count` clamp history list hits
+// to painted, real rows only.
 inline HitTarget hit_test(LayoutTree& layout,
                           const Rect& history_rect,
                           const Rect& right_rect,
                           int history_scroll_offset,
                           int history_visible_rows,
+                          int history_list_row_count,
                           int x,
                           int y) {
     HitTarget hit;
@@ -71,7 +76,8 @@ inline HitTarget hit_test(LayoutTree& layout,
     if (history_rect.w > 0 && rect_contains(history_rect, x, y)) {
         hit.kind = HitKind::HistorySidebar;
         hit.history_row = history_sidebar_row_at(
-            history_rect, y, history_scroll_offset, history_visible_rows);
+            history_rect, y, history_scroll_offset, history_visible_rows,
+            history_list_row_count);
         return hit;
     }
     if (right_rect.w > 0 && rect_contains(right_rect, x, y)) {

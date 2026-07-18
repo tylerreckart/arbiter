@@ -83,14 +83,16 @@ TEST_CASE("rect_contains and history_sidebar_row_at match frame geometry") {
     CHECK_FALSE(rect_contains(r, 26, 1));
     CHECK_FALSE(rect_contains(r, 0, 0));
 
-    // list_top = y + 2 = 3; row height 2; 3 visible rows.
-    CHECK(history_sidebar_row_at(r, 3, 0, 3) == 0);
-    CHECK(history_sidebar_row_at(r, 4, 0, 3) == 0);
-    CHECK(history_sidebar_row_at(r, 5, 0, 3) == 1);
-    CHECK(history_sidebar_row_at(r, 5, 2, 3) == 3);
-    CHECK(history_sidebar_row_at(r, 2, 0, 3) == -1);   // above list
-    CHECK(history_sidebar_row_at(r, 9, 0, 3) == -1);   // below visible band
-    CHECK(history_sidebar_row_at(r, 3, 0, 0) == -1);   // no visible rows
+    // list_top = y + 2 = 3; row height 2; 3 visible slots; 2 real rows
+    // ("+ New" + one conversation) so the third slot is empty.
+    CHECK(history_sidebar_row_at(r, 3, 0, 3, 2) == 0);
+    CHECK(history_sidebar_row_at(r, 4, 0, 3, 2) == 0);
+    CHECK(history_sidebar_row_at(r, 5, 0, 3, 2) == 1);
+    CHECK(history_sidebar_row_at(r, 7, 0, 3, 2) == -1);  // empty slot past list
+    CHECK(history_sidebar_row_at(r, 5, 2, 3, 5) == 3);   // scrolled into real rows
+    CHECK(history_sidebar_row_at(r, 2, 0, 3, 2) == -1);  // above list
+    CHECK(history_sidebar_row_at(r, 9, 0, 3, 2) == -1);  // below visible band
+    CHECK(history_sidebar_row_at(r, 3, 0, 0, 2) == -1);  // no visible rows
 }
 
 TEST_CASE("allocate_weighted_sizes sums exactly to available") {

@@ -220,6 +220,12 @@ int HistorySidebarState::scroll_offset() const {
     return scroll_offset_;
 }
 
+int HistorySidebarState::list_row_count() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    // "+ New" plus every visible (filter-surviving) conversation.
+    return 1 + static_cast<int>(visible_entries_locked().size());
+}
+
 std::string HistorySidebarState::selected_conversation_id() const {
     std::lock_guard<std::mutex> lk(mu_);
     return pinned_new_ ? std::string{} : pinned_id_;
@@ -236,6 +242,13 @@ HistorySidebarKey HistorySidebarState::handle_key(int key_byte,
                                                   char csi_final,
                                                   const std::string& csi_params) {
     std::lock_guard<std::mutex> lk(mu_);
+
+    // SGR mouse reports must never be treated as Esc/nav in any mode.
+    // The history stdin loop filters them first; this is defense in depth.
+    if ((csi_final == 'M' || csi_final == 'm')
+        && !csi_params.empty() && csi_params[0] == '<') {
+        return HistorySidebarKey::None;
+    }
 
     if (mode_ == Mode::Renaming) {
         if (key_byte == '\r' || key_byte == '\n') {
@@ -291,13 +304,6 @@ HistorySidebarKey HistorySidebarState::handle_key(int key_byte,
             repin_after_filter_locked();
             return HistorySidebarKey::None;
         }
-        return HistorySidebarKey::None;
-    }
-
-    // SGR mouse reports must never be treated as Esc/nav. The history
-    // stdin loop filters them first; this is defense in depth.
-    if ((csi_final == 'M' || csi_final == 'm')
-        && !csi_params.empty() && csi_params[0] == '<') {
         return HistorySidebarKey::None;
     }
 
