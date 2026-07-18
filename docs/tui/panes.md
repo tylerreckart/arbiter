@@ -1,19 +1,21 @@
 # Panes
 
-Multi-pane layouts let you run several conversations in parallel inside the same terminal. Each pane has its own agent, history, scrollback, in-flight turn, and command queue. Layouts are an N-ary tree of leaves (panes) and split nodes (vertical or horizontal containers), mutated only through chord keys and the `/pane` command.
+Multi-pane layouts let you run several conversations in parallel inside the same terminal. Each pane is a viewport (vim "window") bound to a conversation (vim "buffer"): it has its own agent, scrollback, in-flight turn, and command queue. Different panes can show different conversations at once. Layouts are an N-ary tree of leaves (panes) and split nodes (vertical or horizontal containers), mutated only through chord keys and the `/pane` command.
 
 ## Single-pane default
 
-Launching `arbiter` opens one pane covering the whole terminal. The hint row at the bottom shows `esc interrupt · pgup/dn scroll · /agents · /help`. Plain text goes to the focused (only) pane's current agent.
+Launching `arbiter` opens one pane covering the whole terminal, bound to the last-active conversation. The hint row at the bottom shows `esc interrupt · pgup/dn scroll · /agents · /help`. Plain text goes to the focused (only) pane's current agent.
 
 ## Splitting
 
 | Chord  | Effect                                                           |
 |--------|------------------------------------------------------------------|
 | `^W v` | Vertical split — focused pane becomes left, new pane on the right. |
-| `^W s` | Horizontal split — focused pane becomes top, new pane on the bottom. |
+| `^W h` | Horizontal split — focused pane becomes top, new pane on the bottom. |
 
-Splits divide the focused pane's rect equally. New panes get the `index` master agent by default; switch with `/use <agent>`. The hint row is hidden once the layout has more than one pane (clutter on every pane); the two rows stay reserved as blank padding so input-row positions don't shift between modes.
+Splits divide the focused pane's rect equally. The new pane inherits the focused pane's conversation (same buffer in a new window); switch with `/chat switch` or the history sidebar. New panes use the `index` master agent by default; change with `/use <agent>`.
+
+In multi-pane layouts the focused pane shows a compact chord hint (`^W w focus · ^W z zoom · ^W c close`); unfocused panes keep the hint row as blank padding so input positions don't shift.
 
 Splitting twice in the same orientation does **not** wrap a new node — the new sibling is appended to the existing split, so N panes share `1/N` each. Splitting in the other orientation wraps the focused leaf in a fresh 2-child node.
 
@@ -25,7 +27,17 @@ Splitting twice in the same orientation does **not** wrap a new node — the new
 
 Exactly one pane is focused at any moment. The focused pane's bottom border draws with an accent colour; non-focused panes show a plain header separator and a dim placeholder prompt on their input row (so they read as "input surface, currently idle" rather than half-drawn).
 
+Unfocused panes show a small activity badge on the mid-separator when a turn is running (`●`) or when a turn completes while you were elsewhere (`✓` / `✗`). The badge clears when you focus that pane.
+
 PgUp/PgDn scroll the **focused** pane. Esc cancels the **focused** pane's in-flight turn — siblings keep streaming.
+
+## Zoom
+
+| Chord  | Effect                                                                         |
+|--------|---------------------------------------------------------------------------------|
+| `^W z` | Toggle maximize on the focused pane. Siblings stay open; press again to restore. |
+
+Zoom is a rendering override — the layout tree is unchanged. Cycling focus while zoomed moves the maximized pane; splitting or closing clears zoom first.
 
 ## Closing
 
@@ -37,9 +49,15 @@ Close is graceful: the pane's command queue is stopped (so its exec thread's `po
 
 When closing collapses a split node to a single child, the child takes the parent's slot in the tree (no orphan single-child split nodes). Focus moves to the nearest leaf.
 
+## Conversations and panes
+
+Switching conversations (`^W b` → Enter, or `/chat switch`) attaches the selected conversation to the **focused pane only**. Sibling panes keep their conversations and the split layout stays intact. `/chat new` creates a fresh conversation on the focused pane.
+
+Agent message histories are keyed per conversation, so two panes can stream different threads concurrently without resetting each other.
+
 ## `/pane` — programmatic spawn
 
-`/pane <agent> <msg>` spawns a new pane running `<agent>` with `<msg>` as its first input. Differs from `^W v/s` in three ways:
+`/pane <agent> <msg>` spawns a new pane running `<agent>` with `<msg>` as its first input. Differs from `^W v/h` in three ways:
 
 1. The new pane gets a specific starting message instead of an empty prompt.
 2. The result of that first message flows back to the spawning pane as a `[PANE RESULT]` message when the child completes (the spawner can keep typing while the child works).
@@ -50,8 +68,8 @@ Agents themselves can emit `/pane <agent> <msg>` in their replies. The orchestra
 ## Independence and shared state
 
 Independent per-pane:
+- Bound conversation id
 - Agent and current model
-- Conversation history
 - Scrollback ring
 - In-flight turn (one at a time per pane; queue subsequent inputs)
 - Status bar, indicators
@@ -62,11 +80,9 @@ Shared across all panes:
 - Agents catalogue (`/create` / `/remove` affects every pane immediately)
 - Loops (`/loops`, `/log`, etc. operate on the global loop manager)
 - The shared scratchpad (`/mem shared`)
-- Session restore key (one snapshot per cwd, see [sessions.md](sessions.md))
+- Per-conversation agent histories (shared when two panes bind the same conversation)
 
 ## Limits
 
-- No keyboard shortcut to resize a split asymmetrically. Children share their parent's dimension equally; if you want a small reader pane next to a wide writer pane, the chord-based layout doesn't express it.
-- No "zoom" / temporary maximise.
-- No drag-to-resize (terminal mouse events are not consumed).
-- Layout is not persisted — relaunching restores the focused pane's session (history, agent, conversation state) but always starts as a single pane. Sessions only restore content; layouts are ephemeral.
+- No keyboard shortcut to resize a split asymmetrically. Children share their parent's dimension equally; if you want a small reader pane next to a wide writer pane, the chord-based layout doesn't express it. (Mouse drag-resize is tracked separately.)
+- Layout is not persisted — relaunching restores conversations' agent histories but always starts as a single pane. Sessions restore content; layouts are ephemeral.

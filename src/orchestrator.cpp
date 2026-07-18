@@ -1867,6 +1867,19 @@ void Orchestrator::reset_all_histories() {
     }
 }
 
+void Orchestrator::erase_conversation_histories(const std::string& conversation_id) {
+    index_master_->erase_conversation(conversation_id);
+    std::lock_guard<std::mutex> lk(agents_mutex_);
+    for (auto& [id, agent] : agents_) {
+        (void)id;
+        agent->erase_conversation(conversation_id);
+    }
+}
+
+bool Orchestrator::has_conversation_loaded(const std::string& conversation_id) const {
+    return index_master_->has_conversation(conversation_id);
+}
+
 static constexpr size_t kSessionWarnBytes = 4 * 1024 * 1024;  // 4 MB total
 static constexpr size_t kAgentWarnBytes   = 512 * 1024;        // per-agent
 
