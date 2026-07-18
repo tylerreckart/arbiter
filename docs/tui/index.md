@@ -34,7 +34,7 @@ What lives where:
 - **Scroll region.** Where everything the agent emits goes — streamed prose, tool-call summary lines, `/cmd` output, system notices. Scrollable with PgUp/PgDn (virtual-line aware: wrapped lines count as multiple rows). Markdown/theme ANSI is rendered as OpenTUI syntax highlights.
 - **Mid separator.** Dashed line above the input. Doubles as the tool-call indicator: while a turn is firing tool calls, this row shows `⠋ N tool calls…` instead of plain dashes.
 - **Input area.** 1 row by default, grows up to 5 as text wraps. Standard editing controls (arrows, history, tab-complete on slash commands). Rendered by OpenTUI `EditBuffer` / `EditorView`.
-- **Hint row.** Static legend of the most-used keys and commands. In multi-pane layouts the focused pane shows a compact chord hint (`^W w/z/c`); unfocused panes keep the row as blank padding so input position doesn't shift.
+- **Hint row.** Static legend of the most-used keys and commands. In multi-pane layouts the focused pane shows a compact chord hint (`^W w/z/c`); unfocused panes hide the hint. By default (`chrome_compact_rows`) vacated rows go back to the scroll region; opt out in the theme if you want a stable input row across pane counts.
 
 ### Sidebar (wide terminals)
 
@@ -57,6 +57,7 @@ Token totals also appear in the pane header stats row (right side of row 1) when
 - **[Panes](panes.md)** — multi-pane layouts: split, focus, close, `/pane` spawn semantics.
 - **[Streaming](streaming.md)** — what you see during a turn: thinking spinner, tool-call indicator, verbose mode, cancellation.
 - **[Sessions](sessions.md)** — history persistence, session restore on relaunch, per-cwd scoping.
+- **[Output styling plan](output-styling-plan.md)** — analysis of the render pipeline and a phased plan for spacing, surfaces, and StyleId unification.
 
 ## Configuration
 

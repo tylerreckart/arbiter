@@ -13,9 +13,9 @@ Launching `arbiter` opens one pane covering the whole terminal, bound to the las
 | `^W v` | Vertical split — focused pane becomes left, new pane on the right. |
 | `^W h` | Horizontal split — focused pane becomes top, new pane on the bottom. |
 
-Splits divide the focused pane's rect equally. The new pane inherits the focused pane's conversation (same buffer in a new window); switch with `/chat switch` or the history sidebar. New panes use the `index` master agent by default; change with `/use <agent>`.
+Splits divide the focused pane's rect equally (or by drag-adjusted weights). The new pane inherits the focused pane's conversation (same buffer in a new window); switch with `/chat switch` or the history sidebar. New panes use the `index` master agent by default; change with `/use <agent>`.
 
-In multi-pane layouts the focused pane shows a compact chord hint (`^W w focus · ^W z zoom · ^W c close`); unfocused panes keep the hint row as blank padding so input positions don't shift.
+In multi-pane layouts the focused pane shows a compact chord hint (`^W w focus · ^W z zoom · ^W c close`); unfocused panes hide the hint. With the default `layout.chrome_compact_rows` theme setting, those rows are reclaimed for scrollback; set `"chrome_compact_rows": false` in `tui.json` / a theme file to keep blank placeholders so the input row does not shift.
 
 Splitting twice in the same orientation does **not** wrap a new node — the new sibling is appended to the existing split, so N panes share `1/N` each. Splitting in the other orientation wraps the focused leaf in a fresh 2-child node.
 
@@ -82,7 +82,22 @@ Shared across all panes:
 - The shared scratchpad (`/mem shared`)
 - Per-conversation agent histories (shared when two panes bind the same conversation)
 
+## Mouse
+
+When `layout.mouse` is enabled in `~/.arbiter/tui.json` (the default), the TUI enables SGR mouse tracking and consumes:
+
+| Action | Effect |
+|--------|--------|
+| Left-click a pane | Focus that pane (also exits history-sidebar focus) |
+| Left-click the input row | Focus the pane and place the caret |
+| Wheel over scrollback | Scroll that pane (does not steal keyboard focus) |
+| Left-click a conversation in the history sidebar | Select and switch to it |
+| Drag a split gutter | Resize the two adjacent panes asymmetrically |
+| Right sidebar | Display-only — clicks and wheel over it are ignored |
+
+Set `"layout": { "mouse": false }` to keep keyboard-only input (useful inside tmux without `set -g mouse on`, or when the host terminal fights with mouse capture).
+
 ## Limits
 
-- No keyboard shortcut to resize a split asymmetrically. Children share their parent's dimension equally; if you want a small reader pane next to a wide writer pane, the chord-based layout doesn't express it. (Mouse drag-resize is tracked separately.)
+- No keyboard shortcut yet to resize a split asymmetrically (mouse drag works; see above). Chord-based weights are tracked as #44.
 - Layout is not persisted — relaunching restores conversations' agent histories but always starts as a single pane. Sessions restore content; layouts are ephemeral.

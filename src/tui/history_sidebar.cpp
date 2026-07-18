@@ -207,6 +207,30 @@ void HistorySidebarState::page_selection(int direction, int visible_rows) {
     move_selection(direction < 0 ? -page : page, visible_rows);
 }
 
+void HistorySidebarState::select_at_index(int index, int visible_rows) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const int max_sel = static_cast<int>(visible_entries_locked().size());
+    int idx = std::max(0, std::min(index, max_sel));
+    set_pin_from_index_locked(idx);
+    clamp_scroll_locked(idx, visible_rows);
+}
+
+int HistorySidebarState::scroll_offset() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return scroll_offset_;
+}
+
+int HistorySidebarState::list_row_count() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    // "+ New" plus every visible (filter-surviving) conversation.
+    return 1 + static_cast<int>(visible_entries_locked().size());
+}
+
+bool HistorySidebarState::filter_line_visible() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return mode_ == Mode::Filtering || !filter_.empty();
+}
+
 std::string HistorySidebarState::selected_conversation_id() const {
     std::lock_guard<std::mutex> lk(mu_);
     return pinned_new_ ? std::string{} : pinned_id_;
@@ -223,6 +247,13 @@ HistorySidebarKey HistorySidebarState::handle_key(int key_byte,
                                                   char csi_final,
                                                   const std::string& csi_params) {
     std::lock_guard<std::mutex> lk(mu_);
+
+    // SGR mouse reports must never be treated as Esc/nav in any mode.
+    // The history stdin loop filters them first; this is defense in depth.
+    if ((csi_final == 'M' || csi_final == 'm')
+        && !csi_params.empty() && csi_params[0] == '<') {
+        return HistorySidebarKey::None;
+    }
 
     if (mode_ == Mode::Renaming) {
         if (key_byte == '\r' || key_byte == '\n') {
@@ -351,7 +382,10 @@ int read_history_sidebar_key(char& csi_final, std::string& csi_params) {
         while (true) {
             int b3 = 0;
             if (read_byte_timed(b3, 50) <= 0) break;
-            if ((b3 >= '0' && b3 <= '9') || b3 == ';') {
+            // Include '<' so SGR mouse reports (CSI < Pb ; Px ; Py M/m)
+            // tokenize here the same way PaneInputEditor does.
+            if ((b3 >= '0' && b3 <= '9') || b3 == ';' || b3 == '<'
+                || b3 == '?' || b3 == ':' || b3 == '>' || b3 == '=' || b3 == '$') {
                 params += static_cast<char>(b3);
                 continue;
             }

@@ -102,7 +102,7 @@ void render_inline_styled(StyledLine& out, const std::string& text) {
             size_t end = text.find("~~", i + 2);
             if (end != std::string::npos) {
                 flush_plain(plain_start, i);
-                styled_append(out, StyleId::Default, text.substr(i + 2, end - i - 2));
+                styled_append(out, StyleId::Strike, text.substr(i + 2, end - i - 2));
                 i = end + 2;
                 plain_start = i;
                 matched = true;

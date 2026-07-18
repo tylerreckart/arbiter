@@ -458,6 +458,8 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
+    target_compile_definitions(unit_markdown_diff PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_markdown_diff COMMAND unit_markdown_diff)
 
     add_executable(unit_code_highlighter
@@ -506,6 +508,15 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_kitty_key_decode COMMAND unit_kitty_key_decode)
+
+    add_executable(unit_mouse_decode
+        tests/test_mouse_decode.cpp
+    )
+    target_include_directories(unit_mouse_decode PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_mouse_decode COMMAND unit_mouse_decode)
 
     add_executable(unit_sidebar_format
         tests/test_sidebar_format.cpp

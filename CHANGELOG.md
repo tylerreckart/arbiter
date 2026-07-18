@@ -19,6 +19,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   turn runs and `✓` / `✗` when a turn completes off-focus.
 - **Multi-pane hint degradation (#47).**  Focused multi-pane layouts show a
   compact chord hint instead of hiding the footer row entirely.
+- **TUI mouse support.** SGR mouse tracking (click-to-focus, wheel scroll,
+  input caret placement, history-sidebar clicks, drag-to-resize splits).
+  Opt out with `"layout": { "mouse": false }` in `~/.arbiter/tui.json`.
 
 ## [0.7.3] — 2026-07-09
 

@@ -2,6 +2,19 @@
 
 Arbiter ships its own line editor. Bindings below are the complete set the editor responds to. Keys not listed are inserted literally.
 
+## Mouse (when `layout.mouse` is true)
+
+| Action | Effect |
+|--------|--------|
+| Left-click pane | Focus that pane |
+| Left-click input | Focus pane + move caret |
+| Wheel | Scroll pane / history list under the pointer |
+| Drag split gutter | Resize adjacent panes |
+| Left-click history row | Switch to that conversation |
+| Right sidebar | Ignored (display-only) |
+
+Disable with `"mouse": false` under `layout` in `~/.arbiter/tui.json`.
+
 ## Editing
 
 | Key             | Action                                                              |
