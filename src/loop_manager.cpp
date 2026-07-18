@@ -2,6 +2,7 @@
 
 #include "loop_manager.h"
 #include "markdown.h"
+#include "styled_text.h"
 #include "theme.h"
 
 #include <algorithm>
@@ -9,6 +10,32 @@
 #include <vector>
 
 namespace arbiter {
+
+namespace {
+
+void push_loop_banner(OutputQueue* oq,
+                      StyleId style,
+                      const std::string& tag,
+                      const std::string& detail,
+                      const std::string& hint) {
+    if (!oq) return;
+    // Separation from prior output comes from OutputQueue::end_message /
+    // block_gap — do not insert a leading blank StyledLine (that double-gaps).
+    StyledLine line;
+    styled_append(line, style, tag);
+    if (!detail.empty()) styled_append(line, StyleId::System, " " + detail);
+    std::vector<StyledLine> lines;
+    lines.push_back(std::move(line));
+    if (!hint.empty()) {
+        StyledLine h;
+        styled_append(h, StyleId::System, "  " + hint);
+        lines.push_back(std::move(h));
+    }
+    oq->push_prose(lines);
+    oq->end_message();
+}
+
+} // namespace
 
 // Per-entry truncation so a single iteration with a huge agent response can't
 // dominate memory; combined with a total-bytes cap applied by trim_log_bytes()
@@ -308,13 +335,11 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
             std::string reason =
                 "max iterations reached (" + std::to_string(kMaxIters) + ")";
             { std::lock_guard<std::mutex> ek(e->mu); e->stop_reason = reason; }
-            if (e->oq) {
-                e->oq->push("\n" + theme().accent_warning + "[" +
-                            e->loop_id + "/" + e->agent_id +
-                            " MAX ITERS]" + theme().reset + " " +
-                            reason +
-                            "\n  Use /log " + e->loop_id + " to review.\n");
-            }
+            push_loop_banner(e->oq,
+                             StyleId::Warning,
+                             "[" + e->loop_id + "/" + e->agent_id + " MAX ITERS]",
+                             reason,
+                             "Use /log " + e->loop_id + " to review.");
             break;
         }
 
@@ -375,15 +400,13 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
 
         if (!resp.ok) {
             { std::lock_guard<std::mutex> ek(e->mu); e->stop_reason = resp.error; }
-            if (e->oq) {
-                e->oq->push("\n" + theme().bold + theme().accent_error + "[" +
-                            e->loop_id + "/" + e->agent_id + " FAILED]" +
-                            theme().reset + " " +
-                            resp.error +
-                            "\n  Use /log " + e->loop_id +
-                            " to see output, /kill " + e->loop_id +
-                            " to dismiss.\n");
-            }
+            push_loop_banner(e->oq,
+                             StyleId::Error,
+                             "[" + e->loop_id + "/" + e->agent_id + " FAILED]",
+                             resp.error,
+                             "Use /log " + e->loop_id +
+                                 " to see output, /kill " + e->loop_id +
+                                 " to dismiss.");
             break;
         }
 
@@ -397,14 +420,12 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
                 std::lock_guard<std::mutex> ek(e->mu);
                 e->stop_reason = "task complete (advisor gate approved)";
             }
-            if (e->oq) {
-                e->oq->push("\n" + theme().bold + theme().accent_success + "[" +
-                            e->loop_id + "/" + e->agent_id + " DONE]" +
-                            theme().reset + " " +
-                            e->stop_reason +
-                            "\n  Use /log " + e->loop_id +
-                            " to review, /kill " + e->loop_id + " to dismiss.\n");
-            }
+            push_loop_banner(e->oq,
+                             StyleId::Success,
+                             "[" + e->loop_id + "/" + e->agent_id + " DONE]",
+                             e->stop_reason,
+                             "Use /log " + e->loop_id +
+                                 " to review, /kill " + e->loop_id + " to dismiss.");
             break;
         }
 
@@ -414,14 +435,12 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
                 e->stop_reason = "task complete (idle after " +
                                  std::to_string(consecutive_idle) + " turns)";
             }
-            if (e->oq) {
-                e->oq->push("\n" + theme().bold + theme().accent_success + "[" +
-                            e->loop_id + "/" + e->agent_id + " DONE]" +
-                            theme().reset + " " +
-                            e->stop_reason +
-                            "\n  Use /log " + e->loop_id +
-                            " to review, /kill " + e->loop_id + " to dismiss.\n");
-            }
+            push_loop_banner(e->oq,
+                             StyleId::Success,
+                             "[" + e->loop_id + "/" + e->agent_id + " DONE]",
+                             e->stop_reason,
+                             "Use /log " + e->loop_id +
+                                 " to review, /kill " + e->loop_id + " to dismiss.");
             break;
         }
 
