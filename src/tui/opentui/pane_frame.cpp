@@ -52,7 +52,8 @@ std::string trim_to_cells(std::string s, int max_cells) {
 
 bool is_command_token(std::string_view token) {
     return token == "esc" || token == "pg" || token == "pgup/dn"
-        || (!token.empty() && token.front() == '/');
+        || token == "^W" || token == "^W w/z/c"
+        || (!token.empty() && (token.front() == '/' || token.front() == '^'));
 }
 
 void draw_footer_hint(OpenTuiHandle frame,
@@ -136,6 +137,25 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                   status,
                   d.accent.info,
                   d.bg.scroll);
+    } else if (!chrome.activity_badge.empty()) {
+        // Unfocused activity/completion indicator (#41) — right-aligned on
+        // the mid-separator so it doesn't collide with a focused prompt.
+        std::string badge = trim_to_cells(chrome.activity_badge,
+                                          std::max(0, content_w - header_pad));
+        const int badge_w = cell_width(badge);
+        const int bx = r.x + pad + static_cast<int>(block_w) - header_pad - badge_w;
+        if (bx >= r.x + pad) {
+            const TuiRgba& color = (badge.find("✗") != std::string::npos)
+                ? d.accent.error
+                : (badge.find("●") != std::string::npos) ? d.accent.warning
+                                                         : d.accent.success;
+            draw_text(frame,
+                      static_cast<std::uint32_t>(bx),
+                      static_cast<std::uint32_t>(sep_y),
+                      badge,
+                      color,
+                      d.bg.scroll);
+        }
     }
 
     if (input_top_y <= input_bottom_y) {
@@ -165,9 +185,19 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
 
     if (!paint_footer) return;
 
-    const bool compact = r.w <= d.layout.compact_cols;
-    std::string left = compact ? d.component.footer_left_compact : d.component.footer_left;
-    std::string footer_right = compact ? d.component.footer_right_compact : d.component.footer_right;
+    const bool narrow = r.w <= d.layout.compact_cols;
+    std::string left;
+    std::string footer_right;
+    if (chrome.footer_hint_mode == FooterHintMode::Compact) {
+        // Multi-pane focused: degrade to chord-only hints (#47) instead of
+        // hiding the row entirely.
+        left = narrow ? "^W w/z/c" : "^W w focus  ^W z zoom  ^W c close";
+        footer_right = narrow ? "" : "^W b conversations";
+    } else {
+        left = narrow ? d.component.footer_left_compact : d.component.footer_left;
+        footer_right = narrow ? d.component.footer_right_compact
+                              : d.component.footer_right;
+    }
     left = trim_to_cells(left, content_w);
     footer_right = trim_to_cells(footer_right, content_w);
 

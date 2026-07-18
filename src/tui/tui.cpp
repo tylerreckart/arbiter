@@ -56,7 +56,8 @@ int TUI::input_rows() const {
 
 int TUI::bottom_pad_rows() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    return tui_bottom_pad_rows(footer_hint_visible_, tui_design());
+    const bool visible = footer_hint_mode_ != FooterHintMode::Hidden;
+    return tui_bottom_pad_rows(visible, tui_design());
 }
 
 int TUI::last_scroll_row() const {
@@ -163,23 +164,36 @@ TuiChromeSnapshot TUI::chrome_snapshot() const {
     TuiChromeSnapshot s;
     s.rect = rect_;
     s.input_rows = input_rows_;
-    s.bottom_pad_rows = tui_bottom_pad_rows(footer_hint_visible_, tui_design());
+    const bool visible = footer_hint_mode_ != FooterHintMode::Hidden;
+    s.bottom_pad_rows = tui_bottom_pad_rows(visible, tui_design());
     s.status_active = status_active_;
     s.focus_accent = focus_accent_;
-    s.footer_hint_visible = footer_hint_visible_;
+    s.footer_hint_mode = footer_hint_mode_;
+    s.footer_hint_visible = visible;
     s.status = current_status_;
     s.pre_input_status = current_pre_input_status_;
+    s.activity_badge = activity_badge_;
     return s;
 }
 
-void TUI::set_footer_hint_visible(bool visible) {
+void TUI::set_footer_hint_mode(FooterHintMode mode) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    footer_hint_visible_ = visible;
+    footer_hint_mode_ = mode;
 }
 
 void TUI::set_focus_accent(bool active) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     focus_accent_ = active;
+}
+
+void TUI::set_activity_badge(const std::string& badge) {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    activity_badge_ = badge;
+}
+
+void TUI::clear_activity_badge() {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    activity_badge_.clear();
 }
 
 // ─── Braille spinner frames (shared by both indicators) ─────────────────────

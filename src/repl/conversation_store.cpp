@@ -512,12 +512,28 @@ std::string ConversationStore::create_or_reuse(const std::string& cwd) {
     return create_unlocked(cwd);
 }
 
+std::string ConversationStore::create_or_reuse_for(const std::string& cwd,
+                                                    const std::string& prefer_id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!prefer_id.empty() && session_is_empty_unlocked(prefer_id)) {
+        set_active_unlocked(prefer_id);
+        return prefer_id;
+    }
+    if (prefer_id.empty() && session_is_empty_unlocked(active_id_)) {
+        return active_id_;
+    }
+    return create_unlocked(cwd);
+}
+
 bool ConversationStore::load(const std::string& id, Orchestrator& orch) {
     std::string path;
     {
         std::lock_guard<std::mutex> lk(mu_);
         path = session_path_unlocked(id);
     }
+    // Bind the session file into this conversation's history slot so other
+    // open panes' conversations stay untouched in memory.
+    ConversationScope scope(id);
     return orch.load_session(path);
 }
 
@@ -527,6 +543,7 @@ void ConversationStore::save(const std::string& id, Orchestrator& orch) {
         std::lock_guard<std::mutex> lk(mu_);
         path = session_path_unlocked(id);
     }
+    ConversationScope scope(id);
     orch.save_session(path);
     std::lock_guard<std::mutex> lk(mu_);
     const std::int64_t ts = now_epoch();

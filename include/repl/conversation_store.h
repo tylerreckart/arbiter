@@ -66,6 +66,12 @@ public:
     // creation).
     std::string create_or_reuse(const std::string& cwd);
 
+    // Like create_or_reuse(), but checks emptiness of `prefer_id` (the
+    // focused pane's conversation) instead of the global active id.  When
+    // `prefer_id` is empty or unknown, falls back to create_or_reuse().
+    std::string create_or_reuse_for(const std::string& cwd,
+                                    const std::string& prefer_id);
+
     bool load(const std::string& id, Orchestrator& orch);
     void save(const std::string& id, Orchestrator& orch);
 

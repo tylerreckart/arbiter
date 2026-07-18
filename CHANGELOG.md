@@ -8,6 +8,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Pane ↔ conversation decoupling (#40).**  Each pane binds to a
+  conversation id; `/chat switch` and the history sidebar attach to the
+  focused pane only, leaving sibling panes and the split layout intact.
+  Agent histories are keyed per conversation so concurrent panes can
+  stream different threads.
+- **Pane zoom (#43).**  `Ctrl-w z` temporarily maximizes the focused pane
+  without closing siblings.
+- **Unfocused activity badges (#41).**  Non-focused panes show `●` while a
+  turn runs and `✓` / `✗` when a turn completes off-focus.
+- **Multi-pane hint degradation (#47).**  Focused multi-pane layouts show a
+  compact chord hint instead of hiding the footer row entirely.
 - **TUI mouse support.** SGR mouse tracking (click-to-focus, wheel scroll,
   input caret placement, history-sidebar clicks, drag-to-resize splits).
   Opt out with `"layout": { "mouse": false }` in `~/.arbiter/tui.json`.
