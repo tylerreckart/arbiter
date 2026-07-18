@@ -19,9 +19,9 @@
   --code-bg: #e6dfd3;
   --max: 1240px;
   --docs-side: 280px;
-  --header-offset: 18px;
-  --header-h: 56px;
-  --chrome-clearance: calc(var(--header-offset) + var(--header-h) + 28px);
+  --header-offset: 0px;
+  --header-h: 64px;
+  --chrome-clearance: calc(var(--header-h) + 28px);
   --font-display: "Instrument Serif", "Times New Roman", serif;
   --font-body: "IBM Plex Sans", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
@@ -89,12 +89,12 @@ a:hover {
 /* ——— Floating header ——— */
 
 .site-header {
-  background: var(--panel);
-  left: 50%;
+  background: var(--bg);
+  border-bottom: 1px solid var(--ink);
+  left: 0;
   position: fixed;
   top: var(--header-offset);
-  transform: translateX(-50%);
-  width: min(var(--max), calc(100vw - 48px));
+  width: 100%;
   z-index: 40;
 }
 
@@ -103,13 +103,15 @@ a:hover {
   display: flex;
   gap: 12px;
   justify-content: space-between;
+  margin: 0 auto;
+  max-width: var(--max);
   min-height: var(--header-h);
-  padding: 0 12px 0 16px;
+  padding: 0 24px;
 }
 
 .brand {
   align-items: center;
-  color: var(--panel-fg);
+  color: var(--ink);
   display: inline-flex;
   gap: 10px;
   text-decoration: none;
@@ -138,7 +140,7 @@ a:hover {
 }
 
 .nav-links a {
-  color: var(--panel-muted);
+  color: var(--muted);
   font-family: var(--font-body);
   font-size: 0.84rem;
   font-weight: 500;
@@ -149,8 +151,8 @@ a:hover {
 }
 
 .nav-links a:hover {
-  background: var(--panel-raised);
-  color: var(--panel-fg);
+  background: var(--bg-mute);
+  color: var(--ink);
 }
 
 .nav-links .button,
@@ -174,6 +176,15 @@ a:hover {
 .button:hover {
   background: var(--signal);
   color: var(--signal-ink);
+}
+
+.nav-links .button {
+  background: var(--signal);
+  color: var(--signal-ink);
+}
+
+.nav-links .button:hover {
+  background: var(--signal-hover);
 }
 
 .button.signal {
@@ -715,7 +726,7 @@ h4 {
 
 .nav-status {
   align-items: center;
-  color: var(--panel-muted);
+  color: var(--muted);
   display: flex;
   font-family: var(--font-mono);
   font-size: 0.64rem;
