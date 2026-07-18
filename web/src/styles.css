@@ -122,14 +122,6 @@ a:hover {
   width: 26px;
 }
 
-.brand-name {
-  color: #fff;
-  font-family: var(--font-body);
-  font-size: 0.95rem;
-  font-weight: 560;
-  letter-spacing: -0.01em;
-}
-
 .nav-links {
   align-items: center;
   display: flex;
@@ -951,10 +943,6 @@ body.docs .site-footer {
 
   .nav-links a:not(.button) {
     display: none;
-  }
-
-  .brand-name {
-    font-size: 0.9rem;
   }
 
   .hero,
