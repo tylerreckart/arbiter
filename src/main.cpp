@@ -598,7 +598,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             hs.active_id = conversation_store.active_id();
             const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
             arbiter::opentui::draw_history_sidebar(
-                frame, hs, hb, chrome.rect, chrome.input_rows);
+                frame, hs, hb, chrome.rect, chrome.input_rows, chrome.bottom_pad_rows);
         }
 
         if (layout.pane_count() > 1) layout.draw_borders(frame);
@@ -630,7 +630,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         sidebar.set_loops(std::move(loop_rows));
         const arbiter::SidebarSnapshot snap = sidebar.snapshot();
         const arbiter::TuiChromeSnapshot chrome = focused.tui.chrome_snapshot();
-        arbiter::opentui::draw_sidebar(frame, snap, sb, chrome.rect, chrome.input_rows);
+        arbiter::opentui::draw_sidebar(
+            frame, snap, sb, chrome.rect, chrome.input_rows, chrome.bottom_pad_rows);
     };
     auto present_unlocked = [&]() {
         pane_history_present(ui_ctx, pane_hooks);
@@ -1970,7 +1971,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             const Rect hb = HistorySidebarState::rect_for_terminal(cols, rows, true);
             const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
             const int visible_rows = arbiter::opentui::history_sidebar_visible_rows(
-                hb, chrome.rect, chrome.input_rows, true);
+                hb, chrome.rect, chrome.input_rows, true, chrome.bottom_pad_rows);
 
             char csi = 0;
             std::string csi_params;

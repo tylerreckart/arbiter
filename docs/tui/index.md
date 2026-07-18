@@ -34,7 +34,7 @@ What lives where:
 - **Scroll region.** Where everything the agent emits goes — streamed prose, tool-call summary lines, `/cmd` output, system notices. Scrollable with PgUp/PgDn (virtual-line aware: wrapped lines count as multiple rows). Markdown/theme ANSI is rendered as OpenTUI syntax highlights.
 - **Mid separator.** Dashed line above the input. Doubles as the tool-call indicator: while a turn is firing tool calls, this row shows `⠋ N tool calls…` instead of plain dashes.
 - **Input area.** 1 row by default, grows up to 5 as text wraps. Standard editing controls (arrows, history, tab-complete on slash commands). Rendered by OpenTUI `EditBuffer` / `EditorView`.
-- **Hint row.** Static legend of the most-used keys and commands. Hidden in multi-pane layouts (becomes clutter on every pane); the rows are still reserved as blank padding so input row position doesn't shift between modes.
+- **Hint row.** Static legend of the most-used keys and commands. Hidden in multi-pane layouts (becomes clutter on every pane). By default (`chrome_compact_rows`) the vacated rows go back to the scroll region; opt out in the theme if you want a stable input row across pane counts.
 
 ### Sidebar (wide terminals)
 

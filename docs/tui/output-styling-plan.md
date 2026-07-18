@@ -3,10 +3,10 @@
 Analysis of how Arbiter renders streamed output, and a phased plan to
 improve overall styling, spacing, and output rendering.
 
-**Status:** Phases 1–4 implemented (theme surfaces, vertical rhythm, StyleId
-emit migration for user echo / advisor / loops, strike + width-aware HR,
-soft pane padding). Phase 0 fixture inventory and Phase 5 chrome compaction
-remain follow-ups.
+**Status:** Phases 1–5 implemented (theme surfaces, vertical rhythm, StyleId
+emit migration, strike + width-aware HR, soft pane padding, chrome
+compaction + shared pad helpers). Phase 0 fixture inventory remains a
+follow-up.
 
 ## Current rendering pipeline
 
@@ -280,14 +280,15 @@ re-parse; TextSegment usage in interactive scroll shrinks sharply.
 **Exit:** markdown and panels feel like one product; no more 60-col HR
 on a 120-col pane.
 
-### Phase 5 — Chrome & density (optional follow-on)
+### Phase 5 — Chrome & density ✅
 
-- Themeable chrome vertical budget: whether multi-pane keeps blank
-  footer reservation vs reclaiming rows (`chrome_compact_rows`).
-- Sidebar / history column: shared spacing constants with pane padding
-  (today each frame recomputes pad with copy-pasted dense_cols logic).
-- Consider a light left gutter for assistant prose (1 col, `bg.gutter`)
-  vs user echo — only if it survives the quiet-chrome aesthetic.
+- Themeable chrome vertical budget via `chrome_compact_rows` (default
+  `true`): multi-pane / `show_footer: false` reclaim blank hint rows
+  (`tui_bottom_pad_rows` → 1 instead of 3).
+- Shared helpers: `tui_pane_pad_x`, `tui_pane_edge_pad`, `tui_input_pad_x`
+  used by pane chrome, input editor, scroll bind, and both sidebars.
+- `scroll_pad_y` draw-time inset and optional `scroll_gutter_cols` (default
+  `0`, paints `bg.gutter`) for quiet content indent without per-role noise.
 
 **Exit:** multi-pane and narrow terminals waste less vertical space;
 padding logic lives in one helper.

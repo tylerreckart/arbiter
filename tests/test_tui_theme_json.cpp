@@ -131,3 +131,37 @@ TEST_CASE("light preset gets light diff backgrounds") {
     // Light add tint should be brighter than the dark-theme default green.
     CHECK(d.content.diff_bg_add[1] > 0x80);
 }
+
+TEST_CASE("chrome_compact_rows reclaims bottom pad when footer hidden") {
+    TuiDesign d = tui_design_for_preset("onedark");
+    d.layout.chrome_compact_rows = true;
+    d.layout.show_footer = true;
+    CHECK(tui_bottom_pad_rows(true, d) == 3);
+    CHECK(tui_bottom_pad_rows(false, d) == 1);
+
+    d.layout.chrome_compact_rows = false;
+    CHECK(tui_bottom_pad_rows(false, d) == 3);
+
+    d.layout.chrome_compact_rows = true;
+    d.layout.show_footer = false;
+    CHECK(tui_bottom_pad_rows(true, d) == 1);
+}
+
+TEST_CASE("tui_pane_edge_pad and tui_input_pad_x share density ramp") {
+    TuiDesign d = tui_design_for_preset("onedark");
+    d.layout.compact_cols = 72;
+    d.layout.dense_cols = 88;
+    d.layout.pane_padding_x = 2;
+    d.layout.input_padding_x = 2;
+    CHECK(tui_pane_edge_pad(70, d) == 0);
+    CHECK(tui_input_pad_x(70, d) == 0);
+    CHECK(tui_pane_edge_pad(100, d) == 2);
+    CHECK(tui_input_pad_x(100, d) == 2);
+    CHECK(tui_input_pad_x(80, d) <= tui_pane_pad_x(80, d));
+}
+
+TEST_CASE("tui_design_to_json exports chrome_compact_rows") {
+    const std::string json = tui_design_to_json(tui_design_for_preset("onedark"), "");
+    CHECK(json.find("\"chrome_compact_rows\"") != std::string::npos);
+    CHECK(json.find("\"scroll_gutter_cols\"") != std::string::npos);
+}
