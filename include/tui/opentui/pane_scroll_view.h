@@ -110,6 +110,8 @@ private:
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
         void collect_lines(std::vector<std::string>& out) const override;
+
+        void emit_line(const StyledLine& line);
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,

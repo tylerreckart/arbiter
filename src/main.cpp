@@ -2130,7 +2130,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
         }
 
-        focused.output_queue.push_prose({arbiter::styled_user_echo(line)});
+        focused.output_queue.push_prose(arbiter::styled_user_echo_lines(line));
         focused.output_queue.end_message();
 
         focused.cmd_queue.push(line);

@@ -85,8 +85,8 @@ std::string style_open(StyleId id) {
     case StyleId::CodeType:     return t.md_code_type;
     case StyleId::CodeFunction: return t.md_code_function;
     case StyleId::System:       return t.dim + t.system_fg;
-    case StyleId::UserEchoArrow:return t.user_echo_arrow;
-    case StyleId::UserEchoText: return t.user_echo_text;
+    case StyleId::UserEchoArrow:return t.user_echo_bg + t.user_echo_arrow;
+    case StyleId::UserEchoText: return t.user_echo_bg + t.user_echo_text;
     }
     return {};
 }
@@ -129,34 +129,40 @@ void styled_append_char(StyledLine& line, StyleId id, char c) {
     styled_append(line, id, std::string_view(&c, 1));
 }
 
-namespace {
-
-std::string user_echo_payload(const StyledLine& line) {
-    std::string text = line.text;
-    while (!text.empty() && text.back() == ' ') text.pop_back();
-    return text;
-}
-
-StyledLine padded_user_echo_line(std::string_view text, int cols) {
-    const int width = cols < 1 ? 1 : cols;
-    std::string body(text);
-    const int w = static_cast<int>(display_width(body));
-    if (w < width) {
-        body.append(static_cast<size_t>(width - w), ' ');
-    }
-    // Longer turns wrap naturally; do not truncate payload.
-    StyledLine line;
-    styled_append(line, StyleId::UserEchoText, body);
-    return line;
-}
-
-} // namespace
-
 StyledLine styled_user_echo(std::string_view text) {
     StyledLine line;
     // No caret — differentiation is the input-matching background strip.
+    if (text.empty()) {
+        // Zero-width span so empty turns still pad/paint the bg strip.
+        line.spans.push_back({0, 0, StyleId::UserEchoText});
+        return line;
+    }
     styled_append(line, StyleId::UserEchoText, text);
     return line;
+}
+
+std::vector<StyledLine> styled_user_echo_lines(std::string_view text) {
+    std::vector<StyledLine> out;
+    if (text.empty()) {
+        out.push_back(styled_user_echo({}));
+        return out;
+    }
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t nl = text.find('\n', start);
+        if (nl == std::string::npos) {
+            out.push_back(styled_user_echo(text.substr(start)));
+            break;
+        }
+        out.push_back(styled_user_echo(text.substr(start, nl - start)));
+        start = nl + 1;
+        if (start == text.size()) {
+            // Trailing newline → blank echo row (still gets the bg strip).
+            out.push_back(styled_user_echo({}));
+            break;
+        }
+    }
+    return out;
 }
 
 bool is_styled_user_echo_line(const StyledLine& line) {
@@ -169,12 +175,28 @@ bool is_styled_user_echo_line(const StyledLine& line) {
     return true;
 }
 
-bool resize_styled_user_echo_lines(std::vector<StyledLine>& lines, int cols) {
+StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols) {
     const int width = cols < 1 ? 1 : cols;
+    std::string body = line.text;
+    const int w = static_cast<int>(display_width(body));
+    if (w < width) {
+        body.append(static_cast<size_t>(width - w), ' ');
+    }
+    // Longer turns wrap naturally; do not truncate payload.
+    StyledLine out;
+    if (body.empty()) {
+        out.spans.push_back({0, 0, StyleId::UserEchoText});
+        return out;
+    }
+    styled_append(out, StyleId::UserEchoText, body);
+    return out;
+}
+
+bool resize_styled_user_echo_lines(std::vector<StyledLine>& lines, int cols) {
     bool changed = false;
     for (StyledLine& line : lines) {
         if (!is_styled_user_echo_line(line)) continue;
-        StyledLine next = padded_user_echo_line(user_echo_payload(line), width);
+        StyledLine next = pad_styled_user_echo_line(line, cols);
         if (next.text == line.text) continue;
         line = std::move(next);
         changed = true;

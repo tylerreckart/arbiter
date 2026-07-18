@@ -41,11 +41,10 @@ std::vector<StyledLine> prepare_prose_lines(std::vector<StyledLine> lines,
             continue;
         }
         if (arbiter::is_styled_user_echo_line(line)) {
+            // Keep source unpadded so trailing spaces survive wrap resize;
+            // ProseSegment pads at emit time.
             empties = 0;
-            std::vector<StyledLine> one;
-            one.push_back(std::move(line));
-            arbiter::resize_styled_user_echo_lines(one, wrap_cols);
-            out.push_back(std::move(one.front()));
+            out.push_back(std::move(line));
             continue;
         }
         if (line.text.empty()) {
@@ -126,11 +125,20 @@ PaneScrollView::ProseSegment::~ProseSegment() {
     if (buffer_ != 0) destroyTextBuffer(buffer_);
 }
 
+void PaneScrollView::ProseSegment::emit_line(const StyledLine& line) {
+    if (!span_append_) return;
+    if (arbiter::is_styled_user_echo_line(line)) {
+        span_append_->append_line(arbiter::pad_styled_user_echo_line(line, wrap_cols_));
+    } else {
+        span_append_->append_line(line);
+    }
+}
+
 void PaneScrollView::ProseSegment::append(const std::vector<StyledLine>& lines) {
     if (!span_append_) return;
     for (const StyledLine& line : lines) {
         source_.push_back(line);
-        span_append_->append_line(line);
+        emit_line(line);
     }
 }
 
@@ -143,7 +151,7 @@ void PaneScrollView::ProseSegment::retheme() {
     if (!span_append_) return;
     span_append_->clear();
     for (const StyledLine& line : source_) {
-        span_append_->append_line(line);
+        emit_line(line);
     }
 }
 
@@ -161,17 +169,38 @@ int PaneScrollView::ProseSegment::visual_rows(int content_w) const {
 void PaneScrollView::ProseSegment::set_wrap_cols(int cols) {
     const int next = std::max(1, cols);
     const bool rules_resized = arbiter::resize_styled_rule_lines(source_, next);
-    const bool echo_resized = arbiter::resize_styled_user_echo_lines(source_, next);
+    bool has_echo = false;
+    for (const StyledLine& line : source_) {
+        if (arbiter::is_styled_user_echo_line(line)) {
+            has_echo = true;
+            break;
+        }
+    }
+    const bool wrap_changed = next != wrap_cols_;
     wrap_cols_ = next;
     if (view_ != 0) {
         textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(wrap_cols_));
     }
-    // Rule / user-echo padding lives in the TextBuffer; rebuild when width changes.
-    if (rules_resized || echo_resized) retheme();
+    // Rules mutate source_; user-echo pad is emit-only — rebuild buffer when
+    // wrap width changes so the bg strip tracks the content row.
+    if (rules_resized || (has_echo && wrap_changed)) retheme();
 }
 
 void PaneScrollView::ProseSegment::collect_lines(std::vector<std::string>& out) const {
-    for (const auto& line : source_) out.push_back(line.text);
+    for (const auto& line : source_) {
+        if (arbiter::is_styled_user_echo_line(line)) {
+            // Skip the echoed "/find …" command itself (UI chrome, not content).
+            // Do not skip model/prose lines that happen to start with "/find".
+            std::string_view payload = line.text;
+            static constexpr std::string_view kFind = "/find";
+            if (payload.size() >= kFind.size()
+                && payload.substr(0, kFind.size()) == kFind
+                && (payload.size() == kFind.size() || payload[kFind.size()] == ' ')) {
+                continue;
+            }
+        }
+        out.push_back(line.text);
+    }
 }
 
 void PaneScrollView::ProseSegment::draw(OpenTuiHandle frame,
@@ -873,17 +902,10 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
     std::string needle = term;
     for (char& c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-    // The echoed "/find <term>" line that invoked this very search is
-    // itself a segment by the time this runs (the REPL echoes every typed
-    // line into scrollback before dispatching it), and it trivially
-    // contains `term` by construction.  Without excluding it, every /find
-    // call always finds itself as an extra, meaningless match — and
-    // because the echo's arrival in scrollback races the pump thread that
-    // drains it, whether that self-match is counted at all is
-    // nondeterministic (one run sees N matches, the next sees N+1).  A
-    // user's own /find invocations are UI chrome, not content they're
-    // searching for, so skip them unconditionally.
-    static constexpr std::string_view kEchoPrefix = "/find";
+    // ProseSegment::collect_lines already omits echoed "/find …" user turns.
+    // Legacy ANSI TextSegment echoes used a "> /find" caret prefix — skip those
+    // here so old scrollback does not self-match.
+    static constexpr std::string_view kLegacyEchoPrefix = "> /find";
 
     int base = 0;
     std::vector<std::string> lines;
@@ -893,12 +915,8 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
         seg->collect_lines(lines);
         for (size_t k = 0; k < lines.size(); ++k) {
             std::string_view line_sv = lines[k];
-            while (!line_sv.empty() && line_sv.back() == ' ') {
-                line_sv.remove_suffix(1);
-            }
-            if (line_sv.size() >= kEchoPrefix.size()
-                && line_sv.substr(0, kEchoPrefix.size()) == kEchoPrefix
-                && (line_sv.size() == kEchoPrefix.size() || line_sv[kEchoPrefix.size()] == ' ')) {
+            if (line_sv.size() >= kLegacyEchoPrefix.size()
+                && line_sv.substr(0, kLegacyEchoPrefix.size()) == kLegacyEchoPrefix) {
                 continue;
             }
             std::string hay = std::move(lines[k]);
