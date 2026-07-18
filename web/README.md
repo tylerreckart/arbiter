@@ -11,9 +11,11 @@ npm run build
 npm run serve
 ```
 
-The site intentionally avoids a client framework. The only moving part is
-`scripts/build.mjs`, which discovers docs, derives navigation, renders Markdown,
-and writes static pages.
+The site intentionally avoids a client framework. Moving parts:
+
+- `scripts/build.mjs` — discovers docs, derives navigation, renders Markdown
+- `src/styles.css` — visual system
+- `src/site.js` — install copy button and section reveal
 
 `install.sh` is copied to `dist/install.sh` during the build so the homepage can
 advertise:
