@@ -6,9 +6,9 @@
   --muted: #5f5f5a;
   --line: #e6e6e2;
   --line-strong: #111111;
-  --signal: #ff5800;
+  --signal: #ff7a1a;
   --signal-ink: #111111;
-  --signal-soft: rgba(255, 88, 0, 0.14);
+  --signal-soft: rgba(255, 122, 26, 0.14);
   --panel: #111111;
   --panel-fg: #f3f3ef;
   --panel-muted: #9b9b94;
@@ -176,7 +176,7 @@ a:hover {
 }
 
 .button.signal:hover {
-  background: #ff7a33;
+  background: #ff9a3d;
 }
 
 /* ——— Marketing ——— */
@@ -273,7 +273,7 @@ a:hover {
 
 .product-stage-inner {
   margin: 0 auto;
-  max-width: 1200px;
+  max-width: var(--max);
 }
 
 .product-stage .eyebrow {
@@ -631,7 +631,7 @@ body.docs .site-footer {
 }
 
 .docs-link.active {
-  background: rgba(184, 255, 60, 0.12);
+  background: var(--signal-soft);
   color: var(--signal);
 }
 

@@ -28,7 +28,7 @@ export async function copyAssets() {
 export async function writeFavicon() {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
   <rect width="64" height="64" fill="#0c0c0c"/>
-  <rect x="12" y="12" width="40" height="40" fill="#ff5800"/>
+  <rect x="12" y="12" width="40" height="40" fill="#ff7a1a"/>
   <text x="32" y="41" text-anchor="middle" font-family="ui-monospace, monospace" font-size="26" fill="#111111">⛮</text>
 </svg>`
   await writeFile('favicon.svg', svg)
