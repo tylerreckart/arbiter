@@ -7,6 +7,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **TUI mouse support.** SGR mouse tracking (click-to-focus, wheel scroll,
+  input caret placement, history-sidebar clicks, drag-to-resize splits).
+  Opt out with `"layout": { "mouse": false }` in `~/.arbiter/tui.json`.
+
 ## [0.7.3] — 2026-07-09
 
 Adds TUI search and command-discovery surfaces, and fixes ctrl-key
