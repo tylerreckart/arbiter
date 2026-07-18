@@ -260,6 +260,7 @@ private:
     ProseSegment& current_prose();
     CodeSegment& current_code();
     void start_block();
+    void start_block_gap(int gap_rows);
     void append_blank_row();
     [[nodiscard]] bool has_rendered_content() const;
 

@@ -75,3 +75,59 @@ TEST_CASE("user theme name resolves from themes directory") {
     CHECK(tui_theme_name_is_valid(dir, "brand"));
     CHECK_FALSE(tui_theme_name_is_valid(dir, "missing-brand"));
 }
+
+TEST_CASE("tui_design_to_json exports panel surface and rhythm tokens") {
+    const std::string json = tui_design_to_json(tui_design_for_preset("onedark"), "");
+    CHECK(json.find("\"code_bg\"") != std::string::npos);
+    CHECK(json.find("\"diff_bg_add\"") != std::string::npos);
+    CHECK(json.find("\"system_fg\"") != std::string::npos);
+    CHECK(json.find("\"block_gap\"") != std::string::npos);
+    CHECK(json.find("\"panel_gap\"") != std::string::npos);
+    CHECK(json.find("\"prose_paragraph_gap\"") != std::string::npos);
+}
+
+TEST_CASE("missing panel surfaces derive from chrome colors") {
+    const std::string dir = temp_dir() + "_surfaces";
+    std::filesystem::create_directories(dir + "/themes");
+    // No preset — surfaces must be derived from the chrome colors we set.
+    write_file(dir + "/themes/sparse.json", R"({
+  "bg": {
+    "base": "#101010",
+    "panel": "#112233",
+    "header": "#223344",
+    "scroll": "#101010",
+    "status": "#101010",
+    "input": "#101010",
+    "footer": "#101010",
+    "gutter": "#101010"
+  },
+  "content": { "text_dim": "#445566" }
+})");
+    write_file(dir + "/tui.json", R"({ "theme_file": "themes/sparse.json" })");
+    load_tui_design(dir);
+    CHECK(tui_design().content.code_bg[0] == 0x11);
+    CHECK(tui_design().content.code_bg[1] == 0x22);
+    CHECK(tui_design().content.code_bg[2] == 0x33);
+    CHECK(tui_design().content.code_header_bg[0] == 0x22);
+    CHECK(tui_design().content.system_fg[0] == 0x44);
+    CHECK(tui_design().content.diff_bg_add[1] != 0);  // derived non-black
+}
+
+TEST_CASE("tui_pane_pad_x soft-lerps between compact and dense") {
+    TuiDesign d = tui_design_for_preset("onedark");
+    d.layout.compact_cols = 72;
+    d.layout.dense_cols = 88;
+    d.layout.pane_padding_x = 2;
+    CHECK(tui_pane_pad_x(70, d) == 0);
+    CHECK(tui_pane_pad_x(88, d) == 2);
+    CHECK(tui_pane_pad_x(100, d) == 2);
+    const int mid = tui_pane_pad_x(80, d);
+    CHECK(mid >= 1);
+    CHECK(mid <= 2);
+}
+
+TEST_CASE("light preset gets light diff backgrounds") {
+    const TuiDesign d = tui_design_for_preset("light");
+    // Light add tint should be brighter than the dark-theme default green.
+    CHECK(d.content.diff_bg_add[1] > 0x80);
+}

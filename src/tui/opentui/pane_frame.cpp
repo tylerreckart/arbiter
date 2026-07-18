@@ -98,7 +98,7 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
     if (r.w <= 0 || r.h <= 0) return;
 
     const TuiDesign& d = tui_design();
-    const int raw_pad = (r.w <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
+    const int raw_pad = tui_pane_pad_x(r.w, d);
     const int pad = std::min(raw_pad, std::max(0, (r.w - 1) / 2));
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
 

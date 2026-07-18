@@ -284,7 +284,7 @@ void draw_vertical_border(OpenTuiHandle frame,
 // draw_pane_chrome); the border needs to sit in that gap, flush against
 // the pane's real content edge, or it reads as floating in dead space.
 int pane_edge_pad(const TuiDesign& d, int pane_w) {
-    const int raw_pad = (pane_w <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
+    const int raw_pad = tui_pane_pad_x(pane_w, d);
     return std::min(raw_pad, std::max(0, (pane_w - 1) / 2));
 }
 

@@ -52,6 +52,10 @@ struct TuiDesign {
         int status_inset_x = 2;
         int input_padding_x = 1;
         int footer_gap = 1;
+        int block_gap = 1;            // blank rows between messages
+        int panel_gap = 1;            // blank rows before/after code & diff
+        int prose_paragraph_gap = 1;  // max consecutive blank prose lines
+        int scroll_pad_y = 0;         // reserved; draw-time inset (unused yet)
         int compact_cols = 72;
         int dense_cols = 88;
         bool show_footer = true;
@@ -97,6 +101,14 @@ struct TuiDesign {
         TuiRgba code_number{};
         TuiRgba code_type{};
         TuiRgba code_function{};
+        TuiRgba code_bg{};
+        TuiRgba code_header_bg{};
+        TuiRgba code_gutter{};
+        TuiRgba diff_bg_context{};
+        TuiRgba diff_bg_add{};
+        TuiRgba diff_bg_remove{};
+        TuiRgba diff_bg_empty{};
+        TuiRgba system_fg{};
         TuiRgba text_dim{};
         TuiRgba text_dimmer{};
         TuiRgba accent_focused{};
@@ -119,6 +131,10 @@ struct SidebarColors {
 
 TuiRgba tui_rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b,
                  std::uint8_t a = 255);
+
+// Soft horizontal content pad: 0 at/below compact_cols, full pane_padding_x
+// at/above dense_cols, lerped in between.
+[[nodiscard]] int tui_pane_pad_x(int cols, const TuiDesign& d);
 
 [[nodiscard]] SidebarColors tui_sidebar_colors(const TuiDesign& d);
 

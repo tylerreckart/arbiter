@@ -176,3 +176,25 @@ TEST_CASE("display_width counts wide characters") {
     CHECK(display_width("\xe2\x80\xa2") == 1);  // bullet
     CHECK(display_width("hello") == 5);
 }
+
+TEST_CASE("MarkdownRenderer styles strikethrough spans") {
+    MarkdownRenderer md;
+    auto lines = md.feed_styled("before ~~gone~~ after\n");
+    REQUIRE_FALSE(lines.empty());
+    bool saw_strike = false;
+    for (const auto& span : lines.front().spans) {
+        if (span.id == StyleId::Strike) {
+            saw_strike = true;
+            CHECK(lines.front().text.substr(span.begin, span.end - span.begin) == "gone");
+        }
+    }
+    CHECK(saw_strike);
+}
+
+TEST_CASE("styled_user_echo builds arrow and text spans") {
+    const StyledLine line = styled_user_echo("hello");
+    CHECK(line.text == "> hello");
+    REQUIRE(line.spans.size() >= 2);
+    CHECK(line.spans[0].id == StyleId::UserEchoArrow);
+    CHECK(line.spans[1].id == StyleId::UserEchoText);
+}
