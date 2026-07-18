@@ -235,31 +235,50 @@ TEST_CASE("tool_call_summary_lines uses System for the count text") {
     CHECK(lines[0].spans[1].id == StyleId::System);
 }
 
-TEST_CASE("to_ansi System and Rule use theme tokens") {
+TEST_CASE("to_ansi System and Rule use theme tokens with dim") {
     load_tui_design("");  // ensure design/theme are live
     StyledLine sys;
     styled_append(sys, StyleId::System, "status");
     const std::string sys_ansi = to_ansi(sys);
     CHECK(sys_ansi.find("status") != std::string::npos);
     CHECK(sys_ansi.find(theme().system_fg) != std::string::npos);
+    // Match OpenTUI resolve_style(System) which sets kAttrDim.
+    CHECK(sys_ansi.find(theme().dim) != std::string::npos);
 
     StyledLine rule = styled_rule_line(4);
     const std::string rule_ansi = to_ansi(rule);
     CHECK(rule_ansi.find("----") != std::string::npos);
     CHECK(rule_ansi.find(theme().md_rule) != std::string::npos);
+    CHECK(rule_ansi.find(theme().dim) != std::string::npos);
 }
 
-TEST_CASE("loop banner lines have no leading blank StyledLine") {
-    // Mirrors push_loop_banner: tag + optional detail, optional hint — no
-    // leading empty line (block_gap / end_message owns separation).
+TEST_CASE("loop banner and confirm lines have no leading blank StyledLine") {
+    // Mirrors push_loop_banner / confirm prompts: content only — block_gap /
+    // new_block owns separation (no leading empty StyledLine).
     StyledLine line;
     styled_append(line, StyleId::Info, "[loop]");
     styled_append(line, StyleId::System, " detail");
-    std::vector<StyledLine> lines;
-    lines.push_back(std::move(line));
-    StyledLine hint;
-    styled_append(hint, StyleId::System, "  hint");
-    lines.push_back(std::move(hint));
-    REQUIRE_FALSE(lines.empty());
-    CHECK_FALSE(lines.front().text.empty());
+    std::vector<StyledLine> banner;
+    banner.push_back(std::move(line));
+    REQUIRE_FALSE(banner.empty());
+    CHECK_FALSE(banner.front().text.empty());
+
+    StyledLine prompt;
+    styled_append(prompt, StyleId::Warning, "confirm? [y/N]");
+    std::vector<StyledLine> confirm{prompt};
+    CHECK(confirm.size() == 1);
+    CHECK_FALSE(confirm.front().text.empty());
+}
+
+TEST_CASE("ANSI loop-log payloads must not go through plain System prose") {
+    // Guard the /log regression: render_markdown ANSI embedded in a System
+    // span would show CSI escapes as glyphs. TextSegment (push_msg) owns
+    // these payloads; prose path must not be used for them.
+    const std::string ansi = theme().accent_success + "ok" + theme().reset;
+    CHECK(ansi.find('\033') != std::string::npos);
+    StyledLine as_prose;
+    styled_append(as_prose, StyleId::System, ansi);
+    // to_ansi wraps the whole span; the ESC byte remains in the text payload
+    // (prose does not interpret nested SGR). Callers must use push_msg instead.
+    CHECK(as_prose.text.find('\033') != std::string::npos);
 }
