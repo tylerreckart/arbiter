@@ -8,8 +8,11 @@ const docsRoot = process.env.ARBITER_DOCS_PATH
   : path.join(repoRoot, 'docs')
 const dist = path.join(root, 'dist')
 const stylesPath = path.join(root, 'src', 'styles.css')
+const siteScriptPath = path.join(root, 'src', 'site.js')
 const installPath = path.join(root, 'install.sh')
 const assetsPath = path.join(repoRoot, 'assets')
+const siteOrigin = 'https://arbiter.run'
+const githubBlobBase = 'https://github.com/tylerreckart/arbiter/blob/main'
 
 const sectionOrder = [
   'getting-started',
@@ -29,11 +32,15 @@ const sectionLabels = {
   philosophy: 'Philosophy',
 }
 
+const assetAllowlist = new Set(['terminal.jpg', 'themes.jpg', 'terminal_crop.jpg', 'themes_crop.jpg'])
+
 await fs.rm(dist, { force: true, recursive: true })
 await fs.mkdir(dist, { recursive: true })
 await fs.copyFile(stylesPath, path.join(dist, 'styles.css'))
+await fs.copyFile(siteScriptPath, path.join(dist, 'site.js'))
 await fs.copyFile(installPath, path.join(dist, 'install.sh'))
 await copyAssets()
+await writeFavicon()
 
 const docs = await readDocs(docsRoot)
 const sortedDocs = sortDocs(docs)
@@ -57,7 +64,7 @@ for (let index = 0; index < sortedDocs.length; index += 1) {
   )
 }
 
-await writeFile('robots.txt', 'User-agent: *\nAllow: /\nSitemap: /sitemap.xml\n')
+await writeFile('robots.txt', `User-agent: *\nAllow: /\nSitemap: ${siteOrigin}/sitemap.xml\n`)
 await writeFile('sitemap.xml', renderSitemap(sortedDocs))
 
 console.log(`Built ${sortedDocs.length + 2} pages into ${path.relative(repoRoot, dist)}`)
@@ -77,10 +84,12 @@ async function readDocs(base) {
     const relative = slash(path.relative(base, file))
     const source = await fs.readFile(file, 'utf8')
     const title = extractTitle(source) ?? titleFromSlug(relative)
+    const description = extractDescription(source, title)
     const slug = relative.replace(/\.md$/, '').replace(/\/index$/, '')
     const section = relative.includes('/') ? relative.split('/')[0] : slug
     const href = `/docs/${slug}/`
     docs.push({
+      description,
       href,
       outputPath: `docs/${slug}/index.html`,
       relative,
@@ -127,94 +136,110 @@ function renderHome(docs) {
   const gettingStarted = docs.find((doc) => doc.relative === 'getting-started/index.md')
   const api = docs.find((doc) => doc.relative === 'api/index.md')
   const philosophy = docs.find((doc) => doc.relative === 'philosophy.md')
+  const installCommand = 'curl -fsSL https://arbiter.run/install.sh | sh'
 
   return layout({
-    title: 'Arbiter - Self-hosted agent runtime for events and operations',
+    title: 'Arbiter — the agent that runs anywhere',
     description:
       'Arbiter is a self-hosted agent runtime that turns prompts, webhooks, and device events into supervised, stateful work with durable memory and observable streams.',
+    canonicalPath: '/',
+    ogImage: '/assets/terminal.jpg',
     body: `
       <section class="hero">
+        <div class="hero-media" aria-hidden="true">
+          <img src="/assets/terminal.jpg" alt="">
+          <div class="hero-shade"></div>
+        </div>
         <div class="hero-inner">
-          <div class="hero-copy-panel">
-            <p class="eyebrow">Self-hosted agent runtime</p>
-            <h1>The agent that runs anywhere.</h1>
-            <p class="hero-copy">Arbiter is one small binary for laptops, servers, CI runners, edge boxes, and the systems around them. Use the TUI, one-shot CLI, HTTP API, or event router to turn real work into supervised agent runs.</p>
-          </div>
-          <div class="install-callout" aria-label="Install command">
-            <span>Install Arbiter</span>
-            <code>curl -fsSL https://arbiter.run/install.sh | sh</code>
-          </div>
-          ${terminalScene()}
-          <div class="hero-points">
-            <div class="point"><strong>Route</strong><span>Map prompts, webhooks, incidents, schedules, and hardware events to the right agent.</span></div>
-            <div class="point"><strong>Supervise</strong><span>Constrain tools and require advisor review before consequential work leaves the runtime.</span></div>
-            <div class="point"><strong>Replay</strong><span>Persist request streams so clients can reconnect, audit, or tail in-flight work.</span></div>
+          <div class="hero-copy">
+            <p class="brand-lockup">Arbiter</p>
+            <h1 class="hero-title">The agent that runs anywhere.</h1>
+            <p class="hero-lede">One small binary for laptops, servers, CI, and edge — supervised agents with durable memory and a live event stream.</p>
+            <div class="install-callout" aria-label="Install command">
+              <span>Install Arbiter</span>
+              <code>${escapeHtml(installCommand)}</code>
+              <button class="button" type="button" data-copy-install="${escapeAttribute(installCommand)}">Copy</button>
+            </div>
           </div>
         </div>
       </section>
 
-      <section class="section" id="platform">
+      <section class="section reveal" id="platform">
         <div class="section-inner">
-          <h2>The control plane for agentic operations.</h2>
-          <p class="section-lede">Coders need IDE agents. People need chat assistants. Systems need a runtime that can receive events, choose an agent, execute tools under policy, and leave an auditable trail.</p>
+          <p class="eyebrow">Platform</p>
+          <h2>Route. Supervise. Replay.</h2>
+          <p class="section-lede">Map real events to the right agent, constrain tools with advisor gates, and keep every stream reconnectable.</p>
           <div class="feature-grid">
             <article class="feature">
-              <h3>For operators</h3>
-              <p>Route production incidents, scheduled checks, queue messages, and service webhooks into supervised agent runs.</p>
+              <h3>Route</h3>
+              <p>Prompts, webhooks, incidents, schedules, and hardware events land on agents with explicit constitutions.</p>
             </article>
             <article class="feature">
-              <h3>For developers</h3>
-              <p>Drive the same agents from the TUI, one-shot CLI, HTTP API, or Agent2Agent clients without changing the runtime.</p>
+              <h3>Supervise</h3>
+              <p>Tool access is an allowlist. Advisor gates review consequential turns before work leaves the runtime.</p>
             </article>
             <article class="feature">
-              <h3>For devices</h3>
-              <p>Let sensors and edge machines emit structured events while Arbiter handles routing, memory, tools, and final action.</p>
+              <h3>Replay</h3>
+              <p>Persist request streams so clients can reconnect, audit, or tail in-flight work without losing context.</p>
             </article>
           </div>
         </div>
       </section>
 
-      <section class="section section-contrast" id="workflow">
+      <section class="section section-contrast reveal" id="workflow">
         <div class="section-inner split-section">
           <div>
             <p class="eyebrow">How it works</p>
             <h2>One event stream from request to result.</h2>
-            <p class="section-lede">Arbiter makes the invisible parts of agent work visible: routing, delegation, tool calls, memory reads, advisor gates, artifacts, token use, and terminal status.</p>
+            <p class="section-lede">Arbiter makes routing, delegation, tool calls, memory reads, advisor gates, and token use visible as structured events.</p>
           </div>
           <div class="steps">
-            <div class="step"><span>1</span><strong>Receive</strong><p>Accept a prompt, CLI send, HTTP request, webhook, schedule, or device event.</p></div>
-            <div class="step"><span>2</span><strong>Route</strong><p>Match the work to an agent constitution with explicit tools, memory, and event patterns.</p></div>
-            <div class="step"><span>3</span><strong>Act</strong><p>Execute writ commands inline while advisor gates review consequential decisions.</p></div>
-            <div class="step"><span>4</span><strong>Observe</strong><p>Stream and persist every event so clients can reconnect, inspect, and audit outcomes.</p></div>
+            <div class="step"><span>01</span><strong>Receive</strong><p>Accept a prompt, CLI send, HTTP request, webhook, schedule, or device event.</p></div>
+            <div class="step"><span>02</span><strong>Route</strong><p>Match the work to an agent constitution with explicit tools, memory, and event patterns.</p></div>
+            <div class="step"><span>03</span><strong>Act</strong><p>Execute writ commands inline while advisor gates review consequential decisions.</p></div>
+            <div class="step"><span>04</span><strong>Observe</strong><p>Stream and persist every event so clients can reconnect, inspect, and audit outcomes.</p></div>
           </div>
         </div>
       </section>
 
-      <section class="section" id="positioning">
+      <section class="section reveal" id="surfaces">
         <div class="section-inner">
-          <h2>Built for the space between copilots and cron jobs.</h2>
-          <p class="section-lede">Arbiter is not trying to be your editor, your hosted assistant, or a chat app. It is the runtime layer underneath agentic workflows that need local control and operational visibility.</p>
+          <p class="eyebrow">Surfaces</p>
+          <h2>Same runtime. Optional interfaces.</h2>
+          <p class="section-lede">Drive agents from the TUI, one-shot CLI, HTTP API, or Agent2Agent clients without changing the binary underneath.</p>
           <div class="feature-grid">
             <article class="feature">
-              <h3>Self-hosted by default</h3>
-              <p>Your binary, your machine, your tenant database, your agent constitutions, and your provider keys.</p>
+              <h3>Operators</h3>
+              <p>Route production incidents, scheduled checks, queue messages, and service webhooks into supervised runs.</p>
             </article>
             <article class="feature">
-              <h3>Policy in the loop</h3>
-              <p>Tool access is an allowlist. Advisor gates are structural checks, not another prompt asking the same model to self-grade.</p>
+              <h3>Developers</h3>
+              <p>Script one-shots, embed the API, or keep a multi-pane TUI open on the machine that owns the work.</p>
             </article>
             <article class="feature">
-              <h3>Interfaces are optional</h3>
-              <p>Use the terminal, script it, embed the API, federate over A2A, or let events arrive from systems that never show a UI.</p>
+              <h3>Devices</h3>
+              <p>Let sensors and edge machines emit structured events while Arbiter handles routing, memory, and action.</p>
             </article>
           </div>
         </div>
       </section>
 
-      <section class="section" id="docs">
+      <section class="section reveal" id="themes">
         <div class="section-inner">
-          <h2>Documentation that ships with the code.</h2>
-          <p class="section-lede">This site ingests the repository Markdown directly, preserving the docs authoring flow while publishing static HTML.</p>
+          <p class="eyebrow">Themeable</p>
+          <h2>No color compiled into the binary.</h2>
+          <p class="section-lede">The TUI reads a JSON theme at startup. Presets ship in-tree; save your own look without rebuilding.</p>
+          <div class="themes-panel">
+            <img src="/assets/themes.jpg" alt="Arbiter TUI theme gallery across multiple color palettes" width="1600" height="900" loading="lazy">
+          </div>
+        </div>
+      </section>
+
+      <section class="section reveal" id="docs">
+        <div class="section-inner">
+          <p class="eyebrow">Documentation</p>
+          <h2>Docs that ship with the code.</h2>
+          <p class="section-lede">This site ingests repository Markdown directly, so implementation and documentation stay on the same path.</p>
           <div class="flow">
             <a class="flow-row" href="${gettingStarted?.href ?? '/docs/'}"><code>getting-started</code><span>Install locally, configure providers, and get the first agent reply.</span></a>
             <a class="flow-row" href="${philosophy?.href ?? '/docs/'}"><code>philosophy</code><span>The design themes behind Arbiter's runtime, memory, and supervision model.</span></a>
@@ -226,29 +251,37 @@ function renderHome(docs) {
   })
 }
 
-function terminalScene() {
-  return `
-    <img class="terminal-image" src="/assets/terminal.jpg" alt="Arbiter terminal interface with sessions and inline diff rendering">
-  `
-}
-
 async function copyAssets() {
   try {
     await fs.access(assetsPath)
   } catch {
     return
   }
-  await fs.cp(assetsPath, path.join(dist, 'assets'), {
-    recursive: true,
-    filter: (source) => /\.(gif|jpe?g|png|webp|svg)$/i.test(source) || source === assetsPath,
-  })
+
+  const targetDir = path.join(dist, 'assets')
+  await fs.mkdir(targetDir, { recursive: true })
+  const entries = await fs.readdir(assetsPath, { withFileTypes: true })
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    if (!assetAllowlist.has(entry.name)) continue
+    await fs.copyFile(path.join(assetsPath, entry.name), path.join(targetDir, entry.name))
+  }
+}
+
+async function writeFavicon() {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
+  <rect width="64" height="64" fill="#10141c"/>
+  <text x="32" y="44" text-anchor="middle" font-family="ui-monospace, monospace" font-size="36" fill="#9fe8d4">⛮</text>
+</svg>`
+  await writeFile('favicon.svg', svg)
 }
 
 function renderDocsIndex(docs) {
   const groups = groupDocs(docs)
   const cards = [...groups.entries()]
     .map(([section, sectionDocs]) => {
-      const first = sectionDocs[0]
+      const indexDoc = sectionDocs.find((doc) => doc.relative.endsWith('/index.md') || doc.relative === `${section}.md`)
+      const first = indexDoc ?? sectionDocs[0]
       return `
         <a class="flow-row" href="${first.href}">
           <code>${escapeHtml(sectionLabels[section] ?? titleCase(section))}</code>
@@ -263,9 +296,10 @@ function renderDocsIndex(docs) {
 
   return layout({
     title: 'Arbiter Documentation',
-    description: 'Static documentation for the Arbiter reasoning runtime.',
+    description: 'Install, operate, and extend the Arbiter self-hosted agent runtime.',
+    canonicalPath: '/docs/',
     body: `
-      <section class="section">
+      <section class="section docs-index">
         <div class="section-inner">
           <p class="eyebrow">Documentation</p>
           <h1>Build, operate, and extend Arbiter.</h1>
@@ -281,12 +315,13 @@ function renderDocPage({ doc, docs, html, next, prev }) {
   const nav = renderDocsSidebar(docs, doc)
   const breadcrumbs = `${escapeHtml(sectionLabels[doc.section] ?? titleCase(doc.section))} / ${escapeHtml(doc.title)}`
   return layout({
-    title: `${doc.title} - Arbiter Docs`,
-    description: `Arbiter documentation: ${doc.title}.`,
+    title: `${doc.title} — Arbiter Docs`,
+    description: doc.description,
+    canonicalPath: doc.href,
     body: `
       <div class="docs-layout">
         ${nav}
-        <main class="docs-main">
+        <main class="docs-main" id="main">
           <article class="doc-shell">
             <div class="breadcrumbs">${breadcrumbs}</div>
             <div class="doc-content">${html}</div>
@@ -305,45 +340,122 @@ function renderDocsSidebar(docs, activeDoc) {
   const groups = groupDocs(docs)
   const body = [...groups.entries()]
     .map(([section, sectionDocs]) => {
+      if (section === 'api') {
+        return renderApiSidebarGroup(sectionDocs, activeDoc)
+      }
+
       const links = sectionDocs
         .map((doc) => {
           const active = doc.href === activeDoc.href ? ' active' : ''
           return `<a class="docs-link${active}" href="${doc.href}">${escapeHtml(doc.title)}</a>`
         })
         .join('')
+
       return `<div class="docs-group"><p class="docs-group-title">${escapeHtml(
         sectionLabels[section] ?? titleCase(section),
       )}</p>${links}</div>`
     })
     .join('')
 
-  return `<aside class="docs-sidebar"><h2>Docs</h2>${body}</aside>`
+  return `<aside class="docs-sidebar" aria-label="Documentation"><h2>Docs</h2>${body}</aside>`
+}
+
+function renderApiSidebarGroup(sectionDocs, activeDoc) {
+  const subgroups = new Map()
+  const topLevel = []
+
+  for (const doc of sectionDocs) {
+    const parts = doc.relative.replace(/^api\//, '').split('/')
+    if (parts.length === 1) {
+      topLevel.push(doc)
+      continue
+    }
+    const key = parts[0]
+    const list = subgroups.get(key) ?? []
+    list.push(doc)
+    subgroups.set(key, list)
+  }
+
+  const topLinks = topLevel
+    .map((doc) => {
+      const active = doc.href === activeDoc.href ? ' active' : ''
+      const label = doc.relative === 'api/index.md' ? 'Overview' : doc.title
+      return `<a class="docs-link${active}" href="${doc.href}">${escapeHtml(label)}</a>`
+    })
+    .join('')
+
+  const nested = [...subgroups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, docsInGroup]) => {
+      const open = docsInGroup.some((doc) => doc.href === activeDoc.href) ? ' open' : ''
+      const links = docsInGroup
+        .map((doc) => {
+          const active = doc.href === activeDoc.href ? ' active' : ''
+          return `<a class="docs-link${active}" href="${doc.href}">${escapeHtml(shortApiTitle(doc))}</a>`
+        })
+        .join('')
+      return `<details class="docs-subgroup"${open}><summary>${escapeHtml(titleCase(key))}</summary><div class="docs-subgroup-body">${links}</div></details>`
+    })
+    .join('')
+
+  return `<div class="docs-group"><p class="docs-group-title">API Reference</p>${topLinks}${nested}</div>`
+}
+
+function shortApiTitle(doc) {
+  const leaf = doc.relative.split('/').pop().replace(/\.md$/, '')
+  if (leaf === 'index') return 'Overview'
+  return titleCase(leaf)
 }
 
 function groupDocs(docs) {
   const groups = new Map()
+  for (const section of sectionOrder) groups.set(section, [])
   for (const doc of docs) {
     const group = groups.get(doc.section) ?? []
     group.push(doc)
     groups.set(doc.section, group)
   }
+  for (const [section, sectionDocs] of groups) {
+    if (sectionDocs.length === 0) groups.delete(section)
+  }
   return groups
 }
 
-function layout({ title, description, body }) {
+function layout({ title, description, body, canonicalPath = '/', ogImage = '/assets/terminal.jpg' }) {
+  const canonical = `${siteOrigin}${canonicalPath}`
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="${escapeHtml(description)}">
+    <meta name="theme-color" content="#10141c">
+    <link rel="canonical" href="${escapeAttribute(canonical)}">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Arbiter">
+    <meta property="og:title" content="${escapeHtml(title)}">
+    <meta property="og:description" content="${escapeHtml(description)}">
+    <meta property="og:url" content="${escapeAttribute(canonical)}">
+    <meta property="og:image" content="${escapeAttribute(`${siteOrigin}${ogImage}`)}">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="${escapeHtml(title)}">
+    <meta name="twitter:description" content="${escapeHtml(description)}">
+    <meta name="twitter:image" content="${escapeAttribute(`${siteOrigin}${ogImage}`)}">
     <title>${escapeHtml(title)}</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header">
       <nav class="nav" aria-label="Main navigation">
-        <a class="brand" href="/"><span class="brand-mark">⛮</span></a>
+        <a class="brand" href="/">
+          <span class="brand-mark" aria-hidden="true">⛮</span>
+          <span class="brand-name">Arbiter</span>
+        </a>
         <div class="nav-links">
           <a href="/#platform">Platform</a>
           <a href="/#workflow">Workflow</a>
@@ -353,13 +465,16 @@ function layout({ title, description, body }) {
         </div>
       </nav>
     </header>
-    ${body}
+    <div id="main">
+      ${body}
+    </div>
     <footer class="site-footer">
       <div class="site-footer-inner">
         <span>Arbiter is experimental open-source infrastructure.</span>
         <a href="/docs/philosophy/">Philosophy</a>
       </div>
     </footer>
+    <script src="/site.js" defer></script>
   </body>
 </html>
 `
@@ -378,16 +493,22 @@ function markdownToHtml(markdown, doc) {
       continue
     }
 
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+      html.push('<hr>')
+      index += 1
+      continue
+    }
+
     const fence = line.match(/^```(\w+)?\s*$/)
     if (fence) {
       const language = fence[1] ? ` class="language-${escapeHtml(fence[1])}"` : ''
       const code = []
       index += 1
-      while (index < lines.length && !lines[index].startsWith('```')) {
+      while (index < lines.length && !/^```/.test(lines[index])) {
         code.push(lines[index])
         index += 1
       }
-      index += 1
+      if (index < lines.length) index += 1
       html.push(`<pre><code${language}>${escapeHtml(code.join('\n'))}</code></pre>`)
       continue
     }
@@ -413,26 +534,20 @@ function markdownToHtml(markdown, doc) {
     }
 
     if (/^\s*[-*]\s+/.test(line)) {
-      const items = []
-      while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*[-*]\s+/, ''))
-        index += 1
-      }
-      html.push(`<ul>${items.map((item) => `<li>${inline(item, doc)}</li>`).join('')}</ul>`)
+      const { html: listHtml, nextIndex } = renderList(lines, index, 'ul', doc)
+      html.push(listHtml)
+      index = nextIndex
       continue
     }
 
     if (/^\s*\d+\.\s+/.test(line)) {
-      const items = []
-      while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*\d+\.\s+/, ''))
-        index += 1
-      }
-      html.push(`<ol>${items.map((item) => `<li>${inline(item, doc)}</li>`).join('')}</ol>`)
+      const { html: listHtml, nextIndex } = renderList(lines, index, 'ol', doc)
+      html.push(listHtml)
+      index = nextIndex
       continue
     }
 
-    if (/^>\s+/.test(line)) {
+    if (/^>\s?/.test(line)) {
       const quote = []
       while (index < lines.length && /^>\s?/.test(lines[index])) {
         quote.push(lines[index].replace(/^>\s?/, ''))
@@ -452,6 +567,7 @@ function markdownToHtml(markdown, doc) {
       !/^\s*[-*]\s+/.test(lines[index]) &&
       !/^\s*\d+\.\s+/.test(lines[index]) &&
       !/^>\s?/.test(lines[index]) &&
+      !/^(-{3,}|\*{3,}|_{3,})$/.test(lines[index].trim()) &&
       !isTableStart(lines, index)
     ) {
       paragraph.push(lines[index].trim())
@@ -461,6 +577,43 @@ function markdownToHtml(markdown, doc) {
   }
 
   return html.join('\n')
+}
+
+function renderList(lines, startIndex, type, doc) {
+  const items = []
+  let index = startIndex
+  const itemRe = type === 'ul' ? /^(\s*)[-*]\s+(.*)$/ : /^(\s*)\d+\.\s+(.*)$/
+  const anyItemRe = /^(\s*)(?:[-*]|\d+\.)\s+/
+  const baseIndent = leadingSpaces(lines[index])
+
+  while (index < lines.length) {
+    const line = lines[index]
+    if (!line.trim()) break
+
+    const match = line.match(itemRe)
+    if (!match || match[1].length !== baseIndent) break
+
+    let itemHtml = inline(match[2], doc)
+    index += 1
+
+    if (index < lines.length && anyItemRe.test(lines[index]) && leadingSpaces(lines[index]) > baseIndent) {
+      const nestedType = /^\s*\d+\.\s+/.test(lines[index]) ? 'ol' : 'ul'
+      const nested = renderList(lines, index, nestedType, doc)
+      itemHtml += nested.html
+      index = nested.nextIndex
+    }
+
+    items.push(`<li>${itemHtml}</li>`)
+  }
+
+  return {
+    html: `<${type}>${items.join('')}</${type}>`,
+    nextIndex: index,
+  }
+}
+
+function leadingSpaces(value) {
+  return value.match(/^\s*/)?.[0].length ?? 0
 }
 
 function renderTable(lines, doc) {
@@ -493,8 +646,14 @@ function inline(value, doc) {
   const tokens = []
   let text = escapeHtml(value)
 
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, href) => {
+    const token = `@@TOK${tokens.length}@@`
+    tokens.push(`<img src="${escapeAttribute(resolveHref(href, doc))}" alt="${escapeAttribute(alt)}">`)
+    return token
+  })
+
   text = text.replace(/`([^`]+)`/g, (_, code) => {
-    const token = `@@CODE${tokens.length}@@`
+    const token = `@@TOK${tokens.length}@@`
     tokens.push(`<code>${code}</code>`)
     return token
   })
@@ -503,20 +662,27 @@ function inline(value, doc) {
     return `<a href="${escapeAttribute(resolveHref(href, doc))}">${label}</a>`
   })
   text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-  text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  text = text.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>')
 
   for (let index = 0; index < tokens.length; index += 1) {
-    text = text.replace(`@@CODE${index}@@`, tokens[index])
+    text = text.replace(`@@TOK${index}@@`, tokens[index])
   }
   return text
 }
 
 function resolveHref(href, doc) {
-  if (/^(https?:|mailto:|#)/.test(href)) return href
+  if (/^(https?:|mailto:|#|\/)/.test(href)) return href
   if (href.endsWith('.md') || href.includes('.md#')) {
     const [filePart, hash] = href.split('#')
     const sourceDir = path.posix.dirname(doc.relative)
     const target = path.posix.normalize(path.posix.join(sourceDir, filePart))
+
+    if (target.startsWith('../') || target === '..') {
+      const repoPath = path.posix.normalize(path.posix.join('docs', sourceDir, filePart))
+      const cleaned = repoPath.replace(/^(\.\.\/)+/, '').replace(/^\//, '')
+      return `${githubBlobBase}/${cleaned}${hash ? `#${hash}` : ''}`
+    }
+
     const slug = target.replace(/\.md$/, '').replace(/\/index$/, '')
     return `/docs/${slug}/${hash ? `#${hash}` : ''}`
   }
@@ -525,6 +691,24 @@ function resolveHref(href, doc) {
 
 function extractTitle(markdown) {
   return markdown.match(/^#\s+(.+)$/m)?.[1]?.trim()
+}
+
+function extractDescription(markdown, fallback) {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('```') || trimmed.startsWith('|') || trimmed.startsWith('>') || trimmed.startsWith('-') || /^\d+\./.test(trimmed)) {
+      continue
+    }
+    const plain = trimmed
+      .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/[`*_]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (plain.length > 40) return plain.slice(0, 180).replace(/\s+\S*$/, '') + (plain.length > 180 ? '…' : '')
+  }
+  return `Arbiter documentation: ${fallback}`
 }
 
 function titleFromSlug(relative) {
@@ -570,7 +754,7 @@ function renderSitemap(docs) {
   const urls = ['/', '/docs/', ...docs.map((doc) => doc.href)]
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map((url) => `  <url><loc>https://arbiter.run${url}</loc></url>`).join('\n')}
+${urls.map((url) => `  <url><loc>${siteOrigin}${url}</loc></url>`).join('\n')}
 </urlset>
 `
 }
