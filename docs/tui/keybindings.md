@@ -47,6 +47,7 @@ Scrollback is **visual-row aware**: a wrapped paragraph counts as multiple rows 
 | `^W h`       | Horizontal split — focused pane split into top/bottom.                       |
 | `^W s`       | Toggle the session sidebar (wide terminals only).                            |
 | `^W w` / `^W ^W` | Cycle focus to the next pane (pre-order traversal of the layout tree).   |
+| `^W z`       | Zoom / unzoom the focused pane (temporary maximize; siblings stay open).     |
 | `^W c`       | Close the focused pane. Its exec thread is joined; in-flight turn is cancelled. Last remaining pane cannot be closed. |
 | `^W t`       | Toggle the conversation-history sidebar (left rail). Preference is saved to `~/.arbiter/tui.json`. |
 | `^W b`       | Enter the conversation sidebar for selection. Auto-shows the sidebar if hidden. Use `↑`/`↓` and `Enter`; `Esc` cancels. |
@@ -58,7 +59,7 @@ If the chord byte doesn't match any of the above, it's silently dropped — the 
 | Key       | Action                                                                       |
 |-----------|------------------------------------------------------------------------------|
 | `↑` / `↓` | Move selection (`+ New conversation` at top, then prior threads newest-first). |
-| `Enter`   | Switch to the selected conversation or start a new one. Scrollback clears; agent histories load from disk. |
+| `Enter`   | Attach the selected conversation (or start a new one) to the **focused pane**. Sibling panes and the split layout are left alone. |
 | `Esc`     | Cancel and return focus to the pane input.                                   |
 
 The sidebar requires at least 72 terminal columns when enabled. Below that width it auto-hides even if toggled on.

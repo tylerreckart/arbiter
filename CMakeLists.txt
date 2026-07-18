@@ -909,6 +909,29 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_constitution COMMAND unit_constitution)
 
+    # Per-conversation Agent history isolation (ConversationScope / #40).
+    add_executable(unit_agent_conversation
+        tests/test_agent_conversation.cpp
+        src/agent.cpp
+        src/constitution.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_agent_conversation PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_agent_conversation PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_agent_conversation COMMAND unit_agent_conversation)
+
     # Advisor gate signal parser.  The parser is the only thing translating
     # an advisor's reply into a CONTINUE/REDIRECT/HALT decision; format
     # drift here means the runtime gate silently misroutes.  Kept as a

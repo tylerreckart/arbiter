@@ -108,6 +108,18 @@ public:
     bool close_pane(Pane* target,
                     const std::function<void(Pane&)>& on_destroy = {});
 
+    // Temporarily give the focused pane the full content rect (tmux zoom /
+    // vim Ctrl-w _).  Second call restores the prior split arrangement.
+    // Closing or splitting while zoomed clears zoom first.
+    void toggle_zoom_focused();
+    [[nodiscard]] bool zoomed() const { return zoomed_ != nullptr; }
+    [[nodiscard]] Pane* zoomed_pane() const { return zoomed_; }
+    void clear_zoom();
+
+    // Focus a specific pane by pointer (no-op if unknown).  Clears
+    // unfocused-activity badges on the newly focused pane.
+    bool focus_pane(Pane* target);
+
     // Public so layout.cpp's free-function helpers can name the type
     // without friend declarations.  Treat as opaque outside layout.cpp.
     struct Node {
@@ -125,9 +137,11 @@ private:
     void compute_bounds(Node& n, const Rect& r);
     void collect_leaves(Node& n, std::vector<Pane*>& out) const;
     void draw_borders_(const Node& n, OpenTuiHandle frame) const;
+    void apply_chrome_flags();
 
     std::unique_ptr<Node> root_;
     Pane*                 focused_ = nullptr;
+    Pane*                 zoomed_  = nullptr;  // nullptr = not zoomed
     Rect                  bounds_{};
 };
 

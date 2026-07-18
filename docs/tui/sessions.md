@@ -22,8 +22,8 @@ On first launch after upgrading, legacy per-cwd session files under `~/.arbiter/
 | Event             | What happens                                                       |
 |-------------------|--------------------------------------------------------------------|
 | `arbiter` startup | The last active conversation is loaded. Agent histories are restored before the first prompt. |
-| Switch conversation (`Ctrl-w b` → Enter) | Current conversation is saved; selected thread is loaded. UI collapses to a single pane with cleared scrollback. |
-| `/quit` / Ctrl-D  | The active conversation is written to disk. Pane layout is **not** saved. |
+| Switch conversation (`Ctrl-w b` → Enter) | Focused pane's conversation is saved; selected thread attaches to that pane only. Other panes and the split layout stay put. |
+| `/quit` / Ctrl-D  | Every distinct open-pane conversation is written to disk. Pane layout is **not** saved. |
 | `/reset [agent]`  | Clears the named (or focused) agent's history in memory only. The next save snapshots the new state. |
 
 Saves are not incremental — `/quit` and conversation switches write the full snapshot. A hard kill (`SIGKILL`, terminal close, power loss) loses any history accumulated since the last save.
@@ -41,8 +41,8 @@ Conversation **titles** are auto-generated from the first exchange (visible in t
 
 ## What's not persisted
 
-- **Pane layout.** Switching conversations or restarting always collapses to a single pane.
-- **Scrollback.** The painted history is gone. Type a follow-up and the agent answers in context, but you can't PgUp to prior scrollback.
+- **Pane layout.** Restarting always opens a single pane. Switching conversations no longer collapses splits — only the focused pane rebinds.
+- **Scrollback.** On relaunch the painted history is gone (conversation switch replays a transcript tail into the pane). Type a follow-up and the agent answers in context.
 - **In-flight turns.** A turn streaming when you quit or switch is dropped — the partial response isn't in the saved history.
 - **Background loops.** `/loop`-spawned processes are killed on exit.
 - **Queue depth.** Any queued user inputs are dropped on exit.
