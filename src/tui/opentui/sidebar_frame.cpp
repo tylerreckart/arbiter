@@ -1,5 +1,6 @@
 #include "tui/opentui/sidebar_frame.h"
 
+#include "styled_text.h"
 #include "tui/opentui/engine.h"
 #include "tui/sidebar_format.h"
 #include "tui/tui_design.h"
@@ -24,11 +25,7 @@ std::string capitalize_label(std::string_view s) {
 }
 
 int cell_width(std::string_view s) {
-    int w = 0;
-    for (unsigned char c : s) {
-        if ((c & 0xC0) != 0x80) ++w;
-    }
-    return w;
+    return static_cast<int>(arbiter::display_width(s));
 }
 
 void draw_text(OpenTuiHandle frame,
@@ -60,9 +57,7 @@ void fill_rect(OpenTuiHandle frame,
 }
 
 std::string trim_to_cells(std::string s, int max_cells) {
-    if (max_cells <= 0) return {};
-    while (!s.empty() && cell_width(s) > max_cells) s.pop_back();
-    return s;
+    return arbiter::trim_to_display_cols(std::move(s), max_cells);
 }
 
 int draw_section_label(OpenTuiHandle frame,
@@ -284,8 +279,7 @@ void draw_vertical_border(OpenTuiHandle frame,
 // draw_pane_chrome); the border needs to sit in that gap, flush against
 // the pane's real content edge, or it reads as floating in dead space.
 int pane_edge_pad(const TuiDesign& d, int pane_w) {
-    const int raw_pad = (pane_w <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
-    return std::min(raw_pad, std::max(0, (pane_w - 1) / 2));
+    return tui_pane_edge_pad(pane_w, d);
 }
 
 } // namespace
@@ -294,7 +288,8 @@ void draw_sidebar(OpenTuiHandle frame,
                   const SidebarSnapshot& snap,
                   const Rect& r,
                   const Rect& pane_rect,
-                  int pane_input_rows) {
+                  int pane_input_rows,
+                  int pane_bottom_pad_rows) {
     if (frame == 0 || r.w <= 0 || r.h <= 0) return;
 
     const Rect& pr = pane_rect;
@@ -304,11 +299,12 @@ void draw_sidebar(OpenTuiHandle frame,
     const TuiRgba sbg = tui_sidebar_bg(d);
     const SidebarColors sc = tui_sidebar_colors(d);
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
+    const int bottom_pad = std::max(1, pane_bottom_pad_rows);
 
     const int sidebar_top = r.y;
     const int panel_top_y = sidebar_top;
-    const int sep_y = pr.y + pr.h - TUI::kBottomPadRows - pane_input_rows - TUI::kSepRows;
-    const int input_bottom_y = pr.y + pr.h - TUI::kBottomPadRows - 1;
+    const int sep_y = pr.y + pr.h - bottom_pad - pane_input_rows - TUI::kSepRows;
+    const int input_bottom_y = pr.y + pr.h - bottom_pad - 1;
     if (input_bottom_y < panel_top_y) return;
 
     const int block_x = r.x;

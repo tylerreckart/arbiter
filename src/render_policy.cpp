@@ -112,7 +112,7 @@ std::vector<StyledLine> tool_call_summary_lines(int total, int failed) {
         rest += std::to_string(failed);
         rest += " failed)";
     }
-    styled_append(line, StyleId::Dim, rest);
+    styled_append(line, StyleId::System, rest);
     return {line};
 }
 

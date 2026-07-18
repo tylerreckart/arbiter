@@ -13,7 +13,7 @@ Launching `arbiter` opens one pane covering the whole terminal. The hint row at 
 | `^W v` | Vertical split — focused pane becomes left, new pane on the right. |
 | `^W s` | Horizontal split — focused pane becomes top, new pane on the bottom. |
 
-Splits divide the focused pane's rect equally. New panes get the `index` master agent by default; switch with `/use <agent>`. The hint row is hidden once the layout has more than one pane (clutter on every pane); the two rows stay reserved as blank padding so input-row positions don't shift between modes.
+Splits divide the focused pane's rect equally. New panes get the `index` master agent by default; switch with `/use <agent>`. The hint row is hidden once the layout has more than one pane (clutter on every pane). With the default `layout.chrome_compact_rows` theme setting, those rows are reclaimed for scrollback; set `"chrome_compact_rows": false` in `tui.json` / a theme file to keep blank placeholders so the input row does not shift between single- and multi-pane.
 
 Splitting twice in the same orientation does **not** wrap a new node — the new sibling is appended to the existing split, so N panes share `1/N` each. Splitting in the other orientation wraps the focused leaf in a fresh 2-child node.
 
