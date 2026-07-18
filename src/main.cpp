@@ -295,13 +295,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     Scheduler scheduler(&api_opts, &tenants, &notifications);
     scheduler.start();
 
-    // Load shared input history once — each pane's editor gets a copy.
-    std::vector<std::string> shared_history;
+    // Load input history into one live store shared by every pane's editor:
+    // a command typed in any pane is instantly in every pane's Up-arrow /
+    // Ctrl-R history.
+    auto shared_history = std::make_shared<arbiter::opentui::SharedInputHistory>();
     {
+        std::vector<std::string> loaded;
         std::ifstream hf(get_config_dir() + "/history");
         std::string line;
         while (std::getline(hf, line))
-            if (!line.empty()) shared_history.push_back(std::move(line));
+            if (!line.empty()) loaded.push_back(std::move(line));
+        shared_history->replace(std::move(loaded));
     }
 
     std::cout.flush();
@@ -309,6 +313,55 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     signal(SIGWINCH, sigwinch_handler);
 
     std::function<void()> pump_notify;
+
+    // Ctrl-P command palette: one shared table of every REPL command with a
+    // one-line hint.  Kept in sync with /help by review (both live in this
+    // file); Enter inserts the name into the input buffer.
+    const std::vector<arbiter::PaletteItem> palette_items = {
+        {"/ask",          "ask the index master"},
+        {"/send",         "send a message to a specific agent"},
+        {"/use",          "switch the focused pane's current agent"},
+        {"/agents",       "list loaded agents"},
+        {"/status",       "orchestrator status"},
+        {"/tokens",       "token usage report"},
+        {"/create",       "create agent with default config"},
+        {"/remove",       "remove agent"},
+        {"/reset",        "clear an agent's history"},
+        {"/model",        "change agent model at runtime"},
+        {"/pane",         "spawn a parallel pane running an agent"},
+        {"/find",         "search the focused pane's scrollback"},
+        {"/loop",         "run agent in a background loop"},
+        {"/loops",        "list running / suspended loops"},
+        {"/log",          "show buffered loop output"},
+        {"/watch",        "follow loop output"},
+        {"/kill",         "stop a loop"},
+        {"/suspend",      "pause a loop"},
+        {"/resume",       "resume a paused loop"},
+        {"/inject",       "inject a message into a running loop"},
+        {"/fetch",        "fetch URL, send readable text to agent"},
+        {"/browse",       "fetch + extract readable text"},
+        {"/search",       "web search"},
+        {"/mem",          "structured memory + scratchpad"},
+        {"/todo",         "todo tracker"},
+        {"/schedule",     "schedule recurring/one-shot tasks"},
+        {"/exec",         "shell command (confirm gate)"},
+        {"/write",        "write a file"},
+        {"/read",         "conversation artifacts"},
+        {"/list",         "list conversation artifacts"},
+        {"/mcp",          "MCP server registry"},
+        {"/a2a",          "remote A2A agents"},
+        {"/lesson",       "agent-scoped lessons"},
+        {"/plan",         "execute a planner-produced plan file"},
+        {"/theme",        "switch TUI color theme in-session"},
+        {"/verbose",      "toggle raw /cmd line streaming"},
+        {"/chat list",    "list conversations"},
+        {"/chat new",     "start a new conversation"},
+        {"/chat switch",  "switch conversation"},
+        {"/chat search",  "find text across saved conversations"},
+        {"/chat title",   "rename the active conversation"},
+        {"/help",         "command reference"},
+        {"/quit",         "exit"},
+    };
 
     // ── Pane factory ───────────────────────────────────────────────────────
     auto make_pane = [&]() -> std::unique_ptr<Pane> {
@@ -322,8 +375,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         p->current_model = orch.get_agent_model(p->current_agent);
         pane_history_init(*p);
 
+        p->editor.set_shared_history(shared_history);
         p->editor.set_max_history(1000);
-        p->editor.set_history(shared_history);  // copy per-pane
+        p->editor.set_palette_items(palette_items);
         p->editor.set_present_fn([&]() { if (pump_notify) pump_notify(); });
 
         p->editor.set_completion_provider(
@@ -345,7 +399,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (only_cmd || buf.empty()) {
                     return match({"/send","/ask","/use","/agents","/status","/tokens",
                                   "/create","/remove","/reset","/model",
-                                  "/pane",
+                                  "/pane","/find",
                                   "/loop","/loops","/log","/watch",
                                   "/kill","/suspend","/resume","/inject",
                                   "/fetch","/mem","/search","/browse",
@@ -367,7 +421,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                                 "search","entries","entry","add"});
                 if (cmd == "todo") return match({"list","add","start","done","cancel","reorder"});
                 if (cmd == "schedule") return match({"list","cancel","pause","resume"});
-                if (cmd == "chat") return match({"list", "new", "switch", "title", "delete", "purge"});
+                if (cmd == "chat") return match({"list", "new", "switch", "search", "title", "delete", "purge"});
                 if (cmd == "mcp") return match({"tools","call"});
                 if (cmd == "a2a") return match({"list","call"});
                 if (cmd == "theme") return match(arbiter::tui_list_available_themes(dir));
@@ -641,6 +695,48 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             if (cmd == "status") {
                 output_queue.push_msg(orch.global_status());
+                return;
+            }
+            if (cmd == "find") {
+                std::string rest;
+                std::getline(iss, rest);
+                size_t a = 0;
+                while (a < rest.size() && std::isspace(static_cast<unsigned char>(rest[a]))) ++a;
+                rest = rest.substr(a);
+                while (!rest.empty() && std::isspace(static_cast<unsigned char>(rest.back())))
+                    rest.pop_back();
+
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                arbiter::PaneFindResult r;
+                if (rest == "next" || (rest.empty() && !pane.find_term.empty())) {
+                    r = pane_history_find_step(pane, +1);
+                } else if (rest == "prev") {
+                    r = pane_history_find_step(pane, -1);
+                } else if (rest.empty()) {
+                    output_queue.push_msg("Usage: /find <text>, then /find next|prev to cycle");
+                    return;
+                } else {
+                    r = pane_history_find(pane, rest);
+                }
+                if (r.total == 0) {
+                    tui.set_status("find \"" + pane.find_term + "\": no matches");
+                } else {
+                    tui.set_status("find \"" + pane.find_term + "\": "
+                                   + std::to_string(r.hit) + "/" + std::to_string(r.total)
+                                   + "  /find next|prev");
+                }
+                // Back-to-back /find and /find next calls are the only case
+                // in the app where the *entire* visible delta is a one-line
+                // status-bar change with no accompanying scrollback content
+                // change (jump_to_row can also leave scroll_offset
+                // unchanged, e.g. cycling between two matches that map to
+                // the same visual row).  OpenTUI's diffed render occasionally
+                // fails to pick up such a narrow change from the normal
+                // pump-driven cadence — same class of issue /theme already
+                // works around (via refresh_chrome()) by forcing a full
+                // repaint instead of relying on pump_notify()'s diffed redraw.
+                if (ui_ctx.present_all) ui_ctx.present_all();
+                ot_session.flush_display();
                 return;
             }
             if (cmd == "tokens") {
@@ -1052,11 +1148,15 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /theme [list]|<preset>           — switch TUI color theme in-session\n"
                     "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
                     "  /chat title <text>               — rename the active conversation (locks title)\n"
+                    "  /chat search <text>              — find text across saved conversations\n"
+                    "  /find <text> | next | prev       — search the focused pane's scrollback\n"
                     "  /help                            — this list\n"
                     "  /quit                            — exit\n"
                     "\n"
                     "Scroll: PgUp / PgDn scroll the focused pane's history.  Esc cancels\n"
-                    "any in-flight agent turn.");
+                    "any in-flight agent turn.\n"
+                    "Keys: Ctrl-P command palette, Ctrl-R reverse history search,\n"
+                    "Ctrl-W pane chords (w/h/v/c/t/b).");
                 return;
             }
             if (cmd == "chat") {
@@ -1170,7 +1270,39 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     output_queue.push_msg("purged");
                     return;
                 }
-                output_queue.push_msg("Usage: /chat list|new|switch|title|delete|purge");
+                if (sub == "search") {
+                    std::string term;
+                    std::getline(iss, term);
+                    size_t a = 0;
+                    while (a < term.size() && std::isspace(static_cast<unsigned char>(term[a]))) ++a;
+                    term = term.substr(a);
+                    if (term.empty()) {
+                        output_queue.push_msg("Usage: /chat search <text>");
+                        return;
+                    }
+                    // Flush the coalesced autosave first so the active
+                    // conversation's newest turns are searchable too.
+                    conversation_store.flush();
+                    const auto hits = conversation_store.search(term);
+                    if (hits.empty()) {
+                        output_queue.push_msg("(no conversations match \"" + term + "\")");
+                        return;
+                    }
+                    const std::string active = conversation_store.active_id();
+                    std::ostringstream out;
+                    for (const auto& h : hits) {
+                        out << (h.id == active ? "* " : "  ")
+                            << (h.title.empty() ? "Untitled" : h.title)
+                            << "  [" << h.id.substr(0, std::min<size_t>(8, h.id.size())) << "]"
+                            << "  (" << h.match_count
+                            << (h.match_count == 1 ? " match)" : " matches)") << "\n";
+                        if (!h.snippet.empty()) out << "      " << h.snippet << "\n";
+                    }
+                    out << "  Switch with /chat switch <id-prefix>.\n";
+                    output_queue.push_msg(out.str());
+                    return;
+                }
+                output_queue.push_msg("Usage: /chat list|new|switch|search|title|delete|purge");
                 return;
             }
             if (cmd == "verbose") {
@@ -1996,16 +2128,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     if (stdin_is_tty) ::tcsetattr(STDIN_FILENO, TCSANOW, &orig_stdin_tm);
 
-    // Merge every pane's editor history into a single disk file, dropping
-    // duplicates while preserving last-seen order.
+    // Persist the shared history, dropping duplicates while preserving
+    // last-seen order (all panes share one store, so no merge needed).
     {
         std::ofstream hf(get_config_dir() + "/history");
         std::vector<std::string> merged;
         std::set<std::string> seen;
-        layout.for_each_pane([&](Pane& p) {
-            for (auto& h : p.editor.history())
-                if (seen.insert(h).second) merged.push_back(h);
-        });
+        for (auto& h : shared_history->snapshot())
+            if (seen.insert(h).second) merged.push_back(h);
         for (auto& h : merged) hf << h << '\n';
     }
     // Drain any autosave still in flight, then do one last synchronous save

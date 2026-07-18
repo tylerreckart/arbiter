@@ -76,3 +76,21 @@ TEST_CASE("prune_expired removes only expired rows") {
     CHECK(c.get(1, "fresh").has_value());
     CHECK(!c.get(1, "old").has_value());
 }
+
+TEST_CASE("unique keys don't accumulate past the TTL (amortized prune)") {
+    // Regression: clients mint a fresh key per request, so expired rows
+    // were never revisited by get() and the table grew for the life of
+    // the process.  put() now sweeps every 512 inserts.
+    IdempotencyCache c(std::chrono::milliseconds(20));
+    for (int i = 0; i < 600; ++i) {
+        CHECK(c.put(1, "warmup-" + std::to_string(i), "req"));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    // All 600 are now expired; the next amortized sweep (inside the
+    // following batch of puts) must clear them.
+    for (int i = 0; i < 600; ++i) {
+        CHECK(c.put(1, "second-" + std::to_string(i), "req"));
+    }
+    CHECK(c.size() <= 600 + 512);
+    CHECK(c.size() < 1200);
+}

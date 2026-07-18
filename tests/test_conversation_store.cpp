@@ -227,3 +227,108 @@ TEST_CASE("titled flag round-trips through the manifest on disk") {
     }
     fs::remove_all(dir);
 }
+
+TEST_CASE("equal updated_at ties break by id so list order is deterministic") {
+    // updated_at has second resolution, so conversations created/saved in
+    // the same second tie constantly.  The sidebar's keyboard navigation
+    // depends on list() order being stable — with no tie-break, std::sort's
+    // handling of equal keys made row order (and therefore which
+    // conversation Enter switched to) nondeterministic on fast machines.
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    // Three conversations created back-to-back land in the same epoch
+    // second (ids embed a per-process counter, so they stay distinct and
+    // monotonically increasing).
+    const std::string first = store.active_id();
+    const std::string second = store.create(dir);
+    const std::string third = store.create(dir);
+
+    const auto entries = store.list();
+    REQUIRE(entries.size() == 3);
+    // Later-created conversations sort first on an updated_at tie.
+    CHECK(entries[0].id == third);
+    CHECK(entries[1].id == second);
+    CHECK(entries[2].id == first);
+    for (size_t i = 1; i < entries.size(); ++i) {
+        const bool ordered =
+            entries[i - 1].updated_at > entries[i].updated_at ||
+            (entries[i - 1].updated_at == entries[i].updated_at &&
+             entries[i - 1].id > entries[i].id);
+        CHECK(ordered);
+    }
+
+    fs::remove_all(dir);
+}
+
+namespace {
+
+// Minimal session JSON with one index-master exchange and one sub-agent turn.
+std::string session_with(const std::string& user, const std::string& assistant,
+                         const std::string& agent_msg = {}) {
+    std::ostringstream ss;
+    ss << R"({"version":1,"index":[)"
+       << R"({"role":"user","content":")" << user << R"("},)"
+       << R"({"role":"assistant","content":")" << assistant << R"("}],)"
+       << R"("agents":{)";
+    if (!agent_msg.empty()) {
+        ss << R"("scout":[{"role":"assistant","content":")" << agent_msg << R"("}])";
+    }
+    ss << "}}";
+    return ss.str();
+}
+
+} // namespace
+
+TEST_CASE("search finds text across conversations, case-insensitively") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    const std::string first = store.active_id();
+    const std::string second = store.create(dir);
+    atomic_write_file(store.session_path(first),
+                      session_with("tune the flux capacitor",
+                                   "the Flux capacitor is tuned",
+                                   "flux readings nominal"));
+    atomic_write_file(store.session_path(second),
+                      session_with("write a haiku", "done"));
+
+    auto hits = store.search("FLUX");
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].id == first);
+    CHECK(hits[0].match_count == 3);   // user + assistant + sub-agent
+    CHECK(hits[0].snippet.find("flux") != std::string::npos);
+
+    CHECK(store.search("no-such-text").empty());
+    CHECK(store.search("").empty());
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("search matches titles and skips deleted conversations") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    const std::string first = store.active_id();
+    const std::string second = store.create(dir);
+    atomic_write_file(store.session_path(first),
+                      session_with("hello", "world"));
+    atomic_write_file(store.session_path(second),
+                      session_with("hello", "world"));
+    store.set_title_locked(first, "flux notes");
+
+    auto hits = store.search("flux");
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].id == first);
+    CHECK(hits[0].match_count == 1);
+
+    // Soft-deleted conversations drop out of search like they do list().
+    hits = store.search("hello");
+    CHECK(hits.size() == 2);
+    store.soft_delete(second);
+    hits = store.search("hello");
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].id == first);
+
+    fs::remove_all(dir);
+}

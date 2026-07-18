@@ -58,9 +58,19 @@ std::string cwd_session_hash(const std::string& cwd) {
 }
 
 void sort_entries(std::vector<ConversationEntry>& entries) {
+    // updated_at has second resolution, so two conversations touched in the
+    // same second tie constantly (e.g. save-then-create during a switch).
+    // Without a tie-break, std::sort's unspecified ordering of equal keys
+    // makes the history sidebar's row order nondeterministic — keyboard
+    // navigation in tests (and muscle memory in real use) lands on the
+    // wrong row.  Ids are fixed-width hex of (epoch seconds, per-process
+    // counter), so comparing them descending breaks ties by creation order.
     std::sort(entries.begin(), entries.end(),
               [](const ConversationEntry& a, const ConversationEntry& b) {
-                  return a.updated_at > b.updated_at;
+                  if (a.updated_at != b.updated_at) {
+                      return a.updated_at > b.updated_at;
+                  }
+                  return a.id > b.id;
               });
 }
 
@@ -360,6 +370,98 @@ std::vector<ConversationEntry> ConversationStore::list() const {
     out.reserve(entries_.size());
     for (const auto& e : entries_) {
         if (e.deleted_at == 0) out.push_back(e);
+    }
+    return out;
+}
+
+namespace {
+
+std::string lowercase(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// Count matches of `needle_lc` in `haystack` (both compared lowercase) and
+// capture a flattened excerpt around the first one.
+int count_matches(const std::string& haystack, const std::string& needle_lc,
+                  std::string* first_snippet) {
+    const std::string hay_lc = lowercase(haystack);
+    int count = 0;
+    size_t pos = hay_lc.find(needle_lc);
+    while (pos != std::string::npos) {
+        if (count == 0 && first_snippet && first_snippet->empty()) {
+            constexpr size_t kBefore = 30;
+            constexpr size_t kAfter = 50;
+            const size_t begin = pos > kBefore ? pos - kBefore : 0;
+            const size_t end = std::min(haystack.size(), pos + needle_lc.size() + kAfter);
+            std::string snip = haystack.substr(begin, end - begin);
+            for (char& c : snip) {
+                if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+            }
+            *first_snippet = (begin > 0 ? "…" : "") + snip
+                           + (end < haystack.size() ? "…" : "");
+        }
+        ++count;
+        pos = hay_lc.find(needle_lc, pos + needle_lc.size());
+    }
+    return count;
+}
+
+// Sum matches across every message array in a parsed session file.
+int count_session_matches(const JsonValue& root, const std::string& needle_lc,
+                          std::string* first_snippet) {
+    int total = 0;
+    auto scan_messages = [&](const JsonValue* arr) {
+        if (!arr || !arr->is_array()) return;
+        for (const auto& m : arr->as_array()) {
+            if (!m || !m->is_object()) continue;
+            total += count_matches(m->get_string("content"), needle_lc, first_snippet);
+        }
+    };
+    scan_messages(root.get("index").get());
+    if (auto agents = root.get("agents"); agents && agents->is_object()) {
+        for (const auto& [id, msgs] : agents->as_object()) {
+            (void)id;
+            scan_messages(msgs.get());
+        }
+    }
+    return total;
+}
+
+} // namespace
+
+std::vector<ConversationSearchHit>
+ConversationStore::search(const std::string& term, size_t max_hits) const {
+    std::vector<ConversationSearchHit> out;
+    if (term.empty()) return out;
+    const std::string needle_lc = lowercase(term);
+
+    // Snapshot entries under the lock; read session files outside it so a
+    // large store doesn't stall saves/renames for the whole scan.
+    std::vector<ConversationEntry> entries = list();
+
+    for (const auto& e : entries) {
+        if (out.size() >= max_hits) break;
+        const std::string raw = read_file(session_path(e.id));
+        if (raw.empty()) continue;
+        std::shared_ptr<JsonValue> root;
+        try {
+            root = json_parse(raw);
+        } catch (...) {
+            continue;   // corrupt/mid-write session — skip, don't fail the search
+        }
+        if (!root || !root->is_object()) continue;
+
+        ConversationSearchHit hit;
+        hit.match_count = count_session_matches(*root, needle_lc, &hit.snippet);
+        // Title matches count too — a conversation renamed "curl timeout
+        // notes" should surface for "curl" even if the transcript never
+        // repeats the word.
+        hit.match_count += count_matches(e.title, needle_lc, &hit.snippet);
+        if (hit.match_count == 0) continue;
+        hit.id = e.id;
+        hit.title = e.title;
+        out.push_back(std::move(hit));
     }
     return out;
 }

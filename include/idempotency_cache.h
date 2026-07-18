@@ -13,8 +13,11 @@
 // Durable dedup is a Phase-3 follow-up that requires the recovery
 // sweep to actually resume orphans.
 //
-// TTL: 24h.  Expired entries are evicted lazily on `get`/`put` and
-// on a periodic background sweep driven by `prune_expired`.
+// TTL: 24h.  Expired entries are evicted lazily on `get`/`put`, and a
+// full sweep runs amortized inside `put` (every kPruneEvery inserts) so
+// unique keys — the common case, since clients mint a fresh key per
+// request — can't grow the table unboundedly.  `prune_expired` remains
+// callable for an explicit sweep (tests, an optional background tick).
 
 #include <chrono>
 #include <cstdint>
@@ -50,9 +53,9 @@ public:
     bool put(int64_t tenant_id, const std::string& key,
              const std::string& request_id);
 
-    // Drop entries older than the TTL.  Cheap O(N) sweep; intended for
-    // a periodic background tick.  Safe to call concurrently with
-    // get/put.
+    // Drop entries older than the TTL.  Cheap O(N) sweep; runs amortized
+    // from put() and may be called explicitly.  Safe to call concurrently
+    // with get/put.
     void prune_expired();
 
     // Visible only for tests.
@@ -63,9 +66,14 @@ private:
         return std::to_string(tenant_id) + ":" + k;
     }
 
+    void prune_expired_locked(std::chrono::steady_clock::time_point now);
+
+    static constexpr int kPruneEvery = 512;   // puts between amortized sweeps
+
     mutable std::mutex                       mu_;
     std::unordered_map<std::string, Entry>   table_;
     std::chrono::nanoseconds                 ttl_;
+    int                                      puts_since_prune_ = 0;
 };
 
 } // namespace arbiter

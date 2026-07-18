@@ -44,15 +44,19 @@ enum class LoopState { Running, Suspended, Stopped };
 const char* loop_state_str(LoopState s);
 
 struct LoopEntry {
+    // Immutable after start() — readable without a lock.
     std::string loop_id;
     std::string agent_id;
+    std::chrono::steady_clock::time_point started;
+
+    // `mu` guards every mutable field below.  The loop thread and the
+    // manager's query/control APIs both take it; the manager's own map
+    // mutex only protects the loop_id → entry map, never entry state.
+    std::mutex              mu;
+    std::condition_variable cv;
     LoopState   state   = LoopState::Running;
     int         iter    = 0;
     std::string last_output;
-    std::chrono::steady_clock::time_point started;
-
-    std::mutex              mu;
-    std::condition_variable cv;
     std::queue<std::string> injected;
     bool stop_req    = false;
     bool suspend_req = false;
