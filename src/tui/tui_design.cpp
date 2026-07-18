@@ -175,35 +175,72 @@ void derive_code_syntax_colors(TuiDesign::Content& c) {
     c.code_function = c.heading[0];
 }
 
-// Fill panel/diff surfaces that the current theme document did not set
-// explicitly.  Re-derives from chrome colors so a panel override without
-// code_bg still keeps code panels in sync.  When `doc` is null (cold
-// default), only unset (zero-alpha) slots are filled.
-void derive_panel_surfaces(TuiDesign& d, const JsonValue* doc = nullptr) {
-    auto& c = d.content;
-    auto unset_or_missing = [&](const char* key, const TuiRgba& slot) -> bool {
-        if (doc) return !child(*doc, "content", key);
-        return slot[3] == 0;
-    };
+bool rgba_unset(const TuiRgba& c) {
+    return c[3] == 0;
+}
 
-    if (unset_or_missing("code_bg", c.code_bg)) c.code_bg = d.bg.panel;
-    if (unset_or_missing("code_header_bg", c.code_header_bg)) c.code_header_bg = d.bg.header;
-    if (unset_or_missing("code_gutter", c.code_gutter)) c.code_gutter = d.text.muted;
-    if (unset_or_missing("system_fg", c.system_fg)) c.system_fg = c.text_dim;
+void fill_diff_bg_from_base(TuiDesign& d) {
+    auto& c = d.content;
+    const bool light = relative_luminance(d.bg.base) > 0.45;
+    c.diff_bg_context = light ? tui_rgba(0xf0, 0xf2, 0xf4) : tui_rgba(0x18, 0x18, 0x18);
+    c.diff_bg_add = light ? tui_rgba(0xd8, 0xf0, 0xdc) : tui_rgba(0x0d, 0x33, 0x16);
+    c.diff_bg_remove = light ? tui_rgba(0xf8, 0xd8, 0xd8) : tui_rgba(0x4a, 0x12, 0x12);
+    c.diff_bg_empty = light ? tui_rgba(0xe4, 0xe6, 0xe8) : tui_rgba(0x10, 0x10, 0x10);
+}
+
+// Fill only still-unset surface slots from chrome.  Never overwrites values
+// already supplied by a nested preset / earlier document in the chain.
+void derive_unset_panel_surfaces(TuiDesign& d) {
+    auto& c = d.content;
+    if (rgba_unset(c.code_bg)) c.code_bg = d.bg.panel;
+    if (rgba_unset(c.code_header_bg)) c.code_header_bg = d.bg.header;
+    if (rgba_unset(c.code_gutter)) c.code_gutter = d.text.muted;
+    if (rgba_unset(c.system_fg)) c.system_fg = c.text_dim;
 
     const bool light = relative_luminance(d.bg.base) > 0.45;
-    if (unset_or_missing("diff_bg_context", c.diff_bg_context)) {
+    if (rgba_unset(c.diff_bg_context)) {
         c.diff_bg_context = light ? tui_rgba(0xf0, 0xf2, 0xf4) : tui_rgba(0x18, 0x18, 0x18);
     }
-    if (unset_or_missing("diff_bg_add", c.diff_bg_add)) {
+    if (rgba_unset(c.diff_bg_add)) {
         c.diff_bg_add = light ? tui_rgba(0xd8, 0xf0, 0xdc) : tui_rgba(0x0d, 0x33, 0x16);
     }
-    if (unset_or_missing("diff_bg_remove", c.diff_bg_remove)) {
+    if (rgba_unset(c.diff_bg_remove)) {
         c.diff_bg_remove = light ? tui_rgba(0xf8, 0xd8, 0xd8) : tui_rgba(0x4a, 0x12, 0x12);
     }
-    if (unset_or_missing("diff_bg_empty", c.diff_bg_empty)) {
+    if (rgba_unset(c.diff_bg_empty)) {
         c.diff_bg_empty = light ? tui_rgba(0xe4, 0xe6, 0xe8) : tui_rgba(0x10, 0x10, 0x10);
     }
+}
+
+// When the current document changes chrome colors without restating the
+// matching surface keys, keep panels in sync with that chrome.  Explicit
+// content.* keys in this document always win (already applied).
+void sync_surfaces_for_chrome_overrides(TuiDesign& d, const JsonValue& doc) {
+    auto& c = d.content;
+    if (child(doc, "bg", "panel") && !child(doc, "content", "code_bg")) {
+        c.code_bg = d.bg.panel;
+    }
+    if (child(doc, "bg", "header") && !child(doc, "content", "code_header_bg")) {
+        c.code_header_bg = d.bg.header;
+    }
+    if (child(doc, "text", "muted") && !child(doc, "content", "code_gutter")) {
+        c.code_gutter = d.text.muted;
+    }
+    if (child(doc, "content", "text_dim") && !child(doc, "content", "system_fg")) {
+        c.system_fg = c.text_dim;
+    }
+    const bool any_diff_bg = child(doc, "content", "diff_bg_context")
+        || child(doc, "content", "diff_bg_add")
+        || child(doc, "content", "diff_bg_remove")
+        || child(doc, "content", "diff_bg_empty");
+    if (child(doc, "bg", "base") && !any_diff_bg) {
+        fill_diff_bg_from_base(d);
+    }
+}
+
+void finalize_panel_surfaces(TuiDesign& d, const JsonValue* doc) {
+    if (doc) sync_surfaces_for_chrome_overrides(d, *doc);
+    derive_unset_panel_surfaces(d);
 }
 
 std::string executable_dir() {
@@ -501,10 +538,10 @@ TuiDesign default_design() {
             if (!child(*root, "content", "code_keyword")) {
                 derive_code_syntax_colors(d.content);
             }
-            derive_panel_surfaces(d, root.get());
+            finalize_panel_surfaces(d, root.get());
         }
     } else {
-        derive_panel_surfaces(d, nullptr);
+        finalize_panel_surfaces(d, nullptr);
     }
     return d;
 }
@@ -528,7 +565,7 @@ void apply_theme_document(TuiDesign& d,
     if (!child(doc, "content", "code_keyword")) {
         derive_code_syntax_colors(d.content);
     }
-    derive_panel_surfaces(d, &doc);
+    finalize_panel_surfaces(d, &doc);
 }
 
 bool apply_theme_from_path(TuiDesign& d,
@@ -822,6 +859,9 @@ void load_tui_design(const std::string& config_dir, std::string_view cli_preset)
         try {
             apply_color_overrides(design, *file_root);
             apply_layout_component_overrides(design, *file_root);
+            // Re-sync panel/diff surfaces when tui.json tweaks chrome without
+            // restating every content.* surface key.
+            finalize_panel_surfaces(design, file_root.get());
         } catch (...) {
             design = default_design();
             g_active_preset = kDefaultTuiPreset;

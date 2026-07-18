@@ -113,6 +113,54 @@ TEST_CASE("missing panel surfaces derive from chrome colors") {
     CHECK(tui_design().content.diff_bg_add[1] != 0);  // derived non-black
 }
 
+TEST_CASE("nested preset keeps distinct code_bg across layout-only wrapper") {
+    const std::string dir = temp_dir() + "_nested_keep";
+    std::filesystem::create_directories(dir + "/themes");
+    write_file(dir + "/themes/brand.json", R"({
+  "preset": "onedark",
+  "bg": { "panel": "#112233" },
+  "content": { "code_bg": "#aabbcc" }
+})");
+    write_file(dir + "/themes/wrapper.json", R"({
+  "preset": "brand",
+  "layout": { "block_gap": 2 }
+})");
+    write_file(dir + "/tui.json", R"({ "theme_file": "themes/wrapper.json" })");
+    load_tui_design(dir);
+    CHECK(tui_design().content.code_bg[0] == 0xaa);
+    CHECK(tui_design().content.code_bg[1] == 0xbb);
+    CHECK(tui_design().content.code_bg[2] == 0xcc);
+    CHECK(tui_design().layout.block_gap == 2);
+}
+
+TEST_CASE("chrome panel override without code_bg resyncs code_bg") {
+    const std::string dir = temp_dir() + "_panel_sync";
+    std::filesystem::create_directories(dir + "/themes");
+    write_file(dir + "/themes/panel.json", R"({
+  "preset": "onedark",
+  "bg": { "panel": "#112233" }
+})");
+    write_file(dir + "/tui.json", R"({ "theme_file": "themes/panel.json" })");
+    load_tui_design(dir);
+    CHECK(tui_design().content.code_bg[0] == 0x11);
+    CHECK(tui_design().content.code_bg[1] == 0x22);
+    CHECK(tui_design().content.code_bg[2] == 0x33);
+}
+
+TEST_CASE("tui.json bg.base override refreshes derived diff surfaces") {
+    const std::string dir = temp_dir() + "_tui_base";
+    std::filesystem::create_directories(dir);
+    // Start from a dark preset, then lighten base via tui.json only.
+    write_file(dir + "/tui.json", R"({
+  "preset": "onedark",
+  "bg": { "base": "#f8f9fa" }
+})");
+    load_tui_design(dir);
+    CHECK(tui_design().bg.base[0] == 0xf8);
+    // Diff add tint should flip to the light-theme green, not stay dark.
+    CHECK(tui_design().content.diff_bg_add[1] > 0x80);
+}
+
 TEST_CASE("tui_pane_pad_x soft-lerps between compact and dense") {
     TuiDesign d = tui_design_for_preset("onedark");
     d.layout.compact_cols = 72;

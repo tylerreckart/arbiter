@@ -1,5 +1,6 @@
 #include "tui/opentui/diff_panel.h"
 
+#include "styled_text.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
@@ -143,16 +144,33 @@ TuiRgba bg_for_line(BgLine line, const TuiDesign& d) {
 
 std::string truncate_cells(std::string_view text, int max_cells) {
     if (max_cells <= 0) return {};
+    // Walk by UTF-8 code points using display_width (wcwidth) so CJK/emoji
+    // truncate on the same cell budget as prose scrollback.
+    std::string out;
+    out.reserve(static_cast<size_t>(max_cells));
+    size_t i = 0;
     int w = 0;
-    std::size_t i = 0;
     while (i < text.size()) {
+        const size_t start = i;
         const unsigned char c = static_cast<unsigned char>(text[i]);
-        const int cw = (c < 0x80) ? 1 : 2;
+        if (c < 0x80) {
+            ++i;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < text.size()) {
+            i += 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < text.size()) {
+            i += 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < text.size()) {
+            i += 4;
+        } else {
+            ++i;
+        }
+        const std::string_view cluster = text.substr(start, i - start);
+        const int cw = static_cast<int>(arbiter::display_width(cluster));
         if (w + cw > max_cells) break;
+        out.append(cluster);
         w += cw;
-        i += (c < 0x80) ? 1 : ((c < 0xE0) ? 2 : ((c < 0xF0) ? 3 : 4));
     }
-    return std::string(text.substr(0, i));
+    return out;
 }
 
 } // namespace

@@ -177,10 +177,20 @@ int PaneScrollView::ProseSegment::visual_rows(int content_w) const {
 }
 
 void PaneScrollView::ProseSegment::set_wrap_cols(int cols) {
-    wrap_cols_ = std::max(1, cols);
+    const int next = std::max(1, cols);
+    bool rules_resized = false;
+    for (StyledLine& line : source_) {
+        if (!is_rule_line(line)) continue;
+        if (static_cast<int>(line.text.size()) == next) continue;
+        line = make_rule_line(next);
+        rules_resized = true;
+    }
+    wrap_cols_ = next;
     if (view_ != 0) {
         textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(wrap_cols_));
     }
+    // Rule text lives in the TextBuffer; rebuild highlights when width changes.
+    if (rules_resized) retheme();
 }
 
 void PaneScrollView::ProseSegment::collect_lines(std::vector<std::string>& out) const {
