@@ -6,5 +6,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "serve": "python3 -m http.server 4173 --directory dist"
+  },
+  "dependencies": {
+    "pug": "^3.0.4"
   }
 }
