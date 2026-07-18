@@ -1,6 +1,8 @@
 # Local Install
 
-Run arbiter on your own machine. You bring the provider keys; you control the binary. Free, open-source, fully featured. Ten minutes from `curl` to first agent reply.
+Install Arbiter locally, seed the starter agents, and open the terminal
+workspace. You control the binary and configuration; model requests go to the
+provider you configure.
 
 ## Prerequisites
 
@@ -13,18 +15,23 @@ Run arbiter on your own machine. You bring the provider keys; you control the bi
 
 ## Install the binary
 
-**macOS arm64**
+The installer supports **macOS Apple silicon** and **Linux x86_64**, selects the
+newest published release containing a compatible binary, and verifies its
+SHA-256 checksum:
 
 ```bash
-curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
-  | tar xz -C /usr/local/bin
+curl -fsSL https://arbiter.run/install.sh | sh
 ```
 
-**Linux x86_64**
+Review the [installer source](https://github.com/tylerreckart/arbiter/blob/web/web/install.sh)
+before running it if you prefer. Set `INSTALL_DIR` to install somewhere other
+than `/usr/local/bin`; the script uses `sudo` only when the target directory is
+not writable.
+
+Pin a specific release:
 
 ```bash
-curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-linux-x86_64.tar.gz \
-  | tar xz -C /usr/local/bin
+curl -fsSL https://arbiter.run/install.sh | ARBITER_VERSION=v0.7.2 sh
 ```
 
 **From source** (any platform with C++20)
@@ -50,6 +57,11 @@ arbiter                                 # launch the terminal client
 `--init` writes nine starter agents into `~/.arbiter/agents/*.json` (reviewer, research, writer, devops, planner, backend, frontend, marketer, social) and is safe to re-run — existing files are preserved unless you pass `--force`. See [`cli/init.md`](../cli/init.md) for the full layout.
 
 `arbiter` opens the interactive TUI. Type a message and the master agent (`index`) decides whether to answer directly or delegate. Switch agents with `/use <name>`; send a one-off to a specific agent with `/send <name> <message>`. Full TUI reference: [`tui/`](../tui/index.md).
+
+Try this first:
+
+> Help me turn this project into a concrete plan. Ask what you need to know,
+> then delegate research and review to separate agents.
 
 ## Try one-shot mode
 
