@@ -11,6 +11,7 @@
 #include "markdown.h"
 #include "stream_renderer.h"
 #include "render_policy.h"
+#include "styled_text.h"
 #include "cli_helpers.h"
 #include "cli.h"
 #include "api_server.h"
@@ -498,32 +499,34 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                       const std::string& reason) {
         Pane* p = g_active_pane;
         if (!p) return;
-        std::string banner =
-            theme().accent_error + "[advisor halt: " + agent_id + "] " +
-            reason + theme().reset + "";
-        p->output_queue.push_msg(banner);
+        arbiter::StyledLine banner;
+        arbiter::styled_append(banner, arbiter::StyleId::Error,
+                               "[advisor halt: " + agent_id + "] ");
+        arbiter::styled_append(banner, arbiter::StyleId::System, reason);
+        p->output_queue.push_prose({banner});
+        p->output_queue.end_message();
     });
 
     orch.set_advisor_event_callback([&](const arbiter::Orchestrator::AdvisorEvent& ev) {
         Pane* p = g_active_pane;
         if (!p) return;
         if (ev.kind == "gate_continue") return;  // quiet success
-        const std::string& dim  = theme().text_dimmer;
-        const std::string& warn = theme().accent_warning;
-        const std::string& err  = theme().accent_error;
-        const std::string& rst  = theme().reset;
-        std::string label, color;
-        if      (ev.kind == "consult")       { label = "advisor consult"; color = dim; }
-        else if (ev.kind == "gate_redirect") { label = "advisor redirect"; color = warn; }
-        else if (ev.kind == "gate_halt")     { label = "advisor halt";    color = err;  }
-        else if (ev.kind == "gate_budget")   { label = "advisor budget";  color = err;  }
-        else                                  { label = ev.kind;            color = dim; }
+        arbiter::StyleId style = arbiter::StyleId::System;
+        std::string label;
+        if      (ev.kind == "consult")       { label = "advisor consult"; style = arbiter::StyleId::System; }
+        else if (ev.kind == "gate_redirect") { label = "advisor redirect"; style = arbiter::StyleId::Warning; }
+        else if (ev.kind == "gate_halt")     { label = "advisor halt";    style = arbiter::StyleId::Error;  }
+        else if (ev.kind == "gate_budget")   { label = "advisor budget";  style = arbiter::StyleId::Error;  }
+        else                                  { label = ev.kind;            style = arbiter::StyleId::System; }
         std::string detail = ev.detail;
         if (detail.size() > 200) { detail.resize(197); detail += "..."; }
-        std::string line = color + "[" + label + ": " + ev.agent_id + "]";
-        if (!detail.empty()) line += " " + detail;
-        line += rst + "";
-        p->output_queue.push_msg(line);
+        arbiter::StyledLine line;
+        arbiter::styled_append(line, style, "[" + label + ": " + ev.agent_id + "]");
+        if (!detail.empty()) {
+            arbiter::styled_append(line, arbiter::StyleId::System, " " + detail);
+        }
+        p->output_queue.push_prose({line});
+        p->output_queue.end_message();
     });
 
     orch.set_confirm_callback([&](const std::string& p) -> bool {
@@ -2090,8 +2093,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
         }
 
-        focused.output_queue.push_msg(
-            theme().user_echo_arrow + "> " + theme().user_echo_text + line + theme().reset + "");
+        focused.output_queue.push_prose({arbiter::styled_user_echo(line)});
+        focused.output_queue.end_message();
 
         focused.cmd_queue.push(line);
         if (focused.cmd_queue.is_busy()) {

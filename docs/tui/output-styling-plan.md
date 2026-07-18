@@ -1,8 +1,12 @@
 # TUI output styling & spacing plan
 
-Analysis of how Arbiter renders streamed output today, and a phased plan to
-improve overall styling, spacing, and output rendering. This is a design
-doc — no behavior changes land with it.
+Analysis of how Arbiter renders streamed output, and a phased plan to
+improve overall styling, spacing, and output rendering.
+
+**Status:** Phases 1–4 implemented (theme surfaces, vertical rhythm, StyleId
+emit migration for user echo / advisor / loops, strike + width-aware HR,
+soft pane padding). Phase 0 fixture inventory and Phase 5 chrome compaction
+remain follow-ups.
 
 ## Current rendering pipeline
 

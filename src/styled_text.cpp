@@ -58,6 +58,7 @@ std::string style_open(StyleId id) {
     case StyleId::Dim:       return t.dim;
     case StyleId::Bold:      return t.bold;
     case StyleId::Italic:    return t.italic;
+    case StyleId::Strike:    return t.strike + t.dim;
     case StyleId::Heading1:  return t.bold + t.md_heading[0];
     case StyleId::Heading2:  return t.bold + t.md_heading[1];
     case StyleId::Heading3:  return t.bold + t.md_heading[2];
@@ -83,6 +84,9 @@ std::string style_open(StyleId id) {
     case StyleId::CodeNumber:   return t.md_code_number;
     case StyleId::CodeType:     return t.md_code_type;
     case StyleId::CodeFunction: return t.md_code_function;
+    case StyleId::System:       return t.dim + t.text_dim;
+    case StyleId::UserEchoArrow:return t.user_echo_arrow;
+    case StyleId::UserEchoText: return t.user_echo_text;
     }
     return {};
 }
@@ -112,6 +116,13 @@ void styled_append(StyledLine& line, StyleId id, std::string_view text) {
 
 void styled_append_char(StyledLine& line, StyleId id, char c) {
     styled_append(line, id, std::string_view(&c, 1));
+}
+
+StyledLine styled_user_echo(std::string_view text) {
+    StyledLine line;
+    styled_append(line, StyleId::UserEchoArrow, "> ");
+    styled_append(line, StyleId::UserEchoText, text);
+    return line;
 }
 
 std::string to_ansi(const StyledLine& line) {

@@ -13,6 +13,7 @@ enum class StyleId : std::uint8_t {
     Dim,
     Bold,
     Italic,
+    Strike,
     Heading1,
     Heading2,
     Heading3,
@@ -38,6 +39,9 @@ enum class StyleId : std::uint8_t {
     CodeNumber,
     CodeType,
     CodeFunction,
+    System,
+    UserEchoArrow,
+    UserEchoText,
 };
 
 struct StyleSpan {
@@ -56,6 +60,9 @@ struct StyledLine {
 
 void styled_append(StyledLine& line, StyleId id, std::string_view text);
 void styled_append_char(StyledLine& line, StyleId id, char c);
+
+// Styled "> text" user-echo line for the TUI prose path.
+[[nodiscard]] StyledLine styled_user_echo(std::string_view text);
 
 [[nodiscard]] std::string to_ansi(const StyledLine& line);
 [[nodiscard]] std::string styled_lines_to_ansi(const std::vector<StyledLine>& lines);
