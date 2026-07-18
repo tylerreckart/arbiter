@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.7.0 LANGUAGES CXX)
+project(arbiter VERSION 0.7.3 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -222,6 +222,7 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/ansi_scroll_append.cpp
     src/tui/opentui/span_scroll_append.cpp
     src/tui/opentui/pane_input_editor.cpp
+    src/tui/palette.cpp
     src/tui/sidebar.cpp
     src/tui/sidebar_format.cpp
     src/tui/history_sidebar.cpp
@@ -486,6 +487,25 @@ if(INDEX_BUILD_TESTS)
     target_compile_definitions(unit_tui_theme_json PRIVATE
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_tui_theme_json COMMAND unit_tui_theme_json)
+
+    add_executable(unit_palette
+        tests/test_palette.cpp
+        src/tui/palette.cpp
+    )
+    target_include_directories(unit_palette PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_palette COMMAND unit_palette)
+
+    add_executable(unit_kitty_key_decode
+        tests/test_kitty_key_decode.cpp
+    )
+    target_include_directories(unit_kitty_key_decode PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_kitty_key_decode COMMAND unit_kitty_key_decode)
 
     add_executable(unit_sidebar_format
         tests/test_sidebar_format.cpp

@@ -111,6 +111,21 @@ Engine::~Engine() {
 void Engine::setup_terminal(bool alternate_screen) {
     setupTerminal(renderer_, alternate_screen);
     sync_terminal_capability_responses(renderer_);
+
+    // OpenTUI's capability handshake opts into the kitty keyboard protocol
+    // (pushes `CSI > 5 u` — disambiguate escape codes — once the terminal
+    // confirms support).  Under that protocol, terminals like kitty,
+    // ghostty, WezTerm, and foot encode ctrl+letter and Esc as CSI-u escape
+    // sequences instead of legacy control bytes.  Best-effort disable here
+    // (and again every render tick, see Engine::render()) so the protocol
+    // stays off as much as possible — but the terminal's capability reply
+    // is asynchronous and can re-enable it at any time relative to these
+    // calls, so this is defense-in-depth, not the actual fix: correctness
+    // comes from PaneInputEditor::read_key_event() decoding CSI-u key
+    // reports directly (see kitty_key_decode.h), so ctrl-key bindings and
+    // Esc-cancel work whether or not the protocol is actually off.
+    disableKittyKeyboard(renderer_);
+
     terminal_ready_ = true;
 }
 
@@ -138,6 +153,19 @@ void Engine::draw(const DrawFn& draw_fn) {
 }
 
 void Engine::render(bool force) {
+    // The one-shot disableKittyKeyboard() in setup_terminal() only undoes an
+    // enable that already landed *before* that call returns.  The terminal's
+    // "kitty keyboard supported" reply is asynchronous — real round-trip
+    // latency (as opposed to this process's own capability-response read
+    // loop timeout) can land it after setup_terminal() has already moved on,
+    // so the protocol comes back on with no further correction. Rather than
+    // chase that timing (which varies by terminal and connection), simply
+    // re-assert "disabled" on every render tick: disableKittyKeyboard() is a
+    // few comparisons and a zero-length write when already off (see its
+    // disassembly — checked, not guessed), so calling it unconditionally
+    // here costs nothing while guaranteeing the protocol can never stay on
+    // longer than one frame (~30ms) regardless of when it was (re-)enabled.
+    disableKittyKeyboard(renderer_);
     ::render(renderer_, force);
 }
 

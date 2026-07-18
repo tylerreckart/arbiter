@@ -3,6 +3,7 @@
 
 #include "constitution.h"
 #include "api_client.h"
+#include <atomic>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -12,10 +13,13 @@
 namespace arbiter {
 
 struct AgentStats {
-    int total_input_tokens  = 0;
-    int total_output_tokens = 0;
-    int total_requests      = 0;
-    std::chrono::steady_clock::time_point created;
+    // Atomic: written by the request thread mid-turn while other threads
+    // (status_summary from the REPL, to_json from the autosave worker)
+    // read concurrently.
+    std::atomic<int> total_input_tokens{0};
+    std::atomic<int> total_output_tokens{0};
+    std::atomic<int> total_requests{0};
+    std::chrono::steady_clock::time_point created;   // set once in the ctor
 };
 
 class Agent {

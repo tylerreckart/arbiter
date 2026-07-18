@@ -12,8 +12,12 @@
 #include "doctest.h"
 #include "pty_harness.h"
 
-#include <string>
 #include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cstddef>
+#include <string>
+#include <thread>
 
 using namespace index_tests;
 
@@ -193,4 +197,279 @@ TEST_CASE("left/right arrow cursor navigation allows mid-string insertion") {
     s.read_for(500);
 
     CHECK(PtySession::strip_ansi(s.output()).find("/agents") != std::string::npos);
+}
+
+TEST_CASE("Ctrl-R reverse-i-search recalls and submits; Esc cancels") {
+    PtySession s = ready_editor();
+
+    // Seed history with two instant commands (no agent turn involved).
+    s.send("/agents\r");
+    s.read_for(500);
+    s.send("/tokens\r");
+    s.read_for(500);
+
+    // Ctrl-R opens the search prompt.  (Per-keystroke buffer assertions
+    // don't work here: the framebuffer diff renderer re-emits only changed
+    // cells, so the query never appears contiguously in the byte stream —
+    // assert functionally on what Enter submits instead.)
+    const std::string before_accept = s.output();
+    s.send("\x12");
+    s.read_for(300);
+    CHECK(PtySession::strip_ansi(s.output().substr(before_accept.size()))
+              .find("reverse-i-search") != std::string::npos);
+
+    // Query matches the older entry; Enter accepts and submits it, so its
+    // echo lands in the scroll region again.
+    s.send("agen");
+    s.read_for(400);
+    s.send("\r");
+    s.read_for(700);
+    CHECK(PtySession::strip_ansi(s.output().substr(before_accept.size()))
+              .find("/agents") != std::string::npos);
+
+    // Esc cancels: the pre-search (empty) buffer is restored, so Enter
+    // submits nothing.  Snapshot after the Esc — the match preview itself
+    // legitimately painted "/tokens" into the input row before it.
+    s.send("\x12");
+    s.read_for(200);
+    s.send("token");
+    s.read_for(300);
+    s.send("\033");
+    s.read_for(400);
+    const std::string after_esc = s.output();
+    s.send("\r");
+    s.read_for(600);
+    CHECK(PtySession::strip_ansi(s.output().substr(after_esc.size()))
+              .find("/tokens") == std::string::npos);
+
+    s.terminate();
+}
+
+TEST_CASE("history is shared live across panes") {
+    PtySession s = ready_editor();
+
+    // Type a command in the first pane, then split; the new (focused) pane
+    // must see it in its own history immediately.
+    s.send("/agents\r");
+    s.read_for(500);
+    s.send("\x17" "v");   // Ctrl-W v: vertical split, focuses the new pane
+    s.read_for(600);
+
+    const std::string before = s.output();
+    s.send("\033[A");     // Up arrow: recall /agents in the new pane
+    s.read_for(400);
+    s.send("\r");
+    s.read_for(600);
+    const std::string new_bytes = PtySession::strip_ansi(s.output().substr(before.size()));
+    CHECK(new_bytes.find("/agents") != std::string::npos);
+
+    s.terminate();
+}
+
+TEST_CASE("Ctrl-P palette inserts the selected command; Esc closes it") {
+    PtySession s = ready_editor();
+
+    // Open the palette, narrow to /agents, accept, submit.  (Overlay pixels
+    // are diff-rendered, so assert functionally on what Enter produces.)
+    const std::string before = s.output();
+    s.send("\x10");
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(400);
+    s.send("\r");        // accept: buffer becomes "/agents "
+    s.read_for(300);
+    s.send("\r");        // submit it
+    s.read_for(600);
+    CHECK(PtySession::strip_ansi(s.output().substr(before.size()))
+              .find("/agents") != std::string::npos);
+
+    // Esc closes without touching the buffer: the follow-up Enter submits
+    // an empty line, so no command echo appears afterward.
+    s.send("\x10");
+    s.read_for(200);
+    s.send("quit");      // selects /quit but never accepts it
+    s.read_for(300);
+    s.send("\033");
+    s.read_for(400);
+    const std::string after_esc = s.output();
+    s.send("\r");
+    s.read_for(500);
+    CHECK(PtySession::strip_ansi(s.output().substr(after_esc.size()))
+              .find("/quit") == std::string::npos);
+    // And the app is still running (Esc didn't leak /quit through).
+    s.send("/agents\r");
+    s.read_for(600);
+    CHECK(PtySession::strip_ansi(s.output().substr(after_esc.size()))
+              .find("/agents") != std::string::npos);
+
+    s.terminate();
+}
+
+TEST_CASE("kitty keyboard protocol push is popped so ctrl keys stay legacy") {
+    // Impersonate a kitty-class terminal: answer the startup capability
+    // queries the way kitty/ghostty do, including "kitty keyboard protocol
+    // supported" (ESC[?0u).  OpenTUI's handshake responds by pushing
+    // CSI > 5 u (disambiguate escape codes), which would make the terminal
+    // re-encode every ctrl+letter as CSI-u — sequences the input layer
+    // doesn't decode.  setup_terminal must pop that entry (CSI < 1 u)
+    // after the handshake so the whole ctrl-key surface keeps working.
+    PtySession s(24, 80);
+    s.spawn({ INDEX_TEST_BINARY });
+    s.read_until("\033[?1049h", 10000);
+    s.send("\x1b[?0u");            // kitty keyboard: supported, flags 0
+    s.send("\x1b[24;1R");          // cursor position report
+    s.send("\x1b[?62;22c");        // DA1
+    s.send("\x1b[?2026;2$y");      // DECRPM: synchronized output supported
+    s.read_for(2500);
+
+    // Scan the raw byte stream for kitty keyboard pushes (CSI > ... u) and
+    // pops (CSI < ... u).  The pop must come after the last push.
+    const std::string out = s.output();
+    auto find_last = [&](const std::string& intro) -> std::size_t {
+        std::size_t last = std::string::npos;
+        std::size_t pos = 0;
+        while ((pos = out.find(intro, pos)) != std::string::npos) {
+            std::size_t j = pos + intro.size();
+            while (j < out.size() && (std::isdigit((unsigned char)out[j]) || out[j] == ';'))
+                ++j;
+            if (j < out.size() && out[j] == 'u') last = pos;
+            pos += intro.size();
+        }
+        return last;
+    };
+    const std::size_t last_push = find_last("\x1b[>");
+    const std::size_t last_pop  = find_last("\x1b[<");
+    REQUIRE(last_pop != std::string::npos);
+    if (last_push != std::string::npos) {
+        CHECK(last_pop > last_push);
+    }
+
+    // And legacy control bytes still drive the app end-to-end.
+    s.send("\x10");        // Ctrl-P opens the palette
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(300);
+    s.send("\r\r");        // accept, then submit "/agents "
+    s.read_for(800);
+    CHECK(PtySession::strip_ansi(s.output()).find("/agents") != std::string::npos);
+
+    s.terminate();
+}
+
+TEST_CASE("ctrl keys survive a kitty-support reply that lands after the startup handshake window") {
+    // Regression: the one-shot disableKittyKeyboard() call in
+    // setup_terminal() only undoes an enable that already happened by the
+    // time that call returns. The terminal's "kitty keyboard supported"
+    // reply is asynchronous — real round-trip latency can land it after
+    // arbiter's own capability-response read loop (~1s budget) has already
+    // moved on, so the protocol comes back on with nothing left to correct
+    // it. Simulate exactly that: answer the kitty query well past that
+    // window (as if flags 5 — disambiguate + report events — were already
+    // active), and confirm ctrl keys still work, proving Engine::render()
+    // re-asserts "disabled" on every tick rather than relying on the
+    // one-shot call alone.
+    PtySession s(24, 80);
+    s.spawn({ INDEX_TEST_BINARY });
+    s.read_until("\033[?1049h", 10000);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    s.send("\x1b[?5u");
+    s.send("\x1b[24;1R");
+    s.send("\x1b[?62;22c");
+    s.send("\x1b[?2026;2$y");
+    s.read_for(2000);
+    // A couple more render ticks for the periodic re-assert to catch up.
+    s.read_for(200);
+
+    s.send("\x10");
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(300);
+    s.send("\r\r");
+    s.read_for(800);
+    CHECK(PtySession::strip_ansi(s.output()).find("/agents") != std::string::npos);
+
+    s.terminate();
+}
+
+TEST_CASE("ctrl keys still work when the terminal sends raw kitty CSI-u reports") {
+    // The two tests above only ever prove that legacy control bytes
+    // (0x10, 0x12, 0x17, ...) keep working after our disable attempts.
+    // Neither actually exercises the case a real user hit in Ghostty: a
+    // terminal that keeps the kitty keyboard protocol on regardless (e.g.
+    // it doesn't honor CSI < u pops the way this harness's fake terminal
+    // does, or some other program re-enables it) and sends every
+    // ctrl+letter as `CSI <codepoint>;<mods> u` instead of a single C0
+    // byte. Send those reports directly and confirm the app still responds
+    // correctly — this is what proves the *decode* is the real fix, not
+    // just the suppression timing.
+    PtySession s = ready_editor();
+
+    // Ctrl-P (codepoint 'p' = 112, mods = 5 = 1 + ctrl(4)) opens the palette.
+    const std::string before = s.output();
+    s.send("\x1b[112;5u");
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(300);
+    s.send("\r\r");   // accept, then submit "/agents "
+    s.read_for(800);
+    CHECK(PtySession::strip_ansi(s.output().substr(before.size()))
+              .find("/agents") != std::string::npos);
+
+    // Esc under the "disambiguate" flag arrives as a bare `CSI 27 u` rather
+    // than 0x1B; it must still clear an in-progress line. Same technique as
+    // the plain-ESC test: if the buffer is cleared, Ctrl-D on the now-empty
+    // line exits the app; if ESC was a no-op, Ctrl-D just deletes a char and
+    // the app keeps running.
+    s.send("willbe-cancelled");
+    s.read_for(200);
+    s.send("\x1b[27u");
+    s.read_for(300);
+    s.send("\x04");
+    s.read_for(1000);
+    CHECK(s.wait_exited(3000));
+}
+
+TEST_CASE("ctrl keys decode when the kitty report carries alternate-key/event-type subfields") {
+    // Regression: OpenTUI pushes kitty flags 5 (disambiguate + *report
+    // alternate keys*), so a real terminal's report isn't the bare
+    // `CSI 112;5 u` the previous test used — it's
+    // `CSI 112:80;5 u` (base codepoint : shifted-key alternate). The raw
+    // CSI tokenizer in read_key_event() didn't accept ':' as a parameter
+    // byte, so any sequence with a colon in it never reached
+    // decode_kitty_csi_u at all — every real kitty-protocol terminal's
+    // ctrl-key reports were silently dropped even though the decoder
+    // itself handled colons correctly. Exercise the actual shape a real
+    // terminal sends. (Event-type/release-event filtering is covered
+    // directly, without PTY/UI-text fragility, in
+    // test_kitty_key_decode.cpp.)
+    PtySession s = ready_editor();
+
+    // Ctrl-P: codepoint 'p'=112, shifted alternate 'P'=80, mods=5 (ctrl).
+    const std::string before = s.output();
+    s.send("\x1b[112:80;5u");
+    s.read_for(300);
+    s.send("agents");
+    s.read_for(300);
+    s.send("\r\r");
+    s.read_for(800);
+    CHECK(PtySession::strip_ansi(s.output().substr(before.size()))
+              .find("/agents") != std::string::npos);
+
+    // Ctrl-W chord (base 'w'=119, shifted 'W'=87) followed by 'b' opens the
+    // history sidebar — proves the chord path also survives colon subfields.
+    // The sidebar's row content ("Conversations", "Untitled", ...) is drawn
+    // once at startup regardless of focus, so it won't reappear in this
+    // diff window; key on the "enter  / filter" footer hint instead, which
+    // only paints once the sidebar actually gains keyboard focus.
+    const std::string before_chord = s.output();
+    s.send("\x1b[119:87;5u");
+    s.send("b");
+    s.read_for(400);
+    CHECK(PtySession::strip_ansi(s.output().substr(before_chord.size()))
+              .find("filt") != std::string::npos);
+    s.send("\x1b");
+    s.read_for(200);
+
+    s.terminate();
 }

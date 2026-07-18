@@ -2,10 +2,12 @@
 
 #include "code_highlighter.h"
 #include "markdown.h"
+#include "tui/ansi_util.h"
 #include "tui/style_resolver.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
@@ -130,6 +132,10 @@ void PaneScrollView::ProseSegment::set_wrap_cols(int cols) {
     }
 }
 
+void PaneScrollView::ProseSegment::collect_lines(std::vector<std::string>& out) const {
+    for (const auto& line : source_) out.push_back(line.text);
+}
+
 void PaneScrollView::ProseSegment::draw(OpenTuiHandle frame,
                                         int x,
                                         int y,
@@ -201,6 +207,20 @@ void PaneScrollView::TextSegment::set_wrap_cols(int cols) {
     wrap_cols_ = std::max(1, cols);
     if (view_ != 0) {
         textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(wrap_cols_));
+    }
+}
+
+void PaneScrollView::TextSegment::collect_lines(std::vector<std::string>& out) const {
+    const std::string plain = arbiter::strip_ansi(source_);
+    size_t start = 0;
+    while (start <= plain.size()) {
+        const size_t nl = plain.find('\n', start);
+        if (nl == std::string::npos) {
+            out.push_back(plain.substr(start));
+            break;
+        }
+        out.push_back(plain.substr(start, nl - start));
+        start = nl + 1;
     }
 }
 
@@ -290,6 +310,13 @@ int PaneScrollView::CodeSegment::visual_rows(int /*content_w*/) const {
 
 void PaneScrollView::CodeSegment::set_wrap_cols(int /*cols*/) {
     cached_rows_ = -1;
+}
+
+void PaneScrollView::CodeSegment::collect_lines(std::vector<std::string>& out) const {
+    out.push_back(lang_);   // header row
+    // All body lines are searchable even when the block is collapsed —
+    // find_rows clamps hits beyond the preview back into the visible rows.
+    for (const auto& line : lines_) out.push_back(line);
 }
 
 void PaneScrollView::CodeSegment::draw(OpenTuiHandle frame,
@@ -440,6 +467,19 @@ int PaneScrollView::DiffSegment::visual_rows(int /*content_w*/) const {
 
 void PaneScrollView::DiffSegment::set_wrap_cols(int /*cols*/) {
     cached_ = false;
+}
+
+void PaneScrollView::DiffSegment::collect_lines(std::vector<std::string>& out) const {
+    size_t start = 0;
+    while (start <= patch_.size()) {
+        const size_t nl = patch_.find('\n', start);
+        if (nl == std::string::npos) {
+            out.push_back(patch_.substr(start));
+            break;
+        }
+        out.push_back(patch_.substr(start, nl - start));
+        start = nl + 1;
+    }
 }
 
 void PaneScrollView::DiffSegment::draw(OpenTuiHandle frame,
@@ -762,6 +802,43 @@ int PaneScrollView::max_scroll_offset() const {
     const int total = total_visual_rows();
     if (total <= viewport_h_) return 0;
     return total - viewport_h_;
+}
+
+std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
+    std::vector<int> out;
+    if (term.empty()) return out;
+    std::string needle = term;
+    for (char& c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    // The echoed "> /find <term>" line that invoked this very search is
+    // itself a segment by the time this runs (the REPL echoes every typed
+    // line into scrollback before dispatching it), and it trivially
+    // contains `term` by construction.  Without excluding it, every /find
+    // call always finds itself as an extra, meaningless match — and
+    // because the echo's arrival in scrollback races the pump thread that
+    // drains it, whether that self-match is counted at all is
+    // nondeterministic (one run sees N matches, the next sees N+1).  A
+    // user's own /find invocations are UI chrome, not content they're
+    // searching for, so skip them unconditionally.
+    static constexpr std::string_view kEchoPrefix = "> /find";
+
+    int base = 0;
+    std::vector<std::string> lines;
+    for (const auto& seg : segments_) {
+        const int rows = seg->visual_rows(wrap_cols_);
+        lines.clear();
+        seg->collect_lines(lines);
+        for (size_t k = 0; k < lines.size(); ++k) {
+            std::string_view line_sv = lines[k];
+            if (line_sv.substr(0, kEchoPrefix.size()) == kEchoPrefix) continue;
+            std::string hay = std::move(lines[k]);
+            for (char& c : hay) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (hay.find(needle) == std::string::npos) continue;
+            out.push_back(base + std::min(static_cast<int>(k), std::max(0, rows - 1)));
+        }
+        base += rows;
+    }
+    return out;
 }
 
 void PaneScrollView::draw(OpenTuiHandle frame,

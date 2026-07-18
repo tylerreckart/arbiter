@@ -7,6 +7,109 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-07-09
+
+Adds TUI search and command-discovery surfaces, and fixes ctrl-key
+bindings and Esc going dead under terminals that speak the kitty
+keyboard protocol.
+
+### Added
+- **Conversation search.**  `/chat search <term>` and a live type-to-filter
+  (`/` in the history sidebar) find matching conversations by title or
+  content.
+- **In-pane scrollback search.**  `/find <term>` searches the focused
+  pane's scroll buffer and jumps between matches.
+- **Command palette.**  Ctrl-P opens a fuzzy-matched palette covering
+  every `/`-command, ranked by prefix/substring/description/subsequence
+  match quality.
+- **Reverse history search.**  Ctrl-R starts a readline-style
+  reverse-incremental search over input history, now shared live across
+  panes.
+
+### Fixed
+- **Ctrl-key bindings and Esc dead under the kitty keyboard protocol.**
+  Terminals that speak the protocol (kitty, Ghostty, WezTerm, foot)
+  re-encode ctrl+letter and Esc as `CSI ... u` escape sequences instead
+  of legacy control bytes once OpenTUI's capability handshake opts in.
+  Rather than only trying to suppress the terminal's use of the
+  protocol — inherently racy, since the terminal's capability reply is
+  asynchronous relative to arbiter's setup window — the input layer now
+  decodes these reports directly back into the legacy bytes its
+  dispatch already understands. Also handles the alternate-key and
+  event-type colon subfields real terminals send once "report alternate
+  keys" is active, which a first pass at the decoder missed, silently
+  dropping every real-world report.
+
+## [0.7.2] — 2026-07-08
+
+Patch release: a thread-safety and performance sweep across the loop
+manager, theme system, provider circuit breaker, and API server.  No
+functional surface changes — every fix hardens behavior that already
+existed.
+
+### Added
+- **API server connection cap.**  The thread-per-connection accept loop
+  is now bounded (default 256; override with `ARBITER_MAX_CONNECTIONS`).
+  Connections past the cap get `503 Service Unavailable` +
+  `Retry-After: 1` instead of an unbounded detached thread each.
+
+### Fixed
+- **LoopManager data races.**  Loop entry state (`output_log`, `state`,
+  `iter`, `stop_reason`) was written by the loop thread under one mutex
+  (or none) and read by `/log`, `/loops`, and `/watch` under another —
+  reading the log vector mid-append was undefined behavior.  All mutable
+  entry fields are now guarded by the per-entry mutex on both sides, and
+  `kill()` / `reap_stopped()` / the destructor detach entries from the
+  registry before joining so two concurrent `/kill`s of the same loop
+  can't use-after-free.
+- **Theme switch race.**  `/theme` rebuilt a shared `Theme` and mutated
+  the global `TuiDesign` in place while loop threads, pane exec threads,
+  and the output pump were reading them.  The active design is now
+  published as an immutable snapshot (lock-free reads; snapshots retained
+  so handed-out references never dangle) and `theme()` caches per-thread.
+- **Circuit breaker stuck half-open.**  A probe admitted in `HalfOpen`
+  that ended without a verdict — connection failure in `complete()`'s
+  early-return path, or a user cancel — leaked `probe_in_flight` and
+  rejected the provider with `circuit_open` until process restart.
+  Connect failures now record a failure; cancelled probes resolve via a
+  new `record_abandoned()` that reopens the breaker without counting
+  toward the Closed-state failure threshold.
+- **`ApiClient::complete()` ignored `cancel()`.**  A cancel during a
+  blocking call shut the socket down, then the retry loop reconnected
+  and retried up to 4 times (with backoff sleeps) anyway.  `complete()`
+  now checks the cancel flag at every attempt boundary and aborts.
+- **Agent stats race.**  Token/request counters are now atomic;
+  `status_summary()` and the autosave serializer read them while a turn
+  is mid-flight.
+- **Idempotency cache unbounded growth.**  `prune_expired()` was never
+  called in production, and clients mint a fresh `Idempotency-Key` per
+  request, so expired entries accumulated for the life of the server.
+  `put()` now runs the TTL sweep amortized every 512 inserts.
+- **Missing `<array>` include** in `span_scroll_append.h` broke the
+  build on toolchains that don't provide it transitively.
+
+## [0.7.1] — 2026-07-06
+
+Patch release: two concurrency fixes in the API client and the
+conversation-titling worker.
+
+### Fixed
+- **Per-provider connection pools.**  The process-wide `ApiClient`
+  serialized every upstream call behind one global connection mutex held
+  for the entire request — panes advertised as independently streaming
+  couldn't overlap, even across different providers (#48).  Each call now
+  leases a distinct connection from a small per-provider pool and does
+  all socket I/O with no shared lock held; `cancel()` semantics are
+  unchanged.  Adds a deterministic barrier-based regression test
+  (`unit_api_client_pool`).
+- **Title worker use-after-free.**  The detached conversation-titling
+  worker captured a raw `Orchestrator*` and could dereference it after
+  the orchestrator was destroyed if the title call outlived its 10s
+  timeout during shutdown (#51).  The worker now mints and owns a
+  standalone side client (`Orchestrator::make_side_client()`) and never
+  touches orchestrator-owned state; timed-out calls are cancelled so the
+  worker exits promptly instead of lingering on a hung connection.
+
 ## [0.7.0] — 2026-07-06
 
 Minor release focused on durable conversation history in the TUI.  Sessions
