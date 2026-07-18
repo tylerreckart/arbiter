@@ -15,6 +15,7 @@ need curl
 need tar
 need uname
 need mktemp
+need sed
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -41,9 +42,54 @@ trap cleanup EXIT INT TERM
 
 url="https://github.com/$REPO/releases/latest/download/$asset"
 archive="$tmp/$asset"
+version="${ARBITER_VERSION:-}"
+
+if [ -n "$version" ]; then
+  url="https://github.com/$REPO/releases/download/$version/$asset"
+elif ! curl -fsIL "$url" >/dev/null 2>&1; then
+  # A release can be published before its build workflow attaches binaries.
+  # In that case, select the newest published release that has this platform
+  # asset instead of leaving the stable install URL broken.
+  releases="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=10")"
+  tags="$(
+    printf '%s\n' "$releases" |
+      sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p'
+  )"
+
+  for candidate in $tags; do
+    candidate_url="https://github.com/$REPO/releases/download/$candidate/$asset"
+    if curl -fsIL "$candidate_url" >/dev/null 2>&1; then
+      version="$candidate"
+      url="$candidate_url"
+      echo "Latest release has no $asset; using newest available binary: $version"
+      break
+    fi
+  done
+
+  if [ -z "$version" ]; then
+    echo "arbiter installer: no published binary found for $os/$arch" >&2
+    echo "Build from source instead: https://github.com/$REPO" >&2
+    exit 1
+  fi
+fi
 
 echo "Downloading $url"
 curl -fL "$url" -o "$archive"
+
+checksum="$tmp/$asset.sha256"
+if curl -fL "$url.sha256" -o "$checksum"; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$tmp" && sha256sum -c "$asset.sha256")
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "$tmp" && shasum -a 256 -c "$asset.sha256")
+  else
+    echo "arbiter installer: sha256sum or shasum is required to verify the download" >&2
+    exit 1
+  fi
+else
+  echo "arbiter installer: release checksum is unavailable" >&2
+  exit 1
+fi
 
 tar -xzf "$archive" -C "$tmp"
 
