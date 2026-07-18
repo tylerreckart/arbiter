@@ -66,10 +66,14 @@ public:
         bool is_leaf() const { return pane != nullptr; }
     };
 
-    struct SeparatorHit {
-        Node*  parent = nullptr;  // split node owning the separator
-        int    index = -1;        // child left/above the separator
-        Orient orient = Orient::Vertical;
+    // Stable separator identity: path of child indices from the root to the
+    // split node, plus the separator's child index. Survives pointer
+    // invalidation as long as the caller re-resolves under layout_mu; a
+    // mutated tree simply fails resolve and the drag ends cleanly.
+    struct SeparatorRef {
+        std::vector<int> path;
+        int              index = -1;  // child left/above the separator
+        Orient           orient = Orient::Vertical;
     };
 
     // Build a tree with a single leaf covering `bounds`.  The pane's
@@ -104,13 +108,13 @@ public:
 
     // Hit-test helpers. Coordinates are 0-based terminal cells.
     [[nodiscard]] Pane* pane_at(int x, int y) const;
-    [[nodiscard]] std::optional<SeparatorHit> hit_separator(int x, int y);
+    [[nodiscard]] std::optional<SeparatorRef> hit_separator(int x, int y);
 
     // Drag a separator so the cell under the pointer becomes the new
     // separator position. Adjusts the two adjacent children's weights and
-    // recomputes bounds. Returns false if the hit is stale or clamping
+    // recomputes bounds. Returns false if the ref is stale or clamping
     // refuses the move (min pane size).
-    bool drag_separator(const SeparatorHit& sep, int pointer_x, int pointer_y);
+    bool drag_separator(const SeparatorRef& sep, int pointer_x, int pointer_y);
 
     // Split the focused leaf and return a pointer to the newly created
     // pane (or nullptr if the split was refused — e.g. the focused leaf
@@ -149,7 +153,11 @@ private:
     void compute_bounds(Node& n, const Rect& r);
     void collect_leaves(const Node& n, std::vector<Pane*>& out) const;
     void draw_borders_(const Node& n, OpenTuiHandle frame) const;
-    std::optional<SeparatorHit> hit_separator_(Node& n, int x, int y);
+    std::optional<SeparatorRef> hit_separator_(Node& n,
+                                               int x,
+                                               int y,
+                                               std::vector<int>& path);
+    [[nodiscard]] Node* resolve_split_(const SeparatorRef& sep);
 
     std::unique_ptr<Node> root_;
     Pane*                 focused_ = nullptr;

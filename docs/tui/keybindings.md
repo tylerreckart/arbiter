@@ -11,6 +11,7 @@ Arbiter ships its own line editor. Bindings below are the complete set the edito
 | Wheel | Scroll pane / history list under the pointer |
 | Drag split gutter | Resize adjacent panes |
 | Left-click history row | Switch to that conversation |
+| Right sidebar | Ignored (display-only) |
 
 Disable with `"mouse": false` under `layout` in `~/.arbiter/tui.json`.
 

@@ -1,6 +1,7 @@
 // arbiter/src/repl/layout.cpp — see repl/layout.h
 
 #include "repl/layout.h"
+#include "repl/layout_weights.h"
 #include "tui/opentui/engine.h"
 #include "tui/tui_design.h"
 
@@ -92,7 +93,9 @@ void LayoutTree::compute_bounds(Node& n, const Rect& r) {
     }
     // Split: divide the orientation axis by child weights, reserving
     // (N-1) cells for separators. Equal weights (the default) reproduce
-    // the historic 1/N layout. Leading children absorb rounding remainder.
+    // the historic 1/N layout. Sizes are allowed to be 0 when the terminal
+    // is too small for N children — allocate_weighted_sizes guarantees the
+    // sum equals `available` exactly so children never walk past `r`.
     const int N = static_cast<int>(n.children.size());
     if (N < 1) return;
     const bool vertical = (n.orient == Orient::Vertical);
@@ -100,31 +103,12 @@ void LayoutTree::compute_bounds(Node& n, const Rect& r) {
     const int separators = std::max(0, N - 1);
     const int available = std::max(0, total - separators);
 
-    double weight_sum = 0.0;
-    for (const auto& child : n.children) {
-        weight_sum += std::max(0.0001, child->weight);
-    }
-
-    std::vector<int> sizes(static_cast<size_t>(N), 1);
-    int assigned = 0;
+    std::vector<double> weights(static_cast<size_t>(N), 1.0);
     for (int i = 0; i < N; ++i) {
-        const double w = std::max(0.0001, n.children[static_cast<size_t>(i)]->weight);
-        int size = static_cast<int>((available * w) / weight_sum);
-        if (size < 1) size = 1;
-        sizes[static_cast<size_t>(i)] = size;
-        assigned += size;
+        weights[static_cast<size_t>(i)] =
+            std::max(0.0001, n.children[static_cast<size_t>(i)]->weight);
     }
-    // Fix rounding drift so sizes sum exactly to `available`.
-    int drift = available - assigned;
-    for (int i = 0; drift != 0 && i < N; ++i) {
-        if (drift > 0) {
-            sizes[static_cast<size_t>(i)] += 1;
-            --drift;
-        } else if (sizes[static_cast<size_t>(i)] > 1) {
-            sizes[static_cast<size_t>(i)] -= 1;
-            ++drift;
-        }
-    }
+    const std::vector<int> sizes = allocate_weighted_sizes(available, weights);
 
     int offset = 0;
     for (int i = 0; i < N; ++i) {
@@ -271,43 +255,60 @@ Pane* LayoutTree::pane_at(int x, int y) const {
     return nullptr;
 }
 
-std::optional<LayoutTree::SeparatorHit>
-LayoutTree::hit_separator_(Node& n, int x, int y) {
+std::optional<LayoutTree::SeparatorRef>
+LayoutTree::hit_separator_(Node& n, int x, int y, std::vector<int>& path) {
     if (n.is_leaf()) return std::nullopt;
     for (int i = 0; i + 1 < static_cast<int>(n.children.size()); ++i) {
         const Rect& left = n.children[static_cast<size_t>(i)]->bounds;
         if (n.orient == Orient::Vertical) {
             const int sep_x = left.x + left.w;
             if (x == sep_x && y >= n.bounds.y && y < n.bounds.y + n.bounds.h) {
-                return SeparatorHit{&n, i, n.orient};
+                return SeparatorRef{path, i, n.orient};
             }
         } else {
             const int sep_y = left.y + left.h;
             if (y == sep_y && x >= n.bounds.x && x < n.bounds.x + n.bounds.w) {
-                return SeparatorHit{&n, i, n.orient};
+                return SeparatorRef{path, i, n.orient};
             }
         }
     }
-    for (auto& child : n.children) {
-        if (auto hit = hit_separator_(*child, x, y)) return hit;
+    for (int i = 0; i < static_cast<int>(n.children.size()); ++i) {
+        path.push_back(i);
+        if (auto hit = hit_separator_(*n.children[static_cast<size_t>(i)], x, y, path)) {
+            return hit;
+        }
+        path.pop_back();
     }
     return std::nullopt;
 }
 
-std::optional<LayoutTree::SeparatorHit>
+std::optional<LayoutTree::SeparatorRef>
 LayoutTree::hit_separator(int x, int y) {
     if (!root_) return std::nullopt;
-    return hit_separator_(*root_, x, y);
+    std::vector<int> path;
+    return hit_separator_(*root_, x, y, path);
 }
 
-bool LayoutTree::drag_separator(const SeparatorHit& sep,
+LayoutTree::Node* LayoutTree::resolve_split_(const SeparatorRef& sep) {
+    if (!root_ || sep.index < 0) return nullptr;
+    Node* n = root_.get();
+    for (int idx : sep.path) {
+        if (!n || n->is_leaf()) return nullptr;
+        if (idx < 0 || idx >= static_cast<int>(n->children.size())) return nullptr;
+        n = n->children[static_cast<size_t>(idx)].get();
+    }
+    if (!n || n->is_leaf()) return nullptr;
+    if (n->orient != sep.orient) return nullptr;
+    if (sep.index + 1 >= static_cast<int>(n->children.size())) return nullptr;
+    return n;
+}
+
+bool LayoutTree::drag_separator(const SeparatorRef& sep,
                                  int pointer_x,
                                  int pointer_y) {
-    if (!sep.parent || sep.index < 0) return false;
-    Node& parent = *sep.parent;
-    if (parent.is_leaf()) return false;
-    if (sep.index + 1 >= static_cast<int>(parent.children.size())) return false;
-    if (parent.orient != sep.orient) return false;
+    Node* parent_ptr = resolve_split_(sep);
+    if (!parent_ptr) return false;
+    Node& parent = *parent_ptr;
 
     constexpr int kMinW = 24;
     constexpr int kMinH = 8;

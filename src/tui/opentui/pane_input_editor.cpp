@@ -429,7 +429,9 @@ void PaneInputEditor::set_cursor_from_click(int term_x, int term_y) {
     const int col = term_x - ex;
     if (row < 0 || row >= max_rows || col < 0) return;
 
-    const int visual = row * editor_w + std::min(col, editor_w);
+    // Clamp to the last cell of this visual row — clicks in the right
+    // padding must not spill onto the next wrap row's first column.
+    const int visual = row * editor_w + std::min(col, editor_w - 1);
     // Map visual column index into a byte offset in buffer_.
     int vis = 0;
     int byte_off = 0;

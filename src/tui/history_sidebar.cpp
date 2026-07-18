@@ -294,6 +294,13 @@ HistorySidebarKey HistorySidebarState::handle_key(int key_byte,
         return HistorySidebarKey::None;
     }
 
+    // SGR mouse reports must never be treated as Esc/nav. The history
+    // stdin loop filters them first; this is defense in depth.
+    if ((csi_final == 'M' || csi_final == 'm')
+        && !csi_params.empty() && csi_params[0] == '<') {
+        return HistorySidebarKey::None;
+    }
+
     if (csi_final == '~' && csi_params == "5") return HistorySidebarKey::PageUp;
     if (csi_final == '~' && csi_params == "6") return HistorySidebarKey::PageDown;
     if (csi_final == 'A') return HistorySidebarKey::Up;
