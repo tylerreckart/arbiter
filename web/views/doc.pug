@@ -1,0 +1,24 @@
+extends layout.pug
+
+block content
+  .docs-shell
+    include /includes/docs-sidebar.pug
+    main.docs-main
+      .docs-main-inner
+        article.doc-shell
+          .breadcrumbs= breadcrumbs
+          .doc-content!= contentHtml
+          nav.doc-nav(aria-label="Documentation pagination")
+            if prev
+              a(href=prev.href)
+                span Previous
+                = prev.title
+            else
+              span
+            if next
+              a(href=next.href)
+                span Next
+                = next.title
+            else
+              span
+        include /includes/toc.pug

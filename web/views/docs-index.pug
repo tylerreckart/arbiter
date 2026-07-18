@@ -1,0 +1,16 @@
+extends layout.pug
+
+block content
+  .docs-shell
+    include /includes/docs-sidebar.pug
+    main.docs-main
+      .docs-main-inner
+        .doc-shell.docs-index-inner
+          p.eyebrow Documentation
+          h1 Build, operate, and extend Arbiter.
+          p.lead Generated from repository Markdown so implementation and documentation stay on the same path.
+          .flow
+            each card in cards
+              a.flow-row(href=card.href)
+                code= card.label
+                span #{card.count} page#{card.count === 1 ? "" : "s"} covering #{card.preview}.

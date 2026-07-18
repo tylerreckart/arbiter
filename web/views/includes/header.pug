@@ -1,0 +1,17 @@
+header.site-header
+  nav.nav(aria-label="Main navigation")
+    a.brand(href="/")
+      span.brand-mark(aria-hidden="true") ⛮
+      span.brand-name Arbiter
+    .nav-links
+      if variant === "docs"
+        a(href="/") Home
+        a(href="/docs/") Docs
+        a(href="https://github.com/tylerreckart/arbiter") GitHub
+        a.button(href="/docs/getting-started/") Start
+      else
+        a(href="/#product") Product
+        a(href="/#platform") Platform
+        a(href="/docs/") Docs
+        a(href="https://github.com/tylerreckart/arbiter") GitHub
+        a.button(href="/docs/getting-started/") Start

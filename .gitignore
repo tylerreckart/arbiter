@@ -5,6 +5,7 @@
 compile_commands.json
 /web/dist/
 /web/dist/*
+/web/node_modules/
 
 # Editor / IDE droppings
 .vscode/

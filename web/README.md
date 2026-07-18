@@ -7,15 +7,20 @@ The build reads Markdown from `../docs` by default and emits plain HTML to
 building from another checkout layout.
 
 ```bash
+npm install
 npm run build
 npm run serve
 ```
 
-The site intentionally avoids a client framework. Moving parts:
+## Layout
 
-- `scripts/build.mjs` — discovers docs, derives navigation, renders Markdown
-- `src/styles.css` — visual system
-- `src/site.js` — install copy button and section reveal
+| Path | Role |
+|------|------|
+| `scripts/build.mjs` | Build orchestrator |
+| `lib/` | Docs discovery, Markdown, navigation models, assets |
+| `views/` | Pug templates (`layout`, pages, includes) |
+| `src/styles.css` | Visual system |
+| `src/site.js` | Install copy button and section reveal |
 
 `install.sh` is copied to `dist/install.sh` during the build so the homepage can
 advertise:
