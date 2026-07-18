@@ -42,6 +42,7 @@ Theme build_theme_from_design() {
     t.border_active   = t.accent_focused;
     t.text_dim        = fg_rgba(c.text_dim);
     t.text_dimmer     = fg_rgba(c.text_dimmer);
+    t.system_fg       = fg_rgba(c.system_fg);
     t.prompt_color    = fg_rgba(c.prompt_color);
     t.user_echo_arrow = fg_rgba(c.user_echo_arrow);
     t.user_echo_text  = fg_rgba(c.user_echo_text);
@@ -60,6 +61,7 @@ Theme build_theme_from_design() {
     t.md_code_function = fg_rgba(c.code_function);
     t.md_link     = fg_rgba(c.link);
     t.md_bullet   = fg_rgba(c.bullet);
+    t.md_rule     = fg_rgba(c.rule);
     t.md_cmd_line = fg_rgba(c.writ_line);
     for (size_t i = 0; i < t.md_heading.size(); ++i) {
         t.md_heading[i] = fg_rgba(c.heading[i]);

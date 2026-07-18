@@ -3,10 +3,12 @@
 Analysis of how Arbiter renders streamed output, and a phased plan to
 improve overall styling, spacing, and output rendering.
 
-**Status:** Phases 1–5 implemented (theme surfaces, vertical rhythm, StyleId
-emit migration, strike + width-aware HR, soft pane padding, chrome
-compaction + shared pad helpers). Phase 0 fixture inventory remains a
-follow-up.
+**Status:** Phases 1–2 and 4–5 implemented; Phase 3 largely done for
+interactive REPL emit (`push_prose` / StyleId for slash-command status,
+banners, confirms, tool summaries, user echo). Phase 0 fixture inventory
+and any remaining ANSI `push()` log dumps (e.g. raw loop log tails) are
+follow-ups. Nested-theme surface/syntax derive uses sticky-follow so
+chrome-only overlays do not wipe distinct earlier `content.*` tokens.
 
 ## Current rendering pipeline
 
@@ -200,14 +202,13 @@ defaults):
     "diff_bg_add": "#0d3316",
     "diff_bg_remove": "#4a1212",
     "diff_bg_empty": "#101010",
-    "system_fg": "#5c6370",   // [interrupted], tool summary rest
-    "user_echo_bg": null      // optional highlight strip
+    "system_fg": "#5c6370"    // [interrupted], tool summary rest, status prose
   }
 }
 ```
 
-Add `StyleId::Strike`, `StyleId::System`, `StyleId::UserEcho` (optional
-if user echo moves fully to spans).
+Add `StyleId::Strike`, `StyleId::System`, `StyleId::UserEchoArrow` /
+`StyleId::UserEchoText`.
 
 ## Phased plan
 

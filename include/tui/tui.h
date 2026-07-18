@@ -6,14 +6,16 @@
 // reads each frame.
 //
 // Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
-//   rows y..h-5        scroll region (streamed model output)
-//   row  h-6           mid separator (tool-call / thinking indicator)
-//   rows h-6..h-3      input area (dark bg + accent strip)
-//   row  h-2           hint row (key / command hints)
-//   row  h             bottom padding
+//   scroll region     streamed model output (grows when chrome shrinks)
+//   mid separator     tool-call / thinking indicator
+//   input area        dark bg + accent strip
+//   bottom pad        hint row + padding when footer is shown; with
+//                     layout.chrome_compact_rows (default) multi-pane /
+//                     footer-off layouts reclaim those rows for scroll
 //
 // All `*_row()` accessors return absolute 1-indexed terminal rows — they fold
 // in rect_.y for scroll/input placement in OpenTUI draw calls.
+// bottom_pad_rows() is theme-driven (see tui_bottom_pad_rows).
 //
 // The mid separator shows tool-call or thinking spinners via
 // set_pre_input_status / set_status.

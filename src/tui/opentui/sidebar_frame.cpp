@@ -1,5 +1,6 @@
 #include "tui/opentui/sidebar_frame.h"
 
+#include "styled_text.h"
 #include "tui/opentui/engine.h"
 #include "tui/sidebar_format.h"
 #include "tui/tui_design.h"
@@ -24,11 +25,7 @@ std::string capitalize_label(std::string_view s) {
 }
 
 int cell_width(std::string_view s) {
-    int w = 0;
-    for (unsigned char c : s) {
-        if ((c & 0xC0) != 0x80) ++w;
-    }
-    return w;
+    return static_cast<int>(arbiter::display_width(s));
 }
 
 void draw_text(OpenTuiHandle frame,
@@ -60,9 +57,7 @@ void fill_rect(OpenTuiHandle frame,
 }
 
 std::string trim_to_cells(std::string s, int max_cells) {
-    if (max_cells <= 0) return {};
-    while (!s.empty() && cell_width(s) > max_cells) s.pop_back();
-    return s;
+    return arbiter::trim_to_display_cols(std::move(s), max_cells);
 }
 
 int draw_section_label(OpenTuiHandle frame,
