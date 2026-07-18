@@ -37,6 +37,7 @@ inline constexpr Rect kEmptyRect{0, 0, 0, 0};
 struct TuiChromeSnapshot {
     Rect rect;
     int  input_rows = 1;
+    int  bottom_pad_rows = 3;
     bool status_active = false;
     bool focus_accent = false;
     bool footer_hint_visible = true;
@@ -46,9 +47,13 @@ struct TuiChromeSnapshot {
 
 class TUI {
 public:
-    static constexpr int kSepRows       = 1;   // mid separator above input area
-    static constexpr int kMaxInputRows  = 7;
-    static constexpr int kBottomPadRows = 3;   // input spacer + hint row + bottom padding
+    static constexpr int kSepRows              = 1;   // mid separator above input area
+    static constexpr int kMaxInputRows         = 7;
+    static constexpr int kBottomPadRows        = 3;   // spacer + hint row + bottom pad
+    static constexpr int kCompactBottomPadRows = 1;   // trailing pad when footer reclaimed
+
+    // Rows reserved below the input block (theme-aware; see tui_bottom_pad_rows).
+    [[nodiscard]] int bottom_pad_rows() const;
 
     // Per-pane layout.  Rendering is handled by OpenTUI (see opentui::Session).
     void init(const std::string& agent,
@@ -100,13 +105,13 @@ public:
     // True while begin_input is showing the queue-depth pill ("N queued").
     [[nodiscard]] bool queue_indicator_active() const;
 
-    // Show / hide the two-row footer hint at the bottom of the pane.  In
-    // single-pane mode the hint ("esc interrupt, pgup/dn scroll, /agents,
-    // /help") is useful; in multi-pane layouts it becomes clutter on every
-    // pane.  LayoutTree::resize toggles this for every leaf whenever the
-    // pane count crosses the 1/>1 boundary.  The rows are still reserved
-    // (blanked) when hidden so the input row's absolute position doesn't
-    // shift between modes.
+    // Show / hide the footer hint at the bottom of the pane.  In single-pane
+    // mode the hint ("esc interrupt, pgup/dn scroll, /agents, /help") is
+    // useful; in multi-pane layouts it becomes clutter on every pane.
+    // LayoutTree::resize toggles this for every leaf whenever the pane
+    // count crosses the 1/>1 boundary.  When layout.chrome_compact_rows is
+    // true, hiding the hint also reclaims those rows for the scroll region;
+    // otherwise the rows stay blank so the input row does not shift.
     void set_footer_hint_visible(bool visible);
 
     // Accent split separators when this pane is focused in a multi-pane layout.
@@ -136,9 +141,11 @@ private:
     mutable std::recursive_mutex tty_mu_;
 
     // Absolute 1-indexed terminal rows for each chrome slot within rect_.
-    int sep_row()        const { return rect_.y + rect_.h - kBottomPadRows - input_rows_; }
+    // Uses bottom_pad_rows() so compact chrome reclaims space when the
+    // footer hint is hidden.
+    int sep_row()        const { return rect_.y + rect_.h - bottom_pad_rows() - input_rows_; }
     int input_top_row()  const { return sep_row() + 1; }
-    int input_row()      const { return rect_.y + rect_.h - kBottomPadRows; }
+    int input_row()      const { return rect_.y + rect_.h - bottom_pad_rows(); }
     int hint_sep_row()   const { return rect_.y + rect_.h - 1; }
     int pad_row()        const { return rect_.y + rect_.h; }
 };

@@ -98,9 +98,10 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
     if (r.w <= 0 || r.h <= 0) return;
 
     const TuiDesign& d = tui_design();
-    const int raw_pad = tui_pane_pad_x(r.w, d);
-    const int pad = std::min(raw_pad, std::max(0, (r.w - 1) / 2));
+    const int pad = tui_pane_edge_pad(r.w, d);
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
+    const int bottom_pad = std::max(1, chrome.bottom_pad_rows);
+    const bool paint_footer = chrome.footer_hint_visible && d.layout.show_footer;
 
     const std::uint32_t px = static_cast<std::uint32_t>(r.x);
     const std::uint32_t pw = static_cast<std::uint32_t>(r.w);
@@ -110,9 +111,9 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
 
     fill_rect(frame, px, static_cast<std::uint32_t>(r.y), pw, static_cast<std::uint32_t>(r.h), d.bg.scroll);
 
-    const int sep_y = r.y + r.h - TUI::kBottomPadRows - chrome.input_rows - TUI::kSepRows;
+    const int sep_y = r.y + r.h - bottom_pad - chrome.input_rows - TUI::kSepRows;
     const int input_top_y = sep_y + 1;
-    const int input_bottom_y = r.y + r.h - TUI::kBottomPadRows - 1;
+    const int input_bottom_y = r.y + r.h - bottom_pad - 1;
     const int hint_y = r.y + r.h - 2;
     const int scroll_top_y = r.y;
     const int scroll_bottom_y = sep_y - 1;
@@ -166,9 +167,13 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
         }
     }
 
-    fill_rect(frame, block_x, static_cast<std::uint32_t>(hint_y), block_w, 1, d.bg.scroll);
+    // Only reserve/paint the hint row when the footer is shown, or when
+    // chrome_compact_rows is off (blank placeholder so input doesn't jump).
+    if (paint_footer || bottom_pad >= TUI::kBottomPadRows) {
+        fill_rect(frame, block_x, static_cast<std::uint32_t>(hint_y), block_w, 1, d.bg.scroll);
+    }
 
-    if (!chrome.footer_hint_visible || !d.layout.show_footer) return;
+    if (!paint_footer) return;
 
     const bool compact = r.w <= d.layout.compact_cols;
     std::string left = compact ? d.component.footer_left_compact : d.component.footer_left;

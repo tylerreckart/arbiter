@@ -98,6 +98,7 @@
   },
   "layout": {
     "block_gap": 2,
+    "chrome_compact_rows": true,
     "compact_cols": 72,
     "dense_cols": 88,
     "footer_gap": 2,
@@ -106,6 +107,7 @@
     "pane_padding_x": 1,
     "panel_gap": 1,
     "prose_paragraph_gap": 1,
+    "scroll_gutter_cols": 0,
     "scroll_pad_y": 0,
     "show_footer": true,
     "show_history_sidebar": true,

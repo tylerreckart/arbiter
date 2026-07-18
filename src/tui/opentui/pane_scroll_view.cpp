@@ -630,14 +630,18 @@ PaneScrollView::CodeSegment& PaneScrollView::current_code() {
 
 void PaneScrollView::bind(const TUI& tui) {
     const TuiDesign& d = tui_design();
-    const int raw_pad = tui_pane_pad_x(tui.cols(), d);
-    const int pad = std::min(raw_pad, std::max(0, (tui.cols() - 1) / 2));
-    const int content_w = std::max(1, tui.cols() - (pad * 2));
+    const int pad = tui_pane_edge_pad(tui.cols(), d);
+    const int gutter = std::max(0, std::min(d.layout.scroll_gutter_cols,
+                                            std::max(0, tui.cols() - pad * 2 - 1)));
+    const int pad_y = std::max(0, d.layout.scroll_pad_y);
+    const int content_w = std::max(1, tui.cols() - (pad * 2) - gutter);
+    const int region_h = tui.scroll_region_rows();
+    const int content_h = std::max(1, region_h - pad_y * 2);
 
-    buf_x_ = tui.left_col() - 1 + pad;
-    buf_y_ = tui.scroll_top_row() - 1;
+    buf_x_ = tui.left_col() - 1 + pad + gutter;
+    buf_y_ = tui.scroll_top_row() - 1 + pad_y;
     viewport_w_ = content_w;
-    viewport_h_ = tui.scroll_region_rows();
+    viewport_h_ = content_h;
     set_wrap_cols(content_w);
 }
 
@@ -918,6 +922,20 @@ void PaneScrollView::draw(OpenTuiHandle frame,
                           int scroll_offset,
                           int new_while_scrolled) {
     bind(tui);
+
+    const TuiDesign& d = tui_design();
+    const int pad = tui_pane_edge_pad(tui.cols(), d);
+    const int gutter = std::max(0, std::min(d.layout.scroll_gutter_cols,
+                                            std::max(0, tui.cols() - pad * 2 - 1)));
+    if (gutter > 0) {
+        const int gutter_x = tui.left_col() - 1 + pad;
+        fill_rect(frame,
+                  gutter_x,
+                  buf_y_,
+                  gutter,
+                  viewport_h_,
+                  d.bg.gutter);
+    }
 
     const int total = total_visual_rows();
     int first_visible = 0;

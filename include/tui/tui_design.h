@@ -55,12 +55,16 @@ struct TuiDesign {
         int block_gap = 1;            // blank rows between messages
         int panel_gap = 1;            // blank rows before/after code & diff
         int prose_paragraph_gap = 1;  // max consecutive blank prose lines
-        int scroll_pad_y = 0;         // reserved; draw-time inset (unused yet)
+        int scroll_pad_y = 0;         // draw-time top/bottom inset in scroll
+        int scroll_gutter_cols = 0;   // left gutter cols in scroll (0 = off)
         int compact_cols = 72;
         int dense_cols = 88;
         bool show_footer = true;
         bool status_pill = true;
         bool show_history_sidebar = true;
+        // When true, reclaim the blank hint/pad rows in multi-pane (or when
+        // show_footer is false) so scroll gets the vertical space back.
+        bool chrome_compact_rows = true;
     } layout;
 
     struct Component {
@@ -135,6 +139,16 @@ TuiRgba tui_rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b,
 // Soft horizontal content pad: 0 at/below compact_cols, full pane_padding_x
 // at/above dense_cols, lerped in between.
 [[nodiscard]] int tui_pane_pad_x(int cols, const TuiDesign& d);
+
+// Clamped pad used by pane chrome and sidebars (never more than (cols-1)/2).
+[[nodiscard]] int tui_pane_edge_pad(int cols, const TuiDesign& d);
+
+// Soft input inner pad — follows the same compact/dense ramp as pane pad.
+[[nodiscard]] int tui_input_pad_x(int cols, const TuiDesign& d);
+
+// Rows reserved below the input block.  Full budget (3) when the footer
+// hint is shown; shrinks to 1 when chrome_compact_rows reclaims space.
+[[nodiscard]] int tui_bottom_pad_rows(bool footer_hint_visible, const TuiDesign& d);
 
 [[nodiscard]] SidebarColors tui_sidebar_colors(const TuiDesign& d);
 

@@ -396,11 +396,13 @@ void apply_layout_component_overrides(TuiDesign& d, const JsonValue& root) {
     number(root, "layout", "panel_gap", d.layout.panel_gap);
     number(root, "layout", "prose_paragraph_gap", d.layout.prose_paragraph_gap);
     number(root, "layout", "scroll_pad_y", d.layout.scroll_pad_y);
+    number(root, "layout", "scroll_gutter_cols", d.layout.scroll_gutter_cols);
     number(root, "layout", "compact_cols", d.layout.compact_cols);
     number(root, "layout", "dense_cols", d.layout.dense_cols);
     boolean(root, "layout", "show_footer", d.layout.show_footer);
     boolean(root, "layout", "status_pill", d.layout.status_pill);
     boolean(root, "layout", "show_history_sidebar", d.layout.show_history_sidebar);
+    boolean(root, "layout", "chrome_compact_rows", d.layout.chrome_compact_rows);
 
     string_value(root, "component", "prompt", d.component.prompt);
     string_value(root, "component", "continuation_prompt", d.component.continuation_prompt);
@@ -423,6 +425,7 @@ void apply_layout_component_overrides(TuiDesign& d, const JsonValue& root) {
     d.layout.panel_gap = std::max(0, std::min(8, d.layout.panel_gap));
     d.layout.prose_paragraph_gap = std::max(0, std::min(8, d.layout.prose_paragraph_gap));
     d.layout.scroll_pad_y = std::max(0, std::min(4, d.layout.scroll_pad_y));
+    d.layout.scroll_gutter_cols = std::max(0, std::min(4, d.layout.scroll_gutter_cols));
     d.layout.compact_cols = std::max(20, d.layout.compact_cols);
     d.layout.dense_cols = std::max(20, d.layout.dense_cols);
 }
@@ -666,11 +669,13 @@ std::shared_ptr<JsonValue> design_to_json_value(const TuiDesign& d,
     layout["panel_gap"] = jnum(d.layout.panel_gap);
     layout["prose_paragraph_gap"] = jnum(d.layout.prose_paragraph_gap);
     layout["scroll_pad_y"] = jnum(d.layout.scroll_pad_y);
+    layout["scroll_gutter_cols"] = jnum(d.layout.scroll_gutter_cols);
     layout["compact_cols"] = jnum(d.layout.compact_cols);
     layout["dense_cols"] = jnum(d.layout.dense_cols);
     layout["show_footer"] = jbool(d.layout.show_footer);
     layout["status_pill"] = jbool(d.layout.status_pill);
     layout["show_history_sidebar"] = jbool(d.layout.show_history_sidebar);
+    layout["chrome_compact_rows"] = jbool(d.layout.chrome_compact_rows);
     root["layout"] = jobj(std::move(layout));
 
     JsonObject component;
@@ -704,6 +709,28 @@ int tui_pane_pad_x(int cols, const TuiDesign& d) {
     if (span <= 0) return max_pad;
     const int scaled = (max_pad * (cols - d.layout.compact_cols) + span / 2) / span;
     return std::max(1, std::min(max_pad, scaled));
+}
+
+int tui_pane_edge_pad(int cols, const TuiDesign& d) {
+    const int raw = tui_pane_pad_x(cols, d);
+    return std::min(raw, std::max(0, (cols - 1) / 2));
+}
+
+int tui_input_pad_x(int cols, const TuiDesign& d) {
+    const int max_pad = std::max(0, d.layout.input_padding_x);
+    if (max_pad == 0 || cols <= d.layout.compact_cols) return 0;
+    if (cols >= d.layout.dense_cols) return max_pad;
+    // Track the pane pad ramp so input inset doesn't outrun outer pad.
+    return std::max(0, std::min(max_pad, tui_pane_pad_x(cols, d)));
+}
+
+int tui_bottom_pad_rows(bool footer_hint_visible, const TuiDesign& d) {
+    // Keep in sync with TUI::kBottomPadRows / kCompactBottomPadRows.
+    constexpr int kFull = 3;
+    constexpr int kCompact = 1;
+    const bool footer_on = footer_hint_visible && d.layout.show_footer;
+    if (!footer_on && d.layout.chrome_compact_rows) return kCompact;
+    return kFull;
 }
 
 TuiRgba tui_sidebar_bg(const TuiDesign& d) {
