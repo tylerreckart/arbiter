@@ -694,6 +694,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             if (s.rfind("ERR:", 0) == 0) push_err(s);
             else push_sys(s);
         };
+        // Loop logs embed render_markdown() ANSI — must stay on the TextSegment
+        // path (push_msg). push_prose_msg would paint CSI escapes as glyphs.
+        auto push_ansi = [&](const std::string& s) {
+            output_queue.push_msg(s);
+        };
         auto push_md = [&](const std::string& md) {
             MarkdownRenderer renderer;
             auto lines = renderer.feed_styled(md);
@@ -975,7 +980,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 }
                 int n = 0;
                 iss >> n;
-                push_status(loops.log(lid, n));
+                push_ansi(loops.log(lid, n));
                 return;
             }
             if (cmd == "watch") {
@@ -1677,7 +1682,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         Pane& pane = layout.focused();
         StyledLine prompt_line;
         styled_append(prompt_line, StyleId::Warning, conf_prompt + " [y/N]");
-        pane_history_push_prose(pane, {StyledLine{}, prompt_line}, true);
+        // new_block supplies block_gap — do not also prepend an empty StyledLine.
+        pane_history_push_prose(pane, {prompt_line}, true);
         ui_ctx.present_all();
 
         unsigned char ch = 0;
@@ -1686,7 +1692,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         StyledLine answer;
         if (yes) styled_append(answer, StyleId::Success, "[user accepted input]");
         else styled_append(answer, StyleId::Error, "[user denied input]");
-        pane_history_push_prose(pane, {StyledLine{}, answer}, true);
+        pane_history_push_prose(pane, {answer}, true);
         ui_ctx.present_all();
         pending->set_value(yes);
         return true;
@@ -1723,7 +1729,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             StyledLine prompt_line;
             styled_append(prompt_line, StyleId::Warning,
                           "pane '" + pc.agent_id + "' finished — close it? [y/N]");
-            pane_history_push_prose(shown, {StyledLine{}, prompt_line}, true);
+            pane_history_push_prose(shown, {prompt_line}, true);
             ui_ctx.present_all();
 
             unsigned char ch = 0;
@@ -1738,7 +1744,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 styled_append(answer, StyleId::Error,
                               "[keeping '" + pc.agent_id + "' open]");
             }
-            pane_history_push_prose(shown, {StyledLine{}, answer}, true);
+            pane_history_push_prose(shown, {answer}, true);
             ui_ctx.present_all();
 
             if (yes) {

@@ -6,9 +6,11 @@ improve overall styling, spacing, and output rendering.
 **Status:** Phases 1–2 and 4–5 implemented; Phase 3 largely done for
 interactive REPL emit (`push_prose` / StyleId for slash-command status,
 banners, confirms, tool summaries, user echo). Phase 0 fixture inventory
-and any remaining ANSI `push()` log dumps (e.g. raw loop log tails) are
-follow-ups. Nested-theme surface/syntax derive uses sticky-follow so
-chrome-only overlays do not wipe distinct earlier `content.*` tokens.
+remains a follow-up. Loop log dumps (`/log`, `/watch` bodies) stay on the
+ANSI `push`/`push_msg` path until logs are stored as structured prose.
+Nested-theme **panel/diff surfaces** use sticky-follow so chrome-only
+overlays do not wipe distinct earlier customs; **syntax colors** use
+unset-only fill (layout wrappers cannot clobber nested `code_*` tokens).
 
 ## Current rendering pipeline
 
@@ -131,8 +133,9 @@ hidden in multi-pane) is compile-time, not themeable.
 
 ### 6. Markdown surface gaps
 
-- Strikethrough (`~~…~~`) drops to `StyleId::Default` (no dedicated id)
-- Horizontal rules are a fixed 60-dash string, not width-aware
+- Strikethrough (`~~…~~`) → `StyleId::Strike` (done)
+- Horizontal rules rewrite on wrap-cols change (done); markdown still emits
+  a 60-dash seed string that the scroll view resizes
 - No tables, task lists, or nested list indent beyond bullet glyph swap
 - Indented code blocks stay as prose+`StyleId::Code` (not `CodeSegment`)
 - Fence languages normalize for highlight, but the panel title is bare
@@ -140,10 +143,9 @@ hidden in multi-pane) is compile-time, not themeable.
 
 ### 7. Measurement inconsistency
 
-`pane_frame.cpp` / local `cell_width` helpers count UTF-8 lead bytes
-(treating many CJK/emoji as 1). `display_width()` (wcwidth mode 0) is
-used for policy truncation. Truncation and footer layout can disagree
-with scroll wrap.
+Chrome frames and scroll trim now share `display_width` /
+`trim_to_display_cols` (wcwidth mode 0). Remaining risk is any new local
+`cell_width` helper that reintroduces lead-byte counting.
 
 ### 8. Interim / system copy is hard-wired
 

@@ -68,7 +68,7 @@ std::string style_open(StyleId id) {
     case StyleId::Link:      return t.underline + t.md_link;
     case StyleId::Bullet:    return t.md_bullet;
     case StyleId::Blockquote:return t.dim;
-    case StyleId::Rule:      return t.md_rule;
+    case StyleId::Rule:      return t.dim + t.md_rule;
     case StyleId::WritLine:  return t.md_cmd_line + t.dim;
     case StyleId::DiffAdd:   return t.accent_success;
     case StyleId::DiffRemove:return t.accent_error;
@@ -84,7 +84,7 @@ std::string style_open(StyleId id) {
     case StyleId::CodeNumber:   return t.md_code_number;
     case StyleId::CodeType:     return t.md_code_type;
     case StyleId::CodeFunction: return t.md_code_function;
-    case StyleId::System:       return t.system_fg;
+    case StyleId::System:       return t.dim + t.system_fg;
     case StyleId::UserEchoArrow:return t.user_echo_arrow;
     case StyleId::UserEchoText: return t.user_echo_text;
     }
