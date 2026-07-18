@@ -87,6 +87,44 @@ using arbiter::theme;
 static volatile sig_atomic_t g_winch = 0;
 static void sigwinch_handler(int) { g_winch = 1; }
 
+// Set while SGR mouse tracking is active so fatal-signal handlers can emit
+// DECRST sequences without touching non-async-signal-safe state.
+static volatile sig_atomic_t g_mouse_tracking = 0;
+
+// Best-effort tty reset for fatal signals. Only async-signal-safe calls.
+static void emergency_tty_reset() {
+    // Disable any-event / button / mouse tracking + SGR mouse; show cursor;
+    // leave alternate screen. Order matches OpenTUI's disableMouse path.
+    static const char kReset[] =
+        "\033[?1003l\033[?1002l\033[?1000l\033[?1006l"
+        "\033[?25h\033[?1049l";
+    (void)::write(STDOUT_FILENO, kReset, sizeof(kReset) - 1);
+}
+
+static void fatal_signal_handler(int sig) {
+    if (g_mouse_tracking) emergency_tty_reset();
+    // Restore default disposition and re-raise so the process still exits
+    // with the expected status / core-dump behavior.
+    ::signal(sig, SIG_DFL);
+    ::raise(sig);
+}
+
+// Read one key for y/N confirms, skipping SGR mouse reports so a click's
+// trailing button-Up cannot cancel the prompt.
+static int read_confirm_key() {
+    while (true) {
+        char csi = 0;
+        std::string params;
+        const int key = arbiter::read_history_sidebar_key(csi, params);
+        if (key < 0) return key;
+        if (key == 0x1B && (csi == 'M' || csi == 'm')
+            && !params.empty() && params[0] == '<') {
+            continue;
+        }
+        return key;
+    }
+}
+
 
 using arbiter::TUI;
 using arbiter::ThinkingIndicator;
@@ -188,6 +226,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // Button+drag+wheel tracking without any-event motion (?1003).
     if (arbiter::tui_design().layout.mouse) {
         ot_session.engine().set_mouse_enabled(true, /*enable_movement=*/false);
+        g_mouse_tracking = 1;
     }
     if (stdin_is_tty) arbiter::drain_stdin_spurious(200);
     ui_ctx.session = &ot_session;
@@ -252,11 +291,22 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // Filled in after switch_conversation exists; make_pane editors call through.
     std::function<bool(const arbiter::opentui::MouseEvent&)> route_mouse;
 
-    // Active separator drag (mouse button held on a split gutter).
+    // Active separator drag (mouse button held on a split gutter). Uses a
+    // path-based SeparatorRef so a mid-drag layout mutation cannot UAF.
     struct MouseDragState {
         bool active = false;
-        LayoutTree::SeparatorHit sep{};
+        LayoutTree::SeparatorRef sep{};
     } mouse_drag;
+
+    // History-row activation is queued out of route_mouse so we never nest
+    // switch_conversation's stdin confirm inside the mouse handler / while
+    // holding layout_mu across a blocking read.
+    struct PendingMouseSwitch {
+        bool pending = false;
+        bool create_new = false;
+    } mouse_switch;
+
+    auto clear_mouse_drag = [&]() { mouse_drag = {}; };
 
     auto layout_bounds = [&sidebar, &layout_ptr, &history_sidebar]() -> Rect {
         const int cols = arbiter::term_cols();
@@ -327,6 +377,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     std::cout.flush();
 
     signal(SIGWINCH, sigwinch_handler);
+    // Best-effort mouse/alt-screen cleanup if we die without running
+    // Engine::~Engine (SIGTERM/HUP; SIGINT is usually blocked via ~ISIG).
+    signal(SIGTERM, fatal_signal_handler);
+    signal(SIGHUP, fatal_signal_handler);
+    signal(SIGINT, fatal_signal_handler);
 
     std::function<void()> pump_notify;
 
@@ -1542,6 +1597,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             return "ERR: no agent '" + req_agent + "'";
 
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        clear_mouse_drag();
 
         if (layout.pane_count() >= kMaxPanes) {
             return "ERR: pane cap reached (" + std::to_string(kMaxPanes) +
@@ -1670,9 +1726,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         pane_history_push(pane, rendered);
         ui_ctx.present_all();
 
-        unsigned char ch = 0;
-        ssize_t n = ::read(STDIN_FILENO, &ch, 1);
-        bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
+        const int key = read_confirm_key();
+        bool yes = (key == 'y' || key == 'Y');
         std::string answer = yes
             ? std::string("\n" + theme().accent_success + "[user accepted input]" + theme().reset + "\n")
             : std::string("\n" + theme().accent_error + "[user denied input]" + theme().reset + "\n");
@@ -1716,9 +1771,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             pane_history_push(shown, prompt);
             ui_ctx.present_all();
 
-            unsigned char ch = 0;
-            ssize_t n = ::read(STDIN_FILENO, &ch, 1);
-            bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
+            const int key = read_confirm_key();
+            bool yes = (key == 'y' || key == 'Y');
 
             std::string answer = yes
                 ? std::string("\n" + theme().accent_success + "[closing '" + pc.agent_id + "']" + theme().reset + "\n")
@@ -1728,6 +1782,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
             if (yes) {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                clear_mouse_drag();
                 layout.close_pane(pc.pane, [&](Pane& p) {
                     p.cmd_queue.stop();
                     if (p.exec_thread.joinable()) p.exec_thread.join();
@@ -1751,6 +1806,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // agent turn finishes or orch.cancel() aborts it).
     auto dispatch_chord = [&](char cmd) {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        clear_mouse_drag();
         switch (cmd) {
             case 'w':
             case 0x17:  // Ctrl-w Ctrl-w → next pane
@@ -1823,6 +1879,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // have already pointed conversation_store's active id at the target
     // and called orch.reset_all_histories().
     auto apply_active_conversation = [&](bool replay) {
+        clear_mouse_drag();
         if (replay) conversation_store.load(conversation_store.active_id(), orch);
 
         while (layout.pane_count() > 1) {
@@ -1865,28 +1922,43 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // current selection (used by /chat switch). Empty + !create_new reads
     // history_sidebar.selected_conversation_id() instead (sidebar Enter).
     auto switch_conversation = [&](bool create_new, std::string explicit_id = {}) {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
-
-        if (any_turn_in_flight()) {
-            layout.focused().tui.set_status("Turn in progress — switch anyway? [y/N]");
-            present_unlocked();
-            char csi = 0;
-            std::string csi_params;
-            const int key = read_history_sidebar_key(csi, csi_params);
-            layout.focused().tui.clear_status();
-            if (key != 'y' && key != 'Y') {
-                history_sidebar.exit_focus();
-                present_unlocked();
-                return;
+        // Confirm outside layout_mu so the output pump can keep painting and
+        // so nested mouse Up reports are drained by read_confirm_key.
+        {
+            bool busy = false;
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                busy = any_turn_in_flight();
+                if (busy) {
+                    layout.focused().tui.set_status(
+                        "Turn in progress — switch anyway? [y/N]");
+                    present_unlocked();
+                }
+            }
+            if (busy) {
+                const int key = read_confirm_key();
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                layout.focused().tui.clear_status();
+                if (key != 'y' && key != 'Y') {
+                    history_sidebar.exit_focus();
+                    present_unlocked();
+                    return;
+                }
             }
         }
+
+        std::unique_lock<std::recursive_mutex> lk(layout_mu);
+        clear_mouse_drag();
 
         orch.cancel();
         // Wait for every pane's exec thread to actually return to queue-pop
         // before touching orch's histories — cancel() only unblocks the
         // in-flight API call, it doesn't wait for the thread to unwind.
+        // Drop the lock while spinning so the output pump can keep painting.
         while (any_turn_in_flight()) {
+            lk.unlock();
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            lk.lock();
         }
 
         // Drain any in-flight autosave before we mutate orch's histories
@@ -2008,7 +2080,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             hb, chrome.rect, chrome.input_rows, history_sidebar.focused());
     };
 
-    // Returns true when the focused editor should exit read_line (focus moved).
+    // Returns true when the focused editor should exit read_line (focus moved
+    // or a pending history switch was queued).
     route_mouse = [&](const arbiter::opentui::MouseEvent& ev) -> bool {
         using arbiter::opentui::HitKind;
         using arbiter::opentui::MouseButton;
@@ -2019,22 +2092,27 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
 
-        // Separator drag: track motion until button release.
+        // Separator drag: re-resolve the path-based ref each event so a
+        // mid-drag tree mutation fails cleanly instead of UAFing.
         if (mouse_drag.active) {
-            if (ev.type == MouseType::Up
-                || (ev.type == MouseType::Drag && ev.button == MouseButton::Left)
-                || (ev.type == MouseType::Down && ev.button == MouseButton::Left)) {
-                if (ev.type != MouseType::Up) {
-                    layout.drag_separator(mouse_drag.sep, ev.x, ev.y);
+            if (ev.type == MouseType::Up) {
+                mouse_drag.active = false;
+                return false;
+            }
+            if (ev.type == MouseType::Drag && ev.button == MouseButton::Left) {
+                if (!layout.drag_separator(mouse_drag.sep, ev.x, ev.y)) {
+                    mouse_drag.active = false;
+                } else {
                     layout.for_each_pane([&](Pane& p) {
                         pane_history_set_cols(p, p.tui.cols());
                     });
                     if (pump_notify) pump_notify();
                 }
-                if (ev.type == MouseType::Up) mouse_drag.active = false;
                 return false;
             }
             if (ev.type == MouseType::Move) return false;
+            // Any other event cancels an in-progress drag.
+            mouse_drag.active = false;
         }
 
         const int cols = arbiter::term_cols();
@@ -2042,22 +2120,28 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         const Rect hb = HistorySidebarState::rect_for_terminal(
             cols, rows, history_sidebar.enabled());
         const Rect rb = right_sidebar_rect();
+        const int hist_vis = (hb.w > 0) ? history_visible_rows(hb) : 0;
         const auto hit = arbiter::opentui::hit_test(
-            layout, hb, rb, history_sidebar.scroll_offset(), ev.x, ev.y);
+            layout, hb, rb, history_sidebar.scroll_offset(), hist_vis,
+            ev.x, ev.y);
 
         if (ev.type == MouseType::Scroll) {
             const int dir = (ev.scroll == ScrollDir::Up || ev.scroll == ScrollDir::Left)
                 ? -1 : +1;
             if (hit.kind == HitKind::HistorySidebar && hb.w > 0) {
-                const int vis = history_visible_rows(hb);
-                history_sidebar.page_selection(dir, vis);
+                history_sidebar.page_selection(dir, hist_vis);
                 if (pump_notify) pump_notify();
                 return false;
             }
-            Pane* target = hit.pane ? hit.pane : layout.focused_ptr();
-            if (target) {
-                const int step = std::max(1, target->tui.scroll_region_rows() / 4);
-                scroll_pane(*target, dir, step * std::max(1, ev.scroll_delta));
+            // Only scroll when the pointer is over a pane scroll/input/chrome
+            // region — never fall back to the focused pane for Outside /
+            // RightSidebar / separator hits.
+            if (hit.pane
+                && (hit.kind == HitKind::PaneScroll
+                    || hit.kind == HitKind::PaneInput
+                    || hit.kind == HitKind::PaneChrome)) {
+                const int step = std::max(1, hit.pane->tui.scroll_region_rows() / 4);
+                scroll_pane(*hit.pane, dir, step * std::max(1, ev.scroll_delta));
             }
             return false;
         }
@@ -2065,8 +2149,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         if (ev.type == MouseType::Down && ev.button == MouseButton::Left) {
             if (hit.kind == HitKind::SplitSeparator) {
                 mouse_drag.active = true;
-                mouse_drag.sep = LayoutTree::SeparatorHit{
-                    hit.split, hit.sep_index, hit.sep_orient};
+                mouse_drag.sep = hit.sep;
                 return false;
             }
             if (hit.kind == HitKind::HistorySidebar) {
@@ -2074,33 +2157,34 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     history_sidebar.enter_focus(conversation_store,
                                                 conversation_store.active_id());
                 }
-                const int vis = history_visible_rows(hb);
                 if (hit.history_row >= 0) {
-                    history_sidebar.select_at_index(hit.history_row, vis);
-                    // Activate the clicked row (same as Enter).
-                    switch_conversation(history_sidebar.is_new_selected());
+                    history_sidebar.select_at_index(hit.history_row, hist_vis);
+                    // Queue activation — never call switch_conversation from
+                    // inside the mouse handler (nested stdin confirm + lock).
+                    mouse_switch.pending = true;
+                    mouse_switch.create_new = history_sidebar.is_new_selected();
                 }
                 refresh_focused_input.store(true);
                 if (pump_notify) pump_notify();
                 return true;
             }
-            if (hit.kind == HitKind::PaneInput && hit.pane) {
-                const bool focus_changed = (hit.pane != layout.focused_ptr());
-                layout.focus_pane(hit.pane);
-                hit.pane->editor.set_cursor_from_click(ev.x, ev.y);
-                if (focus_changed) {
-                    refresh_focused_input.store(true);
-                    if (pump_notify) pump_notify();
-                    return true;
-                }
+            if (hit.kind == HitKind::RightSidebar) {
+                // Display-only telemetry panel — clicks are intentionally
+                // ignored (documented in docs/tui/panes.md).
                 return false;
             }
-            if ((hit.kind == HitKind::PaneScroll || hit.kind == HitKind::PaneChrome)
+            if ((hit.kind == HitKind::PaneInput
+                 || hit.kind == HitKind::PaneScroll
+                 || hit.kind == HitKind::PaneChrome)
                 && hit.pane) {
                 const bool focus_changed = (hit.pane != layout.focused_ptr());
-                if (history_sidebar.focused()) history_sidebar.exit_focus();
+                const bool was_history = history_sidebar.focused();
+                if (was_history) history_sidebar.exit_focus();
                 layout.focus_pane(hit.pane);
-                if (focus_changed) {
+                if (hit.kind == HitKind::PaneInput) {
+                    hit.pane->editor.set_cursor_from_click(ev.x, ev.y);
+                }
+                if (focus_changed || was_history) {
                     refresh_focused_input.store(true);
                     if (pump_notify) pump_notify();
                     return true;
@@ -2113,11 +2197,20 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         return false;
     };
 
+    auto service_mouse_switch = [&]() -> bool {
+        if (!mouse_switch.pending) return false;
+        const bool create_new = mouse_switch.create_new;
+        mouse_switch.pending = false;
+        switch_conversation(create_new);
+        return true;
+    };
+
     // ── Main readline loop ──────────────────────────────────────────────────
     while (!quit_requested) {
         while (service_confirm()) {}
         while (service_pending_closes()) {}
         while (service_pending_conv_ops()) {}
+        while (service_mouse_switch()) {}
 
         if (history_sidebar.focused()) {
             if (pump_notify) pump_notify();
@@ -2139,6 +2232,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (auto ev = arbiter::opentui::decode_sgr_mouse(csi_params, csi)) {
                     (void)route_mouse(*ev);
                 }
+                // Pane click exits history focus; queued history activation
+                // is drained at the top of the next loop iteration.
                 continue;
             }
 
@@ -2222,6 +2317,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             if (service_confirm()) continue;
             if (service_pending_closes()) continue;
             if (service_pending_conv_ops()) continue;
+            if (service_mouse_switch()) continue;
             // Layout mutation woke us up just to repaint the focused
             // pane's prompt — loop back so begin_input paints a fresh
             // one.  Without this, read_line returning false here would
@@ -2285,6 +2381,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     output_pump.join();
 
     g_ui_ctx = nullptr;
+    g_mouse_tracking = 0;
     ot_session.shutdown();
 
     // Discard any capability-query dribble while still in raw/no-echo mode.

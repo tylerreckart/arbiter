@@ -1,10 +1,12 @@
-// Unit tests for decode_sgr_mouse — no PTY, no OpenTUI runtime.
+// Unit tests for decode_sgr_mouse, hit helpers, and weighted split sizing.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "repl/layout_weights.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
 
+using arbiter::allocate_weighted_sizes;
 using arbiter::opentui::decode_sgr_mouse;
 using arbiter::opentui::MouseButton;
 using arbiter::opentui::MouseType;
@@ -81,10 +83,42 @@ TEST_CASE("rect_contains and history_sidebar_row_at match frame geometry") {
     CHECK_FALSE(rect_contains(r, 26, 1));
     CHECK_FALSE(rect_contains(r, 0, 0));
 
-    // list_top = y + 2 = 3; row height 2
-    CHECK(history_sidebar_row_at(r, 3, 0) == 0);
-    CHECK(history_sidebar_row_at(r, 4, 0) == 0);
-    CHECK(history_sidebar_row_at(r, 5, 0) == 1);
-    CHECK(history_sidebar_row_at(r, 5, 2) == 3);
-    CHECK(history_sidebar_row_at(r, 2, 0) == -1);  // above list
+    // list_top = y + 2 = 3; row height 2; 3 visible rows.
+    CHECK(history_sidebar_row_at(r, 3, 0, 3) == 0);
+    CHECK(history_sidebar_row_at(r, 4, 0, 3) == 0);
+    CHECK(history_sidebar_row_at(r, 5, 0, 3) == 1);
+    CHECK(history_sidebar_row_at(r, 5, 2, 3) == 3);
+    CHECK(history_sidebar_row_at(r, 2, 0, 3) == -1);   // above list
+    CHECK(history_sidebar_row_at(r, 9, 0, 3) == -1);   // below visible band
+    CHECK(history_sidebar_row_at(r, 3, 0, 0) == -1);   // no visible rows
+}
+
+TEST_CASE("allocate_weighted_sizes sums exactly to available") {
+    auto equal = allocate_weighted_sizes(10, {1.0, 1.0});
+    REQUIRE(equal.size() == 2);
+    CHECK(equal[0] + equal[1] == 10);
+
+    auto skewed = allocate_weighted_sizes(10, {3.0, 1.0});
+    REQUIRE(skewed.size() == 2);
+    CHECK(skewed[0] + skewed[1] == 10);
+    CHECK(skewed[0] >= skewed[1]);
+}
+
+TEST_CASE("allocate_weighted_sizes handles available < N without overshoot") {
+    auto sizes = allocate_weighted_sizes(2, {1.0, 1.0, 1.0, 1.0});
+    REQUIRE(sizes.size() == 4);
+    int sum = 0;
+    for (int s : sizes) {
+        CHECK(s >= 0);
+        sum += s;
+    }
+    CHECK(sum == 2);
+}
+
+TEST_CASE("allocate_weighted_sizes zero available yields all zeros") {
+    auto sizes = allocate_weighted_sizes(0, {1.0, 2.0, 3.0});
+    REQUIRE(sizes.size() == 3);
+    CHECK(sizes[0] == 0);
+    CHECK(sizes[1] == 0);
+    CHECK(sizes[2] == 0);
 }
