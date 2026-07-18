@@ -1,24 +1,26 @@
 :root {
   color-scheme: light;
   --bg: #ffffff;
-  --bg-mute: #f3f3f1;
-  --ink: #0c0c0c;
-  --muted: #5c5c5c;
-  --line: #e4e4e1;
-  --line-strong: #0c0c0c;
+  --bg-mute: #f4f4f2;
+  --ink: #111111;
+  --muted: #5f5f5a;
+  --line: #e6e6e2;
+  --line-strong: #111111;
   --signal: #b8ff3c;
-  --signal-ink: #0c0c0c;
-  --panel: #0c0c0c;
-  --panel-fg: #f4f4f1;
-  --panel-muted: #9a9a94;
-  --code: #141414;
-  --code-bg: #ecece8;
+  --signal-ink: #111111;
+  --panel: #111111;
+  --panel-fg: #f3f3ef;
+  --panel-muted: #9b9b94;
+  --code: #161616;
+  --code-bg: #efefe9;
   --max: 1080px;
   --docs-side: 280px;
+  --header-offset: 18px;
   --header-h: 56px;
-  --font-display: "Syne", "Segoe UI", sans-serif;
-  --font-body: "Public Sans", "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --chrome-clearance: calc(var(--header-offset) + var(--header-h) + 28px);
+  --font-display: "Instrument Serif", "Times New Roman", serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
 }
 
 * {
@@ -29,9 +31,12 @@ html {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--font-body);
-  font-size: 16px;
-  line-height: 1.55;
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.6;
   scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 body {
@@ -73,87 +78,94 @@ a:hover {
   top: 12px;
 }
 
-/* ——— Chrome ——— */
+/* ——— Floating header ——— */
 
 .site-header {
-  background: var(--bg);
-  border-bottom: 1px solid var(--line);
-  position: sticky;
-  top: 0;
+  animation: header-in 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  background: #000;
+  left: 50%;
+  position: fixed;
+  top: var(--header-offset);
+  transform: translateX(-50%);
+  width: min(640px, calc(100vw - 28px));
   z-index: 40;
 }
 
 .nav {
   align-items: center;
   display: flex;
-  gap: 20px;
+  gap: 12px;
   justify-content: space-between;
-  margin: 0 auto;
-  max-width: 1280px;
   min-height: var(--header-h);
-  padding: 0 24px;
+  padding: 0 12px 0 16px;
 }
 
 .brand {
-  align-items: baseline;
+  align-items: center;
+  color: #fff;
   display: inline-flex;
   gap: 10px;
   text-decoration: none;
 }
 
 .brand-mark {
+  align-items: center;
   background: var(--signal);
   color: var(--signal-ink);
-  display: inline-grid;
+  display: inline-flex;
   font-family: var(--font-mono);
-  font-size: 14px;
-  font-weight: 700;
-  height: 28px;
-  place-items: center;
-  width: 28px;
+  font-size: 15px;
+  font-weight: 600;
+  height: 26px;
+  justify-content: center;
+  line-height: 1;
+  width: 26px;
 }
 
 .brand-name {
-  font-family: var(--font-display);
-  font-size: 1.15rem;
-  font-weight: 800;
-  letter-spacing: -0.03em;
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 560;
+  letter-spacing: -0.01em;
 }
 
 .nav-links {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 6px;
+  gap: 2px;
   justify-content: flex-end;
 }
 
 .nav-links a {
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  color: rgba(255, 255, 255, 0.68);
+  font-family: var(--font-body);
+  font-size: 0.84rem;
   font-weight: 500;
-  letter-spacing: 0.02em;
+  letter-spacing: -0.01em;
   min-height: 34px;
   padding: 8px 10px;
   text-decoration: none;
 }
 
 .nav-links a:hover {
-  color: var(--ink);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
 }
 
 .nav-links .button,
 .button {
   align-items: center;
-  background: var(--ink);
+  background: #fff;
   border: 0;
-  color: #fff;
+  color: #111;
   cursor: pointer;
   display: inline-flex;
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-body);
+  font-size: 0.84rem;
   font-weight: 600;
+  letter-spacing: -0.01em;
   min-height: 34px;
   padding: 8px 12px;
   text-decoration: none;
@@ -161,8 +173,8 @@ a:hover {
 
 .nav-links .button:hover,
 .button:hover {
-  background: #222;
-  color: #fff;
+  background: var(--signal);
+  color: var(--signal-ink);
 }
 
 .button.signal {
@@ -172,14 +184,13 @@ a:hover {
 
 .button.signal:hover {
   background: #d4ff6a;
-  color: var(--signal-ink);
 }
 
 /* ——— Marketing ——— */
 
 .hero {
   border-bottom: 1px solid var(--line);
-  padding: 72px 24px 64px;
+  padding: calc(var(--chrome-clearance) + 36px) 24px 72px;
 }
 
 .hero-inner {
@@ -189,30 +200,33 @@ a:hover {
 
 .brand-lockup {
   font-family: var(--font-display);
-  font-size: clamp(4.5rem, 14vw, 9.5rem);
-  font-weight: 800;
-  letter-spacing: -0.06em;
-  line-height: 0.86;
-  margin: 0 0 28px;
+  font-size: clamp(3.75rem, 10vw, 7rem);
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 0.94;
+  margin: 0 0 22px;
   animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .hero-title {
   font-family: var(--font-display);
-  font-size: clamp(1.75rem, 3.4vw, 2.75rem);
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1.05;
-  margin: 0 0 16px;
-  max-width: 16ch;
+  font-size: clamp(1.85rem, 3.2vw, 2.65rem);
+  font-weight: 400;
+  font-style: italic;
+  letter-spacing: -0.025em;
+  line-height: 1.12;
+  margin: 0 0 18px;
+  max-width: 18ch;
   animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both;
 }
 
 .hero-lede {
   color: var(--muted);
-  font-size: clamp(1.05rem, 1.6vw, 1.25rem);
-  margin: 0 0 28px;
-  max-width: 36ch;
+  font-size: 1.125rem;
+  font-weight: 400;
+  line-height: 1.55;
+  margin: 0 0 30px;
+  max-width: 38ch;
   animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) 140ms both;
 }
 
@@ -231,8 +245,8 @@ a:hover {
 .install-callout span {
   color: var(--signal);
   font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 0.72rem;
+  font-weight: 500;
   grid-column: 1 / -1;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -241,7 +255,7 @@ a:hover {
 .install-callout code {
   display: block;
   font-family: var(--font-mono);
-  font-size: clamp(12px, 1.6vw, 14px);
+  font-size: clamp(0.8rem, 1.5vw, 0.92rem);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -261,7 +275,7 @@ a:hover {
 .product-stage {
   background: var(--panel);
   color: var(--panel-fg);
-  padding: 56px 24px 64px;
+  padding: 64px 24px 72px;
 }
 
 .product-stage-inner {
@@ -275,9 +289,13 @@ a:hover {
 
 .product-stage h2 {
   color: #fff;
-  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 3.4vw, 3rem);
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
   margin: 0;
-  max-width: 18ch;
+  max-width: 16ch;
 }
 
 .product-frame {
@@ -297,7 +315,7 @@ a:hover {
   color: var(--panel-muted);
   display: flex;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 0.78rem;
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
@@ -305,7 +323,7 @@ a:hover {
 
 .section {
   border-bottom: 1px solid var(--line);
-  padding: 80px 24px;
+  padding: 88px 24px;
 }
 
 .section-inner {
@@ -320,64 +338,72 @@ a:hover {
 .eyebrow {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 0.72rem;
+  font-weight: 500;
   letter-spacing: 0.1em;
-  margin: 0 0 14px;
+  margin: 0 0 16px;
   text-transform: uppercase;
 }
 
 h1,
-h2,
+h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
 h3,
 h4 {
-  font-family: var(--font-display);
-  letter-spacing: -0.035em;
-  line-height: 1.08;
+  font-family: var(--font-body);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
 .section h2,
 .docs-index h1 {
-  font-size: clamp(2rem, 4vw, 3.25rem);
-  margin: 0 0 14px;
+  font-size: clamp(2.25rem, 4.2vw, 3.4rem);
+  margin: 0 0 16px;
 }
 
 .section-lede,
 .docs-index .lead {
   color: var(--muted);
   font-size: 1.125rem;
+  line-height: 1.55;
   margin: 0;
-  max-width: 54ch;
+  max-width: 52ch;
 }
 
 .feature-rail {
   display: grid;
   gap: 0;
-  margin-top: 40px;
+  margin-top: 44px;
 }
 
 .feature {
   border-top: 1px solid var(--line-strong);
   display: grid;
-  gap: 12px 32px;
+  gap: 10px 36px;
   grid-template-columns: minmax(140px, 220px) 1fr;
-  padding: 22px 0;
+  padding: 24px 0;
 }
 
 .feature h3 {
-  font-size: 1.35rem;
+  font-size: 1.15rem;
   margin: 0;
 }
 
 .feature p {
   color: var(--muted);
   margin: 0;
-  max-width: 52ch;
+  max-width: 50ch;
 }
 
 .split-section {
   display: grid;
-  gap: 40px;
+  gap: 48px;
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
 }
 
@@ -391,7 +417,7 @@ h4 {
   display: grid;
   gap: 6px 18px;
   grid-template-columns: 2.5rem 1fr;
-  padding: 18px 0;
+  padding: 20px 0;
 }
 
 .step:first-child {
@@ -402,14 +428,16 @@ h4 {
 .step span {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  padding-top: 5px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding-top: 4px;
 }
 
 .step strong {
-  font-family: var(--font-display);
-  font-size: 1.2rem;
+  font-family: var(--font-body);
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
 
 .step p {
@@ -454,8 +482,8 @@ h4 {
 
 .flow-row code {
   font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 0.84rem;
+  font-weight: 500;
 }
 
 .flow-row span {
@@ -481,44 +509,18 @@ body.docs {
   background: var(--bg);
 }
 
-body.docs .site-header {
-  background: var(--panel);
-  border-bottom: 1px solid #222;
-  color: var(--panel-fg);
-}
-
-body.docs .brand-name,
-body.docs .nav-links a {
-  color: var(--panel-fg);
-}
-
-body.docs .nav-links a {
-  color: var(--panel-muted);
-}
-
-body.docs .nav-links a:hover {
-  color: #fff;
-}
-
-body.docs .nav-links .button {
-  background: var(--signal);
-  color: var(--signal-ink);
-}
-
-body.docs .nav-links .button:hover {
-  background: #fff;
-  color: var(--ink);
+body.docs .docs-shell {
+  padding-top: var(--chrome-clearance);
 }
 
 body.docs .site-footer {
-  background: var(--bg);
   border-top: 1px solid var(--line);
 }
 
 .docs-shell {
   display: grid;
   grid-template-columns: var(--docs-side) minmax(0, 1fr);
-  min-height: calc(100vh - var(--header-h));
+  min-height: 100vh;
 }
 
 .docs-sidebar {
@@ -527,23 +529,23 @@ body.docs .site-footer {
   color: var(--panel-fg);
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - var(--header-h));
+  max-height: calc(100vh - var(--chrome-clearance));
   overflow: auto;
   position: sticky;
-  top: var(--header-h);
+  top: var(--chrome-clearance);
 }
 
 .docs-side-head {
   border-bottom: 1px solid #222;
-  padding: 18px 18px 14px;
+  padding: 20px 18px 16px;
 }
 
 .docs-side-head h2 {
   font-family: var(--font-display);
-  font-size: 1.1rem;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  margin: 0 0 12px;
+  font-size: 1.55rem;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  margin: 0 0 14px;
 }
 
 .docs-section-tabs {
@@ -556,8 +558,8 @@ body.docs .site-footer {
   border: 1px solid #333;
   color: var(--panel-muted);
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 0.68rem;
+  font-weight: 500;
   letter-spacing: 0.04em;
   padding: 5px 8px;
   text-decoration: none;
@@ -583,8 +585,8 @@ body.docs .site-footer {
 .docs-subgroup summary {
   color: var(--panel-muted);
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 0.68rem;
+  font-weight: 500;
   letter-spacing: 0.08em;
   margin: 0 0 6px;
   text-transform: uppercase;
@@ -625,7 +627,7 @@ body.docs .site-footer {
 .docs-link {
   color: #d8d8d2;
   display: block;
-  font-size: 13px;
+  font-size: 0.88rem;
   line-height: 1.35;
   padding: 7px 8px;
   text-decoration: none;
@@ -642,15 +644,15 @@ body.docs .site-footer {
 
 .docs-main {
   min-width: 0;
-  padding: 36px 28px 80px;
+  padding: 8px 36px 96px;
 }
 
 .docs-main-inner {
   display: grid;
-  gap: 40px;
-  grid-template-columns: minmax(0, 720px) 180px;
+  gap: 48px;
+  grid-template-columns: minmax(0, 680px) 176px;
   margin: 0 auto;
-  max-width: 980px;
+  max-width: 960px;
 }
 
 .doc-shell {
@@ -660,9 +662,9 @@ body.docs .site-footer {
 .breadcrumbs {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  margin-bottom: 16px;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  margin-bottom: 18px;
   text-transform: uppercase;
 }
 
@@ -670,16 +672,16 @@ body.docs .site-footer {
   align-self: start;
   border-left: 1px solid var(--line);
   display: none;
-  padding-left: 14px;
+  padding-left: 16px;
   position: sticky;
-  top: calc(var(--header-h) + 24px);
+  top: var(--chrome-clearance);
 }
 
 .doc-toc p {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 0.68rem;
+  font-weight: 500;
   letter-spacing: 0.08em;
   margin: 0 0 10px;
   text-transform: uppercase;
@@ -688,8 +690,8 @@ body.docs .site-footer {
 .doc-toc a {
   color: var(--muted);
   display: block;
-  font-size: 12px;
-  line-height: 1.35;
+  font-size: 0.82rem;
+  line-height: 1.4;
   margin-bottom: 8px;
   text-decoration: none;
 }
@@ -705,37 +707,47 @@ body.docs .site-footer {
 }
 
 .doc-content {
-  color: #222;
-  font-size: 16px;
+  color: #242424;
+  font-size: 1rem;
+  line-height: 1.65;
 }
 
 .doc-content h1 {
-  font-size: clamp(2.2rem, 4vw, 3rem);
-  margin: 0 0 18px;
+  font-family: var(--font-display);
+  font-size: clamp(2.4rem, 4.5vw, 3.25rem);
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  margin: 0 0 20px;
 }
 
 .doc-content h2 {
   border-top: 1px solid var(--line);
-  font-size: 1.55rem;
-  margin: 44px 0 12px;
-  padding-top: 28px;
+  font-family: var(--font-body);
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin: 48px 0 12px;
+  padding-top: 32px;
 }
 
 .doc-content h3 {
-  font-size: 1.2rem;
-  margin: 28px 0 10px;
+  font-size: 1.1rem;
+  margin: 30px 0 10px;
 }
 
 .doc-content h4 {
   font-family: var(--font-mono);
-  font-size: 0.95rem;
+  font-size: 0.88rem;
+  font-weight: 500;
   letter-spacing: 0;
-  margin: 22px 0 8px;
+  margin: 24px 0 8px;
 }
 
 .doc-content p,
 .doc-content li {
-  color: #3a3a3a;
+  color: #3d3d3a;
 }
 
 .doc-content ul,
@@ -761,6 +773,7 @@ body.docs .site-footer {
 .doc-content pre {
   background: var(--code);
   color: #f2f2ec;
+  font-size: 0.9rem;
   line-height: 1.55;
   overflow-x: auto;
   padding: 16px 18px;
@@ -769,7 +782,7 @@ body.docs .site-footer {
 .doc-content code {
   background: var(--code-bg);
   font-family: var(--font-mono);
-  font-size: 0.88em;
+  font-size: 0.86em;
   padding: 0.1em 0.28em;
 }
 
@@ -797,8 +810,8 @@ body.docs .site-footer {
 .doc-content th {
   background: var(--bg-mute);
   font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 0.78rem;
+  font-weight: 500;
 }
 
 .doc-content blockquote {
@@ -815,7 +828,7 @@ body.docs .site-footer {
 
 .doc-content a {
   text-decoration: underline;
-  text-decoration-color: rgba(12, 12, 12, 0.28);
+  text-decoration-color: rgba(17, 17, 17, 0.28);
 }
 
 .doc-content a:hover {
@@ -827,8 +840,8 @@ body.docs .site-footer {
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  margin-top: 48px;
-  padding-top: 18px;
+  margin-top: 52px;
+  padding-top: 20px;
 }
 
 .doc-nav a {
@@ -847,19 +860,14 @@ body.docs .site-footer {
   color: var(--muted);
   display: block;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 0.68rem;
   letter-spacing: 0.06em;
   margin-bottom: 4px;
   text-transform: uppercase;
 }
 
-.docs-index {
-  padding: 64px 24px 80px;
-}
-
 .docs-index-inner {
-  margin: 0 auto;
-  max-width: var(--max);
+  padding-top: 8px;
 }
 
 .docs-index .lead {
@@ -870,7 +878,7 @@ body.docs .site-footer {
 
 .site-footer {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.88rem;
   padding: 28px 24px 40px;
 }
 
@@ -884,8 +892,9 @@ body.docs .site-footer {
 }
 
 .site-footer a {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  font-weight: 500;
   text-decoration: none;
 }
 
@@ -901,6 +910,17 @@ body.docs .site-footer {
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+@keyframes header-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -12px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
   }
 }
 
@@ -926,18 +946,21 @@ body.docs .site-footer {
 
 @media (max-width: 640px) {
   .nav {
-    padding: 0 16px;
+    padding: 0 10px 0 12px;
   }
 
   .nav-links a:not(.button) {
     display: none;
   }
 
+  .brand-name {
+    font-size: 0.9rem;
+  }
+
   .hero,
   .section,
   .product-stage,
-  .docs-main,
-  .docs-index {
+  .docs-main {
     padding-left: 16px;
     padding-right: 16px;
   }
