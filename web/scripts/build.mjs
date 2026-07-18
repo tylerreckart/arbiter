@@ -35,16 +35,15 @@ const docs = sortDocs(await readDocs(docsRoot))
 await writeFile(
   'index.html',
   renderPage('home.pug', {
-    apiHref: docs.find((doc) => doc.relative === 'api/index.md')?.href ?? '/docs/',
     canonicalPath: '/',
     description:
-      'Arbiter is a self-hosted agent runtime that turns prompts, webhooks, and device events into supervised, stateful work with durable memory and observable streams.',
+      'Arbiter is an open-source, local-first multi-agent workspace for the terminal. Run parallel conversations and watch tools and diffs stream live.',
     gettingStartedHref:
-      docs.find((doc) => doc.relative === 'getting-started/index.md')?.href ?? '/docs/',
+      docs.find((doc) => doc.relative === 'getting-started/local.md')?.href ?? '/docs/',
     installCommand,
     ogImage: '/assets/terminal.jpg',
     philosophyHref: docs.find((doc) => doc.relative === 'philosophy.md')?.href ?? '/docs/',
-    title: 'Arbiter — the agent that runs anywhere',
+    title: 'Arbiter — your agent workspace, in the terminal',
     variant: 'marketing',
   }),
 )

@@ -3,114 +3,150 @@ extends layout.pug
 block content
   section.hero
     .hero-inner
+      p.eyebrow Open-source terminal agent
       p.brand-lockup Arbiter
-      h1.hero-title The agent that runs anywhere.
-      p.hero-lede One small binary for laptops, servers, CI, and edge — supervised agents with durable memory and a live event stream.
+      h1.hero-title Your agent workspace, in the terminal.
+      p.hero-lede Run parallel agent conversations, watch tools and diffs stream live, and return to saved work without leaving your shell.
       .install-callout(aria-label="Install command")
-        span Install
+        span Install Arbiter
         code= installCommand
         button.button(
           type="button"
           data-copy-install=installCommand
         ) Copy
+      .hero-actions
+        a.text-link(href="#tui") See the TUI ↓
+        a.text-link(href="/docs/getting-started/local/") Read local setup →
+      p.hero-qualifier Prebuilt for macOS Apple silicon and Linux x86_64. Apache-2.0. Bring an OpenRouter key or configure Ollama.
 
-  section#product.product-stage.reveal
+  section#tui.product-stage.reveal
     .product-stage-inner
-      p.eyebrow Terminal interface
-      h2 Multi-pane sessions. Inline diffs. Live streams.
+      p.eyebrow The primary interface
+      h2 One terminal. Multiple agents in motion.
+      p.product-lede Each pane is an independent conversation with its own agent, history, input queue, and live output. Split the workspace, keep typing while work streams, and stop one pane without interrupting the others.
       .product-frame
         img(
           src="/assets/terminal.jpg"
-          alt="Arbiter terminal interface with sessions and inline diff rendering"
+          alt="Arbiter TUI showing parallel conversations, streamed output, tool activity, and inline diff rendering"
           width="1600"
           height="1000"
         )
         .product-meta
           span arbiter — interactive TUI
-          span same runtime as CLI + HTTP API
+          span parallel conversations · live tools · inline diffs
+      .product-features
+        article
+          h3 Parallel panes
+          p Run research, planning, review, and implementation conversations side by side.
+        article
+          h3 Visible work
+          p Follow streamed responses, tool status, token usage, and code diffs as each turn runs.
+        article
+          h3 Conversation history
+          p Return to saved threads and continue with the agent’s existing context.
 
-  section#platform.section.reveal
+  section#workflow.section.reveal
     .section-inner
-      p.eyebrow Platform
-      h2 Route. Supervise. Replay.
-      p.section-lede Map real events to the right agent, constrain tools with advisor gates, and keep every stream reconnectable.
+      .split-section
+        div
+          p.eyebrow From prompt to result
+          h2 Stay in control without babysitting every turn.
+          p.section-lede Arbiter keeps the work visible while agents reason, delegate, and act.
+        .steps
+          .step
+            span 01
+            strong Ask
+            p Start with plain language in the focused pane.
+          .step
+            span 02
+            strong Split
+            p Open another pane or let an agent delegate work to a specialist.
+          .step
+            span 03
+            strong Inspect
+            p Follow streamed output, tool summaries, diffs, and failures while work runs.
+          .step
+            span 04
+            strong Continue
+            p Reopen a saved conversation and pick up where you stopped.
+
+  section#why.section.section-band.reveal
+    .section-inner
+      p.eyebrow Why Arbiter
+      h2 Built as a terminal workspace, not a chat box.
       .feature-rail
         article.feature
-          h3 Route
-          p Prompts, webhooks, incidents, schedules, and hardware events land on agents with explicit constitutions.
+          h3 Agents you can inspect
+          p Agent behavior, models, and allowed capabilities live in editable configuration—not behind a hosted UI.
         article.feature
-          h3 Supervise
-          p Tool access is an allowlist. Advisor gates review consequential turns before work leaves the runtime.
+          h3 Actions gated by the runtime
+          p Each agent has an explicit capability allowlist. Optional advisor gates can review a terminating result before it is returned.
         article.feature
-          h3 Replay
-          p Persist request streams so clients can reconnect, audit, or tail in-flight work without losing context.
+          h3 Tools in the same stream
+          p Agents fetch, write, delegate, schedule, use memory, and call configured integrations while their output streams.
+        article.feature
+          h3 Local first, network optional
+          p Work in the TUI, invoke one agent from a script, or expose the runtime through HTTP and SSE.
 
-  section#workflow.section.section-band.reveal
-    .section-inner.split-section
-      div
-        p.eyebrow How it works
-        h2 One event stream from request to result.
-        p.section-lede Routing, delegation, tool calls, memory reads, advisor gates, and token use stay visible as structured events.
-      .steps
-        .step
+  section#sessions.section.reveal
+    .section-inner
+      p.eyebrow Made for long sessions
+      h2 Find the command, conversation, or output you need.
+      p.section-lede Use the conversation sidebar to move between threads, queue another message while an agent works, inspect live token and tool activity, and run background loops without flooding the foreground.
+      p.section-note Choose from built-in themes or edit the JSON theme system to match your terminal.
+
+  section#interfaces.section.section-band.reveal
+    .section-inner
+      p.eyebrow Beyond the TUI
+      h2 Automate the same runtime when you are ready.
+      .feature-rail
+        article.feature
+          h3 One-shot CLI
+          p Run a named agent from scripts, hooks, or CI and receive the final response on stdout.
+        article.feature
+          h3 HTTP + SSE
+          p Drive Arbiter from another client and consume structured events while work runs.
+        article.feature
+          h3 Integrations
+          p Connect configured MCP servers or remote A2A agents from the same runtime.
+
+  section#trust.section.trust-section.reveal
+    .section-inner
+      p.eyebrow Know what you are running
+      h2 Local control, with explicit boundaries.
+      .trust-grid
+        p Arbiter stores configuration and local state under #[code ~/.arbiter/]. Model requests go to the provider you configure.
+        p Interactive shell execution can access anything available to your user account. Start with #[code arbiter --no-exec] when you do not want agents to run shell commands.
+        p Arbiter is experimental pre-1.0 software. Interfaces and configuration may change between releases.
+      .link-row
+        a.text-link(href="https://github.com/tylerreckart/arbiter/blob/main/SECURITY.md") Read the security model →
+        a.text-link(href=philosophyHref) Read the philosophy →
+
+  section#install.install-section.reveal
+    .section-inner
+      p.eyebrow Get started
+      h2 From download to the TUI in three commands.
+      p.section-lede Prebuilt for macOS Apple silicon and Linux x86_64. Other platforms can build from source.
+      .install-steps
+        .install-step
           span 01
-          strong Receive
-          p Accept a prompt, CLI send, HTTP request, webhook, schedule, or device event.
-        .step
+          code= installCommand
+          button.button(
+            type="button"
+            data-copy-install=installCommand
+          ) Copy
+        .install-step
           span 02
-          strong Route
-          p Match the work to an agent constitution with explicit tools, memory, and event patterns.
-        .step
+          code arbiter --init
+          small Create editable starter agent definitions.
+        .install-step
           span 03
-          strong Act
-          p Execute writ commands inline while advisor gates review consequential decisions.
-        .step
-          span 04
-          strong Observe
-          p Stream and persist every event so clients can reconnect, inspect, and audit outcomes.
-
-  section#surfaces.section.reveal
-    .section-inner
-      p.eyebrow Surfaces
-      h2 Same runtime. Optional interfaces.
-      p.section-lede Drive agents from the TUI, one-shot CLI, HTTP API, or Agent2Agent clients without changing the binary underneath.
-      .feature-rail
-        article.feature
-          h3 Operators
-          p Route production incidents, scheduled checks, queue messages, and service webhooks into supervised runs.
-        article.feature
-          h3 Developers
-          p Script one-shots, embed the API, or keep a multi-pane TUI open on the machine that owns the work.
-        article.feature
-          h3 Devices
-          p Let sensors and edge machines emit structured events while Arbiter handles routing, memory, and action.
-
-  section#themes.section.section-band.reveal
-    .section-inner
-      p.eyebrow Themeable
-      h2 No color compiled into the binary.
-      p.section-lede The TUI reads a JSON theme at startup. Presets ship in-tree; save your own look without rebuilding.
-      .themes-panel
-        img(
-          src="/assets/themes.jpg"
-          alt="Arbiter TUI theme gallery across multiple color palettes"
-          width="1600"
-          height="900"
-          loading="lazy"
-        )
-
-  section#docs.section.reveal
-    .section-inner
-      p.eyebrow Documentation
-      h2 Docs that ship with the code.
-      p.section-lede This site ingests repository Markdown directly, so implementation and documentation stay on the same path.
-      .flow
-        a.flow-row(href=gettingStartedHref)
-          code getting-started
-          span Install locally, configure providers, and get the first agent reply.
-        a.flow-row(href=philosophyHref)
-          code philosophy
-          span The design themes behind Arbiter's runtime, memory, and supervision model.
-        a.flow-row(href=apiHref)
-          code api
-          span HTTP, SSE, tenants, requests, conversations, schedules, agents, and A2A endpoints.
+          code arbiter
+          small Launch the terminal workspace.
+      .first-prompt
+        span Try this first
+        p “Help me turn this project into a concrete plan. Ask what you need to know, then delegate research and review to separate agents.”
+      .link-row
+        a.text-link(href=gettingStartedHref) Read local setup →
+        a.text-link(href="https://github.com/tylerreckart/arbiter/blob/web/web/install.sh") Review the installer →
+        a.text-link(href="/docs/getting-started/local/#install-the-binary") Build from source →
