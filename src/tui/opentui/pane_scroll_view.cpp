@@ -161,8 +161,13 @@ bool PaneScrollView::ProseSegment::is_empty() const {
 
 int PaneScrollView::ProseSegment::visual_rows(int content_w) const {
     if (view_ == 0) return 0;
-    const_cast<ProseSegment*>(this)->wrap_cols_ = content_w;
-    textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(content_w));
+    const int next = std::max(1, content_w);
+    // Keep emit pad / HR width in sync — do not mutate wrap_cols_ alone.
+    if (next != wrap_cols_) {
+        const_cast<ProseSegment*>(this)->set_wrap_cols(next);
+    } else if (view_ != 0) {
+        textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(next));
+    }
     return static_cast<int>(textBufferViewGetVirtualLineCount(view_));
 }
 
@@ -187,20 +192,14 @@ void PaneScrollView::ProseSegment::set_wrap_cols(int cols) {
 }
 
 void PaneScrollView::ProseSegment::collect_lines(std::vector<std::string>& out) const {
-    for (const auto& line : source_) {
-        if (arbiter::is_styled_user_echo_line(line)) {
-            // Skip the echoed "/find …" command itself (UI chrome, not content).
-            // Do not skip model/prose lines that happen to start with "/find".
-            std::string_view payload = line.text;
-            static constexpr std::string_view kFind = "/find";
-            if (payload.size() >= kFind.size()
-                && payload.substr(0, kFind.size()) == kFind
-                && (payload.size() == kFind.size() || payload[kFind.size()] == ' ')) {
-                continue;
-            }
-        }
-        out.push_back(line.text);
-    }
+    // Always emit every source line so find_rows index k maps to visual row k.
+    for (const auto& line : source_) out.push_back(line.text);
+}
+
+bool PaneScrollView::ProseSegment::find_skip_line(std::size_t index) const {
+    if (index >= source_.size()) return false;
+    // Skip echoed `/find` chrome only — not model prose that mentions /find.
+    return arbiter::is_user_echo_find_command(source_[index]);
 }
 
 void PaneScrollView::ProseSegment::draw(OpenTuiHandle frame,
@@ -902,9 +901,9 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
     std::string needle = term;
     for (char& c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-    // ProseSegment::collect_lines already omits echoed "/find …" user turns.
     // Legacy ANSI TextSegment echoes used a "> /find" caret prefix — skip those
-    // here so old scrollback does not self-match.
+    // so old scrollback does not self-match.  Prose user-echo `/find` lines are
+    // skipped via Segment::find_skip_line (keeps row indices aligned).
     static constexpr std::string_view kLegacyEchoPrefix = "> /find";
 
     int base = 0;
@@ -914,6 +913,7 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
         lines.clear();
         seg->collect_lines(lines);
         for (size_t k = 0; k < lines.size(); ++k) {
+            if (seg->find_skip_line(k)) continue;
             std::string_view line_sv = lines[k];
             if (line_sv.size() >= kLegacyEchoPrefix.size()
                 && line_sv.substr(0, kLegacyEchoPrefix.size()) == kLegacyEchoPrefix) {

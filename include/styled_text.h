@@ -72,7 +72,9 @@ void styled_append_char(StyledLine& line, StyleId id, char c);
 // Split on `\n` so multiline turns (`\` continuation) get one strip per row.
 [[nodiscard]] std::vector<StyledLine> styled_user_echo_lines(std::string_view text);
 [[nodiscard]] bool is_styled_user_echo_line(const StyledLine& line);
-// Pad a single unpadded user-echo line to `cols` (does not mutate the source).
+// True when a user-echo line is a `/find` invocation (case-insensitive).
+[[nodiscard]] bool is_user_echo_find_command(const StyledLine& line);
+// Pad a user-echo line to `cols` (idempotent; does not mutate the source).
 [[nodiscard]] StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols);
 // In-place pad helper for tests / callers that hold a temporary vector.
 bool resize_styled_user_echo_lines(std::vector<StyledLine>& lines, int cols);
