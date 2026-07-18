@@ -27,6 +27,12 @@ public:
     void setup_terminal(bool alternate_screen = true);
     void shutdown_terminal();
 
+    // Enable/disable SGR mouse tracking. Disabled automatically on Engine
+    // destruction so a crash/quit path cannot leave the host terminal in
+    // mouse mode. enable_movement=false is the recommended default.
+    void set_mouse_enabled(bool enabled, bool enable_movement = false);
+    [[nodiscard]] bool mouse_enabled() const { return mouse_enabled_; }
+
     void resize(std::uint32_t width, std::uint32_t height);
     void set_render_offset(std::uint32_t offset);
 
@@ -44,6 +50,7 @@ private:
     std::uint32_t width_{0};
     std::uint32_t height_{0};
     bool terminal_ready_{false};
+    bool mouse_enabled_{false};
 };
 
 } // namespace arbiter::opentui

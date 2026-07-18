@@ -166,13 +166,136 @@ void string_value(const JsonValue& root, const char* group, const char* key, std
     if (v && v->is_string()) out = v->as_string();
 }
 
-void derive_code_syntax_colors(TuiDesign::Content& c) {
-    c.code_string   = c.diff_add;
-    c.code_comment  = c.text_dim;
-    c.code_number   = c.warning;
-    c.code_keyword  = c.heading[1];
-    c.code_type     = c.heading[2];
-    c.code_function = c.heading[0];
+bool rgba_unset(const TuiRgba& c) {
+    return c[3] == 0;
+}
+
+// Fill only still-unset syntax slots.  Never clobbers values already set by a
+// nested preset / earlier document (layout-only wrappers must not wipe them).
+void derive_unset_code_syntax_colors(TuiDesign::Content& c) {
+    if (rgba_unset(c.code_string))   c.code_string   = c.diff_add;
+    if (rgba_unset(c.code_comment))  c.code_comment  = c.text_dim;
+    if (rgba_unset(c.code_number))   c.code_number   = c.warning;
+    if (rgba_unset(c.code_keyword))  c.code_keyword  = c.heading[1];
+    if (rgba_unset(c.code_type))     c.code_type     = c.heading[2];
+    if (rgba_unset(c.code_function)) c.code_function = c.heading[0];
+}
+
+struct DiffBgSet {
+    TuiRgba context{};
+    TuiRgba add{};
+    TuiRgba remove{};
+    TuiRgba empty{};
+};
+
+DiffBgSet diff_bg_for_base(const TuiRgba& base) {
+    const bool light = relative_luminance(base) > 0.45;
+    DiffBgSet out;
+    out.context = light ? tui_rgba(0xf0, 0xf2, 0xf4) : tui_rgba(0x18, 0x18, 0x18);
+    out.add     = light ? tui_rgba(0xd8, 0xf0, 0xdc) : tui_rgba(0x0d, 0x33, 0x16);
+    out.remove  = light ? tui_rgba(0xf8, 0xd8, 0xd8) : tui_rgba(0x4a, 0x12, 0x12);
+    out.empty   = light ? tui_rgba(0xe4, 0xe6, 0xe8) : tui_rgba(0x10, 0x10, 0x10);
+    return out;
+}
+
+void fill_diff_bg_from_base(TuiDesign& d) {
+    const DiffBgSet fill = diff_bg_for_base(d.bg.base);
+    d.content.diff_bg_context = fill.context;
+    d.content.diff_bg_add = fill.add;
+    d.content.diff_bg_remove = fill.remove;
+    d.content.diff_bg_empty = fill.empty;
+}
+
+// Fill only still-unset surface slots from chrome.  Never overwrites values
+// already supplied by a nested preset / earlier document in the chain.
+void derive_unset_panel_surfaces(TuiDesign& d) {
+    auto& c = d.content;
+    if (rgba_unset(c.code_bg)) c.code_bg = d.bg.panel;
+    if (rgba_unset(c.code_header_bg)) c.code_header_bg = d.bg.header;
+    if (rgba_unset(c.code_gutter)) c.code_gutter = d.text.muted;
+    if (rgba_unset(c.system_fg)) c.system_fg = c.text_dim;
+    // Match the live readline input block (pane_frame fills with bg.header).
+    if (rgba_unset(c.user_echo_bg)) c.user_echo_bg = d.bg.header;
+
+    const DiffBgSet fill = diff_bg_for_base(d.bg.base);
+    if (rgba_unset(c.diff_bg_context)) c.diff_bg_context = fill.context;
+    if (rgba_unset(c.diff_bg_add)) c.diff_bg_add = fill.add;
+    if (rgba_unset(c.diff_bg_remove)) c.diff_bg_remove = fill.remove;
+    if (rgba_unset(c.diff_bg_empty)) c.diff_bg_empty = fill.empty;
+}
+
+struct ChromeSnapshot {
+    TuiRgba panel{};
+    TuiRgba header{};
+    TuiRgba muted{};
+    TuiRgba text_dim{};
+    TuiRgba base{};
+};
+
+ChromeSnapshot capture_chrome(const TuiDesign& d) {
+    return {d.bg.panel, d.bg.header, d.text.muted, d.content.text_dim, d.bg.base};
+}
+
+// Sticky follow: when this document changes chrome without restating a surface
+// key, refresh that surface only if it was still tracking the previous chrome
+// (unset, or equal to the old derived/chrome value).  Distinct earlier customs
+// are preserved across panel/base tweaks.
+void sync_surfaces_for_chrome_overrides(TuiDesign& d,
+                                        const JsonValue& doc,
+                                        const ChromeSnapshot& before) {
+    auto& c = d.content;
+    if (child(doc, "bg", "panel") && !child(doc, "content", "code_bg")) {
+        if (rgba_unset(c.code_bg) || c.code_bg == before.panel) {
+            c.code_bg = d.bg.panel;
+        }
+    }
+    if (child(doc, "bg", "header") && !child(doc, "content", "code_header_bg")) {
+        if (rgba_unset(c.code_header_bg) || c.code_header_bg == before.header) {
+            c.code_header_bg = d.bg.header;
+        }
+    }
+    if (child(doc, "bg", "header") && !child(doc, "content", "user_echo_bg")) {
+        if (rgba_unset(c.user_echo_bg) || c.user_echo_bg == before.header) {
+            c.user_echo_bg = d.bg.header;
+        }
+    }
+    if (child(doc, "text", "muted") && !child(doc, "content", "code_gutter")) {
+        if (rgba_unset(c.code_gutter) || c.code_gutter == before.muted) {
+            c.code_gutter = d.text.muted;
+        }
+    }
+    if (child(doc, "content", "text_dim") && !child(doc, "content", "system_fg")) {
+        if (rgba_unset(c.system_fg) || c.system_fg == before.text_dim) {
+            c.system_fg = c.text_dim;
+        }
+    }
+    if (child(doc, "bg", "base")) {
+        const DiffBgSet old_fill = diff_bg_for_base(before.base);
+        const DiffBgSet new_fill = diff_bg_for_base(d.bg.base);
+        if (!child(doc, "content", "diff_bg_context")
+            && (rgba_unset(c.diff_bg_context) || c.diff_bg_context == old_fill.context)) {
+            c.diff_bg_context = new_fill.context;
+        }
+        if (!child(doc, "content", "diff_bg_add")
+            && (rgba_unset(c.diff_bg_add) || c.diff_bg_add == old_fill.add)) {
+            c.diff_bg_add = new_fill.add;
+        }
+        if (!child(doc, "content", "diff_bg_remove")
+            && (rgba_unset(c.diff_bg_remove) || c.diff_bg_remove == old_fill.remove)) {
+            c.diff_bg_remove = new_fill.remove;
+        }
+        if (!child(doc, "content", "diff_bg_empty")
+            && (rgba_unset(c.diff_bg_empty) || c.diff_bg_empty == old_fill.empty)) {
+            c.diff_bg_empty = new_fill.empty;
+        }
+    }
+}
+
+void finalize_panel_surfaces(TuiDesign& d,
+                             const JsonValue* doc,
+                             const ChromeSnapshot* before) {
+    if (doc && before) sync_surfaces_for_chrome_overrides(d, *doc, *before);
+    derive_unset_panel_surfaces(d);
 }
 
 std::string executable_dir() {
@@ -311,6 +434,14 @@ void apply_color_overrides(TuiDesign& d, const JsonValue& root) {
     color(root, "content", "code_number", d.content.code_number);
     color(root, "content", "code_type", d.content.code_type);
     color(root, "content", "code_function", d.content.code_function);
+    color(root, "content", "code_bg", d.content.code_bg);
+    color(root, "content", "code_header_bg", d.content.code_header_bg);
+    color(root, "content", "code_gutter", d.content.code_gutter);
+    color(root, "content", "diff_bg_context", d.content.diff_bg_context);
+    color(root, "content", "diff_bg_add", d.content.diff_bg_add);
+    color(root, "content", "diff_bg_remove", d.content.diff_bg_remove);
+    color(root, "content", "diff_bg_empty", d.content.diff_bg_empty);
+    color(root, "content", "system_fg", d.content.system_fg);
     color(root, "content", "text_dim", d.content.text_dim);
     color(root, "content", "text_dimmer", d.content.text_dimmer);
     color(root, "content", "accent_focused", d.content.accent_focused);
@@ -318,6 +449,7 @@ void apply_color_overrides(TuiDesign& d, const JsonValue& root) {
     color(root, "content", "prompt_color", d.content.prompt_color);
     color(root, "content", "user_echo_arrow", d.content.user_echo_arrow);
     color(root, "content", "user_echo_text", d.content.user_echo_text);
+    color(root, "content", "user_echo_bg", d.content.user_echo_bg);
     color(root, "content", "border_inactive", d.content.border_inactive);
     color(root, "content", "agent_master", d.content.agent_master);
     if (auto h = child(root, "content", "heading"); h && h->is_array()) {
@@ -353,11 +485,18 @@ void apply_layout_component_overrides(TuiDesign& d, const JsonValue& root) {
     number(root, "layout", "status_inset_x", d.layout.status_inset_x);
     number(root, "layout", "input_padding_x", d.layout.input_padding_x);
     number(root, "layout", "footer_gap", d.layout.footer_gap);
+    number(root, "layout", "block_gap", d.layout.block_gap);
+    number(root, "layout", "panel_gap", d.layout.panel_gap);
+    number(root, "layout", "prose_paragraph_gap", d.layout.prose_paragraph_gap);
+    number(root, "layout", "scroll_pad_y", d.layout.scroll_pad_y);
+    number(root, "layout", "scroll_gutter_cols", d.layout.scroll_gutter_cols);
     number(root, "layout", "compact_cols", d.layout.compact_cols);
     number(root, "layout", "dense_cols", d.layout.dense_cols);
     boolean(root, "layout", "show_footer", d.layout.show_footer);
     boolean(root, "layout", "status_pill", d.layout.status_pill);
     boolean(root, "layout", "show_history_sidebar", d.layout.show_history_sidebar);
+    boolean(root, "layout", "chrome_compact_rows", d.layout.chrome_compact_rows);
+    boolean(root, "layout", "mouse", d.layout.mouse);
 
     string_value(root, "component", "prompt", d.component.prompt);
     string_value(root, "component", "continuation_prompt", d.component.continuation_prompt);
@@ -376,6 +515,11 @@ void apply_layout_component_overrides(TuiDesign& d, const JsonValue& root) {
     d.layout.status_inset_x = clamp_byte(d.layout.status_inset_x);
     d.layout.input_padding_x = clamp_byte(d.layout.input_padding_x);
     d.layout.footer_gap = std::max(0, d.layout.footer_gap);
+    d.layout.block_gap = std::max(0, std::min(8, d.layout.block_gap));
+    d.layout.panel_gap = std::max(0, std::min(8, d.layout.panel_gap));
+    d.layout.prose_paragraph_gap = std::max(0, std::min(8, d.layout.prose_paragraph_gap));
+    d.layout.scroll_pad_y = std::max(0, std::min(4, d.layout.scroll_pad_y));
+    d.layout.scroll_gutter_cols = std::max(0, std::min(4, d.layout.scroll_gutter_cols));
     d.layout.compact_cols = std::max(20, d.layout.compact_cols);
     d.layout.dense_cols = std::max(20, d.layout.dense_cols);
 }
@@ -446,12 +590,15 @@ TuiDesign default_design() {
     const std::string path = resolve_theme_path("", kDefaultTuiPreset);
     if (!path.empty()) {
         if (auto root = parse_json_file(path)) {
+            const ChromeSnapshot before = capture_chrome(d);
             apply_color_overrides(d, *root);
             apply_layout_component_overrides(d, *root);
-            if (!child(*root, "content", "code_keyword")) {
-                derive_code_syntax_colors(d.content);
-            }
+            derive_unset_code_syntax_colors(d.content);
+            finalize_panel_surfaces(d, root.get(), &before);
         }
+    } else {
+        derive_unset_code_syntax_colors(d.content);
+        finalize_panel_surfaces(d, nullptr, nullptr);
     }
     return d;
 }
@@ -470,11 +617,11 @@ void apply_theme_document(TuiDesign& d,
             }
         }
     }
+    const ChromeSnapshot before = capture_chrome(d);
     apply_color_overrides(d, doc);
     apply_layout_component_overrides(d, doc);
-    if (!child(doc, "content", "code_keyword")) {
-        derive_code_syntax_colors(d.content);
-    }
+    derive_unset_code_syntax_colors(d.content);
+    finalize_panel_surfaces(d, &doc, &before);
 }
 
 bool apply_theme_from_path(TuiDesign& d,
@@ -579,6 +726,14 @@ std::shared_ptr<JsonValue> design_to_json_value(const TuiDesign& d,
         {"code_number", d.content.code_number},
         {"code_type", d.content.code_type},
         {"code_function", d.content.code_function},
+        {"code_bg", d.content.code_bg},
+        {"code_header_bg", d.content.code_header_bg},
+        {"code_gutter", d.content.code_gutter},
+        {"diff_bg_context", d.content.diff_bg_context},
+        {"diff_bg_add", d.content.diff_bg_add},
+        {"diff_bg_remove", d.content.diff_bg_remove},
+        {"diff_bg_empty", d.content.diff_bg_empty},
+        {"system_fg", d.content.system_fg},
         {"text_dim", d.content.text_dim},
         {"text_dimmer", d.content.text_dimmer},
         {"accent_focused", d.content.accent_focused},
@@ -586,6 +741,7 @@ std::shared_ptr<JsonValue> design_to_json_value(const TuiDesign& d,
         {"prompt_color", d.content.prompt_color},
         {"user_echo_arrow", d.content.user_echo_arrow},
         {"user_echo_text", d.content.user_echo_text},
+        {"user_echo_bg", d.content.user_echo_bg},
         {"border_inactive", d.content.border_inactive},
         {"agent_master", d.content.agent_master},
     };
@@ -603,11 +759,18 @@ std::shared_ptr<JsonValue> design_to_json_value(const TuiDesign& d,
     layout["status_inset_x"] = jnum(d.layout.status_inset_x);
     layout["input_padding_x"] = jnum(d.layout.input_padding_x);
     layout["footer_gap"] = jnum(d.layout.footer_gap);
+    layout["block_gap"] = jnum(d.layout.block_gap);
+    layout["panel_gap"] = jnum(d.layout.panel_gap);
+    layout["prose_paragraph_gap"] = jnum(d.layout.prose_paragraph_gap);
+    layout["scroll_pad_y"] = jnum(d.layout.scroll_pad_y);
+    layout["scroll_gutter_cols"] = jnum(d.layout.scroll_gutter_cols);
     layout["compact_cols"] = jnum(d.layout.compact_cols);
     layout["dense_cols"] = jnum(d.layout.dense_cols);
     layout["show_footer"] = jbool(d.layout.show_footer);
     layout["status_pill"] = jbool(d.layout.status_pill);
     layout["show_history_sidebar"] = jbool(d.layout.show_history_sidebar);
+    layout["chrome_compact_rows"] = jbool(d.layout.chrome_compact_rows);
+    layout["mouse"] = jbool(d.layout.mouse);
     root["layout"] = jobj(std::move(layout));
 
     JsonObject component;
@@ -631,6 +794,38 @@ std::shared_ptr<JsonValue> design_to_json_value(const TuiDesign& d,
 
 TuiRgba tui_rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a) {
     return {r, g, b, a};
+}
+
+int tui_pane_pad_x(int cols, const TuiDesign& d) {
+    const int max_pad = std::max(0, d.layout.pane_padding_x);
+    if (max_pad == 0 || cols <= d.layout.compact_cols) return 0;
+    if (cols >= d.layout.dense_cols) return max_pad;
+    const int span = d.layout.dense_cols - d.layout.compact_cols;
+    if (span <= 0) return max_pad;
+    const int scaled = (max_pad * (cols - d.layout.compact_cols) + span / 2) / span;
+    return std::max(1, std::min(max_pad, scaled));
+}
+
+int tui_pane_edge_pad(int cols, const TuiDesign& d) {
+    const int raw = tui_pane_pad_x(cols, d);
+    return std::min(raw, std::max(0, (cols - 1) / 2));
+}
+
+int tui_input_pad_x(int cols, const TuiDesign& d) {
+    const int max_pad = std::max(0, d.layout.input_padding_x);
+    if (max_pad == 0 || cols <= d.layout.compact_cols) return 0;
+    if (cols >= d.layout.dense_cols) return max_pad;
+    // Track the pane pad ramp so input inset doesn't outrun outer pad.
+    return std::max(0, std::min(max_pad, tui_pane_pad_x(cols, d)));
+}
+
+int tui_bottom_pad_rows(bool footer_hint_visible, const TuiDesign& d) {
+    // Keep in sync with TUI::kBottomPadRows / kCompactBottomPadRows.
+    constexpr int kFull = 3;
+    constexpr int kCompact = 1;
+    const bool footer_on = footer_hint_visible && d.layout.show_footer;
+    if (!footer_on && d.layout.chrome_compact_rows) return kCompact;
+    return kFull;
 }
 
 TuiRgba tui_sidebar_bg(const TuiDesign& d) {
@@ -720,8 +915,13 @@ void load_tui_design(const std::string& config_dir, std::string_view cli_preset)
 
     if (file_root) {
         try {
+            const ChromeSnapshot before = capture_chrome(design);
             apply_color_overrides(design, *file_root);
             apply_layout_component_overrides(design, *file_root);
+            derive_unset_code_syntax_colors(design.content);
+            // Sticky-follow panel/diff surfaces when tui.json tweaks chrome
+            // without restating every content.* surface key.
+            finalize_panel_surfaces(design, file_root.get(), &before);
         } catch (...) {
             design = default_design();
             g_active_preset = kDefaultTuiPreset;

@@ -12,6 +12,7 @@
 #include "markdown.h"
 #include "stream_renderer.h"
 #include "render_policy.h"
+#include "styled_text.h"
 #include "cli_helpers.h"
 #include "cli.h"
 #include "api_server.h"
@@ -41,6 +42,8 @@
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
 #include "tui/opentui/top_header_frame.h"
+#include "tui/opentui/mouse_decode.h"
+#include "tui/opentui/mouse_hit.h"
 
 #include <iostream>
 #include <string>
@@ -53,6 +56,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <mutex>
 #include <set>
@@ -86,12 +90,53 @@ using arbiter::ConversationScope;
 static volatile sig_atomic_t g_winch = 0;
 static void sigwinch_handler(int) { g_winch = 1; }
 
+// Set while SGR mouse tracking is active so fatal-signal handlers can emit
+// DECRST sequences without touching non-async-signal-safe state.
+static volatile sig_atomic_t g_mouse_tracking = 0;
+
+// Best-effort tty reset for fatal signals. Only async-signal-safe calls.
+static void emergency_tty_reset() {
+    // Disable any-event / button / mouse tracking + SGR mouse; show cursor;
+    // leave alternate screen. Order matches OpenTUI's disableMouse path.
+    static const char kReset[] =
+        "\033[?1003l\033[?1002l\033[?1000l\033[?1006l"
+        "\033[?25h\033[?1049l";
+    (void)::write(STDOUT_FILENO, kReset, sizeof(kReset) - 1);
+}
+
+static void fatal_signal_handler(int sig) {
+    if (g_mouse_tracking) emergency_tty_reset();
+    // Restore default disposition and re-raise so the process still exits
+    // with the expected status / core-dump behavior.
+    ::signal(sig, SIG_DFL);
+    ::raise(sig);
+}
+
+// Read one key for y/N confirms, skipping SGR mouse reports so a click's
+// trailing button-Up cannot cancel the prompt.
+static int read_confirm_key() {
+    while (true) {
+        char csi = 0;
+        std::string params;
+        const int key = arbiter::read_history_sidebar_key(csi, params);
+        if (key < 0) return key;
+        if (key == 0x1B && (csi == 'M' || csi == 'm')
+            && !params.empty() && params[0] == '<') {
+            continue;
+        }
+        return key;
+    }
+}
+
 
 using arbiter::TUI;
 using arbiter::ThinkingIndicator;
 using arbiter::ToolCallIndicator;
 using arbiter::StreamFilter;
 using arbiter::StyleId;
+using arbiter::StyledLine;
+using arbiter::styled_append;
+using arbiter::MarkdownRenderer;
 using arbiter::CommandQueue;
 using arbiter::OutputQueue;
 using arbiter::LoopManager;
@@ -184,6 +229,16 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     arbiter::UiContext ui_ctx;
     ot_session.start(static_cast<std::uint32_t>(arbiter::term_cols()),
                      static_cast<std::uint32_t>(arbiter::term_rows()));
+    // Install fatal handlers BEFORE enabling mouse so a SIGTERM/HUP during
+    // the rest of startup cannot leave the host shell in SGR mouse mode.
+    signal(SIGTERM, fatal_signal_handler);
+    signal(SIGHUP, fatal_signal_handler);
+    signal(SIGINT, fatal_signal_handler);
+    // Button+drag+wheel tracking without any-event motion (?1003).
+    if (arbiter::tui_design().layout.mouse) {
+        ot_session.engine().set_mouse_enabled(true, /*enable_movement=*/false);
+        g_mouse_tracking = 1;
+    }
     if (stdin_is_tty) arbiter::drain_stdin_spurious(200);
     ui_ctx.session = &ot_session;
     g_ui_ctx = &ui_ctx;
@@ -243,6 +298,26 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // Forward declaration — layout_ptr lets lambdas registered before layout
     // construction reach it safely (we set it once and never clear).
     LayoutTree* layout_ptr = nullptr;
+
+    // Filled in after switch_conversation exists; make_pane editors call through.
+    std::function<bool(const arbiter::opentui::MouseEvent&)> route_mouse;
+
+    // Active separator drag (mouse button held on a split gutter). Uses a
+    // path-based SeparatorRef so a mid-drag layout mutation cannot UAF.
+    struct MouseDragState {
+        bool active = false;
+        LayoutTree::SeparatorRef sep{};
+    } mouse_drag;
+
+    // History-row activation is queued out of route_mouse so we never nest
+    // switch_conversation's stdin confirm inside the mouse handler / while
+    // holding layout_mu across a blocking read.
+    struct PendingMouseSwitch {
+        bool pending = false;
+        bool create_new = false;
+    } mouse_switch;
+
+    auto clear_mouse_drag = [&]() { mouse_drag = {}; };
 
     auto layout_bounds = [&sidebar, &layout_ptr, &history_sidebar]() -> Rect {
         const int cols = arbiter::term_cols();
@@ -476,6 +551,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 || cmd == 'z' || cmd == 't' || cmd == 'b'
                 || cmd == 0x17;
         });
+        p->editor.set_mouse_handler([&route_mouse](const arbiter::opentui::MouseEvent& ev) {
+            return route_mouse ? route_mouse(ev) : false;
+        });
         return p;
     };
 
@@ -509,32 +587,34 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                       const std::string& reason) {
         Pane* p = g_active_pane;
         if (!p) return;
-        std::string banner =
-            theme().accent_error + "[advisor halt: " + agent_id + "] " +
-            reason + theme().reset + "";
-        p->output_queue.push_msg(banner);
+        arbiter::StyledLine banner;
+        arbiter::styled_append(banner, arbiter::StyleId::Error,
+                               "[advisor halt: " + agent_id + "] ");
+        arbiter::styled_append(banner, arbiter::StyleId::System, reason);
+        p->output_queue.push_prose({banner});
+        p->output_queue.end_message();
     });
 
     orch.set_advisor_event_callback([&](const arbiter::Orchestrator::AdvisorEvent& ev) {
         Pane* p = g_active_pane;
         if (!p) return;
         if (ev.kind == "gate_continue") return;  // quiet success
-        const std::string& dim  = theme().text_dimmer;
-        const std::string& warn = theme().accent_warning;
-        const std::string& err  = theme().accent_error;
-        const std::string& rst  = theme().reset;
-        std::string label, color;
-        if      (ev.kind == "consult")       { label = "advisor consult"; color = dim; }
-        else if (ev.kind == "gate_redirect") { label = "advisor redirect"; color = warn; }
-        else if (ev.kind == "gate_halt")     { label = "advisor halt";    color = err;  }
-        else if (ev.kind == "gate_budget")   { label = "advisor budget";  color = err;  }
-        else                                  { label = ev.kind;            color = dim; }
+        arbiter::StyleId style = arbiter::StyleId::System;
+        std::string label;
+        if      (ev.kind == "consult")       { label = "advisor consult"; style = arbiter::StyleId::System; }
+        else if (ev.kind == "gate_redirect") { label = "advisor redirect"; style = arbiter::StyleId::Warning; }
+        else if (ev.kind == "gate_halt")     { label = "advisor halt";    style = arbiter::StyleId::Error;  }
+        else if (ev.kind == "gate_budget")   { label = "advisor budget";  style = arbiter::StyleId::Error;  }
+        else                                  { label = ev.kind;            style = arbiter::StyleId::System; }
         std::string detail = ev.detail;
         if (detail.size() > 200) { detail.resize(197); detail += "..."; }
-        std::string line = color + "[" + label + ": " + ev.agent_id + "]";
-        if (!detail.empty()) line += " " + detail;
-        line += rst + "";
-        p->output_queue.push_msg(line);
+        arbiter::StyledLine line;
+        arbiter::styled_append(line, style, "[" + label + ": " + ev.agent_id + "]");
+        if (!detail.empty()) {
+            arbiter::styled_append(line, arbiter::StyleId::System, " " + detail);
+        }
+        p->output_queue.push_prose({line});
+        p->output_queue.end_message();
     });
 
     orch.set_confirm_callback([&](const std::string& p) -> bool {
@@ -606,7 +686,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             hs.active_id = conversation_store.active_id();
             const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
             arbiter::opentui::draw_history_sidebar(
-                frame, hs, hb, chrome.rect, chrome.input_rows);
+                frame, hs, hb, chrome.rect, chrome.input_rows, chrome.bottom_pad_rows);
         }
 
         if (layout.pane_count() > 1) layout.draw_borders(frame);
@@ -638,7 +718,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         sidebar.set_loops(std::move(loop_rows));
         const arbiter::SidebarSnapshot snap = sidebar.snapshot();
         const arbiter::TuiChromeSnapshot chrome = focused.tui.chrome_snapshot();
-        arbiter::opentui::draw_sidebar(frame, snap, sb, chrome.rect, chrome.input_rows);
+        arbiter::opentui::draw_sidebar(
+            frame, snap, sb, chrome.rect, chrome.input_rows, chrome.bottom_pad_rows);
     };
     auto present_unlocked = [&]() {
         pane_history_present(ui_ctx, pane_hooks);
@@ -666,9 +747,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (i) names += ", ";
                 names += exec_agents[i];
             }
-            layout.focused().output_queue.push_msg(
-                "\033[2m[exec enabled: " + names +
-                " \xe2\x80\x94 shell commands will run as you]\033[0m");
+            layout.focused().output_queue.push_prose_msg(
+                "[exec enabled: " + names +
+                " \xe2\x80\x94 shell commands will run as you]",
+                StyleId::System);
         }
     }
 
@@ -687,6 +769,32 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         auto& current_agent   = pane.current_agent;
         auto& current_model   = pane.current_model;
 
+        auto push_sys = [&](const std::string& s) {
+            output_queue.push_prose_msg(s, StyleId::System);
+        };
+        auto push_err = [&](const std::string& s) {
+            output_queue.push_prose_msg(s, StyleId::Error);
+        };
+        auto push_status = [&](const std::string& s) {
+            if (s.rfind("ERR:", 0) == 0) push_err(s);
+            else push_sys(s);
+        };
+        // Loop logs embed render_markdown() ANSI — must stay on the TextSegment
+        // path (push_msg). push_prose_msg would paint CSI escapes as glyphs.
+        auto push_ansi = [&](const std::string& s) {
+            output_queue.push_msg(s);
+        };
+        auto push_md = [&](const std::string& md) {
+            MarkdownRenderer renderer;
+            auto lines = renderer.feed_styled(md);
+            auto tail = renderer.flush_styled();
+            lines.insert(lines.end(), tail.begin(), tail.end());
+            if (!lines.empty()) {
+                output_queue.push_prose(lines);
+                output_queue.end_message();
+            }
+        };
+
         if (line[0] == '/') {
             // Parse command
             std::istringstream iss(line.substr(1));
@@ -701,11 +809,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 std::string out;
                 for (auto& id : orch.list_agents()) out += "  " + id + "\n";
                 out += "\n";
-                output_queue.push(out);
+                push_sys(out);
                 return;
             }
             if (cmd == "status") {
-                output_queue.push_msg(orch.global_status());
+                push_status(orch.global_status());
                 return;
             }
             if (cmd == "find") {
@@ -724,7 +832,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 } else if (rest == "prev") {
                     r = pane_history_find_step(pane, -1);
                 } else if (rest.empty()) {
-                    output_queue.push_msg("Usage: /find <text>, then /find next|prev to cycle");
+                    push_status("Usage: /find <text>, then /find next|prev to cycle");
                     return;
                 } else {
                     r = pane_history_find(pane, rest);
@@ -751,7 +859,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 return;
             }
             if (cmd == "tokens") {
-                output_queue.push_msg(sidebar.tokens_report());
+                push_status(sidebar.tokens_report());
                 return;
             }
             if (cmd == "use" || cmd == "switch") {
@@ -762,7 +870,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     current_model = orch.get_agent_model(id);
                     pane.original_task.clear();
                 } else {
-                    output_queue.push_msg("ERR: no agent '" + id + "'");
+                    push_status("ERR: no agent '" + id + "'");
                 }
                 return;
             }
@@ -813,14 +921,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 std::getline(iss, msg);
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 if (id.empty() || msg.empty()) {
-                    output_queue.push_msg(
+                    push_status(
                         "Usage: /pane <agent-id> <message>");
                     return;
                 }
                 std::string result = spawn_pane_fn
                     ? spawn_pane_fn(id, msg)
                     : std::string("ERR: pane spawner not initialized");
-                output_queue.push_msg(result);
+                push_status(result);
                 return;
             }
             if (cmd == "ask") {
@@ -860,10 +968,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     auto config = arbiter::master_constitution();
                     config.name = id;
                     orch.create_agent(id, std::move(config));
-                    output_queue.push_msg("Created: " + id + " (default config)\n"
+                    push_status("Created: " + id + " (default config)\n"
                                       "Edit ~/.arbiter/agents/" + id + ".json to customize");
                 } catch (const std::exception& e) {
-                    output_queue.push_msg("ERR: " + std::string(e.what()));
+                    push_status("ERR: " + std::string(e.what()));
                 }
                 return;
             }
@@ -871,7 +979,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 std::string id;
                 iss >> id;
                 orch.remove_agent(id);
-                output_queue.push_msg("Removed: " + id);
+                push_status("Removed: " + id);
                 if (current_agent == id) current_agent = "index";
                 return;
             }
@@ -881,9 +989,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (id.empty()) id = current_agent;
                 try {
                     orch.get_agent(id).reset_history();
-                    output_queue.push_msg("History cleared: " + id);
+                    push_status("History cleared: " + id);
                 } catch (const std::exception& e) {
-                    output_queue.push_msg("ERR: " + std::string(e.what()));
+                    push_status("ERR: " + std::string(e.what()));
                 }
                 return;
             }
@@ -894,46 +1002,46 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 std::getline(iss, prompt);
                 if (!prompt.empty() && prompt[0] == ' ') prompt.erase(0, 1);
                 if (id.empty() || prompt.empty()) {
-                    output_queue.push_msg("Usage: /loop <agent> <initial prompt>");
+                    push_status("Usage: /loop <agent> <initial prompt>");
                     return;
                 }
                 if (id != "index" && !orch.has_agent(id)) {
-                    output_queue.push_msg("ERR: no agent '" + id + "'");
+                    push_status("ERR: no agent '" + id + "'");
                     return;
                 }
                 std::string lid = loops.start(orch, id, prompt, &output_queue);
-                output_queue.push_msg("Loop started: " + lid + " (agent: " + id + ")");
+                push_status("Loop started: " + lid + " (agent: " + id + ")");
                 return;
             }
             if (cmd == "loops") {
-                output_queue.push_msg(loops.list());
+                push_status(loops.list());
                 return;
             }
             if (cmd == "kill") {
                 std::string lid;
                 iss >> lid;
                 if (loops.kill(lid))
-                    output_queue.push_msg("Killed: " + lid);
+                    push_status("Killed: " + lid);
                 else
-                    output_queue.push_msg("ERR: no loop '" + lid + "'");
+                    push_status("ERR: no loop '" + lid + "'");
                 return;
             }
             if (cmd == "suspend") {
                 std::string lid;
                 iss >> lid;
                 if (loops.suspend(lid))
-                    output_queue.push_msg("Suspended: " + lid);
+                    push_status("Suspended: " + lid);
                 else
-                    output_queue.push_msg("ERR: no loop '" + lid + "' or not running");
+                    push_status("ERR: no loop '" + lid + "' or not running");
                 return;
             }
             if (cmd == "resume") {
                 std::string lid;
                 iss >> lid;
                 if (loops.resume(lid))
-                    output_queue.push_msg("Resumed: " + lid);
+                    push_status("Resumed: " + lid);
                 else
-                    output_queue.push_msg("ERR: no loop '" + lid + "' or not suspended");
+                    push_status("ERR: no loop '" + lid + "' or not suspended");
                 return;
             }
             if (cmd == "inject") {
@@ -943,40 +1051,40 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 std::getline(iss, msg);
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
                 if (loops.inject(lid, msg))
-                    output_queue.push_msg("Injected into " + lid);
+                    push_status("Injected into " + lid);
                 else
-                    output_queue.push_msg("ERR: no loop '" + lid + "'");
+                    push_status("ERR: no loop '" + lid + "'");
                 return;
             }
             if (cmd == "log") {
                 std::string lid;
                 iss >> lid;
                 if (lid.empty()) {
-                    output_queue.push_msg("Usage: /log <loop-id> [last-N]");
+                    push_status("Usage: /log <loop-id> [last-N]");
                     return;
                 }
                 int n = 0;
                 iss >> n;
-                output_queue.push_msg(loops.log(lid, n));
+                push_ansi(loops.log(lid, n));
                 return;
             }
             if (cmd == "watch") {
                 std::string lid;
                 iss >> lid;
                 if (lid.empty()) {
-                    output_queue.push_msg("Usage: /watch <loop-id>");
+                    push_status("Usage: /watch <loop-id>");
                     return;
                 }
                 if (loops.is_stopped(lid) && loops.log_count(lid) == 0) {
-                    output_queue.push_msg("ERR: no loop '" + lid + "'");
+                    push_status("ERR: no loop '" + lid + "'");
                     return;
                 }
                 // Dump everything buffered so far
                 size_t seen = loops.log_count(lid);
                 output_queue.push(loops.log(lid, 0));
                 if (!loops.is_stopped(lid)) {
-                    output_queue.push("\033[2m--- watching " + lid +
-                                      " — press Enter to detach ---" + theme().reset + "\n");
+                    push_sys("--- watching " + lid +
+                             " — press Enter to detach ---");
                     // Tail new entries — exec thread polls while main thread flushes
                     while (!loops.is_stopped(lid)) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -992,9 +1100,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         output_queue.push(loops.log_since(lid, seen));
                     }
                     if (loops.is_stopped(lid)) {
-                        output_queue.push_msg("\033[2m--- loop finished ---" + theme().reset + "");
+                        push_sys("--- loop finished ---");
                     } else {
-                        output_queue.push_msg("\033[2m--- detached ---" + theme().reset + "");
+                        push_sys("--- detached ---");
                     }
                 }
                 return;
@@ -1003,14 +1111,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 std::string url;
                 iss >> url;
                 if (url.empty()) {
-                    output_queue.push_msg("Usage: /fetch <url>");
+                    push_status("Usage: /fetch <url>");
                     return;
                 }
                 thinking.start("fetching");
                 std::string content = fetch_url(url);
                 thinking.stop();
                 if (content.substr(0, 4) == "ERR:") {
-                    output_queue.push_msg(theme().accent_error + content + theme().reset + "");
+                    push_err(content);
                     return;
                 }
                 static constexpr size_t kFetchLimit = 32768;
@@ -1025,13 +1133,13 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     auto resp = orch.send(current_agent, msg);
                     thinking.stop();
                     if (resp.ok) {
-                        output_queue.push_msg(arbiter::render_markdown(resp.content));
+                        push_md(resp.content);
                     } else {
                         output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
                     }
                 } catch (const std::exception& ex) {
                     thinking.stop();
-                    output_queue.push_msg(theme().accent_error + "ERR: " + std::string(ex.what()) + theme().reset + "");
+                    push_err("ERR: " + std::string(ex.what()));
                 }
                 return;
             }
@@ -1039,15 +1147,15 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 std::string id, model;
                 iss >> id >> model;
                 if (id.empty() || model.empty()) {
-                    output_queue.push_msg("Usage: /model <agent-id> <model-id>\n"
+                    push_status("Usage: /model <agent-id> <model-id>\n"
                                       "  e.g. /model research claude-haiku-4-5-20251001");
                     return;
                 }
                 try {
                     orch.get_agent(id).config_mut().model = model;
-                    output_queue.push_msg(id + " model -> " + model);
+                    push_status(id + " model -> " + model);
                 } catch (const std::exception& ex) {
-                    output_queue.push_msg("ERR: " + std::string(ex.what()));
+                    push_status("ERR: " + std::string(ex.what()));
                 }
                 return;
             }
@@ -1055,7 +1163,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 std::string subcmd;
                 iss >> subcmd;
                 if (subcmd != "execute") {
-                    output_queue.push_msg("Usage: /plan execute <path>\n"
+                    push_status("Usage: /plan execute <path>\n"
                                       "  Runs a plan file produced by /agent planner, executing each\n"
                                       "  phase sequentially and injecting prior outputs into dependents.");
                     return;
@@ -1063,23 +1171,23 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 std::string path;
                 iss >> path;
                 if (path.empty()) {
-                    output_queue.push_msg("Usage: /plan execute <path>");
+                    push_status("Usage: /plan execute <path>");
                     return;
                 }
-                output_queue.push_msg("\033[2m[plan] executing: " + path + "]" + theme().reset + "");
+                push_sys("[plan] executing: " + path + "]");
                 auto result = orch.execute_plan(path,
                     [&](const std::string& msg) {
-                        output_queue.push_msg("\033[2m" + msg + theme().reset + "");
+                        push_sys(msg);
                     });
                 if (!result.ok) {
-                    output_queue.push_msg(theme().accent_error + "[plan] failed: " + result.error + theme().reset + "");
+                    push_err("[plan] failed: " + result.error);
                 } else {
-                    output_queue.push_msg("\033[2m[plan] complete — " +
-                                      std::to_string(result.phases.size()) + " phase(s) executed]" + theme().reset + "");
+                    push_sys("[plan] complete — " +
+                             std::to_string(result.phases.size()) + " phase(s) executed]");
                     // Print final phase output (the deliverable)
                     if (!result.phases.empty()) {
                         auto& [num, name, out] = result.phases.back();
-                        output_queue.push_msg(arbiter::render_markdown(out));
+                        push_md(out);
                     }
                 }
                 return;
@@ -1090,12 +1198,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (!topic.empty() && topic[0] == ' ') topic.erase(0, 1);
                 if (!topic.empty()) {
                     std::string result = orch.execute_slash_command(line, current_agent);
-                    output_queue.push_msg(result.empty()
+                    push_status(result.empty()
                         ? "Unknown help topic '" + topic + "'"
                         : result);
                     return;
                 }
-                output_queue.push_msg(
+                push_status(
                     "Conversation\n"
                     "  <text>                           — send to the focused pane's agent\n"
                     "  /send <agent> <msg>              — send to a specific agent\n"
@@ -1195,7 +1303,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (sub == "list") {
                     const auto entries = conversation_store.list();
                     if (entries.empty()) {
-                        output_queue.push_msg("(no conversations)");
+                        push_status("(no conversations)");
                         return;
                     }
                     // Star the conversation bound to *this* pane, not the
@@ -1209,7 +1317,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                             << "  [" << e.id.substr(0, std::min<size_t>(8, e.id.size())) << "]\n";
                         ++n;
                     }
-                    output_queue.push_msg(out.str());
+                    push_status(out.str());
                     return;
                 }
                 if (sub == "new") {
@@ -1218,7 +1326,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         pending_conv_ops.push_back({true, true, "", false, false});
                     }
                     if (layout_ptr) layout_ptr->focused().editor.interrupt();
-                    output_queue.push_msg("switching to a new conversation...");
+                    push_status("switching to a new conversation...");
                     return;
                 }
                 if (sub == "switch") {
@@ -1226,7 +1334,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     iss >> arg;
                     const std::string id = resolve_chat_target(arg);
                     if (id.empty()) {
-                        output_queue.push_msg("Usage: /chat switch <n | id-prefix> (see /chat list)");
+                        push_status("Usage: /chat switch <n | id-prefix> (see /chat list)");
                         return;
                     }
                     {
@@ -1234,7 +1342,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         pending_conv_ops.push_back({true, false, id, false, false});
                     }
                     if (layout_ptr) layout_ptr->focused().editor.interrupt();
-                    output_queue.push_msg("switching...");
+                    push_status("switching...");
                     return;
                 }
                 if (sub == "title") {
@@ -1244,11 +1352,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     while (a < text.size() && std::isspace(static_cast<unsigned char>(text[a]))) ++a;
                     text = text.substr(a);
                     if (text.empty()) {
-                        output_queue.push_msg("Usage: /chat title <text>");
+                        push_status("Usage: /chat title <text>");
                         return;
                     }
                     conversation_store.set_title_locked(pane.conversation_id, text);
-                    output_queue.push_msg("title: " + text);
+                    push_status("title: " + text);
                     return;
                 }
                 if (sub == "delete") {
@@ -1256,7 +1364,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     iss >> arg;
                     const std::string id = resolve_chat_target(arg);
                     if (id.empty()) {
-                        output_queue.push_msg("Usage: /chat delete <n | id-prefix> (see /chat list)");
+                        push_status("Usage: /chat delete <n | id-prefix> (see /chat list)");
                         return;
                     }
                     {
@@ -1264,7 +1372,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         pending_conv_ops.push_back({false, false, id, true, false});
                     }
                     if (layout_ptr) layout_ptr->focused().editor.interrupt();
-                    output_queue.push_msg("deleted (session file kept — /chat purge removes it)");
+                    push_status("deleted (session file kept — /chat purge removes it)");
                     return;
                 }
                 if (sub == "purge") {
@@ -1272,7 +1380,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     iss >> arg;
                     const std::string id = resolve_chat_target(arg);
                     if (id.empty()) {
-                        output_queue.push_msg("Usage: /chat purge <n | id-prefix> (see /chat list)");
+                        push_status("Usage: /chat purge <n | id-prefix> (see /chat list)");
                         return;
                     }
                     {
@@ -1280,7 +1388,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         pending_conv_ops.push_back({false, false, id, true, true});
                     }
                     if (layout_ptr) layout_ptr->focused().editor.interrupt();
-                    output_queue.push_msg("purged");
+                    push_status("purged");
                     return;
                 }
                 if (sub == "search") {
@@ -1290,7 +1398,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     while (a < term.size() && std::isspace(static_cast<unsigned char>(term[a]))) ++a;
                     term = term.substr(a);
                     if (term.empty()) {
-                        output_queue.push_msg("Usage: /chat search <text>");
+                        push_status("Usage: /chat search <text>");
                         return;
                     }
                     // Flush the coalesced autosave first so the active
@@ -1298,7 +1406,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     conversation_store.flush();
                     const auto hits = conversation_store.search(term);
                     if (hits.empty()) {
-                        output_queue.push_msg("(no conversations match \"" + term + "\")");
+                        push_status("(no conversations match \"" + term + "\")");
                         return;
                     }
                     const std::string starred = pane.conversation_id;
@@ -1312,10 +1420,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         if (!h.snippet.empty()) out << "      " << h.snippet << "\n";
                     }
                     out << "  Switch with /chat switch <id-prefix>.\n";
-                    output_queue.push_msg(out.str());
+                    push_status(out.str());
                     return;
                 }
-                output_queue.push_msg("Usage: /chat list|new|switch|search|title|delete|purge");
+                push_status("Usage: /chat list|new|switch|search|title|delete|purge");
                 return;
             }
             if (cmd == "verbose") {
@@ -1325,10 +1433,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 else if (arg == "off")  cfg.verbose = false;
                 else if (arg.empty())   cfg.verbose = !cfg.verbose;
                 else {
-                    output_queue.push_msg("Usage: /verbose [on|off]");
+                    push_status("Usage: /verbose [on|off]");
                     return;
                 }
-                output_queue.push_msg(std::string("verbose: ") +
+                push_status(std::string("verbose: ") +
                                       (cfg.verbose ? "on" : "off"));
                 return;
             }
@@ -1359,14 +1467,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                            "  { \"preset\": \"nord\" }   or   { \"theme_file\": \"themes/mine.json\" }\n"
                            "Override any token with bg/text/accent/border/content groups (#RRGGBB).\n"
                            "Export a starter: arbiter --export-theme onedark > ~/.arbiter/themes/mine.json";
-                    output_queue.push_msg(out.str());
+                    push_status(out.str());
                     return;
                 }
                 if (arg == "save") {
                     std::string name;
                     iss >> name;
                     if (name.empty()) {
-                        output_queue.push_msg("Usage: /theme save <name>");
+                        push_status("Usage: /theme save <name>");
                         return;
                     }
                     namespace fs = std::filesystem;
@@ -1377,47 +1485,47 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     if (!arbiter::tui_write_theme_file(path,
                                                        arbiter::tui_design(),
                                                        preset_hint)) {
-                        output_queue.push_msg("ERR: could not write " + path);
+                        push_status("ERR: could not write " + path);
                         return;
                     }
-                    output_queue.push_msg("saved theme: " + path);
+                    push_status("saved theme: " + path);
                     return;
                 }
                 if (arg == "file") {
                     std::string path_arg;
                     iss >> path_arg;
                     if (path_arg.empty()) {
-                        output_queue.push_msg("Usage: /theme file <path>\n"
+                        push_status("Usage: /theme file <path>\n"
                                             "  Path is relative to ~/.arbiter/ unless absolute.");
                         return;
                     }
                     if (!arbiter::set_tui_theme_file(dir, path_arg)) {
-                        output_queue.push_msg("ERR: could not load theme file '" + path_arg + "'");
+                        push_status("ERR: could not load theme file '" + path_arg + "'");
                         return;
                     }
                     refresh_chrome();
-                    output_queue.push_msg("theme file: " + path_arg);
+                    push_status("theme file: " + path_arg);
                     return;
                 }
                 if (!arbiter::tui_theme_name_is_valid(dir, arg)) {
-                    output_queue.push_msg("ERR: unknown theme '" + arg + "' (/theme list)");
+                    push_status("ERR: unknown theme '" + arg + "' (/theme list)");
                     return;
                 }
                 arbiter::set_tui_preset(dir, arg);
                 refresh_chrome();
-                output_queue.push_msg("theme: " + arg);
+                push_status("theme: " + arg);
                 return;
             }
 
             {
                 std::string result = orch.execute_slash_command(line, current_agent);
                 if (!result.empty()) {
-                    output_queue.push_msg(result);
+                    push_status(result);
                     return;
                 }
             }
 
-            output_queue.push_msg("Unknown command. /help for list.");
+            push_status("Unknown command. /help for list.");
             return;
         }
 
@@ -1561,6 +1669,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             return "ERR: no agent '" + req_agent + "'";
 
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        clear_mouse_drag();
 
         if (layout.pane_count() >= kMaxPanes) {
             return "ERR: pane cap reached (" + std::to_string(kMaxPanes) +
@@ -1696,18 +1805,18 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         if (!pending) return false;
 
         Pane& pane = layout.focused();
-        std::string rendered =
-            "\n" + theme().accent_prompt + conf_prompt + " [y/N] " + theme().reset + "";
-        pane_history_push(pane, rendered);
+        StyledLine prompt_line;
+        styled_append(prompt_line, StyleId::Warning, conf_prompt + " [y/N]");
+        // new_block supplies block_gap — do not also prepend an empty StyledLine.
+        pane_history_push_prose(pane, {prompt_line}, true);
         ui_ctx.present_all();
 
-        unsigned char ch = 0;
-        ssize_t n = ::read(STDIN_FILENO, &ch, 1);
-        bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
-        std::string answer = yes
-            ? std::string("\n" + theme().accent_success + "[user accepted input]" + theme().reset + "\n")
-            : std::string("\n" + theme().accent_error + "[user denied input]" + theme().reset + "\n");
-        pane_history_push(pane, answer);
+        const int key = read_confirm_key();
+        bool yes = (key == 'y' || key == 'Y');
+        StyledLine answer;
+        if (yes) styled_append(answer, StyleId::Success, "[user accepted input]");
+        else styled_append(answer, StyleId::Error, "[user denied input]");
+        pane_history_push_prose(pane, {answer}, true);
         ui_ctx.present_all();
         pending->set_value(yes);
         return true;
@@ -1741,24 +1850,29 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
             // Render the confirm prompt in the focused pane's scrollback.
             Pane& shown = layout.focused();
-            std::string prompt =
-                "\n" + theme().accent_prompt + "pane '" + pc.agent_id +
-                "' finished — close it? [y/N] " + theme().reset + "";
-            pane_history_push(shown, prompt);
+            StyledLine prompt_line;
+            styled_append(prompt_line, StyleId::Warning,
+                          "pane '" + pc.agent_id + "' finished — close it? [y/N]");
+            pane_history_push_prose(shown, {prompt_line}, true);
             ui_ctx.present_all();
 
-            unsigned char ch = 0;
-            ssize_t n = ::read(STDIN_FILENO, &ch, 1);
-            bool yes = (n == 1) && (ch == 'y' || ch == 'Y');
+            const int key = read_confirm_key();
+            bool yes = (key == 'y' || key == 'Y');
 
-            std::string answer = yes
-                ? std::string("\n" + theme().accent_success + "[closing '" + pc.agent_id + "']" + theme().reset + "\n")
-                : std::string("\n" + theme().accent_error + "[keeping '" + pc.agent_id + "' open]" + theme().reset + "\n");
-            pane_history_push(shown, answer);
+            StyledLine answer;
+            if (yes) {
+                styled_append(answer, StyleId::Success,
+                              "[closing '" + pc.agent_id + "']");
+            } else {
+                styled_append(answer, StyleId::Error,
+                              "[keeping '" + pc.agent_id + "' open]");
+            }
+            pane_history_push_prose(shown, {answer}, true);
             ui_ctx.present_all();
 
             if (yes) {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                clear_mouse_drag();
                 layout.close_pane(pc.pane, [&](Pane& p) {
                     p.cmd_queue.stop();
                     if (p.exec_thread.joinable()) p.exec_thread.join();
@@ -1782,6 +1896,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // agent turn finishes or orch.cancel() aborts it).
     auto dispatch_chord = [&](char cmd) {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        clear_mouse_drag();
         switch (cmd) {
             case 'w':
             case 0x17:  // Ctrl-w Ctrl-w → next pane
@@ -1854,6 +1969,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // Loads into that conversation's history slot if not already resident,
     // clears the pane's scrollback, and optionally replays the transcript.
     auto apply_conversation_to_pane = [&](Pane& pane, const std::string& id, bool replay) {
+        clear_mouse_drag();
         pane.conversation_id = id;
         pane.current_agent = "index";
         pane.current_model = orch.get_agent_model("index");
@@ -1887,25 +2003,42 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // Attaches to the *focused* pane only — sibling panes keep their
     // conversations and the split layout stays intact (#40).
     auto switch_conversation = [&](bool create_new, std::string explicit_id = {}) {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        // Confirm outside layout_mu so the output pump can keep painting and
+        // so nested mouse Up reports are drained by read_confirm_key.
+        {
+            bool busy = false;
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                busy = focused_turn_in_flight();
+                if (busy) {
+                    layout.focused().tui.set_status(
+                        "Turn in progress — switch anyway? [y/N]");
+                    present_unlocked();
+                }
+            }
+            if (busy) {
+                const int key = read_confirm_key();
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                layout.focused().tui.clear_status();
+                if (key != 'y' && key != 'Y') {
+                    history_sidebar.exit_focus();
+                    present_unlocked();
+                    return;
+                }
+            }
+        }
 
+        std::unique_lock<std::recursive_mutex> lk(layout_mu);
+        clear_mouse_drag();
         Pane& focused = layout.focused();
 
         if (focused_turn_in_flight()) {
-            focused.tui.set_status("Turn in progress — switch anyway? [y/N]");
-            present_unlocked();
-            char csi = 0;
-            std::string csi_params;
-            const int key = read_history_sidebar_key(csi, csi_params);
-            focused.tui.clear_status();
-            if (key != 'y' && key != 'Y') {
-                history_sidebar.exit_focus();
-                present_unlocked();
-                return;
-            }
             orch.cancel();
+            // Drop the lock while spinning so the output pump can keep painting.
             while (focused_turn_in_flight()) {
+                lk.unlock();
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                lk.lock();
             }
         }
 
@@ -1955,7 +2088,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // Soft/hard-deletes `id`. Any pane bound to it is reassigned to the
     // store's new active conversation; layout is preserved.
     auto delete_conversation = [&](const std::string& id, bool hard) {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        std::unique_lock<std::recursive_mutex> lk(layout_mu);
+        clear_mouse_drag();
 
         bool any_showing = false;
         layout.for_each_pane([&](Pane& p) {
@@ -1964,8 +2098,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
         if (any_showing) {
             orch.cancel();
+            // Drop the lock while waiting so the output pump can keep painting.
             while (focused_turn_in_flight()) {
+                lk.unlock();
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                lk.lock();
             }
             conversation_store.flush();
             layout.for_each_pane([&](Pane& p) {
@@ -2019,11 +2156,175 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         return true;
     };
 
+    auto scroll_pane = [&](Pane& pane, int direction, int step) {
+        const int max_off = pane_history_max_scroll(pane);
+        if (direction < 0) {
+            pane.scroll_offset = std::min(pane.scroll_offset + step, max_off);
+            if (pane.scroll_offset >= max_off && pane.scroll && pane.scroll->has_gap()) {
+                const auto history = orch.get_agent_history("index");
+                arbiter::replay_load_previous_chunk(pane, history);
+            }
+        } else {
+            pane.scroll_offset = std::max(0, pane.scroll_offset - step);
+            pane.new_while_scrolled = 0;
+            if (pane.scroll_offset == 0) pane.tui.clear_status();
+        }
+        if (pump_notify) pump_notify();
+    };
+
+    auto right_sidebar_rect = [&]() -> Rect {
+        const int cols = arbiter::term_cols();
+        const int rows = arbiter::term_rows();
+        const int panes = static_cast<int>(layout.pane_count());
+        const int sw = sidebar.effective_width(cols, panes);
+        if (sw <= 0) return {};
+        const int pane_x = layout.outer_bounds().x;
+        const int pane_w = layout.outer_bounds().w;
+        const int gap = cols - pane_x - pane_w;
+        if (gap <= 0) return {};
+        return Rect{pane_x + pane_w, 1, std::min(sw, gap), std::max(1, rows - 1)};
+    };
+
+    auto history_visible_rows = [&](const Rect& hb) -> int {
+        const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
+        return arbiter::opentui::history_sidebar_visible_rows(
+            hb, chrome.rect, chrome.input_rows, history_sidebar.focused(),
+            history_sidebar.filter_line_visible(), chrome.bottom_pad_rows);
+    };
+
+    // Returns true when the focused editor should exit read_line (focus moved
+    // or a pending history switch was queued).
+    route_mouse = [&](const arbiter::opentui::MouseEvent& ev) -> bool {
+        using arbiter::opentui::HitKind;
+        using arbiter::opentui::MouseButton;
+        using arbiter::opentui::MouseType;
+        using arbiter::opentui::ScrollDir;
+
+        if (!arbiter::tui_design().layout.mouse) return false;
+
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+
+        // Separator drag: re-resolve the path-based ref each event so a
+        // mid-drag tree mutation fails cleanly instead of UAFing.
+        if (mouse_drag.active) {
+            if (ev.type == MouseType::Up) {
+                mouse_drag.active = false;
+                return false;
+            }
+            if (ev.type == MouseType::Drag && ev.button == MouseButton::Left) {
+                if (!layout.drag_separator(mouse_drag.sep, ev.x, ev.y)) {
+                    mouse_drag.active = false;
+                } else {
+                    layout.for_each_pane([&](Pane& p) {
+                        pane_history_set_cols(p, p.tui.cols());
+                    });
+                    if (pump_notify) pump_notify();
+                }
+                return false;
+            }
+            if (ev.type == MouseType::Move) return false;
+            // Any other event cancels an in-progress drag.
+            mouse_drag.active = false;
+        }
+
+        const int cols = arbiter::term_cols();
+        const int rows = arbiter::term_rows();
+        const Rect hb = HistorySidebarState::rect_for_terminal(
+            cols, rows, history_sidebar.enabled());
+        const Rect rb = right_sidebar_rect();
+        const int hist_vis = (hb.w > 0) ? history_visible_rows(hb) : 0;
+        const int hist_len = (hb.w > 0) ? history_sidebar.list_row_count() : 0;
+        const bool hist_filter = (hb.w > 0) && history_sidebar.filter_line_visible();
+        const auto hit = arbiter::opentui::hit_test(
+            layout, hb, rb, history_sidebar.scroll_offset(), hist_vis, hist_len,
+            hist_filter, ev.x, ev.y);
+
+        if (ev.type == MouseType::Scroll) {
+            const int dir = (ev.scroll == ScrollDir::Up || ev.scroll == ScrollDir::Left)
+                ? -1 : +1;
+            if (hit.kind == HitKind::HistorySidebar && hb.w > 0) {
+                history_sidebar.page_selection(dir, hist_vis);
+                if (pump_notify) pump_notify();
+                return false;
+            }
+            // Only scroll when the pointer is over a pane scroll/input/chrome
+            // region — never fall back to the focused pane for Outside /
+            // RightSidebar / separator hits.
+            if (hit.pane
+                && (hit.kind == HitKind::PaneScroll
+                    || hit.kind == HitKind::PaneInput
+                    || hit.kind == HitKind::PaneChrome)) {
+                const int step = std::max(1, hit.pane->tui.scroll_region_rows() / 4);
+                scroll_pane(*hit.pane, dir, step * std::max(1, ev.scroll_delta));
+            }
+            return false;
+        }
+
+        if (ev.type == MouseType::Down && ev.button == MouseButton::Left) {
+            if (hit.kind == HitKind::SplitSeparator) {
+                mouse_drag.active = true;
+                mouse_drag.sep = hit.sep;
+                return false;
+            }
+            if (hit.kind == HitKind::HistorySidebar) {
+                if (!history_sidebar.focused()) {
+                    history_sidebar.enter_focus(conversation_store,
+                                                conversation_store.active_id());
+                }
+                if (hit.history_row >= 0) {
+                    history_sidebar.select_at_index(hit.history_row, hist_vis);
+                    // Queue activation — never call switch_conversation from
+                    // inside the mouse handler (nested stdin confirm + lock).
+                    mouse_switch.pending = true;
+                    mouse_switch.create_new = history_sidebar.is_new_selected();
+                }
+                refresh_focused_input.store(true);
+                if (pump_notify) pump_notify();
+                return true;
+            }
+            if (hit.kind == HitKind::RightSidebar) {
+                // Display-only telemetry panel — clicks are intentionally
+                // ignored (documented in docs/tui/panes.md).
+                return false;
+            }
+            if ((hit.kind == HitKind::PaneInput
+                 || hit.kind == HitKind::PaneScroll
+                 || hit.kind == HitKind::PaneChrome)
+                && hit.pane) {
+                const bool focus_changed = (hit.pane != layout.focused_ptr());
+                const bool was_history = history_sidebar.focused();
+                if (was_history) history_sidebar.exit_focus();
+                layout.focus_pane(hit.pane);
+                if (hit.kind == HitKind::PaneInput) {
+                    hit.pane->editor.set_cursor_from_click(ev.x, ev.y);
+                }
+                if (focus_changed || was_history) {
+                    refresh_focused_input.store(true);
+                    if (pump_notify) pump_notify();
+                    return true;
+                }
+                if (pump_notify) pump_notify();
+                return false;
+            }
+        }
+
+        return false;
+    };
+
+    auto service_mouse_switch = [&]() -> bool {
+        if (!mouse_switch.pending) return false;
+        const bool create_new = mouse_switch.create_new;
+        mouse_switch.pending = false;
+        switch_conversation(create_new);
+        return true;
+    };
+
     // ── Main readline loop ──────────────────────────────────────────────────
     while (!quit_requested) {
         while (service_confirm()) {}
         while (service_pending_closes()) {}
         while (service_pending_conv_ops()) {}
+        while (service_mouse_switch()) {}
 
         if (history_sidebar.focused()) {
             if (pump_notify) pump_notify();
@@ -2032,12 +2333,24 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             const Rect hb = HistorySidebarState::rect_for_terminal(cols, rows, true);
             const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
             const int visible_rows = arbiter::opentui::history_sidebar_visible_rows(
-                hb, chrome.rect, chrome.input_rows, true);
+                hb, chrome.rect, chrome.input_rows, true,
+                history_sidebar.filter_line_visible(), chrome.bottom_pad_rows);
 
             char csi = 0;
             std::string csi_params;
             const int key = read_history_sidebar_key(csi, csi_params);
             if (key < 0) break;
+
+            // Mouse reports while the history sidebar owns stdin.
+            if (key == 0x1B && (csi == 'M' || csi == 'm')
+                && !csi_params.empty() && csi_params[0] == '<') {
+                if (auto ev = arbiter::opentui::decode_sgr_mouse(csi_params, csi)) {
+                    (void)route_mouse(*ev);
+                }
+                // Pane click exits history focus; queued history activation
+                // is drained at the top of the next loop iteration.
+                continue;
+            }
 
             const HistorySidebarKey action = history_sidebar.handle_key(key, csi, csi_params);
             if (action == HistorySidebarKey::Up) {
@@ -2119,6 +2432,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             if (service_confirm()) continue;
             if (service_pending_closes()) continue;
             if (service_pending_conv_ops()) continue;
+            if (service_mouse_switch()) continue;
             // Layout mutation woke us up just to repaint the focused
             // pane's prompt — loop back so begin_input paints a fresh
             // one.  Without this, read_line returning false here would
@@ -2155,8 +2469,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
         }
 
-        focused.output_queue.push_msg(
-            theme().user_echo_arrow + "> " + theme().user_echo_text + line + theme().reset + "");
+        focused.output_queue.push_prose(arbiter::styled_user_echo_lines(line));
+        focused.output_queue.end_message();
 
         focused.cmd_queue.push(line);
         if (focused.cmd_queue.is_busy()) {
@@ -2183,6 +2497,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     g_ui_ctx = nullptr;
     ot_session.shutdown();
+    // Clear after Engine disables mouse so a fatal signal in the tiny
+    // shutdown window still emits DECRST.
+    g_mouse_tracking = 0;
 
     // Discard any capability-query dribble while still in raw/no-echo mode.
     // This must run *before* tcsetattr restores ECHO below — bytes that

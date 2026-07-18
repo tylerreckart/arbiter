@@ -2,6 +2,7 @@
 
 #include "tui/opentui/engine.h"
 #include "tui/opentui/kitty_key_decode.h"
+#include "tui/opentui/mouse_decode.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
@@ -191,6 +192,15 @@ int PaneInputEditor::read_key_event() {
             }
             if (final) {
                 if (is_terminal_response_csi(params, final)) continue;
+                // SGR mouse: CSI < Pb ; Px ; Py M/m. Handled outside the
+                // editor lock so the router can touch layout/scroll state.
+                if ((final == 'M' || final == 'm')
+                    && !params.empty() && params[0] == '<') {
+                    if (auto ev = decode_sgr_mouse(params, final)) {
+                        if (mouse_handler_ && mouse_handler_(*ev)) return -1;
+                    }
+                    continue;
+                }
                 if (final == 'u') {
                     // Kitty-protocol key report — decode back to the legacy
                     // byte so it flows through the same dispatch as a
@@ -303,9 +313,8 @@ void PaneInputEditor::update_input_rows() {
     int cols = tui_.cols();
     if (cols <= 0) cols = 80;
     const TuiDesign& d = tui_design();
-    const int raw_outer = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
-    const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
-    const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
+    const int outer_pad = tui_pane_edge_pad(cols, d);
+    const int raw_inner = tui_input_pad_x(cols, d);
     const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
     const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
     const int content_cols = std::max(1, cols - (outer_pad * 2) - chrome_inset);
@@ -335,9 +344,8 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     const std::uint32_t py = static_cast<std::uint32_t>(tui.input_top_row_pub());
     const TuiDesign& d = tui_design();
     const int cols = std::max(1, tui.cols());
-    const int raw_outer = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
-    const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
-    const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
+    const int outer_pad = tui_pane_edge_pad(cols, d);
+    const int raw_inner = tui_input_pad_x(cols, d);
     const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
     const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
     const std::uint32_t content_x = px
@@ -393,6 +401,54 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     // Command palette overlays the rows above the input strip; drawn last
     // so it paints over scroll content.
     if (palette_active_) draw_palette(frame, tui);
+}
+
+void PaneInputEditor::set_cursor_from_click(int term_x, int term_y) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const TuiDesign& d = tui_design();
+    const int cols = std::max(1, tui_.cols());
+    const int raw_outer = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
+    const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
+    const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
+    const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
+    const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
+
+    const int px = tui_.left_col() - 1;
+    const int py = tui_.input_top_row_pub();
+    const int content_x = px + outer_pad + chrome_inset + inner_pad;
+    const int prompt_skip = std::max(0, prompt_cols_);
+    const int editor_w = std::max(1,
+                                  cols - (outer_pad * 2) - chrome_inset
+                                      - (inner_pad * 2) - prompt_skip);
+    const int ex = content_x + prompt_skip;
+    const int max_rows = std::max(1, tui_.input_rows() - 2);
+
+    const int row = term_y - py;
+    const int col = term_x - ex;
+    if (row < 0 || row >= max_rows || col < 0) return;
+
+    // Clamp to the last cell of this visual row — clicks in the right
+    // padding must not spill onto the next wrap row's first column.
+    const int visual = row * editor_w + std::min(col, editor_w - 1);
+    // Map visual column index into a byte offset in buffer_.
+    int vis = 0;
+    int byte_off = 0;
+    while (byte_off < static_cast<int>(buffer_.size()) && vis < visual) {
+        unsigned char c = static_cast<unsigned char>(buffer_[static_cast<size_t>(byte_off)]);
+        if ((c & 0xC0) == 0x80) {
+            ++byte_off;
+            continue;
+        }
+        ++vis;
+        ++byte_off;
+        while (byte_off < static_cast<int>(buffer_.size())
+               && (static_cast<unsigned char>(buffer_[static_cast<size_t>(byte_off)]) & 0xC0) == 0x80) {
+            ++byte_off;
+        }
+    }
+    cursor_ = std::min(byte_off, static_cast<int>(buffer_.size()));
+    sync_edit_buffer();
+    request_present();
 }
 
 void PaneInputEditor::move_cursor_to_insertion() {

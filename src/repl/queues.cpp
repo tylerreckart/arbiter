@@ -205,7 +205,23 @@ void OutputQueue::push_code_close(const std::string& close_fence) {
 }
 
 void OutputQueue::push_prose_msg(const std::string& text, StyleId id) {
-    push_prose({styled_plain_line(text, id)});
+    size_t start = 0;
+    while (start < text.size() && (text[start] == '\n' || text[start] == '\r')) ++start;
+    if (start >= text.size()) {
+        end_message();
+        return;
+    }
+    std::vector<StyledLine> lines;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) {
+            lines.push_back(styled_plain_line(text.substr(start), id));
+            break;
+        }
+        lines.push_back(styled_plain_line(text.substr(start, end - start), id));
+        start = end + 1;
+    }
+    if (!lines.empty()) push_prose(lines);
     end_message();
 }
 

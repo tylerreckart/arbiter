@@ -57,6 +57,11 @@ std::size_t SpanScrollAppender::StyleKeyHash::operator()(const StyleKey& k) cons
         h ^= static_cast<std::size_t>(k.fg[1]) << 2;
         h ^= static_cast<std::size_t>(k.fg[2]) << 3;
     }
+    if (k.has_bg) {
+        h ^= static_cast<std::size_t>(k.bg[0]) << 4;
+        h ^= static_cast<std::size_t>(k.bg[1]) << 5;
+        h ^= static_cast<std::size_t>(k.bg[2]) << 6;
+    }
     return h;
 }
 
@@ -87,6 +92,10 @@ SpanScrollAppender::StyleKey SpanScrollAppender::style_key_for(StyleId id) const
     if (rs.fg) {
         key.has_fg = true;
         key.fg = *rs.fg;
+    }
+    if (rs.bg) {
+        key.has_bg = true;
+        key.bg = *rs.bg;
     }
     return key;
 }

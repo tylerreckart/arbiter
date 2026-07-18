@@ -2,6 +2,7 @@
 
 #include "code_highlighter.h"
 #include "markdown.h"
+#include "styled_text.h"
 #include "tui/ansi_util.h"
 #include "tui/style_resolver.h"
 #include "tui/tui_design.h"
@@ -19,22 +20,53 @@ namespace {
 constexpr std::uint8_t kWrapWord = 2;
 
 int cell_width(std::string_view s) {
-    int w = 0;
-    for (unsigned char c : s) {
-        if ((c & 0xC0) != 0x80) ++w;
-    }
-    return w;
+    return static_cast<int>(arbiter::display_width(s));
 }
 
 std::string trim_to_cells(std::string s, int max_cells) {
-    if (max_cells <= 0) return {};
-    while (!s.empty() && cell_width(s) > max_cells) {
-        s.pop_back();
-        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
-            s.pop_back();
+    return arbiter::trim_to_display_cols(std::move(s), max_cells);
+}
+
+std::vector<StyledLine> prepare_prose_lines(std::vector<StyledLine> lines,
+                                            int wrap_cols,
+                                            int paragraph_gap,
+                                            int trailing_empties) {
+    std::vector<StyledLine> out;
+    out.reserve(lines.size());
+    int empties = trailing_empties;
+    for (StyledLine& line : lines) {
+        if (arbiter::is_styled_rule_line(line)) {
+            empties = 0;
+            out.push_back(arbiter::styled_rule_line(wrap_cols));
+            continue;
         }
+        if (arbiter::is_styled_user_echo_line(line)) {
+            // Keep source unpadded so trailing spaces survive wrap resize;
+            // ProseSegment pads at emit time.
+            empties = 0;
+            out.push_back(std::move(line));
+            continue;
+        }
+        if (line.text.empty()) {
+            if (empties < paragraph_gap) {
+                out.push_back(std::move(line));
+                ++empties;
+            }
+            continue;
+        }
+        empties = 0;
+        out.push_back(std::move(line));
     }
-    return s;
+    return out;
+}
+
+int trailing_empty_count(const std::vector<StyledLine>& lines) {
+    int n = 0;
+    for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
+        if (!it->text.empty()) break;
+        ++n;
+    }
+    return n;
 }
 
 void fill_rect(OpenTuiHandle frame,
@@ -93,11 +125,20 @@ PaneScrollView::ProseSegment::~ProseSegment() {
     if (buffer_ != 0) destroyTextBuffer(buffer_);
 }
 
+void PaneScrollView::ProseSegment::emit_line(const StyledLine& line) {
+    if (!span_append_) return;
+    if (arbiter::is_styled_user_echo_line(line)) {
+        span_append_->append_line(arbiter::pad_styled_user_echo_line(line, wrap_cols_));
+    } else {
+        span_append_->append_line(line);
+    }
+}
+
 void PaneScrollView::ProseSegment::append(const std::vector<StyledLine>& lines) {
     if (!span_append_) return;
     for (const StyledLine& line : lines) {
         source_.push_back(line);
-        span_append_->append_line(line);
+        emit_line(line);
     }
 }
 
@@ -110,7 +151,7 @@ void PaneScrollView::ProseSegment::retheme() {
     if (!span_append_) return;
     span_append_->clear();
     for (const StyledLine& line : source_) {
-        span_append_->append_line(line);
+        emit_line(line);
     }
 }
 
@@ -120,20 +161,45 @@ bool PaneScrollView::ProseSegment::is_empty() const {
 
 int PaneScrollView::ProseSegment::visual_rows(int content_w) const {
     if (view_ == 0) return 0;
-    const_cast<ProseSegment*>(this)->wrap_cols_ = content_w;
-    textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(content_w));
+    const int next = std::max(1, content_w);
+    // Keep emit pad / HR width in sync — do not mutate wrap_cols_ alone.
+    if (next != wrap_cols_) {
+        const_cast<ProseSegment*>(this)->set_wrap_cols(next);
+    } else if (view_ != 0) {
+        textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(next));
+    }
     return static_cast<int>(textBufferViewGetVirtualLineCount(view_));
 }
 
 void PaneScrollView::ProseSegment::set_wrap_cols(int cols) {
-    wrap_cols_ = std::max(1, cols);
+    const int next = std::max(1, cols);
+    const bool rules_resized = arbiter::resize_styled_rule_lines(source_, next);
+    bool has_echo = false;
+    for (const StyledLine& line : source_) {
+        if (arbiter::is_styled_user_echo_line(line)) {
+            has_echo = true;
+            break;
+        }
+    }
+    const bool wrap_changed = next != wrap_cols_;
+    wrap_cols_ = next;
     if (view_ != 0) {
         textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(wrap_cols_));
     }
+    // Rules mutate source_; user-echo pad is emit-only — rebuild buffer when
+    // wrap width changes so the bg strip tracks the content row.
+    if (rules_resized || (has_echo && wrap_changed)) retheme();
 }
 
 void PaneScrollView::ProseSegment::collect_lines(std::vector<std::string>& out) const {
+    // Always emit every source line so find_rows index k maps to visual row k.
     for (const auto& line : source_) out.push_back(line.text);
+}
+
+bool PaneScrollView::ProseSegment::find_skip_line(std::size_t index) const {
+    if (index >= source_.size()) return false;
+    // Skip echoed `/find` chrome only — not model prose that mentions /find.
+    return arbiter::is_user_echo_find_command(source_[index]);
 }
 
 void PaneScrollView::ProseSegment::draw(OpenTuiHandle frame,
@@ -366,7 +432,7 @@ void PaneScrollView::CodeSegment::draw(OpenTuiHandle frame,
         std::snprintf(buf, sizeof(buf), "%*u ",
                       gutter - 2,
                       line_num);
-        draw_text(frame, x + 1, y + drawn, buf, d.text.muted, bg);
+        draw_text(frame, x + 1, y + drawn, buf, d.content.code_gutter, bg);
 
         int col = 0;
         const auto fg_for = [&](StyleId id) -> const TuiRgba& {
@@ -420,14 +486,18 @@ void PaneScrollView::CodeSegment::draw(OpenTuiHandle frame,
     if (row >= skip_rows) {
         const int drawn = row - skip_rows;
         if (drawn < h) {
-            fill_rect(frame, x, y + drawn, w, 1, d.bg.header);
+            fill_rect(frame, x, y + drawn, w, 1, d.content.code_header_bg);
             const std::string title = lang_.empty() ? "code" : lang_;
             draw_text(frame,
                       x + 1,
                       y + drawn,
                       title,
                       d.text.primary,
-                      d.bg.header);
+                      d.content.code_header_bg);
+            // Left accent bar so code panels share chrome language with input.
+            if (w > 0) {
+                fill_rect(frame, x, y + drawn, 1, 1, d.border.subtle);
+            }
         }
     }
     ++row;
@@ -438,7 +508,7 @@ void PaneScrollView::CodeSegment::draw(OpenTuiHandle frame,
         if (i >= highlighted_.size()) continue;
         if (!draw_styled_row(highlighted_[i],
                              static_cast<std::uint32_t>(i + 1),
-                             d.bg.scroll,
+                             d.content.code_bg,
                              row)) {
             return;
         }
@@ -447,7 +517,7 @@ void PaneScrollView::CodeSegment::draw(OpenTuiHandle frame,
     if (!expanded_ && preview_rows_ > 0 && lines_.size() > preview_rows_) {
         const std::string summary =
             "… (" + std::to_string(lines_.size()) + " lines, ^O expand) …";
-        if (!draw_plain_row(summary, d.text.muted, d.bg.panel, row)) return;
+        if (!draw_plain_row(summary, d.content.code_gutter, d.content.code_bg, row)) return;
     }
 }
 
@@ -566,7 +636,7 @@ PaneScrollView::CodeSegment& PaneScrollView::current_code() {
             if (!code->closed_) return *code;
         }
     }
-    start_block();
+    start_block_gap(tui_design().layout.panel_gap);
     auto seg = std::make_unique<CodeSegment>();
     auto& ref = *seg;
     segments_.push_back(std::move(seg));
@@ -575,16 +645,18 @@ PaneScrollView::CodeSegment& PaneScrollView::current_code() {
 
 void PaneScrollView::bind(const TUI& tui) {
     const TuiDesign& d = tui_design();
-    const int raw_pad = (tui.cols() <= d.layout.dense_cols)
-        ? 0
-        : std::max(0, d.layout.pane_padding_x);
-    const int pad = std::min(raw_pad, std::max(0, (tui.cols() - 1) / 2));
-    const int content_w = std::max(1, tui.cols() - (pad * 2));
+    const int pad = tui_pane_edge_pad(tui.cols(), d);
+    const int gutter = std::max(0, std::min(d.layout.scroll_gutter_cols,
+                                            std::max(0, tui.cols() - pad * 2 - 1)));
+    const int pad_y = std::max(0, d.layout.scroll_pad_y);
+    const int content_w = std::max(1, tui.cols() - (pad * 2) - gutter);
+    const int region_h = tui.scroll_region_rows();
+    const int content_h = std::max(1, region_h - pad_y * 2);
 
-    buf_x_ = tui.left_col() - 1 + pad;
-    buf_y_ = tui.scroll_top_row() - 1;
+    buf_x_ = tui.left_col() - 1 + pad + gutter;
+    buf_y_ = tui.scroll_top_row() - 1 + pad_y;
     viewport_w_ = content_w;
-    viewport_h_ = tui.scroll_region_rows();
+    viewport_h_ = content_h;
     set_wrap_cols(content_w);
 }
 
@@ -609,16 +681,24 @@ bool PaneScrollView::has_rendered_content() const {
 }
 
 void PaneScrollView::start_block() {
-    if (segments_.empty()) return;
-    if (dynamic_cast<const BlankSegment*>(segments_.back().get())) return;
-    append_blank_row();
+    start_block_gap(tui_design().layout.block_gap);
+}
+
+void PaneScrollView::start_block_gap(int gap_rows) {
+    if (segments_.empty() || gap_rows <= 0) return;
+    int existing = 0;
+    for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
+        if (!dynamic_cast<const BlankSegment*>(it->get())) break;
+        ++existing;
+    }
+    for (int i = existing; i < gap_rows; ++i) append_blank_row();
 }
 
 void PaneScrollView::append(std::string_view text, bool new_block) {
     if (text.empty()) return;
     std::string chunk(text);
     if (new_block || !has_rendered_content()) {
-        start_block();
+        start_block_gap(tui_design().layout.block_gap);
         if (new_block) {
             while (!chunk.empty() && (chunk.front() == '\n' || chunk.front() == '\r')) {
                 chunk.erase(chunk.begin());
@@ -631,10 +711,17 @@ void PaneScrollView::append(std::string_view text, bool new_block) {
 
 void PaneScrollView::append_prose(const std::vector<StyledLine>& lines, bool new_block) {
     if (lines.empty()) return;
+    const TuiDesign& d = tui_design();
     if (new_block || !has_rendered_content()) {
-        start_block();
+        start_block_gap(d.layout.block_gap);
     }
-    current_prose().append(lines);
+    auto& prose = current_prose();
+    auto prepared = prepare_prose_lines(lines,
+                                        wrap_cols_,
+                                        d.layout.prose_paragraph_gap,
+                                        trailing_empty_count(prose.source_));
+    if (prepared.empty()) return;
+    prose.append(prepared);
 }
 
 void PaneScrollView::append_code_open(std::string_view open_fence,
@@ -642,8 +729,11 @@ void PaneScrollView::append_code_open(std::string_view open_fence,
                                       size_t preview_rows,
                                       bool new_block) {
     if (open_fence.empty()) return;
+    const TuiDesign& d = tui_design();
     if (new_block || !has_rendered_content()) {
-        start_block();
+        start_block_gap(std::max(d.layout.block_gap, d.layout.panel_gap));
+    } else {
+        start_block_gap(d.layout.panel_gap);
     }
     auto& code = current_code();
     code.open(std::string(lang), preview_rows);
@@ -663,11 +753,12 @@ void PaneScrollView::append_blank_row() {
 
 void PaneScrollView::append_diff(std::string_view patch) {
     if (patch.empty()) return;
+    const int gap = tui_design().layout.panel_gap;
 #ifdef ARBITER_HAS_NATIVE_DIFF_VIEW
     DiffView native_probe;
     if (native_probe.set_patch(patch) && native_probe.valid()
         && native_probe.virtual_line_count() > 0) {
-        start_block();
+        start_block_gap(gap);
         segments_.push_back(std::make_unique<NativeDiffSegment>(std::string(patch)));
         set_wrap_cols(wrap_cols_);
         return;
@@ -676,12 +767,12 @@ void PaneScrollView::append_diff(std::string_view patch) {
     DiffPanel probe;
     probe.set_patch(patch);
     if (probe.visual_rows() > 0) {
-        start_block();
+        start_block_gap(gap);
         segments_.push_back(std::make_unique<DiffSegment>(std::string(patch)));
         set_wrap_cols(wrap_cols_);
         return;
     }
-    start_block();
+    start_block_gap(gap);
     current_text().append(arbiter::render_diff_ansi(std::string(patch)));
 }
 
@@ -810,17 +901,10 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
     std::string needle = term;
     for (char& c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-    // The echoed "> /find <term>" line that invoked this very search is
-    // itself a segment by the time this runs (the REPL echoes every typed
-    // line into scrollback before dispatching it), and it trivially
-    // contains `term` by construction.  Without excluding it, every /find
-    // call always finds itself as an extra, meaningless match — and
-    // because the echo's arrival in scrollback races the pump thread that
-    // drains it, whether that self-match is counted at all is
-    // nondeterministic (one run sees N matches, the next sees N+1).  A
-    // user's own /find invocations are UI chrome, not content they're
-    // searching for, so skip them unconditionally.
-    static constexpr std::string_view kEchoPrefix = "> /find";
+    // Legacy ANSI TextSegment echoes used a "> /find" caret prefix — skip those
+    // so old scrollback does not self-match.  Prose user-echo `/find` lines are
+    // skipped via Segment::find_skip_line (keeps row indices aligned).
+    static constexpr std::string_view kLegacyEchoPrefix = "> /find";
 
     int base = 0;
     std::vector<std::string> lines;
@@ -829,8 +913,12 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
         lines.clear();
         seg->collect_lines(lines);
         for (size_t k = 0; k < lines.size(); ++k) {
+            if (seg->find_skip_line(k)) continue;
             std::string_view line_sv = lines[k];
-            if (line_sv.substr(0, kEchoPrefix.size()) == kEchoPrefix) continue;
+            if (line_sv.size() >= kLegacyEchoPrefix.size()
+                && line_sv.substr(0, kLegacyEchoPrefix.size()) == kLegacyEchoPrefix) {
+                continue;
+            }
             std::string hay = std::move(lines[k]);
             for (char& c : hay) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             if (hay.find(needle) == std::string::npos) continue;
@@ -846,6 +934,20 @@ void PaneScrollView::draw(OpenTuiHandle frame,
                           int scroll_offset,
                           int new_while_scrolled) {
     bind(tui);
+
+    const TuiDesign& d = tui_design();
+    const int pad = tui_pane_edge_pad(tui.cols(), d);
+    const int gutter = std::max(0, std::min(d.layout.scroll_gutter_cols,
+                                            std::max(0, tui.cols() - pad * 2 - 1)));
+    if (gutter > 0) {
+        const int gutter_x = tui.left_col() - 1 + pad;
+        fill_rect(frame,
+                  gutter_x,
+                  buf_y_,
+                  gutter,
+                  viewport_h_,
+                  d.bg.gutter);
+    }
 
     const int total = total_visual_rows();
     int first_visible = 0;

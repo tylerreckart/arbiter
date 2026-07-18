@@ -82,6 +82,11 @@ private:
         // find_rows(); line k maps approximately to the segment's k-th
         // visual row.  Default: nothing searchable.
         virtual void collect_lines(std::vector<std::string>& /*out*/) const {}
+        // When true, find_rows skips line `index` but still counts it for
+        // visual-row mapping (e.g. echoed `/find` chrome).
+        [[nodiscard]] virtual bool find_skip_line(std::size_t /*index*/) const {
+            return false;
+        }
         virtual void draw(OpenTuiHandle frame,
                           int x,
                           int y,
@@ -110,6 +115,9 @@ private:
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
         void collect_lines(std::vector<std::string>& out) const override;
+        [[nodiscard]] bool find_skip_line(std::size_t index) const override;
+
+        void emit_line(const StyledLine& line);
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,
@@ -260,6 +268,7 @@ private:
     ProseSegment& current_prose();
     CodeSegment& current_code();
     void start_block();
+    void start_block_gap(int gap_rows);
     void append_blank_row();
     [[nodiscard]] bool has_rendered_content() const;
 
