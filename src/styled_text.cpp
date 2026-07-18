@@ -68,7 +68,7 @@ std::string style_open(StyleId id) {
     case StyleId::Link:      return t.underline + t.md_link;
     case StyleId::Bullet:    return t.md_bullet;
     case StyleId::Blockquote:return t.dim;
-    case StyleId::Rule:      return t.dim;
+    case StyleId::Rule:      return t.md_rule;
     case StyleId::WritLine:  return t.md_cmd_line + t.dim;
     case StyleId::DiffAdd:   return t.accent_success;
     case StyleId::DiffRemove:return t.accent_error;
@@ -84,7 +84,7 @@ std::string style_open(StyleId id) {
     case StyleId::CodeNumber:   return t.md_code_number;
     case StyleId::CodeType:     return t.md_code_type;
     case StyleId::CodeFunction: return t.md_code_function;
-    case StyleId::System:       return t.dim + t.text_dim;
+    case StyleId::System:       return t.system_fg;
     case StyleId::UserEchoArrow:return t.user_echo_arrow;
     case StyleId::UserEchoText: return t.user_echo_text;
     }
@@ -107,6 +107,17 @@ std::size_t display_width(std::string_view text) {
     return cols;
 }
 
+std::string trim_to_display_cols(std::string s, int max_cols) {
+    if (max_cols <= 0) return {};
+    while (!s.empty() && static_cast<int>(display_width(s)) > max_cols) {
+        s.pop_back();
+        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
+            s.pop_back();
+        }
+    }
+    return s;
+}
+
 void styled_append(StyledLine& line, StyleId id, std::string_view text) {
     if (text.empty()) return;
     const std::uint32_t begin = static_cast<std::uint32_t>(line.text.size());
@@ -123,6 +134,37 @@ StyledLine styled_user_echo(std::string_view text) {
     styled_append(line, StyleId::UserEchoArrow, "> ");
     styled_append(line, StyleId::UserEchoText, text);
     return line;
+}
+
+bool is_styled_rule_line(const StyledLine& line) {
+    if (line.text.empty()) return false;
+    for (unsigned char c : line.text) {
+        if (c != '-') return false;
+    }
+    if (line.spans.empty()) return false;
+    for (const StyleSpan& span : line.spans) {
+        if (span.id != StyleId::Rule) return false;
+    }
+    return true;
+}
+
+StyledLine styled_rule_line(int cols) {
+    StyledLine line;
+    const int width = cols < 1 ? 1 : cols;
+    styled_append(line, StyleId::Rule, std::string(static_cast<size_t>(width), '-'));
+    return line;
+}
+
+bool resize_styled_rule_lines(std::vector<StyledLine>& lines, int cols) {
+    const int width = cols < 1 ? 1 : cols;
+    bool changed = false;
+    for (StyledLine& line : lines) {
+        if (!is_styled_rule_line(line)) continue;
+        if (static_cast<int>(line.text.size()) == width) continue;
+        line = styled_rule_line(width);
+        changed = true;
+    }
+    return changed;
 }
 
 std::string to_ansi(const StyledLine& line) {

@@ -3,6 +3,8 @@
 #include "markdown.h"
 #include "render_policy.h"
 #include "styled_text.h"
+#include "theme.h"
+#include "tui/tui_design.h"
 
 using namespace arbiter;
 
@@ -197,4 +199,67 @@ TEST_CASE("styled_user_echo builds arrow and text spans") {
     REQUIRE(line.spans.size() >= 2);
     CHECK(line.spans[0].id == StyleId::UserEchoArrow);
     CHECK(line.spans[1].id == StyleId::UserEchoText);
+}
+
+TEST_CASE("resize_styled_rule_lines rewrites HR width") {
+    std::vector<StyledLine> lines;
+    lines.push_back(styled_rule_line(60));
+    StyledLine prose;
+    styled_append(prose, StyleId::Default, "keep");
+    lines.push_back(prose);
+    CHECK(resize_styled_rule_lines(lines, 40));
+    CHECK(lines[0].text.size() == 40);
+    CHECK(is_styled_rule_line(lines[0]));
+    CHECK(lines[1].text == "keep");
+    CHECK_FALSE(resize_styled_rule_lines(lines, 40));
+}
+
+TEST_CASE("trim_to_display_cols does not split UTF-8 clusters") {
+    const std::string wide = "\xe4\xb8\xad";  // U+4E2D
+    CHECK(trim_to_display_cols("hello", 3) == "hel");
+    CHECK(trim_to_display_cols(wide, 0).empty());
+    // Truncating just below the mixed width must drop the whole cluster,
+    // never leave a dangling UTF-8 continuation byte.
+    const std::string mixed = std::string("x") + wide;
+    const int mix_w = static_cast<int>(display_width(mixed));
+    REQUIRE(mix_w >= 2);
+    const std::string trimmed = trim_to_display_cols(mixed, mix_w - 1);
+    CHECK(trimmed == "x");
+}
+
+TEST_CASE("tool_call_summary_lines uses System for the count text") {
+    const auto lines = tool_call_summary_lines(3, 0);
+    REQUIRE(lines.size() == 1);
+    REQUIRE(lines[0].spans.size() >= 2);
+    CHECK(lines[0].spans[0].id == StyleId::Success);
+    CHECK(lines[0].spans[1].id == StyleId::System);
+}
+
+TEST_CASE("to_ansi System and Rule use theme tokens") {
+    load_tui_design("");  // ensure design/theme are live
+    StyledLine sys;
+    styled_append(sys, StyleId::System, "status");
+    const std::string sys_ansi = to_ansi(sys);
+    CHECK(sys_ansi.find("status") != std::string::npos);
+    CHECK(sys_ansi.find(theme().system_fg) != std::string::npos);
+
+    StyledLine rule = styled_rule_line(4);
+    const std::string rule_ansi = to_ansi(rule);
+    CHECK(rule_ansi.find("----") != std::string::npos);
+    CHECK(rule_ansi.find(theme().md_rule) != std::string::npos);
+}
+
+TEST_CASE("loop banner lines have no leading blank StyledLine") {
+    // Mirrors push_loop_banner: tag + optional detail, optional hint — no
+    // leading empty line (block_gap / end_message owns separation).
+    StyledLine line;
+    styled_append(line, StyleId::Info, "[loop]");
+    styled_append(line, StyleId::System, " detail");
+    std::vector<StyledLine> lines;
+    lines.push_back(std::move(line));
+    StyledLine hint;
+    styled_append(hint, StyleId::System, "  hint");
+    lines.push_back(std::move(hint));
+    REQUIRE_FALSE(lines.empty());
+    CHECK_FALSE(lines.front().text.empty());
 }

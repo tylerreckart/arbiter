@@ -166,26 +166,44 @@ void string_value(const JsonValue& root, const char* group, const char* key, std
     if (v && v->is_string()) out = v->as_string();
 }
 
-void derive_code_syntax_colors(TuiDesign::Content& c) {
-    c.code_string   = c.diff_add;
-    c.code_comment  = c.text_dim;
-    c.code_number   = c.warning;
-    c.code_keyword  = c.heading[1];
-    c.code_type     = c.heading[2];
-    c.code_function = c.heading[0];
-}
-
 bool rgba_unset(const TuiRgba& c) {
     return c[3] == 0;
 }
 
+// Fill only still-unset syntax slots.  Never clobbers values already set by a
+// nested preset / earlier document (layout-only wrappers must not wipe them).
+void derive_unset_code_syntax_colors(TuiDesign::Content& c) {
+    if (rgba_unset(c.code_string))   c.code_string   = c.diff_add;
+    if (rgba_unset(c.code_comment))  c.code_comment  = c.text_dim;
+    if (rgba_unset(c.code_number))   c.code_number   = c.warning;
+    if (rgba_unset(c.code_keyword))  c.code_keyword  = c.heading[1];
+    if (rgba_unset(c.code_type))     c.code_type     = c.heading[2];
+    if (rgba_unset(c.code_function)) c.code_function = c.heading[0];
+}
+
+struct DiffBgSet {
+    TuiRgba context{};
+    TuiRgba add{};
+    TuiRgba remove{};
+    TuiRgba empty{};
+};
+
+DiffBgSet diff_bg_for_base(const TuiRgba& base) {
+    const bool light = relative_luminance(base) > 0.45;
+    DiffBgSet out;
+    out.context = light ? tui_rgba(0xf0, 0xf2, 0xf4) : tui_rgba(0x18, 0x18, 0x18);
+    out.add     = light ? tui_rgba(0xd8, 0xf0, 0xdc) : tui_rgba(0x0d, 0x33, 0x16);
+    out.remove  = light ? tui_rgba(0xf8, 0xd8, 0xd8) : tui_rgba(0x4a, 0x12, 0x12);
+    out.empty   = light ? tui_rgba(0xe4, 0xe6, 0xe8) : tui_rgba(0x10, 0x10, 0x10);
+    return out;
+}
+
 void fill_diff_bg_from_base(TuiDesign& d) {
-    auto& c = d.content;
-    const bool light = relative_luminance(d.bg.base) > 0.45;
-    c.diff_bg_context = light ? tui_rgba(0xf0, 0xf2, 0xf4) : tui_rgba(0x18, 0x18, 0x18);
-    c.diff_bg_add = light ? tui_rgba(0xd8, 0xf0, 0xdc) : tui_rgba(0x0d, 0x33, 0x16);
-    c.diff_bg_remove = light ? tui_rgba(0xf8, 0xd8, 0xd8) : tui_rgba(0x4a, 0x12, 0x12);
-    c.diff_bg_empty = light ? tui_rgba(0xe4, 0xe6, 0xe8) : tui_rgba(0x10, 0x10, 0x10);
+    const DiffBgSet fill = diff_bg_for_base(d.bg.base);
+    d.content.diff_bg_context = fill.context;
+    d.content.diff_bg_add = fill.add;
+    d.content.diff_bg_remove = fill.remove;
+    d.content.diff_bg_empty = fill.empty;
 }
 
 // Fill only still-unset surface slots from chrome.  Never overwrites values
@@ -197,49 +215,79 @@ void derive_unset_panel_surfaces(TuiDesign& d) {
     if (rgba_unset(c.code_gutter)) c.code_gutter = d.text.muted;
     if (rgba_unset(c.system_fg)) c.system_fg = c.text_dim;
 
-    const bool light = relative_luminance(d.bg.base) > 0.45;
-    if (rgba_unset(c.diff_bg_context)) {
-        c.diff_bg_context = light ? tui_rgba(0xf0, 0xf2, 0xf4) : tui_rgba(0x18, 0x18, 0x18);
-    }
-    if (rgba_unset(c.diff_bg_add)) {
-        c.diff_bg_add = light ? tui_rgba(0xd8, 0xf0, 0xdc) : tui_rgba(0x0d, 0x33, 0x16);
-    }
-    if (rgba_unset(c.diff_bg_remove)) {
-        c.diff_bg_remove = light ? tui_rgba(0xf8, 0xd8, 0xd8) : tui_rgba(0x4a, 0x12, 0x12);
-    }
-    if (rgba_unset(c.diff_bg_empty)) {
-        c.diff_bg_empty = light ? tui_rgba(0xe4, 0xe6, 0xe8) : tui_rgba(0x10, 0x10, 0x10);
-    }
+    const DiffBgSet fill = diff_bg_for_base(d.bg.base);
+    if (rgba_unset(c.diff_bg_context)) c.diff_bg_context = fill.context;
+    if (rgba_unset(c.diff_bg_add)) c.diff_bg_add = fill.add;
+    if (rgba_unset(c.diff_bg_remove)) c.diff_bg_remove = fill.remove;
+    if (rgba_unset(c.diff_bg_empty)) c.diff_bg_empty = fill.empty;
 }
 
-// When the current document changes chrome colors without restating the
-// matching surface keys, keep panels in sync with that chrome.  Explicit
-// content.* keys in this document always win (already applied).
-void sync_surfaces_for_chrome_overrides(TuiDesign& d, const JsonValue& doc) {
+struct ChromeSnapshot {
+    TuiRgba panel{};
+    TuiRgba header{};
+    TuiRgba muted{};
+    TuiRgba text_dim{};
+    TuiRgba base{};
+};
+
+ChromeSnapshot capture_chrome(const TuiDesign& d) {
+    return {d.bg.panel, d.bg.header, d.text.muted, d.content.text_dim, d.bg.base};
+}
+
+// Sticky follow: when this document changes chrome without restating a surface
+// key, refresh that surface only if it was still tracking the previous chrome
+// (unset, or equal to the old derived/chrome value).  Distinct earlier customs
+// are preserved across panel/base tweaks.
+void sync_surfaces_for_chrome_overrides(TuiDesign& d,
+                                        const JsonValue& doc,
+                                        const ChromeSnapshot& before) {
     auto& c = d.content;
     if (child(doc, "bg", "panel") && !child(doc, "content", "code_bg")) {
-        c.code_bg = d.bg.panel;
+        if (rgba_unset(c.code_bg) || c.code_bg == before.panel) {
+            c.code_bg = d.bg.panel;
+        }
     }
     if (child(doc, "bg", "header") && !child(doc, "content", "code_header_bg")) {
-        c.code_header_bg = d.bg.header;
+        if (rgba_unset(c.code_header_bg) || c.code_header_bg == before.header) {
+            c.code_header_bg = d.bg.header;
+        }
     }
     if (child(doc, "text", "muted") && !child(doc, "content", "code_gutter")) {
-        c.code_gutter = d.text.muted;
+        if (rgba_unset(c.code_gutter) || c.code_gutter == before.muted) {
+            c.code_gutter = d.text.muted;
+        }
     }
     if (child(doc, "content", "text_dim") && !child(doc, "content", "system_fg")) {
-        c.system_fg = c.text_dim;
+        if (rgba_unset(c.system_fg) || c.system_fg == before.text_dim) {
+            c.system_fg = c.text_dim;
+        }
     }
-    const bool any_diff_bg = child(doc, "content", "diff_bg_context")
-        || child(doc, "content", "diff_bg_add")
-        || child(doc, "content", "diff_bg_remove")
-        || child(doc, "content", "diff_bg_empty");
-    if (child(doc, "bg", "base") && !any_diff_bg) {
-        fill_diff_bg_from_base(d);
+    if (child(doc, "bg", "base")) {
+        const DiffBgSet old_fill = diff_bg_for_base(before.base);
+        const DiffBgSet new_fill = diff_bg_for_base(d.bg.base);
+        if (!child(doc, "content", "diff_bg_context")
+            && (rgba_unset(c.diff_bg_context) || c.diff_bg_context == old_fill.context)) {
+            c.diff_bg_context = new_fill.context;
+        }
+        if (!child(doc, "content", "diff_bg_add")
+            && (rgba_unset(c.diff_bg_add) || c.diff_bg_add == old_fill.add)) {
+            c.diff_bg_add = new_fill.add;
+        }
+        if (!child(doc, "content", "diff_bg_remove")
+            && (rgba_unset(c.diff_bg_remove) || c.diff_bg_remove == old_fill.remove)) {
+            c.diff_bg_remove = new_fill.remove;
+        }
+        if (!child(doc, "content", "diff_bg_empty")
+            && (rgba_unset(c.diff_bg_empty) || c.diff_bg_empty == old_fill.empty)) {
+            c.diff_bg_empty = new_fill.empty;
+        }
     }
 }
 
-void finalize_panel_surfaces(TuiDesign& d, const JsonValue* doc) {
-    if (doc) sync_surfaces_for_chrome_overrides(d, *doc);
+void finalize_panel_surfaces(TuiDesign& d,
+                             const JsonValue* doc,
+                             const ChromeSnapshot* before) {
+    if (doc && before) sync_surfaces_for_chrome_overrides(d, *doc, *before);
     derive_unset_panel_surfaces(d);
 }
 
@@ -533,15 +581,15 @@ TuiDesign default_design() {
     const std::string path = resolve_theme_path("", kDefaultTuiPreset);
     if (!path.empty()) {
         if (auto root = parse_json_file(path)) {
+            const ChromeSnapshot before = capture_chrome(d);
             apply_color_overrides(d, *root);
             apply_layout_component_overrides(d, *root);
-            if (!child(*root, "content", "code_keyword")) {
-                derive_code_syntax_colors(d.content);
-            }
-            finalize_panel_surfaces(d, root.get());
+            derive_unset_code_syntax_colors(d.content);
+            finalize_panel_surfaces(d, root.get(), &before);
         }
     } else {
-        finalize_panel_surfaces(d, nullptr);
+        derive_unset_code_syntax_colors(d.content);
+        finalize_panel_surfaces(d, nullptr, nullptr);
     }
     return d;
 }
@@ -560,12 +608,11 @@ void apply_theme_document(TuiDesign& d,
             }
         }
     }
+    const ChromeSnapshot before = capture_chrome(d);
     apply_color_overrides(d, doc);
     apply_layout_component_overrides(d, doc);
-    if (!child(doc, "content", "code_keyword")) {
-        derive_code_syntax_colors(d.content);
-    }
-    finalize_panel_surfaces(d, &doc);
+    derive_unset_code_syntax_colors(d.content);
+    finalize_panel_surfaces(d, &doc, &before);
 }
 
 bool apply_theme_from_path(TuiDesign& d,
@@ -857,11 +904,13 @@ void load_tui_design(const std::string& config_dir, std::string_view cli_preset)
 
     if (file_root) {
         try {
+            const ChromeSnapshot before = capture_chrome(design);
             apply_color_overrides(design, *file_root);
             apply_layout_component_overrides(design, *file_root);
-            // Re-sync panel/diff surfaces when tui.json tweaks chrome without
-            // restating every content.* surface key.
-            finalize_panel_surfaces(design, file_root.get());
+            derive_unset_code_syntax_colors(design.content);
+            // Sticky-follow panel/diff surfaces when tui.json tweaks chrome
+            // without restating every content.* surface key.
+            finalize_panel_surfaces(design, file_root.get(), &before);
         } catch (...) {
             design = default_design();
             g_active_preset = kDefaultTuiPreset;

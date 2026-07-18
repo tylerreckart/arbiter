@@ -24,33 +24,7 @@ int cell_width(std::string_view s) {
 }
 
 std::string trim_to_cells(std::string s, int max_cells) {
-    if (max_cells <= 0) return {};
-    while (!s.empty() && cell_width(s) > max_cells) {
-        s.pop_back();
-        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
-            s.pop_back();
-        }
-    }
-    return s;
-}
-
-bool is_rule_line(const StyledLine& line) {
-    if (line.text.empty()) return false;
-    for (unsigned char c : line.text) {
-        if (c != '-') return false;
-    }
-    if (line.spans.empty()) return false;
-    for (const StyleSpan& span : line.spans) {
-        if (span.id != StyleId::Rule) return false;
-    }
-    return true;
-}
-
-StyledLine make_rule_line(int cols) {
-    StyledLine line;
-    const int width = std::max(1, cols);
-    styled_append(line, StyleId::Rule, std::string(static_cast<size_t>(width), '-'));
-    return line;
+    return arbiter::trim_to_display_cols(std::move(s), max_cells);
 }
 
 std::vector<StyledLine> prepare_prose_lines(std::vector<StyledLine> lines,
@@ -61,9 +35,9 @@ std::vector<StyledLine> prepare_prose_lines(std::vector<StyledLine> lines,
     out.reserve(lines.size());
     int empties = trailing_empties;
     for (StyledLine& line : lines) {
-        if (is_rule_line(line)) {
+        if (arbiter::is_styled_rule_line(line)) {
             empties = 0;
-            out.push_back(make_rule_line(wrap_cols));
+            out.push_back(arbiter::styled_rule_line(wrap_cols));
             continue;
         }
         if (line.text.empty()) {
@@ -178,13 +152,7 @@ int PaneScrollView::ProseSegment::visual_rows(int content_w) const {
 
 void PaneScrollView::ProseSegment::set_wrap_cols(int cols) {
     const int next = std::max(1, cols);
-    bool rules_resized = false;
-    for (StyledLine& line : source_) {
-        if (!is_rule_line(line)) continue;
-        if (static_cast<int>(line.text.size()) == next) continue;
-        line = make_rule_line(next);
-        rules_resized = true;
-    }
+    const bool rules_resized = arbiter::resize_styled_rule_lines(source_, next);
     wrap_cols_ = next;
     if (view_ != 0) {
         textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(wrap_cols_));

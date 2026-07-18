@@ -133,7 +133,7 @@ TEST_CASE("nested preset keeps distinct code_bg across layout-only wrapper") {
     CHECK(tui_design().layout.block_gap == 2);
 }
 
-TEST_CASE("chrome panel override without code_bg resyncs code_bg") {
+TEST_CASE("chrome panel override without code_bg resyncs tracking code_bg") {
     const std::string dir = temp_dir() + "_panel_sync";
     std::filesystem::create_directories(dir + "/themes");
     write_file(dir + "/themes/panel.json", R"({
@@ -142,9 +142,63 @@ TEST_CASE("chrome panel override without code_bg resyncs code_bg") {
 })");
     write_file(dir + "/tui.json", R"({ "theme_file": "themes/panel.json" })");
     load_tui_design(dir);
+    // onedark's code_bg tracked panel (#21252b); sticky-follow updates it.
     CHECK(tui_design().content.code_bg[0] == 0x11);
     CHECK(tui_design().content.code_bg[1] == 0x22);
     CHECK(tui_design().content.code_bg[2] == 0x33);
+}
+
+TEST_CASE("panel tweak preserves distinct earlier code_bg") {
+    const std::string dir = temp_dir() + "_panel_keep";
+    std::filesystem::create_directories(dir + "/themes");
+    write_file(dir + "/themes/brand.json", R"({
+  "preset": "onedark",
+  "bg": { "panel": "#112233" },
+  "content": { "code_bg": "#aabbcc" }
+})");
+    write_file(dir + "/tui.json", R"({
+  "theme_file": "themes/brand.json",
+  "bg": { "panel": "#998877" }
+})");
+    load_tui_design(dir);
+    CHECK(tui_design().bg.panel[0] == 0x99);
+    CHECK(tui_design().content.code_bg[0] == 0xaa);
+    CHECK(tui_design().content.code_bg[1] == 0xbb);
+    CHECK(tui_design().content.code_bg[2] == 0xcc);
+}
+
+TEST_CASE("nested layout-only wrapper keeps custom syntax colors") {
+    const std::string dir = temp_dir() + "_syntax_keep";
+    std::filesystem::create_directories(dir + "/themes");
+    write_file(dir + "/themes/brand.json", R"({
+  "preset": "onedark",
+  "content": { "code_keyword": "#ff00aa" }
+})");
+    write_file(dir + "/themes/wrapper.json", R"({
+  "preset": "brand",
+  "layout": { "block_gap": 3 }
+})");
+    write_file(dir + "/tui.json", R"({ "theme_file": "themes/wrapper.json" })");
+    load_tui_design(dir);
+    CHECK(tui_design().content.code_keyword[0] == 0xff);
+    CHECK(tui_design().content.code_keyword[1] == 0x00);
+    CHECK(tui_design().content.code_keyword[2] == 0xaa);
+    CHECK(tui_design().layout.block_gap == 3);
+}
+
+TEST_CASE("partial diff_bg override does not freeze other slots on base change") {
+    const std::string dir = temp_dir() + "_partial_diff";
+    std::filesystem::create_directories(dir);
+    write_file(dir + "/tui.json", R"({
+  "preset": "onedark",
+  "bg": { "base": "#f8f9fa" },
+  "content": { "diff_bg_add": "#00ff00" }
+})");
+    load_tui_design(dir);
+    CHECK(tui_design().content.diff_bg_add[1] == 0xff);
+    // Unmentioned slots still sticky-follow the new light base.
+    CHECK(tui_design().content.diff_bg_context[0] > 0xe0);
+    CHECK(tui_design().content.diff_bg_remove[0] > 0xe0);
 }
 
 TEST_CASE("tui.json bg.base override refreshes derived diff surfaces") {
@@ -159,6 +213,20 @@ TEST_CASE("tui.json bg.base override refreshes derived diff surfaces") {
     CHECK(tui_design().bg.base[0] == 0xf8);
     // Diff add tint should flip to the light-theme green, not stay dark.
     CHECK(tui_design().content.diff_bg_add[1] > 0x80);
+}
+
+TEST_CASE("scroll wrap width accounts for edge pad and gutter") {
+    TuiDesign d = tui_design_for_preset("onedark");
+    d.layout.pane_padding_x = 2;
+    d.layout.compact_cols = 40;
+    d.layout.dense_cols = 40;
+    d.layout.scroll_gutter_cols = 1;
+    const int cols = 80;
+    const int pad = tui_pane_edge_pad(cols, d);
+    const int gutter = d.layout.scroll_gutter_cols;
+    const int content_w = cols - pad * 2 - gutter;
+    CHECK(pad == 2);
+    CHECK(content_w == 75);
 }
 
 TEST_CASE("tui_pane_pad_x soft-lerps between compact and dense") {

@@ -46,6 +46,7 @@ struct Theme {
     std::string border_active;     // alias for accent_focused — readability at call sites
     std::string text_dim;          // hint text faint parts, status
     std::string text_dimmer;       // sub-agent progress, dimmer than text_dim
+    std::string system_fg;         // StyleId::System / status prose (content.system_fg)
     std::string prompt_color;      // the "> " readline prompt arrow
     std::string user_echo_arrow;   // "> " prefix on echoed user input
     std::string user_echo_text;    // echoed user-typed text
@@ -67,6 +68,7 @@ struct Theme {
     std::string                    md_code_function;
     std::string                    md_link;        // [link]() — underline + this color
     std::string                    md_bullet;      // list bullets (• ◦ –)
+    std::string                    md_rule;        // markdown HR / StyleId::Rule
     std::string                    md_cmd_line;    // /fetch, /exec, … display-color
     std::array<std::string, 4>     md_heading;     // h1..h4 (h5/h6 reuse h4)
 };
