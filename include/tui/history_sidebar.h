@@ -84,6 +84,10 @@ public:
     [[nodiscard]] int scroll_offset() const;
     // Painted list length including the leading "+ New" row.
     [[nodiscard]] int list_row_count() const;
+    // True while the filter line is painted (editing '/' or a committed
+    // filter is still narrowing the list). Shifts the conversation rows
+    // down by one; mouse hit-testing and visible-row math must match.
+    [[nodiscard]] bool filter_line_visible() const;
 
     // Valid only immediately after handle_key() returns RenameCommit —
     // returns the edited text and clears the internal buffer.

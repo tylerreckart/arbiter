@@ -117,8 +117,9 @@ std::string relative_time(std::int64_t updated_at, std::int64_t now) {
     return buf;
 }
 
-int list_top_y(const Rect& r, bool /*focused*/) {
-    return r.y + 2; // section label row, then list
+int list_top_y(const Rect& r, bool /*focused*/, bool filter_line_visible) {
+    // Section label at r.y+1, then optional filter line, then list.
+    return r.y + 2 + (filter_line_visible ? 1 : 0);
 }
 
 int scroll_bottom_y(const Rect& pane_rect, int pane_input_rows) {
@@ -270,9 +271,10 @@ int pane_edge_pad(const TuiDesign& d, int pane_w) {
 int history_sidebar_visible_rows(const Rect& sidebar_rect,
                                  const Rect& pane_rect,
                                  int pane_input_rows,
-                                 bool focused) {
+                                 bool focused,
+                                 bool filter_line_visible) {
     if (sidebar_rect.h <= 0 || pane_rect.h <= 0) return 1;
-    const int top = list_top_y(sidebar_rect, focused);
+    const int top = list_top_y(sidebar_rect, focused, filter_line_visible);
     const int bottom = scroll_bottom_y(pane_rect, pane_input_rows);
     const int list_h = std::max(0, bottom - top + 1);
     return std::max(1, list_h / kRowHeight);

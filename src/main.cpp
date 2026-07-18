@@ -2081,7 +2081,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     auto history_visible_rows = [&](const Rect& hb) -> int {
         const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
         return arbiter::opentui::history_sidebar_visible_rows(
-            hb, chrome.rect, chrome.input_rows, history_sidebar.focused());
+            hb, chrome.rect, chrome.input_rows, history_sidebar.focused(),
+            history_sidebar.filter_line_visible());
     };
 
     // Returns true when the focused editor should exit read_line (focus moved
@@ -2126,9 +2127,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         const Rect rb = right_sidebar_rect();
         const int hist_vis = (hb.w > 0) ? history_visible_rows(hb) : 0;
         const int hist_len = (hb.w > 0) ? history_sidebar.list_row_count() : 0;
+        const bool hist_filter = (hb.w > 0) && history_sidebar.filter_line_visible();
         const auto hit = arbiter::opentui::hit_test(
             layout, hb, rb, history_sidebar.scroll_offset(), hist_vis, hist_len,
-            ev.x, ev.y);
+            hist_filter, ev.x, ev.y);
 
         if (ev.type == MouseType::Scroll) {
             const int dir = (ev.scroll == ScrollDir::Up || ev.scroll == ScrollDir::Left)
@@ -2224,7 +2226,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             const Rect hb = HistorySidebarState::rect_for_terminal(cols, rows, true);
             const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
             const int visible_rows = arbiter::opentui::history_sidebar_visible_rows(
-                hb, chrome.rect, chrome.input_rows, true);
+                hb, chrome.rect, chrome.input_rows, true,
+                history_sidebar.filter_line_visible());
 
             char csi = 0;
             std::string csi_params;

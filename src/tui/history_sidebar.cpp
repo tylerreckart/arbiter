@@ -226,6 +226,11 @@ int HistorySidebarState::list_row_count() const {
     return 1 + static_cast<int>(visible_entries_locked().size());
 }
 
+bool HistorySidebarState::filter_line_visible() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return mode_ == Mode::Filtering || !filter_.empty();
+}
+
 std::string HistorySidebarState::selected_conversation_id() const {
     std::lock_guard<std::mutex> lk(mu_);
     return pinned_new_ ? std::string{} : pinned_id_;
