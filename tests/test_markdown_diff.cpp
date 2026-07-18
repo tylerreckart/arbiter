@@ -208,9 +208,16 @@ TEST_CASE("styled_user_echo has no caret and pads to wrap width") {
     const StyledLine spaced = styled_user_echo("hi  ");
     CHECK(spaced.text == "hi  ");
     CHECK(pad_styled_user_echo_line(spaced, 6).text == "hi    ");
+
+    // Idempotent: re-padding an already-padded line does not grow forever.
+    std::vector<StyledLine> once{padded};
+    CHECK_FALSE(resize_styled_user_echo_lines(once, 10));
+    CHECK(once[0].text == "hello     ");
+    CHECK(resize_styled_user_echo_lines(once, 8));
+    CHECK(once[0].text == "hello   ");
 }
 
-TEST_CASE("styled_user_echo_lines splits multiline turns") {
+TEST_CASE("styled_user_echo_lines splits multiline and CRLF") {
     const auto lines = styled_user_echo_lines("one\ntwo\n");
     REQUIRE(lines.size() == 3);
     CHECK(lines[0].text == "one");
@@ -218,6 +225,30 @@ TEST_CASE("styled_user_echo_lines splits multiline turns") {
     CHECK(lines[2].text.empty());
     CHECK(is_styled_user_echo_line(lines[2]));
     CHECK(pad_styled_user_echo_line(lines[2], 4).text == "    ");
+
+    const auto crlf = styled_user_echo_lines("a\r\nb\rc");
+    REQUIRE(crlf.size() == 3);
+    CHECK(crlf[0].text == "a");
+    CHECK(crlf[1].text == "b");
+    CHECK(crlf[2].text == "c");
+}
+
+TEST_CASE("pad_styled_user_echo_line fills last wrapped row") {
+    // 10 cells of content at width 4 → 3 visual rows; pad last row to 12.
+    const StyledLine line = styled_user_echo("0123456789");
+    const StyledLine padded = pad_styled_user_echo_line(line, 4);
+    CHECK(display_width(padded.text) == 12);
+}
+
+TEST_CASE("is_user_echo_find_command is case-insensitive and echo-only") {
+    CHECK(is_user_echo_find_command(styled_user_echo("/find foo")));
+    CHECK(is_user_echo_find_command(styled_user_echo("/Find Foo")));
+    CHECK(is_user_echo_find_command(styled_user_echo("/find")));
+    CHECK_FALSE(is_user_echo_find_command(styled_user_echo("/finder")));
+    CHECK_FALSE(is_user_echo_find_command(styled_user_echo("see /find docs")));
+    StyledLine prose;
+    styled_append(prose, StyleId::Default, "/find foo");
+    CHECK_FALSE(is_user_echo_find_command(prose));
 }
 
 TEST_CASE("to_ansi UserEchoText includes background strip") {

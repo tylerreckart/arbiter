@@ -143,20 +143,32 @@ StyledLine styled_user_echo(std::string_view text) {
 
 std::vector<StyledLine> styled_user_echo_lines(std::string_view text) {
     std::vector<StyledLine> out;
-    if (text.empty()) {
+    // Normalize CRLF / bare CR so `\` continuations and pasted text split cleanly.
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\r') {
+            if (i + 1 < text.size() && text[i + 1] == '\n') continue;
+            normalized.push_back('\n');
+            continue;
+        }
+        normalized.push_back(text[i]);
+    }
+    if (normalized.empty()) {
         out.push_back(styled_user_echo({}));
         return out;
     }
     size_t start = 0;
-    while (start <= text.size()) {
-        const size_t nl = text.find('\n', start);
+    while (start <= normalized.size()) {
+        const size_t nl = normalized.find('\n', start);
         if (nl == std::string::npos) {
-            out.push_back(styled_user_echo(text.substr(start)));
+            out.push_back(styled_user_echo(std::string_view(normalized).substr(start)));
             break;
         }
-        out.push_back(styled_user_echo(text.substr(start, nl - start)));
+        out.push_back(styled_user_echo(
+            std::string_view(normalized).substr(start, nl - start)));
         start = nl + 1;
-        if (start == text.size()) {
+        if (start == normalized.size()) {
             // Trailing newline → blank echo row (still gets the bg strip).
             out.push_back(styled_user_echo({}));
             break;
@@ -175,14 +187,42 @@ bool is_styled_user_echo_line(const StyledLine& line) {
     return true;
 }
 
+bool is_user_echo_find_command(const StyledLine& line) {
+    if (!is_styled_user_echo_line(line)) return false;
+    std::string_view payload = line.text;
+    while (!payload.empty() && payload.back() == ' ') payload.remove_suffix(1);
+    static constexpr char kFind[] = "/find";
+    static constexpr size_t kFindLen = sizeof(kFind) - 1;
+    if (payload.size() < kFindLen) return false;
+    for (size_t i = 0; i < kFindLen; ++i) {
+        const char c = payload[i];
+        const char expect = kFind[i];
+        const char lower = (c >= 'A' && c <= 'Z')
+            ? static_cast<char>(c - 'A' + 'a') : c;
+        if (lower != expect) return false;
+    }
+    return payload.size() == kFindLen || payload[kFindLen] == ' ';
+}
+
 StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols) {
     const int width = cols < 1 ? 1 : cols;
     std::string body = line.text;
-    const int w = static_cast<int>(display_width(body));
+    // Idempotent when fed a previously padded line: trim trailing spaces only
+    // while over budget so intentional trailing spaces that still fit are kept.
+    while (!body.empty() && body.back() == ' '
+           && static_cast<int>(display_width(body)) > width) {
+        body.pop_back();
+    }
+    int w = static_cast<int>(display_width(body));
     if (w < width) {
         body.append(static_cast<size_t>(width - w), ' ');
+    } else if (w > width) {
+        // Fill the last wrapped visual row so the bg strip is full-width.
+        const int rem = w % width;
+        if (rem != 0) {
+            body.append(static_cast<size_t>(width - rem), ' ');
+        }
     }
-    // Longer turns wrap naturally; do not truncate payload.
     StyledLine out;
     if (body.empty()) {
         out.spans.push_back({0, 0, StyleId::UserEchoText});
