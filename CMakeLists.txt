@@ -149,7 +149,6 @@ set(ARBITER_SOURCES
     src/a2a/http.cpp
     src/a2a/client.cpp
     src/a2a/manager.cpp
-    src/readline_wrapper.cpp
     src/markdown.cpp
     src/code_highlighter.cpp
 )
@@ -250,31 +249,6 @@ elseif(UNIX)
         BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
         INSTALL_RPATH "$ORIGIN/../lib/opentui"
     )
-endif()
-
-# --- Readline / libedit for interactive line editing ---
-# Try libedit first (BSD license, ships on macOS)
-find_library(EDITLINE_LIB edit)
-find_path(EDITLINE_INCLUDE editline/readline.h)
-
-if(NOT EDITLINE_LIB OR NOT EDITLINE_INCLUDE)
-    find_library(EDITLINE_LIB readline)
-    find_path(EDITLINE_INCLUDE readline/readline.h)
-    if(EDITLINE_LIB AND EDITLINE_INCLUDE)
-        set(READLINE_GNU ON)
-    endif()
-endif()
-
-if(EDITLINE_LIB AND EDITLINE_INCLUDE)
-    message(STATUS "Found readline/libedit: ${EDITLINE_LIB}")
-    target_compile_definitions(arbiter PRIVATE ARBITER_HAS_READLINE)
-    if(NOT READLINE_GNU)
-        target_compile_definitions(arbiter PRIVATE ARBITER_USE_EDITLINE)
-    endif()
-    target_include_directories(arbiter PRIVATE ${EDITLINE_INCLUDE})
-    target_link_libraries(arbiter PRIVATE ${EDITLINE_LIB})
-else()
-    message(WARNING "readline/libedit not found; falling back to raw getline (no line editing)")
 endif()
 
 # --- Install ---

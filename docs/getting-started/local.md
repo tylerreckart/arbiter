@@ -37,7 +37,7 @@ cmake --build build
 sudo cmake --install build
 ```
 
-Build deps: OpenSSL, libcurl, SQLite3, a C++20 compiler. `libedit` or GNU readline is optional but recommended for line editing in the terminal client. Distro-specific install commands are in [`CONTRIBUTING.md`](../../CONTRIBUTING.md#linux).
+Build deps: OpenSSL, libcurl, SQLite3, a C++20 compiler. Distro-specific install commands are in [`CONTRIBUTING.md`](../../CONTRIBUTING.md#linux).
 
 ## First run
 
