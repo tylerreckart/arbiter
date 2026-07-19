@@ -4,6 +4,9 @@
 .cache/
 compile_commands.json
 
+# Local docs site build output (dist + node_modules)
+/web/
+
 # Editor / IDE droppings
 .vscode/
 .idea/
