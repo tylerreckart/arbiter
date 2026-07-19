@@ -47,7 +47,8 @@ public:
     // Must be thread-safe vs the REPL thread.
     void set_confirm_callback(ConfirmFn cb) { confirm_cb_ = std::move(cb); }
 
-    // Fired once per /cmd with (name, ok), at every delegation depth.
+    // Fired per /cmd at Started and Finished (ToolActivityEvent), at every
+    // delegation depth.  API adapters typically ignore Started.
     void set_tool_status_callback(ToolStatusFn cb) { tool_status_cb_ = std::move(cb); }
 
     // Spawn a UI pane. Without it, /pane returns ERR.
@@ -252,6 +253,10 @@ public:
     // transcript on a TUI conversation switch. Throws std::out_of_range for
     // unknown ids.
     std::vector<Message> get_agent_history(const std::string& id) const;
+
+    // Append finished-tool chrome onto the agent's latest assistant message
+    // (current ConversationScope).  No-op for unknown ids / empty history.
+    void append_tool_trace(const std::string& id, ToolTraceEntry entry);
 
     // Global stats
     std::string global_status() const;

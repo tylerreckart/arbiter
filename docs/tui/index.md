@@ -57,7 +57,8 @@ Token totals also appear in the pane header stats row (right side of row 1) when
 - **[Panes](panes.md)** — multi-pane layouts: split, focus, close, `/pane` spawn semantics.
 - **[Streaming](streaming.md)** — what you see during a turn: thinking spinner, tool-call indicator, verbose mode, cancellation.
 - **[Sessions](sessions.md)** — history persistence, session restore on relaunch, per-cwd scoping.
-- **[Output styling plan](output-styling-plan.md)** — analysis of the render pipeline and a phased plan for spacing, surfaces, and StyleId unification.
+- **[Output UX](output-ux.md)** — tool timeline, thinking rows, permission cards, replay chrome.
+- **[Output styling plan](output-styling-plan.md)** — theme tokens, spacing, and StyleId foundation (complete).
 
 ## Configuration
 

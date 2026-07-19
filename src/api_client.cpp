@@ -1193,17 +1193,29 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
 static void process_anthropic_event(const std::string& data,
                                      std::string& content,
                                      ApiResponse& resp,
-                                     StreamCallback cb) {
+                                     StreamCallback cb,
+                                     ReasoningCallback reasoning_cb) {
     if (data.empty() || data == "[DONE]") return;
     try {
         auto root = json_parse(data);
         std::string type = root->get_string("type");
         if (type == "content_block_delta") {
             auto delta = root->get("delta");
-            if (delta && delta->get_string("type") == "text_delta") {
-                std::string text = delta->get_string("text");
-                content += text;
-                if (cb) cb(text);
+            if (delta) {
+                const std::string dtype = delta->get_string("type");
+                if (dtype == "text_delta") {
+                    std::string text = delta->get_string("text");
+                    content += text;
+                    if (cb) cb(text);
+                } else if (dtype == "thinking_delta") {
+                    // Anthropic extended thinking — separate from prose.
+                    std::string think = delta->get_string("thinking");
+                    if (think.empty()) think = delta->get_string("text");
+                    if (!think.empty()) {
+                        resp.reasoning += think;
+                        if (reasoning_cb) reasoning_cb(think);
+                    }
+                }
             }
         } else if (type == "message_start") {
             auto msg = root->get("message");
@@ -1236,7 +1248,8 @@ static void process_anthropic_event(const std::string& data,
 static void process_openai_event(const std::string& data,
                                   std::string& content,
                                   ApiResponse& resp,
-                                  StreamCallback cb) {
+                                  StreamCallback cb,
+                                  ReasoningCallback reasoning_cb) {
     if (data.empty() || data == "[DONE]") return;
     try {
         auto root = json_parse(data);
@@ -1257,6 +1270,13 @@ static void process_openai_event(const std::string& data,
                     if (!text.empty()) {
                         content += text;
                         if (cb) cb(text);
+                    }
+                    // OpenAI / OpenRouter reasoning models.
+                    std::string think = delta->get_string("reasoning_content");
+                    if (think.empty()) think = delta->get_string("reasoning");
+                    if (!think.empty()) {
+                        resp.reasoning += think;
+                        if (reasoning_cb) reasoning_cb(think);
                     }
                 }
                 std::string finish = ch0->get_string("finish_reason");
@@ -1388,11 +1408,13 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
             if (!data.empty() && data.back() == '\r') data.pop_back();
             switch (fmt) {
                 case Provider::FORMAT_ANTHROPIC:
-                    process_anthropic_event(data, content, resp, cb); break;
+                    process_anthropic_event(data, content, resp, cb, reasoning_cb_);
+                    break;
                 case Provider::FORMAT_GEMINI:
                     process_gemini_event(data, content, resp, cb); break;
                 case Provider::FORMAT_OPENAI_CHAT: default:
-                    process_openai_event(data, content, resp, cb); break;
+                    process_openai_event(data, content, resp, cb, reasoning_cb_);
+                    break;
             }
         }
     };

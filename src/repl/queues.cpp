@@ -204,6 +204,60 @@ void OutputQueue::push_code_close(const std::string& close_fence) {
     if (fn) fn();
 }
 
+void OutputQueue::push_tool(const ToolActivityEvent& event) {
+    if (event.id.empty() && event.label.empty()) return;
+    std::function<void()> fn;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        bool new_block = false;
+        if (need_sep_) {
+            new_block = true;
+            need_sep_ = false;
+        }
+        if (split_after_diff_) {
+            new_block = true;
+            split_after_diff_ = false;
+        }
+        OutputItem item;
+        item.kind = OutputItem::Kind::Tool;
+        item.new_block = new_block;
+        item.tool = event;
+        items_.push_back(std::move(item));
+        fn = notify_fn_;
+    }
+    if (fn) fn();
+}
+
+void OutputQueue::push_thinking(const std::string& delta) {
+    if (delta.empty()) return;
+    std::function<void()> fn;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        bool new_block = false;
+        if (need_sep_) {
+            new_block = true;
+            need_sep_ = false;
+        }
+        if (split_after_diff_) {
+            new_block = true;
+            split_after_diff_ = false;
+        }
+        // Coalesce consecutive thinking deltas into one item when possible.
+        if (!items_.empty() && items_.back().kind == OutputItem::Kind::Thinking
+            && !new_block) {
+            items_.back().data += delta;
+        } else {
+            OutputItem item;
+            item.kind = OutputItem::Kind::Thinking;
+            item.data = delta;
+            item.new_block = new_block;
+            items_.push_back(std::move(item));
+        }
+        fn = notify_fn_;
+    }
+    if (fn) fn();
+}
+
 void OutputQueue::push_prose_msg(const std::string& text, StyleId id) {
     size_t start = 0;
     while (start < text.size() && (text[start] == '\n' || text[start] == '\r')) ++start;

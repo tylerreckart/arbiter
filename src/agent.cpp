@@ -191,6 +191,18 @@ ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
     return resp;
 }
 
+void Agent::append_tool_trace(ToolTraceEntry entry) {
+    std::lock_guard<std::mutex> lk(history_mu_);
+    auto it = histories_.find(agent_conversation_key());
+    if (it == histories_.end() || it->second.empty()) return;
+    for (auto rit = it->second.rbegin(); rit != it->second.rend(); ++rit) {
+        if (rit->role == "assistant") {
+            rit->tool_trace.push_back(std::move(entry));
+            return;
+        }
+    }
+}
+
 void Agent::reset_history() {
     std::lock_guard<std::mutex> lk(history_mu_);
     histories_[agent_conversation_key()].clear();
@@ -239,6 +251,21 @@ std::string Agent::to_json() const {
                 auto mo = jobj();
                 mo->as_object_mut()["role"] = jstr(msg.role);
                 mo->as_object_mut()["content"] = jstr(msg.content);
+                if (!msg.tool_trace.empty()) {
+                    auto tarr = jarr();
+                    for (const auto& t : msg.tool_trace) {
+                        auto to = jobj();
+                        auto& tm = to->as_object_mut();
+                        tm["id"] = jstr(t.id);
+                        tm["label"] = jstr(t.label);
+                        tm["kind"] = jstr(t.kind);
+                        tm["detail"] = jstr(t.detail);
+                        tm["ok"] = jbool(t.ok);
+                        tm["result_preview"] = jstr(t.result_preview);
+                        tarr->as_array_mut().push_back(to);
+                    }
+                    mo->as_object_mut()["tool_trace"] = tarr;
+                }
                 hist->as_array_mut().push_back(mo);
             }
         }

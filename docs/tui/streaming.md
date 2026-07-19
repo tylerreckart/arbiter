@@ -32,22 +32,19 @@ Sub-agent progress uses the same pipeline with `kInterim` policy: dimmed prose, 
 
 When the agent emits `/fetch`, `/exec`, `/agent`, `/mem`, `/write … /endwrite`, etc., `BlockParser` intercepts those lines. Behaviour depends on `/verbose`:
 
-**Verbose off (default).** The `/cmd` lines are *swallowed* from the scroll region and the mid separator above the input switches to a tool-call spinner:
+**Verbose off (default).** The raw `/cmd` lines are *swallowed* from the scroll region. Each tool still appears as a compact `ToolSegment` row in scrollback (`○ exec:git status` → `✓` / `✗`), and the mid separator above the input shows a live count spinner:
 
 ```
 ─── [⠋ 3 tool calls…] ───────────────────────────────────────
 ```
 
-The count increments as each tool call completes. The model's prose between `/cmd` blocks renders normally in the scroll region; only the bare `/cmd` lines (and `/write` blocks' content) are hidden. When the turn ends, a single summary line lands in scrollback:
+`^O` expands the focused tool row to show args and a truncated result preview. The model's prose between `/cmd` blocks renders normally; only the bare `/cmd` lines (and `/write` bodies) stay hidden. See [output-ux.md](output-ux.md).
 
-```
-✓ 3 tool calls succeeded                                      (or)
-✗ 2 of 5 tool calls failed
-```
-
-**Verbose on.** Every `/cmd` line, every tool result, every `/write … /endwrite` block streams into scroll. Useful when debugging an agent's tool use; noisy for normal interaction. Toggle with `/verbose on` / `/verbose off`.
+**Verbose on.** Every `/cmd` line, every tool result, every `/write … /endwrite` block streams into scroll (in addition to the tool rows). Useful when debugging an agent's tool use; noisy for normal interaction. Toggle with `/verbose on` / `/verbose off`.
 
 The thinking and tool-call spinners deliberately don't share a row — early versions both fought for row 1 at 80 ms cadence and produced visible flashing. Header is for "agent is generating"; mid separator is for "agent is calling tools."
+
+When a provider streams a separate reasoning channel (`thinking_delta` / `reasoning_content`), a collapsed **thinking** row also appears in scrollback above the assistant prose. Expand with `^O`. Models without that channel keep the header spinner only.
 
 ## End of turn
 
@@ -63,7 +60,7 @@ Scroll position is preserved across turns — if you PgUp'd to read history whil
 
 Press `Esc` (alone, no follow-on within 50 ms) to cancel the focused pane's in-flight turn:
 
-1. The cancel handler pushes `[interrupted]` into the scroll region.
+1. The cancel handler pushes a system activity line (`· [interrupted]`) into the scroll region.
 2. The agent's pending HTTP request is aborted (libcurl `curl_multi_remove_handle`).
 3. The exec thread unwinds back to the queue's `pop()`.
 4. The input row redraws with whatever was queued next, or empty.

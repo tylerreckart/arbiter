@@ -7724,8 +7724,10 @@ void handle_a2a_message_stream(int fd,
     // Per-tool observation events.  arbiter fires this for /fetch,
     // /search, /mem, /mcp, /agent, /parallel, /write, etc.
     orch->set_tool_status_callback(
-        [&](const std::string& tool, bool ok) {
-            writer.emit_tool_call(tool, ok);
+        [&](const ToolActivityEvent& ev) {
+            // Preserve existing SSE `tool_call` = completion semantics.
+            if (ev.phase != ToolActivityEvent::Phase::Finished) return;
+            writer.emit_tool_call(ev.label, ev.ok);
         });
 
     // Sub-agent completion: emit the full text the sub-agent produced
@@ -9139,11 +9141,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         emit("agent_start", p);
     });
     orch->set_tool_status_callback(
-        [&emit, stamp](const std::string& kind, bool ok) {
+        [&emit, stamp](const ToolActivityEvent& ev) {
+            // Preserve existing SSE `tool_call` = completion semantics.
+            if (ev.phase != ToolActivityEvent::Phase::Finished) return;
             auto p = jobj();
             auto& m = p->as_object_mut();
-            m["tool"] = jstr(kind);
-            m["ok"]   = jbool(ok);
+            m["tool"] = jstr(ev.label);
+            m["ok"]   = jbool(ev.ok);
             stamp(p);
             emit("tool_call", p);
         });
@@ -9183,7 +9187,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // API mode has no interactive user and no TUI panes — deny any prompt
     // for confirmation and refuse /pane so the agent's tool-result block
     // tells it to adapt.
-    orch->set_confirm_callback([](const std::string&) { return false; });
+    orch->set_confirm_callback([](const ConfirmRequest&) { return false; });
     orch->set_pane_spawner(
         [](const std::string&, const std::string&) -> std::string {
             return "ERR: /pane unavailable in API mode — use /agent for "
