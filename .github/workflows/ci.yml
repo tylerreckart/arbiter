@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euxo pipefail
           brew update --quiet
-          brew install --formula openssl@3 libedit
+          brew install --formula openssl@3
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
@@ -72,8 +72,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake pkg-config \
-            libssl-dev libcurl4-openssl-dev libedit-dev \
-            libsqlite3-dev
+            libssl-dev libcurl4-openssl-dev libsqlite3-dev
 
       - name: Configure
         run: |

@@ -120,6 +120,7 @@ private:
     void draw_palette(OpenTuiHandle frame, const TUI& tui) const;
 
     int  read_key_event();
+    bool read_bracketed_paste(std::string& out);
     void discard_osc();
     void discard_string_terminated();
     static bool is_terminal_response_csi(const std::string& params, char final);
@@ -146,6 +147,7 @@ private:
     OpenTuiHandle view_{0};
 
     std::string buffer_;
+    std::string pending_paste_;
     int         cursor_      = 0;
     std::string prompt_;
     int         prompt_cols_ = 0;
