@@ -716,6 +716,20 @@ std::string ApiClient::build_body_gemini(const ApiRequest& req) {
     auto& g = gen->as_object_mut();
     g["maxOutputTokens"] = jnum(static_cast<double>(req.max_tokens));
     if (req.include_temperature) g["temperature"] = jnum(req.temperature);
+    // Gemini 2.5 / 3 thinking models: ask for thought summaries so the TUI
+    // can render a ThinkingSegment.  Older Gemini models ignore unknown
+    // generationConfig keys or reject them — gate on model id.
+    {
+        const std::string stripped = strip_model_prefix(req.model);
+        const bool thinking_model =
+            stripped.find("gemini-2.5") != std::string::npos ||
+            stripped.find("gemini-3") != std::string::npos;
+        if (thinking_model) {
+            auto tc = jobj();
+            tc->as_object_mut()["includeThoughts"] = jbool(true);
+            g["thinkingConfig"] = tc;
+        }
+    }
     m["generationConfig"] = gen;
 
     return json_serialize(*obj);
@@ -1016,7 +1030,14 @@ ApiResponse ApiClient::parse_body_gemini(const std::string& body) {
                     if (parts && parts->is_array()) {
                         for (auto& part : parts->as_array()) {
                             if (!part) continue;
-                            resp.content += part->get_string("text");
+                            std::string text = part->get_string("text");
+                            if (text.empty()) continue;
+                            // Thought summaries carry `"thought": true`.
+                            if (part->get_bool("thought")) {
+                                resp.reasoning += text;
+                            } else {
+                                resp.content += text;
+                            }
                         }
                     }
                 }
@@ -1299,11 +1320,14 @@ static void process_openai_event(const std::string& data,
 
 // Gemini SSE chunk: `data: {"candidates":[{"content":{"parts":[{"text":"…"}],
 // "role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{...}}`.
+// Thought summaries arrive as parts with `"thought": true` when
+// generationConfig.thinkingConfig.includeThoughts is set.
 // Gemini SSE: no [DONE] marker; final chunk carries finishReason + usageMetadata.
 static void process_gemini_event(const std::string& data,
                                   std::string& content,
                                   ApiResponse& resp,
-                                  StreamCallback cb) {
+                                  StreamCallback cb,
+                                  ReasoningCallback reasoning_cb) {
     if (data.empty()) return;
     try {
         auto root = json_parse(data);
@@ -1325,7 +1349,11 @@ static void process_gemini_event(const std::string& data,
                         for (auto& part : parts->as_array()) {
                             if (!part) continue;
                             std::string text = part->get_string("text");
-                            if (!text.empty()) {
+                            if (text.empty()) continue;
+                            if (part->get_bool("thought")) {
+                                resp.reasoning += text;
+                                if (reasoning_cb) reasoning_cb(text);
+                            } else {
                                 content += text;
                                 if (cb) cb(text);
                             }
@@ -1411,7 +1439,8 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
                     process_anthropic_event(data, content, resp, cb, reasoning_cb_);
                     break;
                 case Provider::FORMAT_GEMINI:
-                    process_gemini_event(data, content, resp, cb); break;
+                    process_gemini_event(data, content, resp, cb, reasoning_cb_);
+                    break;
                 case Provider::FORMAT_OPENAI_CHAT: default:
                     process_openai_event(data, content, resp, cb, reasoning_cb_);
                     break;

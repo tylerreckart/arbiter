@@ -5,6 +5,9 @@
 
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace arbiter;
@@ -661,4 +664,147 @@ TEST_CASE("write confirm request carries path summary and preview lines") {
     REQUIRE_FALSE(seen.preview_lines.empty());
     CHECK(seen.preview_lines.front().find("line one") != std::string::npos);
     CHECK(result.find("user declined") != std::string::npos);
+}
+
+TEST_CASE("exec confirm request does not duplicate short command in preview") {
+    ConfirmRequest seen;
+    bool called = false;
+    ConfirmFn capture = [&](const ConfirmRequest& req) {
+        called = true;
+        seen = req;
+        return false;
+    };
+
+    std::vector<AgentCommand> cmds;
+    AgentCommand e;
+    e.name = "exec";
+    e.args = "rm -rf /tmp/arbiter-confirm-test";
+    cmds.push_back(e);
+
+    auto result = execute_agent_commands(
+        cmds, "nested-agent", "",
+        nullptr, capture);
+    CHECK(called);
+    CHECK(seen.action == "exec");
+    CHECK(seen.target == e.args);
+    CHECK(seen.summary.find("destructive") != std::string::npos);
+    CHECK(seen.preview_lines.empty());
+    CHECK(result.find("user declined") != std::string::npos);
+}
+
+TEST_CASE("exec confirm request previews when target is truncated") {
+    ConfirmRequest seen;
+    ConfirmFn capture = [&](const ConfirmRequest& req) {
+        seen = req;
+        return false;
+    };
+
+    std::string long_cmd = "rm -rf ";
+    long_cmd.append(120, 'x');
+    std::vector<AgentCommand> cmds;
+    AgentCommand e;
+    e.name = "exec";
+    e.args = long_cmd;
+    cmds.push_back(e);
+
+    execute_agent_commands(cmds, "test", "", nullptr, capture);
+    CHECK(seen.target.size() < long_cmd.size());
+    CHECK(seen.target.find("\u2026") != std::string::npos);
+    REQUIRE_FALSE(seen.preview_lines.empty());
+    CHECK(seen.preview_lines.front().find("rm -rf") != std::string::npos);
+}
+
+TEST_CASE("tool events carry dispatching agent_id") {
+    std::vector<ToolActivityEvent> events;
+    ToolStatusFn capture = [&](const ToolActivityEvent& ev) {
+        events.push_back(ev);
+    };
+
+    std::vector<AgentCommand> cmds;
+    AgentCommand h;
+    h.name = "help";
+    h.args = "mem";
+    cmds.push_back(h);
+
+    execute_agent_commands(
+        cmds, "child-writer", "",
+        nullptr, nullptr, nullptr, nullptr, capture);
+    REQUIRE(events.size() == 2);
+    CHECK(events[0].agent_id == "child-writer");
+    CHECK(events[1].agent_id == "child-writer");
+    CHECK(events[0].phase == ToolActivityEvent::Phase::Started);
+    CHECK(events[1].phase == ToolActivityEvent::Phase::Finished);
+}
+
+TEST_CASE("capability denial still emits Started then Finished pairing") {
+    std::vector<ToolActivityEvent> events;
+    ToolStatusFn capture = [&](const ToolActivityEvent& ev) {
+        events.push_back(ev);
+    };
+
+    std::vector<AgentCommand> cmds;
+    AgentCommand e;
+    e.name = "exec";
+    e.args = "ls";
+    cmds.push_back(e);
+
+    // capabilities={"search"} — /exec is outside the allowlist.
+    auto result = execute_agent_commands(
+        cmds, "restricted", "",
+        /*agent_invoker=*/nullptr,
+        /*confirm=*/nullptr,
+        /*dedup_cache=*/nullptr,
+        /*advisor_invoker=*/nullptr,
+        capture,
+        /*pane_spawner=*/nullptr,
+        /*write_interceptor=*/nullptr,
+        /*exec_disabled=*/false,
+        /*parallel_invoker=*/nullptr,
+        /*structured_memory_reader=*/nullptr,
+        /*structured_memory_writer=*/nullptr,
+        /*mcp_invoker=*/nullptr,
+        /*memory_scratchpad=*/nullptr,
+        /*search_invoker=*/nullptr,
+        /*artifact_writer=*/nullptr,
+        /*artifact_reader=*/nullptr,
+        /*artifact_lister=*/nullptr,
+        /*a2a_invoker=*/nullptr,
+        /*scheduler_invoker=*/nullptr,
+        /*todo_invoker=*/nullptr,
+        /*lesson_invoker=*/nullptr,
+        /*exec_invoker=*/nullptr,
+        /*capabilities=*/std::vector<std::string>{"search"});
+
+    CHECK(result.find("capability not granted") != std::string::npos);
+    REQUIRE(events.size() == 2);
+    CHECK(events[0].phase == ToolActivityEvent::Phase::Started);
+    CHECK(events[1].phase == ToolActivityEvent::Phase::Finished);
+    CHECK(events[1].id == events[0].id);
+    CHECK_FALSE(events[1].ok);
+}
+
+TEST_CASE("dedup hit still emits Started/Finished with cached ok flag") {
+    std::map<std::string, std::string> cache;
+    cache["help|mem"] =
+        "[/help mem]\nmemory help body\n[END HELP]\n\n";
+
+    std::vector<ToolActivityEvent> events;
+    ToolStatusFn capture = [&](const ToolActivityEvent& ev) {
+        events.push_back(ev);
+    };
+
+    std::vector<AgentCommand> cmds;
+    AgentCommand h;
+    h.name = "help";
+    h.args = "mem";
+    cmds.push_back(h);
+
+    auto result = execute_agent_commands(
+        cmds, "test", "",
+        nullptr, nullptr, &cache, nullptr, capture);
+    CHECK(result.find("memory help body") != std::string::npos);
+    REQUIRE(events.size() == 2);
+    CHECK(events[0].phase == ToolActivityEvent::Phase::Started);
+    CHECK(events[1].phase == ToolActivityEvent::Phase::Finished);
+    CHECK(events[1].ok);
 }

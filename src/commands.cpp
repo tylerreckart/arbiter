@@ -1936,6 +1936,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         ToolActivityEvent ev;
         ev.phase = phase;
         ev.id = id;
+        ev.agent_id = agent_id;
         ev.label = tool_status_label(cmd);
         ev.kind = cmd.name;
         ev.detail = tool_activity_detail(cmd);
@@ -2734,14 +2735,21 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             } else if (confirm && is_destructive_exec(cmd.args)) {
                 ConfirmRequest req;
                 req.action = "exec";
-                req.target = cmd.args;
                 req.summary = "destructive shell command";
-                std::string preview = cmd.args;
-                if (preview.size() > 240) {
-                    preview.resize(237);
-                    preview += "\u2026";
+                // Target carries the command; only spill into preview when
+                // the header would truncate (avoids duplicating the same line).
+                constexpr size_t kTargetMax = 96;
+                if (cmd.args.size() > kTargetMax) {
+                    req.target = cmd.args.substr(0, kTargetMax - 3) + "\u2026";
+                    std::string preview = cmd.args;
+                    if (preview.size() > 240) {
+                        preview.resize(237);
+                        preview += "\u2026";
+                    }
+                    req.preview_lines.push_back(std::move(preview));
+                } else {
+                    req.target = cmd.args;
                 }
-                req.preview_lines.push_back(std::move(preview));
                 if (!confirm(req)) {
                     block << "ERR: user declined\n";
                     cache_result = false;  // user may want to approve a retry

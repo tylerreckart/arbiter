@@ -490,6 +490,56 @@ if(INDEX_BUILD_TESTS)
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_tui_theme_json COMMAND unit_tui_theme_json)
 
+    # ToolCallIndicator arm/bump/finalize counting (nullptr TUI — no paint).
+    add_executable(unit_tool_indicator
+        tests/test_tool_indicator.cpp
+        tests/term_size_stub.cpp
+        src/tui/tui.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_tool_indicator PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(unit_tool_indicator PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    add_test(NAME unit_tool_indicator COMMAND unit_tool_indicator)
+
+    # PaneScrollView ToolSegment / ThinkingSegment geometry + toggle.
+    add_executable(unit_pane_scroll_segments
+        tests/test_pane_scroll_segments.cpp
+        tests/term_size_stub.cpp
+        src/tui/opentui/pane_scroll_view.cpp
+        src/tui/opentui/ansi_scroll_append.cpp
+        src/tui/opentui/span_scroll_append.cpp
+        src/tui/opentui/diff_panel.cpp
+        src/tui/tui.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/tui/ansi_util.cpp
+        src/code_highlighter.cpp
+        src/markdown.cpp
+        src/styled_text.cpp
+        src/render_policy.cpp
+        src/theme.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_pane_scroll_segments PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(unit_pane_scroll_segments PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    target_link_libraries(unit_pane_scroll_segments PRIVATE OpenTUI::core)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(unit_pane_scroll_segments PRIVATE dl pthread)
+        set_target_properties(unit_pane_scroll_segments PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    endif()
+    add_test(NAME unit_pane_scroll_segments COMMAND unit_pane_scroll_segments)
+
     add_executable(unit_palette
         tests/test_palette.cpp
         src/tui/palette.cpp

@@ -568,6 +568,43 @@ void PaneScrollView::DiffSegment::draw(OpenTuiHandle frame,
 
 // --- ThinkingSegment (provider reasoning, collapsed by default) --------------
 
+namespace {
+
+// Soft-wrap plain text to `cols` display cells, preserving explicit newlines.
+std::vector<std::string> wrap_plain_lines(std::string_view text, int cols) {
+    std::vector<std::string> out;
+    if (cols < 1) cols = 1;
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t nl = text.find('\n', start);
+        const std::string_view src = (nl == std::string::npos)
+            ? text.substr(start)
+            : text.substr(start, nl - start);
+        if (src.empty()) {
+            out.emplace_back();
+        } else if (static_cast<int>(arbiter::display_width(src)) <= cols) {
+            out.emplace_back(src);
+        } else {
+            // Greedy cut by display width; never splits mid UTF-8 cluster.
+            std::string remain(src);
+            while (!remain.empty()) {
+                std::string chunk = arbiter::trim_to_display_cols(remain, cols);
+                if (chunk.empty()) {
+                    // Pathological zero-width / oversized cluster — advance one byte.
+                    chunk.assign(remain, 0, 1);
+                }
+                out.push_back(chunk);
+                remain.erase(0, chunk.size());
+            }
+        }
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    return out;
+}
+
+} // namespace
+
 void PaneScrollView::ThinkingSegment::append(std::string_view delta) {
     text_.append(delta.data(), delta.size());
 }
@@ -586,38 +623,23 @@ std::string PaneScrollView::ThinkingSegment::header_text() const {
     if (can_expand()) {
         text += expanded_ ? "  \u25BE" : "  \u25B8";
     }
-    // Collapsed preview: first ~40 chars of reasoning on the same row.
-    if (!expanded_ && !text_.empty()) {
-        std::string preview = text_;
-        for (char& ch : preview) {
-            if (ch == '\n' || ch == '\r') ch = ' ';
-        }
-        while (!preview.empty() && preview.front() == ' ') preview.erase(preview.begin());
-        if (preview.size() > 48) {
-            preview.resize(45);
-            preview += "\u2026";
-        }
-        if (!preview.empty()) {
-            text += "  ";
-            text += preview;
-        }
-    }
     return text;
 }
 
-int PaneScrollView::ThinkingSegment::visual_rows(int /*content_w*/) const {
-    if (!expanded_) return 1;
-    int lines = 1; // header
-    size_t start = 0;
-    int body = 0;
-    while (start <= text_.size()) {
-        const size_t nl = text_.find('\n', start);
-        ++body;
-        if (nl == std::string::npos) break;
-        start = nl + 1;
+int PaneScrollView::ThinkingSegment::visual_rows(int content_w) const {
+    const int cols = std::max(1, content_w > 0 ? content_w : wrap_cols_);
+    // Body text is drawn inset by 2 cells (accent + pad); wrap to that width.
+    const int body_cols = std::max(1, cols - 3);
+    const auto body = wrap_plain_lines(text_, body_cols);
+    const int body_n = static_cast<int>(body.size());
+    if (!expanded_) {
+        if (body_n == 0) return 1;
+        const int preview = std::min(body_n, kPreviewRows);
+        // +1 ellipsis row when more body exists beyond the preview window.
+        return 1 + preview + (body_n > kPreviewRows ? 1 : 0);
     }
-    if (body == 0 && !text_.empty()) body = 1;
-    return lines + std::min(body, 40); // hard cap expanded height
+    static constexpr int kExpandedCap = 40;
+    return 1 + std::min(body_n, kExpandedCap);
 }
 
 void PaneScrollView::ThinkingSegment::set_wrap_cols(int cols) {
@@ -626,17 +648,15 @@ void PaneScrollView::ThinkingSegment::set_wrap_cols(int cols) {
 
 void PaneScrollView::ThinkingSegment::collect_lines(std::vector<std::string>& out) const {
     out.push_back(header_text());
-    if (expanded_ && !text_.empty()) {
-        size_t start = 0;
-        while (start <= text_.size()) {
-            const size_t nl = text_.find('\n', start);
-            if (nl == std::string::npos) {
-                out.push_back(text_.substr(start));
-                break;
-            }
-            out.push_back(text_.substr(start, nl - start));
-            start = nl + 1;
-        }
+    if (text_.empty()) return;
+    const int body_cols = std::max(1, wrap_cols_ - 3);
+    const auto body = wrap_plain_lines(text_, body_cols);
+    const int limit = expanded_
+        ? std::min(static_cast<int>(body.size()), 40)
+        : std::min(static_cast<int>(body.size()), kPreviewRows);
+    for (int i = 0; i < limit; ++i) out.push_back(body[static_cast<size_t>(i)]);
+    if (!expanded_ && static_cast<int>(body.size()) > kPreviewRows) {
+        out.push_back("\u2026");
     }
 }
 
@@ -649,6 +669,7 @@ void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
     if (w <= 0 || h <= 0) return;
     const TuiDesign& d = tui_design();
     const TuiRgba& bg = d.bg.scroll;
+    const int body_cols = std::max(1, w - 3);
 
     auto draw_row = [&](const std::string& text,
                         const TuiRgba& fg,
@@ -664,7 +685,7 @@ void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
         draw_text(frame,
                   x + 2,
                   y + drawn,
-                  trim_to_cells(text, std::max(1, w - 3)),
+                  trim_to_cells(text, body_cols),
                   fg,
                   bg);
         ++screen_row;
@@ -673,19 +694,17 @@ void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
 
     int row = 0;
     if (!draw_row(header_text(), d.content.system_fg, row)) return;
-    if (!expanded_) return;
+    if (text_.empty()) return;
 
-    size_t start = 0;
-    int body_rows = 0;
-    while (start <= text_.size() && body_rows < 40) {
-        const size_t nl = text_.find('\n', start);
-        const std::string line = (nl == std::string::npos)
-            ? text_.substr(start)
-            : text_.substr(start, nl - start);
-        if (!draw_row(line, d.text.muted, row)) return;
-        ++body_rows;
-        if (nl == std::string::npos) break;
-        start = nl + 1;
+    const auto body = wrap_plain_lines(text_, body_cols);
+    const int limit = expanded_
+        ? std::min(static_cast<int>(body.size()), 40)
+        : std::min(static_cast<int>(body.size()), kPreviewRows);
+    for (int i = 0; i < limit; ++i) {
+        if (!draw_row(body[static_cast<size_t>(i)], d.text.muted, row)) return;
+    }
+    if (!expanded_ && static_cast<int>(body.size()) > kPreviewRows) {
+        draw_row("\u2026", d.text.muted, row);
     }
 }
 

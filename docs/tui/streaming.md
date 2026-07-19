@@ -44,7 +44,10 @@ When the agent emits `/fetch`, `/exec`, `/agent`, `/mem`, `/write … /endwrite`
 
 The thinking and tool-call spinners deliberately don't share a row — early versions both fought for row 1 at 80 ms cadence and produced visible flashing. Header is for "agent is generating"; mid separator is for "agent is calling tools."
 
-When a provider streams a separate reasoning channel (`thinking_delta` / `reasoning_content`), a collapsed **thinking** row also appears in scrollback above the assistant prose. Expand with `^O`. Models without that channel keep the header spinner only.
+When a provider streams a separate reasoning channel (`thinking_delta` /
+`reasoning_content` / Gemini `thought` parts), a collapsed **thinking** row
+also appears in scrollback above the assistant prose. Expand with `^O`.
+Models without that channel keep the header spinner only.
 
 ## End of turn
 

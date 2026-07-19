@@ -596,8 +596,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         }
         if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
             sidebar.record_tool(ev.label, ev.ok);
-            // Persist onto the last assistant message so conversation switch
-            // can rebuild ToolSegments without re-running tools.
+            // Persist onto the dispatching agent's last assistant message
+            // (nested /agent tools attribute to the child, not the pane).
             if (p) {
                 arbiter::ToolTraceEntry te;
                 te.id = ev.id;
@@ -606,7 +606,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 te.detail = ev.detail;
                 te.ok = ev.ok;
                 te.result_preview = ev.result_preview;
-                orch.append_tool_trace(p->current_agent, std::move(te));
+                const std::string& owner =
+                    !ev.agent_id.empty() ? ev.agent_id : p->current_agent;
+                orch.append_tool_trace(owner, std::move(te));
             }
         }
     });
