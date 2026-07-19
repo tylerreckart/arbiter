@@ -116,4 +116,47 @@ std::vector<StyledLine> tool_call_summary_lines(int total, int failed) {
     return {line};
 }
 
+StyledLine styled_activity_line(std::string text, StyleId id) {
+    StyledLine line;
+    styled_append(line, StyleId::Dim, "\u00b7 ");  // ·
+    styled_append(line, id, std::move(text));
+    return line;
+}
+
+StyledLine styled_interim_header(const std::string& agent_id) {
+    StyledLine line;
+    styled_append(line, StyleId::Dim, "\u2192 ");  // →
+    styled_append(line, StyleId::Dim,
+                  agent_id.empty() ? "sub-agent" : agent_id);
+    return line;
+}
+
+std::vector<StyledLine> styled_permission_card(
+    const std::string& action,
+    const std::string& target,
+    const std::vector<std::string>& preview_lines) {
+    std::vector<StyledLine> lines;
+    StyledLine header;
+    styled_append(header, StyleId::Warning, "permission ");
+    styled_append(header, StyleId::Bold, action);
+    if (!target.empty()) {
+        styled_append(header, StyleId::System, "  ");
+        styled_append(header, StyleId::Code, target);
+    }
+    lines.push_back(std::move(header));
+
+    for (const auto& prev : preview_lines) {
+        if (prev.empty()) continue;
+        StyledLine row;
+        styled_append(row, StyleId::Dim, "  ");
+        styled_append(row, StyleId::System, prev);
+        lines.push_back(std::move(row));
+    }
+
+    StyledLine prompt;
+    styled_append(prompt, StyleId::Warning, "  allow? [y/N]");
+    lines.push_back(std::move(prompt));
+    return lines;
+}
+
 } // namespace arbiter

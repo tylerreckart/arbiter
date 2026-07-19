@@ -257,9 +257,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     std::recursive_mutex layout_mu;
 
     struct ConfirmState {
-        std::mutex            mu;
-        std::string           prompt;
-        std::promise<bool>*   pending = nullptr;
+        std::mutex               mu;
+        arbiter::ConfirmRequest  request;
+        std::promise<bool>*      pending = nullptr;
     } confirm_state;
 
     std::atomic<bool> quit_requested{false};
@@ -540,7 +540,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         p->editor.set_cancel_handler([raw, &orch]() {
             orch.cancel();
             raw->multiline_accum.clear();
-            raw->output_queue.push_prose_msg("[interrupted]", StyleId::Error);
+            raw->output_queue.push_prose(
+                {arbiter::styled_activity_line("[interrupted]", StyleId::Error)});
+            raw->output_queue.end_message();
         });
         // Chord prefix: Ctrl-w.  Recognized follow-ups: w (next pane),
         // h (horizontal split), v (vertical split), s (sidebar toggle),
@@ -557,21 +559,52 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         return p;
     };
 
+    // Provider reasoning/thinking → collapsible ThinkingSegment (when emitted).
+    // Header ThinkingIndicator remains the wait-state spinner for all models.
+    orch.client().set_reasoning_callback([&](const std::string& delta) {
+        Pane* p = g_active_pane;
+        if (p) p->output_queue.push_thinking(delta);
+    });
+
     // ── Orchestrator callbacks ─────────────────────────────────────────────
     // All pane-facing callbacks route through g_active_pane (thread-local),
     // which each pane's exec thread sets at startup.
-    orch.set_progress_callback([&](const std::string& /*agent_id*/,
+    orch.set_progress_callback([&](const std::string& agent_id,
                                     const std::string& content) {
         Pane* p = g_active_pane;
         if (!p) return;
+        // One-line interim header so sub-agent progress isn't anonymous dim dump.
+        p->output_queue.push_prose({arbiter::styled_interim_header(agent_id)});
         arbiter::StreamRenderer renderer(arbiter::kInterim, p->output_queue);
         renderer.feed(content);
         renderer.flush();
     });
-    orch.set_tool_status_callback([&](const std::string& kind, bool ok) {
+    orch.set_tool_status_callback([&](const arbiter::ToolActivityEvent& ev) {
         Pane* p = g_active_pane;
-        if (p) p->tool_indicator.bump(kind, ok);
-        sidebar.record_tool(kind, ok);
+        if (p) {
+            // In-scroll timeline row (Started creates, Finished updates).
+            p->output_queue.push_tool(ev);
+            if (ev.phase == arbiter::ToolActivityEvent::Phase::Started) {
+                p->tool_indicator.begin();
+            } else {
+                p->tool_indicator.bump(ev.label, ev.ok);
+            }
+        }
+        if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
+            sidebar.record_tool(ev.label, ev.ok);
+            // Persist onto the last assistant message so conversation switch
+            // can rebuild ToolSegments without re-running tools.
+            if (p) {
+                arbiter::ToolTraceEntry te;
+                te.id = ev.id;
+                te.label = ev.label;
+                te.kind = ev.kind;
+                te.detail = ev.detail;
+                te.ok = ev.ok;
+                te.result_preview = ev.result_preview;
+                orch.append_tool_trace(p->current_agent, std::move(te));
+            }
+        }
     });
     orch.set_cost_callback([&](const std::string& agent_id,
                                  const std::string& model,
@@ -587,11 +620,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                       const std::string& reason) {
         Pane* p = g_active_pane;
         if (!p) return;
-        arbiter::StyledLine banner;
-        arbiter::styled_append(banner, arbiter::StyleId::Error,
-                               "[advisor halt: " + agent_id + "] ");
-        arbiter::styled_append(banner, arbiter::StyleId::System, reason);
-        p->output_queue.push_prose({banner});
+        std::string text = "[advisor halt: " + agent_id + "] " + reason;
+        p->output_queue.push_prose(
+            {arbiter::styled_activity_line(std::move(text), arbiter::StyleId::Error)});
         p->output_queue.end_message();
     });
 
@@ -608,21 +639,19 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         else                                  { label = ev.kind;            style = arbiter::StyleId::System; }
         std::string detail = ev.detail;
         if (detail.size() > 200) { detail.resize(197); detail += "..."; }
-        arbiter::StyledLine line;
-        arbiter::styled_append(line, style, "[" + label + ": " + ev.agent_id + "]");
-        if (!detail.empty()) {
-            arbiter::styled_append(line, arbiter::StyleId::System, " " + detail);
-        }
-        p->output_queue.push_prose({line});
+        std::string text = "[" + label + ": " + ev.agent_id + "]";
+        if (!detail.empty()) text += " " + detail;
+        p->output_queue.push_prose(
+            {arbiter::styled_activity_line(std::move(text), style)});
         p->output_queue.end_message();
     });
 
-    orch.set_confirm_callback([&](const std::string& p) -> bool {
+    orch.set_confirm_callback([&](const arbiter::ConfirmRequest& req) -> bool {
         std::promise<bool> done;
         auto fut = done.get_future();
         {
             std::lock_guard<std::mutex> lk(confirm_state.mu);
-            confirm_state.prompt  = p;
+            confirm_state.request = req;
             confirm_state.pending = &done;
         }
         if (layout_ptr) layout_ptr->focused().editor.interrupt();
@@ -888,14 +917,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         renderer.feed(chunk);
                     });
                     renderer.flush();
-                    {
-                        const int n = tool_indicator.total();
-                        const int f = tool_indicator.failed();
-                        tool_indicator.finalize();
-                        if (n > 0) {
-                            output_queue.push_prose(arbiter::tool_call_summary_lines(n, f));
-                        }
-                    }
+                    // Per-tool rows already landed via ToolActivityEvent; just
+                    // clear the mid-separator spinner.
+                    tool_indicator.finalize();
                     // Separator: md.flush() guarantees the stream ends with
                     // a `\n`, so one more gives exactly one blank line before
                     // the next message.
@@ -943,14 +967,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         renderer.feed(chunk);
                     });
                     renderer.flush();
-                    {
-                        const int n = tool_indicator.total();
-                        const int f = tool_indicator.failed();
-                        tool_indicator.finalize();
-                        if (n > 0) {
-                            output_queue.push_prose(arbiter::tool_call_summary_lines(n, f));
-                        }
-                    }
+                    tool_indicator.finalize();
                     output_queue.end_message();
                     if (!resp.ok) {
                         output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
@@ -1538,14 +1555,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 [&](const std::string& chunk) { renderer.feed(chunk); },
                 pane.original_task);
             renderer.flush();
-            {
-                const int n = tool_indicator.total();
-                const int f = tool_indicator.failed();
-                tool_indicator.finalize();
-                if (n > 0) {
-                    output_queue.push_prose(arbiter::tool_call_summary_lines(n, f));
-                }
-            }
+            // Per-tool ToolSegment rows already reflect the turn; finalize
+            // only clears the mid-separator spinner.
+            tool_indicator.finalize();
             // md.flush() guarantees the stream ended on `\n`; one more gives
             // exactly one blank line before the next message.
             output_queue.end_message();
@@ -1795,28 +1807,34 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // the editor.interrupt() wakes the main loop.
     auto service_confirm = [&]() -> bool {
         std::promise<bool>* pending = nullptr;
-        std::string         conf_prompt;
+        arbiter::ConfirmRequest req;
         {
             std::lock_guard<std::mutex> lk(confirm_state.mu);
             pending = confirm_state.pending;
-            conf_prompt = confirm_state.prompt;
+            req = confirm_state.request;
             confirm_state.pending = nullptr;
         }
         if (!pending) return false;
 
         Pane& pane = layout.focused();
-        StyledLine prompt_line;
-        styled_append(prompt_line, StyleId::Warning, conf_prompt + " [y/N]");
+        // Multi-line permission card: action, target, content preview.
+        std::vector<std::string> preview = req.preview_lines;
+        if (!req.summary.empty()) {
+            preview.insert(preview.begin(), req.summary);
+        }
+        auto card = arbiter::styled_permission_card(req.action, req.target, preview);
         // new_block supplies block_gap — do not also prepend an empty StyledLine.
-        pane_history_push_prose(pane, {prompt_line}, true);
+        pane_history_push_prose(pane, card, true);
         ui_ctx.present_all();
 
         const int key = read_confirm_key();
         bool yes = (key == 'y' || key == 'Y');
-        StyledLine answer;
-        if (yes) styled_append(answer, StyleId::Success, "[user accepted input]");
-        else styled_append(answer, StyleId::Error, "[user denied input]");
-        pane_history_push_prose(pane, {answer}, true);
+        pane_history_push_prose(
+            pane,
+            {arbiter::styled_activity_line(
+                yes ? "[user accepted input]" : "[user denied input]",
+                yes ? StyleId::Success : StyleId::Error)},
+            true);
         ui_ctx.present_all();
         pending->set_value(yes);
         return true;

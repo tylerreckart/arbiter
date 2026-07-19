@@ -138,19 +138,37 @@ using AdvisorGateInvoker = std::function<AdvisorGateOutput(const AdvisorGateInpu
 // failure-mode policy (the runtime gate fails closed by default).
 AdvisorGateOutput parse_advisor_signal(const std::string& reply);
 
-// Gatekeeper for potentially-destructive operations.  Given a human-readable
-// prompt (e.g. "write agents/foo.md?"), returns true to proceed, false to
-// abort.  If unset, every guarded command runs without prompting.
-using ConfirmFn = std::function<bool(const std::string& prompt)>;
+// Gatekeeper for potentially-destructive operations.  Carries enough context
+// for the TUI to render a permission card (action, target, content preview).
+// Returns true to proceed, false to abort.  If unset, every guarded command
+// runs without prompting.
+struct ConfirmRequest {
+    std::string action;                       // "write" | "exec" | …
+    std::string target;                       // path or command
+    std::string summary;                      // e.g. "12 lines, 340 bytes"
+    std::vector<std::string> preview_lines;   // truncated content / cmd preview
+};
+using ConfirmFn = std::function<bool(const ConfirmRequest& request)>;
 
-// Fired once per executed /cmd, after execution completes, with the command
-// name ("fetch", "exec", "write", "agent", "mem", "advise") and whether the
-// result indicates success.  Success = the command did what it advertised;
-// failure = ERR: prefix, UPSTREAM FAILED, user-declined, budget-skipped, or
-// exec non-zero exit status.  The REPL wires this to ToolCallIndicator so
-// the spinner's ✓/✗ summary reflects real post-exec status, not just a
-// count of /cmd lines in the stream.
-using ToolStatusFn = std::function<void(const std::string& label, bool ok)>;
+// Per-tool lifecycle event for TUI / API observers.  `Started` fires when
+// dispatch begins; `Finished` fires when the result is known (ok or fail).
+// Success = the command did what it advertised; failure = ERR: prefix,
+// UPSTREAM FAILED, user-declined, budget-skipped, or exec non-zero exit.
+struct ToolActivityEvent {
+    enum class Phase { Started, Finished };
+    Phase       phase = Phase::Started;
+    std::string id;              // stable within a turn (e.g. "t1", "t2")
+    std::string label;           // tool_status_label() — sidebar / row text
+    std::string kind;            // fetch|exec|write|agent|mem|mcp|…
+    std::string detail;          // truncated args / path
+    bool        ok = true;       // meaningful on Finished
+    std::string result_preview;  // truncated body preview; Finished only
+};
+
+// Fired once per /cmd at Started and again at Finished.  The REPL wires
+// this to the in-scroll ToolSegment timeline + ToolCallIndicator; the API
+// adapts Finished events onto the existing `tool_call` SSE shape.
+using ToolStatusFn = std::function<void(const ToolActivityEvent& event)>;
 
 // Spawn a new UI pane running `agent_id` with `message` as its first queued
 // input.  Fire-and-forget from the caller's perspective: the spawning agent
@@ -454,5 +472,12 @@ bool is_tool_result_failure(const std::string& block);
 // Human-readable label for tool-status / sidebar activity (e.g. "exec: git status",
 // "mcp:playwright.browser_navigate").  Exposed for unit tests.
 std::string tool_status_label(const AgentCommand& cmd);
+
+// Truncated args/path for ToolActivityEvent::detail.  Exposed for unit tests.
+std::string tool_activity_detail(const AgentCommand& cmd);
+
+// One-line preview extracted from a tool-result block (newlines → spaces,
+// capped).  Exposed for unit tests.
+std::string tool_result_preview(const std::string& block, size_t max_chars = 200);
 
 } // namespace arbiter

@@ -564,3 +564,85 @@ TEST_CASE("tool_status_label emits accurate sidebar labels") {
     cmd.args = "--persist src/main.cpp";
     CHECK(tool_status_label(cmd) == "write:src/main.cpp");
 }
+
+TEST_CASE("tool_activity_detail truncates args for event rows") {
+    AgentCommand cmd;
+    cmd.name = "exec";
+    cmd.args = "git status --short";
+    CHECK(tool_activity_detail(cmd) == "git status --short");
+
+    cmd.name = "write";
+    cmd.args = "--persist src/main.cpp";
+    CHECK(tool_activity_detail(cmd) == "src/main.cpp");
+}
+
+TEST_CASE("tool_result_preview strips framing and collapses newlines") {
+    const std::string block =
+        "[/exec git status]\n"
+        "M src/main.cpp\n"
+        "?? notes.txt\n"
+        "[END EXEC]\n\n";
+    const auto preview = tool_result_preview(block);
+    CHECK(preview.find("[/exec") == std::string::npos);
+    CHECK(preview.find("[END") == std::string::npos);
+    CHECK(preview.find("M src/main.cpp") != std::string::npos);
+    CHECK(preview.find('\n') == std::string::npos);
+}
+
+TEST_CASE("execute_agent_commands emits Started then Finished tool events") {
+    std::vector<ToolActivityEvent> events;
+    ToolStatusFn capture = [&](const ToolActivityEvent& ev) {
+        events.push_back(ev);
+    };
+
+    std::vector<AgentCommand> cmds;
+    AgentCommand h;
+    h.name = "help";
+    h.args = "mem";  // topic whose body does not contain the literal "ERR:"
+    cmds.push_back(h);
+
+    auto result = execute_agent_commands(
+        cmds, "test", "",
+        /*agent_invoker=*/nullptr,
+        /*confirm=*/nullptr,
+        /*dedup_cache=*/nullptr,
+        /*advisor_invoker=*/nullptr,
+        capture);
+    CHECK(result.find("[/help") != std::string::npos);
+    REQUIRE(events.size() == 2);
+    CHECK(events[0].phase == ToolActivityEvent::Phase::Started);
+    CHECK(events[0].kind == "help");
+    CHECK(events[0].id == "t1");
+    CHECK(events[1].phase == ToolActivityEvent::Phase::Finished);
+    CHECK(events[1].id == "t1");
+    CHECK(events[1].ok);
+    CHECK(events[1].label == tool_status_label(h));
+}
+
+TEST_CASE("write confirm request carries path summary and preview lines") {
+    ConfirmRequest seen;
+    bool called = false;
+    ConfirmFn capture = [&](const ConfirmRequest& req) {
+        called = true;
+        seen = req;
+        return false;  // decline so we don't touch disk
+    };
+
+    std::vector<AgentCommand> cmds;
+    AgentCommand w;
+    w.name = "write";
+    w.args = "tmp_confirm_card.txt";
+    w.content = "line one\nline two\nline three\n";
+    cmds.push_back(w);
+
+    auto result = execute_agent_commands(
+        cmds, "test", "",
+        nullptr, capture);
+    CHECK(called);
+    CHECK(seen.action == "write");
+    CHECK(seen.target == "tmp_confirm_card.txt");
+    CHECK(seen.summary.find("lines") != std::string::npos);
+    REQUIRE_FALSE(seen.preview_lines.empty());
+    CHECK(seen.preview_lines.front().find("line one") != std::string::npos);
+    CHECK(result.find("user declined") != std::string::npos);
+}

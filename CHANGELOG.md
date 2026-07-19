@@ -8,6 +8,16 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Agent output UX overhaul.**  Turns render as a first-class activity
+  timeline: per-tool `ToolSegment` rows (Started → Finished, expandable
+  with `^O`), collapsible provider `ThinkingSegment` when reasoning
+  deltas are emitted, multi-line permission cards for `/write` and
+  destructive `/exec`, interim sub-agent headers, and `tool_trace`
+  persistence so conversation switch rebuilds tool chrome.  See
+  `docs/tui/output-ux.md`.
+- **Markdown polish.**  Task lists (`- [ ]` / `- [x]`), nested numbered
+  lists, and indented code blocks route into `CodeSegment` when the
+  stream sink is wired.
 - **Pane ↔ conversation decoupling (#40).**  Each pane binds to a
   conversation id; `/chat switch` and the history sidebar attach to the
   focused pane only, leaving sibling panes and the split layout intact.

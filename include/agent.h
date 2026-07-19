@@ -50,6 +50,11 @@ public:
         histories_[agent_conversation_key()] = std::move(h);
     }
 
+    // Append a finished tool row onto the most recent assistant message in
+    // the current ConversationScope (no-op if none).  Used so transcript
+    // replay can rebuild ToolSegment chrome without re-running tools.
+    void append_tool_trace(ToolTraceEntry entry);
+
     // Accessors
     const std::string& id() const { return id_; }
     const Constitution& config() const { return config_; }

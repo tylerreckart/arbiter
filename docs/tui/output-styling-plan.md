@@ -3,10 +3,10 @@
 Analysis of how Arbiter renders streamed output, and a phased plan to
 improve overall styling, spacing, and output rendering.
 
-**Status:** Phases 1–2 and 4–5 implemented; Phase 3 largely done for
-interactive REPL emit (`push_prose` / StyleId for slash-command status,
-banners, confirms, tool summaries, user echo). Phase 0 fixture inventory
-remains a follow-up. Loop log dumps (`/log`, `/watch` bodies) stay on the
+**Status:** Phases 1–5 complete as the styling foundation. Product UX for
+tools / thinking / confirms / turn hierarchy continues in
+[output-ux.md](output-ux.md). Phase 0 golden fixtures live alongside the
+markdown/stream tests. Loop log dumps (`/log`, `/watch` bodies) stay on the
 ANSI `push`/`push_msg` path until logs are stored as structured prose.
 Nested-theme **panel/diff surfaces** use sticky-follow so chrome-only
 overlays do not wipe distinct earlier customs; **syntax colors** use

@@ -53,7 +53,66 @@ std::string first_token(const std::string& s) {
     return tok;
 }
 
+// Collapse whitespace runs and newlines so tool previews stay one line.
+std::string collapse_ws_preview(std::string s, size_t max_chars) {
+    std::string out;
+    out.reserve(std::min(s.size(), max_chars + 8));
+    bool prev_space = false;
+    for (char ch : s) {
+        if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
+        if (ch == ' ') {
+            if (prev_space) continue;
+            prev_space = true;
+        } else {
+            prev_space = false;
+        }
+        out.push_back(ch);
+        if (out.size() >= max_chars) break;
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    if (s.size() > out.size() && out.size() >= 3) {
+        if (out.size() > 3) out.resize(out.size() - 1);
+        out += "\u2026";
+    }
+    return out;
+}
+
 } // namespace
+
+std::string tool_activity_detail(const AgentCommand& cmd) {
+    std::string args = trim_label_ws(cmd.args);
+    if (cmd.name == "write") {
+        std::string path = args;
+        if (path.rfind("--persist ", 0) == 0) path = path.substr(10);
+        else if (path == "--persist") path.clear();
+        path = trim_label_ws(path);
+        if (path.empty()) path = "(content)";
+        return truncate_for_label(path, 72);
+    }
+    if (cmd.name == "write" || !cmd.content.empty()) {
+        // Keep args primary; content length is a secondary cue for writes.
+    }
+    return truncate_for_label(args, 72);
+}
+
+std::string tool_result_preview(const std::string& block, size_t max_chars) {
+    if (block.empty() || max_chars == 0) return {};
+    // Skip the `[/name …]` header line when present so the preview is body.
+    size_t start = 0;
+    if (!block.empty() && block[0] == '[') {
+        const size_t nl = block.find('\n');
+        if (nl != std::string::npos) start = nl + 1;
+    }
+    // Trim trailing `[END …]` marker.
+    std::string body = block.substr(start);
+    const auto end_marker = body.find("\n[END ");
+    if (end_marker != std::string::npos) body.resize(end_marker);
+    else {
+        const auto end_at_0 = body.find("[END ");
+        if (end_at_0 == 0) body.clear();
+    }
+    return collapse_ws_preview(std::move(body), max_chars);
+}
 
 std::string tool_status_label(const AgentCommand& cmd) {
     const std::string& name = cmd.name;
@@ -1866,12 +1925,34 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         return "";   // "help" and unknowns are always allowed
     };
 
+    int tool_seq = 0;
+
+    auto emit_tool = [&](ToolActivityEvent::Phase phase,
+                         const AgentCommand& cmd,
+                         const std::string& id,
+                         bool ok = true,
+                         const std::string& preview = {}) {
+        if (!tool_status) return;
+        ToolActivityEvent ev;
+        ev.phase = phase;
+        ev.id = id;
+        ev.label = tool_status_label(cmd);
+        ev.kind = cmd.name;
+        ev.detail = tool_activity_detail(cmd);
+        ev.ok = ok;
+        ev.result_preview = preview;
+        tool_status(ev);
+    };
+
     for (auto& cmd : cmds) {
         // Enforce total budget
         if (out.tellp() >= static_cast<std::streampos>(kTotalLimit)) {
             out << "[TOOL RESULTS TRUNCATED: budget exhausted]\n\n";
             break;
         }
+
+        const std::string tool_id = "t" + std::to_string(++tool_seq);
+        emit_tool(ToolActivityEvent::Phase::Started, cmd, tool_id);
 
         // ── Capability gate ─────────────────────────────────────────────
         // If the calling agent declared a non-empty `capabilities` list,
@@ -1884,14 +1965,17 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         if (!unrestricted) {
             const char* needed = bundle_of(cmd.name);
             if (*needed && !allowed_bundles.count(needed)) {
-                out << "[/" << cmd.name << " " << cmd.args << "]\n"
-                    << "ERR: capability not granted — this agent's "
-                    << "`capabilities` does not include /" << cmd.name
-                    << " (bundle '" << needed << "').  Adapt: stop "
-                    << "emitting /" << cmd.name
-                    << " or delegate via /agent to one that has it.\n"
-                    << "[END " << cmd.name << "]\n\n";
-                if (tool_status) tool_status(tool_status_label(cmd), false);
+                std::string fail_block =
+                    "[/" + cmd.name + " " + cmd.args + "]\n"
+                    "ERR: capability not granted — this agent's "
+                    "`capabilities` does not include /" + cmd.name +
+                    " (bundle '" + needed + "').  Adapt: stop "
+                    "emitting /" + cmd.name +
+                    " or delegate via /agent to one that has it.\n"
+                    "[END " + cmd.name + "]\n\n";
+                out << fail_block;
+                emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id,
+                          false, tool_result_preview(fail_block));
                 continue;
             }
         }
@@ -1911,8 +1995,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             // Dedup hits still count toward the turn's tool-call tally; the
             // model emitted a /cmd, so the user's "(N tool calls…)" indicator
             // should reflect that.  ok/fail mirrors the cached block.
-            if (tool_status) tool_status(tool_status_label(cmd),
-                                      !is_tool_result_failure(cached));
+            const bool ok = !is_tool_result_failure(cached);
+            emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id, ok,
+                      tool_result_preview(cached));
             continue;
         }
 
@@ -2633,6 +2718,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             // A wired exec_invoker (sandbox) overrides exec_disabled —
             // the API server uses the disabled flag to mean "no host
             // shell" but a per-tenant container is a different surface.
+            bool exec_declined = false;
             if (!exec_invoker && exec_disabled) {
                 // API / sandboxed contexts run with exec turned off so
                 // agents can't invoke arbitrary shell commands.  Tell the
@@ -2644,18 +2730,34 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                          "files, or /agent to delegate analysis that doesn't "
                          "require the shell.\n";
                 cache_result = false;
-            } else if (confirm && is_destructive_exec(cmd.args) &&
-                       !confirm("exec '" + cmd.args + "'?")) {
-                block << "ERR: user declined\n";
-                cache_result = false;  // user may want to approve a retry
-            } else if (exec_invoker) {
-                std::string output = exec_invoker(cmd.args);
-                block << output;
-                if (output.empty() || output.back() != '\n') block << "\n";
-                if (output.size() >= 4 && output.compare(0, 4, "ERR:") == 0)
-                    cache_result = false;
-            } else {
-                block << cmd_exec(cmd.args, /*confirmed=*/true) << "\n";
+            } else if (confirm && is_destructive_exec(cmd.args)) {
+                ConfirmRequest req;
+                req.action = "exec";
+                req.target = cmd.args;
+                req.summary = "destructive shell command";
+                std::string preview = cmd.args;
+                if (preview.size() > 240) {
+                    preview.resize(237);
+                    preview += "\u2026";
+                }
+                req.preview_lines.push_back(std::move(preview));
+                if (!confirm(req)) {
+                    block << "ERR: user declined\n";
+                    cache_result = false;  // user may want to approve a retry
+                    exec_declined = true;
+                }
+            }
+            if (cache_result && !exec_declined &&
+                !(!exec_invoker && exec_disabled)) {
+                if (exec_invoker) {
+                    std::string output = exec_invoker(cmd.args);
+                    block << output;
+                    if (output.empty() || output.back() != '\n') block << "\n";
+                    if (output.size() >= 4 && output.compare(0, 4, "ERR:") == 0)
+                        cache_result = false;
+                } else {
+                    block << cmd_exec(cmd.args, /*confirmed=*/true) << "\n";
+                }
             }
             block << "[END EXEC]\n\n";
 
@@ -2876,7 +2978,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << "[END WRITE]\n\n";
                 cache_result = false;   // allow a clean retry
                 out << block.str();
-                if (tool_status) tool_status(tool_status_label(cmd), false);
+                emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id,
+                          false, tool_result_preview(block.str()));
                 continue;
             }
             if (!write_interceptor && confirm) {
@@ -2885,15 +2988,42 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 // clobber the user's filesystem, so no confirm is needed.
                 size_t lines = std::count(cmd.content.begin(), cmd.content.end(), '\n');
                 if (!cmd.content.empty() && cmd.content.back() != '\n') ++lines;
-                std::string p = "write " + path + " (" +
-                                std::to_string(lines) + " lines, " +
-                                std::to_string(cmd.content.size()) + " bytes)?";
-                if (!confirm(p)) {
+                ConfirmRequest req;
+                req.action = "write";
+                req.target = path;
+                req.summary = std::to_string(lines) + " lines, " +
+                              std::to_string(cmd.content.size()) + " bytes";
+                // First ~8 lines of the write body as preview.
+                {
+                    size_t start = 0;
+                    int shown = 0;
+                    while (start < cmd.content.size() && shown < 8) {
+                        size_t nl = cmd.content.find('\n', start);
+                        std::string row = (nl == std::string::npos)
+                            ? cmd.content.substr(start)
+                            : cmd.content.substr(start, nl - start);
+                        if (row.size() > 100) {
+                            row.resize(97);
+                            row += "\u2026";
+                        }
+                        req.preview_lines.push_back(std::move(row));
+                        if (nl == std::string::npos) break;
+                        start = nl + 1;
+                        ++shown;
+                    }
+                    if (static_cast<int>(lines) > shown) {
+                        req.preview_lines.push_back(
+                            "… +" + std::to_string(static_cast<int>(lines) - shown) +
+                            " more lines");
+                    }
+                }
+                if (!confirm(req)) {
                     block << "ERR: user declined\n";
                     block << "[END WRITE]\n\n";
                     cache_result = false;
                     out << block.str();
-                    if (tool_status) tool_status(tool_status_label(cmd), false);
+                    emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id,
+                              false, tool_result_preview(block.str()));
                     continue;
                 }
             }
@@ -3047,8 +3177,14 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         if (dedup_cache && cache_result && !block_str.empty()) {
             (*dedup_cache)[dedup_key] = block_str;
         }
-        if (tool_status && !block_str.empty()) {
-            tool_status(tool_status_label(cmd), !is_tool_result_failure(block_str));
+        if (!block_str.empty()) {
+            const bool ok = !is_tool_result_failure(block_str);
+            emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id, ok,
+                      tool_result_preview(block_str));
+        } else {
+            // No block produced (unknown command name) — still close the
+            // Started event so observers don't leave a spinning row.
+            emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id, true);
         }
     }
 

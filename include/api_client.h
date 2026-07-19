@@ -45,6 +45,17 @@ struct ContentPart {
     std::string image_url;
 };
 
+// Compact finished-tool chrome for TUI transcript replay.  Not sent to
+// model providers — UI/session persistence only.
+struct ToolTraceEntry {
+    std::string id;
+    std::string label;
+    std::string kind;
+    std::string detail;
+    bool        ok = true;
+    std::string result_preview;
+};
+
 struct Message {
     std::string role;                // "user" | "assistant"
 
@@ -56,6 +67,10 @@ struct Message {
     // unchanged while allowing new code to attach images.
     std::string content;
     std::vector<ContentPart> parts;
+
+    // Finished tool rows that followed this assistant turn in the TUI.
+    // Populated by the REPL after /cmd dispatch; ignored by API body builders.
+    std::vector<ToolTraceEntry> tool_trace;
 };
 
 struct ApiRequest {
@@ -80,6 +95,9 @@ struct ApiResponse {
     std::string raw_body;            // full response for debug
     std::string stop_reason;
     bool had_tool_calls = false;
+    // Accumulated provider reasoning/thinking text (when emitted).  Empty
+    // for models that don't stream a separate reasoning channel.
+    std::string reasoning;
     // Set when gate-mode advisor returned CONTINUE on the terminating turn.
     // Outer loops (LoopManager) use this to distinguish "task done" from
     // "send() returned ok but hit kMaxTurns before the gate could fire".
@@ -87,6 +105,10 @@ struct ApiResponse {
 };
 
 using StreamCallback = std::function<void(const std::string& chunk)>;
+// Optional side-channel for provider reasoning/thinking deltas (Anthropic
+// thinking_delta, OpenAI reasoning_content).  Not mixed into StreamCallback
+// text so the TUI can render a collapsible ThinkingSegment separately.
+using ReasoningCallback = std::function<void(const std::string& delta)>;
 
 // Provider descriptor.  Selected per-request by model-string prefix; each
 // provider owns its host/port/path, whether TLS is required, which request
@@ -138,6 +160,10 @@ public:
 
     ApiResponse complete(const ApiRequest& req);
     ApiResponse stream(const ApiRequest& req, StreamCallback cb);
+
+    // Optional reasoning/thinking stream sink.  Fired from the same thread
+    // as StreamCallback when a provider emits a separate reasoning channel.
+    void set_reasoning_callback(ReasoningCallback cb) { reasoning_cb_ = std::move(cb); }
 
     int total_input_tokens()  const { return total_in_.load(); }
     int total_output_tokens() const { return total_out_.load(); }
@@ -261,6 +287,7 @@ private:
     // ApiServer owns these for the running-server case).
     ProviderCircuitBreaker* breaker_ = nullptr;
     Metrics*                metrics_ = nullptr;
+    ReasoningCallback       reasoning_cb_;
 
     // Connection lifecycle per provider.
     bool ensure_connection(const Provider& p, Conn& c);
