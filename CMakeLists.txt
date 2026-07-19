@@ -136,6 +136,7 @@ set(ARBITER_SOURCES
     src/request_event_bus.cpp
     src/scheduler.cpp
     src/json.cpp
+    src/message_codec.cpp
     src/commands.cpp
     src/mcp/types.cpp
     src/mcp/subprocess.cpp
@@ -372,12 +373,18 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_commands
         tests/test_commands.cpp
         src/commands.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/json.cpp
     )
     target_include_directories(unit_commands PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
         ${OPENSSL_INCLUDE_DIR}
     )
+    target_compile_definitions(unit_commands PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     target_link_libraries(unit_commands PRIVATE
         CURL::libcurl
         OpenSSL::SSL
@@ -720,6 +727,44 @@ if(INDEX_BUILD_TESTS)
         ${OPENSSL_INCLUDE_DIR}
     )
     add_test(NAME unit_transcript_replay_predicates COMMAND unit_transcript_replay_predicates)
+
+    # Session JSON ↔ scroll rebuild round-trip (thinking + tool_trace).
+    add_executable(unit_message_replay_roundtrip
+        tests/test_message_replay_roundtrip.cpp
+        tests/term_size_stub.cpp
+        src/message_codec.cpp
+        src/json.cpp
+        src/repl/queues.cpp
+        src/stream_renderer.cpp
+        src/tui/block_parser.cpp
+        src/tui/stream_filter.cpp
+        src/tui/opentui/pane_scroll_view.cpp
+        src/tui/opentui/ansi_scroll_append.cpp
+        src/tui/opentui/span_scroll_append.cpp
+        src/tui/opentui/diff_panel.cpp
+        src/tui/tui.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/tui/ansi_util.cpp
+        src/code_highlighter.cpp
+        src/markdown.cpp
+        src/styled_text.cpp
+        src/render_policy.cpp
+        src/theme.cpp
+    )
+    target_include_directories(unit_message_replay_roundtrip PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(unit_message_replay_roundtrip PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    target_link_libraries(unit_message_replay_roundtrip PRIVATE OpenTUI::core)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(unit_message_replay_roundtrip PRIVATE dl pthread)
+        set_target_properties(unit_message_replay_roundtrip PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    endif()
+    add_test(NAME unit_message_replay_roundtrip COMMAND unit_message_replay_roundtrip)
 
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser

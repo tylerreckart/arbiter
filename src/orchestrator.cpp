@@ -4,6 +4,7 @@
 #include "atomic_file.h"
 #include "commands.h"
 #include "config.h"
+#include "message_codec.h"
 #include "tui/stream_filter.h"
 #include <cctype>
 #include <cstdlib>
@@ -32,6 +33,11 @@ namespace {
 thread_local int         tl_stream_id    = 0;
 thread_local std::string tl_stream_agent;
 thread_local int         tl_stream_depth = 0;
+
+// Pane-exec thread installs a binder so /parallel workers can re-pin the
+// spawning pane's TLS callback routing.  Thread-local so concurrent panes
+// don't clobber each other; workers capture a copy at spawn time.
+thread_local std::function<void()> tl_worker_pane_binder;
 
 struct StreamScope {
     int         prev_id;
@@ -316,9 +322,8 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             child_clients.back()->set_circuit_breaker(client_.circuit_breaker());
             child_clients.back()->set_metrics(client_.metrics());
             // Share the parent's reasoning sink so thought deltas still reach
-            // the TUI when the provider emits them.  (Live ToolSegment paint
-            // from worker threads still depends on the REPL callback finding
-            // a pane — that path is unchanged.)
+            // the TUI when the provider emits them.  Workers also re-pin the
+            // spawning pane via tl_worker_pane_binder so g_active_pane is set.
             if (client_.reasoning_callback()) {
                 child_clients.back()->set_reasoning_callback(
                     client_.reasoning_callback());
@@ -334,11 +339,19 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
         std::vector<std::string> results(kids.size());
         threads.reserve(kids.size());
 
+        // Capture on the spawning (pane exec) thread so workers can pin the
+        // same pane + conversation for tool/thinking callback routing.
+        auto pane_binder = tl_worker_pane_binder;
+        const std::string conv_key = agent_conversation_key();
+
         for (size_t i = 0; i < kids.size(); ++i) {
             const std::string sub_id  = kids[i].first;
             const std::string sub_msg = kids[i].second;
             threads.emplace_back([this, i, sub_id, sub_msg, caller_id, depth,
-                                   original_query, &results, &child_clients]() {
+                                   original_query, &results, &child_clients,
+                                   pane_binder, conv_key]() {
+                if (pane_binder) pane_binder();
+                ConversationScope scope(conv_key);
                 // Basic validations — mirror make_invoker's gates.
                 if (sub_id == caller_id) {
                     results[i] = "ERR: agent cannot invoke itself";
@@ -635,6 +648,10 @@ static std::string summarize_tool_calls(const std::vector<AgentCommand>& cmds,
 
 ApiResponse Orchestrator::ask_arbiter(const std::string& query) {
     return send("index", query);
+}
+
+void Orchestrator::set_worker_pane_binder(std::function<void()> fn) {
+    tl_worker_pane_binder = std::move(fn);
 }
 
 void Orchestrator::set_progress_callback(ProgressCallback cb) {
@@ -1096,6 +1113,7 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
         if (!more.ok) return;
 
         resp.content               += more.content;
+        resp.reasoning             += more.reasoning;
         resp.input_tokens          += more.input_tokens;
         resp.output_tokens         += more.output_tokens;
         resp.cache_read_tokens     += more.cache_read_tokens;
@@ -1533,6 +1551,17 @@ void Orchestrator::append_tool_trace(const std::string& id, ToolTraceEntry entry
     it->second->append_tool_trace(std::move(entry));
 }
 
+void Orchestrator::append_thinking(const std::string& id, std::string_view delta) {
+    if (id == "index") {
+        index_master_->append_thinking(delta);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(agents_mutex_);
+    auto it = agents_.find(id);
+    if (it == agents_.end()) return;
+    it->second->append_thinking(delta);
+}
+
 static std::string short_model(const std::string& model) {
     std::string s = model;
     if (s.size() > 7 && s.substr(0, 7) == "claude-")
@@ -1805,70 +1834,13 @@ Orchestrator::PlanResult Orchestrator::execute_plan(
 
 // ─── Session persistence ──────────────────────────────────────────────────────
 
-static std::shared_ptr<JsonValue> tool_trace_to_json(
-    const std::vector<ToolTraceEntry>& trace) {
-    auto arr = jarr();
-    for (const auto& t : trace) {
-        auto obj = jobj();
-        auto& m = obj->as_object_mut();
-        m["id"] = jstr(t.id);
-        m["label"] = jstr(t.label);
-        m["kind"] = jstr(t.kind);
-        m["detail"] = jstr(t.detail);
-        m["ok"] = jbool(t.ok);
-        m["result_preview"] = jstr(t.result_preview);
-        arr->as_array_mut().push_back(obj);
-    }
-    return arr;
-}
-
-static std::vector<ToolTraceEntry> tool_trace_from_json(const JsonValue* arr) {
-    std::vector<ToolTraceEntry> out;
-    if (!arr || !arr->is_array()) return out;
-    for (auto& v : arr->as_array()) {
-        if (!v || !v->is_object()) continue;
-        ToolTraceEntry t;
-        t.id = v->get_string("id");
-        t.label = v->get_string("label");
-        t.kind = v->get_string("kind");
-        t.detail = v->get_string("detail");
-        t.ok = v->get_bool("ok", true);
-        t.result_preview = v->get_string("result_preview");
-        out.push_back(std::move(t));
-    }
-    return out;
-}
-
 static std::shared_ptr<JsonValue> messages_to_json(const std::vector<Message>& msgs) {
-    auto arr = jarr();
-    for (auto& m : msgs) {
-        auto obj = jobj();
-        obj->as_object_mut()["role"]    = jstr(m.role);
-        obj->as_object_mut()["content"] = jstr(m.content);
-        if (!m.thinking.empty()) {
-            obj->as_object_mut()["thinking"] = jstr(m.thinking);
-        }
-        if (!m.tool_trace.empty()) {
-            obj->as_object_mut()["tool_trace"] = tool_trace_to_json(m.tool_trace);
-        }
-        arr->as_array_mut().push_back(obj);
-    }
-    return arr;
+    return json_parse(encode_messages_json(msgs));
 }
 
 static std::vector<Message> messages_from_json(const JsonValue* arr) {
-    std::vector<Message> out;
-    if (!arr || !arr->is_array()) return out;
-    for (auto& v : arr->as_array()) {
-        if (!v) continue;
-        Message msg;
-        msg.role = v->get_string("role");
-        msg.content = v->get_string("content");
-        msg.thinking = v->get_string("thinking");
-        msg.tool_trace = tool_trace_from_json(v->get("tool_trace").get());
-        out.push_back(std::move(msg));
-    }
-    return out;
+    if (!arr) return {};
+    return decode_messages_json(json_serialize(*arr));
 }
 
 std::string Orchestrator::execute_slash_command(const std::string& line,

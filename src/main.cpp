@@ -176,7 +176,8 @@ static arbiter::RenderPolicy master_stream_policy(const arbiter::Config& cfg) {
 // Orchestrator callbacks (progress/tool-status/agent-start) run
 // synchronously from whichever exec thread invoked orch.send_streaming, so
 // reading this thread-local gets the owning pane with zero synchronization.
-// Threads other than pane-exec (main, pump) leave it nullptr.
+// /parallel workers re-pin it via orch.set_worker_pane_binder (captured at
+// spawn time from the pane exec thread).  Main/pump leave it nullptr.
 thread_local Pane* g_active_pane = nullptr;
 
 // Pin the advisor gate's original task across foreground turns until the gate
@@ -561,14 +562,19 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     // Provider reasoning/thinking → collapsible ThinkingSegment (when emitted).
     // Header ThinkingIndicator remains the wait-state spinner for all models.
+    // When an assistant message already exists (tool / nested phase), also
+    // persist onto the pane agent so conversation switch rebuilds the rows.
     orch.client().set_reasoning_callback([&](const std::string& delta) {
         Pane* p = g_active_pane;
-        if (p) p->output_queue.push_thinking(delta);
+        if (!p) return;
+        p->output_queue.push_thinking(delta);
+        orch.append_thinking(p->current_agent, delta);
     });
 
     // ── Orchestrator callbacks ─────────────────────────────────────────────
     // All pane-facing callbacks route through g_active_pane (thread-local),
-    // which each pane's exec thread sets at startup.
+    // which each pane's exec thread sets at startup. /parallel workers pin
+    // the same pane via worker_pane_binder.
     orch.set_progress_callback([&](const std::string& agent_id,
                                     const std::string& content) {
         Pane* p = g_active_pane;
@@ -1622,11 +1628,16 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         pane_ptr->exec_thread = std::thread([&, pane_ptr]() {
             Pane& p = *pane_ptr;
             g_active_pane = &p;
+            // /parallel workers capture this binder by value at spawn time.
+            orch.set_worker_pane_binder([pane_ptr]() { g_active_pane = pane_ptr; });
             std::string line;
             while (p.cmd_queue.pop(line)) {
                 p.cmd_queue.set_busy(true);
                 p.turn_running.store(true);
                 p.last_response.clear();
+                // Re-install each turn so a sibling pane that also ran
+                // /parallel can't leave a stale binder in place.
+                orch.set_worker_pane_binder([pane_ptr]() { g_active_pane = pane_ptr; });
                 if (layout_ptr && &layout_ptr->focused() != &p) {
                     p.activity_unfocused.store(true);
                     p.tui.set_activity_badge("●");

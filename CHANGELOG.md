@@ -15,7 +15,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   multi-line permission cards for `/write` and destructive `/exec`,
   interim sub-agent headers, and `tool_trace` + `thinking` persistence so
   conversation switch rebuilds tool and reasoning chrome.  Nested tools
-  dual-write to the pane agent (for replay) and the dispatching child.
+  dual-write to the pane agent (for replay) and the dispatching child;
+  `/parallel` workers re-pin the spawning pane for live callback routing.
   See `docs/tui/output-ux.md`.
 - **Markdown polish.**  Task lists (`- [ ]` / `- [x]`), nested numbered
   lists, and indented code blocks route into `CodeSegment` when the

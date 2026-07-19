@@ -1,6 +1,7 @@
 // arbiter/src/commands.cpp — Agent-invocable command execution
 #include "commands.h"
 #include "api_client.h"  // ContentPart full type — forward-declared in commands.h.
+#include "styled_text.h"
 
 #include <algorithm>
 #include <atomic>
@@ -2738,15 +2739,13 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 req.summary = "destructive shell command";
                 // Target carries the command; only spill into preview when
                 // the header would truncate (avoids duplicating the same line).
-                constexpr size_t kTargetMax = 96;
-                if (cmd.args.size() > kTargetMax) {
-                    req.target = cmd.args.substr(0, kTargetMax - 3) + "\u2026";
-                    std::string preview = cmd.args;
-                    if (preview.size() > 240) {
-                        preview.resize(237);
-                        preview += "\u2026";
-                    }
-                    req.preview_lines.push_back(std::move(preview));
+                // Truncate by display width so multibyte UTF-8 isn't split.
+                constexpr int kTargetCols = 96;
+                constexpr int kPreviewCols = 240;
+                if (static_cast<int>(display_width(cmd.args)) > kTargetCols) {
+                    req.target = trim_to_display_cols(cmd.args, kTargetCols - 1) + "\u2026";
+                    req.preview_lines.push_back(
+                        trim_to_display_cols(cmd.args, kPreviewCols));
                 } else {
                     req.target = cmd.args;
                 }
