@@ -716,6 +716,27 @@ std::string ApiClient::build_body_gemini(const ApiRequest& req) {
     auto& g = gen->as_object_mut();
     g["maxOutputTokens"] = jnum(static_cast<double>(req.max_tokens));
     if (req.include_temperature) g["temperature"] = jnum(req.temperature);
+    // Gemini 2.5 / 3 thinking models: ask for thought summaries so the TUI
+    // can render a ThinkingSegment.  Older Gemini models ignore unknown
+    // generationConfig keys or reject them — gate on model id.
+    // Flash-Lite defaults thinking off unless thinkingBudget is set.
+    {
+        const std::string stripped = strip_model_prefix(req.model);
+        const bool thinking_model =
+            stripped.find("gemini-2.5") != std::string::npos ||
+            stripped.find("gemini-3") != std::string::npos;
+        if (thinking_model) {
+            auto tc = jobj();
+            tc->as_object_mut()["includeThoughts"] = jbool(true);
+            const bool lite =
+                stripped.find("flash-lite") != std::string::npos ||
+                stripped.find("flash_lite") != std::string::npos;
+            if (lite) {
+                tc->as_object_mut()["thinkingBudget"] = jnum(1024);
+            }
+            g["thinkingConfig"] = tc;
+        }
+    }
     m["generationConfig"] = gen;
 
     return json_serialize(*obj);
@@ -1016,7 +1037,14 @@ ApiResponse ApiClient::parse_body_gemini(const std::string& body) {
                     if (parts && parts->is_array()) {
                         for (auto& part : parts->as_array()) {
                             if (!part) continue;
-                            resp.content += part->get_string("text");
+                            std::string text = part->get_string("text");
+                            if (text.empty()) continue;
+                            // Thought summaries carry `"thought": true`.
+                            if (part->get_bool("thought")) {
+                                resp.reasoning += text;
+                            } else {
+                                resp.content += text;
+                            }
                         }
                     }
                 }
@@ -1193,17 +1221,29 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
 static void process_anthropic_event(const std::string& data,
                                      std::string& content,
                                      ApiResponse& resp,
-                                     StreamCallback cb) {
+                                     StreamCallback cb,
+                                     ReasoningCallback reasoning_cb) {
     if (data.empty() || data == "[DONE]") return;
     try {
         auto root = json_parse(data);
         std::string type = root->get_string("type");
         if (type == "content_block_delta") {
             auto delta = root->get("delta");
-            if (delta && delta->get_string("type") == "text_delta") {
-                std::string text = delta->get_string("text");
-                content += text;
-                if (cb) cb(text);
+            if (delta) {
+                const std::string dtype = delta->get_string("type");
+                if (dtype == "text_delta") {
+                    std::string text = delta->get_string("text");
+                    content += text;
+                    if (cb) cb(text);
+                } else if (dtype == "thinking_delta") {
+                    // Anthropic extended thinking — separate from prose.
+                    std::string think = delta->get_string("thinking");
+                    if (think.empty()) think = delta->get_string("text");
+                    if (!think.empty()) {
+                        resp.reasoning += think;
+                        if (reasoning_cb) reasoning_cb(think);
+                    }
+                }
             }
         } else if (type == "message_start") {
             auto msg = root->get("message");
@@ -1236,7 +1276,8 @@ static void process_anthropic_event(const std::string& data,
 static void process_openai_event(const std::string& data,
                                   std::string& content,
                                   ApiResponse& resp,
-                                  StreamCallback cb) {
+                                  StreamCallback cb,
+                                  ReasoningCallback reasoning_cb) {
     if (data.empty() || data == "[DONE]") return;
     try {
         auto root = json_parse(data);
@@ -1257,6 +1298,13 @@ static void process_openai_event(const std::string& data,
                     if (!text.empty()) {
                         content += text;
                         if (cb) cb(text);
+                    }
+                    // OpenAI / OpenRouter reasoning models.
+                    std::string think = delta->get_string("reasoning_content");
+                    if (think.empty()) think = delta->get_string("reasoning");
+                    if (!think.empty()) {
+                        resp.reasoning += think;
+                        if (reasoning_cb) reasoning_cb(think);
                     }
                 }
                 std::string finish = ch0->get_string("finish_reason");
@@ -1279,11 +1327,14 @@ static void process_openai_event(const std::string& data,
 
 // Gemini SSE chunk: `data: {"candidates":[{"content":{"parts":[{"text":"…"}],
 // "role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{...}}`.
+// Thought summaries arrive as parts with `"thought": true` when
+// generationConfig.thinkingConfig.includeThoughts is set.
 // Gemini SSE: no [DONE] marker; final chunk carries finishReason + usageMetadata.
 static void process_gemini_event(const std::string& data,
                                   std::string& content,
                                   ApiResponse& resp,
-                                  StreamCallback cb) {
+                                  StreamCallback cb,
+                                  ReasoningCallback reasoning_cb) {
     if (data.empty()) return;
     try {
         auto root = json_parse(data);
@@ -1305,7 +1356,11 @@ static void process_gemini_event(const std::string& data,
                         for (auto& part : parts->as_array()) {
                             if (!part) continue;
                             std::string text = part->get_string("text");
-                            if (!text.empty()) {
+                            if (text.empty()) continue;
+                            if (part->get_bool("thought")) {
+                                resp.reasoning += text;
+                                if (reasoning_cb) reasoning_cb(text);
+                            } else {
                                 content += text;
                                 if (cb) cb(text);
                             }
@@ -1388,11 +1443,14 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
             if (!data.empty() && data.back() == '\r') data.pop_back();
             switch (fmt) {
                 case Provider::FORMAT_ANTHROPIC:
-                    process_anthropic_event(data, content, resp, cb); break;
+                    process_anthropic_event(data, content, resp, cb, reasoning_cb_);
+                    break;
                 case Provider::FORMAT_GEMINI:
-                    process_gemini_event(data, content, resp, cb); break;
+                    process_gemini_event(data, content, resp, cb, reasoning_cb_);
+                    break;
                 case Provider::FORMAT_OPENAI_CHAT: default:
-                    process_openai_event(data, content, resp, cb); break;
+                    process_openai_event(data, content, resp, cb, reasoning_cb_);
+                    break;
             }
         }
     };

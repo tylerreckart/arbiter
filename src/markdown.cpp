@@ -218,6 +218,26 @@ std::vector<StyledLine> MarkdownRenderer::render_buffered_code_block_styled(
 }
 
 std::optional<StyledLine> MarkdownRenderer::process_line_styled(const std::string& line) {
+    // Close indented-code blocks on the first non-empty, non-indented line.
+    if (in_indent_code_) {
+        const bool still_indent =
+            line.empty() ||
+            (line.size() >= 4 && line.compare(0, 4, "    ") == 0) ||
+            (!line.empty() && line[0] == '\t');
+        if (still_indent) {
+            if (line.empty()) {
+                if (code_line_) code_line_("");
+            } else {
+                size_t skip = (line[0] == '\t') ? 1 : 4;
+                if (code_line_) code_line_(line.substr(skip));
+            }
+            return std::nullopt;
+        }
+        if (code_close_) code_close_("```");
+        in_indent_code_ = false;
+        // Fall through to render the terminating line as normal prose.
+    }
+
     const size_t lead = fence_ltrim(line);
     const std::string_view view(line.data() + lead, line.size() - lead);
 
@@ -308,38 +328,81 @@ std::optional<StyledLine> MarkdownRenderer::process_line_styled(const std::strin
         if (indent < line.size() &&
             (line[indent] == '-' || line[indent] == '*' || line[indent] == '+') &&
             indent + 1 < line.size() && line[indent + 1] == ' ') {
+            // Task lists: `- [ ] …` / `- [x] …` (GFM-style).
+            const size_t after_bullet = indent + 2;
+            bool is_task = false;
+            bool task_done = false;
+            if (after_bullet + 3 <= line.size() &&
+                line[after_bullet] == '[' &&
+                (line[after_bullet + 1] == ' ' ||
+                 line[after_bullet + 1] == 'x' ||
+                 line[after_bullet + 1] == 'X') &&
+                line[after_bullet + 2] == ']' &&
+                (after_bullet + 3 == line.size() || line[after_bullet + 3] == ' ')) {
+                is_task = true;
+                task_done = (line[after_bullet + 1] != ' ');
+            }
+
             StyledLine bullet_line;
             if (indent > 0) {
                 styled_append(bullet_line, StyleId::Default, std::string(indent, ' '));
             }
-            const char* bullet = (indent == 0) ? "\xe2\x80\xa2"
-                               : (indent <= 2)  ? "\xe2\x97\xa6"
-                                                : "\xe2\x80\x93";
-            styled_append(bullet_line, StyleId::Bullet, bullet);
-            styled_append(bullet_line, StyleId::Default, " ");
-            render_inline_styled(bullet_line, line.substr(indent + 2));
+            if (is_task) {
+                styled_append(bullet_line,
+                              task_done ? StyleId::Success : StyleId::Dim,
+                              task_done ? "\u2611 " : "\u2610 ");  // ☑ / ☐
+                const size_t text_at = (after_bullet + 3 < line.size() &&
+                                        line[after_bullet + 3] == ' ')
+                    ? after_bullet + 4
+                    : after_bullet + 3;
+                render_inline_styled(bullet_line, line.substr(text_at));
+            } else {
+                const char* bullet = (indent == 0) ? "\xe2\x80\xa2"
+                                   : (indent <= 2)  ? "\xe2\x97\xa6"
+                                                    : "\xe2\x80\x93";
+                styled_append(bullet_line, StyleId::Bullet, bullet);
+                styled_append(bullet_line, StyleId::Default, " ");
+                render_inline_styled(bullet_line, line.substr(indent + 2));
+            }
             return bullet_line;
         }
     }
 
-    if ((line.size() >= 4 && line.substr(0, 4) == "    ") ||
+    // Indented code → CodeSegment when a code sink is wired; otherwise prose.
+    if ((line.size() >= 4 && line.compare(0, 4, "    ") == 0) ||
         (!line.empty() && line[0] == '\t')) {
         size_t skip = (line[0] == '\t') ? 1 : 4;
+        const std::string body = line.substr(skip);
+        if (code_open_ && code_line_) {
+            if (!in_indent_code_) {
+                in_indent_code_ = true;
+                code_open_("```", "");
+            }
+            code_line_(body);
+            return std::nullopt;
+        }
         StyledLine code_line;
         styled_append(code_line, StyleId::Default, "    ");
-        styled_append(code_line, StyleId::Code, line.substr(skip));
+        styled_append(code_line, StyleId::Code, body);
         return code_line;
     }
 
-    if (!line.empty() && std::isdigit(static_cast<unsigned char>(line[0]))) {
-        size_t dot = 0;
-        while (dot < line.size() && std::isdigit(static_cast<unsigned char>(line[dot]))) ++dot;
-        if (dot < line.size() && line[dot] == '.' &&
-            dot + 1 < line.size() && line[dot + 1] == ' ') {
+    // Nested numbered lists: allow leading indent before `1. `.
+    {
+        size_t indent = 0;
+        while (indent < line.size() && line[indent] == ' ') ++indent;
+        size_t dig = indent;
+        while (dig < line.size() && std::isdigit(static_cast<unsigned char>(line[dig])))
+            ++dig;
+        if (dig > indent && dig < line.size() && line[dig] == '.' &&
+            dig + 1 < line.size() && line[dig + 1] == ' ') {
             StyledLine numbered;
-            styled_append(numbered, StyleId::Bold, line.substr(0, dot + 1));
+            if (indent > 0) {
+                styled_append(numbered, StyleId::Default, std::string(indent, ' '));
+            }
+            styled_append(numbered, StyleId::Bold, line.substr(indent, dig - indent + 1));
             styled_append(numbered, StyleId::Default, " ");
-            render_inline_styled(numbered, line.substr(dot + 2));
+            render_inline_styled(numbered, line.substr(dig + 2));
             return numbered;
         }
     }
@@ -421,6 +484,10 @@ std::vector<StyledLine> MarkdownRenderer::flush_styled() {
         code_open_fence_.clear();
         in_code_block_ = false;
     }
+    if (in_indent_code_) {
+        if (code_close_) code_close_("```");
+        in_indent_code_ = false;
+    }
     return result;
 }
 
@@ -432,6 +499,7 @@ void MarkdownRenderer::reset() {
     line_buf_.clear();
     in_code_block_ = false;
     in_diff_block_ = false;
+    in_indent_code_ = false;
     diff_buf_.clear();
     code_buf_.clear();
     code_open_fence_.clear();

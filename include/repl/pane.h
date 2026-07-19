@@ -54,6 +54,10 @@ struct Pane {
     std::string       spawn_message;
     std::string       last_response;
     std::atomic<bool> spawn_flowed{false};
+
+    // Last sub-agent that got an interim `→ agent` header this turn; cleared
+    // when a new user turn starts so the next delegation can header again.
+    std::string       last_interim_agent;
 };
 
 } // namespace arbiter

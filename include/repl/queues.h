@@ -1,6 +1,7 @@
 #pragma once
 // arbiter/include/repl/queues.h
 
+#include "commands.h"
 #include "styled_text.h"
 
 #include <atomic>
@@ -48,7 +49,7 @@ private:
 };
 
 struct OutputItem {
-    enum class Kind : std::uint8_t { Text, Diff, Prose, Code };
+    enum class Kind : std::uint8_t { Text, Diff, Prose, Code, Tool, Thinking };
     enum class CodeOp : std::uint8_t { Open, Line, Close };
 
     Kind kind = Kind::Text;
@@ -58,6 +59,8 @@ struct OutputItem {
     size_t code_preview_rows = 8;
     std::string code_lang;
     bool new_block = false;
+    // Kind::Tool — upsert ToolSegment by tool.id (Started then Finished).
+    ToolActivityEvent tool{};
 };
 
 class OutputQueue {
@@ -86,6 +89,13 @@ public:
                         size_t preview_rows);
     void push_code_line(const std::string& line);
     void push_code_close(const std::string& close_fence);
+
+    // Queue a tool activity upsert (Started creates a row; Finished updates it).
+    void push_tool(const ToolActivityEvent& event);
+
+    // Append a reasoning/thinking delta into the current ThinkingSegment
+    // (creates one if needed). Collapsed by default in the scroll view.
+    void push_thinking(const std::string& delta);
 
     std::vector<OutputItem> drain_items();
 

@@ -45,6 +45,7 @@ private:
     std::string line_buf_;
     bool        in_code_block_ = false;
     bool        in_diff_block_ = false;
+    bool        in_indent_code_ = false;  // 4-space / tab indented code → CodeSegment
     std::string diff_buf_;
     std::vector<std::string> code_buf_;
     std::string code_open_fence_;

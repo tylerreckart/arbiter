@@ -60,15 +60,29 @@ static std::string tail_stripped(const PtySession& s, size_t bytes = 512) {
     return plain.substr(plain.size() - bytes);
 }
 
+// Poll for `token` in ANSI-stripped output.  Cold-start macOS runners often
+// need longer than a fixed read_for() for the first input-row paint.
+static bool wait_for_plain(PtySession& s, const std::string& token, int budget_ms) {
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(budget_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        s.read_for(200);
+        if (PtySession::strip_ansi(s.output()).find(token) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
 TEST_CASE("printable characters appear in the input row") {
     PtySession s = ready_editor();
     s.send("hello");
-    s.read_for(500);
 
     // After typing "hello", the input-row repaint should include the buffer
     // contents.  The block cursor can split the latest diff, so search the
-    // captured stream instead of only the final tail.
-    CHECK(PtySession::strip_ansi(s.output()).find("hello") != std::string::npos);
+    // captured stream instead of only the final tail.  Poll — a single 500ms
+    // drain races the first OpenTUI frame on cold macOS CI runners (main and
+    // this branch both saw 16/17 pass with only this case failing).
+    CHECK(wait_for_plain(s, "hello", 8000));
 }
 
 TEST_CASE("backspace deletes the character before the cursor") {

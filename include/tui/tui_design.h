@@ -56,7 +56,7 @@ struct TuiDesign {
         int panel_gap = 1;            // blank rows before/after code & diff
         int prose_paragraph_gap = 1;  // max consecutive blank prose lines
         int scroll_pad_y = 0;         // draw-time top/bottom inset in scroll
-        int scroll_gutter_cols = 0;   // left gutter cols in scroll (0 = off)
+        int scroll_gutter_cols = 1;   // quiet left gutter for content hierarchy
         int compact_cols = 72;
         int dense_cols = 88;
         bool show_footer = true;

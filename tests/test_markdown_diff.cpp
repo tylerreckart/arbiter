@@ -341,3 +341,67 @@ TEST_CASE("ANSI loop-log payloads must not go through plain System prose") {
     // (prose does not interpret nested SGR). Callers must use push_msg instead.
     CHECK(as_prose.text.find('\033') != std::string::npos);
 }
+
+TEST_CASE("markdown task lists render checkbox glyphs") {
+    MarkdownRenderer md;
+    auto lines = md.feed_styled("- [ ] open item\n- [x] done item\n");
+    auto rest = md.flush_styled();
+    lines.insert(lines.end(), rest.begin(), rest.end());
+    REQUIRE(lines.size() >= 2);
+    CHECK(lines[0].text.find("open item") != std::string::npos);
+    CHECK(lines[0].text.find("\u2610") != std::string::npos);  // ☐
+    CHECK(lines[1].text.find("done item") != std::string::npos);
+    CHECK(lines[1].text.find("\u2611") != std::string::npos);  // ☑
+}
+
+TEST_CASE("markdown nested numbered lists keep indent") {
+    MarkdownRenderer md;
+    auto lines = md.feed_styled("1. top\n  2. nested\n");
+    auto rest = md.flush_styled();
+    lines.insert(lines.end(), rest.begin(), rest.end());
+    REQUIRE(lines.size() >= 2);
+    CHECK(lines[0].text.find("1.") != std::string::npos);
+    const auto pos2 = lines[1].text.find("2.");
+    CHECK(pos2 != std::string::npos);
+    CHECK(pos2 > 0);  // leading indent before nested "2."
+    CHECK(lines[1].text.find("nested") != std::string::npos);
+}
+
+TEST_CASE("styled_activity_line and interim header helpers") {
+    auto act = styled_activity_line("[interrupted]", StyleId::Error);
+    CHECK(act.text.find("\u00b7 ") == 0);
+    CHECK(act.text.find("[interrupted]") != std::string::npos);
+
+    auto hdr = styled_interim_header("researcher");
+    CHECK(hdr.text.find("\u2192 ") == 0);
+    CHECK(hdr.text.find("researcher") != std::string::npos);
+}
+
+TEST_CASE("styled_permission_card includes action target preview and prompt") {
+    auto card = styled_permission_card(
+        "write", "src/main.cpp",
+        {"12 lines, 40 bytes", "#include <iostream>"});
+    REQUIRE(card.size() >= 3);
+    CHECK(card.front().text.find("permission") != std::string::npos);
+    CHECK(card.front().text.find("write") != std::string::npos);
+    CHECK(card.front().text.find("src/main.cpp") != std::string::npos);
+    CHECK(card.back().text.find("[y/N]") != std::string::npos);
+}
+
+TEST_CASE("indented code block routes to code sink when wired") {
+    std::vector<std::string> bodies;
+    bool opened = false;
+    bool closed = false;
+    MarkdownRenderer md;
+    md.set_code_sink(
+        [&](std::string, std::string) { opened = true; },
+        [&](const std::string& line) { bodies.push_back(line); },
+        [&](std::string) { closed = true; });
+    md.feed_styled("intro\n    int x = 1;\n    int y = 2;\nouto\n");
+    md.flush_styled();
+    CHECK(opened);
+    CHECK(closed);
+    REQUIRE(bodies.size() == 2);
+    CHECK(bodies[0] == "int x = 1;");
+    CHECK(bodies[1] == "int y = 2;");
+}

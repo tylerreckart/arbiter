@@ -4,6 +4,7 @@
 #include "atomic_file.h"
 #include "commands.h"
 #include "config.h"
+#include "message_codec.h"
 #include "tui/stream_filter.h"
 #include <cctype>
 #include <cstdlib>
@@ -32,6 +33,11 @@ namespace {
 thread_local int         tl_stream_id    = 0;
 thread_local std::string tl_stream_agent;
 thread_local int         tl_stream_depth = 0;
+
+// Pane-exec thread installs a binder so /parallel workers can re-pin the
+// spawning pane's TLS callback routing.  Thread-local so concurrent panes
+// don't clobber each other; workers capture a copy at spawn time.
+thread_local std::function<void()> tl_worker_pane_binder;
 
 struct StreamScope {
     int         prev_id;
@@ -315,6 +321,13 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             child_clients.push_back(std::make_unique<ApiClient>(api_keys_));
             child_clients.back()->set_circuit_breaker(client_.circuit_breaker());
             child_clients.back()->set_metrics(client_.metrics());
+            // Share the parent's reasoning sink so thought deltas still reach
+            // the TUI when the provider emits them.  Workers also re-pin the
+            // spawning pane via tl_worker_pane_binder so g_active_pane is set.
+            if (client_.reasoning_callback()) {
+                child_clients.back()->set_reasoning_callback(
+                    client_.reasoning_callback());
+            }
         }
         // Register child clients so cancel() can reach them while threads run.
         {
@@ -326,11 +339,19 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
         std::vector<std::string> results(kids.size());
         threads.reserve(kids.size());
 
+        // Capture on the spawning (pane exec) thread so workers can pin the
+        // same pane + conversation for tool/thinking callback routing.
+        auto pane_binder = tl_worker_pane_binder;
+        const std::string conv_key = agent_conversation_key();
+
         for (size_t i = 0; i < kids.size(); ++i) {
             const std::string sub_id  = kids[i].first;
             const std::string sub_msg = kids[i].second;
             threads.emplace_back([this, i, sub_id, sub_msg, caller_id, depth,
-                                   original_query, &results, &child_clients]() {
+                                   original_query, &results, &child_clients,
+                                   pane_binder, conv_key]() {
+                if (pane_binder) pane_binder();
+                ConversationScope scope(conv_key);
                 // Basic validations — mirror make_invoker's gates.
                 if (sub_id == caller_id) {
                     results[i] = "ERR: agent cannot invoke itself";
@@ -627,6 +648,10 @@ static std::string summarize_tool_calls(const std::vector<AgentCommand>& cmds,
 
 ApiResponse Orchestrator::ask_arbiter(const std::string& query) {
     return send("index", query);
+}
+
+void Orchestrator::set_worker_pane_binder(std::function<void()> fn) {
+    tl_worker_pane_binder = std::move(fn);
 }
 
 void Orchestrator::set_progress_callback(ProgressCallback cb) {
@@ -1088,6 +1113,7 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
         if (!more.ok) return;
 
         resp.content               += more.content;
+        resp.reasoning             += more.reasoning;
         resp.input_tokens          += more.input_tokens;
         resp.output_tokens         += more.output_tokens;
         resp.cache_read_tokens     += more.cache_read_tokens;
@@ -1514,6 +1540,28 @@ std::vector<Message> Orchestrator::get_agent_history(const std::string& id) cons
     return it->second->history();
 }
 
+void Orchestrator::append_tool_trace(const std::string& id, ToolTraceEntry entry) {
+    if (id == "index") {
+        index_master_->append_tool_trace(std::move(entry));
+        return;
+    }
+    std::lock_guard<std::mutex> lock(agents_mutex_);
+    auto it = agents_.find(id);
+    if (it == agents_.end()) return;
+    it->second->append_tool_trace(std::move(entry));
+}
+
+void Orchestrator::append_thinking(const std::string& id, std::string_view delta) {
+    if (id == "index") {
+        index_master_->append_thinking(delta);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(agents_mutex_);
+    auto it = agents_.find(id);
+    if (it == agents_.end()) return;
+    it->second->append_thinking(delta);
+}
+
 static std::string short_model(const std::string& model) {
     std::string s = model;
     if (s.size() > 7 && s.substr(0, 7) == "claude-")
@@ -1787,24 +1835,12 @@ Orchestrator::PlanResult Orchestrator::execute_plan(
 // ─── Session persistence ──────────────────────────────────────────────────────
 
 static std::shared_ptr<JsonValue> messages_to_json(const std::vector<Message>& msgs) {
-    auto arr = jarr();
-    for (auto& m : msgs) {
-        auto obj = jobj();
-        obj->as_object_mut()["role"]    = jstr(m.role);
-        obj->as_object_mut()["content"] = jstr(m.content);
-        arr->as_array_mut().push_back(obj);
-    }
-    return arr;
+    return json_parse(encode_messages_json(msgs));
 }
 
 static std::vector<Message> messages_from_json(const JsonValue* arr) {
-    std::vector<Message> out;
-    if (!arr || !arr->is_array()) return out;
-    for (auto& v : arr->as_array()) {
-        if (!v) continue;
-        out.push_back({v->get_string("role"), v->get_string("content")});
-    }
-    return out;
+    if (!arr) return {};
+    return decode_messages_json(json_serialize(*arr));
 }
 
 std::string Orchestrator::execute_slash_command(const std::string& line,

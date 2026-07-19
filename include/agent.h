@@ -8,6 +8,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <chrono>
@@ -49,6 +50,17 @@ public:
         std::lock_guard<std::mutex> lk(history_mu_);
         histories_[agent_conversation_key()] = std::move(h);
     }
+
+    // Append a finished tool row onto the most recent assistant message in
+    // the current ConversationScope (no-op if none).  Used so transcript
+    // replay can rebuild ToolSegment chrome without re-running tools.
+    void append_tool_trace(ToolTraceEntry entry);
+
+    // Append reasoning text onto the most recent assistant message (no-op
+    // when the latest message isn't assistant — e.g. mid-stream before the
+    // new turn is committed).  Used so nested /agent and /parallel thought
+    // deltas persist onto the pane agent's turn for conversation switch.
+    void append_thinking(std::string_view delta);
 
     // Accessors
     const std::string& id() const { return id_; }
