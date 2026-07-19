@@ -206,6 +206,18 @@ void Agent::append_tool_trace(ToolTraceEntry entry) {
     }
 }
 
+void Agent::append_thinking(std::string_view delta) {
+    if (delta.empty()) return;
+    std::lock_guard<std::mutex> lk(history_mu_);
+    auto it = histories_.find(agent_conversation_key());
+    if (it == histories_.end() || it->second.empty()) return;
+    // Only append when an assistant turn already exists — mid-stream of a
+    // new turn still has the user message on top, and that turn's thinking
+    // is committed wholesale via Message.thinking = resp.reasoning.
+    if (it->second.back().role != "assistant") return;
+    it->second.back().thinking.append(delta.data(), delta.size());
+}
+
 void Agent::reset_history() {
     std::lock_guard<std::mutex> lk(history_mu_);
     histories_[agent_conversation_key()].clear();

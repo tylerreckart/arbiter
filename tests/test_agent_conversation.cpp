@@ -110,9 +110,26 @@ TEST_CASE("Agent to_json persists thinking and multi-turn tool_trace") {
     t3.kind = "help";
     t3.ok = true;
     agent.append_tool_trace(std::move(t3));
+    agent.append_thinking(" more thought");
     const auto hist = agent.history();
     REQUIRE(hist.size() == 4);
     REQUIRE(hist[3].tool_trace.size() == 2);
     CHECK(hist[3].tool_trace.back().id == "t3");
     CHECK(hist[1].tool_trace.size() == 1);
+    CHECK(hist[3].thinking == "step two more thought");
+    CHECK(hist[1].thinking == "step one");
+}
+
+TEST_CASE("append_thinking no-ops when latest message is not assistant") {
+    ApiClient client({});
+    Constitution cfg;
+    cfg.name = "tester";
+    cfg.model = "test-model";
+    Agent agent("tester", cfg, client);
+
+    ConversationScope scope("conv-think");
+    agent.set_history({Message{"user", "hi"}});
+    agent.append_thinking("should not stick");
+    REQUIRE(agent.history().size() == 1);
+    CHECK(agent.history()[0].thinking.empty());
 }

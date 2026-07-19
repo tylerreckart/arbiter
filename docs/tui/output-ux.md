@@ -62,11 +62,13 @@ Keys remain `y` / `n`. Declines still return `ERR: user declined` to the agent.
 
 When Anthropic emits `thinking_delta`, OpenAI-compat emits
 `reasoning_content` / `reasoning`, or Gemini streams parts with
-`"thought": true` (via `thinkingConfig.includeThoughts` on Gemini 2.5/3),
-deltas land in a collapsed `ThinkingSegment`. Models without a separate
-reasoning channel keep the header **thinking…** spinner only — Arbiter does
-not invent chain-of-thought from ordinary prose. Reasoning is stored on the
-assistant `Message.thinking` field and rebuilt on conversation switch.
+`"thought": true` (via `thinkingConfig.includeThoughts` on Gemini 2.5/3;
+Flash-Lite also sets `thinkingBudget`), deltas land in a collapsed
+`ThinkingSegment`. Models without a separate reasoning channel keep the
+header **thinking…** spinner only — Arbiter does not invent chain-of-thought
+from ordinary prose. Reasoning is stored on the assistant `Message.thinking`
+field (including nested `/agent` and `/parallel` deltas appended onto the
+pane agent’s open turn) and rebuilt on conversation switch.
 
 ## Replay
 

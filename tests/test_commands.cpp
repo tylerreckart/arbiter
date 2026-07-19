@@ -2,6 +2,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "commands.h"
+#include "styled_text.h"
 
 #include <filesystem>
 #include <fstream>
@@ -712,6 +713,35 @@ TEST_CASE("exec confirm request previews when target is truncated") {
     CHECK(seen.target.find("\u2026") != std::string::npos);
     REQUIRE_FALSE(seen.preview_lines.empty());
     CHECK(seen.preview_lines.front().find("rm -rf") != std::string::npos);
+}
+
+TEST_CASE("exec confirm truncation does not split UTF-8 code points") {
+    ConfirmRequest seen;
+    ConfirmFn capture = [&](const ConfirmRequest& req) {
+        seen = req;
+        return false;
+    };
+
+    // Wide glyphs (CJK) — byte truncation would split mid-sequence.
+    // Grow until display width exceeds the target column budget.
+    std::string long_cmd = "rm -rf ";
+    while (display_width(long_cmd) <= 96) long_cmd += "文";
+    std::vector<AgentCommand> cmds;
+    AgentCommand e;
+    e.name = "exec";
+    e.args = long_cmd;
+    cmds.push_back(e);
+
+    execute_agent_commands(cmds, "test", "", nullptr, capture);
+    const auto ell = seen.target.find("\u2026");
+    REQUIRE(ell != std::string::npos);
+    const std::string bare = seen.target.substr(0, ell);
+    // Display-width truncate keeps complete clusters (CJK = width 2 each).
+    CHECK(display_width(bare) <= 95);
+    CHECK(display_width(bare) > 0);
+    // Round-trip through trim must be a no-op — proves no mid-sequence cut.
+    CHECK(trim_to_display_cols(bare, static_cast<int>(display_width(bare))) == bare);
+    REQUIRE_FALSE(seen.preview_lines.empty());
 }
 
 TEST_CASE("tool events carry dispatching agent_id") {

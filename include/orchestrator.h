@@ -5,8 +5,10 @@
 #include "api_client.h"
 #include "commands.h"
 #include <atomic>
+#include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <memory>
 #include <mutex>
@@ -257,6 +259,16 @@ public:
     // Append finished-tool chrome onto the agent's latest assistant message
     // (current ConversationScope).  No-op for unknown ids / empty history.
     void append_tool_trace(const std::string& id, ToolTraceEntry entry);
+
+    // Append reasoning onto the agent's latest assistant message when one
+    // exists (see Agent::append_thinking).  No-op for unknown ids.
+    void append_thinking(const std::string& id, std::string_view delta);
+
+    // Binder installed by the REPL on the pane exec thread so /parallel
+    // workers can pin the spawning pane onto their thread-local callback
+    // routing (g_active_pane).  Stored thread-locally and captured by value
+    // when workers spawn — multi-pane safe under concurrent turns.
+    void set_worker_pane_binder(std::function<void()> fn);
 
     // Global stats
     std::string global_status() const;
