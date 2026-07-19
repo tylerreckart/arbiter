@@ -7,7 +7,7 @@ Agents can issue `/search <query>` mid-turn to discover sources before fetching 
 | `search_provider` | `brave` | Search backend. Only `brave` is implemented in v1; `tavily` and `exa` slots reserved. |
 | `search_api_key`  | `""`    | Provider API key. Empty ⇒ `/search` returns ERR with a clear "configure ARBITER_SEARCH_API_KEY" message. |
 
-`arbiter --api` reads the key from `ARBITER_SEARCH_API_KEY` (preferred — provider-agnostic name) or `BRAVE_SEARCH_API_KEY` (convenience for Brave-only deployments). The provider can be set via `ARBITER_SEARCH_PROVIDER`. Without a key the slash command degrades cleanly: agents see `ERR: web search unavailable in this context` and adapt by dropping the `/search` step.
+`arbiter` and `arbiter --api` resolve the key in this order: `ARBITER_SEARCH_API_KEY` (preferred — provider-agnostic name), `BRAVE_SEARCH_API_KEY` (convenience for Brave-only deployments), then `~/.arbiter/search_api_key` (written by [`arbiter --setup-tools`](../cli/setup-tools.md)). The provider can be set via `ARBITER_SEARCH_PROVIDER`. Without a key the slash command degrades cleanly: agents see `ERR: web search unavailable in this context` and adapt by dropping the `/search` step.
 
 ## Slash commands
 

@@ -17,11 +17,17 @@
 
 #include "commands.h"
 #include "json.h"
+#include "mcp/manager.h"
 #include "mcp/subprocess.h"
 #include "mcp/types.h"
 
 #include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 
 using namespace arbiter;
 using namespace arbiter::mcp;
@@ -466,4 +472,106 @@ TEST_CASE("/browse JSON-escapes special characters in the URL") {
         nullptr, false, nullptr, nullptr, nullptr, invoker);
     CHECK(seen.find("\\\"hello\\\"") != std::string::npos);
     CHECK(seen.find("\\\\backslash") != std::string::npos);
+}
+
+// ── 4. Registry serialize / load round-trip ──────────────────────────
+
+TEST_CASE("serialize_server_registry pretty-prints empty servers object") {
+    auto body = serialize_server_registry({});
+    CHECK(body.find("\"servers\"") != std::string::npos);
+    auto v = json_parse(body);
+    REQUIRE(v);
+    REQUIRE(v->get("servers"));
+    CHECK(v->get("servers")->as_object().empty());
+}
+
+TEST_CASE("save_server_registry round-trips playwright + hosted + env") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path()
+        / ("arbiter-mcp-reg-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    const auto path = (dir / "mcp_servers.json").string();
+
+    std::vector<ServerSpec> specs;
+    {
+        ServerSpec s;
+        s.name = "playwright";
+        s.argv = {"npx", "-y", "@playwright/mcp@latest", "--headless"};
+        s.init_timeout = std::chrono::milliseconds(90000);
+        s.call_timeout = std::chrono::milliseconds(30000);
+        specs.push_back(s);
+    }
+    {
+        ServerSpec s;
+        s.name = "sentry";
+        s.argv = {"npx", "-y", "mcp-remote", "https://mcp.sentry.dev/mcp"};
+        s.env_extra = {"FOO=bar"};
+        s.init_timeout = std::chrono::milliseconds(90000);
+        specs.push_back(s);
+    }
+
+    REQUIRE(save_server_registry(path, specs));
+    struct stat st{};
+    REQUIRE(::stat(path.c_str(), &st) == 0);
+    CHECK((st.st_mode & 0777) == 0600);
+
+    auto loaded = load_server_registry(path);
+    REQUIRE(loaded.size() == 2);
+    CHECK(loaded[0].name == "playwright");  // alphabetical
+    CHECK(loaded[0].argv.size() == 4);
+    CHECK(loaded[0].argv[0] == "npx");
+    CHECK(loaded[0].argv.back() == "--headless");
+    CHECK(loaded[0].init_timeout.count() == 90000);
+    CHECK(loaded[1].name == "sentry");
+    REQUIRE(loaded[1].env_extra.size() == 1);
+    CHECK(loaded[1].env_extra[0] == "FOO=bar");
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("save_server_registry rejects empty argv without throwing") {
+    ServerSpec s;
+    s.name = "broken";
+    // argv empty → serialize would throw; save must return false.
+    CHECK_FALSE(save_server_registry("/tmp/arbiter-mcp-should-not-exist.json", {s}));
+}
+
+TEST_CASE("serialize_server_registry escapes quotes in names and args") {
+    ServerSpec s;
+    s.name = "weird\"name";
+    s.argv = {"cmd", "arg\"with\"quotes"};
+    auto body = serialize_server_registry({s});
+    auto v = json_parse(body);
+    REQUIRE(v);
+    auto servers = v->get("servers");
+    REQUIRE(servers);
+    auto entry = servers->get("weird\"name");
+    REQUIRE(entry);
+    CHECK(entry->get_string("command", "") == "cmd");
+    auto args = entry->get("args");
+    REQUIRE(args);
+    REQUIRE(args->as_array().size() == 1);
+    CHECK(args->as_array()[0]->as_string() == "arg\"with\"quotes");
+}
+
+TEST_CASE("load_server_registry skips entries with empty command") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path()
+        / ("arbiter-mcp-skip-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    const auto path = (dir / "mcp_servers.json").string();
+    {
+        std::ofstream f(path);
+        f << R"({
+  "servers": {
+    "broken": { "command": "" },
+    "ok": { "command": "npx", "args": ["-y", "demo"] }
+  }
+})";
+    }
+    auto loaded = load_server_registry(path);
+    REQUIRE(loaded.size() == 1);
+    CHECK(loaded[0].name == "ok");
+    CHECK(loaded[0].argv.size() == 3);
+    fs::remove_all(dir);
 }

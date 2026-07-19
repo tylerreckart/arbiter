@@ -3,10 +3,13 @@
 #include "mcp/manager.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <fcntl.h>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace arbiter::mcp {
 
@@ -60,8 +63,10 @@ std::vector<ServerSpec> load_server_registry(const std::string& path) {
         ServerSpec s;
         s.name = name;
         s.argv.push_back(str_field(*val, "command"));
-        if (s.argv[0].empty())
-            throw std::runtime_error("MCP registry entry '" + name + "' missing 'command'");
+        // Skip unusable entries instead of failing the whole registry —
+        // a single bad hand-edit must not brick --setup-tools or every
+        // /v1/orchestrate request.
+        if (s.argv[0].empty()) continue;
 
         if (auto args = val->get("args"); args && args->is_array()) {
             for (auto& a : args->as_array()) {
@@ -84,6 +89,134 @@ std::vector<ServerSpec> load_server_registry(const std::string& path) {
     std::sort(out.begin(), out.end(),
               [](const ServerSpec& a, const ServerSpec& b) { return a.name < b.name; });
     return out;
+}
+
+namespace {
+
+std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out.push_back(static_cast<char>(c));
+                }
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+std::string serialize_server_registry(const std::vector<ServerSpec>& specs) {
+    std::vector<ServerSpec> sorted = specs;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const ServerSpec& a, const ServerSpec& b) { return a.name < b.name; });
+
+    std::ostringstream os;
+    os << "{\n  \"servers\": {";
+    if (sorted.empty()) {
+        os << "}\n}\n";
+        return os.str();
+    }
+    os << "\n";
+    for (size_t i = 0; i < sorted.size(); ++i) {
+        const auto& s = sorted[i];
+        if (s.argv.empty()) {
+            throw std::runtime_error("MCP server '" + s.name + "' has empty argv");
+        }
+        os << "    \"" << json_escape(s.name) << "\": {\n";
+        os << "      \"command\": \"" << json_escape(s.argv[0]) << "\"";
+        if (s.argv.size() > 1) {
+            os << ",\n      \"args\": [";
+            for (size_t a = 1; a < s.argv.size(); ++a) {
+                if (a > 1) os << ", ";
+                os << "\"" << json_escape(s.argv[a]) << "\"";
+            }
+            os << "]";
+        }
+        if (!s.env_extra.empty()) {
+            os << ",\n      \"env\": {\n";
+            for (size_t e = 0; e < s.env_extra.size(); ++e) {
+                const auto& kv = s.env_extra[e];
+                const auto eq = kv.find('=');
+                const std::string key = eq == std::string::npos ? kv : kv.substr(0, eq);
+                const std::string val = eq == std::string::npos ? "" : kv.substr(eq + 1);
+                os << "        \"" << json_escape(key) << "\": \""
+                   << json_escape(val) << "\"";
+                if (e + 1 < s.env_extra.size()) os << ",";
+                os << "\n";
+            }
+            os << "      }";
+        }
+        if (s.init_timeout != std::chrono::seconds(60)) {
+            os << ",\n      \"init_timeout_ms\": "
+               << s.init_timeout.count();
+        }
+        if (s.call_timeout != std::chrono::seconds(30)) {
+            os << ",\n      \"call_timeout_ms\": "
+               << s.call_timeout.count();
+        }
+        os << "\n    }";
+        if (i + 1 < sorted.size()) os << ",";
+        os << "\n";
+    }
+    os << "  }\n}\n";
+    return os.str();
+}
+
+bool save_server_registry(const std::string& path,
+                          const std::vector<ServerSpec>& specs) {
+    if (path.empty()) return false;
+    std::string body;
+    try {
+        body = serialize_server_registry(specs);
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    // Write tmp with mode 0600 up front — registry env blocks may hold
+    // secrets, and umask-default create + later chmod leaves a window.
+    const std::string tmp = path + ".tmp";
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return false;
+    // open(2) mode is masked by umask — force 0600 before any bytes land.
+    if (::fchmod(fd, 0600) != 0) {
+        ::close(fd);
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    size_t off = 0;
+    bool ok = true;
+    while (ok && off < body.size()) {
+        const ssize_t n = ::write(fd, body.data() + off, body.size() - off);
+        if (n <= 0) ok = false;
+        else off += static_cast<size_t>(n);
+    }
+    if (ok) ok = (::fsync(fd) == 0);
+    ::close(fd);
+    if (!ok) {
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    if (::rename(tmp.c_str(), path.c_str()) != 0) {
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    ::chmod(path.c_str(), 0600);
+    return true;
 }
 
 Manager::Manager(std::vector<ServerSpec> specs) : specs_(std::move(specs)) {}

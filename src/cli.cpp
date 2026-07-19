@@ -283,11 +283,7 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     if (const char* p = std::getenv("ARBITER_SEARCH_PROVIDER"); p && *p) {
         opts.search_provider = p;
     }
-    if (const char* k = std::getenv("ARBITER_SEARCH_API_KEY"); k && *k) {
-        opts.search_api_key = k;
-    } else if (const char* k = std::getenv("BRAVE_SEARCH_API_KEY"); k && *k) {
-        opts.search_api_key = k;
-    }
+    opts.search_api_key = get_search_api_key();
     // ── Per-tenant sandbox ───────────────────────────────────────────
     if (const char* img = std::getenv("ARBITER_SANDBOX_IMAGE"); img && *img) {
         opts.sandbox_enabled         = true;
@@ -409,11 +405,7 @@ ApiServerOptions make_cli_api_options(const std::string& config_dir,
     if (const char* p = std::getenv("ARBITER_SEARCH_PROVIDER"); p && *p) {
         opts.search_provider = p;
     }
-    if (const char* k = std::getenv("ARBITER_SEARCH_API_KEY"); k && *k) {
-        opts.search_api_key = k;
-    } else if (const char* k = std::getenv("BRAVE_SEARCH_API_KEY"); k && *k) {
-        opts.search_api_key = k;
-    }
+    opts.search_api_key = get_search_api_key();
     return opts;
 }
 
