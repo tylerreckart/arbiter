@@ -89,8 +89,7 @@ a:hover {
 /* ——— Full-width system header ——— */
 
 .site-header {
-  background: var(--bg);
-  border-bottom: 1px solid var(--ink);
+  background: var(--ink);
   left: 0;
   position: fixed;
   top: var(--header-offset);
@@ -104,7 +103,6 @@ a:hover {
   gap: 12px;
   justify-content: space-between;
   margin: 0 auto;
-  max-width: var(--max);
   min-height: var(--header-h);
   padding: 0 24px;
 }
@@ -119,16 +117,16 @@ a:hover {
 
 .brand-mark {
   align-items: center;
-  background: var(--signal);
+  background: var(--bg);
   color: var(--signal-ink);
   display: inline-flex;
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: 20px;
   font-weight: 600;
-  height: 26px;
+  height: 32px;
   justify-content: center;
   line-height: 1;
-  width: 26px;
+  width: 32px;
 }
 
 .nav-links {
@@ -160,7 +158,7 @@ a:hover {
   align-items: center;
   background: var(--panel-fg);
   border: 0;
-  color: var(--ink);
+  color: var(--bg s);
   cursor: pointer;
   display: inline-flex;
   font-family: var(--font-body);
@@ -315,10 +313,6 @@ a:hover {
   max-width: var(--max);
 }
 
-.product-stage .eyebrow {
-  color: var(--signal);
-}
-
 .product-stage h2 {
   color: var(--panel-fg);
   font-family: var(--font-display);
@@ -350,18 +344,6 @@ a:hover {
   height: auto;
   object-fit: contain;
   width: 100%;
-}
-
-.product-meta {
-  align-items: center;
-  border-top: 1px solid var(--panel-line);
-  color: var(--panel-muted);
-  display: flex;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
 }
 
 .product-features {
@@ -413,16 +395,6 @@ a:hover {
     linear-gradient(rgba(25, 21, 16, 0.045) 1px, transparent 1px),
     linear-gradient(90deg, rgba(25, 21, 16, 0.045) 1px, transparent 1px);
   background-size: 48px 48px;
-}
-
-.eyebrow {
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  margin: 0 0 16px;
-  text-transform: uppercase;
 }
 
 h1,
@@ -580,52 +552,24 @@ h4 {
 }
 
 .trust-section {
-  background: var(--panel);
-  color: var(--panel-fg);
   padding: 88px 24px;
 }
 
-.trust-section .eyebrow {
-  color: var(--signal);
-}
-
 .trust-section h2 {
-  color: var(--panel-fg);
   font-size: clamp(2.25rem, 4.2vw, 3.4rem);
   margin: 0 0 36px;
 }
 
 .trust-grid {
-  border-top: 1px solid var(--panel-line);
+  border-top: 1px solid var(--ink);
   display: grid;
   gap: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.trust-grid p {
-  border-right: 1px solid var(--panel-line);
-  color: var(--panel-muted);
-  font-size: 0.95rem;
-  margin: 0;
-  padding: 22px 24px 0 0;
-}
-
-.trust-grid p + p {
-  padding-left: 24px;
-}
-
-.trust-grid p:last-child {
-  border-right: 0;
-}
-
 .trust-grid code {
-  color: var(--panel-fg);
   font-family: var(--font-mono);
   font-size: 0.88em;
-}
-
-.trust-section .text-link {
-  color: var(--panel-fg);
 }
 
 .install-section {
@@ -635,7 +579,6 @@ h4 {
   padding: 88px 24px;
 }
 
-.install-section .eyebrow,
 .install-section .section-lede {
   color: var(--muted);
 }
@@ -703,42 +646,18 @@ h4 {
   padding-left: 18px;
 }
 
-.first-prompt span {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .first-prompt p {
   font-family: var(--font-display);
   font-size: clamp(1.4rem, 2.5vw, 2rem);
   line-height: 1.2;
-  margin: 8px 0 0;
+  margin: 0;
 }
 
 .install-section .text-link {
   color: var(--ink);
 }
 
-/* ——— Retrofuturist technical system ——— */
-
-.nav-status {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  font-family: var(--font-mono);
-  font-size: 0.64rem;
-  gap: 12px;
-  letter-spacing: 0.08em;
-}
-
-.nav-status span + span::before {
-  color: var(--signal);
-  content: "■";
-  margin-right: 12px;
-}
+/* ——— Home page ——— */
 
 .hero {
   background-color: var(--bg);
@@ -750,18 +669,13 @@ h4 {
 }
 
 .hero-inner {
-  align-items: end;
   display: grid;
-  gap: 38px 64px;
-  grid-template-columns: minmax(0, 7fr) minmax(360px, 5fr);
+  gap: 28px;
 }
 
 .hero-copy {
-  background: var(--bg);
-  box-shadow: 20px 0 0 var(--bg);
+  max-width: 720px;
   padding: 12px 0 0;
-  position: relative;
-  z-index: 2;
 }
 
 .hero .brand-lockup {
@@ -770,155 +684,8 @@ h4 {
   margin-bottom: 38px;
 }
 
-.hero-schematic {
-  background: var(--panel);
-  border: 1px solid var(--ink);
-  color: var(--panel-fg);
-  min-height: 500px;
-  overflow: hidden;
-  padding: 14px;
-  position: relative;
-}
-
-.hero-schematic::after {
-  background:
-    radial-gradient(circle, var(--signal) 0 1px, transparent 1.3px) 0 0 / 7px 7px,
-    radial-gradient(circle, var(--signal) 0 0.6px, transparent 0.9px) 3.5px 3.5px / 7px 7px;
-  bottom: -15%;
-  content: "";
-  height: 55%;
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000);
-  mask-image: linear-gradient(to bottom, transparent, #000);
-  opacity: 0.7;
-  pointer-events: none;
-  position: absolute;
-  right: -10%;
-  width: 75%;
-}
-
-.schematic-head,
-.schematic-foot {
-  align-items: center;
-  border-bottom: 1px solid var(--panel-line);
-  color: var(--panel-muted);
-  display: flex;
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  justify-content: space-between;
-  letter-spacing: 0.06em;
-  padding-bottom: 10px;
-  position: relative;
-  z-index: 1;
-}
-
-.schematic-foot {
-  border-bottom: 0;
-  border-top: 1px solid var(--panel-line);
-  margin-top: 20px;
-  padding: 10px 0 0;
-}
-
-.schematic-grid {
-  display: grid;
-  gap: 14px;
-  grid-template-columns: 1fr;
-  padding: 28px 12px 18px;
-  position: relative;
-  z-index: 1;
-}
-
-.schematic-node {
-  background: var(--panel-raised);
-  border: 1px solid var(--panel-line);
-  display: grid;
-  gap: 2px;
-  grid-template-columns: 28px 1fr;
-  padding: 11px 12px;
-}
-
-.schematic-node > span,
-.schematic-node small,
-.schematic-output,
-.schematic-bus {
-  font-family: var(--font-mono);
-}
-
-.schematic-node > span {
-  color: var(--signal);
-  font-size: 0.68rem;
-  grid-row: 1 / 3;
-}
-
-.schematic-node strong {
-  font-size: 0.85rem;
-  letter-spacing: 0.04em;
-}
-
-.schematic-node small {
-  color: var(--panel-muted);
-  font-size: 0.66rem;
-}
-
-.node-input {
-  width: 58%;
-}
-
-.node-runtime {
-  background: var(--signal);
-  border-color: var(--signal);
-  color: var(--signal-ink);
-  margin-left: 20%;
-  width: 80%;
-}
-
-.node-runtime > span,
-.node-runtime small {
-  color: rgba(25, 21, 16, 0.65);
-}
-
-.schematic-stack {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: 1fr 1fr;
-  margin-left: 12%;
-}
-
-.schematic-bus {
-  display: flex;
-  height: 26px;
-  margin-left: 22%;
-  position: relative;
-  width: 55%;
-}
-
-.schematic-bus::before {
-  border-bottom: 1px solid var(--signal);
-  border-left: 1px solid var(--signal);
-  border-right: 1px solid var(--signal);
-  content: "";
-  inset: 0;
-  position: absolute;
-}
-
-.schematic-output {
-  display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(3, 1fr);
-  margin-left: 28%;
-}
-
-.schematic-output span {
-  border-top: 1px solid var(--signal);
-  color: var(--signal);
-  font-size: 0.65rem;
-  padding-top: 7px;
-  text-align: center;
-}
-
 .hero-qualifier {
-  border-top: 1px solid var(--ink);
   font-family: var(--font-mono);
-  grid-column: 1 / -1;
   letter-spacing: 0.025em;
   margin-top: 0;
   max-width: none;
@@ -926,43 +693,8 @@ h4 {
   width: 100%;
 }
 
-.section-register {
-  align-items: center;
-  border-bottom: 1px solid currentColor;
-  display: flex;
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  justify-content: space-between;
-  letter-spacing: 0.08em;
-  margin-bottom: 42px;
-  opacity: 0.66;
-  padding-bottom: 8px;
-}
-
-.product-stage {
-  isolation: isolate;
-  overflow: hidden;
-  position: relative;
-}
-
-.product-stage::after {
-  background: radial-gradient(circle, var(--signal) 0 1px, transparent 1.3px) 0 0 / 7px 7px;
-  content: "";
-  height: 360px;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000);
-  mask-image: linear-gradient(90deg, transparent, #000);
-  opacity: 0.28;
-  pointer-events: none;
-  position: absolute;
-  right: 0;
-  top: 0;
-  width: 420px;
-  z-index: -1;
-}
-
 .product-heading,
-.interfaces-heading,
-.install-grid {
+.interfaces-heading {
   align-items: end;
   display: grid;
   gap: 32px 64px;
@@ -973,101 +705,24 @@ h4 {
   margin: 0;
 }
 
-.product-figure {
-  margin: 42px 0 0;
-}
-
 .product-frame {
   background: var(--panel-raised);
   border: 1px solid var(--signal);
-  box-shadow: 12px 12px 0 rgba(255, 138, 36, 0.18);
-}
-
-.product-meta {
-  border: 1px solid var(--panel-line);
-  border-top: 0;
-}
-
-.product-features article > span,
-.spec-cell > span,
-.trust-grid article > span,
-.install-spec > span,
-.port span,
-.port-runtime > span {
-  color: var(--signal);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.08em;
+  margin-top: 42px;
 }
 
 .workflow-grid {
   display: grid;
-  gap: 36px 64px;
-  grid-template-columns: minmax(280px, 0.8fr) minmax(420px, 1.2fr);
+  gap: 36px;
 }
 
-.workflow-diagram {
-  align-items: center;
-  background:
-    linear-gradient(var(--line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line) 1px, transparent 1px);
-  background-size: 24px 24px;
-  border: 1px solid var(--ink);
-  display: grid;
-  gap: 10px;
-  grid-template-columns: auto 24px auto 24px auto 24px auto;
-  min-height: 260px;
-  padding: 28px 18px;
-  position: relative;
-}
-
-.flow-node {
-  background: var(--bg);
-  border: 1px solid var(--ink);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  padding: 10px 8px;
-  text-align: center;
-}
-
-.flow-runtime {
-  background: var(--signal);
-}
-
-.flow-arrow {
-  color: var(--signal);
-  font-family: var(--font-mono);
-  text-align: center;
-}
-
-.flow-branch {
-  display: grid;
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  gap: 4px;
-  left: 29%;
-  position: absolute;
-  text-align: center;
-  top: 68%;
-}
-
-.flow-return {
-  border-top: 1px solid var(--signal);
-  bottom: 18px;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 0.64rem;
-  left: 18px;
-  padding-top: 6px;
-  position: absolute;
-  right: 18px;
-  text-align: right;
+.workflow-grid .workflow-copy {
+  max-width: 52ch;
 }
 
 .workflow-grid .steps {
   border-top: 1px solid var(--ink);
   display: grid;
-  grid-column: 1 / -1;
   grid-template-columns: repeat(4, 1fr);
 }
 
@@ -1099,14 +754,14 @@ h4 {
 .spec-cell {
   border-bottom: 1px solid var(--ink);
   border-right: 1px solid var(--ink);
-  min-height: 250px;
+  min-height: 220px;
   padding: 24px;
   position: relative;
 }
 
 .spec-cell h3 {
   font-size: 1.35rem;
-  margin: 40px 0 10px;
+  margin: 0 0 10px;
 }
 
 .spec-cell p {
@@ -1147,184 +802,46 @@ h4 {
   z-index: 1;
 }
 
-.spec-cell-signal > span,
 .spec-cell-signal p {
   color: rgba(25, 21, 16, 0.75);
 }
 
-.sessions-grid {
-  align-items: start;
-  display: grid;
-  gap: 64px;
-  grid-template-columns: 0.9fr 1.1fr;
+.sessions-copy {
+  max-width: 58ch;
 }
 
-.session-index {
-  background: var(--panel);
-  border: 1px solid var(--ink);
-  color: var(--panel-fg);
-  padding: 12px;
-}
-
-.session-index-head,
-.session-index-foot {
-  color: var(--panel-muted);
-  display: flex;
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  justify-content: space-between;
-  letter-spacing: 0.06em;
-  padding: 4px 4px 12px;
-}
-
-.session-index-foot {
-  padding: 12px 4px 4px;
-}
-
-.session-row {
-  align-items: center;
-  border-top: 1px solid var(--panel-line);
-  display: grid;
-  gap: 10px;
-  grid-template-columns: 34px 1fr auto;
-  padding: 13px 10px;
-}
-
-.session-row > span,
-.session-row small {
-  color: var(--panel-muted);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-}
-
-.session-row strong {
-  font-size: 0.78rem;
-  letter-spacing: 0.04em;
-}
-
-.session-row.is-active {
-  background:
-    radial-gradient(circle, rgba(25, 21, 16, 0.35) 0 1px, transparent 1.3px) 0 0 / 6px 6px,
-    var(--signal);
-  color: var(--signal-ink);
-}
-
-.session-row.is-active > span,
-.session-row.is-active small {
-  color: rgba(25, 21, 16, 0.68);
-}
-
-.interfaces {
-  background: var(--panel);
-  color: var(--panel-fg);
-}
-
-.interfaces .section-register,
-.interfaces .eyebrow {
-  color: var(--signal);
-}
-
-.interfaces h2 {
-  color: var(--panel-fg);
-}
-
-.interfaces .section-lede {
-  color: var(--panel-muted);
-}
-
-.port-diagram {
-  align-items: stretch;
+.port-list {
+  border-top: 1px solid var(--ink);
   display: grid;
   gap: 0;
-  grid-template-columns: 1fr 72px 1.2fr 0.7fr;
-  margin-top: 46px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 44px;
 }
 
-.port-inputs {
-  border: 1px solid var(--panel-line);
+.port-list article {
+  border-right: 1px solid var(--line);
+  padding: 22px 24px 0 0;
 }
 
-.port {
-  border-bottom: 1px solid var(--panel-line);
-  display: grid;
-  gap: 3px;
-  grid-template-columns: 62px 1fr;
-  padding: 15px;
+.port-list article + article {
+  padding-left: 24px;
 }
 
-.port:last-child {
-  border-bottom: 0;
+.port-list article:last-child {
+  border-right: 0;
 }
 
-.port span {
-  grid-row: 1 / 3;
+.port-list strong {
+  display: block;
+  font-size: 1.05rem;
+  margin-bottom: 8px;
 }
 
-.port strong {
-  font-size: 0.8rem;
-}
-
-.port small,
-.port-runtime small {
-  color: var(--panel-muted);
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-}
-
-.port-bus {
-  display: grid;
-  padding: 18px 0;
-}
-
-.port-bus span {
-  border-bottom: 1px solid var(--signal);
-  position: relative;
-}
-
-.port-bus span::after {
-  color: var(--signal);
-  content: "→";
-  position: absolute;
-  right: -2px;
-  top: -12px;
-}
-
-.port-runtime {
-  align-content: center;
-  background:
-    radial-gradient(circle, rgba(25, 21, 16, 0.3) 0 1px, transparent 1.3px) 0 0 / 7px 7px,
-    var(--signal);
-  color: var(--signal-ink);
-  display: grid;
-  gap: 8px;
-  padding: 28px;
-}
-
-.port-runtime > span,
-.port-runtime small {
-  color: rgba(25, 21, 16, 0.68);
-}
-
-.port-runtime strong {
-  font-size: 1.25rem;
-}
-
-.port-outputs {
-  border: 1px solid var(--panel-line);
-  display: grid;
-}
-
-.port-outputs span {
-  align-content: center;
-  border-bottom: 1px solid var(--panel-line);
-  color: var(--panel-muted);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  padding: 12px;
-}
-
-.port-outputs span:last-child {
-  border-bottom: 0;
+.port-list p {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin: 0;
+  max-width: 36ch;
 }
 
 .trust-section {
@@ -1334,8 +851,6 @@ h4 {
   color: var(--ink);
 }
 
-.trust-section .section-register,
-.trust-section .eyebrow,
 .trust-section h2,
 .trust-section .text-link {
   color: var(--ink);
@@ -1354,70 +869,18 @@ h4 {
   border-right: 0;
 }
 
-.trust-grid article > span {
-  color: var(--muted);
-}
-
 .trust-grid article p {
   color: var(--ink);
-  margin: 38px 0 0;
+  margin: 0;
 }
 
 .trust-grid code {
   color: var(--ink);
 }
 
-.install-grid {
-  align-items: start;
-}
-
-.install-spec {
-  border-left: 1px solid var(--ink);
-  display: grid;
-  gap: 8px 20px;
-  grid-template-columns: 80px 1fr;
-  padding-left: 20px;
-}
-
-.install-spec > span {
-  color: var(--muted);
-  grid-row: span 2;
-}
-
-.install-spec strong {
-  font-size: 0.85rem;
-}
-
 .direct-download {
-  align-items: center;
-  background:
-    radial-gradient(circle, rgba(25, 21, 16, 0.28) 0 1px, transparent 1.3px)
-      0 0 / 7px 7px,
-    var(--signal);
-  border: 1px solid var(--ink);
-  display: grid;
-  gap: 24px;
-  grid-template-columns: minmax(160px, 0.65fr) minmax(320px, 1.35fr);
   margin-top: 42px;
-  padding: 24px;
-}
-
-.direct-download-label {
-  display: grid;
-  font-family: var(--font-mono);
-  gap: 4px;
-}
-
-.direct-download-label span {
-  font-size: 0.74rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-}
-
-.direct-download-label small {
-  color: rgba(25, 21, 16, 0.68);
-  font-size: 0.64rem;
-  letter-spacing: 0.06em;
+  max-width: 520px;
 }
 
 .mac-download-button {
@@ -1472,17 +935,6 @@ h4 {
   border: 1px solid var(--ink);
   color: var(--panel-fg);
   margin-top: 42px;
-}
-
-.install-console-head {
-  border-bottom: 1px solid var(--panel-line);
-  color: var(--panel-muted);
-  display: flex;
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  justify-content: space-between;
-  letter-spacing: 0.06em;
-  padding: 10px 18px;
 }
 
 .install-console .install-steps {
@@ -1904,35 +1356,26 @@ body.docs .site-footer {
   .docs-main-inner,
   .product-features,
   .trust-grid,
-  .hero-inner,
   .product-heading,
-  .workflow-grid,
-  .sessions-grid,
   .interfaces-heading,
-  .install-grid,
-  .direct-download {
+  .port-list {
     grid-template-columns: 1fr;
   }
 
   .product-features article,
   .product-features article + article,
-  .trust-grid article {
+  .trust-grid article,
+  .port-list article,
+  .port-list article + article {
     border-bottom: 1px solid var(--panel-line);
     border-right: 0;
     padding: 20px 0;
   }
 
   .product-features article:last-child,
-  .trust-grid article:last-child {
+  .trust-grid article:last-child,
+  .port-list article:last-child {
     border-bottom: 0;
-  }
-
-  .hero-copy {
-    box-shadow: none;
-  }
-
-  .hero-schematic {
-    min-height: 460px;
   }
 
   .workflow-grid .steps {
@@ -1945,25 +1388,6 @@ body.docs .site-footer {
 
   .workflow-grid .step:nth-child(-n + 2) {
     border-bottom: 1px solid var(--line);
-  }
-
-  .port-diagram {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .port-bus {
-    display: none;
-  }
-
-  .port-runtime,
-  .port-outputs {
-    min-height: 180px;
-  }
-
-  .install-spec {
-    border-left: 0;
-    border-top: 1px solid var(--ink);
-    padding: 18px 0 0;
   }
 
   .docs-sidebar {
@@ -1979,10 +1403,6 @@ body.docs .site-footer {
 }
 
 @media (max-width: 640px) {
-  .nav-status {
-    display: none;
-  }
-
   .nav {
     padding: 0 10px 0 12px;
   }
@@ -2005,42 +1425,8 @@ body.docs .site-footer {
     font-size: clamp(4.5rem, 28vw, 7rem);
   }
 
-  .hero-schematic {
-    min-height: 420px;
-    padding: 10px;
-  }
-
-  .schematic-stack {
-    grid-template-columns: 1fr;
-  }
-
-  .node-input,
-  .node-runtime {
-    margin-left: 0;
-    width: 100%;
-  }
-
-  .schematic-output {
-    margin-left: 0;
-  }
-
-  .workflow-diagram {
-    gap: 6px;
-    grid-template-columns: 1fr;
-    padding-bottom: 72px;
-  }
-
-  .flow-arrow {
-    transform: rotate(90deg);
-  }
-
-  .flow-branch {
-    display: none;
-  }
-
   .workflow-grid .steps,
-  .spec-matrix,
-  .port-diagram {
+  .spec-matrix {
     grid-template-columns: 1fr;
   }
 
@@ -2050,20 +1436,7 @@ body.docs .site-footer {
   }
 
   .spec-cell {
-    min-height: 230px;
-  }
-
-  .session-row {
-    grid-template-columns: 30px 1fr;
-  }
-
-  .session-row small {
-    grid-column: 2;
-  }
-
-  .port-runtime,
-  .port-outputs {
-    min-height: 0;
+    min-height: 200px;
   }
 
   .install-callout {
@@ -2079,8 +1452,7 @@ body.docs .site-footer {
     justify-self: start;
   }
 
-  .flow-row,
-  .product-meta {
+  .flow-row {
     align-items: flex-start;
     flex-direction: column;
     grid-template-columns: 1fr;

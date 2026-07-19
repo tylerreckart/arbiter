@@ -4,7 +4,6 @@ block content
   section.hero
     .hero-inner
       .hero-copy
-        p.eyebrow ARBITER / TERMINAL AGENT WORKSPACE
         p.brand-lockup Arbiter
         h1.hero-title Your agent workspace, in the terminal.
         p.hero-lede Run parallel agent conversations, watch tools and diffs stream live, and return to saved work without leaving your shell.
@@ -18,97 +17,38 @@ block content
         .hero-actions
           a.text-link(href="#tui") See the TUI ↓
           a.text-link(href="/docs/getting-started/local/") Read local setup →
-      .hero-schematic(role="img" aria-label="A prompt branches into parallel agent panes and returns results through the local runtime")
-        .schematic-head
-          span FIG. 00
-          span LOCAL RUNTIME / 512×512 REF
-        .schematic-grid
-          .schematic-node.node-input
-            span 00
-            strong PROMPT
-            small stdin
-          .schematic-bus(aria-hidden="true")
-            span
-            span
-          .schematic-stack
-            .schematic-node
-              span 01
-              strong PANE_01
-              small research
-            .schematic-node
-              span 02
-              strong PANE_02
-              small review
-          .schematic-node.node-runtime
-            span 03
-            strong ARBITER
-            small route · tools · gate
-          .schematic-output
-            span DIFF
-            span RESULT
-            span HISTORY
-        .schematic-foot
-          span STATUS / READY
-          span LOCAL / NETWORK OPTIONAL
       p.hero-qualifier Prebuilt for macOS Apple silicon and Linux x86_64. Apache-2.0. Bring an OpenRouter key or configure Ollama.
 
   section#tui.product-stage
     .product-stage-inner
-      .section-register
-        span 01
-        span INTERFACE
       .product-heading
         div
-          p.eyebrow The primary interface
           h2 One terminal. Multiple agents in motion.
         p.product-lede Each pane is an independent conversation with its own agent, history, input queue, and live output. Split the workspace, keep typing while work streams, and stop one pane without interrupting the others.
-      figure.product-figure
-        .product-frame
-          img(
-            src="/assets/terminal.jpg"
-            alt="Arbiter TUI showing parallel conversations, streamed output, tool activity, and inline diff rendering"
-            width="2250"
-            height="1540"
-          )
-        figcaption.product-meta
-          span FIG. 01 / ARBITER INTERACTIVE TUI
-          span 2250×1540 / LIVE CAPTURE
+      .product-frame
+        img(
+          src="/assets/terminal.jpg"
+          alt="Arbiter TUI showing parallel conversations, streamed output, tool activity, and inline diff rendering"
+          width="2250"
+          height="1540"
+        )
       .product-features
         article
-          span 01 / PANE
           h3 Parallel panes
           p Run research, planning, review, and implementation conversations side by side.
         article
-          span 02 / STREAM
           h3 Visible work
           p Follow streamed responses, tool status, token usage, and code diffs as each turn runs.
         article
-          span 03 / HISTORY
           h3 Conversation history
           p Return to saved threads and continue with the agent’s existing context.
 
   section#workflow.section
     .section-inner
-      .section-register
-        span 02
-        span CONTROL LOOP
       .workflow-grid
         .workflow-copy
-          p.eyebrow From prompt to result
           h2 Stay in control without babysitting every turn.
           p.section-lede Arbiter keeps the work visible while agents reason, delegate, and act.
-        .workflow-diagram(aria-hidden="true")
-          .flow-node.flow-ask ASK
-          .flow-arrow →
-          .flow-node PANE_01
-          .flow-branch
-            span ↓
-            span PANE_02
-          .flow-arrow →
-          .flow-node.flow-runtime RUNTIME
-          .flow-arrow →
-          .flow-node TOOL + DIFF
-          .flow-return HISTORY ← CONTINUE
         .steps
           .step
             span 01
@@ -129,121 +69,58 @@ block content
 
   section#why.section.section-band
     .section-inner
-      .section-register
-        span 03
-        span SYSTEM SPECIFICATION
-      p.eyebrow Why Arbiter
       h2 Built as a terminal workspace, not a chat box.
       .spec-matrix
         article.spec-cell.spec-cell-signal
-          span 01 / CONFIG
           h3 Agents you can inspect
           p Agent behavior, models, and allowed capabilities live in editable configuration—not behind a hosted UI.
           code definitions: ~/.arbiter/agents/*.json
         article.spec-cell
-          span 02 / CONTROL
           h3 Actions gated by the runtime
           p Each agent has an explicit capability allowlist. Optional advisor gates can review a terminating result before it is returned.
           code capabilities: explicit allowlist
         article.spec-cell
-          span 03 / TOOL BUS
           h3 Tools in the same stream
           p Agents fetch, write, delegate, schedule, use memory, and call configured integrations while their output streams.
           code protocol: writ / line-oriented
         article.spec-cell
-          span 04 / TRANSPORT
           h3 Local first, network optional
           p Work in the TUI, invoke one agent from a script, or expose the runtime through HTTP and SSE.
           code surfaces: TUI / CLI / HTTP+SSE
 
   section#sessions.section
     .section-inner
-      .section-register
-        span 04
-        span SESSION MEMORY
-      .sessions-grid
-        .sessions-copy
-          p.eyebrow Made for long sessions
-          h2 Find the command, conversation, or output you need.
-          p.section-lede Use the conversation sidebar to move between threads, queue another message while an agent works, inspect live token and tool activity, and run background loops without flooding the foreground.
-          p.section-note Choose from built-in themes or edit the JSON theme system to match your terminal.
-        .session-index(aria-label="Example of Arbiter conversation and task states")
-          .session-index-head
-            span CONVERSATION INDEX
-            span 04 RECORDS
-          .session-row.is-active
-            span 01
-            strong ACTIVE PANE
-            small streaming / 3 tools
-          .session-row
-            span 02
-            strong RESEARCH
-            small saved / context retained
-          .session-row
-            span 03
-            strong REVIEW
-            small queued / pane_02
-          .session-row
-            span 04
-            strong BACKGROUND LOOP
-            small running / buffered output
-          .session-index-foot
-            span Ctrl-w b / SELECT
-            span Ctrl-w v / SPLIT
+      .sessions-copy
+        h2 Find the command, conversation, or output you need.
+        p.section-lede Use the conversation sidebar to move between threads, queue another message while an agent works, inspect live token and tool activity, and run background loops without flooding the foreground.
+        p.section-note Choose from built-in themes or edit the JSON theme system to match your terminal.
 
   section#interfaces.section.section-band
     .section-inner
-      .section-register
-        span 05
-        span I/O ARCHITECTURE
       .interfaces-heading
         div
-          p.eyebrow Beyond the TUI
           h2 Automate the same runtime when you are ready.
         p.section-lede One orchestration loop, multiple ports. Start in the terminal; connect scripts, clients, and remote tools when the workflow needs them.
-      .port-diagram
-        .port-inputs
-          .port
-            span IN_01
-            strong SCRIPT
-            small one-shot CLI
-          .port
-            span IN_02
-            strong CLIENT
-            small HTTP + SSE
-          .port
-            span IN_03
-            strong MCP / A2A
-            small integrations
-        .port-bus(aria-hidden="true")
-          span
-          span
-          span
-        .port-runtime
-          span CORE_00
-          strong ARBITER RUNTIME
-          small route · delegate · supervise
-        .port-outputs
-          span MODEL
-          span TOOLS
-          span EVENTS
+      .port-list
+        article
+          strong Script
+          p One-shot CLI invocations against the local runtime.
+        article
+          strong Client
+          p HTTP and SSE for remote tools and custom clients.
+        article
+          strong Integrations
+          p MCP and A2A bridges into the same agent loop.
 
   section#trust.section.trust-section
     .section-inner
-      .section-register
-        span 06
-        span OPERATING BOUNDARIES
-      p.eyebrow Know what you are running
       h2 Local control, with explicit boundaries.
       .trust-grid
         article
-          span 01 / STATE
           p Arbiter stores configuration and local state under #[code ~/.arbiter/]. Model requests go to the provider you configure.
         article
-          span 02 / EXECUTION
           p Interactive shell execution can access anything available to your user account. Start with #[code arbiter --no-exec] when you do not want agents to run shell commands.
         article
-          span 03 / STABILITY
           p Arbiter is experimental pre-1.0 software. Interfaces and configuration may change between releases.
       .link-row
         a.text-link(href="https://github.com/tylerreckart/arbiter/blob/main/SECURITY.md") Read the security model →
@@ -251,33 +128,16 @@ block content
 
   section#install.install-section
     .section-inner
-      .section-register
-        span 07
-        span INITIALIZATION
-      .install-grid
-        .install-copy
-          p.eyebrow Get started
-          h2 From download to the TUI in three commands.
-          p.section-lede Prebuilt for macOS Apple silicon and Linux x86_64. Other platforms can build from source.
-        .install-spec
-          span TARGETS
-          strong macOS arm64
-          strong Linux x86_64
-          span LICENSE
-          strong Apache-2.0
+      .install-copy
+        h2 From download to the TUI in three commands.
+        p.section-lede Prebuilt for macOS Apple silicon and Linux x86_64. Other platforms can build from source.
       .direct-download
-        .direct-download-label
-          span DOWNLOAD / MACOS
-          small PREBUILT BINARY
         a.mac-download-button(href=macDownloadUrl)
           span.download-glyph(aria-hidden="true") ↓
           span
             strong Download for macOS
             small Apple silicon · #{binaryRelease} · tar.gz
       .install-console
-        .install-console-head
-          span INSTALL VIA TERMINAL / BOOT SEQUENCE
-          span 03 STEPS
         .install-steps
           .install-step
             span 01
@@ -295,7 +155,6 @@ block content
             code arbiter
             small Launch the terminal workspace.
       .first-prompt
-        span FIRST INPUT / 001
         p “Help me turn this project into a concrete plan. Ask what you need to know, then delegate research and review to separate agents.”
       .link-row
         a.text-link(href=gettingStartedHref) Read local setup →
