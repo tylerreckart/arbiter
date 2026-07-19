@@ -4,6 +4,7 @@
 // Non-REPL entry points.  Each function corresponds to one command-line mode:
 //
 //   arbiter --init [--force]          → cmd_init       (create example agents + config dir)
+//   arbiter --setup-tools             → cmd_setup_tools (MCP / search / browse wizard)
 //   arbiter --api  [--port N]         → cmd_api        (HTTP+SSE orchestration API)
 //   arbiter --send <a> <msg>          → cmd_oneshot    (one-turn request, no TUI)
 //

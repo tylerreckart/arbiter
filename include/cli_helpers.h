@@ -35,6 +35,20 @@ std::string get_memory_dir();
 //   openrouter → OPENROUTER_API_KEY | ~/.arbiter/openrouter_api_key
 std::map<std::string, std::string> get_api_keys();
 
+// Web-search API key.  Precedence:
+//   ARBITER_SEARCH_API_KEY → BRAVE_SEARCH_API_KEY → ~/.arbiter/search_api_key
+// Empty string means /search is unavailable.
+std::string get_search_api_key();
+
+// Persist or clear ~/.arbiter/search_api_key (mode 0600).  Env vars still
+// override the file at runtime.
+bool set_search_api_key(const std::string& key);
+bool clear_search_api_key();
+
+// Interactive OpenTUI wizard for MCP / search / browse settings under
+// ~/.arbiter/.  Requires a TTY; exits(1) when stdin/stdout are not terminals.
+void cmd_setup_tools();
+
 // Thin wrappers: commands.cpp's cmd_mem_*/cmd_fetch but with memory_dir
 // supplied automatically.
 std::string write_memory(const std::string& agent_id, const std::string& text);

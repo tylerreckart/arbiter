@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **`arbiter --setup-tools`.** Interactive OpenTUI wizard for `/search`
+  (Brave key → `~/.arbiter/search_api_key`), `/browse` (Playwright MCP
+  preset), and the MCP registry (`~/.arbiter/mcp_servers.json` — hosted
+  `mcp-remote` or custom stdio). Offered at the end of first-run setup;
+  re-runnable anytime. Search key resolution now also reads the saved
+  file after the env vars.
 - **Agent output UX overhaul.**  Turns render as a first-class activity
   timeline: per-tool `ToolSegment` rows (Started → Finished, expandable
   with `^O`), collapsible provider `ThinkingSegment` when reasoning
