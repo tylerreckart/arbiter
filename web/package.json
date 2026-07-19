@@ -5,9 +5,14 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "dev": "node scripts/dev.mjs",
     "serve": "python3 -m http.server 4173 --directory dist"
   },
   "dependencies": {
     "pug": "^3.0.4"
+  },
+  "devDependencies": {
+    "browser-sync": "^3.0.4",
+    "chokidar": "^5.0.0"
   }
 }
