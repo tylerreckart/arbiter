@@ -998,11 +998,13 @@ void PaneScrollView::append_blank_row() {
 void PaneScrollView::upsert_tool(const ToolActivityEvent& event, bool new_block) {
     if (event.id.empty() && event.label.empty()) return;
 
-    // Prefer updating an existing row with the same id (live Started→Finished).
+    // Prefer updating an unfinished row with the same id (live Started→Finished).
+    // Never reopen a finished row — ids must be unique, but guard anyway so a
+    // colliding Started cannot wipe prior-turn chrome.
     if (!event.id.empty()) {
         for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
             if (auto* tool = dynamic_cast<ToolSegment*>(it->get())) {
-                if (tool->id_ == event.id) {
+                if (tool->id_ == event.id && !tool->finished_) {
                     tool->apply(event);
                     return;
                 }

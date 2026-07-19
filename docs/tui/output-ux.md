@@ -6,13 +6,16 @@ Builds on the segment pipeline and theme tokens from
 
 ## Turn anatomy
 
+Live order within a turn (tools appear as `/cmd` lines are dispatched, after
+the model stream that emitted them):
+
 ```
-user user echo strip (full-width input bg)
-○ fetch:https://…                          ← ToolSegment (running)
-✓ exec:git status  ▸                       ← ToolSegment (done; ^O expands)
-thinking  ▸  first words of reasoning…     ← ThinkingSegment (when provider emits)
-assistant prose / markdown / code / diffs
-· [interrupted]                            ← activity chrome (system lines)
+user echo strip (full-width input bg)
+thinking  ▸  first words of reasoning…     ThinkingSegment (when provider emits)
+assistant prose / markdown / code / diffs  (writ lines swallowed)
+○ fetch:https://…                          ToolSegment appears as dispatch starts
+✓ exec:git status  ▸                       resolves when the result returns
+· [interrupted]                            activity chrome (system lines)
 ```
 
 | Layer | Segment | Notes |
@@ -29,10 +32,10 @@ compact status rows, not raw `/fetch` dumps. `/verbose` still streams raw writs.
 ## Tool timeline
 
 `execute_agent_commands` emits `ToolActivityEvent` at **Started** and
-**Finished**. The REPL:
+**Finished** with process-wide unique ids. The REPL:
 
 1. Upserts a `ToolSegment` in scrollback
-2. Bumps the mid-separator spinner count
+2. Bumps the mid-separator spinner count on Finished (armed once per turn)
 3. Records the Finished event onto the last assistant message as `tool_trace`
    so conversation switch can rebuild the rows
 
@@ -59,7 +62,8 @@ When Anthropic emits `thinking_delta` or OpenAI-compat emits
 `reasoning_content` / `reasoning`, deltas land in a collapsed
 `ThinkingSegment`. Models without a separate reasoning channel keep the
 header **thinking…** spinner only — Arbiter does not invent chain-of-thought
-from ordinary prose.
+from ordinary prose. Reasoning is not persisted across conversation switch
+today (live-session only).
 
 ## Replay
 

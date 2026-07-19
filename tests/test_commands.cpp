@@ -612,11 +612,27 @@ TEST_CASE("execute_agent_commands emits Started then Finished tool events") {
     REQUIRE(events.size() == 2);
     CHECK(events[0].phase == ToolActivityEvent::Phase::Started);
     CHECK(events[0].kind == "help");
-    CHECK(events[0].id == "t1");
+    CHECK_FALSE(events[0].id.empty());
     CHECK(events[1].phase == ToolActivityEvent::Phase::Finished);
-    CHECK(events[1].id == "t1");
+    CHECK(events[1].id == events[0].id);
     CHECK(events[1].ok);
     CHECK(events[1].label == tool_status_label(h));
+}
+
+TEST_CASE("tool event ids are unique across execute_agent_commands calls") {
+    std::vector<std::string> ids;
+    ToolStatusFn capture = [&](const ToolActivityEvent& ev) {
+        if (ev.phase == ToolActivityEvent::Phase::Started) ids.push_back(ev.id);
+    };
+    std::vector<AgentCommand> cmds;
+    AgentCommand h;
+    h.name = "help";
+    h.args = "mem";
+    cmds.push_back(h);
+    execute_agent_commands(cmds, "test", "", nullptr, nullptr, nullptr, nullptr, capture);
+    execute_agent_commands(cmds, "test", "", nullptr, nullptr, nullptr, nullptr, capture);
+    REQUIRE(ids.size() == 2);
+    CHECK(ids[0] != ids[1]);
 }
 
 TEST_CASE("write confirm request carries path summary and preview lines") {
