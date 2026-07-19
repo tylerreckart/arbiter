@@ -75,8 +75,8 @@ Policies already in use:
 4. **Horizontal layout tokens.** `pane_padding_x`, `header_padding_x`,
    `input_padding_x`, `footer_gap`, `compact_cols` / `dense_cols` already
    exist and are theme-overridable.
-5. **Quiet default.** Tool calls collapse to mid-separator spinner + one
-   summary line; scroll stays readable.
+5. **Quiet default.** Tool calls become compact `ToolSegment` rows plus the
+   mid-separator spinner; raw `/cmd` dumps stay swallowed unless `/verbose`.
 
 ## Pain points
 

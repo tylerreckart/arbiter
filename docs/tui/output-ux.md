@@ -11,7 +11,8 @@ the model stream that emitted them):
 
 ```
 user echo strip (full-width input bg)
-thinking  ▸  first words of reasoning…     ThinkingSegment (when provider emits)
+thinking  ▸                                ThinkingSegment header (when provider emits)
+  first preview lines…                     up to 3 wrapped body rows when collapsed
 assistant prose / markdown / code / diffs  (writ lines swallowed)
 ○ fetch:https://…                          ToolSegment appears as dispatch starts
 ✓ exec:git status  ▸                       resolves when the result returns
@@ -36,8 +37,9 @@ compact status rows, not raw `/fetch` dumps. `/verbose` still streams raw writs.
 
 1. Upserts a `ToolSegment` in scrollback
 2. Bumps the mid-separator spinner count on Finished (armed once per turn)
-3. Records the Finished event onto the last assistant message as `tool_trace`
-   so conversation switch can rebuild the rows
+3. Records the Finished event onto the pane agent’s last assistant message as
+   `tool_trace` (conversation switch replays that history). When a nested
+   `/agent` dispatched the tool, the same entry is mirrored onto the child.
 
 Expand/collapse: `^O` (same chord as code blocks) when a tool or thinking
 row is in view.
@@ -70,8 +72,8 @@ assistant `Message.thinking` field and rebuilt on conversation switch.
 
 `transcript_replay` rebuilds `ThinkingSegment`s from `Message.thinking`,
 runs assistant content through `StreamRenderer(kReplay)`, then rebuilds
-`ToolSegment`s from each message’s `tool_trace`. Nested `/agent` tools
-attribute to the child agent’s history (via `ToolActivityEvent.agent_id`).
+`ToolSegment`s from each message’s `tool_trace` on the pane agent’s
+history (typically `index`).
 
 ## Related
 

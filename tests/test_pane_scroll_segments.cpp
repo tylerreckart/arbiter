@@ -68,17 +68,18 @@ TEST_CASE("ThinkingSegment honors wrap width and kPreviewRows when collapsed") {
 }
 
 TEST_CASE("ThinkingSegment wrap width grows visual rows for long lines") {
+    // Long enough that even an 80-col wrap exceeds kPreviewRows (3).
+    const std::string blob(400, 'x');
+
     TUI tui_n;
     PaneScrollView narrow;
     bind_view(narrow, tui_n, 20, 40);
-    narrow.append_thinking(
-        "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP");
+    narrow.append_thinking(blob);
 
     TUI tui_w;
     PaneScrollView wide;
     bind_view(wide, tui_w, 80, 40);
-    wide.append_thinking(
-        "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP");
+    wide.append_thinking(blob);
 
     CHECK(narrow.total_visual_rows() >= wide.total_visual_rows());
 

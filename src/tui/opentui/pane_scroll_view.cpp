@@ -615,12 +615,16 @@ void PaneScrollView::ThinkingSegment::toggle_expanded() {
 }
 
 bool PaneScrollView::ThinkingSegment::can_expand() const {
-    return !text_.empty();
+    // Only offer expand when collapsed preview (or expanded cap) would hide rows.
+    const int body_cols = std::max(1, wrap_cols_ - 3);
+    const int body_n = static_cast<int>(wrap_plain_lines(text_, body_cols).size());
+    if (expanded_) return body_n > 0;
+    return body_n > kPreviewRows;
 }
 
 std::string PaneScrollView::ThinkingSegment::header_text() const {
     std::string text = "thinking";
-    if (can_expand()) {
+    if (can_expand() || expanded_) {
         text += expanded_ ? "  \u25BE" : "  \u25B8";
     }
     return text;
@@ -632,14 +636,14 @@ int PaneScrollView::ThinkingSegment::visual_rows(int content_w) const {
     const int body_cols = std::max(1, cols - 3);
     const auto body = wrap_plain_lines(text_, body_cols);
     const int body_n = static_cast<int>(body.size());
+    static constexpr int kExpandedCap = 40;
     if (!expanded_) {
         if (body_n == 0) return 1;
         const int preview = std::min(body_n, kPreviewRows);
         // +1 ellipsis row when more body exists beyond the preview window.
         return 1 + preview + (body_n > kPreviewRows ? 1 : 0);
     }
-    static constexpr int kExpandedCap = 40;
-    return 1 + std::min(body_n, kExpandedCap);
+    return 1 + std::min(body_n, kExpandedCap) + (body_n > kExpandedCap ? 1 : 0);
 }
 
 void PaneScrollView::ThinkingSegment::set_wrap_cols(int cols) {
@@ -651,11 +655,14 @@ void PaneScrollView::ThinkingSegment::collect_lines(std::vector<std::string>& ou
     if (text_.empty()) return;
     const int body_cols = std::max(1, wrap_cols_ - 3);
     const auto body = wrap_plain_lines(text_, body_cols);
+    static constexpr int kExpandedCap = 40;
     const int limit = expanded_
-        ? std::min(static_cast<int>(body.size()), 40)
+        ? std::min(static_cast<int>(body.size()), kExpandedCap)
         : std::min(static_cast<int>(body.size()), kPreviewRows);
     for (int i = 0; i < limit; ++i) out.push_back(body[static_cast<size_t>(i)]);
-    if (!expanded_ && static_cast<int>(body.size()) > kPreviewRows) {
+    const int body_n = static_cast<int>(body.size());
+    if ((!expanded_ && body_n > kPreviewRows) ||
+        (expanded_ && body_n > kExpandedCap)) {
         out.push_back("\u2026");
     }
 }
@@ -697,13 +704,16 @@ void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
     if (text_.empty()) return;
 
     const auto body = wrap_plain_lines(text_, body_cols);
+    static constexpr int kExpandedCap = 40;
     const int limit = expanded_
-        ? std::min(static_cast<int>(body.size()), 40)
+        ? std::min(static_cast<int>(body.size()), kExpandedCap)
         : std::min(static_cast<int>(body.size()), kPreviewRows);
     for (int i = 0; i < limit; ++i) {
         if (!draw_row(body[static_cast<size_t>(i)], d.text.muted, row)) return;
     }
-    if (!expanded_ && static_cast<int>(body.size()) > kPreviewRows) {
+    const int body_n = static_cast<int>(body.size());
+    if ((!expanded_ && body_n > kPreviewRows) ||
+        (expanded_ && body_n > kExpandedCap)) {
         draw_row("\u2026", d.text.muted, row);
     }
 }

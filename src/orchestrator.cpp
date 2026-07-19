@@ -315,6 +315,14 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             child_clients.push_back(std::make_unique<ApiClient>(api_keys_));
             child_clients.back()->set_circuit_breaker(client_.circuit_breaker());
             child_clients.back()->set_metrics(client_.metrics());
+            // Share the parent's reasoning sink so thought deltas still reach
+            // the TUI when the provider emits them.  (Live ToolSegment paint
+            // from worker threads still depends on the REPL callback finding
+            // a pane — that path is unchanged.)
+            if (client_.reasoning_callback()) {
+                child_clients.back()->set_reasoning_callback(
+                    client_.reasoning_callback());
+            }
         }
         // Register child clients so cancel() can reach them while threads run.
         {

@@ -170,6 +170,9 @@ public:
     // Optional reasoning/thinking stream sink.  Fired from the same thread
     // as StreamCallback when a provider emits a separate reasoning channel.
     void set_reasoning_callback(ReasoningCallback cb) { reasoning_cb_ = std::move(cb); }
+    // Non-owning view of the current sink — used to copy the callback onto
+    // /parallel child ApiClients so they share the parent's reasoning path.
+    const ReasoningCallback& reasoning_callback() const { return reasoning_cb_; }
 
     int total_input_tokens()  const { return total_in_.load(); }
     int total_output_tokens() const { return total_out_.load(); }

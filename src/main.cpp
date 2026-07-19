@@ -596,8 +596,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         }
         if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
             sidebar.record_tool(ev.label, ev.ok);
-            // Persist onto the dispatching agent's last assistant message
-            // (nested /agent tools attribute to the child, not the pane).
+            // Persist for conversation-switch replay.  Pane history is what
+            // apply_conversation_to_pane rebuilds (usually "index"), so the
+            // pane agent always gets the row.  When a nested /agent dispatched
+            // the tool, also mirror onto that child so its own history stays
+            // accurate if inspected later.
             if (p) {
                 arbiter::ToolTraceEntry te;
                 te.id = ev.id;
@@ -606,9 +609,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 te.detail = ev.detail;
                 te.ok = ev.ok;
                 te.result_preview = ev.result_preview;
-                const std::string& owner =
-                    !ev.agent_id.empty() ? ev.agent_id : p->current_agent;
-                orch.append_tool_trace(owner, std::move(te));
+                orch.append_tool_trace(p->current_agent, te);
+                if (!ev.agent_id.empty() && ev.agent_id != p->current_agent) {
+                    orch.append_tool_trace(ev.agent_id, std::move(te));
+                }
             }
         }
     });

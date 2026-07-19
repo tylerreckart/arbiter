@@ -15,7 +15,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   multi-line permission cards for `/write` and destructive `/exec`,
   interim sub-agent headers, and `tool_trace` + `thinking` persistence so
   conversation switch rebuilds tool and reasoning chrome.  Nested tools
-  attribute to the dispatching agent.  See `docs/tui/output-ux.md`.
+  dual-write to the pane agent (for replay) and the dispatching child.
+  See `docs/tui/output-ux.md`.
 - **Markdown polish.**  Task lists (`- [ ]` / `- [x]`), nested numbered
   lists, and indented code blocks route into `CodeSegment` when the
   stream sink is wired.
