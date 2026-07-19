@@ -8,6 +8,18 @@ building from another checkout layout.
 
 ```bash
 npm install
+npm run dev
+```
+
+`npm run dev` performs an initial build, serves `dist/` at
+`http://localhost:4173`, watches Pug templates, build modules, styles,
+client-side scripts, docs, installer, and image assets, then rebuilds and
+reloads connected browsers after each successful change. Set `PORT=4174` to
+use another port.
+
+For a production-style static build:
+
+```bash
 npm run build
 npm run serve
 ```
@@ -17,10 +29,11 @@ npm run serve
 | Path | Role |
 |------|------|
 | `scripts/build.mjs` | Build orchestrator |
+| `scripts/dev.mjs` | Watch, rebuild, and live-reload server |
 | `lib/` | Docs discovery, Markdown, navigation models, assets |
 | `views/` | Pug templates (`layout`, pages, includes) |
 | `src/styles.css` | Visual system |
-| `src/site.js` | Install copy button and section reveal |
+| `src/site.js` | Install copy button |
 
 `install.sh` is copied to `dist/install.sh` during the build so the homepage can
 advertise:
