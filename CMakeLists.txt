@@ -770,7 +770,16 @@ if(INDEX_BUILD_TESTS)
     target_compile_definitions(unit_message_replay_roundtrip PRIVATE
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     target_link_libraries(unit_message_replay_roundtrip PRIVATE OpenTUI::core)
-    if(UNIX AND NOT APPLE)
+    if(APPLE)
+        target_link_libraries(unit_message_replay_roundtrip PRIVATE
+            "-framework CoreFoundation"
+            "-framework CoreAudio"
+            "-framework AudioToolbox"
+        )
+        target_link_options(unit_message_replay_roundtrip PRIVATE "-Wl,-ld_classic")
+        set_target_properties(unit_message_replay_roundtrip PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    elseif(UNIX)
         target_link_libraries(unit_message_replay_roundtrip PRIVATE dl pthread)
         set_target_properties(unit_message_replay_roundtrip PROPERTIES
             BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
