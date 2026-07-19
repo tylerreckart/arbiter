@@ -52,7 +52,7 @@ Arbiter agents can emit `/search <query>`. To make that route somewhere, configu
 | `ARBITER_SEARCH_API_KEY`       | API key for the configured provider. Preferred — explicitly scoped to arbiter's search use. |
 | `BRAVE_SEARCH_API_KEY`         | Convenience fallback when `ARBITER_SEARCH_API_KEY` is unset. Useful if you already have this var set for other tools. |
 
-Without a key configured, `/search` returns `ERR` and the agent falls back to `/fetch` on URLs it already knows.
+File fallback: `~/.arbiter/search_api_key` (written by `arbiter --setup-tools`). Precedence is env vars first, then the file. Without a key configured, `/search` returns `ERR` and the agent falls back to `/fetch` on URLs it already knows.
 
 ## Precedence summary
 
@@ -71,13 +71,14 @@ Distinct from env vars but listed here for completeness, since the env-vs-file p
 | Path                       | Purpose                                                              |
 |----------------------------|----------------------------------------------------------------------|
 | `openrouter_api_key`       | OpenRouter API key (one line, no whitespace).                        |
+| `search_api_key`           | Brave Search API key for `/search` (one line). Written by `--setup-tools`. |
 | `admin_token`              | Admin token used by `/v1/admin/*`. Generated automatically on first `--api` launch if missing. |
 | `tenants.db`               | Tenant identity store (SQLite).                                      |
 | `agents/*.json`            | Agent constitutions.                                                 |
 | `sessions/*.json`          | Per-cwd interactive session snapshots.                               |
 | `memory/<agent>/notes.md`  | Per-agent persistent scratchpad (`/mem write`).                      |
 | `workspaces/t<id>/…`       | Per-tenant sandbox workspace (mode 0700). Created on demand when the sandbox is enabled. See [`docs/concepts/sandbox.md`](../concepts/sandbox.md). |
-| `mcp_servers.json`         | Optional MCP server registry. See [`docs/concepts/mcp.md`](../concepts/mcp.md). |
+| `mcp_servers.json`         | Optional MCP server registry. See [`docs/concepts/mcp.md`](../concepts/mcp.md). Editable via `arbiter --setup-tools`. |
 | `history`                  | Merged TUI editor history across panes.                              |
 
 Files are read on demand by the relevant subsystem. None of them are watched for changes — restart the process to pick up edits to `agents/*.json` or `mcp_servers.json` while `--api` is running.

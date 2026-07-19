@@ -122,7 +122,7 @@ one-shot mode are in [getting-started/local](docs/getting-started/local.md).
   tenants, auth, SSE events, fleet streaming, MCP, A2A, artifacts, memory,
   operations, and one page per endpoint.
 - [`docs/cli/`](https://arbiter.run/docs/cli) — non-interactive command-line
-  reference: `--init`, `--send`, `--api`, tenant admin, environment variables.
+  reference: `--init`, `--setup-tools`, `--send`, `--api`, tenant admin, environment variables.
 - [`docs/tui/`](https://arbiter.run/docs/tui) — interactive terminal client:
   screen anatomy, slash commands, keybindings, multi-pane layouts, streaming
   and turn lifecycle, session persistence.

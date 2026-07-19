@@ -3,6 +3,7 @@
 //   arbiter --api [--port 8080]      — HTTP+SSE API server
 //   arbiter --send <agent> <msg>     — one-shot message
 //   arbiter --init                   — create config dir + example agents
+//   arbiter --setup-tools            — MCP / search / browse wizard
 
 #include "orchestrator.h"
 #include "agent_conversation.h"
@@ -2787,6 +2788,10 @@ int main(int argc, char* argv[]) {
             arbiter::cmd_init(force);
             return 0;
         }
+        if (arg1 == "--setup-tools" || arg1 == "setup-tools") {
+            arbiter::cmd_setup_tools();
+            return 0;
+        }
         if (arg1 == "--api" || arg1 == "api") {
             // arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]
             int port = 8080;
@@ -2887,6 +2892,8 @@ int main(int argc, char* argv[]) {
                 "  arbiter --init [--force]           Initialize config + example agents\n"
                 "                                     --force overwrites existing ~/.arbiter/agents/*.json files;\n"
                 "                                     omit it to preserve user-edited agent definitions.\n"
+                "  arbiter --setup-tools              Interactive wizard for /search, /browse, and MCP\n"
+                "                                     Writes ~/.arbiter/search_api_key and mcp_servers.json.\n"
                 "  arbiter --help                     This help\n\n"
                 "Tenants (for --api):\n"
                 "  arbiter --add-tenant <name>        Provision a tenant + API key\n"
@@ -2898,6 +2905,8 @@ int main(int argc, char* argv[]) {
                 "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n"
                 "Config: ~/.arbiter/\n"
                 "  openrouter_api_key                 OpenRouter key file\n"
+                "  search_api_key                     Brave Search key for /search\n"
+                "  mcp_servers.json                   MCP server registry (/mcp, /browse)\n"
                 "  tui.json                           Theme preset, theme_file, or overrides\n"
                 "  themes/*.json                      Custom theme documents\n"
                 "  tenants.db                         Tenant identity store (--api)\n"
