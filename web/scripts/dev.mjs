@@ -157,6 +157,7 @@ function startServer() {
         server: {
           baseDir: dist,
         },
+        snippet: true,
         ui: false,
       },
       (error) => {
