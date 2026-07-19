@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import fs from 'node:fs/promises'
 import path from 'node:path'
 import browserSyncPackage from 'browser-sync'
 import chokidar from 'chokidar'
@@ -15,6 +16,7 @@ import {
 
 const browserSync = browserSyncPackage.create()
 const buildScript = path.join(root, 'scripts', 'build.mjs')
+const stagingDist = path.join(root, '.dev-dist')
 const port = parsePort(process.env.PORT)
 const debounceMs = 100
 
@@ -111,7 +113,10 @@ function runBuild() {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [buildScript], {
       cwd: root,
-      env: process.env,
+      env: {
+        ...process.env,
+        ARBITER_DIST_PATH: stagingDist,
+      },
       stdio: 'inherit',
     })
 
@@ -119,8 +124,21 @@ function runBuild() {
       console.error('[build] failed to start:', error)
       resolve(false)
     })
-    child.once('close', (code) => {
-      resolve(code === 0)
+    child.once('close', async (code) => {
+      if (code !== 0) {
+        await fs.rm(stagingDist, { force: true, recursive: true })
+        resolve(false)
+        return
+      }
+
+      try {
+        await fs.rm(dist, { force: true, recursive: true })
+        await fs.rename(stagingDist, dist)
+        resolve(true)
+      } catch (error) {
+        console.error('[build] failed to publish staged output:', error)
+        resolve(false)
+      }
     })
   })
 }
