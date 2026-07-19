@@ -8,7 +8,6 @@
 #include "agent_conversation.h"
 #include "commands.h"
 #include "constitution.h"
-#include "readline_wrapper.h"
 #include "markdown.h"
 #include "stream_renderer.h"
 #include "render_policy.h"
