@@ -71,6 +71,11 @@ struct Message {
     // Finished tool rows that followed this assistant turn in the TUI.
     // Populated by the REPL after /cmd dispatch; ignored by API body builders.
     std::vector<ToolTraceEntry> tool_trace;
+
+    // Provider reasoning/thinking accumulated for this assistant turn
+    // (Anthropic thinking_delta, OpenAI reasoning_content, Gemini thought
+    // parts).  Persisted for conversation-switch replay; never sent upstream.
+    std::string thinking;
 };
 
 struct ApiRequest {
@@ -106,8 +111,9 @@ struct ApiResponse {
 
 using StreamCallback = std::function<void(const std::string& chunk)>;
 // Optional side-channel for provider reasoning/thinking deltas (Anthropic
-// thinking_delta, OpenAI reasoning_content).  Not mixed into StreamCallback
-// text so the TUI can render a collapsible ThinkingSegment separately.
+// thinking_delta, OpenAI reasoning_content, Gemini thought parts).  Not mixed
+// into StreamCallback text so the TUI can render a collapsible ThinkingSegment
+// separately.
 using ReasoningCallback = std::function<void(const std::string& delta)>;
 
 // Provider descriptor.  Selected per-request by model-string prefix; each

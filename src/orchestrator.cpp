@@ -1837,6 +1837,9 @@ static std::shared_ptr<JsonValue> messages_to_json(const std::vector<Message>& m
         auto obj = jobj();
         obj->as_object_mut()["role"]    = jstr(m.role);
         obj->as_object_mut()["content"] = jstr(m.content);
+        if (!m.thinking.empty()) {
+            obj->as_object_mut()["thinking"] = jstr(m.thinking);
+        }
         if (!m.tool_trace.empty()) {
             obj->as_object_mut()["tool_trace"] = tool_trace_to_json(m.tool_trace);
         }
@@ -1853,6 +1856,7 @@ static std::vector<Message> messages_from_json(const JsonValue* arr) {
         Message msg;
         msg.role = v->get_string("role");
         msg.content = v->get_string("content");
+        msg.thinking = v->get_string("thinking");
         msg.tool_trace = tool_trace_from_json(v->get("tool_trace").get());
         out.push_back(std::move(msg));
     }

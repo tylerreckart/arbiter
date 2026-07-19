@@ -158,6 +158,7 @@ struct ToolActivityEvent {
     enum class Phase { Started, Finished };
     Phase       phase = Phase::Started;
     std::string id;              // stable within a turn (e.g. "t1", "t2")
+    std::string agent_id;        // agent that dispatched the /cmd (nested /agent)
     std::string label;           // tool_status_label() — sidebar / row text
     std::string kind;            // fetch|exec|write|agent|mem|mcp|…
     std::string detail;          // truncated args / path

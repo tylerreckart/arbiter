@@ -177,8 +177,10 @@ diffs compete for the same visual weight because:
    chrome inset; expose them in `TuiDesign::Layout`.
 4. **Density scales continuously.** Prefer clamp/lerp over on/off at
    `dense_cols`.
-5. **Preserve quiet defaults.** Verbose mode and interim collapse stay;
-   polish must not re-introduce tool-call noise into scroll.
+5. **Preserve quiet defaults.** Verbose mode and interim collapse stay.
+   Tool activity belongs in compact `ToolSegment` rows (see
+   [output-ux.md](output-ux.md)), not raw `/cmd` dumps or an end-of-turn
+   aggregate summary line.
 
 ## Proposed token additions
 

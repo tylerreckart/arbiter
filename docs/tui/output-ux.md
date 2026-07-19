@@ -58,18 +58,20 @@ Keys remain `y` / `n`. Declines still return `ERR: user declined` to the agent.
 
 ## Reasoning
 
-When Anthropic emits `thinking_delta` or OpenAI-compat emits
-`reasoning_content` / `reasoning`, deltas land in a collapsed
-`ThinkingSegment`. Models without a separate reasoning channel keep the
-header **thinking…** spinner only — Arbiter does not invent chain-of-thought
-from ordinary prose. Reasoning is not persisted across conversation switch
-today (live-session only).
+When Anthropic emits `thinking_delta`, OpenAI-compat emits
+`reasoning_content` / `reasoning`, or Gemini streams parts with
+`"thought": true` (via `thinkingConfig.includeThoughts` on Gemini 2.5/3),
+deltas land in a collapsed `ThinkingSegment`. Models without a separate
+reasoning channel keep the header **thinking…** spinner only — Arbiter does
+not invent chain-of-thought from ordinary prose. Reasoning is stored on the
+assistant `Message.thinking` field and rebuilt on conversation switch.
 
 ## Replay
 
-`transcript_replay` runs assistant content through `StreamRenderer(kReplay)`
-then rebuilds `ToolSegment`s from each message’s `tool_trace`. Tool chrome
-therefore matches the live turn after a conversation switch.
+`transcript_replay` rebuilds `ThinkingSegment`s from `Message.thinking`,
+runs assistant content through `StreamRenderer(kReplay)`, then rebuilds
+`ToolSegment`s from each message’s `tool_trace`. Nested `/agent` tools
+attribute to the child agent’s history (via `ToolActivityEvent.agent_id`).
 
 ## Related
 

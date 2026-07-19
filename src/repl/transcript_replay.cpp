@@ -63,6 +63,10 @@ void render_messages(opentui::PaneScrollView& view,
             continue;
         }
 
+        // Rebuild collapsible thinking before prose (matches live order).
+        if (!m.thinking.empty()) {
+            queue.push_thinking(m.thinking);
+        }
         StreamRenderer renderer(kReplay, queue);
         renderer.feed(m.content);
         renderer.flush();
