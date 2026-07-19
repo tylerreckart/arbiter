@@ -3,6 +3,7 @@
 #include "api_client.h"  // ContentPart full type — forward-declared in commands.h.
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
@@ -88,9 +89,6 @@ std::string tool_activity_detail(const AgentCommand& cmd) {
         path = trim_label_ws(path);
         if (path.empty()) path = "(content)";
         return truncate_for_label(path, 72);
-    }
-    if (cmd.name == "write" || !cmd.content.empty()) {
-        // Keep args primary; content length is a secondary cue for writes.
     }
     return truncate_for_label(args, 72);
 }
@@ -1925,7 +1923,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         return "";   // "help" and unknowns are always allowed
     };
 
-    int tool_seq = 0;
+    // Process-wide ids so nested /agent turns and multi-turn timelines never
+    // collide on "t1"/"t2" (upsert_tool matches by id across scrollback).
+    static std::atomic<std::uint64_t> g_tool_event_seq{0};
 
     auto emit_tool = [&](ToolActivityEvent::Phase phase,
                          const AgentCommand& cmd,
@@ -1951,7 +1951,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             break;
         }
 
-        const std::string tool_id = "t" + std::to_string(++tool_seq);
+        const std::string tool_id =
+            "t" + std::to_string(g_tool_event_seq.fetch_add(1, std::memory_order_relaxed) + 1);
         emit_tool(ToolActivityEvent::Phase::Started, cmd, tool_id);
 
         // ── Capability gate ─────────────────────────────────────────────
@@ -3182,9 +3183,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id, ok,
                       tool_result_preview(block_str));
         } else {
-            // No block produced (unknown command name) — still close the
-            // Started event so observers don't leave a spinning row.
-            emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id, true);
+            // No block produced (unknown command name) — close the Started
+            // row as a failure so the timeline doesn't show a green ✓.
+            emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id, false);
         }
     }
 

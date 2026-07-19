@@ -573,8 +573,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                     const std::string& content) {
         Pane* p = g_active_pane;
         if (!p) return;
-        // One-line interim header so sub-agent progress isn't anonymous dim dump.
-        p->output_queue.push_prose({arbiter::styled_interim_header(agent_id)});
+        // One header per distinct sub-agent per master turn (not every API
+        // iteration — that was flooding scroll with repeated → agent rows).
+        if (p->last_interim_agent != agent_id) {
+            p->output_queue.push_prose({arbiter::styled_interim_header(agent_id)});
+            p->last_interim_agent = agent_id;
+        }
         arbiter::StreamRenderer renderer(arbiter::kInterim, p->output_queue);
         renderer.feed(content);
         renderer.flush();
@@ -584,9 +588,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         if (p) {
             // In-scroll timeline row (Started creates, Finished updates).
             p->output_queue.push_tool(ev);
-            if (ev.phase == arbiter::ToolActivityEvent::Phase::Started) {
-                p->tool_indicator.begin();
-            } else {
+            // Do NOT call begin() here — turn entry already arms the spinner.
+            // begin() zeroes counters, so N tools would always display as "1".
+            if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
                 p->tool_indicator.bump(ev.label, ev.ok);
             }
         }
@@ -912,6 +916,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 reveal_sidebar();
                 try {
                     if (!cfg.verbose) tool_indicator.begin();
+                    pane.last_interim_agent.clear();
                     arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
                     auto resp = orch.send_streaming(id, msg, [&](const std::string& chunk) {
                         renderer.feed(chunk);
@@ -962,6 +967,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 reveal_sidebar();
                 try {
                     if (!cfg.verbose) tool_indicator.begin();
+                    pane.last_interim_agent.clear();
                     arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
                     auto resp = orch.send_streaming("index", query, [&](const std::string& chunk) {
                         renderer.feed(chunk);
@@ -1550,6 +1556,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         reveal_sidebar();
         try {
             tool_indicator.begin();
+            pane.last_interim_agent.clear();
             arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
             auto resp = orch.send_streaming(current_agent, line,
                 [&](const std::string& chunk) { renderer.feed(chunk); },
