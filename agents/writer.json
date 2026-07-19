@@ -17,5 +17,5 @@
     "Verify URLs, names, dates, and quoted passages against the source material in your prompt BEFORE /write. One verified write beats two iterative drafts.",
     "If a revision is needed after /write, /write again to the SAME PATH — the artifact store overwrites in place. Never create a second filename for a revised version of the same deliverable; one path, one artifact id, content updated."
   ],
-  "capabilities": ["/write", "/fetch", "/exec", "/agent", "/mem"]
+  "capabilities": ["/write", "/search", "/fetch", "/exec", "/agent", "/mem"]
 }

@@ -7,7 +7,9 @@ Agents can issue `/search <query>` mid-turn to discover sources before fetching 
 | `search_provider` | `brave` | Search backend. Only `brave` is implemented in v1; `tavily` and `exa` slots reserved. |
 | `search_api_key`  | `""`    | Provider API key. Empty ⇒ `/search` returns ERR with a clear "configure ARBITER_SEARCH_API_KEY" message. |
 
-`arbiter` and `arbiter --api` resolve the key in this order: `ARBITER_SEARCH_API_KEY` (preferred — provider-agnostic name), `BRAVE_SEARCH_API_KEY` (convenience for Brave-only deployments), then `~/.arbiter/search_api_key` (written by [`arbiter --setup-tools`](../cli/setup-tools.md)). The provider can be set via `ARBITER_SEARCH_PROVIDER`. Without a key the slash command degrades cleanly: agents see `ERR: web search unavailable in this context` and adapt by dropping the `/search` step.
+`arbiter` and `arbiter --api` resolve the key in this order: `ARBITER_SEARCH_API_KEY` (preferred — provider-agnostic name), `BRAVE_SEARCH_API_KEY` (convenience for Brave-only deployments), then `~/.arbiter/search_api_key` (written by [`arbiter --setup-tools`](../cli/setup-tools.md)). The provider can be set via `ARBITER_SEARCH_PROVIDER`. Without a key the slash command degrades cleanly: agents see `ERR: web search unavailable` with setup instructions and adapt by dropping the `/search` step.
+
+In the interactive TUI, operator-typed `/search` mirrors `/fetch`: it bypasses the focused agent's capability list, calls Brave, and injects the result block into the conversation so the agent can synthesize.
 
 ## Slash commands
 
@@ -40,11 +42,12 @@ The dispatcher applies a 16 KB body cap (matching /fetch). Brave's `<strong>...<
 
 | Surface | Cause |
 |---------|-------|
-| `ERR: web search unavailable in this context` | No `search_invoker_cb_` wired (no key configured). |
-| `ERR: Brave returned 401` | Bad key. |
-| `ERR: Brave returned 403` | Plan / IP restriction. |
+| `ERR: web search unavailable` | No search invoker wired (no key configured / process not restarted after `--setup-tools`). |
+| `ERR: Brave returned HTTP 401/403` | Bad key or plan / IP restriction. |
+| `ERR: Brave returned HTTP 422 [SUBSCRIPTION_TOKEN_INVALID]` | Invalid or truncated subscription token. |
 | `ERR: Brave rate-limited (429)` | Quota exhaustion. |
 | `ERR: empty query` | `/search` with no terms. |
+| `ERR: capability not granted … bundle 'web'` | Mid-turn agent `/search` while the agent's `capabilities` omit `/search`, `/fetch`, and `/browse`. |
 
 ## Workflow for agents
 
