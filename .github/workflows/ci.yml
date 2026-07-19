@@ -86,8 +86,13 @@ jobs:
             -DINDEX_BUILD_TESTS=ON \
             $EXTRA
 
+      # Bound parallelism to the core count.  Bare `-j` tells make to spawn
+      # unlimited jobs; the many per-test executables make hundreds of object
+      # files ready at once, and on the 3-core/7 GB macos-14 runner that
+      # launches ~150 clang processes simultaneously and the build stalls in
+      # swap for ~20 minutes (vs ~2.5 min on Linux).
       - name: Build
-        run: cmake --build build --config Debug -j
+        run: cmake --build build --config Debug -j "$(getconf _NPROCESSORS_ONLN)"
 
       # `--no-tests=error` makes ctest fail loudly if no tests are
       # registered (a regression that would otherwise silently pass).
