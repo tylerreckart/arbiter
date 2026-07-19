@@ -1,8 +1,7 @@
 # Agent output UX
 
 How the TUI presents agent turns as a first-class activity timeline.
-Builds on the segment pipeline and theme tokens from
-[output-styling-plan.md](output-styling-plan.md) (phases 1–5 foundation).
+Theme tokens and spacing live in [themes.md](themes.md).
 
 ## Turn anatomy
 
@@ -80,5 +79,4 @@ history (typically `index`).
 ## Related
 
 - [streaming.md](streaming.md) — turn lifecycle, spinners, cancel
-- [output-styling-plan.md](output-styling-plan.md) — theme tokens, spacing, StyleId path
-- [themes.md](themes.md) — `TuiDesign` schema
+- [themes.md](themes.md) — `TuiDesign` schema, theme tokens, spacing

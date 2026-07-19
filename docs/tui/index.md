@@ -58,7 +58,7 @@ Token totals also appear in the pane header stats row (right side of row 1) when
 - **[Streaming](streaming.md)** — what you see during a turn: thinking spinner, tool-call indicator, verbose mode, cancellation.
 - **[Sessions](sessions.md)** — history persistence, session restore on relaunch, per-cwd scoping.
 - **[Output UX](output-ux.md)** — tool timeline, thinking rows, permission cards, replay chrome.
-- **[Output styling plan](output-styling-plan.md)** — theme tokens, spacing, and StyleId foundation (complete).
+- **[Themes](themes.md)** — `TuiDesign` schema, theme tokens, and spacing.
 
 ## Configuration
 
