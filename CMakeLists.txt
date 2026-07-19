@@ -540,7 +540,18 @@ if(INDEX_BUILD_TESTS)
     target_compile_definitions(unit_pane_scroll_segments PRIVATE
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     target_link_libraries(unit_pane_scroll_segments PRIVATE OpenTUI::core)
-    if(UNIX AND NOT APPLE)
+    # Match arbiter's Apple OpenTUI link flags — the modern ld rejects
+    # ADRP/___dso_handle fixups from doctest + libopentui without -ld_classic.
+    if(APPLE)
+        target_link_libraries(unit_pane_scroll_segments PRIVATE
+            "-framework CoreFoundation"
+            "-framework CoreAudio"
+            "-framework AudioToolbox"
+        )
+        target_link_options(unit_pane_scroll_segments PRIVATE "-Wl,-ld_classic")
+        set_target_properties(unit_pane_scroll_segments PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    elseif(UNIX)
         target_link_libraries(unit_pane_scroll_segments PRIVATE dl pthread)
         set_target_properties(unit_pane_scroll_segments PROPERTIES
             BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
