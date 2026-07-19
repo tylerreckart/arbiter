@@ -719,6 +719,7 @@ std::string ApiClient::build_body_gemini(const ApiRequest& req) {
     // Gemini 2.5 / 3 thinking models: ask for thought summaries so the TUI
     // can render a ThinkingSegment.  Older Gemini models ignore unknown
     // generationConfig keys or reject them — gate on model id.
+    // Flash-Lite defaults thinking off unless thinkingBudget is set.
     {
         const std::string stripped = strip_model_prefix(req.model);
         const bool thinking_model =
@@ -727,6 +728,12 @@ std::string ApiClient::build_body_gemini(const ApiRequest& req) {
         if (thinking_model) {
             auto tc = jobj();
             tc->as_object_mut()["includeThoughts"] = jbool(true);
+            const bool lite =
+                stripped.find("flash-lite") != std::string::npos ||
+                stripped.find("flash_lite") != std::string::npos;
+            if (lite) {
+                tc->as_object_mut()["thinkingBudget"] = jnum(1024);
+            }
             g["thinkingConfig"] = tc;
         }
     }
