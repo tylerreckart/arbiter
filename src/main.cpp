@@ -48,6 +48,7 @@
 #include <string>
 #include <cstdlib>
 #include <csignal>
+#include <exception>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -63,6 +64,7 @@
 #include <ctime>
 #include <cstdio>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -89,26 +91,180 @@ using arbiter::ConversationScope;
 static volatile sig_atomic_t g_winch = 0;
 static void sigwinch_handler(int) { g_winch = 1; }
 
-// Set while SGR mouse tracking is active so fatal-signal handlers can emit
-// DECRST sequences without touching non-async-signal-safe state.
-static volatile sig_atomic_t g_mouse_tracking = 0;
+// Armed for the whole interactive Session lifetime (not just while mouse is
+// on). Fatal paths must restore the host tty even when mouse was never
+// enabled — otherwise a crash leaves the primary buffer visible with raw
+// termios / sticky DEC modes, and the shell looks "back" while input is
+// still captured as TUI events.
+static volatile sig_atomic_t g_tui_armed = 0;
 
-// Best-effort tty reset for fatal signals. Only async-signal-safe calls.
+// Saved cooked stdin attributes for async-signal-safe restore. Written once
+// when raw mode is entered; only read from fatal handlers / RAII teardown.
+static struct termios g_saved_stdin_tm;
+static volatile sig_atomic_t g_have_saved_stdin_tm = 0;
+
+// Precomputed path for async-signal-safe fatal logging (~/.arbiter/tui-fatal.log).
+static char g_fatal_log_path[1024];
+static volatile sig_atomic_t g_fatal_log_ready = 0;
+
+// Append bytes; ignores partial-write shortfalls (best-effort diagnostics).
+static void fatal_log_write(int fd, const char* p, std::size_t n) {
+    while (n > 0) {
+        const ssize_t w = ::write(fd, p, n);
+        if (w <= 0) return;
+        p += static_cast<std::size_t>(w);
+        n -= static_cast<std::size_t>(w);
+    }
+}
+
+static void fatal_log_write_cstr(int fd, const char* s) {
+    std::size_t n = 0;
+    while (s[n] != '\0') ++n;
+    fatal_log_write(fd, s, n);
+}
+
+static void fatal_log_write_uint(int fd, unsigned long v) {
+    char buf[32];
+    char* p = buf + sizeof(buf);
+    if (v == 0) {
+        fatal_log_write(fd, "0", 1);
+        return;
+    }
+    while (v > 0) {
+        *--p = static_cast<char>('0' + (v % 10));
+        v /= 10;
+    }
+    fatal_log_write(fd, p, static_cast<std::size_t>((buf + sizeof(buf)) - p));
+}
+
+static const char* fatal_signal_name(int sig) {
+    switch (sig) {
+        case SIGTERM: return "SIGTERM";
+        case SIGHUP:  return "SIGHUP";
+        case SIGINT:  return "SIGINT";
+        case SIGSEGV: return "SIGSEGV";
+        case SIGABRT: return "SIGABRT";
+        case SIGBUS:  return "SIGBUS";
+        case SIGFPE:  return "SIGFPE";
+        default:      return "signal";
+    }
+}
+
+// Async-signal-safe append to ~/.arbiter/tui-fatal.log. Path is prepared
+// before handlers are installed; open/write/close only (no libc logging).
+static void log_fatal_event(const char* kind, int sig) {
+    if (!g_fatal_log_ready) return;
+    const int fd = ::open(g_fatal_log_path,
+                          O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    const auto now = static_cast<unsigned long>(::time(nullptr));
+    fatal_log_write_cstr(fd, "tui-fatal ts=");
+    fatal_log_write_uint(fd, now);
+    fatal_log_write_cstr(fd, " kind=");
+    fatal_log_write_cstr(fd, kind);
+    if (sig != 0) {
+        fatal_log_write_cstr(fd, " signal=");
+        fatal_log_write_cstr(fd, fatal_signal_name(sig));
+        fatal_log_write_cstr(fd, "(");
+        fatal_log_write_uint(fd, static_cast<unsigned long>(sig));
+        fatal_log_write_cstr(fd, ")");
+    }
+    fatal_log_write_cstr(fd, " tty_reset=");
+    fatal_log_write_cstr(fd, g_tui_armed ? "yes" : "no");
+    fatal_log_write_cstr(fd, "\n");
+    (void)::close(fd);
+}
+
+// Best-effort tty reset for fatal signals / terminate. Only async-signal-safe
+// calls (write, tcsetattr, signal, raise).
 static void emergency_tty_reset() {
-    // Disable any-event / button / mouse tracking + SGR mouse; show cursor;
-    // leave alternate screen. Order matches OpenTUI's disableMouse path.
+    // Mouse family off, bracketed paste off, kitty keyboard pop, show cursor,
+    // leave alternate screen. Idempotent if OpenTUI already ran its shutdown.
     static const char kReset[] =
         "\033[?1003l\033[?1002l\033[?1000l\033[?1006l"
+        "\033[?2004l"
+        "\033[<u"
         "\033[?25h\033[?1049l";
     (void)::write(STDOUT_FILENO, kReset, sizeof(kReset) - 1);
+    if (g_have_saved_stdin_tm) {
+        (void)::tcsetattr(STDIN_FILENO, TCSANOW, &g_saved_stdin_tm);
+    }
 }
 
 static void fatal_signal_handler(int sig) {
-    if (g_mouse_tracking) emergency_tty_reset();
+    log_fatal_event("signal", sig);
+    if (g_tui_armed) emergency_tty_reset();
     // Restore default disposition and re-raise so the process still exits
     // with the expected status / core-dump behavior.
     ::signal(sig, SIG_DFL);
     ::raise(sig);
+}
+
+static void tui_terminate_handler() {
+    log_fatal_event("terminate", 0);
+    if (g_tui_armed) emergency_tty_reset();
+    // Abort with default disposition so we don't re-enter fatal_signal_handler.
+    ::signal(SIGABRT, SIG_DFL);
+    std::abort();
+}
+
+// RAII raw-mode stdin. Restores cooked termios on every exit path
+// (normal return, exception unwind) — matching SetupTui's destructor.
+struct StdinRawModeGuard {
+    struct termios saved{};
+    bool active = false;
+
+    StdinRawModeGuard() {
+        if (::tcgetattr(STDIN_FILENO, &saved) != 0) return;
+        active = true;
+        g_saved_stdin_tm = saved;
+        g_have_saved_stdin_tm = 1;
+        struct termios raw = saved;
+        raw.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO | ISIG | IEXTEN));
+        raw.c_iflag &= static_cast<tcflag_t>(~(IXON | ICRNL | BRKINT | INPCK | ISTRIP));
+        raw.c_cc[VMIN]  = 1;
+        raw.c_cc[VTIME] = 0;
+        ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+    }
+
+    ~StdinRawModeGuard() {
+        // Always disarm: exception unwind skips the normal shutdown tail.
+        g_tui_armed = 0;
+        if (!active) return;
+        // Drain while still raw/no-echo — bytes that arrive after ECHO is
+        // restored get echoed by the kernel the instant they're received.
+        arbiter::drain_stdin_spurious(150);
+        ::tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+        g_have_saved_stdin_tm = 0;
+    }
+
+    StdinRawModeGuard(const StdinRawModeGuard&) = delete;
+    StdinRawModeGuard& operator=(const StdinRawModeGuard&) = delete;
+};
+
+static void install_tui_fatal_handlers() {
+    // Prepare the log path before arming handlers so the signal path never
+    // touches the heap or get_config_dir().
+    {
+        const std::string dir = get_config_dir();
+        const int n = std::snprintf(g_fatal_log_path, sizeof(g_fatal_log_path),
+                                    "%s/tui-fatal.log", dir.c_str());
+        if (n > 0 && static_cast<std::size_t>(n) < sizeof(g_fatal_log_path)) {
+            g_fatal_log_ready = 1;
+        }
+    }
+    // Soft kills that previously left sticky SGR mouse in the host shell.
+    ::signal(SIGTERM, fatal_signal_handler);
+    ::signal(SIGHUP, fatal_signal_handler);
+    ::signal(SIGINT, fatal_signal_handler);
+    // Hard crashes / Zig panics (abort). Without these, performShutdownSequence
+    // may leave the alt screen while raw termios + mouse stick — the
+    // "crashed back to the CLI but input is still TUI" failure mode.
+    ::signal(SIGSEGV, fatal_signal_handler);
+    ::signal(SIGABRT, fatal_signal_handler);
+    ::signal(SIGBUS, fatal_signal_handler);
+    ::signal(SIGFPE, fatal_signal_handler);
+    std::set_terminate(tui_terminate_handler);
 }
 
 // Read one key for y/N confirms, skipping SGR mouse reports so a click's
@@ -214,32 +370,24 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // cooked mode), the kernel line discipline echoes those bytes to the
     // screen the instant they arrive — reading them later doesn't undo
     // that. Raw mode has to be in effect *before* the queries go out.
-    struct termios orig_stdin_tm;
-    bool stdin_is_tty = (::tcgetattr(STDIN_FILENO, &orig_stdin_tm) == 0);
-    if (stdin_is_tty) {
-        struct termios raw = orig_stdin_tm;
-        raw.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
-        raw.c_iflag &= ~(IXON | ICRNL | BRKINT | INPCK | ISTRIP);
-        raw.c_cc[VMIN]  = 1;
-        raw.c_cc[VTIME] = 0;
-        ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-    }
+    // Declared before Session so exception unwind restores termios after
+    // OpenTUI teardown (reverse destruction order).
+    StdinRawModeGuard stdin_guard;
 
     arbiter::opentui::Session ot_session;
     arbiter::UiContext ui_ctx;
     ot_session.start(static_cast<std::uint32_t>(arbiter::term_cols()),
                      static_cast<std::uint32_t>(arbiter::term_rows()));
-    // Install fatal handlers BEFORE enabling mouse so a SIGTERM/HUP during
-    // the rest of startup cannot leave the host shell in SGR mouse mode.
-    signal(SIGTERM, fatal_signal_handler);
-    signal(SIGHUP, fatal_signal_handler);
-    signal(SIGINT, fatal_signal_handler);
+    // Install fatal handlers BEFORE enabling mouse / arming so a crash or
+    // SIGTERM during the rest of startup cannot leave sticky DEC modes or
+    // raw termios in the host shell.
+    install_tui_fatal_handlers();
+    g_tui_armed = 1;
     // Button+drag+wheel tracking without any-event motion (?1003).
     if (arbiter::tui_design().layout.mouse) {
         ot_session.engine().set_mouse_enabled(true, /*enable_movement=*/false);
-        g_mouse_tracking = 1;
     }
-    if (stdin_is_tty) arbiter::drain_stdin_spurious(200);
+    if (stdin_guard.active) arbiter::drain_stdin_spurious(200);
     ui_ctx.session = &ot_session;
     g_ui_ctx = &ui_ctx;
 
@@ -2538,18 +2686,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     g_ui_ctx = nullptr;
     ot_session.shutdown();
-    // Clear after Engine disables mouse so a fatal signal in the tiny
-    // shutdown window still emits DECRST.
-    g_mouse_tracking = 0;
-
-    // Discard any capability-query dribble while still in raw/no-echo mode.
-    // This must run *before* tcsetattr restores ECHO below — bytes that
-    // arrive after ECHO is back on get echoed to the screen by the kernel
-    // the instant they're received, and reading them afterward doesn't
-    // undo that.
-    arbiter::drain_stdin_spurious(150);
-
-    if (stdin_is_tty) ::tcsetattr(STDIN_FILENO, TCSANOW, &orig_stdin_tm);
+    // Keep g_tui_armed until StdinRawModeGuard restores termios so a fatal
+    // signal in this window still emits the full emergency reset. Cleared
+    // just before the guard runs at scope exit (after history persist).
+    // StdinRawModeGuard drains stdin and restores cooked mode on destruction.
 
     // Persist the shared history, dropping duplicates while preserving
     // last-seen order (all panes share one store, so no merge needed).
@@ -2580,6 +2720,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     scheduler.stop();
 
     ::write(STDOUT_FILENO, "\n", 1);
+    // StdinRawModeGuard disarms g_tui_armed and restores cooked mode at
+    // scope exit (and on exception unwind).
 }
 
 int main(int argc, char* argv[]) {
