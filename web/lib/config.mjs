@@ -8,7 +8,9 @@ export const repoRoot = path.resolve(root, '..')
 export const docsRoot = process.env.ARBITER_DOCS_PATH
   ? path.resolve(process.env.ARBITER_DOCS_PATH)
   : path.join(repoRoot, 'docs')
-export const dist = path.join(root, 'dist')
+export const dist = process.env.ARBITER_DIST_PATH
+  ? path.resolve(process.env.ARBITER_DIST_PATH)
+  : path.join(root, 'dist')
 export const viewsRoot = path.join(root, 'views')
 export const stylesPath = path.join(root, 'src', 'styles.css')
 export const siteScriptPath = path.join(root, 'src', 'site.js')

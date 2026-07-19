@@ -14,8 +14,9 @@ npm run dev
 `npm run dev` performs an initial build, serves `dist/` at
 `http://localhost:4173`, watches Pug templates, build modules, styles,
 client-side scripts, docs, installer, and image assets, then rebuilds and
-reloads connected browsers after each successful change. Set `PORT=4174` to
-use another port.
+reloads connected browsers after each successful change. Development builds
+are staged separately, so a template or build error leaves the last good site
+available while you fix it. Set `PORT=4174` to use another port.
 
 For a production-style static build:
 
