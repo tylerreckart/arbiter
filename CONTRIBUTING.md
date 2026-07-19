@@ -15,21 +15,19 @@ ctest --test-dir build --output-on-failure
 ```
 
 The build needs OpenSSL, libcurl, SQLite3, and a C++20 compiler.
-libedit (or GNU readline) is optional but recommended for the
-terminal client. CI builds against macOS arm64, macOS x86_64, and
-Ubuntu 22.04.
+CI builds against macOS arm64, macOS x86_64, and Ubuntu 22.04.
 
 ### Linux
 
 ```bash
 sudo apt-get install build-essential cmake pkg-config \
-    libssl-dev libcurl4-openssl-dev libedit-dev
+    libssl-dev libcurl4-openssl-dev libsqlite3-dev
 ```
 
 ### macOS
 
 ```bash
-brew install cmake openssl@3 libedit
+brew install cmake openssl@3
 # point CMake at brew's openssl when configuring:
 cmake -B build -DCMAKE_BUILD_TYPE=Debug \
     -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
