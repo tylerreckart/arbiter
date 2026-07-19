@@ -766,6 +766,7 @@ if(INDEX_BUILD_TESTS)
     target_include_directories(unit_message_replay_roundtrip PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}  # message_codec.h → api_client.h → openssl/ssl.h
     )
     target_compile_definitions(unit_message_replay_roundtrip PRIVATE
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
