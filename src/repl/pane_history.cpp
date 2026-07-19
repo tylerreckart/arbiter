@@ -42,6 +42,14 @@ void pane_history_drain_queue(Pane& pane) {
         case OutputItem::Kind::Diff:
             pane_history_push_diff(pane, item.data);
             break;
+        case OutputItem::Kind::Tool:
+            pane_history_upsert_tool(pane, item.tool, item.new_block);
+            break;
+        case OutputItem::Kind::Thinking:
+            if (pane.scroll && !item.data.empty()) {
+                pane.scroll->append_thinking(item.data, item.new_block);
+            }
+            break;
         }
     }
     if (pane.scroll_offset > 0) {
@@ -99,6 +107,12 @@ void pane_history_push_code_line(Pane& pane, std::string_view line) {
 
 void pane_history_push_code_close(Pane& pane, std::string_view close_fence) {
     if (pane.scroll) pane.scroll->append_code_close(close_fence);
+}
+
+void pane_history_upsert_tool(Pane& pane,
+                              const ToolActivityEvent& event,
+                              bool new_block) {
+    if (pane.scroll) pane.scroll->upsert_tool(event, new_block);
 }
 
 bool pane_history_toggle_code_block(Pane& pane, int scroll_offset) {

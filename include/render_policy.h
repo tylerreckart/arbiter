@@ -42,4 +42,18 @@ void apply_base_style(StyledLine& line, StyleId base);
 
 [[nodiscard]] std::vector<StyledLine> tool_call_summary_lines(int total, int failed);
 
+// Quiet system/activity chrome: dim middle-dot prefix so lines don't read as
+// model prose. Used for interrupts, advisor banners, confirm outcomes.
+[[nodiscard]] StyledLine styled_activity_line(std::string text,
+                                              StyleId id = StyleId::System);
+
+// Sub-agent interim header (`→ agent_id`) drawn before truncated progress.
+[[nodiscard]] StyledLine styled_interim_header(const std::string& agent_id);
+
+// Multi-line permission card for destructive confirms (write/exec).
+[[nodiscard]] std::vector<StyledLine> styled_permission_card(
+    const std::string& action,
+    const std::string& target,
+    const std::vector<std::string>& preview_lines);
+
 } // namespace arbiter

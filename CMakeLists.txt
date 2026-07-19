@@ -136,6 +136,7 @@ set(ARBITER_SOURCES
     src/request_event_bus.cpp
     src/scheduler.cpp
     src/json.cpp
+    src/message_codec.cpp
     src/commands.cpp
     src/mcp/types.cpp
     src/mcp/subprocess.cpp
@@ -346,12 +347,18 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_commands
         tests/test_commands.cpp
         src/commands.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/json.cpp
     )
     target_include_directories(unit_commands PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
         ${OPENSSL_INCLUDE_DIR}
     )
+    target_compile_definitions(unit_commands PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     target_link_libraries(unit_commands PRIVATE
         CURL::libcurl
         OpenSSL::SSL
@@ -463,6 +470,67 @@ if(INDEX_BUILD_TESTS)
     target_compile_definitions(unit_tui_theme_json PRIVATE
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_tui_theme_json COMMAND unit_tui_theme_json)
+
+    # ToolCallIndicator arm/bump/finalize counting (nullptr TUI — no paint).
+    add_executable(unit_tool_indicator
+        tests/test_tool_indicator.cpp
+        tests/term_size_stub.cpp
+        src/tui/tui.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_tool_indicator PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(unit_tool_indicator PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    add_test(NAME unit_tool_indicator COMMAND unit_tool_indicator)
+
+    # PaneScrollView ToolSegment / ThinkingSegment geometry + toggle.
+    add_executable(unit_pane_scroll_segments
+        tests/test_pane_scroll_segments.cpp
+        tests/term_size_stub.cpp
+        src/tui/opentui/pane_scroll_view.cpp
+        src/tui/opentui/ansi_scroll_append.cpp
+        src/tui/opentui/span_scroll_append.cpp
+        src/tui/opentui/diff_panel.cpp
+        src/tui/tui.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/tui/ansi_util.cpp
+        src/code_highlighter.cpp
+        src/markdown.cpp
+        src/styled_text.cpp
+        src/render_policy.cpp
+        src/theme.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_pane_scroll_segments PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(unit_pane_scroll_segments PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    target_link_libraries(unit_pane_scroll_segments PRIVATE OpenTUI::core)
+    # Match arbiter's Apple OpenTUI link flags — the modern ld rejects
+    # ADRP/___dso_handle fixups from doctest + libopentui without -ld_classic.
+    if(APPLE)
+        target_link_libraries(unit_pane_scroll_segments PRIVATE
+            "-framework CoreFoundation"
+            "-framework CoreAudio"
+            "-framework AudioToolbox"
+        )
+        target_link_options(unit_pane_scroll_segments PRIVATE "-Wl,-ld_classic")
+        set_target_properties(unit_pane_scroll_segments PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    elseif(UNIX)
+        target_link_libraries(unit_pane_scroll_segments PRIVATE dl pthread)
+        set_target_properties(unit_pane_scroll_segments PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    endif()
+    add_test(NAME unit_pane_scroll_segments COMMAND unit_pane_scroll_segments)
 
     add_executable(unit_palette
         tests/test_palette.cpp
@@ -644,6 +712,54 @@ if(INDEX_BUILD_TESTS)
         ${OPENSSL_INCLUDE_DIR}
     )
     add_test(NAME unit_transcript_replay_predicates COMMAND unit_transcript_replay_predicates)
+
+    # Session JSON ↔ scroll rebuild round-trip (thinking + tool_trace).
+    add_executable(unit_message_replay_roundtrip
+        tests/test_message_replay_roundtrip.cpp
+        tests/term_size_stub.cpp
+        src/message_codec.cpp
+        src/json.cpp
+        src/repl/queues.cpp
+        src/stream_renderer.cpp
+        src/tui/block_parser.cpp
+        src/tui/stream_filter.cpp
+        src/tui/opentui/pane_scroll_view.cpp
+        src/tui/opentui/ansi_scroll_append.cpp
+        src/tui/opentui/span_scroll_append.cpp
+        src/tui/opentui/diff_panel.cpp
+        src/tui/tui.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/tui/ansi_util.cpp
+        src/code_highlighter.cpp
+        src/markdown.cpp
+        src/styled_text.cpp
+        src/render_policy.cpp
+        src/theme.cpp
+    )
+    target_include_directories(unit_message_replay_roundtrip PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}  # message_codec.h → api_client.h → openssl/ssl.h
+    )
+    target_compile_definitions(unit_message_replay_roundtrip PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    target_link_libraries(unit_message_replay_roundtrip PRIVATE OpenTUI::core)
+    if(APPLE)
+        target_link_libraries(unit_message_replay_roundtrip PRIVATE
+            "-framework CoreFoundation"
+            "-framework CoreAudio"
+            "-framework AudioToolbox"
+        )
+        target_link_options(unit_message_replay_roundtrip PRIVATE "-Wl,-ld_classic")
+        set_target_properties(unit_message_replay_roundtrip PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    elseif(UNIX)
+        target_link_libraries(unit_message_replay_roundtrip PRIVATE dl pthread)
+        set_target_properties(unit_message_replay_roundtrip PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    endif()
+    add_test(NAME unit_message_replay_roundtrip COMMAND unit_message_replay_roundtrip)
 
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser

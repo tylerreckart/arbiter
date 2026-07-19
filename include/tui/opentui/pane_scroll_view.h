@@ -4,6 +4,7 @@
 #include "tui/opentui/ansi_scroll_append.h"
 #include "tui/opentui/diff_panel.h"
 #include "tui/opentui/span_scroll_append.h"
+#include "commands.h"
 #include "styled_text.h"
 #ifdef ARBITER_HAS_NATIVE_DIFF_VIEW
 #include "tui/opentui/diff_view.h"
@@ -41,12 +42,16 @@ public:
     void append_code_line(std::string_view line);
     void append_code_close(std::string_view close_fence);
     void append_diff(std::string_view patch);
+    // Create or update an in-scroll tool activity row (by event.id).
+    void upsert_tool(const ToolActivityEvent& event, bool new_block = false);
+    // Append provider reasoning/thinking into a collapsible segment.
+    void append_thinking(std::string_view delta, bool new_block = false);
     void clear();
 
     // Re-resolve scrollback colors after a TUI preset change.
     void retheme();
 
-    // Toggle expand/collapse on a truncated code block in the current viewport.
+    // Toggle expand/collapse on a truncated code block or tool row in view.
     bool toggle_code_block_in_view(int scroll_offset);
 
     [[nodiscard]] bool has_gap() const;
@@ -222,6 +227,57 @@ private:
         mutable bool cached_{false};
 
         explicit DiffSegment(std::string patch);
+        [[nodiscard]] int visual_rows(int content_w) const override;
+        void set_wrap_cols(int cols) override;
+        void collect_lines(std::vector<std::string>& out) const override;
+        void draw(OpenTuiHandle frame,
+                  int x,
+                  int y,
+                  int w,
+                  int h,
+                  int skip_rows) const override;
+    };
+
+    // Collapsible provider reasoning/thinking block. Collapsed by default.
+    struct ThinkingSegment final : Segment {
+        std::string text_;
+        bool expanded_ = false;
+        mutable int wrap_cols_{80};
+        static constexpr int kPreviewRows = 3;
+
+        void append(std::string_view delta);
+        void toggle_expanded();
+        [[nodiscard]] bool can_expand() const;
+        [[nodiscard]] std::string header_text() const;
+        [[nodiscard]] int visual_rows(int content_w) const override;
+        void set_wrap_cols(int cols) override;
+        void collect_lines(std::vector<std::string>& out) const override;
+        void draw(OpenTuiHandle frame,
+                  int x,
+                  int y,
+                  int w,
+                  int h,
+                  int skip_rows) const override;
+    };
+
+    // Compact per-tool activity row (Claude Code–style timeline).
+    // Collapsed = 1 status line; expanded = detail + result preview.
+    struct ToolSegment final : Segment {
+        std::string id_;
+        std::string label_;
+        std::string kind_;
+        std::string detail_;
+        std::string result_preview_;
+        bool finished_ = false;
+        bool ok_ = true;
+        bool expanded_ = false;
+        mutable int wrap_cols_{80};
+
+        void apply(const ToolActivityEvent& event);
+        void toggle_expanded();
+        [[nodiscard]] bool can_expand() const;
+        [[nodiscard]] std::string status_glyph() const;
+        [[nodiscard]] std::string header_text() const;
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
         void collect_lines(std::vector<std::string>& out) const override;

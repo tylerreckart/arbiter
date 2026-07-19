@@ -566,6 +566,279 @@ void PaneScrollView::DiffSegment::draw(OpenTuiHandle frame,
     panel_.draw(frame, x, y, w, h, skip_rows);
 }
 
+// --- ThinkingSegment (provider reasoning, collapsed by default) --------------
+
+namespace {
+
+// Soft-wrap plain text to `cols` display cells, preserving explicit newlines.
+std::vector<std::string> wrap_plain_lines(std::string_view text, int cols) {
+    std::vector<std::string> out;
+    if (cols < 1) cols = 1;
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t nl = text.find('\n', start);
+        const std::string_view src = (nl == std::string::npos)
+            ? text.substr(start)
+            : text.substr(start, nl - start);
+        if (src.empty()) {
+            out.emplace_back();
+        } else if (static_cast<int>(arbiter::display_width(src)) <= cols) {
+            out.emplace_back(src);
+        } else {
+            // Greedy cut by display width; never splits mid UTF-8 cluster.
+            std::string remain(src);
+            while (!remain.empty()) {
+                std::string chunk = arbiter::trim_to_display_cols(remain, cols);
+                if (chunk.empty()) {
+                    // Pathological zero-width / oversized cluster — advance one byte.
+                    chunk.assign(remain, 0, 1);
+                }
+                out.push_back(chunk);
+                remain.erase(0, chunk.size());
+            }
+        }
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    return out;
+}
+
+} // namespace
+
+void PaneScrollView::ThinkingSegment::append(std::string_view delta) {
+    text_.append(delta.data(), delta.size());
+}
+
+void PaneScrollView::ThinkingSegment::toggle_expanded() {
+    if (!can_expand()) return;
+    expanded_ = !expanded_;
+}
+
+bool PaneScrollView::ThinkingSegment::can_expand() const {
+    // Only offer expand when collapsed preview (or expanded cap) would hide rows.
+    const int body_cols = std::max(1, wrap_cols_ - 3);
+    const int body_n = static_cast<int>(wrap_plain_lines(text_, body_cols).size());
+    if (expanded_) return body_n > 0;
+    return body_n > kPreviewRows;
+}
+
+std::string PaneScrollView::ThinkingSegment::header_text() const {
+    std::string text = "thinking";
+    if (can_expand() || expanded_) {
+        text += expanded_ ? "  \u25BE" : "  \u25B8";
+    }
+    return text;
+}
+
+int PaneScrollView::ThinkingSegment::visual_rows(int content_w) const {
+    const int cols = std::max(1, content_w > 0 ? content_w : wrap_cols_);
+    // Body text is drawn inset by 2 cells (accent + pad); wrap to that width.
+    const int body_cols = std::max(1, cols - 3);
+    const auto body = wrap_plain_lines(text_, body_cols);
+    const int body_n = static_cast<int>(body.size());
+    static constexpr int kExpandedCap = 40;
+    if (!expanded_) {
+        if (body_n == 0) return 1;
+        const int preview = std::min(body_n, kPreviewRows);
+        // +1 ellipsis row when more body exists beyond the preview window.
+        return 1 + preview + (body_n > kPreviewRows ? 1 : 0);
+    }
+    return 1 + std::min(body_n, kExpandedCap) + (body_n > kExpandedCap ? 1 : 0);
+}
+
+void PaneScrollView::ThinkingSegment::set_wrap_cols(int cols) {
+    wrap_cols_ = std::max(1, cols);
+}
+
+void PaneScrollView::ThinkingSegment::collect_lines(std::vector<std::string>& out) const {
+    out.push_back(header_text());
+    if (text_.empty()) return;
+    const int body_cols = std::max(1, wrap_cols_ - 3);
+    const auto body = wrap_plain_lines(text_, body_cols);
+    static constexpr int kExpandedCap = 40;
+    const int limit = expanded_
+        ? std::min(static_cast<int>(body.size()), kExpandedCap)
+        : std::min(static_cast<int>(body.size()), kPreviewRows);
+    for (int i = 0; i < limit; ++i) out.push_back(body[static_cast<size_t>(i)]);
+    const int body_n = static_cast<int>(body.size());
+    if ((!expanded_ && body_n > kPreviewRows) ||
+        (expanded_ && body_n > kExpandedCap)) {
+        out.push_back("\u2026");
+    }
+}
+
+void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
+                                           int x,
+                                           int y,
+                                           int w,
+                                           int h,
+                                           int skip_rows) const {
+    if (w <= 0 || h <= 0) return;
+    const TuiDesign& d = tui_design();
+    const TuiRgba& bg = d.bg.scroll;
+    const int body_cols = std::max(1, w - 3);
+
+    auto draw_row = [&](const std::string& text,
+                        const TuiRgba& fg,
+                        int& screen_row) -> bool {
+        if (screen_row < skip_rows) {
+            ++screen_row;
+            return true;
+        }
+        const int drawn = screen_row - skip_rows;
+        if (drawn >= h) return false;
+        fill_rect(frame, x, y + drawn, w, 1, bg);
+        if (w > 0) fill_rect(frame, x, y + drawn, 1, 1, d.accent.info);
+        draw_text(frame,
+                  x + 2,
+                  y + drawn,
+                  trim_to_cells(text, body_cols),
+                  fg,
+                  bg);
+        ++screen_row;
+        return true;
+    };
+
+    int row = 0;
+    if (!draw_row(header_text(), d.content.system_fg, row)) return;
+    if (text_.empty()) return;
+
+    const auto body = wrap_plain_lines(text_, body_cols);
+    static constexpr int kExpandedCap = 40;
+    const int limit = expanded_
+        ? std::min(static_cast<int>(body.size()), kExpandedCap)
+        : std::min(static_cast<int>(body.size()), kPreviewRows);
+    for (int i = 0; i < limit; ++i) {
+        if (!draw_row(body[static_cast<size_t>(i)], d.text.muted, row)) return;
+    }
+    const int body_n = static_cast<int>(body.size());
+    if ((!expanded_ && body_n > kPreviewRows) ||
+        (expanded_ && body_n > kExpandedCap)) {
+        draw_row("\u2026", d.text.muted, row);
+    }
+}
+
+// --- ToolSegment (per-tool activity timeline) ---------------------------------
+
+void PaneScrollView::ToolSegment::apply(const ToolActivityEvent& event) {
+    if (!event.id.empty()) id_ = event.id;
+    if (!event.label.empty()) label_ = event.label;
+    if (!event.kind.empty()) kind_ = event.kind;
+    if (!event.detail.empty()) detail_ = event.detail;
+    if (event.phase == ToolActivityEvent::Phase::Finished) {
+        finished_ = true;
+        ok_ = event.ok;
+        if (!event.result_preview.empty()) {
+            result_preview_ = event.result_preview;
+        }
+    } else {
+        finished_ = false;
+        ok_ = true;
+    }
+}
+
+void PaneScrollView::ToolSegment::toggle_expanded() {
+    if (!can_expand()) return;
+    expanded_ = !expanded_;
+}
+
+bool PaneScrollView::ToolSegment::can_expand() const {
+    return !detail_.empty() || !result_preview_.empty();
+}
+
+std::string PaneScrollView::ToolSegment::status_glyph() const {
+    if (!finished_) return "\u25CB";  // ○ running
+    return ok_ ? "\u2713" : "\u2717"; // ✓ / ✗
+}
+
+std::string PaneScrollView::ToolSegment::header_text() const {
+    std::string text = status_glyph();
+    text += ' ';
+    text += label_.empty() ? (kind_.empty() ? "tool" : kind_) : label_;
+    if (can_expand()) {
+        text += expanded_ ? "  \u25BE" : "  \u25B8"; // ▾ / ▸
+    }
+    return text;
+}
+
+int PaneScrollView::ToolSegment::visual_rows(int /*content_w*/) const {
+    if (!expanded_ || !can_expand()) return 1;
+    int rows = 1;
+    if (!detail_.empty()) ++rows;
+    if (!result_preview_.empty()) ++rows;
+    return rows;
+}
+
+void PaneScrollView::ToolSegment::set_wrap_cols(int cols) {
+    wrap_cols_ = std::max(1, cols);
+}
+
+void PaneScrollView::ToolSegment::collect_lines(std::vector<std::string>& out) const {
+    out.push_back(header_text());
+    if (expanded_) {
+        if (!detail_.empty()) out.push_back("  " + detail_);
+        if (!result_preview_.empty()) out.push_back("  " + result_preview_);
+    }
+}
+
+void PaneScrollView::ToolSegment::draw(OpenTuiHandle frame,
+                                       int x,
+                                       int y,
+                                       int w,
+                                       int h,
+                                       int skip_rows) const {
+    if (w <= 0 || h <= 0) return;
+    const TuiDesign& d = tui_design();
+    const TuiRgba& bg = d.bg.scroll;
+
+    auto draw_row = [&](const std::string& text,
+                        const TuiRgba& fg,
+                        std::uint32_t attrs,
+                        int& screen_row) -> bool {
+        if (screen_row < skip_rows) {
+            ++screen_row;
+            return true;
+        }
+        const int drawn = screen_row - skip_rows;
+        if (drawn >= h) return false;
+        fill_rect(frame, x, y + drawn, w, 1, bg);
+        // Quiet left accent so tool rows don't read as model prose.
+        if (w > 0) {
+            fill_rect(frame, x, y + drawn, 1, 1, d.border.subtle);
+        }
+        draw_text(frame,
+                  x + 2,
+                  y + drawn,
+                  trim_to_cells(text, std::max(1, w - 3)),
+                  fg,
+                  bg,
+                  attrs);
+        ++screen_row;
+        return true;
+    };
+
+    int row = 0;
+    const TuiRgba* header_fg = &d.content.system_fg;
+    std::uint32_t header_attrs = 0;
+    if (!finished_) {
+        header_fg = &d.accent.info;
+    } else if (ok_) {
+        header_fg = &d.accent.success;
+    } else {
+        header_fg = &d.accent.error;
+    }
+    if (!draw_row(header_text(), *header_fg, header_attrs, row)) return;
+
+    if (expanded_) {
+        if (!detail_.empty()) {
+            if (!draw_row(detail_, d.text.muted, 0, row)) return;
+        }
+        if (!result_preview_.empty()) {
+            if (!draw_row(result_preview_, d.content.system_fg, 0, row)) return;
+        }
+    }
+}
+
 #ifdef ARBITER_HAS_NATIVE_DIFF_VIEW
 
 PaneScrollView::NativeDiffSegment::NativeDiffSegment(std::string patch)
@@ -751,6 +1024,52 @@ void PaneScrollView::append_blank_row() {
     segments_.push_back(std::make_unique<BlankSegment>());
 }
 
+void PaneScrollView::upsert_tool(const ToolActivityEvent& event, bool new_block) {
+    if (event.id.empty() && event.label.empty()) return;
+
+    // Prefer updating an unfinished row with the same id (live Started→Finished).
+    // Never reopen a finished row — ids must be unique, but guard anyway so a
+    // colliding Started cannot wipe prior-turn chrome.
+    if (!event.id.empty()) {
+        for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
+            if (auto* tool = dynamic_cast<ToolSegment*>(it->get())) {
+                if (tool->id_ == event.id && !tool->finished_) {
+                    tool->apply(event);
+                    return;
+                }
+            }
+        }
+    }
+
+    const TuiDesign& d = tui_design();
+    if (new_block || !has_rendered_content()) {
+        start_block_gap(d.layout.block_gap);
+    }
+    auto seg = std::make_unique<ToolSegment>();
+    seg->set_wrap_cols(wrap_cols_);
+    seg->apply(event);
+    segments_.push_back(std::move(seg));
+}
+
+void PaneScrollView::append_thinking(std::string_view delta, bool new_block) {
+    if (delta.empty()) return;
+    // Append into the most recent open ThinkingSegment when contiguous.
+    if (!new_block && !segments_.empty()) {
+        if (auto* think = dynamic_cast<ThinkingSegment*>(segments_.back().get())) {
+            think->append(delta);
+            return;
+        }
+    }
+    const TuiDesign& d = tui_design();
+    if (new_block || !has_rendered_content()) {
+        start_block_gap(d.layout.block_gap);
+    }
+    auto seg = std::make_unique<ThinkingSegment>();
+    seg->set_wrap_cols(wrap_cols_);
+    seg->append(delta);
+    segments_.push_back(std::move(seg));
+}
+
 void PaneScrollView::append_diff(std::string_view patch) {
     if (patch.empty()) return;
     const int gap = tui_design().layout.panel_gap;
@@ -861,23 +1180,45 @@ bool PaneScrollView::toggle_code_block_in_view(int scroll_offset) {
     }
     const int last_visible = first_visible + viewport_h_;
 
-    CodeSegment* target = nullptr;
+    CodeSegment* code_target = nullptr;
+    ToolSegment* tool_target = nullptr;
+    ThinkingSegment* think_target = nullptr;
     int row = 0;
     for (const auto& seg : segments_) {
         const int h = seg->visual_rows(wrap_cols_);
         const int seg_end = row + h;
         if (seg_end > first_visible && row < last_visible) {
+            if (auto* think = dynamic_cast<ThinkingSegment*>(seg.get())) {
+                if (think->can_expand()) {
+                    think_target = think;
+                    break;
+                }
+            }
+            if (auto* tool = dynamic_cast<ToolSegment*>(seg.get())) {
+                if (tool->can_expand()) {
+                    tool_target = tool;
+                    break;
+                }
+            }
             if (auto* code = dynamic_cast<CodeSegment*>(seg.get())) {
                 if (code->is_truncated() || code->expanded_) {
-                    target = code;
+                    code_target = code;
                     break;
                 }
             }
         }
         row = seg_end;
     }
-    if (!target) return false;
-    target->toggle_expanded();
+    if (think_target) {
+        think_target->toggle_expanded();
+        return true;
+    }
+    if (tool_target) {
+        tool_target->toggle_expanded();
+        return true;
+    }
+    if (!code_target) return false;
+    code_target->toggle_expanded();
     return true;
 }
 
