@@ -1388,6 +1388,85 @@ h4 {
   font-size: 0.85rem;
 }
 
+.direct-download {
+  align-items: center;
+  background:
+    radial-gradient(circle, rgba(25, 21, 16, 0.28) 0 1px, transparent 1.3px)
+      0 0 / 7px 7px,
+    var(--signal);
+  border: 1px solid var(--ink);
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(160px, 0.65fr) minmax(320px, 1.35fr);
+  margin-top: 42px;
+  padding: 24px;
+}
+
+.direct-download-label {
+  display: grid;
+  font-family: var(--font-mono);
+  gap: 4px;
+}
+
+.direct-download-label span {
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.direct-download-label small {
+  color: rgba(25, 21, 16, 0.68);
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+}
+
+.mac-download-button {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--ink);
+  color: var(--panel-fg);
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 42px 1fr;
+  min-height: 74px;
+  padding: 13px 18px;
+  text-decoration: none;
+}
+
+.mac-download-button:hover {
+  background: var(--panel-raised);
+  color: var(--panel-fg);
+}
+
+.download-glyph {
+  align-items: center;
+  background: var(--signal);
+  color: var(--signal-ink);
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.mac-download-button > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.mac-download-button strong {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  letter-spacing: -0.015em;
+}
+
+.mac-download-button small {
+  color: var(--panel-muted);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+}
+
 .install-console {
   background: var(--panel);
   border: 1px solid var(--ink);
@@ -1830,7 +1909,8 @@ body.docs .site-footer {
   .workflow-grid,
   .sessions-grid,
   .interfaces-heading,
-  .install-grid {
+  .install-grid,
+  .direct-download {
     grid-template-columns: 1fr;
   }
 
