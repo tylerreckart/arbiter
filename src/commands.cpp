@@ -1,7 +1,6 @@
 // arbiter/src/commands.cpp — Agent-invocable command execution
 #include "commands.h"
 #include "api_client.h"  // ContentPart full type — forward-declared in commands.h.
-#include "styled_text.h"
 
 #include <algorithm>
 #include <atomic>
@@ -11,9 +10,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cwchar>
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <filesystem>
 #include <curl/curl.h>
 
@@ -30,6 +31,63 @@ namespace fs = std::filesystem;
 namespace arbiter {
 
 namespace {
+
+// Local display-width helpers so commands.cpp stays free of styled_text /
+// theme deps (unit_mcp and other light binaries link commands.cpp alone).
+int utf8_codepoint(std::string_view text, size_t& index) {
+    if (index >= text.size()) return -1;
+    const unsigned char c0 = static_cast<unsigned char>(text[index]);
+    if (c0 < 0x80) { ++index; return static_cast<int>(c0); }
+    if ((c0 & 0xE0) == 0xC0 && index + 1 < text.size()) {
+        const unsigned char c1 = static_cast<unsigned char>(text[index + 1]);
+        if ((c1 & 0xC0) != 0x80) { ++index; return 0xFFFD; }
+        index += 2;
+        return ((c0 & 0x1F) << 6) | (c1 & 0x3F);
+    }
+    if ((c0 & 0xF0) == 0xE0 && index + 2 < text.size()) {
+        const unsigned char c1 = static_cast<unsigned char>(text[index + 1]);
+        const unsigned char c2 = static_cast<unsigned char>(text[index + 2]);
+        if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80) { ++index; return 0xFFFD; }
+        index += 3;
+        return ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
+    }
+    if ((c0 & 0xF8) == 0xF0 && index + 3 < text.size()) {
+        const unsigned char c1 = static_cast<unsigned char>(text[index + 1]);
+        const unsigned char c2 = static_cast<unsigned char>(text[index + 2]);
+        const unsigned char c3 = static_cast<unsigned char>(text[index + 3]);
+        if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80) {
+            ++index; return 0xFFFD;
+        }
+        index += 4;
+        return ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) |
+               ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+    }
+    ++index;
+    return 0xFFFD;
+}
+
+int cmd_display_width(std::string_view text) {
+    int cols = 0;
+    size_t i = 0;
+    while (i < text.size()) {
+        const int cp = utf8_codepoint(text, i);
+        if (cp < 0) break;
+        int w = ::wcwidth(static_cast<wchar_t>(cp));
+        if (w < 0) w = 1;
+        cols += w;
+    }
+    return cols;
+}
+
+std::string trim_to_cols(std::string s, int max_cols) {
+    if (max_cols <= 0) return {};
+    while (!s.empty() && cmd_display_width(s) > max_cols) {
+        s.pop_back();
+        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80)
+            s.pop_back();
+    }
+    return s;
+}
 
 std::string trim_label_ws(std::string s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front())))
@@ -2742,10 +2800,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 // Truncate by display width so multibyte UTF-8 isn't split.
                 constexpr int kTargetCols = 96;
                 constexpr int kPreviewCols = 240;
-                if (static_cast<int>(display_width(cmd.args)) > kTargetCols) {
-                    req.target = trim_to_display_cols(cmd.args, kTargetCols - 1) + "\u2026";
-                    req.preview_lines.push_back(
-                        trim_to_display_cols(cmd.args, kPreviewCols));
+                if (cmd_display_width(cmd.args) > kTargetCols) {
+                    req.target = trim_to_cols(cmd.args, kTargetCols - 1) + "\u2026";
+                    req.preview_lines.push_back(trim_to_cols(cmd.args, kPreviewCols));
                 } else {
                     req.target = cmd.args;
                 }
