@@ -940,6 +940,8 @@ if(INDEX_BUILD_TESTS)
         tests/test_mcp.cpp
         src/mcp/types.cpp
         src/mcp/subprocess.cpp
+        src/mcp/manager.cpp
+        src/mcp/client.cpp
         src/commands.cpp
         src/json.cpp
     )

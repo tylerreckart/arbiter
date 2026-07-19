@@ -8,6 +8,7 @@ Arbiter is a single binary with three operating modes — interactive, one-shot,
 | One agent reply, piped output, no TTY                | `arbiter --send <agent> <message>`           |
 | HTTP+SSE orchestration server for other clients      | `arbiter --api [--port N] [--bind ADDR]`     |
 | Initialize `~/.arbiter/` with example agents         | `arbiter --init`                             |
+| Configure `/search`, `/browse`, and MCP servers      | `arbiter --setup-tools`                      |
 | Manage `--api` tenant identities                     | `arbiter --add-tenant`, `--list-tenants`, `--disable-tenant`, `--enable-tenant` |
 
 The interactive mode is documented separately under [`docs/tui`](../tui/index.md). Everything else is here.
@@ -17,6 +18,7 @@ The interactive mode is documented separately under [`docs/tui`](../tui/index.md
 ```
 arbiter                                    Interactive REPL (the TUI)
 arbiter --init                             Create ~/.arbiter/ + example agents
+arbiter --setup-tools                      Interactive wizard for search / browse / MCP
 arbiter --send <agent> <message>           One-shot — print agent reply to stdout
 arbiter --api [--port N] [--bind ADDR]     HTTP+SSE orchestration server
               [--verbose]
@@ -32,6 +34,7 @@ arbiter --help                             Print built-in help
 - [Getting started](../getting-started/index.md) — pick a path:
   - [Local install](../getting-started/local.md) — install + first run on your own machine.
 - [`--init`](init.md) — what gets created, the `~/.arbiter/` layout.
+- [`--setup-tools`](setup-tools.md) — interactive MCP / search / browse wizard.
 - [`--send`](send.md) — the one-shot mode for scripts, pipes, and CI hooks.
 - [`--api`](api.md) — the HTTP server mode: flags, behaviour, links to the endpoint docs.
 - [Tenant admin](tenants.md) — managing `--api` bearer tokens.
