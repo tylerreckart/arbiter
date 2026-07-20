@@ -27,6 +27,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **MCP child env credential scrub.** Stdio MCP subprocesses inherit a
   scrubbed parent environment (secret-shaped keys stripped); registry
   `env` extras remain an explicit opt-in.
+- **`unit_sandbox_ssrf` TSan flake.** Path-only sandbox workspace tests
+  set `idle_seconds = 0` so the idle reaper thread never starts.
+- **`chat_command_tui` switch/replay flake.** Wait for each dummy-key
+  turn to finish (auth error) before `/chat new` / `/chat switch`, and
+  match an interior marker substring so pane-edge clipping cannot
+  miss the replay assertion on macos-arm64.
 - **Sub-agent `/parallel` fan-out.** Same `agent_id` may appear more than
   once in a `/parallel` block again (ephemeral clones — matching the
   documented behaviour), and a sub-agent may fan out to copies of itself.
