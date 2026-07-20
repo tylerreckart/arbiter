@@ -1205,6 +1205,22 @@ std::string trim(std::string s) {
     return s;
 }
 
+// Pull Brave's ErrorResponse shape into a short ERR line.  Live API errors
+// use `detail` (and sometimes `code`); older docs mentioned `message`.
+std::string brave_format_error(const JsonValue& root, long http_code) {
+    if (auto err = root.get("error"); err && err->is_object()) {
+        std::string detail = err->get_string("detail", "");
+        if (detail.empty()) detail = err->get_string("message", "");
+        std::string code = err->get_string("code", "");
+        std::ostringstream out;
+        out << "ERR: Brave returned HTTP " << http_code;
+        if (!code.empty()) out << " [" << code << "]";
+        if (!detail.empty()) out << " — " << detail;
+        return out.str();
+    }
+    return "ERR: Brave returned HTTP " + std::to_string(http_code);
+}
+
 // Render a Brave Search /web/search response into the SearchInvoker output
 // format.  Pulls title, URL, and description from each web.results entry.
 // On any shape surprise (missing field, non-string type) we skip the entry
@@ -1221,11 +1237,12 @@ std::string brave_render(const std::string& json_body, int top_n) {
     // Surface API-level errors verbatim — the caller wants to see "rate
     // limited" or "invalid token" instead of a silent empty result list.
     if (auto err = root->get("error"); err && err->is_object()) {
-        std::string msg = err->get_string("message", "");
+        std::string detail = err->get_string("detail", "");
+        if (detail.empty()) detail = err->get_string("message", "");
         std::string code = err->get_string("code", "");
         return "ERR: Brave API error" +
                (code.empty() ? "" : " [" + code + "]") +
-               (msg.empty()  ? "" : ": "  + msg);
+               (detail.empty() ? "" : ": " + detail);
     }
     auto web = root->get("web");
     if (!web || !web->is_object()) return "(no web results)\n";
@@ -1285,11 +1302,15 @@ std::string brave_search(const std::string& query, const std::string& api_key,
     std::string response;
     struct curl_slist* headers = nullptr;
     const std::string subscription_header = "X-Subscription-Token: " + api_key;
+    // Match Brave's documented client headers.  CURLOPT_ACCEPT_ENCODING
+    // both advertises gzip and auto-decompresses — sending the Accept-
+    // Encoding header alone would leave a binary body we can't parse.
     headers = curl_slist_append(headers, "Accept: application/json");
     headers = curl_slist_append(headers, subscription_header.c_str());
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, brave_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -1309,14 +1330,21 @@ std::string brave_search(const std::string& query, const std::string& api_key,
     if (rc != CURLE_OK) {
         return std::string("ERR: HTTP failure (") + curl_easy_strerror(rc) + ")";
     }
-    if (http_code == 401 || http_code == 403) {
-        return "ERR: Brave returned " + std::to_string(http_code) +
-               " — check ARBITER_SEARCH_API_KEY";
-    }
     if (http_code == 429) {
         return "ERR: Brave rate-limited (429) — slow down or upgrade plan";
     }
     if (http_code < 200 || http_code >= 300) {
+        // Prefer Brave's ErrorResponse.detail (e.g. 422 invalid token)
+        // over a bare status code — operators can't fix what they can't see.
+        try {
+            auto root = json_parse(response);
+            if (root && root->is_object())
+                return brave_format_error(*root, http_code);
+        } catch (...) { /* fall through */ }
+        if (http_code == 401 || http_code == 403) {
+            return "ERR: Brave returned " + std::to_string(http_code) +
+                   " — check ARBITER_SEARCH_API_KEY / ~/.arbiter/search_api_key";
+        }
         return "ERR: Brave returned HTTP " + std::to_string(http_code);
     }
     return brave_render(response, requested);

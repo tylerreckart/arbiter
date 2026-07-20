@@ -22,10 +22,11 @@
     "When uncertain, state it plainly.",
     "Cite sources where possible. Prefer primary over secondary.",
     "Favor depth over breadth.",
+    "Discover sources with /search before guessing URLs. Prefer /search → /fetch → /browse.",
     "Before fetching, state what you expect to find and why that source is likely to have it.",
     "After fetching, extract facts immediately — do not defer synthesis to the end.",
     "When sources conflict, note the conflict and state which source you trust more and why.",
     "Use /mcp call github when researching codebase patterns, library usage, or open-source prior art — repository search and commit history beat blog summaries for primary-source claims."
   ],
-  "capabilities": ["/fetch", "/mem", "/agent", "/mcp"]
+  "capabilities": ["/search", "/fetch", "/browse", "/mem", "/agent", "/mcp"]
 }

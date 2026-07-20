@@ -432,6 +432,16 @@ void cmd_oneshot(const std::string& agent_id, const std::string& msg) {
     Orchestrator orch(std::move(api_keys));
     orch.load_agents(dir + "/agents");
 
+    // Same tool wiring as the TUI — without it, /search /mcp /browse
+    // degrade to "unavailable" mid-turn even when keys/registry exist.
+    TenantStore tenants;
+    tenants.open(dir + "/tenants.db");
+    Tenant primary = ensure_primary_tenant(tenants);
+    ApiServerOptions api_opts = make_cli_api_options(dir, get_api_keys(),
+                                                     /*exec_allowed=*/false);
+    wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
+                            /*conversation_id=*/0);
+
     auto resp = orch.send(agent_id, msg);
     if (resp.ok) {
         std::cout << resp.content << "\n";

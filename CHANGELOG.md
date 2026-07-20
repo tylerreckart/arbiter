@@ -7,6 +7,20 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **`/search` wiring.** Operator-typed `/search` in the TUI now mirrors
+  `/fetch` (bypasses the focused agent's capability gate and injects
+  results into the turn). `arbiter --send` wires the same search/MCP
+  tools as the TUI. Brave error responses surface `detail`/`code`
+  (including HTTP 422 invalid tokens), and responses are requested with
+  libcurl auto-decompression per Brave's documented client headers.
+  Research starter capabilities now list `/search` and `/browse`
+  explicitly.
+- **`chat_command_tui` sidebar rename flake.** Seed the conversation via
+  `/chat title` (no in-flight agent turn) and poll for the renamed title
+  so macos-arm64 CI no longer races sidebar focus against a dummy API
+  request.
+
 ### Added
 - **`arbiter --setup-tools`.** Interactive OpenTUI wizard for `/search`
   (Brave key → `~/.arbiter/search_api_key`), `/browse` (Playwright MCP

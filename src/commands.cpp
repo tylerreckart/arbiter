@@ -2149,8 +2149,10 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 cache_result = false;
             } else if (!search_invoker) {
                 block << "[/search " << query << "]\n"
-                      << "ERR: web search unavailable in this context — only "
-                         "the HTTP API wires a search provider.  Adapt: drop "
+                      << "ERR: web search unavailable — no search provider is "
+                         "wired.  Configure a Brave Search API key with "
+                         "`arbiter --setup-tools` (or set ARBITER_SEARCH_API_KEY "
+                         "/ BRAVE_SEARCH_API_KEY) and restart.  Adapt: drop "
                          "the /search step, or fall back to /fetch with a known "
                          "URL.\n"
                       << "[END SEARCH]\n\n";
