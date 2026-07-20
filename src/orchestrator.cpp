@@ -358,11 +358,10 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                                    pane_binder, conv_key]() {
                 if (pane_binder) pane_binder();
                 ConversationScope scope(conv_key);
-                // Basic validations — mirror make_invoker's gates.
-                if (sub_id == caller_id) {
-                    results[i] = "ERR: agent cannot invoke itself";
-                    return;
-                }
+                // Basic validations — mirror make_invoker's gates, except
+                // self-invoke: /parallel always runs on an ephemeral Agent
+                // clone, so a sub-agent (e.g. research) may fan out to
+                // multiple copies of itself without racing its own history.
                 if (sub_id == "index") {
                     results[i] = "ERR: index cannot be delegated to";
                     return;

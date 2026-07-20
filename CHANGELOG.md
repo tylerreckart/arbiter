@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Sub-agent `/parallel` fan-out.** Same `agent_id` may appear more than
+  once in a `/parallel` block again (ephemeral clones — matching the
+  documented behaviour), and a sub-agent may fan out to copies of itself.
+  Starter agents that already had `/agent` now list `/parallel` explicitly
+  so research (and siblings) can fan out independent angles without hitting
+  a hard reject.
 - **Conversation switch/delete cancel wait (#46).** After confirming
   “switch anyway?” (or deleting a conversation with a turn in flight), the
   main thread no longer spins in a blind `sleep_for` loop. Cancel is deferred

@@ -2920,17 +2920,6 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 }
             }
 
-            // Duplicate agent_id detection — each id must appear at most once
-            // in the batch; two concurrent calls would race the same history.
-            std::string parallel_dup_id;
-            {
-                std::set<std::string> seen_ids;
-                for (const auto& [id, msg] : children) {
-                    (void)msg;
-                    if (!seen_ids.insert(id).second) { parallel_dup_id = id; break; }
-                }
-            }
-
             block << "[/parallel " << children.size() << " children]\n";
             if (cmd.truncated) {
                 block << "ERR: /parallel block was cut off (missing "
@@ -2940,12 +2929,6 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << "ERR: /parallel block had no /agent lines — only "
                          "/agent <id> <msg> is permitted inside "
                          "/parallel.../endparallel\n";
-                cache_result = false;
-            } else if (!parallel_dup_id.empty()) {
-                block << "ERR: /parallel cannot invoke '" << parallel_dup_id
-                      << "' twice in one batch — each agent_id must appear"
-                         " at most once. Use separate /agent calls or"
-                         " different agent ids.\n";
                 cache_result = false;
             } else if (!parallel_invoker) {
                 block << "ERR: /parallel unavailable in this context\n";
