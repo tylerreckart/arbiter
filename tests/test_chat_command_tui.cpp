@@ -31,6 +31,21 @@ std::string plain(const PtySession& s) {
     return PtySession::strip_ansi(s.output());
 }
 
+// Poll until `token` shows up in bytes written after `offset`.  Commands
+// queue FIFO behind any in-flight turn, so a generous budget doubles as
+// the "wait for the previous turn" mechanism.
+bool wait_for_token(PtySession& s, std::size_t offset, const std::string& token,
+                    int budget_ms) {
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(budget_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        s.read_for(200);
+        const std::string tail = PtySession::strip_ansi(s.output().substr(offset));
+        if (tail.find(token) != std::string::npos) return true;
+    }
+    return false;
+}
+
 } // namespace
 
 TEST_CASE("/chat new + /chat switch <n> performs a full switch with replay in a narrow terminal") {
@@ -63,23 +78,34 @@ TEST_CASE("/chat new + /chat switch <n> performs a full switch with replay in a 
 
 TEST_CASE("sidebar rename (r) and soft delete (d + y)") {
     PtySession s = ready_repl(40, 100);
-    s.send("rename-me-marker\r");
-    s.read_for(1200);
+
+    // Seed the active conversation with a local title — no agent turn.  An
+    // in-flight turn races sidebar focus on slow CI runners (keys land in
+    // the editor instead of rename mode), which is why a fixed read_for
+    // after `rename-me-marker\r` flakes on macos-arm64.
+    const std::size_t before_seed = s.output().size();
+    s.send("/chat title seed-title-for-rename\r");
+    CHECK(wait_for_token(s, before_seed, "seed-title-for-rename", 10000));
 
     // Enter sidebar; pinned to the active entry (row 1) since only one
-    // conversation exists.
+    // conversation exists.  Don't wait for "Conversations" in the delta —
+    // OpenTUI may not re-emit unchanged header cells on focus.
     s.send("\x17" "b");
-    s.read_for(300);
+    s.read_for(500);
+
     s.send("r");
     s.read_for(200);
-    // Clear the pre-filled buffer (deterministic title) before typing.
+    // Clear the pre-filled buffer before typing.
     for (int i = 0; i < 60; ++i) s.send("\x7f");
     s.read_for(200);
+
+    const std::size_t before_rename = s.output().size();
     s.send("my-new-title");
-    s.read_for(200);
+    // While renaming, the buffer is painted into the row; poll until it
+    // lands (CI runners are slower than a fixed 200ms read_for).
+    CHECK(wait_for_token(s, before_rename, "my-new-title", 10000));
     s.send("\r");
-    s.read_for(500);
-    CHECK(plain(s).find("my-new-title") != std::string::npos);
+    CHECK(wait_for_token(s, before_rename, "my-new-title", 10000));
 
     // Delete it (still focused, still pinned to the same — only — entry).
     // Deleting the only conversation creates a fresh one, so the sidebar
@@ -92,25 +118,6 @@ TEST_CASE("sidebar rename (r) and soft delete (d + y)") {
 
     s.terminate();
 }
-
-namespace {
-
-// Poll until `token` shows up in bytes written after `offset`.  Commands
-// queue FIFO behind any in-flight turn, so a generous budget doubles as
-// the "wait for the previous turn" mechanism.
-bool wait_for_token(PtySession& s, std::size_t offset, const std::string& token,
-                    int budget_ms) {
-    const auto deadline = std::chrono::steady_clock::now()
-                        + std::chrono::milliseconds(budget_ms);
-    while (std::chrono::steady_clock::now() < deadline) {
-        s.read_for(200);
-        const std::string tail = PtySession::strip_ansi(s.output().substr(offset));
-        if (tail.find(token) != std::string::npos) return true;
-    }
-    return false;
-}
-
-} // namespace
 
 TEST_CASE("/find reports match position in the status line and cycles") {
     PtySession s = ready_repl(24, 80);

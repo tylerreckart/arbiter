@@ -11,7 +11,7 @@ provider you configure.
   - **Ollama** — set model ids to `ollama/<model>` for local models.
   - **Ollama** — set `OLLAMA_HOST` if not at `http://localhost:11434`.
 - Only one is required. Multiple can coexist; different agents can target different providers.
-- Optional: a Brave Search key (`ARBITER_SEARCH_API_KEY`) if you want `/search` to resolve. Without it, agents fall back to `/fetch` on URLs they already know.
+- Optional: run `arbiter --setup-tools` to enable `/search` (Brave key), `/browse` (Playwright MCP), and other MCP servers. Without search configured, agents fall back to `/fetch` on URLs they already know.
 
 ## Install the binary
 
@@ -44,7 +44,7 @@ cmake --build build
 sudo cmake --install build
 ```
 
-Build deps: OpenSSL, libcurl, SQLite3, a C++20 compiler. `libedit` or GNU readline is optional but recommended for line editing in the terminal client. Distro-specific install commands are in [`CONTRIBUTING.md`](../../CONTRIBUTING.md#linux).
+Build deps: OpenSSL, libcurl, SQLite3, a C++20 compiler. Distro-specific install commands are in [`CONTRIBUTING.md`](../../CONTRIBUTING.md#linux).
 
 ## First run
 
@@ -90,10 +90,11 @@ Authenticate with `Authorization: Bearer <token>`. The endpoint catalogue is at 
 ~/.arbiter/
 ├── agents/*.json          agent constitutions (edit these)
 ├── openrouter_api_key     OpenRouter key (alternative to env var)
+├── search_api_key         Brave Search key for /search (via --setup-tools)
 ├── tenants.db             tenant identities for --api
 ├── sessions/              per-cwd TUI session snapshots
 ├── memory/                per-agent persistent scratchpads
-├── mcp_servers.json       optional MCP server registry
+├── mcp_servers.json       optional MCP server registry (via --setup-tools)
 └── a2a_agents.json        optional remote A2A agent registry
 ```
 
@@ -103,4 +104,4 @@ Full reference: [`cli/environment.md`](../cli/environment.md).
 
 - **Author your own agent.** Drop a JSON into `~/.arbiter/agents/<id>.json`. Schema: [`api/agents/create.md`](../api/agents/create.md). Concepts: [Writ](../concepts/writ.md), [Advisor](../concepts/advisor.md).
 - **Read the design philosophy.** [`philosophy.md`](../philosophy.md).
-- **Wire up integrations.** [MCP servers](../concepts/mcp.md) for external tools, [A2A](../concepts/a2a.md) for remote agents.
+- **Wire up integrations.** `arbiter --setup-tools` for search / browse / MCP, or edit the files by hand — [MCP servers](../concepts/mcp.md), [A2A](../concepts/a2a.md).

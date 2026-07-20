@@ -39,9 +39,20 @@ struct ServerSpec {
 //                                    "args": ["@playwright/mcp@latest"],
 //                                    "env": { "K": "V" } } } }
 // Missing file ⇒ empty registry (the /mcp slash command then errors with
-// a clear message).  Malformed file ⇒ throws so the operator notices at
-// startup rather than mid-request.
+// a clear message).  Malformed JSON ⇒ throws so the operator notices at
+// startup rather than mid-request.  Entries with an empty `command` are
+// skipped (a single bad hand-edit must not brick the whole registry).
 std::vector<ServerSpec> load_server_registry(const std::string& path);
+
+// Pretty-print a registry for `~/.arbiter/mcp_servers.json`.  Round-trips
+// with load_server_registry (command/args/env/timeouts).  env_extra entries
+// must be "KEY=VALUE"; the first '=' splits key from value.
+std::string serialize_server_registry(const std::vector<ServerSpec>& specs);
+
+// Atomically write the registry to `path` (mode 0600).  Returns false on
+// I/O failure.  Empty specs writes `{ "servers": {} }`.
+bool save_server_registry(const std::string& path,
+                          const std::vector<ServerSpec>& specs);
 
 class Manager {
 public:

@@ -12,7 +12,7 @@ The cold-start cost of spawning a server lazily on first reference is real (`npx
 
 ## Registry
 
-Configure available servers via `~/.arbiter/mcp_servers.json` (path comes from `ApiServerOptions::mcp_servers_path` — defaults to `~/.arbiter/mcp_servers.json` when running `arbiter --api`):
+Configure available servers via `~/.arbiter/mcp_servers.json` (path comes from `ApiServerOptions::mcp_servers_path` — defaults to `~/.arbiter/mcp_servers.json` when running `arbiter --api`). The interactive wizard `arbiter --setup-tools` can create or edit this file (Playwright for `/browse`, hosted servers via `mcp-remote`, or a custom stdio command):
 
 ```json
 {

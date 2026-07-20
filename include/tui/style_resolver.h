@@ -9,6 +9,7 @@ namespace arbiter {
 
 struct ResolvedStyle {
     const TuiRgba* fg = nullptr;
+    const TuiRgba* bg = nullptr;
     std::uint32_t  attrs = 0;
 };
 

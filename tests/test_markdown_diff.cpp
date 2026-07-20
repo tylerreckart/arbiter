@@ -3,6 +3,8 @@
 #include "markdown.h"
 #include "render_policy.h"
 #include "styled_text.h"
+#include "theme.h"
+#include "tui/tui_design.h"
 
 using namespace arbiter;
 
@@ -175,4 +177,231 @@ TEST_CASE("display_width counts wide characters") {
     CHECK(display_width("abc") == 3);
     CHECK(display_width("\xe2\x80\xa2") == 1);  // bullet
     CHECK(display_width("hello") == 5);
+}
+
+TEST_CASE("MarkdownRenderer styles strikethrough spans") {
+    MarkdownRenderer md;
+    auto lines = md.feed_styled("before ~~gone~~ after\n");
+    REQUIRE_FALSE(lines.empty());
+    bool saw_strike = false;
+    for (const auto& span : lines.front().spans) {
+        if (span.id == StyleId::Strike) {
+            saw_strike = true;
+            CHECK(lines.front().text.substr(span.begin, span.end - span.begin) == "gone");
+        }
+    }
+    CHECK(saw_strike);
+}
+
+TEST_CASE("styled_user_echo has no caret and pads to wrap width") {
+    const StyledLine line = styled_user_echo("hello");
+    CHECK(line.text == "hello");
+    REQUIRE(line.spans.size() == 1);
+    CHECK(line.spans[0].id == StyleId::UserEchoText);
+    CHECK(is_styled_user_echo_line(line));
+
+    const StyledLine padded = pad_styled_user_echo_line(line, 10);
+    CHECK(padded.text == "hello     ");
+    CHECK(line.text == "hello");  // source stays unpadded
+
+    // Intentional trailing spaces in the payload survive pad.
+    const StyledLine spaced = styled_user_echo("hi  ");
+    CHECK(spaced.text == "hi  ");
+    CHECK(pad_styled_user_echo_line(spaced, 6).text == "hi    ");
+
+    // Idempotent: re-padding an already-padded line does not grow forever.
+    std::vector<StyledLine> once{padded};
+    CHECK_FALSE(resize_styled_user_echo_lines(once, 10));
+    CHECK(once[0].text == "hello     ");
+    CHECK(resize_styled_user_echo_lines(once, 8));
+    CHECK(once[0].text == "hello   ");
+}
+
+TEST_CASE("styled_user_echo_lines splits multiline and CRLF") {
+    const auto lines = styled_user_echo_lines("one\ntwo\n");
+    REQUIRE(lines.size() == 3);
+    CHECK(lines[0].text == "one");
+    CHECK(lines[1].text == "two");
+    CHECK(lines[2].text.empty());
+    CHECK(is_styled_user_echo_line(lines[2]));
+    CHECK(pad_styled_user_echo_line(lines[2], 4).text == "    ");
+
+    const auto crlf = styled_user_echo_lines("a\r\nb\rc");
+    REQUIRE(crlf.size() == 3);
+    CHECK(crlf[0].text == "a");
+    CHECK(crlf[1].text == "b");
+    CHECK(crlf[2].text == "c");
+}
+
+TEST_CASE("pad_styled_user_echo_line fills last wrapped row") {
+    // 10 cells of content at width 4 → 3 visual rows; pad last row to 12.
+    const StyledLine line = styled_user_echo("0123456789");
+    const StyledLine padded = pad_styled_user_echo_line(line, 4);
+    CHECK(display_width(padded.text) == 12);
+}
+
+TEST_CASE("is_user_echo_find_command is case-insensitive and echo-only") {
+    CHECK(is_user_echo_find_command(styled_user_echo("/find foo")));
+    CHECK(is_user_echo_find_command(styled_user_echo("/Find Foo")));
+    CHECK(is_user_echo_find_command(styled_user_echo("/find")));
+    CHECK_FALSE(is_user_echo_find_command(styled_user_echo("/finder")));
+    CHECK_FALSE(is_user_echo_find_command(styled_user_echo("see /find docs")));
+    StyledLine prose;
+    styled_append(prose, StyleId::Default, "/find foo");
+    CHECK_FALSE(is_user_echo_find_command(prose));
+}
+
+TEST_CASE("to_ansi UserEchoText includes background strip") {
+    load_tui_design("");
+    const StyledLine line = styled_user_echo("hi");
+    const std::string ansi = to_ansi(line);
+    CHECK(ansi.find(theme().user_echo_bg) != std::string::npos);
+    CHECK(ansi.find(theme().user_echo_text) != std::string::npos);
+    CHECK(ansi.find("hi") != std::string::npos);
+}
+
+TEST_CASE("resize_styled_rule_lines rewrites HR width") {
+    std::vector<StyledLine> lines;
+    lines.push_back(styled_rule_line(60));
+    StyledLine prose;
+    styled_append(prose, StyleId::Default, "keep");
+    lines.push_back(prose);
+    CHECK(resize_styled_rule_lines(lines, 40));
+    CHECK(lines[0].text.size() == 40);
+    CHECK(is_styled_rule_line(lines[0]));
+    CHECK(lines[1].text == "keep");
+    CHECK_FALSE(resize_styled_rule_lines(lines, 40));
+}
+
+TEST_CASE("trim_to_display_cols does not split UTF-8 clusters") {
+    const std::string wide = "\xe4\xb8\xad";  // U+4E2D
+    CHECK(trim_to_display_cols("hello", 3) == "hel");
+    CHECK(trim_to_display_cols(wide, 0).empty());
+    // Truncating just below the mixed width must drop the whole cluster,
+    // never leave a dangling UTF-8 continuation byte.
+    const std::string mixed = std::string("x") + wide;
+    const int mix_w = static_cast<int>(display_width(mixed));
+    REQUIRE(mix_w >= 2);
+    const std::string trimmed = trim_to_display_cols(mixed, mix_w - 1);
+    CHECK(trimmed == "x");
+}
+
+TEST_CASE("tool_call_summary_lines uses System for the count text") {
+    const auto lines = tool_call_summary_lines(3, 0);
+    REQUIRE(lines.size() == 1);
+    REQUIRE(lines[0].spans.size() >= 2);
+    CHECK(lines[0].spans[0].id == StyleId::Success);
+    CHECK(lines[0].spans[1].id == StyleId::System);
+}
+
+TEST_CASE("to_ansi System and Rule use theme tokens with dim") {
+    load_tui_design("");  // ensure design/theme are live
+    StyledLine sys;
+    styled_append(sys, StyleId::System, "status");
+    const std::string sys_ansi = to_ansi(sys);
+    CHECK(sys_ansi.find("status") != std::string::npos);
+    CHECK(sys_ansi.find(theme().system_fg) != std::string::npos);
+    // Match OpenTUI resolve_style(System) which sets kAttrDim.
+    CHECK(sys_ansi.find(theme().dim) != std::string::npos);
+
+    StyledLine rule = styled_rule_line(4);
+    const std::string rule_ansi = to_ansi(rule);
+    CHECK(rule_ansi.find("----") != std::string::npos);
+    CHECK(rule_ansi.find(theme().md_rule) != std::string::npos);
+    CHECK(rule_ansi.find(theme().dim) != std::string::npos);
+}
+
+TEST_CASE("loop banner and confirm lines have no leading blank StyledLine") {
+    // Mirrors push_loop_banner / confirm prompts: content only — block_gap /
+    // new_block owns separation (no leading empty StyledLine).
+    StyledLine line;
+    styled_append(line, StyleId::Info, "[loop]");
+    styled_append(line, StyleId::System, " detail");
+    std::vector<StyledLine> banner;
+    banner.push_back(std::move(line));
+    REQUIRE_FALSE(banner.empty());
+    CHECK_FALSE(banner.front().text.empty());
+
+    StyledLine prompt;
+    styled_append(prompt, StyleId::Warning, "confirm? [y/N]");
+    std::vector<StyledLine> confirm{prompt};
+    CHECK(confirm.size() == 1);
+    CHECK_FALSE(confirm.front().text.empty());
+}
+
+TEST_CASE("ANSI loop-log payloads must not go through plain System prose") {
+    // Guard the /log regression: render_markdown ANSI embedded in a System
+    // span would show CSI escapes as glyphs. TextSegment (push_msg) owns
+    // these payloads; prose path must not be used for them.
+    const std::string ansi = theme().accent_success + "ok" + theme().reset;
+    CHECK(ansi.find('\033') != std::string::npos);
+    StyledLine as_prose;
+    styled_append(as_prose, StyleId::System, ansi);
+    // to_ansi wraps the whole span; the ESC byte remains in the text payload
+    // (prose does not interpret nested SGR). Callers must use push_msg instead.
+    CHECK(as_prose.text.find('\033') != std::string::npos);
+}
+
+TEST_CASE("markdown task lists render checkbox glyphs") {
+    MarkdownRenderer md;
+    auto lines = md.feed_styled("- [ ] open item\n- [x] done item\n");
+    auto rest = md.flush_styled();
+    lines.insert(lines.end(), rest.begin(), rest.end());
+    REQUIRE(lines.size() >= 2);
+    CHECK(lines[0].text.find("open item") != std::string::npos);
+    CHECK(lines[0].text.find("\u2610") != std::string::npos);  // ☐
+    CHECK(lines[1].text.find("done item") != std::string::npos);
+    CHECK(lines[1].text.find("\u2611") != std::string::npos);  // ☑
+}
+
+TEST_CASE("markdown nested numbered lists keep indent") {
+    MarkdownRenderer md;
+    auto lines = md.feed_styled("1. top\n  2. nested\n");
+    auto rest = md.flush_styled();
+    lines.insert(lines.end(), rest.begin(), rest.end());
+    REQUIRE(lines.size() >= 2);
+    CHECK(lines[0].text.find("1.") != std::string::npos);
+    const auto pos2 = lines[1].text.find("2.");
+    CHECK(pos2 != std::string::npos);
+    CHECK(pos2 > 0);  // leading indent before nested "2."
+    CHECK(lines[1].text.find("nested") != std::string::npos);
+}
+
+TEST_CASE("styled_activity_line and interim header helpers") {
+    auto act = styled_activity_line("[interrupted]", StyleId::Error);
+    CHECK(act.text.find("\u00b7 ") == 0);
+    CHECK(act.text.find("[interrupted]") != std::string::npos);
+
+    auto hdr = styled_interim_header("researcher");
+    CHECK(hdr.text.find("\u2192 ") == 0);
+    CHECK(hdr.text.find("researcher") != std::string::npos);
+}
+
+TEST_CASE("styled_permission_card includes action target preview and prompt") {
+    auto card = styled_permission_card(
+        "write", "src/main.cpp",
+        {"12 lines, 40 bytes", "#include <iostream>"});
+    REQUIRE(card.size() >= 3);
+    CHECK(card.front().text.find("permission") != std::string::npos);
+    CHECK(card.front().text.find("write") != std::string::npos);
+    CHECK(card.front().text.find("src/main.cpp") != std::string::npos);
+    CHECK(card.back().text.find("[y/N]") != std::string::npos);
+}
+
+TEST_CASE("indented code block routes to code sink when wired") {
+    std::vector<std::string> bodies;
+    bool opened = false;
+    bool closed = false;
+    MarkdownRenderer md;
+    md.set_code_sink(
+        [&](std::string, std::string) { opened = true; },
+        [&](const std::string& line) { bodies.push_back(line); },
+        [&](std::string) { closed = true; });
+    md.feed_styled("intro\n    int x = 1;\n    int y = 2;\nouto\n");
+    md.flush_styled();
+    CHECK(opened);
+    CHECK(closed);
+    REQUIRE(bodies.size() == 2);
+    CHECK(bodies[0] == "int x = 1;");
+    CHECK(bodies[1] == "int y = 2;");
 }

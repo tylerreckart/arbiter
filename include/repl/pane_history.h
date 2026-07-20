@@ -1,5 +1,6 @@
 #pragma once
 
+#include "commands.h"
 #include "styled_text.h"
 #include "tui/opentui/c_api.h"
 #include "tui/tui.h"
@@ -55,6 +56,9 @@ void pane_history_push_code_open(Pane& pane,
                                  bool new_block = false);
 void pane_history_push_code_line(Pane& pane, std::string_view line);
 void pane_history_push_code_close(Pane& pane, std::string_view close_fence);
+void pane_history_upsert_tool(Pane& pane,
+                              const ToolActivityEvent& event,
+                              bool new_block = false);
 bool pane_history_toggle_code_block(Pane& pane, int scroll_offset);
 [[nodiscard]] int pane_history_total_rows(const Pane& pane);
 [[nodiscard]] int pane_history_max_scroll(const Pane& pane);

@@ -7,6 +7,55 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **`/search` wiring.** Operator-typed `/search` in the TUI now mirrors
+  `/fetch` (bypasses the focused agent's capability gate and injects
+  results into the turn). `arbiter --send` wires the same search/MCP
+  tools as the TUI. Brave error responses surface `detail`/`code`
+  (including HTTP 422 invalid tokens), and responses are requested with
+  libcurl auto-decompression per Brave's documented client headers.
+  Research starter capabilities now list `/search` and `/browse`
+  explicitly.
+- **`chat_command_tui` sidebar rename flake.** Seed the conversation via
+  `/chat title` (no in-flight agent turn) and poll for the renamed title
+  so macos-arm64 CI no longer races sidebar focus against a dummy API
+  request.
+
+### Added
+- **`arbiter --setup-tools`.** Interactive OpenTUI wizard for `/search`
+  (Brave key → `~/.arbiter/search_api_key`), `/browse` (Playwright MCP
+  preset), and the MCP registry (`~/.arbiter/mcp_servers.json` — hosted
+  `mcp-remote` or custom stdio). Offered at the end of first-run setup;
+  re-runnable anytime. Search key resolution now also reads the saved
+  file after the env vars.
+- **Agent output UX overhaul.**  Turns render as a first-class activity
+  timeline: per-tool `ToolSegment` rows (Started → Finished, expandable
+  with `^O`), collapsible provider `ThinkingSegment` when reasoning
+  deltas are emitted (Anthropic / OpenAI / Gemini thought parts),
+  multi-line permission cards for `/write` and destructive `/exec`,
+  interim sub-agent headers, and `tool_trace` + `thinking` persistence so
+  conversation switch rebuilds tool and reasoning chrome.  Nested tools
+  dual-write to the pane agent (for replay) and the dispatching child;
+  `/parallel` workers re-pin the spawning pane for live callback routing.
+  See `docs/tui/output-ux.md`.
+- **Markdown polish.**  Task lists (`- [ ]` / `- [x]`), nested numbered
+  lists, and indented code blocks route into `CodeSegment` when the
+  stream sink is wired.
+- **Pane ↔ conversation decoupling (#40).**  Each pane binds to a
+  conversation id; `/chat switch` and the history sidebar attach to the
+  focused pane only, leaving sibling panes and the split layout intact.
+  Agent histories are keyed per conversation so concurrent panes can
+  stream different threads.
+- **Pane zoom (#43).**  `Ctrl-w z` temporarily maximizes the focused pane
+  without closing siblings.
+- **Unfocused activity badges (#41).**  Non-focused panes show `●` while a
+  turn runs and `✓` / `✗` when a turn completes off-focus.
+- **Multi-pane hint degradation (#47).**  Focused multi-pane layouts show a
+  compact chord hint instead of hiding the footer row entirely.
+- **TUI mouse support.** SGR mouse tracking (click-to-focus, wheel scroll,
+  input caret placement, history-sidebar clicks, drag-to-resize splits).
+  Opt out with `"layout": { "mouse": false }` in `~/.arbiter/tui.json`.
+
 ## [0.7.3] — 2026-07-09
 
 Adds TUI search and command-discovery surfaces, and fixes ctrl-key

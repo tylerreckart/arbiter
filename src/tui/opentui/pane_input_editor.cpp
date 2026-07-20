@@ -2,6 +2,7 @@
 
 #include "tui/opentui/engine.h"
 #include "tui/opentui/kitty_key_decode.h"
+#include "tui/opentui/mouse_decode.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
@@ -18,6 +19,7 @@ namespace arbiter::opentui {
 namespace {
 
 constexpr int kInputAccentCells = 1;
+constexpr int kBracketedPasteEvent = 0x100;
 
 constexpr std::uint8_t kWrapWord = 2;
 
@@ -46,6 +48,35 @@ bool cursor_visible_now() {
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         clock::now().time_since_epoch()).count();
     return (ms / 500) % 2 == 0;
+}
+
+struct VisualPosition {
+    int row = 0;
+    int col = 0;
+};
+
+VisualPosition visual_position(std::string_view text, int width) {
+    VisualPosition pos;
+    width = std::max(1, width);
+    for (size_t i = 0; i < text.size();) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c == '\n') {
+            ++pos.row;
+            pos.col = 0;
+            ++i;
+            continue;
+        }
+        ++i;
+        while (i < text.size()
+               && (static_cast<unsigned char>(text[i]) & 0xC0) == 0x80) {
+            ++i;
+        }
+        if (++pos.col >= width) {
+            ++pos.row;
+            pos.col = 0;
+        }
+    }
+    return pos;
 }
 
 } // namespace
@@ -116,6 +147,38 @@ bool PaneInputEditor::read_byte_timed(int& out, int ms) {
     ssize_t n = ::read(STDIN_FILENO, &c, 1);
     if (n <= 0) return false;
     out = c;
+    return true;
+}
+
+bool PaneInputEditor::read_bracketed_paste(std::string& out) {
+    static constexpr std::string_view kEnd = "\x1b[201~";
+    std::string raw;
+    while (!interrupt_flag_.load()) {
+        const int b = read_byte();
+        if (b < 0) return false;
+        raw.push_back(static_cast<char>(b));
+        if (raw.size() >= kEnd.size()
+            && raw.compare(raw.size() - kEnd.size(), kEnd.size(), kEnd) == 0) {
+            raw.resize(raw.size() - kEnd.size());
+            break;
+        }
+    }
+    if (interrupt_flag_.load()) return false;
+
+    // Paste is literal editor content: normalize all line endings and retain
+    // tabs/newlines, but discard terminal control bytes that must never turn
+    // into editor commands or escape sequences when the buffer is rendered.
+    out.clear();
+    out.reserve(raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(raw[i]);
+        if (c == '\r') {
+            out.push_back('\n');
+            if (i + 1 < raw.size() && raw[i + 1] == '\n') ++i;
+        } else if (c == '\n' || c == '\t' || c >= 0x20) {
+            out.push_back(static_cast<char>(c));
+        }
+    }
     return true;
 }
 
@@ -190,7 +253,22 @@ int PaneInputEditor::read_key_event() {
                 break;
             }
             if (final) {
+                if (final == '~' && params == "200") {
+                    if (!read_bracketed_paste(pending_paste_)) return -1;
+                    return kBracketedPasteEvent;
+                }
+                // A stray end marker has no payload to terminate.
+                if (final == '~' && params == "201") continue;
                 if (is_terminal_response_csi(params, final)) continue;
+                // SGR mouse: CSI < Pb ; Px ; Py M/m. Handled outside the
+                // editor lock so the router can touch layout/scroll state.
+                if ((final == 'M' || final == 'm')
+                    && !params.empty() && params[0] == '<') {
+                    if (auto ev = decode_sgr_mouse(params, final)) {
+                        if (mouse_handler_ && mouse_handler_(*ev)) return -1;
+                    }
+                    continue;
+                }
                 if (final == 'u') {
                     // Kitty-protocol key report — decode back to the legacy
                     // byte so it flows through the same dispatch as a
@@ -303,14 +381,14 @@ void PaneInputEditor::update_input_rows() {
     int cols = tui_.cols();
     if (cols <= 0) cols = 80;
     const TuiDesign& d = tui_design();
-    const int raw_outer = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
-    const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
-    const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
+    const int outer_pad = tui_pane_edge_pad(cols, d);
+    const int raw_inner = tui_input_pad_x(cols, d);
     const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
     const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
     const int content_cols = std::max(1, cols - (outer_pad * 2) - chrome_inset);
-    const int total_vis = prompt_cols_ + visible_width(buffer_) + (inner_pad * 2);
-    const int editor_rows = std::max(1, (total_vis + content_cols - 1) / content_cols);
+    const int editor_cols =
+        std::max(1, content_cols - (inner_pad * 2) - std::max(0, prompt_cols_));
+    const int editor_rows = visual_position(buffer_, editor_cols).row + 1;
     tui_.grow_input(editor_rows + 2);
 }
 
@@ -335,9 +413,8 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     const std::uint32_t py = static_cast<std::uint32_t>(tui.input_top_row_pub());
     const TuiDesign& d = tui_design();
     const int cols = std::max(1, tui.cols());
-    const int raw_outer = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
-    const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
-    const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
+    const int outer_pad = tui_pane_edge_pad(cols, d);
+    const int raw_inner = tui_input_pad_x(cols, d);
     const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
     const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
     const std::uint32_t content_x = px
@@ -366,13 +443,17 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
         draw_plain_text(frame, content_x, py, plain_prompt, d.accent.primary, &input_bg);
     }
     if (cursor_visible_now()) {
-        const int before_cursor = visible_width(buffer_.substr(0, static_cast<size_t>(cursor_)));
-        const int cursor_row = std::max(0, before_cursor / std::max(1, editor_w));
-        const int cursor_col = std::max(0, before_cursor % std::max(1, editor_w));
+        const VisualPosition cursor_pos =
+            visual_position(std::string_view(buffer_).substr(
+                                0, static_cast<size_t>(cursor_)),
+                            editor_w);
+        const int cursor_row = cursor_pos.row;
+        const int cursor_col = cursor_pos.col;
         const int max_rows = std::max(1, tui.input_rows() - 2);
         if (cursor_row < max_rows) {
             std::string cursor_cell = " ";
-            if (cursor_ < static_cast<int>(buffer_.size())) {
+            if (cursor_ < static_cast<int>(buffer_.size())
+                && buffer_[static_cast<size_t>(cursor_)] != '\n') {
                 size_t end = static_cast<size_t>(cursor_ + 1);
                 while (end < buffer_.size()
                        && (static_cast<unsigned char>(buffer_[end]) & 0xC0) == 0x80) {
@@ -393,6 +474,65 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     // Command palette overlays the rows above the input strip; drawn last
     // so it paints over scroll content.
     if (palette_active_) draw_palette(frame, tui);
+}
+
+void PaneInputEditor::set_cursor_from_click(int term_x, int term_y) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const TuiDesign& d = tui_design();
+    const int cols = std::max(1, tui_.cols());
+    const int raw_outer = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
+    const int outer_pad = std::min(raw_outer, std::max(0, (cols - 1) / 2));
+    const int raw_inner = (cols <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.input_padding_x);
+    const int inner_pad = std::min(raw_inner, std::max(0, (cols - outer_pad * 2 - 1) / 2));
+    const int chrome_inset = kInputAccentCells + std::max(0, d.layout.header_padding_x);
+
+    const int px = tui_.left_col() - 1;
+    const int py = tui_.input_top_row_pub();
+    const int content_x = px + outer_pad + chrome_inset + inner_pad;
+    const int prompt_skip = std::max(0, prompt_cols_);
+    const int editor_w = std::max(1,
+                                  cols - (outer_pad * 2) - chrome_inset
+                                      - (inner_pad * 2) - prompt_skip);
+    const int ex = content_x + prompt_skip;
+    const int max_rows = std::max(1, tui_.input_rows() - 2);
+
+    const int row = term_y - py;
+    const int col = term_x - ex;
+    if (row < 0 || row >= max_rows || col < 0) return;
+
+    const int target_col = std::min(col, editor_w - 1);
+    int visual_row = 0;
+    int visual_col = 0;
+    int byte_off = 0;
+    while (byte_off < static_cast<int>(buffer_.size())) {
+        if (visual_row > row
+            || (visual_row == row && visual_col >= target_col)) {
+            break;
+        }
+        const unsigned char c =
+            static_cast<unsigned char>(buffer_[static_cast<size_t>(byte_off)]);
+        if (c == '\n') {
+            // A click to the right of a short logical line lands at its end,
+            // before the newline, rather than spilling onto the next line.
+            if (visual_row == row) break;
+            ++visual_row;
+            visual_col = 0;
+            ++byte_off;
+            continue;
+        }
+        ++byte_off;
+        while (byte_off < static_cast<int>(buffer_.size())
+               && (static_cast<unsigned char>(buffer_[static_cast<size_t>(byte_off)]) & 0xC0) == 0x80) {
+            ++byte_off;
+        }
+        if (++visual_col >= editor_w) {
+            ++visual_row;
+            visual_col = 0;
+        }
+    }
+    cursor_ = std::min(byte_off, static_cast<int>(buffer_.size()));
+    sync_edit_buffer();
+    request_present();
 }
 
 void PaneInputEditor::move_cursor_to_insertion() {
@@ -801,6 +941,23 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
         if (b < 0) {
             out.clear();
             return false;
+        }
+
+        if (b == kBracketedPasteEvent) {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (palette_active_) {
+                for (char c : pending_paste_) {
+                    palette_query_ += (c == '\n' || c == '\t') ? ' ' : c;
+                }
+                palette_refresh();
+            } else {
+                if (rsearch_active_) rsearch_end(/*accept=*/false);
+                if (!pending_paste_.empty()) {
+                    insert_bytes(pending_paste_.data(), pending_paste_.size());
+                }
+            }
+            pending_paste_.clear();
+            continue;
         }
 
         {

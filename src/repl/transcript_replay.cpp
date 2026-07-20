@@ -4,7 +4,7 @@
 #include "repl/pane.h"
 #include "repl/pane_history.h"
 #include "stream_renderer.h"
-#include "theme.h"
+#include "styled_text.h"
 
 #include <algorithm>
 
@@ -35,6 +35,12 @@ void drain_into(opentui::PaneScrollView& view, OutputQueue& queue) {
         case OutputItem::Kind::Diff:
             view.append_diff(item.data);
             break;
+        case OutputItem::Kind::Tool:
+            view.upsert_tool(item.tool, item.new_block);
+            break;
+        case OutputItem::Kind::Thinking:
+            if (!item.data.empty()) view.append_thinking(item.data, item.new_block);
+            break;
         }
     }
 }
@@ -52,14 +58,30 @@ void render_messages(opentui::PaneScrollView& view,
         if (is_replay_noise(m)) continue;
 
         if (m.role == "user") {
-            queue.push_msg(theme().user_echo_arrow + "> " + theme().user_echo_text
-                          + m.content + theme().reset + "");
+            queue.push_prose(styled_user_echo_lines(m.content));
+            queue.end_message();
             continue;
         }
 
+        // Rebuild collapsible thinking before prose (matches live order).
+        if (!m.thinking.empty()) {
+            queue.push_thinking(m.thinking);
+        }
         StreamRenderer renderer(kReplay, queue);
         renderer.feed(m.content);
         renderer.flush();
+        // Rebuild finished tool rows that followed this assistant turn.
+        for (const auto& t : m.tool_trace) {
+            ToolActivityEvent ev;
+            ev.phase = ToolActivityEvent::Phase::Finished;
+            ev.id = t.id;
+            ev.label = t.label;
+            ev.kind = t.kind;
+            ev.detail = t.detail;
+            ev.ok = t.ok;
+            ev.result_preview = t.result_preview;
+            queue.push_tool(ev);
+        }
         queue.end_message();
     }
     drain_into(view, queue);

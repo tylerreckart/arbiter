@@ -2,6 +2,7 @@
 
 #include "cli_helpers.h"
 #include "commands.h"
+#include "mcp/manager.h"
 #include "starters.h"
 #include "theme.h"
 #include "tui/opentui/engine.h"
@@ -9,13 +10,16 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -78,20 +82,9 @@ std::string fetch_url(const std::string& url) {
 
 namespace {
 
-// Resolve a provider API key.  Order of precedence:
-//   1. env var  — short-circuits the file path entirely
-//   2. file on disk — but ONLY if it's owned by the current user and has
-//      0600-compatible permissions.  If the file exists under a different
-//      uid, treat as tamper and exit (a hostile local user could swap in
-//      a key that bills to their account).  If the perms are looser than
-//      owner-only, warn and tighten in-place so the next startup is clean.
-// Empty return = "no key found for this provider" — the caller falls back
-// to whatever that means (first-run wizard for get_api_keys, or a clear
-// "no API key configured" failure at the ApiClient wire layer).
-std::string load_key(const char* env_var, const std::string& file_path) {
-    const char* env = std::getenv(env_var);
-    if (env && env[0]) return env;
-
+// Load a key file with ownership + mode hardening.  No env lookup.
+// Empty return = file missing / empty.  Wrong-uid exits(1) as tamper.
+std::string load_key_file(const std::string& file_path) {
     struct stat st{};
     if (::stat(file_path.c_str(), &st) == 0) {
         if (st.st_uid != ::geteuid()) {
@@ -115,6 +108,43 @@ std::string load_key(const char* env_var, const std::string& file_path) {
         if (!k.empty()) return k;
     }
     return {};
+}
+
+// Resolve a provider API key.  Order of precedence:
+//   1. env var  — short-circuits the file path entirely
+//   2. file on disk — see load_key_file
+// Empty return = "no key found for this provider" — the caller falls back
+// to whatever that means (first-run wizard for get_api_keys, or a clear
+// "no API key configured" failure at the ApiClient wire layer).
+std::string load_key(const char* env_var, const std::string& file_path) {
+    if (env_var && env_var[0]) {
+        const char* env = std::getenv(env_var);
+        if (env && env[0]) return env;
+    }
+    return load_key_file(file_path);
+}
+
+std::string trim_ws(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    size_t lead = 0;
+    while (lead < s.size() && std::isspace(static_cast<unsigned char>(s[lead]))) ++lead;
+    return s.substr(lead);
+}
+
+bool search_key_from_env() {
+    if (const char* k = std::getenv("ARBITER_SEARCH_API_KEY"); k && *k) {
+        if (!trim_ws(k).empty()) return true;
+    }
+    if (const char* k = std::getenv("BRAVE_SEARCH_API_KEY"); k && *k) {
+        if (!trim_ws(k).empty()) return true;
+    }
+    return false;
+}
+
+bool search_key_file_present() {
+    struct stat st{};
+    return ::stat((get_config_dir() + "/search_api_key").c_str(), &st) == 0
+        && S_ISREG(st.st_mode);
 }
 
 struct ProviderSetup {
@@ -621,6 +651,9 @@ bool write_key_file(const std::string& filename, const std::string& key) {
     const std::string path = get_config_dir() + "/" + filename;
     const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) return false;
+    // open(2) mode is masked by umask — fchmod so the key is never
+    // briefly group/world-readable.
+    if (::fchmod(fd, 0600) != 0) { ::close(fd); return false; }
     size_t off = 0;
     while (off < key.size()) {
         const ssize_t n = ::write(fd, key.data() + off, key.size() - off);
@@ -853,20 +886,649 @@ void wizard_step_starter_agents(
                 agents_dir});
 }
 
+// ── Tools wizard (search / browse / MCP) ─────────────────────────────
+
+std::string mask_key_preview(const std::string& key) {
+    if (key.empty()) return "(not set)";
+    if (key.size() <= 8) return std::string(key.size(), '*');
+    return key.substr(0, 4) + "…" + key.substr(key.size() - 4);
+}
+
+mcp::ServerSpec make_playwright_spec(bool headless) {
+    mcp::ServerSpec s;
+    s.name = "playwright";
+    s.argv = {"npx", "-y", "@playwright/mcp@latest"};
+    if (headless) s.argv.push_back("--headless");
+    s.init_timeout = std::chrono::milliseconds(90000);
+    s.call_timeout = std::chrono::milliseconds(30000);
+    return s;
+}
+
+mcp::ServerSpec make_hosted_mcp_spec(const std::string& name,
+                                     const std::string& url) {
+    mcp::ServerSpec s;
+    s.name = name;
+    s.argv = {"npx", "-y", "mcp-remote", url};
+    s.init_timeout = std::chrono::milliseconds(90000);
+    return s;
+}
+
+void upsert_server(std::vector<mcp::ServerSpec>& specs, mcp::ServerSpec spec) {
+    for (auto& existing : specs) {
+        if (existing.name == spec.name) {
+            existing = std::move(spec);
+            return;
+        }
+    }
+    specs.push_back(std::move(spec));
+}
+
+bool remove_server(std::vector<mcp::ServerSpec>& specs, const std::string& name) {
+    const auto before = specs.size();
+    specs.erase(std::remove_if(specs.begin(), specs.end(),
+                               [&](const mcp::ServerSpec& s) {
+                                   return s.name == name;
+                               }),
+                specs.end());
+    return specs.size() != before;
+}
+
+bool has_server(const std::vector<mcp::ServerSpec>& specs, const std::string& name) {
+    for (const auto& s : specs) if (s.name == name) return true;
+    return false;
+}
+
+std::string argv_blurb(const mcp::ServerSpec& s) {
+    std::string out;
+    for (size_t i = 0; i < s.argv.size(); ++i) {
+        if (i) out += " ";
+        out += s.argv[i];
+        if (out.size() > 56) {
+            out.resize(53);
+            out += "...";
+            break;
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> tools_status_body(const std::string& search_key,
+                                           const std::vector<mcp::ServerSpec>& specs) {
+    const bool browse_ok = has_server(specs, "playwright");
+    const bool from_env = search_key_from_env();
+    std::string search_line = "Search:  not configured  (/search disabled)";
+    if (!search_key.empty()) {
+        search_line = std::string("Search:  Brave key ") + mask_key_preview(search_key)
+            + (from_env ? "  (env)" : "  (file)");
+    }
+    std::vector<std::string> body = {
+        "Configure the tools agents use mid-turn.",
+        "",
+        std::move(search_line),
+        std::string("Browse:  ") + (browse_ok
+            ? "playwright MCP ready  (/browse enabled)"
+            : "not configured  (/browse needs playwright)"),
+        std::string("MCP:     ") + std::to_string(specs.size())
+            + (specs.size() == 1 ? " server" : " servers")
+            + " in ~/.arbiter/mcp_servers.json",
+    };
+    if (!specs.empty()) {
+        body.push_back("");
+        constexpr size_t kMaxListed = 8;
+        const size_t n = std::min(specs.size(), kMaxListed);
+        for (size_t i = 0; i < n; ++i) {
+            body.push_back("  • " + specs[i].name + " — " + argv_blurb(specs[i]));
+        }
+        if (specs.size() > kMaxListed) {
+            body.push_back("  … and "
+                + std::to_string(specs.size() - kMaxListed) + " more");
+        }
+    }
+    return body;
+}
+
+bool persist_mcp_registry(SetupTui& ui, const std::vector<mcp::ServerSpec>& specs) {
+    const std::string path = get_config_dir() + "/mcp_servers.json";
+    try {
+        if (!mcp::save_server_registry(path, specs)) {
+            ui.message("Could not save MCP registry",
+                       {"Failed to write " + path + ".",
+                        "Check directory permissions and try again."});
+            return false;
+        }
+    } catch (const std::exception& e) {
+        ui.message("Could not save MCP registry",
+                   {"Failed to serialize the registry:", e.what()});
+        return false;
+    }
+    return true;
+}
+
+// Mutate `specs`, persist, and roll back the in-memory vector if the write
+// fails so the UI never drifts from ~/.arbiter/mcp_servers.json.
+bool mutate_and_persist(SetupTui& ui,
+                        std::vector<mcp::ServerSpec>& specs,
+                        const std::function<void(std::vector<mcp::ServerSpec>&)>& mut) {
+    auto previous = specs;
+    mut(specs);
+    if (persist_mcp_registry(ui, specs)) return true;
+    specs = std::move(previous);
+    return false;
+}
+
+void wizard_step_search(SetupTui& ui) {
+    while (true) {
+        const std::string key = get_search_api_key();
+        const bool from_env = search_key_from_env();
+        const bool file_present = search_key_file_present();
+        std::vector<std::string> body = {
+            "Web search (/search)",
+            "Uses the Brave Search API. Free tier: 2,000 queries/month.",
+            "",
+            std::string("Status: ") + (key.empty()
+                ? "not configured"
+                : (from_env ? "active via environment variable (overrides file)"
+                            : "saved in ~/.arbiter/search_api_key")),
+            std::string("Key:    ") + mask_key_preview(key),
+            "",
+            "Get a key: https://brave.com/search/api/",
+        };
+        if (from_env) {
+            body.push_back("The env var wins until you unset it.");
+        }
+        std::vector<std::string> options;
+        if (key.empty()) {
+            options = {"Paste Brave Search API key"};
+            // Orphan whitespace-only / empty file: offer removal.
+            if (file_present) options.push_back("Remove empty key file");
+            options.push_back("Back");
+        } else if (from_env) {
+            options = {"Write key to file (unused while env is set)"};
+            if (file_present) options.push_back("Clear saved key file");
+            options.push_back("Back");
+        } else {
+            options = {
+                "Replace saved API key",
+                "Clear saved API key",
+                "Back",
+            };
+        }
+        const int pick = ui.menu("Web search", body, options, 0);
+        const int back = static_cast<int>(options.size()) - 1;
+        if (pick < 0 || pick == back) return;
+        // Clear/remove is the middle option whenever the menu has 3 entries.
+        if (pick == 1 && options.size() == 3) {
+            if (!clear_search_api_key()) {
+                ui.message("Could not clear key",
+                           {"Failed to remove ~/.arbiter/search_api_key."});
+                continue;
+            }
+            if (from_env) {
+                ui.message("Saved key file cleared",
+                           {"~/.arbiter/search_api_key was removed.",
+                            "Search still uses the environment variable until you unset it."});
+            } else if (key.empty()) {
+                ui.message("Empty key file removed",
+                           {"~/.arbiter/search_api_key was removed."});
+            } else {
+                ui.message("Search key cleared",
+                           {"/search will return ERR until a key is configured again."});
+            }
+            continue;
+        }
+        auto pasted = ui.input("Brave Search API key",
+                               {
+                                   "Paste your Brave Search API key.",
+                                   "Saved to ~/.arbiter/search_api_key (mode 0600).",
+                                   from_env
+                                       ? "Env var still overrides this file until unset."
+                                       : "ARBITER_SEARCH_API_KEY overrides the file.",
+                               },
+                               "BSA…",
+                               true);
+        if (!pasted) continue;
+        if (!set_search_api_key(*pasted)) {
+            ui.message("Could not save key",
+                       {"Key was empty after trimming, or the file could not be written."});
+            continue;
+        }
+        if (from_env) {
+            ui.message("Key written to file",
+                       {"Saved ~/.arbiter/search_api_key.",
+                        "Runtime still uses the environment variable.",
+                        "Unset ARBITER_SEARCH_API_KEY / BRAVE_SEARCH_API_KEY to use the file."});
+        } else {
+            ui.message("Search key saved",
+                       {"Agents can use /search on the next launch.",
+                        "Restart a running arbiter process to pick up the change."});
+        }
+    }
+}
+
+void wizard_step_browse(SetupTui& ui, std::vector<mcp::ServerSpec>& specs) {
+    while (true) {
+        const bool ready = has_server(specs, "playwright");
+        std::vector<std::string> body = {
+            "Browse (/browse)",
+            "/browse is a convenience over the playwright MCP server:",
+            "navigate → accessibility snapshot for JS-rendered pages.",
+            "",
+            std::string("Status: ") + (ready
+                ? "playwright MCP configured"
+                : "not configured — /browse will ERR"),
+            "",
+            "Requires Node.js + npx. First run may download Chromium.",
+        };
+        std::vector<std::string> options;
+        if (ready) {
+            options = {
+                "Reinstall Playwright (headless)",
+                "Reinstall Playwright (headed)",
+                "Remove Playwright",
+                "Back",
+            };
+        } else {
+            options = {
+                "Enable Playwright (headless) — recommended",
+                "Enable Playwright (headed)",
+                "Back",
+            };
+        }
+        const int pick = ui.menu("Browse", body, options, 0);
+        if (pick < 0) return;
+        if (!ready && pick == 2) return;
+        if (ready && pick == 3) return;
+        if (ready && pick == 2) {
+            if (mutate_and_persist(ui, specs, [](auto& s) {
+                    remove_server(s, "playwright");
+                })) {
+                ui.message("Playwright removed",
+                           {"/browse is disabled until playwright is added again.",
+                            "Other MCP servers were left unchanged."});
+            }
+            continue;
+        }
+        const bool headless = (pick == 0);
+        if (mutate_and_persist(ui, specs, [&](auto& s) {
+                upsert_server(s, make_playwright_spec(headless));
+            })) {
+            ui.message(headless ? "Playwright enabled (headless)"
+                                : "Playwright enabled (headed)",
+                       {"Wrote playwright entry to ~/.arbiter/mcp_servers.json.",
+                        "/browse and /mcp call playwright … are ready",
+                        "after the next arbiter launch."});
+        }
+    }
+}
+
+std::vector<std::string> split_args(const std::string& line) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : line) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            if (!cur.empty()) {
+                out.push_back(std::move(cur));
+                cur.clear();
+            }
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty()) out.push_back(std::move(cur));
+    return out;
+}
+
+bool valid_server_name(const std::string& name) {
+    if (name.empty() || name.size() > 64) return false;
+    // Reject names that are only dots — they collide with path semantics
+    // and are useless as /mcp call targets.
+    bool any_alnum = false;
+    for (unsigned char c : name) {
+        if (std::isalnum(c)) any_alnum = true;
+        if (std::isalnum(c) || c == '_' || c == '-' || c == '.') continue;
+        return false;
+    }
+    return any_alnum;
+}
+
+// Trim + lowercase so /browse's hard-coded "playwright" name and /mcp
+// call targets stay consistent regardless of how the operator typed them.
+std::string normalize_server_name(std::string name) {
+    name = trim_ws(std::move(name));
+    for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return name;
+}
+
+// Lowercase the URI scheme; reject whitespace (breaks argv / mcp-remote).
+std::string normalize_mcp_url(std::string url) {
+    url = trim_ws(std::move(url));
+    const auto scheme_end = url.find("://");
+    if (scheme_end != std::string::npos) {
+        for (size_t i = 0; i < scheme_end; ++i) {
+            url[i] = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(url[i])));
+        }
+    }
+    return url;
+}
+
+bool valid_mcp_url(const std::string& url) {
+    if (url.find_first_of(" \t\r\n") != std::string::npos) return false;
+    if (url.rfind("https://", 0) == 0) return url.size() > std::strlen("https://");
+    if (url.rfind("http://", 0) == 0)  return url.size() > std::strlen("http://");
+    return false;
+}
+
+struct CanonicalizeResult {
+    bool renamed = false;
+    size_t dropped = 0;
+    bool changed() const { return renamed || dropped > 0; }
+};
+
+// Lowercase names + collapse case-only duplicates so a hand-edited
+// "Playwright" entry can't silently break /browse (exact "playwright").
+// Also drops entries with empty argv or invalid names.
+CanonicalizeResult canonicalize_registry(std::vector<mcp::ServerSpec>& specs) {
+    std::map<std::string, mcp::ServerSpec> by_name;
+    CanonicalizeResult result;
+    for (auto& s : specs) {
+        auto n = normalize_server_name(s.name);
+        if (n != s.name) result.renamed = true;
+        s.name = std::move(n);
+        if (s.name.empty() || !valid_server_name(s.name) || s.argv.empty()) {
+            ++result.dropped;
+            continue;
+        }
+        auto [it, inserted] = by_name.emplace(s.name, s);
+        if (!inserted) {
+            ++result.dropped;  // keep the first, drop the duplicate
+            (void)it;
+        }
+    }
+    specs.clear();
+    for (auto& [_, s] : by_name) specs.push_back(std::move(s));
+    return result;
+}
+
+// Ask before overwriting an existing registry entry.  Returns true when
+// the name is free or the user explicitly chose Replace.
+bool confirm_overwrite_server(SetupTui& ui,
+                              const std::vector<mcp::ServerSpec>& specs,
+                              const std::string& name) {
+    if (!has_server(specs, name)) return true;
+    const int pick = ui.menu("Replace existing server?",
+                             {
+                                 "A server named '" + name + "' is already configured.",
+                                 "Replacing it overwrites that entry in mcp_servers.json.",
+                             },
+                             {"Replace '" + name + "'", "Cancel"},
+                             1);
+    return pick == 0;
+}
+
+void wizard_step_mcp(SetupTui& ui, std::vector<mcp::ServerSpec>& specs) {
+    while (true) {
+        auto body = tools_status_body(get_search_api_key(), specs);
+        body.insert(body.begin(), "MCP servers");
+        body.insert(body.begin() + 1, "stdio servers registered in ~/.arbiter/mcp_servers.json");
+        const int pick = ui.menu("MCP servers",
+                                 body,
+                                 {
+                                     "Add Playwright (browse)",
+                                     "Add hosted MCP (mcp-remote)",
+                                     "Add custom stdio server",
+                                     "Remove a server",
+                                     "Back",
+                                 },
+                                 0);
+        if (pick < 0 || pick == 4) return;
+
+        if (pick == 0) {
+            if (!confirm_overwrite_server(ui, specs, "playwright")) continue;
+            if (mutate_and_persist(ui, specs, [](auto& s) {
+                    upsert_server(s, make_playwright_spec(true));
+                })) {
+                ui.message("Playwright added",
+                           {"Server name: playwright",
+                            "Command: npx -y @playwright/mcp@latest --headless"});
+            }
+            continue;
+        }
+
+        if (pick == 1) {
+            auto name_in = ui.input("Hosted MCP server",
+                                    {
+                                        "Logical name agents will use in /mcp call <name> …",
+                                        "Stored lowercase. Examples: sentry, linear, slack",
+                                    },
+                                    "sentry",
+                                    false);
+            if (!name_in) continue;
+            const std::string name = normalize_server_name(*name_in);
+            if (!valid_server_name(name)) {
+                ui.message("Invalid name",
+                           {"Use letters, digits, '.', '_', or '-' (max 64 chars).",
+                            "Names must include at least one letter or digit."});
+                continue;
+            }
+            auto url_in = ui.input("Hosted MCP server",
+                                   {
+                                       "HTTPS MCP endpoint URL.",
+                                       "Proxied through npx mcp-remote (OAuth on first connect).",
+                                   },
+                                   "https://mcp.example.com/mcp",
+                                   false);
+            if (!url_in) continue;
+            const std::string url = normalize_mcp_url(*url_in);
+            if (!valid_mcp_url(url)) {
+                ui.message("Invalid URL",
+                           {"Enter a full http:// or https:// MCP endpoint",
+                            "(no spaces; scheme alone is not enough)."});
+                continue;
+            }
+            if (!confirm_overwrite_server(ui, specs, name)) continue;
+            if (mutate_and_persist(ui, specs, [&](auto& s) {
+                    upsert_server(s, make_hosted_mcp_spec(name, url));
+                })) {
+                ui.message("Hosted MCP added",
+                           {"Server '" + name + "' → " + url,
+                            "First connect may open a browser for OAuth.",
+                            "Tokens persist under ~/.mcp-auth/."});
+            }
+            continue;
+        }
+
+        if (pick == 2) {
+            auto name_in = ui.input("Custom MCP server",
+                                    {
+                                        "Logical name for /mcp call <name> …",
+                                        "Stored lowercase.",
+                                    },
+                                    "my-server",
+                                    false);
+            if (!name_in) continue;
+            const std::string name = normalize_server_name(*name_in);
+            if (!valid_server_name(name)) {
+                ui.message("Invalid name",
+                           {"Use letters, digits, '.', '_', or '-' (max 64 chars).",
+                            "Names must include at least one letter or digit."});
+                continue;
+            }
+            if (!confirm_overwrite_server(ui, specs, name)) continue;
+            auto command_in = ui.input("Custom MCP server",
+                                       {"Executable (PATH-resolved)."},
+                                       "npx",
+                                       false);
+            if (!command_in) continue;
+            const std::string command = trim_ws(*command_in);
+            if (command.empty()) continue;
+            // Single PATH token only — spaces would be one broken argv[0].
+            if (command.find_first_of(" \t") != std::string::npos) {
+                ui.message("Invalid command",
+                           {"Use a single executable name or path (no spaces).",
+                            "Put flags in the arguments field instead."});
+                continue;
+            }
+            auto args_line = ui.input("Custom MCP server",
+                                      {
+                                          "Arguments after the command (space-separated).",
+                                          "Enter with empty field for none. Esc cancels.",
+                                          "Quoting is not supported.",
+                                      },
+                                      "-y some-mcp-package",
+                                      false,
+                                      "");
+            // Esc aborts the whole add — Enter on an empty field means no args.
+            if (!args_line) continue;
+            const std::string args_trimmed = trim_ws(*args_line);
+            if (mutate_and_persist(ui, specs, [&](auto& all) {
+                    mcp::ServerSpec s;
+                    s.name = name;
+                    s.argv = {command};
+                    for (auto& a : split_args(args_trimmed))
+                        s.argv.push_back(std::move(a));
+                    upsert_server(all, std::move(s));
+                })) {
+                ui.message("Custom MCP server added",
+                           {"Wrote '" + name + "' to ~/.arbiter/mcp_servers.json."});
+            }
+            continue;
+        }
+
+        if (pick == 3) {
+            if (specs.empty()) {
+                ui.message("No servers to remove",
+                           {"The MCP registry is empty."});
+                continue;
+            }
+            std::vector<std::string> options;
+            for (const auto& s : specs) options.push_back(s.name + " — " + argv_blurb(s));
+            options.push_back("Cancel");
+            const int which = ui.menu("Remove MCP server",
+                                      {"Select a server to remove from the registry."},
+                                      options,
+                                      0);
+            if (which < 0 || which == static_cast<int>(options.size()) - 1) continue;
+            const std::string removed = specs[static_cast<size_t>(which)].name;
+            if (mutate_and_persist(ui, specs, [&](auto& s) {
+                    remove_server(s, removed);
+                })) {
+                ui.message("Server removed",
+                           {"Removed '" + removed + "' from ~/.arbiter/mcp_servers.json."});
+            }
+        }
+    }
+}
+
+void run_tools_setup_wizard() {
+    SetupTui ui;
+    std::vector<mcp::ServerSpec> specs;
+    try {
+        specs = mcp::load_server_registry(get_config_dir() + "/mcp_servers.json");
+    } catch (const std::exception& e) {
+        ui.message("MCP registry error",
+                   {"Could not parse ~/.arbiter/mcp_servers.json:",
+                    e.what(),
+                    "Fix or delete the file, then re-run --setup-tools."});
+        return;
+    }
+    {
+        const auto canon = canonicalize_registry(specs);
+        if (canon.changed()) {
+            if (persist_mcp_registry(ui, specs)) {
+                std::vector<std::string> lines;
+                if (canon.renamed) {
+                    lines.push_back("Server names were lowercased so /browse and");
+                    lines.push_back("/mcp call targets stay consistent.");
+                }
+                if (canon.dropped > 0) {
+                    lines.push_back("Removed " + std::to_string(canon.dropped)
+                        + " invalid or duplicate entr"
+                        + (canon.dropped == 1 ? "y." : "ies."));
+                }
+                if (lines.empty()) {
+                    lines.push_back("Registry cleaned up.");
+                }
+                ui.message("MCP registry normalized", lines);
+            }
+        }
+    }
+
+    ui.message("Agent tools",
+               {"Configure web search, browse, and MCP servers.",
+                "Changes write under ~/.arbiter/ and apply on next launch.",
+                "Use arrow keys to move. Press Enter to select."});
+
+    while (true) {
+        const auto body = tools_status_body(get_search_api_key(), specs);
+        const int pick = ui.menu("Agent tools",
+                                 body,
+                                 {
+                                     "Web search (/search)",
+                                     "Browse (/browse via Playwright)",
+                                     "MCP servers",
+                                     "Done",
+                                 },
+                                 0);
+        if (pick < 0) {
+            ui.message("Leaving tools setup",
+                       {"Any changes already written under ~/.arbiter/ are kept.",
+                        "Restart arbiter to load them into a running session."});
+            return;
+        }
+        if (pick == 3) {
+            ui.message("Tools setup complete",
+                       {"Search key → ~/.arbiter/search_api_key (if set)",
+                        "MCP registry → ~/.arbiter/mcp_servers.json",
+                        "Restart arbiter to load changes into a running session."});
+            return;
+        }
+        if (pick == 0) wizard_step_search(ui);
+        else if (pick == 1) wizard_step_browse(ui, specs);
+        else if (pick == 2) wizard_step_mcp(ui, specs);
+    }
+}
+
 // Top-level first-run wizard.
 std::map<std::string, std::string> run_key_setup_wizard() {
-    SetupTui ui;
     std::map<std::string, std::string> keys;
-    ui.message("Welcome to index",
-               {"Let's get you set up — about a minute.",
-                "Use arrow keys to move. Press Enter to select."});
-    wizard_step_keys(ui, keys);
-    std::string master_model = wizard_step_default_model(ui, keys);
-    wizard_step_starter_agents(ui, keys, master_model);
+    bool configure_tools = false;
+    {
+        SetupTui ui;
+        ui.message("Welcome to index",
+                   {"Let's get you set up — about a minute.",
+                    "Use arrow keys to move. Press Enter to select."});
+        wizard_step_keys(ui, keys);
+        std::string master_model = wizard_step_default_model(ui, keys);
+        wizard_step_starter_agents(ui, keys, master_model);
 
-    ui.message("Setup complete",
-               {"Configuration is ready.",
-                "Run arbiter to launch the terminal client."});
+        const int tools = ui.menu("Configure agent tools?",
+                                  {
+                                      "Optional: enable /search, /browse, and MCP servers.",
+                                      "You can also run this later with arbiter --setup-tools.",
+                                  },
+                                  {
+                                      "Configure search / browse / MCP",
+                                      "Skip for now",
+                                  },
+                                  0);
+        if (tools == 0) {
+            configure_tools = true;
+        } else {
+            ui.message("Setup complete",
+                       {"Configuration is ready.",
+                        "Run arbiter to launch the terminal client.",
+                        "Later: arbiter --setup-tools for search / browse / MCP."});
+        }
+    }  // SetupTui restored the terminal before the tools wizard starts.
+
+    if (configure_tools) {
+        run_tools_setup_wizard();
+        SetupTui done;
+        done.message("Setup complete",
+                     {"Configuration is ready.",
+                      "Run arbiter to launch the terminal client."});
+    }
     return keys;
 }
 
@@ -892,6 +1554,36 @@ std::map<std::string, std::string> get_api_keys() {
         }
     }
     return out;
+}
+
+std::string get_search_api_key() {
+    if (const char* k = std::getenv("ARBITER_SEARCH_API_KEY"); k && *k) {
+        return trim_ws(k);
+    }
+    if (const char* k = std::getenv("BRAVE_SEARCH_API_KEY"); k && *k) {
+        return trim_ws(k);
+    }
+    return trim_ws(load_key_file(get_config_dir() + "/search_api_key"));
+}
+
+bool set_search_api_key(const std::string& key) {
+    const std::string trimmed = trim_ws(key);
+    if (trimmed.empty()) return false;
+    return write_key_file("search_api_key", trimmed);
+}
+
+bool clear_search_api_key() {
+    const std::string path = get_config_dir() + "/search_api_key";
+    if (::unlink(path.c_str()) == 0) return true;
+    return errno == ENOENT;
+}
+
+void cmd_setup_tools() {
+    if (!(isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))) {
+        std::cerr << "ERR: --setup-tools requires an interactive terminal\n";
+        std::exit(1);
+    }
+    run_tools_setup_wizard();
 }
 
 namespace {
