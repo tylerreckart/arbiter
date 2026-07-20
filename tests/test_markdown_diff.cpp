@@ -194,6 +194,7 @@ TEST_CASE("MarkdownRenderer styles strikethrough spans") {
 }
 
 TEST_CASE("styled_user_echo has no caret and pads to wrap width") {
+    load_tui_design("");
     const StyledLine line = styled_user_echo("hello");
     CHECK(line.text == "hello");
     REQUIRE(line.spans.size() == 1);
@@ -201,43 +202,54 @@ TEST_CASE("styled_user_echo has no caret and pads to wrap width") {
     CHECK(is_styled_user_echo_line(line));
 
     const StyledLine padded = pad_styled_user_echo_line(line, 10);
-    CHECK(padded.text == "hello     ");
+    // Accent (1) + header_padding_x + payload fill → full width.
+    CHECK(static_cast<int>(display_width(padded.text)) == 10);
+    REQUIRE(padded.spans.size() >= 2);
+    CHECK(padded.spans[0].id == StyleId::UserEchoArrow);
+    CHECK(padded.text.find("hello") != std::string::npos);
     CHECK(line.text == "hello");  // source stays unpadded
 
     // Intentional trailing spaces in the payload survive pad.
     const StyledLine spaced = styled_user_echo("hi  ");
     CHECK(spaced.text == "hi  ");
-    CHECK(pad_styled_user_echo_line(spaced, 6).text == "hi    ");
+    const StyledLine spaced_pad = pad_styled_user_echo_line(spaced, 8);
+    CHECK(spaced_pad.text.find("hi  ") != std::string::npos);
+    CHECK(static_cast<int>(display_width(spaced_pad.text)) == 8);
 
-    // Idempotent: re-padding an already-padded line does not grow forever.
-    std::vector<StyledLine> once{padded};
-    CHECK_FALSE(resize_styled_user_echo_lines(once, 10));
-    CHECK(once[0].text == "hello     ");
+    // Re-pad from unpadded source at a new width.
+    std::vector<StyledLine> once{styled_user_echo("hello")};
+    CHECK(resize_styled_user_echo_lines(once, 10));
+    CHECK(static_cast<int>(display_width(once[0].text)) == 10);
+    once[0] = styled_user_echo("hello");
     CHECK(resize_styled_user_echo_lines(once, 8));
-    CHECK(once[0].text == "hello   ");
+    CHECK(static_cast<int>(display_width(once[0].text)) == 8);
 }
 
-TEST_CASE("styled_user_echo_lines splits multiline and CRLF") {
+TEST_CASE("styled_user_echo_lines splits multiline and adds vertical pad") {
     const auto lines = styled_user_echo_lines("one\ntwo\n");
-    REQUIRE(lines.size() == 3);
-    CHECK(lines[0].text == "one");
-    CHECK(lines[1].text == "two");
-    CHECK(lines[2].text.empty());
-    CHECK(is_styled_user_echo_line(lines[2]));
-    CHECK(pad_styled_user_echo_line(lines[2], 4).text == "    ");
+    // top pad + one + two + bottom pad (trailing \n absorbed into bottom pad)
+    REQUIRE(lines.size() == 4);
+    CHECK(lines[0].text.empty());
+    CHECK(lines[1].text == "one");
+    CHECK(lines[2].text == "two");
+    CHECK(lines[3].text.empty());
+    CHECK(is_styled_user_echo_line(lines[0]));
+    CHECK(pad_styled_user_echo_line(lines[0], 4).text.size() >= 4);
 
     const auto crlf = styled_user_echo_lines("a\r\nb\rc");
-    REQUIRE(crlf.size() == 3);
-    CHECK(crlf[0].text == "a");
-    CHECK(crlf[1].text == "b");
-    CHECK(crlf[2].text == "c");
+    REQUIRE(crlf.size() == 5);  // pad + a + b + c + pad
+    CHECK(crlf[1].text == "a");
+    CHECK(crlf[2].text == "b");
+    CHECK(crlf[3].text == "c");
 }
 
 TEST_CASE("pad_styled_user_echo_line fills last wrapped row") {
-    // 10 cells of content at width 4 → 3 visual rows; pad last row to 12.
+    load_tui_design("");
+    // 10 cells of content — chrome + body pads to a multiple of wrap width.
     const StyledLine line = styled_user_echo("0123456789");
     const StyledLine padded = pad_styled_user_echo_line(line, 4);
-    CHECK(display_width(padded.text) == 12);
+    CHECK(display_width(padded.text) % 4 == 0);
+    CHECK(display_width(padded.text) >= 4);
 }
 
 TEST_CASE("is_user_echo_find_command is case-insensitive and echo-only") {
@@ -375,6 +387,38 @@ TEST_CASE("styled_activity_line and interim header helpers") {
     auto hdr = styled_interim_header("researcher");
     CHECK(hdr.text.find("\u2192 ") == 0);
     CHECK(hdr.text.find("researcher") != std::string::npos);
+}
+
+TEST_CASE("styled_delegation_line highlights routing status") {
+    auto line = styled_delegation_line("/agent research GOAL: dig");
+    CHECK(line.text.find("\u2192 ") == 0);
+    CHECK(line.text.find("delegating") != std::string::npos);
+    CHECK(line.text.find("/agent research") != std::string::npos);
+    REQUIRE(line.spans.size() >= 3);
+    CHECK(line.spans[0].id == StyleId::Info);
+    CHECK(line.spans[1].id == StyleId::Bold);
+
+    // Full orchestrator string still parses.
+    auto full = styled_delegation_line("delegating: /parallel (2 children)");
+    CHECK(full.text.find("/parallel") != std::string::npos);
+}
+
+TEST_CASE("markdown styles writs and delegation status lines") {
+    MarkdownRenderer md;
+    auto lines = md.feed_styled(
+        "/read #2\n"
+        "\xe2\x86\x92 delegating: /agent research GOAL: dig\n"
+        "/browse https://example.com\n");
+    auto rest = md.flush_styled();
+    lines.insert(lines.end(), rest.begin(), rest.end());
+    REQUIRE(lines.size() >= 3);
+    CHECK(lines[0].text.find("\u203a ") == 0);
+    CHECK(lines[0].text.find("/read #2") != std::string::npos);
+    CHECK(lines[0].spans[0].id == StyleId::WritLine);
+    CHECK(lines[1].text.find("delegating") != std::string::npos);
+    CHECK(lines[1].spans[0].id == StyleId::Info);
+    CHECK(lines[2].text.find("/browse") != std::string::npos);
+    CHECK(lines[2].spans[0].id == StyleId::WritLine);
 }
 
 TEST_CASE("styled_permission_card includes action target preview and prompt") {

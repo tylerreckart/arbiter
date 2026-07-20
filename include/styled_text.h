@@ -67,14 +67,18 @@ void styled_append_char(StyledLine& line, StyleId id, char c);
 
 // Styled user-echo line for the TUI prose path (no caret). Source lines stay
 // unpadded; pad at emit via pad_styled_user_echo_line so trailing spaces in
-// the payload are preserved across resize.
+// the payload are preserved across resize. Emit adds a left accent cell +
+// header_padding_x inset to mirror the live input strip.
 [[nodiscard]] StyledLine styled_user_echo(std::string_view text);
 // Split on `\n` so multiline turns (`\` continuation) get one strip per row.
+// Wraps the body with blank echo rows (vertical bg pad) like the input area.
 [[nodiscard]] std::vector<StyledLine> styled_user_echo_lines(std::string_view text);
 [[nodiscard]] bool is_styled_user_echo_line(const StyledLine& line);
 // True when a user-echo line is a `/find` invocation (case-insensitive).
+// Ignores blank vertical-pad rows; matches the payload before emit chrome.
 [[nodiscard]] bool is_user_echo_find_command(const StyledLine& line);
-// Pad a user-echo line to `cols` (idempotent; does not mutate the source).
+// Pad a user-echo line to `cols` with accent + inset + trailing fill.
+// Expects an unpadded source line (does not mutate the source).
 [[nodiscard]] StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols);
 // In-place pad helper for tests / callers that hold a temporary vector.
 bool resize_styled_user_echo_lines(std::vector<StyledLine>& lines, int cols);
