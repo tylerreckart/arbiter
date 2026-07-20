@@ -12,6 +12,11 @@
 
 namespace arbiter {
 
+// Forward-declared so pane.h stays free of api_client.h / OpenSSL — light
+// TUI unit tests include this header via layout/mouse_hit without linking
+// TLS.  Out-of-line Pane special members (pane.cpp) see the complete type.
+class CancelToken;
+
 struct Pane {
     TUI               tui;
     ThinkingIndicator thinking{&tui};
@@ -20,6 +25,11 @@ struct Pane {
 
     OutputQueue       output_queue;
     CommandQueue      cmd_queue;
+
+    // Active turn's cancel token (set by the pane exec thread for the
+    // duration of handle()).  Esc / conversation-switch cancel this token
+    // instead of the process-wide ApiClient so sibling panes keep streaming.
+    std::shared_ptr<CancelToken> turn_cancel;
 
     std::unique_ptr<opentui::PaneScrollView> scroll;
 
@@ -58,6 +68,13 @@ struct Pane {
     // Last sub-agent that got an interim `→ agent` header this turn; cleared
     // when a new user turn starts so the next delegation can header again.
     std::string       last_interim_agent;
+
+    Pane();
+    ~Pane();
+    Pane(const Pane&) = delete;
+    Pane& operator=(const Pane&) = delete;
+    Pane(Pane&&) = delete;
+    Pane& operator=(Pane&&) = delete;
 };
 
 } // namespace arbiter

@@ -25,6 +25,11 @@
 
 namespace index_tests {
 
+// Stretch millisecond budgets under TSan (or ARBITER_TEST_TIME_SCALE).
+// Use for any test-local deadline that does not already go through
+// PtySession::read_for / read_until / wait_exited.
+int scale_timeout_ms(int ms);
+
 class PtySession {
 public:
     // rows/cols match the terminal geometry negotiated via TIOCSWINSZ before
@@ -43,6 +48,8 @@ public:
 
     // Fork+exec the given executable (absolute path) with argv.  The new
     // process sees the test env plus our isolation overrides (HOME, API key).
+    // Sanitizer option vars (ASAN_OPTIONS / TSAN_OPTIONS / …) are forwarded
+    // from the parent when set, so CI sanitizer legs apply to PTY children.
     void spawn(const std::vector<std::string>& argv);
 
     // Write raw bytes to the child's stdin.  Include "\r" for Enter.

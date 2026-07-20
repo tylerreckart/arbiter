@@ -35,6 +35,7 @@ std::string plain(const PtySession& s) {
 
 // Poll until `needle` appears only in bytes written after `offset`.
 void wait_for_new_bytes(PtySession& s, std::size_t offset, const std::string& needle, int timeout_ms) {
+    timeout_ms = scale_timeout_ms(timeout_ms);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (std::chrono::steady_clock::now() < deadline) {
         s.read_for(200);

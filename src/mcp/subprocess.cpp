@@ -3,6 +3,7 @@
 #include "mcp/subprocess.h"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
@@ -10,6 +11,10 @@
 #include <stdexcept>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#if defined(__GLIBC__)
+#  include <stdio_ext.h>
+#endif
 
 extern char** environ;
 
@@ -33,6 +38,24 @@ void set_cloexec(int fd) {
     ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
+// Discard inherited stdio FILE buffers without writing them.  After fork
+// + dup2(pipe → stdout), a sanitizer runtime (or failed-exec path) can
+// otherwise flush the parent's leftover stdout buffer — e.g. doctest's
+// banner — into the MCP pipe, which recv_line then surfaces as a false
+// protocol line.  _exit skips fflush; these purge APIs drop the bytes.
+void purge_stdio_buffers() {
+#if defined(__GLIBC__)
+    __fpurge(stdin);
+    __fpurge(stdout);
+    __fpurge(stderr);
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) \
+    || defined(__NetBSD__)
+    fpurge(stdin);
+    fpurge(stdout);
+    fpurge(stderr);
+#endif
+}
+
 } // namespace
 
 Subprocess::Subprocess(const std::vector<std::string>& argv,
@@ -52,6 +75,10 @@ Subprocess::Subprocess(const std::vector<std::string>& argv,
         throw std::runtime_error(std::string("pipe failed: ") + ::strerror(errno));
     }
 
+    // Flush before fork so the child does not inherit unflushed bytes that
+    // could later land on the redirected stdout pipe (see purge_stdio_buffers).
+    std::fflush(nullptr);
+
     pid_t pid = ::fork();
     if (pid < 0) {
         ::close(in_pipe[0]);  ::close(in_pipe[1]);
@@ -70,6 +97,8 @@ Subprocess::Subprocess(const std::vector<std::string>& argv,
 
         ::close(in_pipe[0]);  ::close(in_pipe[1]);
         ::close(out_pipe[0]); ::close(out_pipe[1]);
+
+        purge_stdio_buffers();
 
         // Build env in-place: parent's `environ` plus the extras.  We're
         // already past fork(), so mutating `environ` in the child only
