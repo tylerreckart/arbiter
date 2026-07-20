@@ -762,7 +762,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     orch.client().set_reasoning_callback([&](const std::string& delta) {
         Pane* p = g_active_pane;
         if (!p) return;
-        p->output_queue.push_thinking(delta);
+        p->output_queue.push_thinking(delta, p->current_agent);
         orch.append_thinking(p->current_agent, delta);
     });
 

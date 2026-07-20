@@ -50,17 +50,19 @@ TEST_CASE("ToolSegment Started then Finished updates one row") {
 }
 
 TEST_CASE("ThinkingSegment honors wrap width and kPreviewRows when collapsed") {
+    load_tui_design("");
     TUI tui;
     PaneScrollView view;
     bind_view(view, tui, 40, 40);
     const int baseline = view.total_visual_rows();
 
-    // Five short lines → collapsed shows header + kPreviewRows (3) + ellipsis.
+    // Five short lines → collapsed shows pad + header + kPreviewRows (3) +
+    // ellipsis + pad.
     view.append_thinking("one\ntwo\nthree\nfour\nfive");
     const int collapsed = view.total_visual_rows() - baseline;
-    // May include a leading block_gap blank; the thinking chrome itself is 5 rows.
-    CHECK(collapsed >= 5);
-    CHECK(collapsed <= 7);
+    // May include a leading block_gap blank; thinking chrome itself is 7 rows.
+    CHECK(collapsed >= 7);
+    CHECK(collapsed <= 9);
 
     CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
     const int expanded = view.total_visual_rows() - baseline;
@@ -70,6 +72,7 @@ TEST_CASE("ThinkingSegment honors wrap width and kPreviewRows when collapsed") {
 }
 
 TEST_CASE("ThinkingSegment wrap width grows visual rows for long lines") {
+    load_tui_design("");
     // Long enough that even an 80-col wrap exceeds kPreviewRows (3).
     const std::string blob(400, 'x');
 
@@ -90,6 +93,20 @@ TEST_CASE("ThinkingSegment wrap width grows visual rows for long lines") {
     CHECK(narrow.total_visual_rows() > wide.total_visual_rows());
 }
 
+TEST_CASE("ThinkingSegment renders markdown structure in body rows") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    const int baseline = view.total_visual_rows();
+
+    view.append_thinking("## Plan\n\n- step one\n- step two",
+                         /*new_block=*/true,
+                         "researcher");
+    // pad + header + at least one body line + pad (+ optional gap).
+    CHECK(view.total_visual_rows() - baseline >= 4);
+}
+
 TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
     load_tui_design("");
     TUI tui;
@@ -103,8 +120,9 @@ TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
 
     view.append_thinking("plan", /*new_block=*/true);
     const int after_think = view.total_visual_rows();
-    // Echo bottom pad already supplies the one blank; thinking = header+body.
-    CHECK(after_think - after_echo == 2);
+    // Echo bottom pad already supplies the one-row gap; thinking chrome is
+    // pad + header + body + pad = 4 (no extra BlankSegment).
+    CHECK(after_think - after_echo == 4);
 
     ToolActivityEvent start;
     start.phase = ToolActivityEvent::Phase::Started;
@@ -119,6 +137,8 @@ TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
     view.upsert_tool(start2, /*new_block=*/false);
 
     // Thinking→tools: one BlankSegment; tools stay clustered.
+    // Thinking's own bottom pad does not count as inter-block credit (only
+    // prose/echo pads do), so tools still get an explicit gap.
     const int after_tools = view.total_visual_rows();
     CHECK(after_tools - after_think == 1 /*gap*/ + 2 /*tool rows*/);
 }
@@ -141,10 +161,10 @@ TEST_CASE("trailing prose blanks do not stack with block_gap") {
 
     view.append_thinking("next", /*new_block=*/true);
     const int after = view.total_visual_rows();
-    // Soft blank trimmed, replaced by exactly one BlankSegment + thinking(2).
-    // Net: -1 soft +1 gap +2 think = +2 from after_prose.
-    CHECK(after - after_prose == 2);
-    CHECK(after == 5);  // lead-in + body + gap + thinking header + body
+    // Soft blank is credited as the gap; thinking = pad+header+body+pad = 4.
+    // Net: keep 1 soft blank as gap credit + 4 thinking rows beyond content
+    // body (soft blank already in after_prose), so delta == 4.
+    CHECK(after - after_prose == 4);
 }
 
 TEST_CASE("prose to tool gap is exactly one blank with no trailing phantom") {
