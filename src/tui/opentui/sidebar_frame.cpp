@@ -383,37 +383,6 @@ void draw_sidebar(OpenTuiHandle frame,
         ++y;
     }
 
-    if (y <= scroll_bottom) {
-        y = draw_section_label(frame, d, content_x, content_w, y, "Task", bg);
-        if (!snap.active_task.empty()) {
-            std::string task = snap.active_task;
-            int lines = 0;
-            while (!task.empty() && lines < 3 && y <= scroll_bottom) {
-                std::string line = trim_to_cells(task, content_w);
-                draw_text(frame,
-                          static_cast<std::uint32_t>(content_x),
-                          static_cast<std::uint32_t>(y),
-                          line,
-                          sc.body,
-                          bg);
-                ++y;
-                ++lines;
-                if (line.size() >= task.size()) break;
-                task.erase(0, line.size());
-                while (!task.empty() && task.front() == ' ') task.erase(0, 1);
-            }
-        } else if (y <= scroll_bottom) {
-            draw_text(frame,
-                      static_cast<std::uint32_t>(content_x),
-                      static_cast<std::uint32_t>(y),
-                      trim_to_cells("(no active task)", content_w),
-                      sc.label,
-                      bg);
-            ++y;
-        }
-        ++y;
-    }
-
     if (y <= scroll_bottom && !snap.todos.empty()) {
         y = draw_section_label(frame, d, content_x, content_w, y, "Todos", bg);
         const int budget = std::max(1, std::min(4, scroll_bottom - y + 1));
@@ -450,7 +419,7 @@ void draw_sidebar(OpenTuiHandle frame,
         ++y;
     }
 
-    if (y <= scroll_bottom) {
+    if (y <= scroll_bottom && !snap.mcp.empty()) {
         y = draw_section_label(frame, d, content_x, content_w, y, "MCP", bg);
         const int mcp_budget = std::max(1, scroll_bottom - y + 1);
         draw_tool_list(frame, d, sc, content_x, content_w, y, mcp_budget,

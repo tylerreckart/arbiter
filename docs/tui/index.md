@@ -6,7 +6,7 @@ Rendering uses [OpenTUI](https://github.com/anomalyco/opentui) (native cell-buff
 
 A pane is to a conversation what a tab is to a browser. A new pane is a new conversation against an agent of your choosing; multiple panes run side-by-side or stacked, each independently typing, streaming, and waiting for its agent. Background loops (long-running agent processes) live alongside; foreground panes can spawn child panes (`/pane <agent> <msg>`) whose results land back in the spawner when done.
 
-Start with `arbiter`. The default layout is a single pane covering the main terminal area. A **left-hand conversation sidebar** lists prior threads and lets you start a new one (`Ctrl-w b` to enter, `Ctrl-w t` to toggle visibility). A **right-hand sidebar** shows session usage, the focused pane's active task, and recent tool/MCP activity when the terminal is wide enough; `Ctrl-w s` toggles it. `Ctrl-w v` / `Ctrl-w h` split the main area.
+Start with `arbiter`. The default layout is a single pane covering the main terminal area. A **left-hand conversation sidebar** lists prior threads and lets you start a new one (`Ctrl-w b` to enter, `Ctrl-w t` to toggle visibility). A **right-hand sidebar** shows session usage, agent/model, todos, and recent tool activity when the terminal is wide enough (MCP appears only after MCP tools are used); `Ctrl-w s` toggles it. `Ctrl-w v` / `Ctrl-w h` split the main area.
 
 ## Screen anatomy
 

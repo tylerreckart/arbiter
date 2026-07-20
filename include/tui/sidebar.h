@@ -44,7 +44,6 @@ struct SidebarSnapshot {
 
     std::string focus_agent;
     std::string focus_model;
-    std::string active_task;
 
     double      total_cost_usd = 0.0;
     std::string cost_basis;
@@ -66,9 +65,9 @@ struct SidebarSnapshot {
     int         context_pct_peak      = -1;
 };
 
-// Session-scoped sidebar data: token usage, recent tool/MCP activity, and the
-// focused pane's active task.  Updated from orchestrator callbacks on exec
-// threads; snapshotted under a mutex for the output pump render path.
+// Session-scoped sidebar data: token usage and recent tool/MCP activity.
+// Updated from orchestrator callbacks on exec threads; snapshotted under a
+// mutex for the output pump render path.
 class SidebarState {
 public:
     static int breakpoint_width(int cols);
@@ -91,8 +90,7 @@ public:
     void record_tool(const std::string& label, bool ok);
     void set_active_tool_calls(int count);
     void set_focus_context(const std::string& agent,
-                           const std::string& model,
-                           const std::string& task);
+                           const std::string& model);
     void set_loops(std::vector<SidebarLoopEntry> loops);
 
     [[nodiscard]] SidebarSnapshot snapshot() const;
@@ -122,7 +120,6 @@ private:
 
     std::string focus_agent_;
     std::string focus_model_;
-    std::string active_task_;
     int active_tool_calls_ = 0;
 
     int context_tokens_     = 0;
