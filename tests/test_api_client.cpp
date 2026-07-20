@@ -396,3 +396,53 @@ TEST_CASE("text-only message still emits string content (legacy path)") {
     // Gemini wraps even text-only into a {text} part — verify the wrap.
     CHECK(gbody.find("\"text\":\"hello there\"") != std::string::npos);
 }
+
+TEST_CASE("CancelToken request_cancel is independent of ApiClient::cancel()") {
+    using arbiter::ApiClient;
+    using arbiter::CancelToken;
+    using arbiter::RequestCancelScope;
+
+    ApiClient client({});
+    auto token_a = std::make_shared<CancelToken>();
+    auto token_b = std::make_shared<CancelToken>();
+
+    {
+        RequestCancelScope scope(client, token_a);
+        client.cancel(*token_a);
+        CHECK(token_a->is_cancelled());
+        CHECK_FALSE(token_b->is_cancelled());
+    }
+
+    {
+        RequestCancelScope scope(client, token_b);
+        CHECK_FALSE(token_b->is_cancelled());
+        client.cancel(*token_b);
+        CHECK(token_b->is_cancelled());
+        // Previously-cancelled token stays cancelled; scoped cancel of B
+        // must not resurrect or clear A.
+        CHECK(token_a->is_cancelled());
+    }
+}
+
+TEST_CASE("current_request_cancel_token tracks RequestCancelScope nesting") {
+    using arbiter::ApiClient;
+    using arbiter::CancelToken;
+    using arbiter::RequestCancelScope;
+    using arbiter::current_request_cancel_token;
+
+    ApiClient client({});
+    CHECK(current_request_cancel_token() == nullptr);
+
+    auto outer = std::make_shared<CancelToken>();
+    auto inner = std::make_shared<CancelToken>();
+    {
+        RequestCancelScope scope_outer(client, outer);
+        CHECK(current_request_cancel_token() == outer);
+        {
+            RequestCancelScope scope_inner(client, inner);
+            CHECK(current_request_cancel_token() == inner);
+        }
+        CHECK(current_request_cancel_token() == outer);
+    }
+    CHECK(current_request_cancel_token() == nullptr);
+}
