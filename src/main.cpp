@@ -70,6 +70,7 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <execinfo.h>
 
 namespace fs = std::filesystem;
 
@@ -174,6 +175,17 @@ static void log_fatal_event(const char* kind, int sig) {
     fatal_log_write_cstr(fd, " tty_reset=");
     fatal_log_write_cstr(fd, g_tui_armed ? "yes" : "no");
     fatal_log_write_cstr(fd, "\n");
+    // Best-effort stack breadcrumb. backtrace_symbols_fd avoids malloc;
+    // backtrace itself is not strictly async-signal-safe but is the usual
+    // compromise for crash diagnostics (and beats a one-line log alone).
+    {
+        void* frames[64];
+        const int n = ::backtrace(frames, 64);
+        if (n > 0) {
+            fatal_log_write_cstr(fd, "backtrace:\n");
+            ::backtrace_symbols_fd(frames, n, fd);
+        }
+    }
     (void)::close(fd);
 }
 

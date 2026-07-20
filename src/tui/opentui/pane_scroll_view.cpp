@@ -75,7 +75,7 @@ void fill_rect(OpenTuiHandle frame,
                int w,
                int h,
                const TuiRgba& bg) {
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0 || x < 0 || y < 0) return;
     bufferFillRect(frame,
                    static_cast<std::uint32_t>(x),
                    static_cast<std::uint32_t>(y),
@@ -91,7 +91,7 @@ void draw_text(OpenTuiHandle frame,
                const TuiRgba& fg,
                const TuiRgba& bg,
                std::uint32_t attrs = 0) {
-    if (text.empty()) return;
+    if (text.empty() || x < 0 || y < 0) return;
     bufferDrawText(frame,
                    text.data(),
                    static_cast<std::uint32_t>(text.size()),
@@ -208,7 +208,9 @@ void PaneScrollView::ProseSegment::draw(OpenTuiHandle frame,
                                         int w,
                                         int h,
                                         int skip_rows) const {
-    if (view_ == 0 || w <= 0 || h <= 0) return;
+    // Negative origins cast to uint32_t wrap to ~0 and SIGSEGV inside
+    // OpenTUI's trySetTransparentTextCellFast (repro: x=-1, y=0).
+    if (view_ == 0 || w <= 0 || h <= 0 || x < 0 || y < 0) return;
     textBufferViewSetFirstLineOffset(view_, 0);
     textBufferViewSetViewport(view_,
                               0,
@@ -296,7 +298,7 @@ void PaneScrollView::TextSegment::draw(OpenTuiHandle frame,
                                        int w,
                                        int h,
                                        int skip_rows) const {
-    if (view_ == 0 || w <= 0 || h <= 0) return;
+    if (view_ == 0 || w <= 0 || h <= 0 || x < 0 || y < 0) return;
     textBufferViewSetFirstLineOffset(view_, 0);
     textBufferViewSetViewport(view_,
                               0,
@@ -868,7 +870,7 @@ void PaneScrollView::NativeDiffSegment::draw(OpenTuiHandle frame,
                                       int w,
                                       int h,
                                       int skip_rows) const {
-    if (patch_.empty() || w <= 0 || h <= 0 || !diff_.valid()) return;
+    if (patch_.empty() || w <= 0 || h <= 0 || x < 0 || y < 0 || !diff_.valid()) return;
     diff_.set_scroll_y(static_cast<std::uint32_t>(std::max(0, skip_rows)));
     diff_.draw(frame, x, y, static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h));
 }
@@ -1361,7 +1363,14 @@ void PaneScrollView::draw(OpenTuiHandle frame,
                           TUI& tui,
                           int scroll_offset,
                           int new_while_scrolled) {
+    // Degenerate / off-screen panes (zoom siblings, squeezed splits): do not
+    // bind or paint — OpenTUI text-buffer draws are not safe with negative
+    // origins from zero-size chrome math.
+    if (frame == 0 || tui.cols() <= 0 || tui.scroll_region_rows() <= 0) return;
+
     bind(tui);
+
+    if (buf_x_ < 0 || buf_y_ < 0 || viewport_w_ <= 0 || viewport_h_ <= 0) return;
 
     const TuiDesign& d = tui_design();
     const int pad = tui_pane_edge_pad(tui.cols(), d);
