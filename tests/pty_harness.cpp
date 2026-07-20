@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <thread>
 
@@ -29,6 +30,32 @@ namespace index_tests {
 
 namespace {
 
+// Stretch PTY deadlines under TSan (or ARBITER_TEST_TIME_SCALE).
+// TSan + the full TUI routinely miss the fixed millisecond budgets that
+// plain Debug / ASan CI is tuned for.  ASan is left unscaled — it already
+// passes with the stock budgets, and read_for() always burns its full
+// wait so a blanket 5x would inflate that leg for no gain.
+int timeout_scale() {
+    static const int scale = [] {
+        if (const char* e = std::getenv("ARBITER_TEST_TIME_SCALE")) {
+            int v = std::atoi(e);
+            if (v > 0 && v <= 50) return v;
+        }
+#if defined(__SANITIZE_THREAD__)
+        return 5;
+#elif defined(__has_feature)
+#  if __has_feature(thread_sanitizer)
+        return 5;
+#  else
+        return 1;
+#  endif
+#else
+        return 1;
+#endif
+    }();
+    return scale;
+}
+
 // Make a fresh temp directory under /tmp with a unique suffix.  Caller owns
 // it; we rm -rf in the session destructor.  Using mkdtemp so the name is
 // actually unique even if parallel tests ever run.
@@ -47,6 +74,15 @@ static void rm_rf(const std::string& path) {
 }
 
 } // namespace
+
+int scale_timeout_ms(int ms) {
+    if (ms <= 0) return ms;
+    const int s = timeout_scale();
+    if (s <= 1) return ms;
+    if (ms > (std::numeric_limits<int>::max)() / s)
+        return (std::numeric_limits<int>::max)();
+    return ms * s;
+}
 
 PtySession::PtySession(int rows, int cols) : rows_(rows), cols_(cols) {
     home_dir_ = make_temp_home();
@@ -125,15 +161,31 @@ void PtySession::spawn(const std::vector<std::string>& argv) {
 
     // Defaults — tests can override by calling env() before spawn().
     // Set first so explicit env() wins via order of iteration below.
+    // Sanitizer *_OPTIONS are forwarded from the parent when present so
+    // ASan/TSan CI legs actually instrument the PTY-spawned arbiter
+    // (spawn replaces the full environment and would otherwise drop them).
     bool has_home = false, has_key = false, has_term = false;
+    bool has_asan = false, has_tsan = false, has_lsan = false, has_ubsan = false;
     for (auto& kv : env_) {
         if (kv.first == "HOME") has_home = true;
         if (kv.first == "OPENROUTER_API_KEY") has_key = true;
         if (kv.first == "TERM") has_term = true;
+        if (kv.first == "ASAN_OPTIONS") has_asan = true;
+        if (kv.first == "TSAN_OPTIONS") has_tsan = true;
+        if (kv.first == "LSAN_OPTIONS") has_lsan = true;
+        if (kv.first == "UBSAN_OPTIONS") has_ubsan = true;
     }
     if (!has_home) env_.emplace_back("HOME", home_dir_);
     if (!has_key)  env_.emplace_back("OPENROUTER_API_KEY", "dummy-key-no-network");
     if (!has_term) env_.emplace_back("TERM", "xterm-256color");
+    auto forward_if_set = [&](bool already, const char* key) {
+        if (already) return;
+        if (const char* v = std::getenv(key)) env_.emplace_back(key, v);
+    };
+    forward_if_set(has_asan, "ASAN_OPTIONS");
+    forward_if_set(has_tsan, "TSAN_OPTIONS");
+    forward_if_set(has_lsan, "LSAN_OPTIONS");
+    forward_if_set(has_ubsan, "UBSAN_OPTIONS");
 
     struct winsize ws{};
     ws.ws_row = (unsigned short)rows_;
@@ -197,6 +249,10 @@ int PtySession::drain_once(int timeout_ms) {
 }
 
 std::string PtySession::read_for(int millis) {
+    // Intentionally not scaled: read_for is used as a short settle/drain
+    // window.  Scaling it 5x under TSan inflates every PTY test and can
+    // change assertion semantics (e.g. "must NOT appear yet").  Deadline
+    // waits go through read_until / wait_exited / scale_timeout_ms.
     auto start = std::chrono::steady_clock::now();
     while (true) {
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -215,6 +271,7 @@ const std::string& PtySession::output() const {
 }
 
 std::string PtySession::read_until(const std::string& needle, int timeout_ms) {
+    timeout_ms = scale_timeout_ms(timeout_ms);
     auto start = std::chrono::steady_clock::now();
     while (true) {
         {
@@ -305,6 +362,7 @@ void PtySession::terminate() {
 
 bool PtySession::wait_exited(int timeout_ms) {
     if (pid_ <= 0) return true;
+    timeout_ms = scale_timeout_ms(timeout_ms);
     auto start = std::chrono::steady_clock::now();
     while (true) {
         int status = 0;

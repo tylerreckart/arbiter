@@ -63,6 +63,7 @@ static std::string tail_stripped(const PtySession& s, size_t bytes = 512) {
 // Poll for `token` in ANSI-stripped output.  Cold-start macOS runners often
 // need longer than a fixed read_for() for the first input-row paint.
 static bool wait_for_plain(PtySession& s, const std::string& token, int budget_ms) {
+    budget_ms = scale_timeout_ms(budget_ms);
     const auto deadline = std::chrono::steady_clock::now()
                         + std::chrono::milliseconds(budget_ms);
     while (std::chrono::steady_clock::now() < deadline) {
