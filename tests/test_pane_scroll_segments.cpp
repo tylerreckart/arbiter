@@ -146,3 +146,27 @@ TEST_CASE("trailing prose blanks do not stack with block_gap") {
     CHECK(after - after_prose <= 3);
     CHECK(after - after_prose >= 2);  // at least gap + thinking header
 }
+
+TEST_CASE("degenerate zero-size pane draw is a no-op") {
+    // Zoom siblings / squeezed splits get w==0 (and often h==0). Painting
+    // those used to reach OpenTUI with negative origins cast to uint32_t and
+    // SIGSEGV in bufferDrawTextBufferView. draw() must return before any
+    // native call when the pane has no usable columns / scroll region.
+    load_tui_design("");
+    TUI tui;
+    tui.set_rect(Rect{5, 1, 0, 0});
+    tui.begin_input();
+    CHECK(tui.cols() == 0);
+    CHECK(tui.scroll_region_rows() <= 0);
+
+    PaneScrollView view;
+    view.append_prose(styled_user_echo_lines("should not paint"));
+    // frame=1 is an invalid OpenTUI handle; a regression that skipped the
+    // guard would crash or corrupt rather than return cleanly.
+    view.draw(/*frame=*/1, tui, 0, 0);
+
+    TUI offscreen;
+    offscreen.set_rect(Rect{-10000, -10000, 0, 0});
+    CHECK(offscreen.cols() == 0);
+    view.draw(/*frame=*/1, offscreen, 0, 0);
+}
