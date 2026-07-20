@@ -22,7 +22,8 @@ namespace arbiter::mcp {
 class Subprocess {
 public:
     // Spawn `argv[0]` as the executable, with the remaining args.  `env_extra`
-    // is appended to the parent environment (KEY=VALUE strings), useful for
+    // is appended after a scrubbed copy of the parent environment (secret-
+    // shaped keys like *_API_KEY / ARBITER_* are stripped).  Useful for
     // passing PLAYWRIGHT_BROWSERS_PATH etc.  Throws std::runtime_error on
     // fork/exec failure (the child's exec failure is detected by an immediate
     // EOF on stdout, which manifests as recv_line returning std::nullopt
