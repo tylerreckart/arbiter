@@ -9,7 +9,7 @@ Live order within a turn (tools appear as `/cmd` lines are dispatched, after
 the model stream that emitted them):
 
 ```
-user echo strip (accent + vertical pad, input bg)
+user echo strip (inset + vertical pad, input bg)
                                   ← one blank row
 thinking  ▸                                ThinkingSegment header (when provider emits)
   first preview lines…                     up to 3 wrapped body rows when collapsed
@@ -26,7 +26,7 @@ assistant prose / markdown / code / diffs  (writ lines swallowed)
 
 | Layer | Segment | Notes |
 |-------|---------|-------|
-| User | `ProseSegment` + `UserEchoText` | Full-width strip with input accent + vertical pad |
+| User | `ProseSegment` + `UserEchoText` | Full-width strip with input inset + vertical pad |
 | Tools | `ToolSegment` | One row per `/cmd`; expand for args/result; clustered (no gap between tools) |
 | Reasoning | `ThinkingSegment` | Only when the provider streams a reasoning channel |
 | Assistant | `Prose` / `Code` / `Diff` | Same StreamRenderer path as before |

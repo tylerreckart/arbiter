@@ -202,10 +202,10 @@ TEST_CASE("styled_user_echo has no caret and pads to wrap width") {
     CHECK(is_styled_user_echo_line(line));
 
     const StyledLine padded = pad_styled_user_echo_line(line, 10);
-    // Accent (1) + header_padding_x + payload fill → full width.
+    // header_padding_x inset + payload fill → full width (no accent bar).
     CHECK(static_cast<int>(display_width(padded.text)) == 10);
-    REQUIRE(padded.spans.size() >= 2);
-    CHECK(padded.spans[0].id == StyleId::UserEchoArrow);
+    REQUIRE_FALSE(padded.spans.empty());
+    CHECK(padded.spans[0].id == StyleId::UserEchoText);
     CHECK(padded.text.find("hello") != std::string::npos);
     CHECK(line.text == "hello");  // source stays unpadded
 
