@@ -16,6 +16,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   libcurl auto-decompression per Brave's documented client headers.
   Research starter capabilities now list `/search` and `/browse`
   explicitly.
+- **`chat_command_tui` sidebar rename flake.** Seed the conversation via
+  `/chat title` (no in-flight agent turn) and poll for the renamed title
+  so macos-arm64 CI no longer races sidebar focus against a dummy API
+  request.
 
 ### Added
 - **`arbiter --setup-tools`.** Interactive OpenTUI wizard for `/search`
