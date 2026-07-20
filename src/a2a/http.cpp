@@ -8,6 +8,7 @@
 // arbiter's startup code.
 
 #include "a2a/http.h"
+#include "ssrf_guard.h"
 
 #include <curl/curl.h>
 
@@ -50,7 +51,8 @@ struct curl_slist* build_headers(const std::vector<HttpHeader>& extra,
 }
 
 // Common easy-handle setup so the three entry points share the same
-// TLS / signal / user-agent posture.
+// TLS / signal / user-agent / SSRF posture.  Opensocket denylist runs
+// on every connect including after redirects — same guard as /fetch.
 void apply_common_opts(CURL* curl, long timeout_secs) {
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL,         1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER,   1L);
@@ -58,7 +60,9 @@ void apply_common_opts(CURL* curl, long timeout_secs) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT,          timeout_secs);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,   std::min<long>(timeout_secs, 15L));
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION,   1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS,        10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT,        "arbiter-a2a/1.0");
+    curl_apply_ssrf_guard(curl);
 }
 
 // Streaming write context.  Holds a reference to the SseReader and the

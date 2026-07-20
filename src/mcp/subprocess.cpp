@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdexcept>
+#include <string_view>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -56,6 +57,43 @@ void purge_stdio_buffers() {
 #endif
 }
 
+// True when an inherited env KEY should be stripped from MCP children.
+// Registry `env_extra` is appended after the scrub and is allowed through
+// even when the key would otherwise match — operators opt into those.
+bool is_secret_env_key(std::string_view key) {
+    if (key.empty()) return true;
+    auto has_suffix = [&](std::string_view suf) {
+        return key.size() >= suf.size() &&
+               key.compare(key.size() - suf.size(), suf.size(), suf) == 0;
+    };
+    auto eq = [&](std::string_view exact) { return key == exact; };
+
+    // Exact high-value names.
+    if (eq("OPENROUTER_API_KEY") || eq("OPENAI_API_KEY") ||
+        eq("ANTHROPIC_API_KEY") || eq("BRAVE_SEARCH_API_KEY") ||
+        eq("ARBITER_ADMIN_TOKEN") || eq("ARBITER_SEARCH_API_KEY") ||
+        eq("GITHUB_TOKEN") || eq("GH_TOKEN") || eq("NPM_TOKEN") ||
+        eq("AWS_SECRET_ACCESS_KEY") || eq("AWS_SESSION_TOKEN") ||
+        eq("AWS_ACCESS_KEY_ID") || eq("GOOGLE_API_KEY") ||
+        eq("GEMINI_API_KEY"))
+        return true;
+
+    // Prefix families used by arbiter / common provider SDKs.
+    if (key.rfind("ARBITER_", 0) == 0) return true;
+    if (key.rfind("OPENROUTER_", 0) == 0) return true;
+
+    // Suffix patterns: FOO_API_KEY, FOO_TOKEN, FOO_SECRET, FOO_PASSWORD.
+    if (has_suffix("_API_KEY") || has_suffix("_APIKEY") ||
+        has_suffix("_ACCESS_TOKEN") || has_suffix("_AUTH_TOKEN") ||
+        has_suffix("_SECRET") || has_suffix("_SECRET_KEY") ||
+        has_suffix("_PASSWORD") || has_suffix("_PASSWD") ||
+        has_suffix("_PRIVATE_KEY"))
+        return true;
+    // Bare TOKEN / SECRET as a final path segment after underscore.
+    if (has_suffix("_TOKEN") || has_suffix("_SECRET")) return true;
+    return false;
+}
+
 } // namespace
 
 Subprocess::Subprocess(const std::vector<std::string>& argv,
@@ -100,13 +138,19 @@ Subprocess::Subprocess(const std::vector<std::string>& argv,
 
         purge_stdio_buffers();
 
-        // Build env in-place: parent's `environ` plus the extras.  We're
-        // already past fork(), so mutating `environ` in the child only
-        // affects the child — execvp picks up the new pointer.  Done
-        // this way (rather than execvpe) because macOS doesn't expose
+        // Inherit parent environ minus secret-shaped keys, then append
+        // registry env_extra.  MCP children (often untrusted npx packages)
+        // must not see provider/admin credentials from the arbiter process.
+        // Done this way (rather than execvpe) because macOS doesn't expose
         // execvpe and we need the PATH-search behaviour for `npx`.
         std::vector<std::string> env_storage;
-        for (char** e = environ; e && *e; ++e) env_storage.emplace_back(*e);
+        for (char** e = environ; e && *e; ++e) {
+            const char* eq = std::strchr(*e, '=');
+            std::string_view key = eq ? std::string_view(*e, static_cast<size_t>(eq - *e))
+                                      : std::string_view(*e);
+            if (is_secret_env_key(key)) continue;
+            env_storage.emplace_back(*e);
+        }
         for (auto& s : env_extra) env_storage.push_back(s);
         std::vector<char*> envp;
         envp.reserve(env_storage.size() + 1);

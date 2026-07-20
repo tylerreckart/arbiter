@@ -12,8 +12,35 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   background as user echo / readline, with matching vertical pad and
   inset, dimmed readable text, and a left accent from the theme’s
   per-agent palette.
+- **Session sidebar.** Drop the always-on Task section. The MCP section
+  only appears after an MCP tool has been used in the session (same
+  pattern as Todos / Scheduled).
 
 ### Fixed
+- **Sandbox workspace symlink escape.** `/write` and `/read` against the
+  per-tenant sandbox workspace now canonicalise the target and reject
+  paths that resolve outside `workspaces/t<tid>/`, so an in-workspace
+  symlink cannot reach host files.
+- **Host `/write` on A2A send + scheduler.** `wire_orch_tools` always
+  installs a write interceptor (with `file_max_bytes` accounting and
+  optional sandbox mirror) so agents no longer fall through to
+  `cmd_write` on the API server cwd.
+- **A2A HTTP SSRF guard.** The A2A client shares `/fetch`'s opensocket
+  denylist and http(s)-only redirect protocol limits, so federation
+  redirects cannot reach private/link-local/metadata addresses.
+- **MCP child env credential scrub.** Stdio MCP subprocesses inherit a
+  scrubbed parent environment (secret-shaped keys stripped); registry
+  `env` extras remain an explicit opt-in.
+- **`unit_sandbox_ssrf` TSan flake.** Path-only sandbox workspace tests
+  set `idle_seconds = 0` so the idle reaper thread never starts.
+- **`chat_command_tui` switch/replay flake.** Wait for each dummy-key
+  turn to finish (auth error) before `/chat new` / `/chat switch`, and
+  match an interior marker substring so pane-edge clipping cannot
+  miss the replay assertion on macos-arm64.
+- **`line_editor` Ctrl-U flake.** Warm the input row, then assert
+  functionally via a post-kill `/agents` submit (rejecting a
+  `garbage/agents` echo) instead of relying on a fixed `read_for` or a
+  contiguous `"ok"` paint under OpenTUI cell diffs.
 - **Sub-agent `/parallel` fan-out.** Same `agent_id` may appear more than
   once in a `/parallel` block again (ephemeral clones — matching the
   documented behaviour), and a sub-agent may fan out to copies of itself.
