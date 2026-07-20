@@ -43,6 +43,8 @@ public:
 
     // Fork+exec the given executable (absolute path) with argv.  The new
     // process sees the test env plus our isolation overrides (HOME, API key).
+    // Sanitizer option vars (ASAN_OPTIONS / TSAN_OPTIONS / …) are forwarded
+    // from the parent when set, so CI sanitizer legs apply to PTY children.
     void spawn(const std::vector<std::string>& argv);
 
     // Write raw bytes to the child's stdin.  Include "\r" for Enter.
