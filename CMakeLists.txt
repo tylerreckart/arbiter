@@ -126,6 +126,7 @@ set(ARBITER_SOURCES
     src/advisor.cpp
     src/api_server.cpp
     src/sandbox.cpp
+    src/ssrf_guard.cpp
     src/idempotency_cache.cpp
     src/metrics.cpp
     src/circuit_breaker.cpp
@@ -356,6 +357,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_commands
         tests/test_commands.cpp
         src/commands.cpp
+        src/ssrf_guard.cpp
         src/styled_text.cpp
         src/theme.cpp
         src/tui/tui_design.cpp
@@ -961,6 +963,7 @@ if(INDEX_BUILD_TESTS)
         src/mcp/manager.cpp
         src/mcp/client.cpp
         src/commands.cpp
+        src/ssrf_guard.cpp
         src/json.cpp
     )
     target_include_directories(unit_mcp PRIVATE
@@ -974,6 +977,23 @@ if(INDEX_BUILD_TESTS)
         OpenSSL::Crypto
     )
     add_test(NAME unit_mcp COMMAND unit_mcp)
+
+    # Sandbox workspace path safety (symlink escape) + SSRF denylist.
+    add_executable(unit_sandbox_ssrf
+        tests/test_sandbox_ssrf.cpp
+        src/sandbox.cpp
+        src/ssrf_guard.cpp
+        src/metrics.cpp
+    )
+    target_include_directories(unit_sandbox_ssrf PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_sandbox_ssrf PRIVATE
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_sandbox_ssrf COMMAND unit_sandbox_ssrf)
 
     # A2A protocol layer.  Five slices exercised in-process:
     #   • wire-type round-trips for every public struct;
