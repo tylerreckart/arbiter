@@ -136,6 +136,7 @@ set(ARBITER_SOURCES
     src/request_event_bus.cpp
     src/scheduler.cpp
     src/json.cpp
+    src/message_codec.cpp
     src/commands.cpp
     src/mcp/types.cpp
     src/mcp/subprocess.cpp
@@ -148,7 +149,6 @@ set(ARBITER_SOURCES
     src/a2a/http.cpp
     src/a2a/client.cpp
     src/a2a/manager.cpp
-    src/readline_wrapper.cpp
     src/markdown.cpp
     src/code_highlighter.cpp
 )
@@ -251,31 +251,6 @@ elseif(UNIX)
     )
 endif()
 
-# --- Readline / libedit for interactive line editing ---
-# Try libedit first (BSD license, ships on macOS)
-find_library(EDITLINE_LIB edit)
-find_path(EDITLINE_INCLUDE editline/readline.h)
-
-if(NOT EDITLINE_LIB OR NOT EDITLINE_INCLUDE)
-    find_library(EDITLINE_LIB readline)
-    find_path(EDITLINE_INCLUDE readline/readline.h)
-    if(EDITLINE_LIB AND EDITLINE_INCLUDE)
-        set(READLINE_GNU ON)
-    endif()
-endif()
-
-if(EDITLINE_LIB AND EDITLINE_INCLUDE)
-    message(STATUS "Found readline/libedit: ${EDITLINE_LIB}")
-    target_compile_definitions(arbiter PRIVATE ARBITER_HAS_READLINE)
-    if(NOT READLINE_GNU)
-        target_compile_definitions(arbiter PRIVATE ARBITER_USE_EDITLINE)
-    endif()
-    target_include_directories(arbiter PRIVATE ${EDITLINE_INCLUDE})
-    target_link_libraries(arbiter PRIVATE ${EDITLINE_LIB})
-else()
-    message(WARNING "readline/libedit not found; falling back to raw getline (no line editing)")
-endif()
-
 # --- Install ---
 install(TARGETS arbiter RUNTIME DESTINATION bin)
 install(DIRECTORY agents/ DESTINATION share/arbiter/agents
@@ -372,12 +347,18 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_commands
         tests/test_commands.cpp
         src/commands.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/json.cpp
     )
     target_include_directories(unit_commands PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
         ${OPENSSL_INCLUDE_DIR}
     )
+    target_compile_definitions(unit_commands PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     target_link_libraries(unit_commands PRIVATE
         CURL::libcurl
         OpenSSL::SSL
@@ -458,6 +439,8 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
+    target_compile_definitions(unit_markdown_diff PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_markdown_diff COMMAND unit_markdown_diff)
 
     add_executable(unit_code_highlighter
@@ -488,6 +471,67 @@ if(INDEX_BUILD_TESTS)
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_tui_theme_json COMMAND unit_tui_theme_json)
 
+    # ToolCallIndicator arm/bump/finalize counting (nullptr TUI — no paint).
+    add_executable(unit_tool_indicator
+        tests/test_tool_indicator.cpp
+        tests/term_size_stub.cpp
+        src/tui/tui.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_tool_indicator PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(unit_tool_indicator PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    add_test(NAME unit_tool_indicator COMMAND unit_tool_indicator)
+
+    # PaneScrollView ToolSegment / ThinkingSegment geometry + toggle.
+    add_executable(unit_pane_scroll_segments
+        tests/test_pane_scroll_segments.cpp
+        tests/term_size_stub.cpp
+        src/tui/opentui/pane_scroll_view.cpp
+        src/tui/opentui/ansi_scroll_append.cpp
+        src/tui/opentui/span_scroll_append.cpp
+        src/tui/opentui/diff_panel.cpp
+        src/tui/tui.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/tui/ansi_util.cpp
+        src/code_highlighter.cpp
+        src/markdown.cpp
+        src/styled_text.cpp
+        src/render_policy.cpp
+        src/theme.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_pane_scroll_segments PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(unit_pane_scroll_segments PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    target_link_libraries(unit_pane_scroll_segments PRIVATE OpenTUI::core)
+    # Match arbiter's Apple OpenTUI link flags — the modern ld rejects
+    # ADRP/___dso_handle fixups from doctest + libopentui without -ld_classic.
+    if(APPLE)
+        target_link_libraries(unit_pane_scroll_segments PRIVATE
+            "-framework CoreFoundation"
+            "-framework CoreAudio"
+            "-framework AudioToolbox"
+        )
+        target_link_options(unit_pane_scroll_segments PRIVATE "-Wl,-ld_classic")
+        set_target_properties(unit_pane_scroll_segments PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    elseif(UNIX)
+        target_link_libraries(unit_pane_scroll_segments PRIVATE dl pthread)
+        set_target_properties(unit_pane_scroll_segments PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    endif()
+    add_test(NAME unit_pane_scroll_segments COMMAND unit_pane_scroll_segments)
+
     add_executable(unit_palette
         tests/test_palette.cpp
         src/tui/palette.cpp
@@ -506,6 +550,15 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_kitty_key_decode COMMAND unit_kitty_key_decode)
+
+    add_executable(unit_mouse_decode
+        tests/test_mouse_decode.cpp
+    )
+    target_include_directories(unit_mouse_decode PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_mouse_decode COMMAND unit_mouse_decode)
 
     add_executable(unit_sidebar_format
         tests/test_sidebar_format.cpp
@@ -659,6 +712,54 @@ if(INDEX_BUILD_TESTS)
         ${OPENSSL_INCLUDE_DIR}
     )
     add_test(NAME unit_transcript_replay_predicates COMMAND unit_transcript_replay_predicates)
+
+    # Session JSON ↔ scroll rebuild round-trip (thinking + tool_trace).
+    add_executable(unit_message_replay_roundtrip
+        tests/test_message_replay_roundtrip.cpp
+        tests/term_size_stub.cpp
+        src/message_codec.cpp
+        src/json.cpp
+        src/repl/queues.cpp
+        src/stream_renderer.cpp
+        src/tui/block_parser.cpp
+        src/tui/stream_filter.cpp
+        src/tui/opentui/pane_scroll_view.cpp
+        src/tui/opentui/ansi_scroll_append.cpp
+        src/tui/opentui/span_scroll_append.cpp
+        src/tui/opentui/diff_panel.cpp
+        src/tui/tui.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/tui/ansi_util.cpp
+        src/code_highlighter.cpp
+        src/markdown.cpp
+        src/styled_text.cpp
+        src/render_policy.cpp
+        src/theme.cpp
+    )
+    target_include_directories(unit_message_replay_roundtrip PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}  # message_codec.h → api_client.h → openssl/ssl.h
+    )
+    target_compile_definitions(unit_message_replay_roundtrip PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    target_link_libraries(unit_message_replay_roundtrip PRIVATE OpenTUI::core)
+    if(APPLE)
+        target_link_libraries(unit_message_replay_roundtrip PRIVATE
+            "-framework CoreFoundation"
+            "-framework CoreAudio"
+            "-framework AudioToolbox"
+        )
+        target_link_options(unit_message_replay_roundtrip PRIVATE "-Wl,-ld_classic")
+        set_target_properties(unit_message_replay_roundtrip PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    elseif(UNIX)
+        target_link_libraries(unit_message_replay_roundtrip PRIVATE dl pthread)
+        set_target_properties(unit_message_replay_roundtrip PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    endif()
+    add_test(NAME unit_message_replay_roundtrip COMMAND unit_message_replay_roundtrip)
 
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser
@@ -839,6 +940,8 @@ if(INDEX_BUILD_TESTS)
         tests/test_mcp.cpp
         src/mcp/types.cpp
         src/mcp/subprocess.cpp
+        src/mcp/manager.cpp
+        src/mcp/client.cpp
         src/commands.cpp
         src/json.cpp
     )
@@ -908,6 +1011,29 @@ if(INDEX_BUILD_TESTS)
         CURL::libcurl
     )
     add_test(NAME unit_constitution COMMAND unit_constitution)
+
+    # Per-conversation Agent history isolation (ConversationScope / #40).
+    add_executable(unit_agent_conversation
+        tests/test_agent_conversation.cpp
+        src/agent.cpp
+        src/constitution.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_agent_conversation PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_agent_conversation PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_agent_conversation COMMAND unit_agent_conversation)
 
     # Advisor gate signal parser.  The parser is the only thing translating
     # an advisor's reply into a CONTINUE/REDIRECT/HALT decision; format

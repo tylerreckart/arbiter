@@ -3,10 +3,13 @@
 
 #include "constitution.h"
 #include "api_client.h"
+#include "agent_conversation.h"
 #include <atomic>
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 #include <chrono>
 
@@ -36,13 +39,28 @@ public:
     // Send with streaming — chunks delivered via callback as they arrive.
     ApiResponse stream(const std::string& user_message, StreamCallback cb);
     ApiResponse stream(std::vector<ContentPart> parts, StreamCallback cb);
-    // Clear conversation history (keep constitution)
+    // Clear the current ConversationScope's history (keep constitution).
     void reset_history();
-    // Replace history (used for session restore)
+    // Drop every conversation slot (used when tearing down an agent).
+    void reset_all_histories();
+    // Drop one conversation's history without touching others.
+    void erase_conversation(const std::string& conversation_id);
+    // Replace history for the current ConversationScope (session restore).
     void set_history(std::vector<Message> h) {
         std::lock_guard<std::mutex> lk(history_mu_);
-        history_ = std::move(h);
+        histories_[agent_conversation_key()] = std::move(h);
     }
+
+    // Append a finished tool row onto the most recent assistant message in
+    // the current ConversationScope (no-op if none).  Used so transcript
+    // replay can rebuild ToolSegment chrome without re-running tools.
+    void append_tool_trace(ToolTraceEntry entry);
+
+    // Append reasoning text onto the most recent assistant message (no-op
+    // when the latest message isn't assistant — e.g. mid-stream before the
+    // new turn is committed).  Used so nested /agent and /parallel thought
+    // deltas persist onto the pane agent's turn for conversation switch.
+    void append_thinking(std::string_view delta);
 
     // Accessors
     const std::string& id() const { return id_; }
@@ -51,11 +69,19 @@ public:
     const AgentStats& stats() const { return stats_; }
     // Returns a copy, not a reference: a background save (ConversationStore's
     // autosave thread) reads this concurrently with a pane's exec thread
-    // appending to history_ mid-turn, so callers must not hold a reference
-    // into live state.
+    // appending to history mid-turn, so callers must not hold a reference
+    // into live state.  Reads the current ConversationScope's slot.
     std::vector<Message> history() const {
         std::lock_guard<std::mutex> lk(history_mu_);
-        return history_;
+        auto it = histories_.find(agent_conversation_key());
+        if (it == histories_.end()) return {};
+        return it->second;
+    }
+    // True if any messages are stored under `conversation_id`.
+    [[nodiscard]] bool has_conversation(const std::string& conversation_id) const {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        auto it = histories_.find(conversation_id);
+        return it != histories_.end() && !it->second.empty();
     }
 
     std::string status_summary() const;
@@ -67,15 +93,17 @@ private:
     Constitution config_;
     ApiClient& client_;
     mutable std::mutex history_mu_;
-    std::vector<Message> history_;
+    // Histories keyed by ConversationScope id ("" outside a scope).
+    std::unordered_map<std::string, std::vector<Message>> histories_;
     AgentStats stats_;
 
     // Concat continuation turns onto `resp` until the model actually finishes
     // (stop_reason != "max_tokens") or a cap is hit.  Pushes partial assistant
-    // + "continue" prompts into history_ during the loop and pops them before
-    // returning so the caller can commit a single merged assistant turn.
-    // `cb` may be null — null triggers the blocking client_.complete() path,
-    // non-null triggers client_.stream() so additional chunks flow through.
+    // + "continue" prompts into the scoped history during the loop and pops
+    // them before returning so the caller can commit a single merged
+    // assistant turn.  `cb` may be null — null triggers the blocking
+    // client_.complete() path, non-null triggers client_.stream() so
+    // additional chunks flow through.
     void continue_until_done(ApiResponse& resp, StreamCallback cb);
 };
 

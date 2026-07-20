@@ -5,8 +5,10 @@
 #include "api_client.h"
 #include "commands.h"
 #include <atomic>
+#include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <memory>
 #include <mutex>
@@ -47,7 +49,8 @@ public:
     // Must be thread-safe vs the REPL thread.
     void set_confirm_callback(ConfirmFn cb) { confirm_cb_ = std::move(cb); }
 
-    // Fired once per /cmd with (name, ok), at every delegation depth.
+    // Fired per /cmd at Started and Finished (ToolActivityEvent), at every
+    // delegation depth.  API adapters typically ignore Started.
     void set_tool_status_callback(ToolStatusFn cb) { tool_status_cb_ = std::move(cb); }
 
     // Spawn a UI pane. Without it, /pane returns ERR.
@@ -253,6 +256,20 @@ public:
     // unknown ids.
     std::vector<Message> get_agent_history(const std::string& id) const;
 
+    // Append finished-tool chrome onto the agent's latest assistant message
+    // (current ConversationScope).  No-op for unknown ids / empty history.
+    void append_tool_trace(const std::string& id, ToolTraceEntry entry);
+
+    // Append reasoning onto the agent's latest assistant message when one
+    // exists (see Agent::append_thinking).  No-op for unknown ids.
+    void append_thinking(const std::string& id, std::string_view delta);
+
+    // Binder installed by the REPL on the pane exec thread so /parallel
+    // workers can pin the spawning pane onto their thread-local callback
+    // routing (g_active_pane).  Stored thread-locally and captured by value
+    // when workers spawn — multi-pane safe under concurrent turns.
+    void set_worker_pane_binder(std::function<void()> fn);
+
     // Global stats
     std::string global_status() const;
 
@@ -284,14 +301,24 @@ public:
     PlanResult execute_plan(const std::string& plan_path,
                             std::function<void(const std::string&)> progress = nullptr);
 
-    // Session persistence — save/restore all agent conversation histories.
+    // Session persistence — save/restore all agent conversation histories
+    // for the *current* ConversationScope (see agent_conversation.h).
     // Histories are stored as JSON at the given path; agent configs come from
     // the normal .json files and are not duplicated in the session file.
     void save_session(const std::string& path) const;
     bool load_session(const std::string& path);  // returns true if anything loaded
 
-    // Clear index master and all loaded agent histories.
+    // Clear index master and all loaded agent histories for the current
+    // ConversationScope only.  Other conversation slots stay intact.
     void reset_all_histories();
+
+    // Drop every agent's history slot for `conversation_id` (used when a
+    // conversation is deleted from the TUI).
+    void erase_conversation_histories(const std::string& conversation_id);
+
+    // True if the master already has non-empty history under this id
+    // (avoids reloading a session already resident in memory).
+    [[nodiscard]] bool has_conversation_loaded(const std::string& conversation_id) const;
 
     // Token tracking — counts the shared client only.  Per-child ApiClients
     // created for /parallel turns track their own counters independently, so
@@ -324,6 +351,13 @@ public:
     // if the line didn't parse to any command.
     std::string execute_slash_command(const std::string& line,
                                       const std::string& agent_id);
+
+    // Direct web search via the wired SearchInvoker (no capability gate).
+    // Used by the REPL `/search` command so it mirrors `/fetch`: operator
+    // lookups are not limited by the focused agent's `capabilities` list.
+    // Returns provider-formatted results, or an ERR: string when search
+    // isn't configured / the provider fails.
+    std::string web_search(const std::string& query, int top_n = 10) const;
 
     // Build an AdvisorInvoker bound to a specific caller.  Returns a lambda
     // that makes a one-shot, history-less call against the caller's

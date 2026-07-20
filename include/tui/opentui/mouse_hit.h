@@ -1,0 +1,128 @@
+#pragma once
+// Hit-testing helpers for mouse routing. Coordinates are 0-based cells
+// (same space as Rect / OpenTUI bufferFillRect / decode_sgr_mouse).
+
+#include "repl/layout.h"
+#include "tui/history_sidebar.h"
+#include "tui/opentui/mouse_decode.h"
+#include "tui/tui.h"
+
+#include <optional>
+
+namespace arbiter::opentui {
+
+enum class HitKind {
+    Outside,
+    HistorySidebar,
+    RightSidebar,
+    SplitSeparator,
+    PaneScroll,
+    PaneInput,
+    PaneChrome,   // header / separators / hint — focus only
+};
+
+struct HitTarget {
+    HitKind kind = HitKind::Outside;
+    Pane*   pane = nullptr;
+    // Stable separator identity (path-based); valid only for SplitSeparator.
+    LayoutTree::SeparatorRef sep{};
+    // Absolute list-row index for HistorySidebar (0 = "+ New"), or -1 when
+    // the click landed in sidebar chrome / empty list space.
+    int history_row = -1;
+};
+
+inline bool rect_contains(const Rect& r, int x, int y) {
+    return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
+}
+
+// Map a 0-based y into a history-sidebar list row index, or -1 if outside
+// the painted list band. `visible_rows` is the number of row slots currently
+// drawn; `list_row_count` is 1 ("+ New") + visible entries. When
+// `filter_line_visible` is true the list starts one row lower (after the
+// "/" filter line), matching history_sidebar_frame.cpp. Clicks on empty
+// slots past the last real row return -1 (do not clamp to the last entry).
+inline int history_sidebar_row_at(const Rect& sidebar_rect,
+                                  int y,
+                                  int scroll_offset,
+                                  int visible_rows,
+                                  int list_row_count,
+                                  bool filter_line_visible = false) {
+    constexpr int kRowHeight = 2;
+    // Section label at y+1, then optional filter line, then list.
+    const int top = sidebar_rect.y + 2 + (filter_line_visible ? 1 : 0);
+    if (y < top) return -1;
+    if (visible_rows <= 0 || list_row_count <= 0) return -1;
+    const int rel = y - top;
+    const int row_in_view = rel / kRowHeight;
+    if (row_in_view < 0 || row_in_view >= visible_rows) return -1;
+    if (rel >= visible_rows * kRowHeight) return -1;
+    const int abs_row = scroll_offset + row_in_view;
+    if (abs_row < 0 || abs_row >= list_row_count) return -1;
+    return abs_row;
+}
+
+// Classify which interactive region contains (x, y).
+// `history_rect` / `right_rect` may be empty (w==0) when those sidebars are off.
+// `history_visible_rows` / `history_list_row_count` clamp history list hits
+// to painted, real rows only.
+inline HitTarget hit_test(LayoutTree& layout,
+                          const Rect& history_rect,
+                          const Rect& right_rect,
+                          int history_scroll_offset,
+                          int history_visible_rows,
+                          int history_list_row_count,
+                          bool history_filter_line_visible,
+                          int x,
+                          int y) {
+    HitTarget hit;
+
+    if (history_rect.w > 0 && rect_contains(history_rect, x, y)) {
+        hit.kind = HitKind::HistorySidebar;
+        hit.history_row = history_sidebar_row_at(
+            history_rect, y, history_scroll_offset, history_visible_rows,
+            history_list_row_count, history_filter_line_visible);
+        return hit;
+    }
+    if (right_rect.w > 0 && rect_contains(right_rect, x, y)) {
+        hit.kind = HitKind::RightSidebar;
+        return hit;
+    }
+
+    if (auto sep = layout.hit_separator(x, y)) {
+        hit.kind = HitKind::SplitSeparator;
+        hit.sep = *sep;
+        return hit;
+    }
+
+    Pane* pane = layout.pane_at(x, y);
+    if (!pane) {
+        hit.kind = HitKind::Outside;
+        return hit;
+    }
+    hit.pane = pane;
+
+    // Match pane_frame.cpp geometry (0-based OpenTUI cells).
+    const TuiChromeSnapshot chrome = pane->tui.chrome_snapshot();
+    const Rect& r = chrome.rect;
+    const int sep_y = r.y + r.h - TUI::kBottomPadRows - chrome.input_rows
+                    - TUI::kSepRows;
+    const int input_top = sep_y + 1;
+    const int input_bottom = r.y + r.h - TUI::kBottomPadRows - 1;
+    const int scroll_top = r.y;
+    const int scroll_bottom = sep_y - 1;
+
+    if (y >= input_top && y <= input_bottom
+        && x >= r.x && x < r.x + r.w) {
+        hit.kind = HitKind::PaneInput;
+        return hit;
+    }
+    if (y >= scroll_top && y <= scroll_bottom
+        && x >= r.x && x < r.x + r.w) {
+        hit.kind = HitKind::PaneScroll;
+        return hit;
+    }
+    hit.kind = HitKind::PaneChrome;
+    return hit;
+}
+
+}  // namespace arbiter::opentui

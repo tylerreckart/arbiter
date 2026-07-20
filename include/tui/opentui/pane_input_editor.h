@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tui/opentui/c_api.h"
+#include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/shared_input_history.h"
 #include "tui/palette.h"
 #include "tui/tui.h"
@@ -55,12 +56,21 @@ public:
     using ChordHandler = std::function<bool(char cmd)>;
     void set_chord_handler(ChordHandler fn) { chord_handler_ = std::move(fn); }
 
+    // Mouse events decoded from SGR CSI reports. Return true to exit
+    // read_line (e.g. focus moved to another pane); false to keep editing.
+    using MouseHandler = std::function<bool(const MouseEvent& ev)>;
+    void set_mouse_handler(MouseHandler fn) { mouse_handler_ = std::move(fn); }
+
     void set_present_fn(std::function<void()> fn) { present_fn_ = std::move(fn); }
 
     bool take_chord(char& out);
 
     bool read_line(const std::string& prompt, std::string& out);
     void interrupt();
+
+    // Place the caret from a 0-based terminal click inside this pane's
+    // input band. No-op when the click falls outside the editor cells.
+    void set_cursor_from_click(int term_x, int term_y);
 
     void draw(OpenTuiHandle frame, const TUI& tui, bool focused) const;
 
@@ -110,6 +120,7 @@ private:
     void draw_palette(OpenTuiHandle frame, const TUI& tui) const;
 
     int  read_key_event();
+    bool read_bracketed_paste(std::string& out);
     void discard_osc();
     void discard_string_terminated();
     static bool is_terminal_response_csi(const std::string& params, char final);
@@ -124,6 +135,7 @@ private:
     CodeExpandHandler code_expand_handler_;
     CancelHandler   cancel_handler_;
     ChordHandler    chord_handler_;
+    MouseHandler    mouse_handler_;
     std::function<void()> present_fn_;
 
     char pending_chord_ = 0;
@@ -135,6 +147,7 @@ private:
     OpenTuiHandle view_{0};
 
     std::string buffer_;
+    std::string pending_paste_;
     int         cursor_      = 0;
     std::string prompt_;
     int         prompt_cols_ = 0;

@@ -6,14 +6,16 @@
 // reads each frame.
 //
 // Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
-//   rows y..h-5        scroll region (streamed model output)
-//   row  h-6           mid separator (tool-call / thinking indicator)
-//   rows h-6..h-3      input area (dark bg + accent strip)
-//   row  h-2           hint row (key / command hints)
-//   row  h             bottom padding
+//   scroll region     streamed model output (grows when chrome shrinks)
+//   mid separator     tool-call / thinking indicator
+//   input area        dark bg + accent strip
+//   bottom pad        hint row + padding when footer is shown; with
+//                     layout.chrome_compact_rows (default) multi-pane /
+//                     footer-off layouts reclaim those rows for scroll
 //
 // All `*_row()` accessors return absolute 1-indexed terminal rows — they fold
 // in rect_.y for scroll/input placement in OpenTUI draw calls.
+// bottom_pad_rows() is theme-driven (see tui_bottom_pad_rows).
 //
 // The mid separator shows tool-call or thinking spinners via
 // set_pre_input_status / set_status.
@@ -34,21 +36,37 @@ struct Rect {
 
 inline constexpr Rect kEmptyRect{0, 0, 0, 0};
 
+enum class FooterHintMode {
+    Hidden,   // blank reserved row (unfocused multi-pane)
+    Compact,  // short chord-only hint (focused multi-pane)
+    Full,     // single-pane full hint
+};
+
 struct TuiChromeSnapshot {
     Rect rect;
     int  input_rows = 1;
+    int  bottom_pad_rows = 3;
     bool status_active = false;
     bool focus_accent = false;
+    FooterHintMode footer_hint_mode = FooterHintMode::Full;
+    // True when mode is Full or Compact (hint text may still be empty when
+    // show_footer is off). Used with chrome_compact_rows to reclaim pad.
     bool footer_hint_visible = true;
     std::string status;
     std::string pre_input_status;
+    // Unfocused activity badge drawn on the mid-separator when set.
+    std::string activity_badge;
 };
 
 class TUI {
 public:
-    static constexpr int kSepRows       = 1;   // mid separator above input area
-    static constexpr int kMaxInputRows  = 7;
-    static constexpr int kBottomPadRows = 3;   // input spacer + hint row + bottom padding
+    static constexpr int kSepRows              = 1;   // mid separator above input area
+    static constexpr int kMaxInputRows         = 7;
+    static constexpr int kBottomPadRows        = 3;   // spacer + hint row + bottom pad
+    static constexpr int kCompactBottomPadRows = 1;   // trailing pad when footer reclaimed
+
+    // Rows reserved below the input block (theme-aware; see tui_bottom_pad_rows).
+    [[nodiscard]] int bottom_pad_rows() const;
 
     // Per-pane layout.  Rendering is handled by OpenTUI (see opentui::Session).
     void init(const std::string& agent,
@@ -100,19 +118,21 @@ public:
     // True while begin_input is showing the queue-depth pill ("N queued").
     [[nodiscard]] bool queue_indicator_active() const;
 
-    // Show / hide the two-row footer hint at the bottom of the pane.  In
-    // single-pane mode the hint ("esc interrupt, pgup/dn scroll, /agents,
-    // /help") is useful; in multi-pane layouts it becomes clutter on every
-    // pane.  LayoutTree::resize toggles this for every leaf whenever the
-    // pane count crosses the 1/>1 boundary.  The rows are still reserved
-    // (blanked) when hidden so the input row's absolute position doesn't
-    // shift between modes.
-    void set_footer_hint_visible(bool visible);
+    // Footer hint presentation.  Single-pane uses Full; multi-pane focused
+    // uses Compact (chord-only); multi-pane unfocused uses Hidden.  When
+    // layout.chrome_compact_rows is true, Hidden also reclaims those rows
+    // for the scroll region; otherwise the rows stay blank so the input
+    // row does not shift.
+    void set_footer_hint_mode(FooterHintMode mode);
 
     // Accent split separators when this pane is focused in a multi-pane layout.
     // LayoutTree flips this on the focused leaf and off on all others after
     // every focus or structural change.  In single-pane mode it is unused.
     void set_focus_accent(bool active);
+
+    // Short badge for unfocused panes (e.g. "●", "✓", "✗"). Cleared on focus.
+    void set_activity_badge(const std::string& badge);
+    void clear_activity_badge();
 
     int cols() const;
     int left_col() const;  // 1-indexed leftmost col
@@ -128,17 +148,20 @@ private:
     Rect rect_{0, 0, 80, 24};          // area of the terminal this TUI owns
     int  input_rows_ = 1;
     bool status_active_ = false;
-    bool footer_hint_visible_ = true;  // flipped off in multi-pane layouts
+    FooterHintMode footer_hint_mode_ = FooterHintMode::Full;
     bool focus_accent_ = false;        // reserved for multi-pane chrome accents
     std::atomic<bool> queue_indicator_shown_{false};
     std::string current_status_;
     std::string current_pre_input_status_;
+    std::string activity_badge_;
     mutable std::recursive_mutex tty_mu_;
 
     // Absolute 1-indexed terminal rows for each chrome slot within rect_.
-    int sep_row()        const { return rect_.y + rect_.h - kBottomPadRows - input_rows_; }
+    // Uses bottom_pad_rows() so compact chrome reclaims space when the
+    // footer hint is hidden.
+    int sep_row()        const { return rect_.y + rect_.h - bottom_pad_rows() - input_rows_; }
     int input_top_row()  const { return sep_row() + 1; }
-    int input_row()      const { return rect_.y + rect_.h - kBottomPadRows; }
+    int input_row()      const { return rect_.y + rect_.h - bottom_pad_rows(); }
     int hint_sep_row()   const { return rect_.y + rect_.h - 1; }
     int pad_row()        const { return rect_.y + rect_.h; }
 };

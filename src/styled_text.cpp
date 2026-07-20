@@ -58,6 +58,7 @@ std::string style_open(StyleId id) {
     case StyleId::Dim:       return t.dim;
     case StyleId::Bold:      return t.bold;
     case StyleId::Italic:    return t.italic;
+    case StyleId::Strike:    return t.strike + t.dim;
     case StyleId::Heading1:  return t.bold + t.md_heading[0];
     case StyleId::Heading2:  return t.bold + t.md_heading[1];
     case StyleId::Heading3:  return t.bold + t.md_heading[2];
@@ -67,7 +68,7 @@ std::string style_open(StyleId id) {
     case StyleId::Link:      return t.underline + t.md_link;
     case StyleId::Bullet:    return t.md_bullet;
     case StyleId::Blockquote:return t.dim;
-    case StyleId::Rule:      return t.dim;
+    case StyleId::Rule:      return t.dim + t.md_rule;
     case StyleId::WritLine:  return t.md_cmd_line + t.dim;
     case StyleId::DiffAdd:   return t.accent_success;
     case StyleId::DiffRemove:return t.accent_error;
@@ -83,6 +84,9 @@ std::string style_open(StyleId id) {
     case StyleId::CodeNumber:   return t.md_code_number;
     case StyleId::CodeType:     return t.md_code_type;
     case StyleId::CodeFunction: return t.md_code_function;
+    case StyleId::System:       return t.dim + t.system_fg;
+    case StyleId::UserEchoArrow:return t.user_echo_bg + t.user_echo_arrow;
+    case StyleId::UserEchoText: return t.user_echo_bg + t.user_echo_text;
     }
     return {};
 }
@@ -103,6 +107,17 @@ std::size_t display_width(std::string_view text) {
     return cols;
 }
 
+std::string trim_to_display_cols(std::string s, int max_cols) {
+    if (max_cols <= 0) return {};
+    while (!s.empty() && static_cast<int>(display_width(s)) > max_cols) {
+        s.pop_back();
+        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
+            s.pop_back();
+        }
+    }
+    return s;
+}
+
 void styled_append(StyledLine& line, StyleId id, std::string_view text) {
     if (text.empty()) return;
     const std::uint32_t begin = static_cast<std::uint32_t>(line.text.size());
@@ -112,6 +127,152 @@ void styled_append(StyledLine& line, StyleId id, std::string_view text) {
 
 void styled_append_char(StyledLine& line, StyleId id, char c) {
     styled_append(line, id, std::string_view(&c, 1));
+}
+
+StyledLine styled_user_echo(std::string_view text) {
+    StyledLine line;
+    // No caret — differentiation is the input-matching background strip.
+    if (text.empty()) {
+        // Zero-width span so empty turns still pad/paint the bg strip.
+        line.spans.push_back({0, 0, StyleId::UserEchoText});
+        return line;
+    }
+    styled_append(line, StyleId::UserEchoText, text);
+    return line;
+}
+
+std::vector<StyledLine> styled_user_echo_lines(std::string_view text) {
+    std::vector<StyledLine> out;
+    // Normalize CRLF / bare CR so `\` continuations and pasted text split cleanly.
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\r') {
+            if (i + 1 < text.size() && text[i + 1] == '\n') continue;
+            normalized.push_back('\n');
+            continue;
+        }
+        normalized.push_back(text[i]);
+    }
+    if (normalized.empty()) {
+        out.push_back(styled_user_echo({}));
+        return out;
+    }
+    size_t start = 0;
+    while (start <= normalized.size()) {
+        const size_t nl = normalized.find('\n', start);
+        if (nl == std::string::npos) {
+            out.push_back(styled_user_echo(std::string_view(normalized).substr(start)));
+            break;
+        }
+        out.push_back(styled_user_echo(
+            std::string_view(normalized).substr(start, nl - start)));
+        start = nl + 1;
+        if (start == normalized.size()) {
+            // Trailing newline → blank echo row (still gets the bg strip).
+            out.push_back(styled_user_echo({}));
+            break;
+        }
+    }
+    return out;
+}
+
+bool is_styled_user_echo_line(const StyledLine& line) {
+    if (line.spans.empty()) return false;
+    for (const StyleSpan& span : line.spans) {
+        if (span.id != StyleId::UserEchoText && span.id != StyleId::UserEchoArrow) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_user_echo_find_command(const StyledLine& line) {
+    if (!is_styled_user_echo_line(line)) return false;
+    std::string_view payload = line.text;
+    while (!payload.empty() && payload.back() == ' ') payload.remove_suffix(1);
+    static constexpr char kFind[] = "/find";
+    static constexpr size_t kFindLen = sizeof(kFind) - 1;
+    if (payload.size() < kFindLen) return false;
+    for (size_t i = 0; i < kFindLen; ++i) {
+        const char c = payload[i];
+        const char expect = kFind[i];
+        const char lower = (c >= 'A' && c <= 'Z')
+            ? static_cast<char>(c - 'A' + 'a') : c;
+        if (lower != expect) return false;
+    }
+    return payload.size() == kFindLen || payload[kFindLen] == ' ';
+}
+
+StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols) {
+    const int width = cols < 1 ? 1 : cols;
+    std::string body = line.text;
+    // Idempotent when fed a previously padded line: trim trailing spaces only
+    // while over budget so intentional trailing spaces that still fit are kept.
+    while (!body.empty() && body.back() == ' '
+           && static_cast<int>(display_width(body)) > width) {
+        body.pop_back();
+    }
+    int w = static_cast<int>(display_width(body));
+    if (w < width) {
+        body.append(static_cast<size_t>(width - w), ' ');
+    } else if (w > width) {
+        // Fill the last wrapped visual row so the bg strip is full-width.
+        const int rem = w % width;
+        if (rem != 0) {
+            body.append(static_cast<size_t>(width - rem), ' ');
+        }
+    }
+    StyledLine out;
+    if (body.empty()) {
+        out.spans.push_back({0, 0, StyleId::UserEchoText});
+        return out;
+    }
+    styled_append(out, StyleId::UserEchoText, body);
+    return out;
+}
+
+bool resize_styled_user_echo_lines(std::vector<StyledLine>& lines, int cols) {
+    bool changed = false;
+    for (StyledLine& line : lines) {
+        if (!is_styled_user_echo_line(line)) continue;
+        StyledLine next = pad_styled_user_echo_line(line, cols);
+        if (next.text == line.text) continue;
+        line = std::move(next);
+        changed = true;
+    }
+    return changed;
+}
+
+bool is_styled_rule_line(const StyledLine& line) {
+    if (line.text.empty()) return false;
+    for (unsigned char c : line.text) {
+        if (c != '-') return false;
+    }
+    if (line.spans.empty()) return false;
+    for (const StyleSpan& span : line.spans) {
+        if (span.id != StyleId::Rule) return false;
+    }
+    return true;
+}
+
+StyledLine styled_rule_line(int cols) {
+    StyledLine line;
+    const int width = cols < 1 ? 1 : cols;
+    styled_append(line, StyleId::Rule, std::string(static_cast<size_t>(width), '-'));
+    return line;
+}
+
+bool resize_styled_rule_lines(std::vector<StyledLine>& lines, int cols) {
+    const int width = cols < 1 ? 1 : cols;
+    bool changed = false;
+    for (StyledLine& line : lines) {
+        if (!is_styled_rule_line(line)) continue;
+        if (static_cast<int>(line.text.size()) == width) continue;
+        line = styled_rule_line(width);
+        changed = true;
+    }
+    return changed;
 }
 
 std::string to_ansi(const StyledLine& line) {

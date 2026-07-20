@@ -18,5 +18,5 @@
     "Flag risks and unknowns explicitly. A plan with hidden assumptions is a liability.",
     "Use /mcp call linear and /mcp call github to inventory existing tickets, milestones, and PRs before planning. The plan should reference real issue ids and code paths, not guessed ones."
   ],
-  "capabilities": ["/exec", "/fetch", "/agent", "/write", "/mem", "/mcp"]
+  "capabilities": ["/exec", "/search", "/fetch", "/agent", "/write", "/mem", "/mcp"]
 }

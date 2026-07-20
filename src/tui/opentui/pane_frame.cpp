@@ -1,5 +1,6 @@
 #include "tui/opentui/pane_frame.h"
 
+#include "styled_text.h"
 #include "tui/opentui/engine.h"
 #include "tui/tui_design.h"
 
@@ -14,11 +15,7 @@ constexpr int kHeaderAccentCells = 1;
 constexpr std::uint32_t kAttrBold = 1u << 0;
 
 int cell_width(std::string_view s) {
-    int w = 0;
-    for (unsigned char c : s) {
-        if ((c & 0xC0) != 0x80) ++w;
-    }
-    return w;
+    return static_cast<int>(arbiter::display_width(s));
 }
 
 void draw_text(OpenTuiHandle frame,
@@ -50,19 +47,13 @@ void fill_rect(OpenTuiHandle frame,
 }
 
 std::string trim_to_cells(std::string s, int max_cells) {
-    if (max_cells <= 0) return {};
-    while (!s.empty() && cell_width(s) > max_cells) {
-        s.pop_back();
-        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
-            s.pop_back();
-        }
-    }
-    return s;
+    return arbiter::trim_to_display_cols(std::move(s), max_cells);
 }
 
 bool is_command_token(std::string_view token) {
     return token == "esc" || token == "pg" || token == "pgup/dn"
-        || (!token.empty() && token.front() == '/');
+        || token == "^W" || token == "^W w/z/c"
+        || (!token.empty() && (token.front() == '/' || token.front() == '^'));
 }
 
 void draw_footer_hint(OpenTuiHandle frame,
@@ -98,9 +89,10 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
     if (r.w <= 0 || r.h <= 0) return;
 
     const TuiDesign& d = tui_design();
-    const int raw_pad = (r.w <= d.layout.dense_cols) ? 0 : std::max(0, d.layout.pane_padding_x);
-    const int pad = std::min(raw_pad, std::max(0, (r.w - 1) / 2));
+    const int pad = tui_pane_edge_pad(r.w, d);
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
+    const int bottom_pad = std::max(1, chrome.bottom_pad_rows);
+    const bool paint_footer = chrome.footer_hint_visible && d.layout.show_footer;
 
     const std::uint32_t px = static_cast<std::uint32_t>(r.x);
     const std::uint32_t pw = static_cast<std::uint32_t>(r.w);
@@ -110,9 +102,9 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
 
     fill_rect(frame, px, static_cast<std::uint32_t>(r.y), pw, static_cast<std::uint32_t>(r.h), d.bg.scroll);
 
-    const int sep_y = r.y + r.h - TUI::kBottomPadRows - chrome.input_rows - TUI::kSepRows;
+    const int sep_y = r.y + r.h - bottom_pad - chrome.input_rows - TUI::kSepRows;
     const int input_top_y = sep_y + 1;
-    const int input_bottom_y = r.y + r.h - TUI::kBottomPadRows - 1;
+    const int input_bottom_y = r.y + r.h - bottom_pad - 1;
     const int hint_y = r.y + r.h - 2;
     const int scroll_top_y = r.y;
     const int scroll_bottom_y = sep_y - 1;
@@ -145,6 +137,25 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                   status,
                   d.accent.info,
                   d.bg.scroll);
+    } else if (!chrome.activity_badge.empty()) {
+        // Unfocused activity/completion indicator (#41) — right-aligned on
+        // the mid-separator so it doesn't collide with a focused prompt.
+        std::string badge = trim_to_cells(chrome.activity_badge,
+                                          std::max(0, content_w - header_pad));
+        const int badge_w = cell_width(badge);
+        const int bx = r.x + pad + static_cast<int>(block_w) - header_pad - badge_w;
+        if (bx >= r.x + pad) {
+            const TuiRgba& color = (badge.find("✗") != std::string::npos)
+                ? d.accent.error
+                : (badge.find("●") != std::string::npos) ? d.accent.warning
+                                                         : d.accent.success;
+            draw_text(frame,
+                      static_cast<std::uint32_t>(bx),
+                      static_cast<std::uint32_t>(sep_y),
+                      badge,
+                      color,
+                      d.bg.scroll);
+        }
     }
 
     if (input_top_y <= input_bottom_y) {
@@ -166,13 +177,27 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
         }
     }
 
-    fill_rect(frame, block_x, static_cast<std::uint32_t>(hint_y), block_w, 1, d.bg.scroll);
+    // Only reserve/paint the hint row when the footer is shown, or when
+    // chrome_compact_rows is off (blank placeholder so input doesn't jump).
+    if (paint_footer || bottom_pad >= TUI::kBottomPadRows) {
+        fill_rect(frame, block_x, static_cast<std::uint32_t>(hint_y), block_w, 1, d.bg.scroll);
+    }
 
-    if (!chrome.footer_hint_visible || !d.layout.show_footer) return;
+    if (!paint_footer) return;
 
-    const bool compact = r.w <= d.layout.compact_cols;
-    std::string left = compact ? d.component.footer_left_compact : d.component.footer_left;
-    std::string footer_right = compact ? d.component.footer_right_compact : d.component.footer_right;
+    const bool narrow = r.w <= d.layout.compact_cols;
+    std::string left;
+    std::string footer_right;
+    if (chrome.footer_hint_mode == FooterHintMode::Compact) {
+        // Multi-pane focused: degrade to chord-only hints (#47) instead of
+        // hiding the row entirely.
+        left = narrow ? "^W w/z/c" : "^W w focus  ^W z zoom  ^W c close";
+        footer_right = narrow ? "" : "^W b conversations";
+    } else {
+        left = narrow ? d.component.footer_left_compact : d.component.footer_left;
+        footer_right = narrow ? d.component.footer_right_compact
+                              : d.component.footer_right;
+    }
     left = trim_to_cells(left, content_w);
     footer_right = trim_to_cells(footer_right, content_w);
 

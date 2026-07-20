@@ -69,7 +69,7 @@ jobs:
         run: |
           set -euxo pipefail
           brew update --quiet
-          brew install --formula openssl@3 libedit
+          brew install --formula openssl@3
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
@@ -78,8 +78,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake pkg-config \
-            libssl-dev libcurl4-openssl-dev libedit-dev \
-            libsqlite3-dev
+            libssl-dev libcurl4-openssl-dev libsqlite3-dev
 
       - name: Configure
         run: |
@@ -92,8 +91,11 @@ jobs:
             -DINDEX_BUILD_TESTS=OFF \
             $EXTRA
 
+      # Bound parallelism to the core count — bare `-j` means unlimited jobs
+      # for make, which thrashes the 3-core/7 GB macos-14 runner into swap.
+      # (See ci.yml for the full story.)
       - name: Build
-        run: cmake --build build --config Release -j
+        run: cmake --build build --config Release -j "$(getconf _NPROCESSORS_ONLN)"
 
       - name: Strip symbols
         run: |

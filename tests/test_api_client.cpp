@@ -313,6 +313,49 @@ TEST_CASE("gemini body emits inline base64 under inlineData") {
     CHECK(body.find("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQ") != std::string::npos);
 }
 
+TEST_CASE("gemini 2.5 body enables thinkingConfig.includeThoughts") {
+    ApiRequest req;
+    req.model = "gemini/gemini-2.5-flash";
+    req.max_tokens = 256;
+    Message m;
+    m.role = "user";
+    m.content = "hello";
+    req.messages.push_back(m);
+
+    auto body = ApiClient::build_body_gemini(req);
+    CHECK(body.find("\"thinkingConfig\"") != std::string::npos);
+    CHECK(body.find("\"includeThoughts\":true") != std::string::npos);
+    // Non-Lite Flash should not force a thinkingBudget.
+    CHECK(body.find("\"thinkingBudget\"") == std::string::npos);
+}
+
+TEST_CASE("gemini flash-lite body sets thinkingBudget so thoughts enable") {
+    ApiRequest req;
+    req.model = "gemini/gemini-2.5-flash-lite";
+    req.max_tokens = 256;
+    Message m;
+    m.role = "user";
+    m.content = "hello";
+    req.messages.push_back(m);
+
+    auto body = ApiClient::build_body_gemini(req);
+    CHECK(body.find("\"includeThoughts\":true") != std::string::npos);
+    CHECK(body.find("\"thinkingBudget\":1024") != std::string::npos);
+}
+
+TEST_CASE("gemini 1.5 body omits thinkingConfig") {
+    ApiRequest req;
+    req.model = "gemini/gemini-1.5-flash";
+    req.max_tokens = 256;
+    Message m;
+    m.role = "user";
+    m.content = "hello";
+    req.messages.push_back(m);
+
+    auto body = ApiClient::build_body_gemini(req);
+    CHECK(body.find("\"thinkingConfig\"") == std::string::npos);
+}
+
 TEST_CASE("gemini body emits hosted-URL image under fileData") {
     auto req = make_request_with_image_url();
     req.model = "gemini/gemini-2.5-flash";

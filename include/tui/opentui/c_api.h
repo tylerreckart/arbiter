@@ -65,6 +65,12 @@ void processCapabilityResponse(OpenTuiHandle renderer,
 // a cheap no-op.  See Engine::render()'s call site for why this needs to be
 // asserted repeatedly rather than once.
 void disableKittyKeyboard(OpenTuiHandle renderer);
+// Enable SGR mouse tracking (DECSET 1000/1002 + 1006). When
+// enable_movement is false, any-event tracking (?1003) stays off so the
+// input loop is not flooded with bare pointer motion — click, drag, and
+// wheel still report under button-event tracking.
+void enableMouse(OpenTuiHandle renderer, bool enable_movement);
+void disableMouse(OpenTuiHandle renderer);
 void resizeRenderer(OpenTuiHandle renderer, uint32_t width, uint32_t height);
 void setRenderOffset(OpenTuiHandle renderer, uint32_t offset);
 uint8_t render(OpenTuiHandle renderer, bool force);
