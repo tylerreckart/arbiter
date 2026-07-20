@@ -97,6 +97,7 @@ set(ARBITER_SOURCES
     src/cli_helpers.cpp
     src/repl/queues.cpp
     src/repl/layout.cpp
+    src/repl/pane.cpp
     src/repl/pane_history.cpp
     src/repl/conversation_store.cpp
     src/repl/conversation_titling.cpp
@@ -558,6 +559,15 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_kitty_key_decode COMMAND unit_kitty_key_decode)
+
+    add_executable(unit_confirm_keys
+        tests/test_confirm_keys.cpp
+    )
+    target_include_directories(unit_confirm_keys PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_confirm_keys COMMAND unit_confirm_keys)
 
     add_executable(unit_mouse_decode
         tests/test_mouse_decode.cpp
