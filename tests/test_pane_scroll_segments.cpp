@@ -98,12 +98,13 @@ TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
 
     view.append_prose(styled_user_echo_lines("hello"));
     const int after_echo = view.total_visual_rows();
-    CHECK(after_echo >= 3);  // pad + text + pad (+ textbuffer trailing nl)
+    // Lead-in blank under the header + top pad + text + bottom pad.
+    CHECK(after_echo == 4);
 
     view.append_thinking("plan", /*new_block=*/true);
     const int after_think = view.total_visual_rows();
-    // Exactly one BlankSegment between echo and thinking (thinking = header+body).
-    CHECK(after_think - after_echo == 1 + 2);
+    // Echo bottom pad already supplies the one blank; thinking = header+body.
+    CHECK(after_think - after_echo == 2);
 
     ToolActivityEvent start;
     start.phase = ToolActivityEvent::Phase::Started;
@@ -117,7 +118,7 @@ TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
     start2.label = "mem:entry";
     view.upsert_tool(start2, /*new_block=*/false);
 
-    // Two tools share a cluster — only one gap before the first tool.
+    // Thinking→tools: one BlankSegment; tools stay clustered.
     const int after_tools = view.total_visual_rows();
     CHECK(after_tools - after_think == 1 /*gap*/ + 2 /*tool rows*/);
 }
@@ -136,15 +137,47 @@ TEST_CASE("trailing prose blanks do not stack with block_gap") {
     prose.push_back(StyledLine{});
     view.append_prose(prose, /*new_block=*/true);
     const int after_prose = view.total_visual_rows();
+    CHECK(after_prose == 3);  // lead-in blank + body + one soft blank
 
-    // Without trim, soft blanks + block_gap would add 2+ visual empties.
-    // With trim, the next block is only +gap + thinking rows beyond content.
     view.append_thinking("next", /*new_block=*/true);
     const int after = view.total_visual_rows();
-    // Trim removes soft StyledLine blanks before inserting the BlankSegment gap.
-    // Growth is gap(1) + thinking(2) minus the trimmed soft blank (~1 virtual row).
-    CHECK(after - after_prose <= 3);
-    CHECK(after - after_prose >= 2);  // at least gap + thinking header
+    // Soft blank trimmed, replaced by exactly one BlankSegment + thinking(2).
+    // Net: -1 soft +1 gap +2 think = +2 from after_prose.
+    CHECK(after - after_prose == 2);
+    CHECK(after == 5);  // lead-in + body + gap + thinking header + body
+}
+
+TEST_CASE("prose to tool gap is exactly one blank with no trailing phantom") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    StyledLine line;
+    styled_append(line, StyleId::Default, "answer");
+    view.append_prose({line}, /*new_block=*/true);
+    const int after_prose = view.total_visual_rows();
+    CHECK(after_prose == 2);  // lead-in blank + body
+
+    ToolActivityEvent start;
+    start.phase = ToolActivityEvent::Phase::Started;
+    start.id = "t1";
+    start.label = "fetch:https://x";
+    start.kind = "fetch";
+    view.upsert_tool(start, /*new_block=*/false);
+    CHECK(view.total_visual_rows() - after_prose == 1 /*gap*/ + 1 /*tool*/);
+}
+
+TEST_CASE("first user echo has a lead-in blank under the header") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    CHECK(view.total_visual_rows() == 0);
+
+    view.append_prose(styled_user_echo_lines("hi"), /*new_block=*/true);
+    // BlankSegment + echo top pad + text + bottom pad.
+    CHECK(view.total_visual_rows() == 4);
 }
 
 TEST_CASE("degenerate zero-size pane draw is a no-op") {
