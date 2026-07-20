@@ -68,11 +68,9 @@ TEST_CASE("/chat new + /chat switch <n> performs a full switch with replay in a 
     const std::string before = s.output();
 
     s.send("/chat switch 2\r");
-    s.read_for(1500);
-
-    REQUIRE(s.output().size() > before.size());
-    const std::string new_bytes = PtySession::strip_ansi(s.output().substr(before.size()));
-    CHECK(new_bytes.find("first-conversation-marker") != std::string::npos);
+    // Poll for replay rather than a fixed settle window — CI runners
+    // (and sanitizer builds) routinely miss a single 1500ms read_for.
+    REQUIRE(wait_for_token(s, before.size(), "first-conversation-marker", 15000));
 
     s.terminate();
 }
