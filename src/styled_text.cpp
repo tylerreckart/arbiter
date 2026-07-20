@@ -86,7 +86,7 @@ std::string style_open(StyleId id) {
     case StyleId::CodeType:     return t.md_code_type;
     case StyleId::CodeFunction: return t.md_code_function;
     case StyleId::System:       return t.dim + t.system_fg;
-    case StyleId::UserEchoArrow:return t.user_echo_bg + t.accent_focused;
+    case StyleId::UserEchoArrow:return t.user_echo_bg + t.user_echo_arrow;
     case StyleId::UserEchoText: return t.user_echo_bg + t.user_echo_text;
     }
     return {};
@@ -218,16 +218,13 @@ bool is_user_echo_find_command(const StyledLine& line) {
 StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols) {
     const int width = cols < 1 ? 1 : cols;
     const TuiDesign& d = tui_design();
-    constexpr int kAccentCells = 1;
     const int inset = std::max(0, d.layout.header_padding_x);
-    const int chrome = kAccentCells + inset;
-    const int first_row_budget = std::max(0, width - chrome);
+    const int first_row_budget = std::max(0, width - inset);
 
     // Expects an unpadded source line (payload only). Emit chrome is applied here.
     std::string body = line.text;
 
     StyledLine out;
-    styled_append(out, StyleId::UserEchoArrow, " ");
     if (inset > 0) {
         styled_append(out, StyleId::UserEchoText,
                       std::string(static_cast<size_t>(inset), ' '));
@@ -238,12 +235,16 @@ StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols) {
         body.append(static_cast<size_t>(first_row_budget - bw), ' ');
     } else {
         // Long turns wrap in the text buffer; pad so the final visual row
-        // fills to `width` (chrome occupies the start of row 0 only).
-        const int total = chrome + bw;
+        // fills to `width` (inset occupies the start of row 0 only).
+        const int total = inset + bw;
         const int rem = total % width;
         if (rem != 0) {
             body.append(static_cast<size_t>(width - rem), ' ');
         }
+    }
+    if (body.empty() && out.text.empty()) {
+        out.spans.push_back({0, 0, StyleId::UserEchoText});
+        return out;
     }
     styled_append(out, StyleId::UserEchoText, body);
     return out;

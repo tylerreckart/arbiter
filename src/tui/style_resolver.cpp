@@ -123,9 +123,9 @@ ResolvedStyle resolve_style(StyleId id) {
         rs.attrs = kAttrDim;
         break;
     case StyleId::UserEchoArrow:
-        // Left accent cell on echoed turns — mirrors pane_frame input strip.
-        rs.fg = &d.accent.primary;
-        rs.bg = &d.accent.primary;
+        // Legacy caret slot — user echoes no longer emit an accent bar.
+        rs.fg = &d.content.user_echo_arrow;
+        rs.bg = &d.content.user_echo_bg;
         break;
     case StyleId::UserEchoText:
         rs.fg = &d.content.user_echo_text;
