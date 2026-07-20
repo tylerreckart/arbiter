@@ -9,25 +9,36 @@ Live order within a turn (tools appear as `/cmd` lines are dispatched, after
 the model stream that emitted them):
 
 ```
-user echo strip (full-width input bg)
+user echo strip (inset + vertical pad, input bg)
+                                  ← one blank row
 thinking  ▸                                ThinkingSegment header (when provider emits)
   first preview lines…                     up to 3 wrapped body rows when collapsed
+                                  ← one blank row
 assistant prose / markdown / code / diffs  (writ lines swallowed)
+                                  ← one blank row
 ○ fetch:https://…                          ToolSegment appears as dispatch starts
 ✓ exec:git status  ▸                       resolves when the result returns
+                                  ← one blank row
 · [interrupted]                            activity chrome (system lines)
+→ delegating: /agent …                     bold/info routing status (not prose)
+› /read #2                                 verbose writs (› + WritLine)
 ```
 
 | Layer | Segment | Notes |
 |-------|---------|-------|
-| User | `ProseSegment` + `UserEchoText` | Full-width strip, no caret |
-| Tools | `ToolSegment` | One row per `/cmd`; expand for args/result |
+| User | `ProseSegment` + `UserEchoText` | Full-width strip with input inset + vertical pad |
+| Tools | `ToolSegment` | One row per `/cmd`; expand for args/result; clustered (no gap between tools) |
 | Reasoning | `ThinkingSegment` | Only when the provider streams a reasoning channel |
 | Assistant | `Prose` / `Code` / `Diff` | Same StreamRenderer path as before |
-| System | styled activity lines (`·` prefix) | Interrupts, advisor, confirm outcomes |
+| System | styled activity / delegation lines | Interrupts, advisor, `→ delegating:` |
 
-Quiet default: writ lines stay swallowed (`BlockParser`); tools appear as
-compact status rows, not raw `/fetch` dumps. `/verbose` still streams raw writs.
+Quiet default: writ lines stay swallowed (`BlockParser` covers `/read`, `/browse`,
+`/todo`, `/search`, …); tools appear as compact status rows, not raw `/fetch`
+dumps. `/verbose` still streams raw writs with `›` WritLine styling.
+
+Blocks are separated by exactly one blank row (`layout.block_gap`, default 1).
+Trailing soft blanks inside prose are trimmed before the next block so gaps
+never stack to two.
 
 ## Tool timeline
 

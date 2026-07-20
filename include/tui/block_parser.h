@@ -31,6 +31,8 @@ private:
     Sink        sink_;
     std::string buf_;
     bool        in_write_block_ = false;
+    bool        in_todo_block_ = false;
+    bool        pending_todo_body_ = false;
 };
 
 } // namespace arbiter

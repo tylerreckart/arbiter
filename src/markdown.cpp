@@ -1,6 +1,7 @@
 // arbiter/src/markdown.cpp — Markdown renderer (styled spans + ANSI shim)
 
 #include "markdown.h"
+#include "render_policy.h"
 #include "styled_text.h"
 #include "theme.h"
 
@@ -21,6 +22,57 @@ StyleId heading_style(size_t level) {
     case 3: return StyleId::Heading3;
     default: return StyleId::Heading4;
     }
+}
+
+bool starts_with_writ_name(std::string_view s, const char* name) {
+    const size_t n = std::strlen(name);
+    if (s.size() < n) return false;
+    if (std::memcmp(s.data(), name, n) != 0) return false;
+    if (s.size() == n) return true;
+    const char next = s[n];
+    return next == ' ' || next == '\t' || next == '\r';
+}
+
+bool is_markdown_writ_line(const std::string& line) {
+    if (line.empty() || line[0] != '/') return false;
+    static const char* kCmds[] = {
+        "fetch", "exec", "agent", "pane", "write", "endwrite",
+        "mem", "endmem", "read", "list", "browse", "search",
+        "todo", "endtodo", "schedule", "mcp", "a2a", "parallel",
+        "endparallel", "advise", "lesson", "endlesson", "help",
+        nullptr
+    };
+    const std::string_view name(line.data() + 1, line.size() - 1);
+    for (auto** p = kCmds; *p; ++p) {
+        if (starts_with_writ_name(name, *p)) return true;
+    }
+    return false;
+}
+
+// UTF-8 "→ delegating:" status lines from the orchestrator gate.
+bool is_delegation_status_line(const std::string& line, std::string_view& detail_out) {
+    // "→ " is UTF-8 e2 86 92 20
+    static constexpr char kArrow[] = "\xe2\x86\x92 ";
+    static constexpr size_t kArrowLen = sizeof(kArrow) - 1;
+    if (line.size() < kArrowLen) return false;
+    if (std::memcmp(line.data(), kArrow, kArrowLen) != 0) return false;
+    std::string_view rest(line.data() + kArrowLen, line.size() - kArrowLen);
+    static constexpr char kDelegating[] = "delegating";
+    static constexpr size_t kDelLen = sizeof(kDelegating) - 1;
+    if (rest.size() < kDelLen) return false;
+    for (size_t i = 0; i < kDelLen; ++i) {
+        const char c = rest[i];
+        const char lower = (c >= 'A' && c <= 'Z')
+            ? static_cast<char>(c - 'A' + 'a') : c;
+        if (lower != kDelegating[i]) return false;
+    }
+    rest.remove_prefix(kDelLen);
+    if (!rest.empty() && rest.front() == ':') rest.remove_prefix(1);
+    while (!rest.empty() && (rest.front() == ' ' || rest.front() == '\t')) {
+        rest.remove_prefix(1);
+    }
+    detail_out = rest;
+    return true;
 }
 
 void render_inline_styled(StyledLine& out, const std::string& text) {
@@ -282,18 +334,19 @@ std::optional<StyledLine> MarkdownRenderer::process_line_styled(const std::strin
 
     if (line.empty()) return StyledLine{};
 
-    if (!line.empty() && line[0] == '/') {
-        static const char* kCmdPrefixes[] = {
-            "/fetch ", "/exec ", "/agent ", "/pane ", "/write ", "/mem ", "/endwrite", nullptr
-        };
-        for (auto** p = kCmdPrefixes; *p; ++p) {
-            size_t plen = strlen(*p);
-            if (line.size() >= plen && line.compare(0, plen, *p) == 0) {
-                StyledLine cmd;
-                styled_append(cmd, StyleId::WritLine, "> " + line);
-                return cmd;
-            }
+    {
+        std::string_view detail;
+        if (is_delegation_status_line(line, detail)) {
+            return styled_delegation_line(detail);
         }
+    }
+
+    if (is_markdown_writ_line(line)) {
+        StyledLine cmd;
+        // Distinctive glyph + bold writ color — stands apart from prose.
+        styled_append(cmd, StyleId::WritLine, "\u203a ");  // ›
+        styled_append(cmd, StyleId::WritLine, line);
+        return cmd;
     }
 
     if (line[0] == '#') {
