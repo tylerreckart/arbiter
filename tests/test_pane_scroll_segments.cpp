@@ -50,17 +50,19 @@ TEST_CASE("ToolSegment Started then Finished updates one row") {
 }
 
 TEST_CASE("ThinkingSegment honors wrap width and kPreviewRows when collapsed") {
+    load_tui_design("");
     TUI tui;
     PaneScrollView view;
     bind_view(view, tui, 40, 40);
     const int baseline = view.total_visual_rows();
 
-    // Five short lines → collapsed shows header + kPreviewRows (3) + ellipsis.
+    // Five short lines → collapsed shows pad + header + kPreviewRows (3) +
+    // ellipsis + pad.
     view.append_thinking("one\ntwo\nthree\nfour\nfive");
     const int collapsed = view.total_visual_rows() - baseline;
-    // May include a leading block_gap blank; the thinking chrome itself is 5 rows.
-    CHECK(collapsed >= 5);
-    CHECK(collapsed <= 7);
+    // May include a leading block_gap blank; thinking chrome itself is 7 rows.
+    CHECK(collapsed >= 7);
+    CHECK(collapsed <= 9);
 
     CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
     const int expanded = view.total_visual_rows() - baseline;
@@ -70,6 +72,7 @@ TEST_CASE("ThinkingSegment honors wrap width and kPreviewRows when collapsed") {
 }
 
 TEST_CASE("ThinkingSegment wrap width grows visual rows for long lines") {
+    load_tui_design("");
     // Long enough that even an 80-col wrap exceeds kPreviewRows (3).
     const std::string blob(400, 'x');
 
@@ -90,6 +93,20 @@ TEST_CASE("ThinkingSegment wrap width grows visual rows for long lines") {
     CHECK(narrow.total_visual_rows() > wide.total_visual_rows());
 }
 
+TEST_CASE("ThinkingSegment renders markdown structure in body rows") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    const int baseline = view.total_visual_rows();
+
+    view.append_thinking("## Plan\n\n- step one\n- step two",
+                         /*new_block=*/true,
+                         "researcher");
+    // pad + header + at least one body line + pad (+ optional gap).
+    CHECK(view.total_visual_rows() - baseline >= 4);
+}
+
 TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
     load_tui_design("");
     TUI tui;
@@ -102,8 +119,9 @@ TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
 
     view.append_thinking("plan", /*new_block=*/true);
     const int after_think = view.total_visual_rows();
-    // Exactly one BlankSegment between echo and thinking (thinking = header+body).
-    CHECK(after_think - after_echo == 1 + 2);
+    // Exactly one BlankSegment between echo and thinking.
+    // Thinking = pad + header + body + pad = 4 rows.
+    CHECK(after_think - after_echo == 1 + 4);
 
     ToolActivityEvent start;
     start.phase = ToolActivityEvent::Phase::Started;
@@ -141,10 +159,9 @@ TEST_CASE("trailing prose blanks do not stack with block_gap") {
     // With trim, the next block is only +gap + thinking rows beyond content.
     view.append_thinking("next", /*new_block=*/true);
     const int after = view.total_visual_rows();
-    // Trim removes soft StyledLine blanks before inserting the BlankSegment gap.
-    // Growth is gap(1) + thinking(2) minus the trimmed soft blank (~1 virtual row).
-    CHECK(after - after_prose <= 3);
-    CHECK(after - after_prose >= 2);  // at least gap + thinking header
+    // Thinking chrome = pad + header + body + pad = 4; plus gap(1).
+    CHECK(after - after_prose <= 5);
+    CHECK(after - after_prose >= 4);  // at least gap + thinking chrome
 }
 
 TEST_CASE("degenerate zero-size pane draw is a no-op") {

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
 
@@ -572,43 +573,102 @@ void PaneScrollView::DiffSegment::draw(OpenTuiHandle frame,
 
 namespace {
 
-// Soft-wrap plain text to `cols` display cells, preserving explicit newlines.
-std::vector<std::string> wrap_plain_lines(std::string_view text, int cols) {
-    std::vector<std::string> out;
+// Soft-wrap a styled line to `cols`, remapping spans onto each visual row.
+std::vector<StyledLine> wrap_styled_line(const StyledLine& line, int cols) {
     if (cols < 1) cols = 1;
-    size_t start = 0;
-    while (start <= text.size()) {
-        const size_t nl = text.find('\n', start);
-        const std::string_view src = (nl == std::string::npos)
-            ? text.substr(start)
-            : text.substr(start, nl - start);
-        if (src.empty()) {
-            out.emplace_back();
-        } else if (static_cast<int>(arbiter::display_width(src)) <= cols) {
-            out.emplace_back(src);
-        } else {
-            // Greedy cut by display width; never splits mid UTF-8 cluster.
-            std::string remain(src);
-            while (!remain.empty()) {
-                std::string chunk = arbiter::trim_to_display_cols(remain, cols);
-                if (chunk.empty()) {
-                    // Pathological zero-width / oversized cluster — advance one byte.
-                    chunk.assign(remain, 0, 1);
-                }
-                out.push_back(chunk);
-                remain.erase(0, chunk.size());
-            }
+    if (line.text.empty()) return {line};
+    if (static_cast<int>(arbiter::display_width(line.text)) <= cols) return {line};
+
+    std::vector<StyledLine> out;
+    std::string remain = line.text;
+    auto style_at = [&](std::uint32_t byte_off) -> StyleId {
+        for (const StyleSpan& span : line.spans) {
+            if (byte_off >= span.begin && byte_off < span.end) return span.id;
         }
-        if (nl == std::string::npos) break;
-        start = nl + 1;
+        return StyleId::Default;
+    };
+
+    std::uint32_t origin = 0;
+    while (!remain.empty()) {
+        std::string chunk = arbiter::trim_to_display_cols(remain, cols);
+        if (chunk.empty()) chunk.assign(remain, 0, 1);
+
+        StyledLine row;
+        std::size_t i = 0;
+        while (i < chunk.size()) {
+            const StyleId id = style_at(origin + static_cast<std::uint32_t>(i));
+            std::size_t j = i + 1;
+            while (j < chunk.size() &&
+                   style_at(origin + static_cast<std::uint32_t>(j)) == id) {
+                ++j;
+            }
+            styled_append(row, id, std::string_view(chunk).substr(i, j - i));
+            i = j;
+        }
+        if (row.spans.empty() && chunk.empty()) {
+            row.spans.push_back({0, 0, StyleId::Dim});
+        }
+        out.push_back(std::move(row));
+        origin += static_cast<std::uint32_t>(chunk.size());
+        remain.erase(0, chunk.size());
     }
     return out;
 }
 
+std::vector<StyledLine> render_thinking_markdown(const std::string& text) {
+    MarkdownRenderer md;
+    std::vector<StyledLine> lines = md.feed_styled(text);
+    std::vector<StyledLine> tail = md.flush_styled();
+    lines.insert(lines.end(),
+                 std::make_move_iterator(tail.begin()),
+                 std::make_move_iterator(tail.end()));
+    while (!lines.empty() && lines.back().text.empty()) lines.pop_back();
+    return lines;
+}
+
+constexpr std::uint32_t kThinkingDimAttr = 1u << 1;  // matches style_resolver Dim
+
+const TuiRgba& thinking_fg(StyleId id, const TuiDesign& d) {
+    // Prefer muted/readable defaults; keep markdown accent hues for structure.
+    switch (id) {
+    case StyleId::Default:
+    case StyleId::Bold:
+    case StyleId::Italic:
+        return d.text.muted;
+    case StyleId::Dim:
+    case StyleId::Strike:
+    case StyleId::Blockquote:
+    case StyleId::Rule:
+    case StyleId::System:
+        return d.content.text_dim;
+    default:
+        break;
+    }
+    const ResolvedStyle rs = resolve_style(id);
+    return rs.fg ? *rs.fg : d.text.muted;
+}
+
+std::uint32_t thinking_attrs(StyleId id) {
+    const ResolvedStyle rs = resolve_style(id);
+    return rs.attrs | kThinkingDimAttr;
+}
+
 } // namespace
+
+void PaneScrollView::ThinkingSegment::invalidate_cache() const {
+    cache_src_.clear();
+    cache_cols_ = -1;
+    body_cache_.clear();
+}
 
 void PaneScrollView::ThinkingSegment::append(std::string_view delta) {
     text_.append(delta.data(), delta.size());
+    invalidate_cache();
+}
+
+void PaneScrollView::ThinkingSegment::set_agent_id(std::string_view agent_id) {
+    if (agent_id.empty()) return;
+    if (agent_id_.empty()) agent_id_.assign(agent_id.data(), agent_id.size());
 }
 
 void PaneScrollView::ThinkingSegment::toggle_expanded() {
@@ -616,10 +676,34 @@ void PaneScrollView::ThinkingSegment::toggle_expanded() {
     expanded_ = !expanded_;
 }
 
+int PaneScrollView::ThinkingSegment::body_content_cols(int content_w) const {
+    const TuiDesign& d = tui_design();
+    const int cols = std::max(1, content_w > 0 ? content_w : wrap_cols_);
+    const int inset = std::max(0, d.layout.header_padding_x);
+    return std::max(1, cols - 1 - inset);
+}
+
+const std::vector<StyledLine>&
+PaneScrollView::ThinkingSegment::wrapped_body(int body_cols) const {
+    if (cache_cols_ == body_cols && cache_src_ == text_) return body_cache_;
+    cache_src_ = text_;
+    cache_cols_ = body_cols;
+    body_cache_.clear();
+    if (text_.empty()) return body_cache_;
+
+    const auto rendered = render_thinking_markdown(text_);
+    body_cache_.reserve(rendered.size());
+    for (const StyledLine& line : rendered) {
+        auto parts = wrap_styled_line(line, body_cols);
+        body_cache_.insert(body_cache_.end(),
+                           std::make_move_iterator(parts.begin()),
+                           std::make_move_iterator(parts.end()));
+    }
+    return body_cache_;
+}
+
 bool PaneScrollView::ThinkingSegment::can_expand() const {
-    // Only offer expand when collapsed preview (or expanded cap) would hide rows.
-    const int body_cols = std::max(1, wrap_cols_ - 3);
-    const int body_n = static_cast<int>(wrap_plain_lines(text_, body_cols).size());
+    const int body_n = static_cast<int>(wrapped_body(body_content_cols(wrap_cols_)).size());
     if (expanded_) return body_n > 0;
     return body_n > kPreviewRows;
 }
@@ -633,35 +717,35 @@ std::string PaneScrollView::ThinkingSegment::header_text() const {
 }
 
 int PaneScrollView::ThinkingSegment::visual_rows(int content_w) const {
-    const int cols = std::max(1, content_w > 0 ? content_w : wrap_cols_);
-    // Body text is drawn inset by 2 cells (accent + pad); wrap to that width.
-    const int body_cols = std::max(1, cols - 3);
-    const auto body = wrap_plain_lines(text_, body_cols);
+    const auto& body = wrapped_body(body_content_cols(content_w));
     const int body_n = static_cast<int>(body.size());
-    static constexpr int kExpandedCap = 40;
+    int body_rows = 0;
     if (!expanded_) {
-        if (body_n == 0) return 1;
-        const int preview = std::min(body_n, kPreviewRows);
-        // +1 ellipsis row when more body exists beyond the preview window.
-        return 1 + preview + (body_n > kPreviewRows ? 1 : 0);
+        if (body_n > 0) {
+            body_rows = std::min(body_n, kPreviewRows);
+            if (body_n > kPreviewRows) ++body_rows;  // ellipsis
+        }
+    } else {
+        body_rows = std::min(body_n, kExpandedCap);
+        if (body_n > kExpandedCap) ++body_rows;
     }
-    return 1 + std::min(body_n, kExpandedCap) + (body_n > kExpandedCap ? 1 : 0);
+    // pad + header + body + pad
+    return kPadRows + 1 + body_rows + kPadRows;
 }
 
 void PaneScrollView::ThinkingSegment::set_wrap_cols(int cols) {
     wrap_cols_ = std::max(1, cols);
+    invalidate_cache();
 }
 
 void PaneScrollView::ThinkingSegment::collect_lines(std::vector<std::string>& out) const {
     out.push_back(header_text());
     if (text_.empty()) return;
-    const int body_cols = std::max(1, wrap_cols_ - 3);
-    const auto body = wrap_plain_lines(text_, body_cols);
-    static constexpr int kExpandedCap = 40;
+    const auto& body = wrapped_body(body_content_cols(wrap_cols_));
     const int limit = expanded_
         ? std::min(static_cast<int>(body.size()), kExpandedCap)
         : std::min(static_cast<int>(body.size()), kPreviewRows);
-    for (int i = 0; i < limit; ++i) out.push_back(body[static_cast<size_t>(i)]);
+    for (int i = 0; i < limit; ++i) out.push_back(body[static_cast<size_t>(i)].text);
     const int body_n = static_cast<int>(body.size());
     if ((!expanded_ && body_n > kPreviewRows) ||
         (expanded_ && body_n > kExpandedCap)) {
@@ -677,46 +761,123 @@ void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
                                            int skip_rows) const {
     if (w <= 0 || h <= 0) return;
     const TuiDesign& d = tui_design();
-    const TuiRgba& bg = d.bg.scroll;
-    const int body_cols = std::max(1, w - 3);
+    const TuiRgba& bg = d.content.user_echo_bg;
+    const TuiRgba accent = tui_agent_accent(agent_id_);
+    const int inset = std::max(0, d.layout.header_padding_x);
+    const int text_x = x + 1 + inset;
+    const int body_cols = std::max(1, w - 1 - inset);
 
-    auto draw_row = [&](const std::string& text,
-                        const TuiRgba& fg,
-                        int& screen_row) -> bool {
-        if (screen_row < skip_rows) {
-            ++screen_row;
+    auto paint_chrome_row = [&](int screen_row) {
+        fill_rect(frame, x, y + screen_row, w, 1, bg);
+        if (w > 0) fill_rect(frame, x, y + screen_row, 1, 1, accent);
+    };
+
+    auto advance = [&](int& row) -> bool {
+        if (row < skip_rows) {
+            ++row;
             return true;
         }
-        const int drawn = screen_row - skip_rows;
+        const int drawn = row - skip_rows;
         if (drawn >= h) return false;
-        fill_rect(frame, x, y + drawn, w, 1, bg);
-        if (w > 0) fill_rect(frame, x, y + drawn, 1, 1, d.accent.info);
-        draw_text(frame,
-                  x + 2,
-                  y + drawn,
-                  trim_to_cells(text, body_cols),
-                  fg,
-                  bg);
-        ++screen_row;
+        paint_chrome_row(drawn);
+        ++row;
+        return true;
+    };
+
+    auto draw_plain = [&](const std::string& text,
+                          const TuiRgba& fg,
+                          std::uint32_t attrs,
+                          int& row) -> bool {
+        if (row < skip_rows) {
+            ++row;
+            return true;
+        }
+        const int drawn = row - skip_rows;
+        if (drawn >= h) return false;
+        paint_chrome_row(drawn);
+        if (!text.empty()) {
+            draw_text(frame,
+                      text_x,
+                      y + drawn,
+                      trim_to_cells(text, body_cols),
+                      fg,
+                      bg,
+                      attrs);
+        }
+        ++row;
+        return true;
+    };
+
+    auto draw_styled = [&](const StyledLine& line, int& row) -> bool {
+        if (row < skip_rows) {
+            ++row;
+            return true;
+        }
+        const int drawn = row - skip_rows;
+        if (drawn >= h) return false;
+        paint_chrome_row(drawn);
+
+        int col = 0;
+        const auto emit_span = [&](std::size_t begin, std::size_t end, StyleId id) {
+            if (begin >= line.text.size() || end <= begin) return;
+            const std::size_t end_clamped = std::min(end, line.text.size());
+            const std::string chunk = trim_to_cells(
+                line.text.substr(begin, end_clamped - begin), body_cols - col);
+            if (chunk.empty()) return;
+            draw_text(frame,
+                      text_x + col,
+                      y + drawn,
+                      chunk,
+                      thinking_fg(id, d),
+                      bg,
+                      thinking_attrs(id));
+            col += cell_width(chunk);
+        };
+
+        if (line.spans.empty()) {
+            emit_span(0, line.text.size(), StyleId::Default);
+        } else {
+            std::size_t cursor = 0;
+            for (const StyleSpan& span : line.spans) {
+                if (span.begin > line.text.size()) break;
+                if (span.begin > cursor) {
+                    emit_span(cursor, span.begin, StyleId::Default);
+                }
+                const std::size_t end =
+                    std::min(static_cast<std::size_t>(span.end), line.text.size());
+                if (end > span.begin) emit_span(span.begin, end, span.id);
+                cursor = end;
+            }
+            if (cursor < line.text.size()) {
+                emit_span(cursor, line.text.size(), StyleId::Default);
+            }
+        }
+        ++row;
         return true;
     };
 
     int row = 0;
-    if (!draw_row(header_text(), d.content.system_fg, row)) return;
-    if (text_.empty()) return;
+    for (int i = 0; i < kPadRows; ++i) {
+        if (!advance(row)) return;
+    }
 
-    const auto body = wrap_plain_lines(text_, body_cols);
-    static constexpr int kExpandedCap = 40;
+    if (!draw_plain(header_text(), d.content.system_fg, kThinkingDimAttr, row)) return;
+
+    const auto& body = wrapped_body(body_cols);
     const int limit = expanded_
         ? std::min(static_cast<int>(body.size()), kExpandedCap)
         : std::min(static_cast<int>(body.size()), kPreviewRows);
     for (int i = 0; i < limit; ++i) {
-        if (!draw_row(body[static_cast<size_t>(i)], d.text.muted, row)) return;
+        if (!draw_styled(body[static_cast<size_t>(i)], row)) return;
     }
     const int body_n = static_cast<int>(body.size());
     if ((!expanded_ && body_n > kPreviewRows) ||
         (expanded_ && body_n > kExpandedCap)) {
-        draw_row("\u2026", d.text.muted, row);
+        if (!draw_plain("\u2026", d.content.text_dim, kThinkingDimAttr, row)) return;
+    }
+
+    for (int i = 0; i < kPadRows; ++i) {
+        if (!advance(row)) return;
     }
 }
 
@@ -1133,11 +1294,14 @@ void PaneScrollView::upsert_tool(const ToolActivityEvent& event, bool new_block)
     segments_.push_back(std::move(seg));
 }
 
-void PaneScrollView::append_thinking(std::string_view delta, bool new_block) {
+void PaneScrollView::append_thinking(std::string_view delta,
+                                     bool new_block,
+                                     std::string_view agent_id) {
     if (delta.empty()) return;
     // Append into the most recent open ThinkingSegment when contiguous.
     if (!new_block && !segments_.empty()) {
         if (auto* think = dynamic_cast<ThinkingSegment*>(segments_.back().get())) {
+            think->set_agent_id(agent_id);
             think->append(delta);
             return;
         }
@@ -1145,6 +1309,7 @@ void PaneScrollView::append_thinking(std::string_view delta, bool new_block) {
         for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
             if (dynamic_cast<BlankSegment*>(it->get())) continue;
             if (auto* think = dynamic_cast<ThinkingSegment*>(it->get())) {
+                think->set_agent_id(agent_id);
                 think->append(delta);
                 return;
             }
@@ -1155,6 +1320,7 @@ void PaneScrollView::append_thinking(std::string_view delta, bool new_block) {
     ensure_block_gap(SegmentKind::Thinking, d.layout.block_gap, new_block);
     auto seg = std::make_unique<ThinkingSegment>();
     seg->set_wrap_cols(wrap_cols_);
+    seg->set_agent_id(agent_id);
     seg->append(delta);
     segments_.push_back(std::move(seg));
 }
