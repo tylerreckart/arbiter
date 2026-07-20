@@ -8,6 +8,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Conversation switch/delete no longer freezes the TUI while cancel
+  unwinds (#46).** After confirming “switch anyway?” (or deleting a
+  conversation with a turn in flight), the main thread no longer spins in a
+  blind `sleep_for` loop. Cancel waits with `layout_mu` released so the
+  output pump keeps painting, a `cancelling… (Esc to abort)` spinner is
+  shown, and Esc / Ctrl-C abandons the pending switch or delete (the
+  in-flight turn still cancels). Queued follow-up commands on the affected
+  pane(s) are drained so cancel only has to finish the current turn.
 - **`/search` wiring.** Operator-typed `/search` in the TUI now mirrors
   `/fetch` (bypasses the focused agent's capability gate and injects
   results into the turn). `arbiter --send` wires the same search/MCP
