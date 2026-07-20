@@ -72,7 +72,7 @@ ResolvedStyle resolve_style(StyleId id) {
         break;
     case StyleId::WritLine:
         rs.fg = &d.content.writ_line;
-        rs.attrs = kAttrDim;
+        rs.attrs = kAttrBold;
         break;
     case StyleId::DiffAdd:
         rs.fg = &d.content.diff_add;
@@ -123,8 +123,9 @@ ResolvedStyle resolve_style(StyleId id) {
         rs.attrs = kAttrDim;
         break;
     case StyleId::UserEchoArrow:
-        rs.fg = &d.content.user_echo_arrow;
-        rs.bg = &d.content.user_echo_bg;
+        // Left accent cell on echoed turns — mirrors pane_frame input strip.
+        rs.fg = &d.accent.primary;
+        rs.bg = &d.accent.primary;
         break;
     case StyleId::UserEchoText:
         rs.fg = &d.content.user_echo_text;

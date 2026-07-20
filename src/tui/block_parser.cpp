@@ -7,7 +7,7 @@ namespace arbiter {
 
 namespace {
 
-bool starts_with_cmd(const std::string& s, const char* prefix, size_t plen) {
+bool starts_with_cmd(std::string_view s, const char* prefix, size_t plen) {
     if (s.size() < plen) return false;
     if (std::memcmp(s.data(), prefix, plen) != 0) return false;
     if (s.size() == plen) return true;
@@ -15,10 +15,12 @@ bool starts_with_cmd(const std::string& s, const char* prefix, size_t plen) {
     return next == ' ' || next == '\t' || next == '\r';
 }
 
-bool is_framing_marker(const std::string& s) {
+bool is_framing_marker(std::string_view s) {
     if (s.empty() || s[0] != '[') return false;
     static const char* kOpens[] = {
         "[/fetch", "[/exec", "[/write", "[/agent", "[/mem", "[/advise",
+        "[/read", "[/browse", "[/search", "[/todo", "[/schedule", "[/mcp",
+        "[/a2a", "[/list", "[/parallel", "[/pane", "[/lesson",
         "[END ", "[TOOL RESULTS", "[END TOOL RESULTS"
     };
     for (const char* p : kOpens) {
@@ -32,6 +34,23 @@ size_t ltrim_idx(const std::string& s) {
     size_t i = 0;
     while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
     return i;
+}
+
+// Agent writ prefixes swallowed in quiet mode (and styled when verbose).
+bool is_agent_writ_line(std::string_view s) {
+    if (s.empty() || s[0] != '/') return false;
+    static const char* kCmds[] = {
+        "fetch", "exec", "agent", "pane", "write", "endwrite",
+        "mem", "endmem", "read", "list", "browse", "search",
+        "todo", "endtodo", "schedule", "mcp", "a2a", "parallel",
+        "endparallel", "advise", "lesson", "endlesson", "help",
+        nullptr
+    };
+    const std::string_view name = s.substr(1);
+    for (auto** p = kCmds; *p; ++p) {
+        if (starts_with_cmd(name, *p, std::strlen(*p))) return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -57,18 +76,38 @@ bool BlockParser::should_swallow(const std::string& line) {
         return true;
     }
 
+    if (in_todo_block_) {
+        if (view.size() >= 8 &&
+            std::memcmp(view.data(), "/endtodo", 8) == 0 &&
+            (view.size() == 8 || view[8] == ' ' || view[8] == '\t' || view[8] == '\r')) {
+            in_todo_block_ = false;
+        }
+        return true;
+    }
+
+    // After `/todo add …`, the next non-writ line begins a block body.
+    if (pending_todo_body_) {
+        pending_todo_body_ = false;
+        if (!view.empty() && !is_agent_writ_line(view)) {
+            in_todo_block_ = true;
+            return true;
+        }
+        // Empty line or another writ — single-line /todo add; fall through.
+    }
+
     if (view.size() > 7 && std::memcmp(view.data(), "/write ", 7) == 0) {
         in_write_block_ = true;
         return true;
     }
 
-    std::string s(view);
-    if (starts_with_cmd(s, "/fetch", 6))  return true;
-    if (starts_with_cmd(s, "/exec", 5))   return true;
-    if (starts_with_cmd(s, "/agent", 6))  return true;
-    if (starts_with_cmd(s, "/mem", 4))    return true;
-    if (starts_with_cmd(s, "/advise", 7)) return true;
-    if (is_framing_marker(s)) return true;
+    if (view.size() >= 9 && std::memcmp(view.data(), "/todo add", 9) == 0 &&
+        (view.size() == 9 || view[9] == ' ' || view[9] == '\t')) {
+        pending_todo_body_ = true;
+        return true;
+    }
+
+    if (is_agent_writ_line(view)) return true;
+    if (is_framing_marker(view)) return true;
 
     return false;
 }
@@ -107,6 +146,8 @@ void BlockParser::flush() {
 void BlockParser::reset() {
     buf_.clear();
     in_write_block_ = false;
+    in_todo_block_ = false;
+    pending_todo_body_ = false;
 }
 
 } // namespace arbiter

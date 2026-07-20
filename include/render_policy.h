@@ -50,6 +50,9 @@ void apply_base_style(StyledLine& line, StyleId base);
 // Sub-agent interim header (`→ agent_id`) drawn before truncated progress.
 [[nodiscard]] StyledLine styled_interim_header(const std::string& agent_id);
 
+// Master-turn delegation status (`→ delegating: /agent …`).
+[[nodiscard]] StyledLine styled_delegation_line(std::string_view detail);
+
 // Multi-line permission card for destructive confirms (write/exec).
 [[nodiscard]] std::vector<StyledLine> styled_permission_card(
     const std::string& action,
