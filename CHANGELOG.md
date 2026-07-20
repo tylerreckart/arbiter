@@ -33,9 +33,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   turn to finish (auth error) before `/chat new` / `/chat switch`, and
   match an interior marker substring so pane-edge clipping cannot
   miss the replay assertion on macos-arm64.
-- **`line_editor` Ctrl-U flake.** Poll for the post-kill `"ok"` paint
-  instead of a fixed `read_for`, matching the printable-characters
-  case that already hit the same OpenTUI first-frame race on macOS CI.
+- **`line_editor` Ctrl-U flake.** Warm the input row, then assert
+  functionally via a post-kill `/agents` submit (rejecting a
+  `garbage/agents` echo) instead of relying on a fixed `read_for` or a
+  contiguous `"ok"` paint under OpenTUI cell diffs.
 - **Sub-agent `/parallel` fan-out.** Same `agent_id` may appear more than
   once in a `/parallel` block again (ephemeral clones — matching the
   documented behaviour), and a sub-agent may fan out to copies of itself.
