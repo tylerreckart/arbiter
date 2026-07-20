@@ -7415,14 +7415,12 @@ A2AInvoker make_a2a_invoker(const ApiServerOptions& opts,
     };
 }
 
-// Construct an orchestrator for a one-shot A2A turn.  Loads the tenant's
-// stored agent catalog (so /agent + /parallel resolve sibling ids during
-// the turn).  Memory bridge, MCP manager, search invoker, file
-// interceptor, and structured-memory reader are deliberately NOT wired
-// here — those depend on the SSE event sink which lands in PR-3.  The
-// agent can chat and delegate; tool slash commands degrade to ERR for
-// the v1.0 message/send synchronous path, and PR-3 lifts both surfaces
-// to full parity.
+// Construct tool wiring shared by A2A, scheduler, and (partially) the
+// SSE orchestrate path.  Always installs a host-safe /write interceptor
+// so agents cannot fall through to cmd_write() and touch the server
+// cwd — SECURITY.md's "orchestrate intercepts /write" guarantee applies
+// to every API entrypoint.  Streaming handlers may replace the
+// interceptor afterward with one that also emits SSE `file` events.
 void wire_orch_tools_impl(Orchestrator& orch,
                              const ApiServerOptions& opts,
                              TenantStore& tenants,
@@ -7434,6 +7432,46 @@ void wire_orch_tools_impl(Orchestrator& orch,
     orch.set_exec_disabled(opts.exec_disabled);
     if (auto exec_inv = make_exec_invoker_callback(opts, tenant_id)) {
         orch.set_exec_invoker(std::move(exec_inv));
+    }
+
+    // Default /write: never touch the process cwd.  Optionally mirror
+    // bytes into the sandbox workspace when that feature is enabled.
+    {
+        auto bytes = std::make_shared<std::atomic<size_t>>(0);
+        const size_t cap = opts.file_max_bytes;
+        SandboxManager* sandbox_mgr = opts.sandbox;
+        orch.set_write_interceptor(
+            [bytes, cap, sandbox_mgr, tenant_id](const std::string& path,
+                                                  const std::string& content) -> std::string {
+                const size_t size = content.size();
+                size_t prev = bytes->load(std::memory_order_relaxed);
+                for (;;) {
+                    if (prev + size > cap) {
+                        return "ERR: per-response file-size cap (" +
+                               std::to_string(cap) +
+                               " bytes) reached — this file was NOT written.";
+                    }
+                    if (bytes->compare_exchange_weak(
+                            prev, prev + size, std::memory_order_relaxed))
+                        break;
+                }
+                std::string note = "OK: captured " + std::to_string(size) +
+                    " bytes for '" + path +
+                    "' (not persisted to server filesystem";
+                if (sandbox_mgr) {
+                    std::string werr;
+                    if (sandbox_mgr->write_to_workspace(
+                            tenant_id, path, content, werr)) {
+                        note += "; saved to /workspace/" + path +
+                                " in sandbox)";
+                    } else {
+                        note += "; sandbox write failed: " + werr + ")";
+                    }
+                } else {
+                    note += ")";
+                }
+                return note;
+            });
     }
 
     orch.set_memory_scratchpad(

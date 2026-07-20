@@ -235,12 +235,10 @@ void SidebarState::set_active_tool_calls(int count) {
 }
 
 void SidebarState::set_focus_context(const std::string& agent,
-                                     const std::string& model,
-                                     const std::string& task) {
+                                     const std::string& model) {
     std::lock_guard<std::mutex> lk(mu_);
     focus_agent_ = agent;
     focus_model_ = model;
-    active_task_ = task;
 }
 
 void SidebarState::set_loops(std::vector<SidebarLoopEntry> loops) {
@@ -260,7 +258,6 @@ SidebarSnapshot SidebarState::snapshot() const {
     s.last_model   = last_model_;
     s.focus_agent  = focus_agent_;
     s.focus_model  = focus_model_;
-    s.active_task  = active_task_;
     s.total_cost_usd = total_cost_usd_;
     s.cost_basis = cost_basis_label(primary_model_, mixed_models_);
     s.tools        = tools_;
