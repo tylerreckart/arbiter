@@ -4,7 +4,6 @@
 #include "tui/opentui/pane_input_editor.h"
 #include "tui/opentui/pane_scroll_view.h"
 #include "tui/tui.h"
-#include "api_client.h"
 
 #include <atomic>
 #include <memory>
@@ -12,6 +11,11 @@
 #include <thread>
 
 namespace arbiter {
+
+// Forward-declared so pane.h stays free of api_client.h / OpenSSL — light
+// TUI unit tests include this header via layout/mouse_hit without linking
+// TLS.  Out-of-line Pane special members (pane.cpp) see the complete type.
+class CancelToken;
 
 struct Pane {
     TUI               tui;
@@ -64,6 +68,13 @@ struct Pane {
     // Last sub-agent that got an interim `→ agent` header this turn; cleared
     // when a new user turn starts so the next delegation can header again.
     std::string       last_interim_agent;
+
+    Pane();
+    ~Pane();
+    Pane(const Pane&) = delete;
+    Pane& operator=(const Pane&) = delete;
+    Pane(Pane&&) = delete;
+    Pane& operator=(Pane&&) = delete;
 };
 
 } // namespace arbiter
