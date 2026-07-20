@@ -114,7 +114,9 @@ int list_top_y(const Rect& r, bool /*focused*/, bool filter_line_visible) {
 
 int scroll_bottom_y(const Rect& pane_rect, int pane_input_rows, int pane_bottom_pad_rows) {
     const int bottom_pad = std::max(1, pane_bottom_pad_rows);
-    return pane_rect.y + pane_rect.h - bottom_pad - pane_input_rows - TUI::kSepRows;
+    const int sep_top = pane_rect.y + pane_rect.h - bottom_pad - pane_input_rows
+                      - TUI::kSepRows;
+    return sep_top - 1;
 }
 
 void draw_row(OpenTuiHandle frame,

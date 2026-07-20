@@ -303,7 +303,7 @@ void draw_sidebar(OpenTuiHandle frame,
 
     const int sidebar_top = r.y;
     const int panel_top_y = sidebar_top;
-    const int sep_y = pr.y + pr.h - bottom_pad - pane_input_rows - TUI::kSepRows;
+    const int sep_top = pr.y + pr.h - bottom_pad - pane_input_rows - TUI::kSepRows;
     const int input_bottom_y = pr.y + pr.h - bottom_pad - 1;
     if (input_bottom_y < panel_top_y) return;
 
@@ -329,7 +329,7 @@ void draw_sidebar(OpenTuiHandle frame,
     draw_vertical_border(frame, border_x, panel_top_y, block_h, d.bg.status, d.bg.scroll);
 
     int y = panel_top_y + 1;
-    const int scroll_bottom = sep_y;
+    const int scroll_bottom = sep_top - 1;
     const TuiRgba& bg = sbg;
 
     y = draw_section_label(frame, d, content_x, content_w, y, "Context", bg);

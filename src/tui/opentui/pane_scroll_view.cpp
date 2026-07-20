@@ -161,7 +161,7 @@ bool PaneScrollView::ProseSegment::is_empty() const {
 }
 
 int PaneScrollView::ProseSegment::visual_rows(int content_w) const {
-    if (view_ == 0) return 0;
+    if (view_ == 0 || is_empty()) return 0;
     const int next = std::max(1, content_w);
     // Keep emit pad / HR width in sync — do not mutate wrap_cols_ alone.
     if (next != wrap_cols_) {
@@ -266,7 +266,7 @@ bool PaneScrollView::TextSegment::is_empty() const {
 }
 
 int PaneScrollView::TextSegment::visual_rows(int content_w) const {
-    if (view_ == 0) return 0;
+    if (view_ == 0 || is_empty()) return 0;
     const_cast<TextSegment*>(this)->wrap_cols_ = content_w;
     textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(content_w));
     return static_cast<int>(textBufferViewGetVirtualLineCount(view_));
@@ -1142,8 +1142,8 @@ PaneScrollView::SegmentKind PaneScrollView::last_content_kind() const {
 
 void PaneScrollView::trim_trailing_soft_blanks() {
     // Walk back over BlankSegments to reach the last content segment, then
-    // drop trailing empty prose lines (not user-echo pad rows) / text newlines
-    // so BlankSegment gaps stay a single consistent rhythm.
+    // drop trailing empty prose lines that are NOT user-echo pad rows / text
+    // newlines so BlankSegment gaps stay a single consistent rhythm.
     Segment* content = nullptr;
     for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
         if (dynamic_cast<BlankSegment*>(it->get())) continue;
@@ -1157,7 +1157,8 @@ void PaneScrollView::trim_trailing_soft_blanks() {
         while (!prose->source_.empty()) {
             const StyledLine& last = prose->source_.back();
             if (!last.text.empty()) break;
-            // Keep blank user-echo pad rows — they are intentional chrome.
+            // Keep blank user-echo pad rows — they are intentional chrome and
+            // also count toward the inter-block gap (see ensure_block_gap).
             if (arbiter::is_styled_user_echo_line(last)) break;
             prose->source_.pop_back();
             changed = true;
@@ -1177,8 +1178,41 @@ void PaneScrollView::trim_trailing_soft_blanks() {
     }
 }
 
+int PaneScrollView::trailing_separator_rows() const {
+    int n = 0;
+    for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
+        if (dynamic_cast<const BlankSegment*>(it->get())) {
+            ++n;
+            continue;
+        }
+        if (const auto* prose = dynamic_cast<const ProseSegment*>(it->get())) {
+            for (auto lit = prose->source_.rbegin(); lit != prose->source_.rend(); ++lit) {
+                if (!lit->text.empty()) break;
+                ++n;  // empty prose / user-echo pad rows
+            }
+        } else if (const auto* text = dynamic_cast<const TextSegment*>(it->get())) {
+            // Source should already be trimmed of trailing newlines; a lone
+            // trailing `\n` still counts as one separator row if present.
+            if (!text->source_.empty()
+                && (text->source_.back() == '\n' || text->source_.back() == '\r')) {
+                ++n;
+            }
+        }
+        break;
+    }
+    return n;
+}
+
 void PaneScrollView::ensure_block_gap(SegmentKind next, int gap_rows, bool force) {
-    if (gap_rows <= 0 || !has_rendered_content()) return;
+    if (gap_rows <= 0) return;
+    // First content in an empty pane: leave one blank under the header chrome
+    // so the lead block (usually a user echo) doesn't kiss the top edge.
+    if (!has_rendered_content()) {
+        (void)next;
+        (void)force;
+        for (int i = 0; i < gap_rows; ++i) append_blank_row();
+        return;
+    }
     const SegmentKind prev = last_content_kind();
     if (prev == SegmentKind::None) return;
     // Consecutive tool rows form one timeline cluster — no gap unless a turn
@@ -1186,8 +1220,39 @@ void PaneScrollView::ensure_block_gap(SegmentKind next, int gap_rows, bool force
     if (prev == SegmentKind::Tool && next == SegmentKind::Tool && !force) return;
     // Same-kind streaming coalesce (prose/text/thinking) skips gap unless forced.
     if (prev == next && !force) return;
+
+    // Drop excess soft blanks (paragraph empties), then credit every trailing
+    // empty visual row (BlankSegments + empty prose/echo-pad lines) so the
+    // net gap is exactly `gap_rows` — never 0, never 2+.
     trim_trailing_soft_blanks();
-    start_block_gap(gap_rows);
+
+    // Pop existing BlankSegments; empty prose/echo pads stay and count as credit.
+    int blank_segs = 0;
+    while (!segments_.empty()
+           && dynamic_cast<BlankSegment*>(segments_.back().get())) {
+        segments_.pop_back();
+        ++blank_segs;
+    }
+    (void)blank_segs;
+
+    const int credit = trailing_separator_rows();  // empty prose/echo pads only now
+    if (credit > gap_rows) {
+        // Too many trailing empties — peel down to exactly gap_rows.
+        int excess = credit - gap_rows;
+        if (auto* prose = dynamic_cast<ProseSegment*>(
+                segments_.empty() ? nullptr : segments_.back().get())) {
+            bool changed = false;
+            while (excess > 0 && !prose->source_.empty()
+                   && prose->source_.back().text.empty()) {
+                prose->source_.pop_back();
+                --excess;
+                changed = true;
+            }
+            if (changed) prose->retheme();
+        }
+    }
+    const int need = std::max(0, gap_rows - std::min(credit, gap_rows));
+    for (int i = 0; i < need; ++i) append_blank_row();
 }
 
 void PaneScrollView::start_block() {

@@ -7,7 +7,7 @@
 //
 // Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
 //   scroll region     streamed model output (grows when chrome shrinks)
-//   mid separator     tool-call / thinking indicator
+//   mid separator     blank + status (thinking/tools) + blank  (kSepRows)
 //   input area        dark bg + accent strip
 //   bottom pad        hint row + padding when footer is shown; with
 //                     layout.chrome_compact_rows (default) multi-pane /
@@ -60,7 +60,8 @@ struct TuiChromeSnapshot {
 
 class TUI {
 public:
-    static constexpr int kSepRows              = 1;   // mid separator above input area
+    static constexpr int kSepRows              = 3;   // pad + status + pad above input
+    static constexpr int kSepStatusOffset      = 1;   // status row within the sep region
     static constexpr int kMaxInputRows         = 7;
     static constexpr int kBottomPadRows        = 3;   // spacer + hint row + bottom pad
     static constexpr int kCompactBottomPadRows = 1;   // trailing pad when footer reclaimed
@@ -158,9 +159,12 @@ private:
 
     // Absolute 1-indexed terminal rows for each chrome slot within rect_.
     // Uses bottom_pad_rows() so compact chrome reclaims space when the
-    // footer hint is hidden.
-    int sep_row()        const { return rect_.y + rect_.h - bottom_pad_rows() - input_rows_; }
-    int input_top_row()  const { return sep_row() + 1; }
+    // footer hint is hidden. Mid-separator is kSepRows tall (pad + status + pad).
+    int sep_region_top_row() const {
+        return rect_.y + rect_.h - bottom_pad_rows() - input_rows_ - kSepRows + 1;
+    }
+    int sep_row()        const { return sep_region_top_row() + kSepStatusOffset; }
+    int input_top_row()  const { return sep_region_top_row() + kSepRows; }
     int input_row()      const { return rect_.y + rect_.h - bottom_pad_rows(); }
     int hint_sep_row()   const { return rect_.y + rect_.h - 1; }
     int pad_row()        const { return rect_.y + rect_.h; }
