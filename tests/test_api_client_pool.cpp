@@ -54,8 +54,8 @@ struct OverlapServer {
 
     std::mutex              mu;
     std::condition_variable cv;
-    int                     open_now = 0;
-    int                     peak     = 0;
+    std::atomic<int>        open_now{0};
+    std::atomic<int>        peak{0};
 
     std::thread              acceptor;
     std::vector<std::thread> handlers;
@@ -77,6 +77,8 @@ struct OverlapServer {
         REQUIRE(::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
         port = ntohs(addr.sin_port);
 
+        // Avoid realloc-while-running when accept_loop emplaces threads.
+        handlers.reserve(static_cast<size_t>(expected));
         acceptor = std::thread([this] { accept_loop(); });
     }
 
@@ -93,15 +95,24 @@ struct OverlapServer {
         char scratch[4096];
         ::recv(cs, scratch, sizeof(scratch), 0);
 
+        // Atomic barrier — avoids a TSan double-lock false positive seen
+        // with unique_lock + condition_variable::wait_for on this fixture
+        // under halt_on_error=1 (mutex lives on the main thread stack).
+        const int now = open_now.fetch_add(1, std::memory_order_acq_rel) + 1;
+        int prev_peak = peak.load(std::memory_order_relaxed);
+        while (now > prev_peak
+               && !peak.compare_exchange_weak(prev_peak, now,
+                                              std::memory_order_relaxed)) {
+        }
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            cv.notify_all();
+        }
         {
             std::unique_lock<std::mutex> lk(mu);
-            ++open_now;
-            peak = std::max(peak, open_now);
-            cv.notify_all();
-            // Barrier: hold the connection open until every expected peer is
-            // also open.  The 5s cap only trips if the client failed to
-            // overlap (regression) — it keeps the test from hanging.
-            cv.wait_for(lk, 5s, [this] { return open_now >= expected; });
+            cv.wait_for(lk, 5s, [this] {
+                return open_now.load(std::memory_order_acquire) >= expected;
+            });
         }
 
         // Non-chunked body with no Content-Length: the client streams until
@@ -116,10 +127,7 @@ struct OverlapServer {
         ::shutdown(cs, SHUT_RDWR);
         ::close(cs);
 
-        {
-            std::lock_guard<std::mutex> lk(mu);
-            --open_now;
-        }
+        open_now.fetch_sub(1, std::memory_order_acq_rel);
     }
 
     void stop() {
@@ -161,5 +169,5 @@ TEST_CASE("concurrent stream() calls overlap instead of serializing (issue #48)"
     // Both requests must have reached the server, and both must have been
     // in flight at the same moment.  peak == 1 means the second call waited
     // for the first to finish — the serialization this fix removes.
-    CHECK(server.peak == 2);
+    CHECK(server.peak.load() == 2);
 }

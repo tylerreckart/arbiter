@@ -36,6 +36,7 @@ std::string plain(const PtySession& s) {
 // the "wait for the previous turn" mechanism.
 bool wait_for_token(PtySession& s, std::size_t offset, const std::string& token,
                     int budget_ms) {
+    budget_ms = scale_timeout_ms(budget_ms);
     const auto deadline = std::chrono::steady_clock::now()
                         + std::chrono::milliseconds(budget_ms);
     while (std::chrono::steady_clock::now() < deadline) {

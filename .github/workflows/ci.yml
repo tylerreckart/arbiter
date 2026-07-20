@@ -136,10 +136,17 @@ jobs:
             cmake_flag: -DARBITER_ASAN=ON
             cache_expect: ARBITER_ASAN:BOOL=ON
             timeout_minutes: 35
+            # Full suite including PTY (ASan is compatible enough with the
+            # prebuilt OpenTUI .so for these deadlines).
+            ctest_args: ""
           - sanitizer: tsan
             cmake_flag: -DARBITER_TSAN=ON
             cache_expect: ARBITER_TSAN:BOOL=ON
             timeout_minutes: 60
+            # Exclude PTY integration tests: they link prebuilt unsanitized
+            # OpenTUI and are deadline-flaky under TSan.  Unit/concurrency
+            # tests (the point of TSan for this issue) still run.
+            ctest_args: "--label-exclude pty"
 
     steps:
       - uses: actions/checkout@v4
@@ -175,7 +182,7 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1
-        run: ctest --test-dir build --output-on-failure --no-tests=error -j 1
+        run: ctest --test-dir build --output-on-failure --no-tests=error -j 1 ${{ matrix.ctest_args }}
 
       - name: Upload test logs on failure
         if: failure()
