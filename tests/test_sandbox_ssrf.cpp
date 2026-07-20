@@ -77,6 +77,10 @@ TEST_CASE("sandbox write/read reject symlink escape outside workspace") {
     cfg.image = "unused";                 // usable_ needs non-empty image
     cfg.workspaces_root = root + "/workspaces";
     cfg.runtime = "docker";               // may be missing — force usable path
+    // Path-only unit test: do not start the idle reaper.  A live reaper
+    // thread + stack-allocated SandboxManager races TSan (false "double
+    // lock" on mu_ during wait_for vs touch_access).
+    cfg.idle_seconds = 0;
     // Construct then poke usable_ indirectly: write_to_workspace checks usable_.
     // When docker isn't on PATH, usable_ is false.  Bypass by writing through
     // a manager that we mark usable via ensuring image+root only... Looking
