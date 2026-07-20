@@ -1,19 +1,19 @@
 # Probe backlog (2026-07) — public issues only
 
-Runtime audit of Arbiter `main` @ `265d679` against `SECURITY.md` /
-concept docs. Build: `cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake
---build build -j && ctest --test-dir build` — **42/42 passed**.
+**Filed on GitHub:**
 
-**Private security findings are not in this file.** They were delivered
-to the maintainer via the probe run transcript and should be filed only
-through [SECURITY.md](../../SECURITY.md) private reporting. Do not paste
-exploit detail into public GitHub issues.
+| Probe | Issue |
+|-------|-------|
+| PROBE-007 | https://github.com/tylerreckart/arbiter/issues/89 |
+| PROBE-002 | https://github.com/tylerreckart/arbiter/issues/90 |
+| PROBE-006 | https://github.com/tylerreckart/arbiter/issues/91 |
+| PROBE-008 | https://github.com/tylerreckart/arbiter/issues/92 |
+| PROBE-009 | https://github.com/tylerreckart/arbiter/issues/93 |
+| PROBE-010 | https://github.com/tylerreckart/arbiter/issues/94 |
+| PROBE-011 | https://github.com/tylerreckart/arbiter/issues/95 |
+| Private channel request | https://github.com/tylerreckart/arbiter/issues/96 |
 
-Surfaces explicitly considered (even when no issue filed): tenant auth
-path, SSRF/`is_blocked_*`, sandbox path sanitiser, capability gating,
-MCP env/spawn, A2A HTTP client, orchestrator cancel/`InFlightRegistry`,
-`file_max_bytes`, scheduler vs request threads, idempotency cache,
-JSON depth limit, TUI prior crash classes (CHANGELOG).
+Private advisory bodies (not in git): see agent artifacts `probe-private/`.
 
 ---
 
