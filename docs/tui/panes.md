@@ -53,7 +53,7 @@ When closing collapses a split node to a single child, the child takes the paren
 
 Switching conversations (`^W b` → Enter, or `/chat switch`) attaches the selected conversation to the **focused pane only**. Sibling panes keep their conversations and the split layout stays intact. `/chat new` creates a fresh conversation on the focused pane.
 
-If the focused pane has a turn in flight, the TUI asks `Turn in progress — switch anyway? [y/N]`. Confirming cancels the turn and shows a `cancelling…` spinner while it unwinds; the output pump keeps painting, and Esc / Ctrl-C abandons the switch (the cancel still finishes in the background). Deleting a conversation that is currently shown behaves the same way.
+If the focused pane has a turn in flight, the TUI asks `Turn in progress — switch anyway? [y/N]`. Confirming cancels **that pane's** in-flight request (sibling panes keep streaming), shows a `cancelling…` spinner, and returns to the normal input loop while the turn unwinds. Esc / Ctrl-C abandons the pending switch; queued follow-up commands on the pane are kept unless the switch completes. Deleting a conversation that is currently shown behaves the same way for every pane bound to it.
 
 Agent message histories are keyed per conversation, so two panes can stream different threads concurrently without resetting each other.
 

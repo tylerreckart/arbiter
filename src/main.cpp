@@ -44,7 +44,7 @@
 #include "tui/opentui/top_header_frame.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
-#include "tui/opentui/kitty_key_decode.h"
+#include "tui/confirm_keys.h"
 
 #include <iostream>
 #include <string>
@@ -67,7 +67,6 @@
 #include <cstdio>
 #include <unistd.h>
 #include <fcntl.h>
-#include <cerrno>
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -286,49 +285,6 @@ static int read_confirm_key() {
     }
 }
 
-// Poll stdin up to timeout_ms without blocking the caller indefinitely.
-// Returns -2 on timeout, -1 on EOF/error, otherwise the key (CSI details in
-// out-params, same shape as read_history_sidebar_key).
-static int poll_key(char& csi_final, std::string& csi_params, int timeout_ms) {
-    csi_final = 0;
-    csi_params.clear();
-    const auto deadline = std::chrono::steady_clock::now()
-        + std::chrono::milliseconds(timeout_ms);
-    while (true) {
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(STDIN_FILENO, &fds);
-        const auto remaining = deadline - std::chrono::steady_clock::now();
-        if (remaining <= std::chrono::milliseconds(0)) return -2;
-        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count();
-        struct timeval tv;
-        tv.tv_sec = static_cast<time_t>(ms / 1000);
-        tv.tv_usec = static_cast<suseconds_t>((ms % 1000) * 1000);
-        const int r = ::select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv);
-        if (r < 0) {
-            if (errno == EINTR) continue;  // SIGWINCH etc. — keep waiting
-            return -1;
-        }
-        if (r == 0) return -2;
-        return arbiter::read_history_sidebar_key(csi_final, csi_params);
-    }
-}
-
-// True for bare Esc / Ctrl-C — used to abandon an in-progress conversation
-// switch/delete while a cancel is still unwinding (#46). Also accepts kitty
-// CSI-u encodings (Esc → CSI 27 u, Ctrl-C → CSI 99;5 u) so Ghostty/kitty/
-// WezTerm can abort the wait the same way the line editor does.
-static bool is_abandon_key(int key, char csi_final, const std::string& csi_params) {
-    if (key == 0x03) return true;  // legacy Ctrl-C
-    if (key == 0x1B && csi_final == 0 && csi_params.empty()) return true;  // bare Esc
-    if (key == 0x1B && csi_final == 'u') {
-        if (auto legacy = arbiter::opentui::decode_kitty_csi_u(csi_params)) {
-            return *legacy == 0x1B || *legacy == 0x03;
-        }
-    }
-    return false;
-}
-
 
 using arbiter::TUI;
 using arbiter::ThinkingIndicator;
@@ -510,6 +466,23 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         bool pending = false;
         bool create_new = false;
     } mouse_switch;
+
+    // After confirming switch/delete during an in-flight turn, cancel is
+    // scoped to the pane token(s) and completion is deferred onto the main
+    // loop (#46).  The render pump keeps painting; Esc abandons via the
+    // editor cancel handler; queued follow-ups are preserved until success.
+    struct PendingAfterCancel {
+        enum class Kind { None, Switch, Delete } kind = Kind::None;
+        bool create_new = false;
+        std::string target_id;
+        bool hard_delete = false;
+        // For Switch: wait until this pane's cmd_queue is idle.
+        // For Delete: wait until no pane bound to wait_conversation_id is busy.
+        Pane* pane = nullptr;
+        std::string wait_conversation_id;
+        const char* abandon_status = "Switch cancelled";
+    } pending_after_cancel;
+    std::atomic<bool> pending_cancel_wait{false};
 
     auto clear_mouse_drag = [&]() { mouse_drag = {}; };
 
@@ -731,8 +704,25 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 pump_notify();
             }
         });
-        p->editor.set_cancel_handler([raw, &orch]() {
-            orch.cancel();
+        p->editor.set_cancel_handler(
+            [raw, &orch, &pending_after_cancel, &pending_cancel_wait, &pump_notify]() {
+            // Esc during a deferred switch/delete wait abandons the pending
+            // op without a second global cancel (token cancel already fired).
+            if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
+                const char* status = pending_after_cancel.abandon_status
+                    ? pending_after_cancel.abandon_status
+                    : "Cancelled";
+                pending_after_cancel = {};
+                pending_cancel_wait.store(false);
+                raw->thinking.stop();
+                raw->tui.set_status(status);
+                if (pump_notify) pump_notify();
+                return;
+            }
+            // Scoped cancel: stop this pane's turn only so sibling panes
+            // keep streaming (#46 / #48).
+            if (raw->turn_cancel) orch.cancel_token(raw->turn_cancel);
+            else orch.cancel();
             raw->multiline_accum.clear();
             raw->output_queue.push_prose(
                 {arbiter::styled_activity_line("[interrupted]", StyleId::Error)});
@@ -1885,6 +1875,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             orch.set_worker_pane_binder([pane_ptr]() { g_active_pane = pane_ptr; });
             std::string line;
             while (p.cmd_queue.pop(line)) {
+                p.turn_cancel = std::make_shared<arbiter::CancelToken>();
+                arbiter::RequestCancelScope cancel_scope(orch.client(), p.turn_cancel);
                 p.cmd_queue.set_busy(true);
                 p.turn_running.store(true);
                 p.last_response.clear();
@@ -1916,6 +1908,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 }
                 p.cmd_queue.set_busy(false);
                 p.tui.clear_queue_indicator();
+                p.turn_cancel.reset();
+                // Wake the main loop if a deferred switch/delete is waiting
+                // for this turn to unwind (#46).
+                if (pending_cancel_wait.load() && layout_ptr) {
+                    layout_ptr->focused().editor.interrupt();
+                }
 
                 if (p.parent_pane != nullptr &&
                     !p.spawn_flowed.exchange(true)) {
@@ -2269,62 +2267,6 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         return busy;
     };
 
-    // After the user confirms switch/delete during an in-flight turn, cancel
-    // and wait without parking the main thread in a blind sleep — keep
-    // layout_mu free so the output pump can paint, show a cancelling spinner,
-    // and let Esc / Ctrl-C abandon the pending switch/delete (#46).
-    // `still_busy` and `on_start` run with layout_mu held.
-    // Returns true when the turn has unwound; false if the user abandoned.
-    auto wait_for_cancel_interruptible =
-        [&](const std::function<bool()>& still_busy,
-            const std::function<void()>& on_start,
-            const char* abandon_status) -> bool {
-        orch.cancel();
-        {
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            if (on_start) on_start();
-            layout.focused().thinking.start("cancelling… (Esc to abort)");
-            present_unlocked();
-        }
-
-        while (true) {
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                if (!still_busy()) {
-                    layout.focused().thinking.stop();
-                    present_unlocked();
-                    return true;
-                }
-                // Re-arm if turn cleanup raced and cleared the indicator.
-                layout.focused().thinking.start("cancelling… (Esc to abort)");
-                layout.focused().thinking.tick();
-            }
-
-            char csi = 0;
-            std::string params;
-            const int key = poll_key(csi, params, 30);
-            if (key == -1) {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                layout.focused().thinking.stop();
-                present_unlocked();
-                return false;
-            }
-            if (key == -2) continue;  // timeout — pump keeps painting
-            // Drain SGR mouse noise so a click's Up doesn't look like Esc.
-            if (key == 0x1B && (csi == 'M' || csi == 'm')
-                && !params.empty() && params[0] == '<') {
-                continue;
-            }
-            if (is_abandon_key(key, csi, params)) {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                layout.focused().thinking.stop();
-                layout.focused().tui.set_status(abandon_status);
-                present_unlocked();
-                return false;
-            }
-        }
-    };
-
     // Attach `id` to a single pane without tearing down the layout (#40).
     // Loads into that conversation's history slot if not already resident,
     // clears the pane's scrollback, and optionally replays the transcript.
@@ -2357,69 +2299,16 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         conversation_store.set_active(id);
     };
 
-    // `explicit_id`: switch straight to this id, bypassing the sidebar's
-    // current selection (used by /chat switch). Empty + !create_new reads
-    // history_sidebar.selected_conversation_id() instead (sidebar Enter).
-    // Attaches to the *focused* pane only — sibling panes keep their
-    // conversations and the split layout stays intact (#40).
-    auto switch_conversation = [&](bool create_new, std::string explicit_id = {}) {
-        // Confirm outside layout_mu so the output pump can keep painting and
-        // so nested mouse Up reports are drained by read_confirm_key.
-        {
-            bool busy = false;
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                busy = focused_turn_in_flight();
-                if (busy) {
-                    layout.focused().tui.set_status(
-                        "Turn in progress — switch anyway? [y/N]");
-                    present_unlocked();
-                }
-            }
-            if (busy) {
-                const int key = read_confirm_key();
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                layout.focused().tui.clear_status();
-                if (key != 'y' && key != 'Y') {
-                    history_sidebar.exit_focus();
-                    present_unlocked();
-                    return;
-                }
-            }
-        }
-
-        // Cancel + interruptible wait with layout_mu released so the pump
-        // keeps ticking; Esc abandons the switch (cancel already fired).
-        {
-            bool need_cancel = false;
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                need_cancel = focused_turn_in_flight();
-            }
-            if (need_cancel) {
-                if (!wait_for_cancel_interruptible(
-                        [&]() { return focused_turn_in_flight(); },
-                        [&]() {
-                            // Drop queued follow-ups so we only wait on the
-                            // current turn, not a backlog that would restart
-                            // busy as soon as cancel completes.
-                            layout.focused().cmd_queue.drain();
-                            layout.focused().tui.clear_queue_indicator();
-                        },
-                        "Switch cancelled")) {
-                    std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                    history_sidebar.exit_focus();
-                    present_unlocked();
-                    return;
-                }
-            }
-        }
-
-        std::unique_lock<std::recursive_mutex> lk(layout_mu);
+    // Completes a conversation switch after any in-flight turn has unwound.
+    // Caller holds layout_mu. Drains queued follow-ups on the focused pane
+    // only at this point so an abandoned wait keeps them (#46).
+    auto finish_switch_conversation = [&](bool create_new, std::string explicit_id) {
         clear_mouse_drag();
         Pane& focused = layout.focused();
+        focused.cmd_queue.drain();
+        focused.tui.clear_queue_indicator();
+        focused.thinking.stop();
 
-        // Persist the pane's current conversation before rebinding.
         conversation_store.flush();
         if (!focused.conversation_id.empty()) {
             conversation_store.save(focused.conversation_id, orch);
@@ -2462,47 +2351,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         ui_ctx.focused_pane = &layout.focused();
     };
 
-    // Soft/hard-deletes `id`. Any pane bound to it is reassigned to the
-    // store's new active conversation; layout is preserved.
-    auto delete_conversation = [&](const std::string& id, bool hard) {
-        bool any_showing = false;
-        {
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            layout.for_each_pane([&](Pane& p) {
-                if (p.conversation_id == id) any_showing = true;
-            });
-        }
-
-        if (any_showing) {
-            bool need_cancel = false;
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                need_cancel = conversation_turn_in_flight(id);
-            }
-            if (need_cancel) {
-                if (!wait_for_cancel_interruptible(
-                        [&]() { return conversation_turn_in_flight(id); },
-                        [&]() {
-                            layout.for_each_pane([&](Pane& p) {
-                                if (p.conversation_id == id) {
-                                    p.cmd_queue.drain();
-                                    p.tui.clear_queue_indicator();
-                                }
-                            });
-                        },
-                        "Delete cancelled")) {
-                    std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                    history_sidebar.exit_focus();
-                    present_unlocked();
-                    return;
-                }
-            }
-        }
-
-        std::unique_lock<std::recursive_mutex> lk(layout_mu);
+    // Completes a delete after bound panes' turns have unwound.
+    auto finish_delete_conversation = [&](const std::string& id, bool hard, bool any_showing) {
         clear_mouse_drag();
-
         if (any_showing) {
+            layout.for_each_pane([&](Pane& p) {
+                if (p.conversation_id == id) {
+                    p.cmd_queue.drain();
+                    p.tui.clear_queue_indicator();
+                }
+            });
+            layout.focused().thinking.stop();
             conversation_store.flush();
             layout.for_each_pane([&](Pane& p) {
                 if (p.conversation_id == id && !p.conversation_id.empty()) {
@@ -2532,6 +2391,171 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         } else {
             present_unlocked();
         }
+    };
+
+    // Start a scoped cancel and defer the switch/delete onto the main loop
+    // so read_line keeps running (spinner via pump; Esc abandons).
+    auto begin_pending_after_cancel = [&](PendingAfterCancel pending) {
+        {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            if (pending.kind == PendingAfterCancel::Kind::Switch && pending.pane) {
+                if (pending.pane->turn_cancel) {
+                    orch.cancel_token(pending.pane->turn_cancel);
+                } else {
+                    orch.cancel();
+                }
+            } else if (pending.kind == PendingAfterCancel::Kind::Delete) {
+                bool cancelled_any = false;
+                layout.for_each_pane([&](Pane& p) {
+                    if (p.conversation_id != pending.wait_conversation_id) return;
+                    if (p.turn_cancel) {
+                        orch.cancel_token(p.turn_cancel);
+                        cancelled_any = true;
+                    }
+                });
+                if (!cancelled_any) orch.cancel();
+            }
+            history_sidebar.exit_focus();
+            layout.focused().thinking.start("cancelling… (Esc to abort)");
+            present_unlocked();
+        }
+        pending_after_cancel = std::move(pending);
+        pending_cancel_wait.store(true);
+    };
+
+    // Service deferred switch/delete once the waited-on turn(s) are idle.
+    // Returns true when an op completed (caller should continue the REPL loop).
+    auto service_pending_after_cancel = [&]() -> bool {
+        if (pending_after_cancel.kind == PendingAfterCancel::Kind::None) return false;
+
+        std::unique_lock<std::recursive_mutex> lk(layout_mu);
+        bool busy = false;
+        if (pending_after_cancel.kind == PendingAfterCancel::Kind::Switch) {
+            Pane* pane = pending_after_cancel.pane;
+            bool alive = false;
+            if (pane) {
+                layout.for_each_pane([&](Pane& p) {
+                    if (&p == pane) alive = true;
+                });
+            }
+            busy = alive && pane->cmd_queue.is_busy();
+        } else {
+            busy = conversation_turn_in_flight(pending_after_cancel.wait_conversation_id);
+        }
+
+        if (busy) {
+            layout.focused().thinking.start("cancelling… (Esc to abort)");
+            layout.focused().thinking.tick();
+            return false;
+        }
+
+        const auto op = pending_after_cancel;
+        pending_after_cancel = {};
+        pending_cancel_wait.store(false);
+
+        if (op.kind == PendingAfterCancel::Kind::Switch) {
+            finish_switch_conversation(op.create_new, op.target_id);
+        } else if (op.kind == PendingAfterCancel::Kind::Delete) {
+            finish_delete_conversation(op.target_id, op.hard_delete, /*any_showing=*/true);
+        }
+        return true;
+    };
+
+    // `explicit_id`: switch straight to this id, bypassing the sidebar's
+    // current selection (used by /chat switch). Empty + !create_new reads
+    // history_sidebar.selected_conversation_id() instead (sidebar Enter).
+    // Attaches to the *focused* pane only — sibling panes keep their
+    // conversations and the split layout stays intact (#40).
+    auto switch_conversation = [&](bool create_new, std::string explicit_id = {}) {
+        if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            layout.focused().tui.set_status("Already cancelling… (Esc to abort)");
+            present_unlocked();
+            return;
+        }
+
+        // Confirm outside layout_mu so the output pump can keep painting and
+        // so nested mouse Up reports are drained by read_confirm_key.
+        {
+            bool busy = false;
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                busy = focused_turn_in_flight();
+                if (busy) {
+                    layout.focused().tui.set_status(
+                        "Turn in progress — switch anyway? [y/N]");
+                    present_unlocked();
+                }
+            }
+            if (busy) {
+                const int key = read_confirm_key();
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                layout.focused().tui.clear_status();
+                if (key != 'y' && key != 'Y') {
+                    history_sidebar.exit_focus();
+                    present_unlocked();
+                    return;
+                }
+            }
+        }
+
+        {
+            bool need_cancel = false;
+            Pane* pane = nullptr;
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                need_cancel = focused_turn_in_flight();
+                pane = &layout.focused();
+            }
+            if (need_cancel) {
+                PendingAfterCancel pending;
+                pending.kind = PendingAfterCancel::Kind::Switch;
+                pending.create_new = create_new;
+                pending.target_id = std::move(explicit_id);
+                pending.pane = pane;
+                pending.abandon_status = "Switch cancelled";
+                begin_pending_after_cancel(std::move(pending));
+                return;
+            }
+        }
+
+        std::unique_lock<std::recursive_mutex> lk(layout_mu);
+        finish_switch_conversation(create_new, std::move(explicit_id));
+    };
+
+    // Soft/hard-deletes `id`. Any pane bound to it is reassigned to the
+    // store's new active conversation; layout is preserved.
+    auto delete_conversation = [&](const std::string& id, bool hard) {
+        if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            layout.focused().tui.set_status("Already cancelling… (Esc to abort)");
+            present_unlocked();
+            return;
+        }
+
+        bool any_showing = false;
+        bool need_cancel = false;
+        {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            layout.for_each_pane([&](Pane& p) {
+                if (p.conversation_id == id) any_showing = true;
+            });
+            if (any_showing) need_cancel = conversation_turn_in_flight(id);
+        }
+
+        if (need_cancel) {
+            PendingAfterCancel pending;
+            pending.kind = PendingAfterCancel::Kind::Delete;
+            pending.target_id = id;
+            pending.hard_delete = hard;
+            pending.wait_conversation_id = id;
+            pending.abandon_status = "Delete cancelled";
+            begin_pending_after_cancel(std::move(pending));
+            return;
+        }
+
+        std::unique_lock<std::recursive_mutex> lk(layout_mu);
+        finish_delete_conversation(id, hard, any_showing);
     };
 
     // Drains /chat-queued switch/delete requests (see PendingConversationOp)
@@ -2724,6 +2748,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         while (service_pending_closes()) {}
         while (service_pending_conv_ops()) {}
         while (service_mouse_switch()) {}
+        while (service_pending_after_cancel()) {}
 
         if (history_sidebar.focused()) {
             if (pump_notify) pump_notify();
@@ -2832,6 +2857,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             if (service_pending_closes()) continue;
             if (service_pending_conv_ops()) continue;
             if (service_mouse_switch()) continue;
+            if (service_pending_after_cancel()) continue;
             // Layout mutation woke us up just to repaint the focused
             // pane's prompt — loop back so begin_input paints a fresh
             // one.  Without this, read_line returning false here would
@@ -2840,6 +2866,19 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             break;   // real EOF
         }
         if (quit_requested) break;
+
+        // While a deferred switch/delete is waiting on cancel, keep the
+        // input loop live but don't queue new turns onto the pane (#46).
+        if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
+            if (service_pending_after_cancel()) continue;
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                layout.focused().thinking.start("cancelling… (Esc to abort)");
+                present_unlocked();
+            }
+            continue;
+        }
+
         if (!line.empty()) focused.editor.add_to_history(line);
 
         focused.scroll_offset      = 0;

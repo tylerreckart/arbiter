@@ -551,6 +551,15 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_kitty_key_decode COMMAND unit_kitty_key_decode)
 
+    add_executable(unit_confirm_keys
+        tests/test_confirm_keys.cpp
+    )
+    target_include_directories(unit_confirm_keys PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_confirm_keys COMMAND unit_confirm_keys)
+
     add_executable(unit_mouse_decode
         tests/test_mouse_decode.cpp
     )
