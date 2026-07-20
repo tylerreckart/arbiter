@@ -44,6 +44,7 @@
 #include "tui/opentui/top_header_frame.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
+#include "tui/opentui/kitty_key_decode.h"
 
 #include <iostream>
 #include <string>
@@ -66,6 +67,7 @@
 #include <cstdio>
 #include <unistd.h>
 #include <fcntl.h>
+#include <cerrno>
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -290,25 +292,41 @@ static int read_confirm_key() {
 static int poll_key(char& csi_final, std::string& csi_params, int timeout_ms) {
     csi_final = 0;
     csi_params.clear();
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(STDIN_FILENO, &fds);
-    struct timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    const int r = ::select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv);
-    if (r < 0) return -1;
-    if (r == 0) return -2;
-    return arbiter::read_history_sidebar_key(csi_final, csi_params);
+    const auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(timeout_ms);
+    while (true) {
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        const auto remaining = deadline - std::chrono::steady_clock::now();
+        if (remaining <= std::chrono::milliseconds(0)) return -2;
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count();
+        struct timeval tv;
+        tv.tv_sec = static_cast<time_t>(ms / 1000);
+        tv.tv_usec = static_cast<suseconds_t>((ms % 1000) * 1000);
+        const int r = ::select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv);
+        if (r < 0) {
+            if (errno == EINTR) continue;  // SIGWINCH etc. — keep waiting
+            return -1;
+        }
+        if (r == 0) return -2;
+        return arbiter::read_history_sidebar_key(csi_final, csi_params);
+    }
 }
 
 // True for bare Esc / Ctrl-C — used to abandon an in-progress conversation
-// switch/delete while a cancel is still unwinding (#46).
+// switch/delete while a cancel is still unwinding (#46). Also accepts kitty
+// CSI-u encodings (Esc → CSI 27 u, Ctrl-C → CSI 99;5 u) so Ghostty/kitty/
+// WezTerm can abort the wait the same way the line editor does.
 static bool is_abandon_key(int key, char csi_final, const std::string& csi_params) {
-    if (key == 0x03) return true;  // Ctrl-C
-    if (key != 0x1B) return false;
-    // Bare Esc (no CSI). Mouse reports and arrows are Esc+CSI — ignore those.
-    return csi_final == 0 && csi_params.empty();
+    if (key == 0x03) return true;  // legacy Ctrl-C
+    if (key == 0x1B && csi_final == 0 && csi_params.empty()) return true;  // bare Esc
+    if (key == 0x1B && csi_final == 'u') {
+        if (auto legacy = arbiter::opentui::decode_kitty_csi_u(csi_params)) {
+            return *legacy == 0x1B || *legacy == 0x03;
+        }
+    }
+    return false;
 }
 
 
