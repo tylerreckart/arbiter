@@ -909,7 +909,7 @@ PaneScrollView::CodeSegment& PaneScrollView::current_code() {
             if (!code->closed_) return *code;
         }
     }
-    start_block_gap(tui_design().layout.panel_gap);
+    // Callers (append_code_open) own block/panel gap insertion.
     auto seg = std::make_unique<CodeSegment>();
     auto& ref = *seg;
     segments_.push_back(std::move(seg));
@@ -953,16 +953,94 @@ bool PaneScrollView::has_rendered_content() const {
     return false;
 }
 
+PaneScrollView::SegmentKind PaneScrollView::last_content_kind() const {
+    for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
+        if (dynamic_cast<const BlankSegment*>(it->get())) continue;
+        if (dynamic_cast<const HistoryGapSegment*>(it->get())) continue;
+        if (const auto* prose = dynamic_cast<const ProseSegment*>(it->get())) {
+            if (prose->is_empty()) continue;
+            return SegmentKind::Prose;
+        }
+        if (const auto* text = dynamic_cast<const TextSegment*>(it->get())) {
+            if (text->is_empty()) continue;
+            return SegmentKind::Text;
+        }
+        if (dynamic_cast<const CodeSegment*>(it->get())) return SegmentKind::Code;
+        if (dynamic_cast<const DiffSegment*>(it->get())) return SegmentKind::Diff;
+#ifdef ARBITER_HAS_NATIVE_DIFF_VIEW
+        if (dynamic_cast<const NativeDiffSegment*>(it->get())) return SegmentKind::Diff;
+#endif
+        if (dynamic_cast<const ToolSegment*>(it->get())) return SegmentKind::Tool;
+        if (dynamic_cast<const ThinkingSegment*>(it->get())) return SegmentKind::Thinking;
+        return SegmentKind::Other;
+    }
+    return SegmentKind::None;
+}
+
+void PaneScrollView::trim_trailing_soft_blanks() {
+    // Walk back over BlankSegments to reach the last content segment, then
+    // drop trailing empty prose lines (not user-echo pad rows) / text newlines
+    // so BlankSegment gaps stay a single consistent rhythm.
+    Segment* content = nullptr;
+    for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
+        if (dynamic_cast<BlankSegment*>(it->get())) continue;
+        content = it->get();
+        break;
+    }
+    if (!content) return;
+
+    if (auto* prose = dynamic_cast<ProseSegment*>(content)) {
+        bool changed = false;
+        while (!prose->source_.empty()) {
+            const StyledLine& last = prose->source_.back();
+            if (!last.text.empty()) break;
+            // Keep blank user-echo pad rows — they are intentional chrome.
+            if (arbiter::is_styled_user_echo_line(last)) break;
+            prose->source_.pop_back();
+            changed = true;
+        }
+        if (changed) prose->retheme();
+        return;
+    }
+    if (auto* text = dynamic_cast<TextSegment*>(content)) {
+        if (text->source_.empty()) return;
+        std::string& s = text->source_;
+        bool changed = false;
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) {
+            s.pop_back();
+            changed = true;
+        }
+        if (changed) text->retheme();
+    }
+}
+
+void PaneScrollView::ensure_block_gap(SegmentKind next, int gap_rows, bool force) {
+    if (gap_rows <= 0 || !has_rendered_content()) return;
+    const SegmentKind prev = last_content_kind();
+    if (prev == SegmentKind::None) return;
+    // Consecutive tool rows form one timeline cluster — no gap unless a turn
+    // boundary forced a new block.
+    if (prev == SegmentKind::Tool && next == SegmentKind::Tool && !force) return;
+    // Same-kind streaming coalesce (prose/text/thinking) skips gap unless forced.
+    if (prev == next && !force) return;
+    trim_trailing_soft_blanks();
+    start_block_gap(gap_rows);
+}
+
 void PaneScrollView::start_block() {
     start_block_gap(tui_design().layout.block_gap);
 }
 
 void PaneScrollView::start_block_gap(int gap_rows) {
-    if (segments_.empty() || gap_rows <= 0) return;
+    if (segments_.empty() || gap_rows < 0) return;
     int existing = 0;
     for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
         if (!dynamic_cast<const BlankSegment*>(it->get())) break;
         ++existing;
+    }
+    while (existing > gap_rows) {
+        segments_.pop_back();
+        --existing;
     }
     for (int i = existing; i < gap_rows; ++i) append_blank_row();
 }
@@ -970,12 +1048,11 @@ void PaneScrollView::start_block_gap(int gap_rows) {
 void PaneScrollView::append(std::string_view text, bool new_block) {
     if (text.empty()) return;
     std::string chunk(text);
-    if (new_block || !has_rendered_content()) {
-        start_block_gap(tui_design().layout.block_gap);
-        if (new_block) {
-            while (!chunk.empty() && (chunk.front() == '\n' || chunk.front() == '\r')) {
-                chunk.erase(chunk.begin());
-            }
+    const bool separate = new_block || last_content_kind() != SegmentKind::Text;
+    if (separate) {
+        ensure_block_gap(SegmentKind::Text, tui_design().layout.block_gap, new_block);
+        while (!chunk.empty() && (chunk.front() == '\n' || chunk.front() == '\r')) {
+            chunk.erase(chunk.begin());
         }
     }
     if (chunk.empty()) return;
@@ -985,11 +1062,19 @@ void PaneScrollView::append(std::string_view text, bool new_block) {
 void PaneScrollView::append_prose(const std::vector<StyledLine>& lines, bool new_block) {
     if (lines.empty()) return;
     const TuiDesign& d = tui_design();
-    if (new_block || !has_rendered_content()) {
-        start_block_gap(d.layout.block_gap);
+    const bool separate = new_block || last_content_kind() != SegmentKind::Prose;
+    std::vector<StyledLine> incoming = lines;
+    if (separate) {
+        ensure_block_gap(SegmentKind::Prose, d.layout.block_gap, new_block);
+        // Leading blank prose lines would stack on top of the BlankSegment gap.
+        while (!incoming.empty() && incoming.front().text.empty()
+               && !arbiter::is_styled_user_echo_line(incoming.front())) {
+            incoming.erase(incoming.begin());
+        }
+        if (incoming.empty()) return;
     }
     auto& prose = current_prose();
-    auto prepared = prepare_prose_lines(lines,
+    auto prepared = prepare_prose_lines(std::move(incoming),
                                         wrap_cols_,
                                         d.layout.prose_paragraph_gap,
                                         trailing_empty_count(prose.source_));
@@ -1003,11 +1088,8 @@ void PaneScrollView::append_code_open(std::string_view open_fence,
                                       bool new_block) {
     if (open_fence.empty()) return;
     const TuiDesign& d = tui_design();
-    if (new_block || !has_rendered_content()) {
-        start_block_gap(std::max(d.layout.block_gap, d.layout.panel_gap));
-    } else {
-        start_block_gap(d.layout.panel_gap);
-    }
+    const int gap = std::max(d.layout.block_gap, d.layout.panel_gap);
+    ensure_block_gap(SegmentKind::Code, gap, new_block);
     auto& code = current_code();
     code.open(std::string(lang), preview_rows);
 }
@@ -1042,9 +1124,7 @@ void PaneScrollView::upsert_tool(const ToolActivityEvent& event, bool new_block)
     }
 
     const TuiDesign& d = tui_design();
-    if (new_block || !has_rendered_content()) {
-        start_block_gap(d.layout.block_gap);
-    }
+    ensure_block_gap(SegmentKind::Tool, d.layout.block_gap, new_block);
     auto seg = std::make_unique<ToolSegment>();
     seg->set_wrap_cols(wrap_cols_);
     seg->apply(event);
@@ -1059,11 +1139,18 @@ void PaneScrollView::append_thinking(std::string_view delta, bool new_block) {
             think->append(delta);
             return;
         }
+        // Skip trailing blanks when looking for an open thinking block.
+        for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
+            if (dynamic_cast<BlankSegment*>(it->get())) continue;
+            if (auto* think = dynamic_cast<ThinkingSegment*>(it->get())) {
+                think->append(delta);
+                return;
+            }
+            break;
+        }
     }
     const TuiDesign& d = tui_design();
-    if (new_block || !has_rendered_content()) {
-        start_block_gap(d.layout.block_gap);
-    }
+    ensure_block_gap(SegmentKind::Thinking, d.layout.block_gap, new_block);
     auto seg = std::make_unique<ThinkingSegment>();
     seg->set_wrap_cols(wrap_cols_);
     seg->append(delta);
@@ -1072,12 +1159,12 @@ void PaneScrollView::append_thinking(std::string_view delta, bool new_block) {
 
 void PaneScrollView::append_diff(std::string_view patch) {
     if (patch.empty()) return;
-    const int gap = tui_design().layout.panel_gap;
+    const int gap = std::max(tui_design().layout.block_gap, tui_design().layout.panel_gap);
 #ifdef ARBITER_HAS_NATIVE_DIFF_VIEW
     DiffView native_probe;
     if (native_probe.set_patch(patch) && native_probe.valid()
         && native_probe.virtual_line_count() > 0) {
-        start_block_gap(gap);
+        ensure_block_gap(SegmentKind::Diff, gap, true);
         segments_.push_back(std::make_unique<NativeDiffSegment>(std::string(patch)));
         set_wrap_cols(wrap_cols_);
         return;
@@ -1086,12 +1173,12 @@ void PaneScrollView::append_diff(std::string_view patch) {
     DiffPanel probe;
     probe.set_patch(patch);
     if (probe.visual_rows() > 0) {
-        start_block_gap(gap);
+        ensure_block_gap(SegmentKind::Diff, gap, true);
         segments_.push_back(std::make_unique<DiffSegment>(std::string(patch)));
         set_wrap_cols(wrap_cols_);
         return;
     }
-    start_block_gap(gap);
+    ensure_block_gap(SegmentKind::Text, gap, true);
     current_text().append(arbiter::render_diff_ansi(std::string(patch)));
 }
 

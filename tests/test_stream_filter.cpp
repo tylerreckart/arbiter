@@ -39,6 +39,34 @@ TEST_CASE("non-verbose swallows /exec /fetch /agent /mem /advise lines") {
     CHECK(got == "Thinking...\nDone.\n");
 }
 
+TEST_CASE("non-verbose swallows /read /browse /todo /search and framing") {
+    Config cfg;
+    std::string got = run(cfg, {
+        "Intro\n",
+        "/read #2\n",
+        "/browse https://example.com\n",
+        "/search nuragic\n",
+        "/todo start 3\n",
+        "/list\n",
+        "[/read #2]\n",
+        "Outro\n"
+    });
+    CHECK(got == "Intro\nOutro\n");
+}
+
+TEST_CASE("non-verbose swallows /todo add block body until /endtodo") {
+    Config cfg;
+    std::string got = run(cfg, {
+        "before\n",
+        "/todo add Validate retained knowledge\n",
+        "body line one\n",
+        "body line two\n",
+        "/endtodo\n",
+        "after\n"
+    });
+    CHECK(got == "before\nafter\n");
+}
+
 TEST_CASE("non-verbose keeps plain narrative prose") {
     Config cfg;
     std::string got = run(cfg, {
