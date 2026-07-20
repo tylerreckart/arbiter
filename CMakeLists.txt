@@ -97,6 +97,7 @@ set(ARBITER_SOURCES
     src/cli_helpers.cpp
     src/repl/queues.cpp
     src/repl/layout.cpp
+    src/repl/pane.cpp
     src/repl/pane_history.cpp
     src/repl/conversation_store.cpp
     src/repl/conversation_titling.cpp
