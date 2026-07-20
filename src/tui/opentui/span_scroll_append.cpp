@@ -79,6 +79,7 @@ void SpanScrollAppender::clear() {
     style_cache_.clear();
     next_style_name_ = 0;
     utf8_hold_.clear();
+    has_line_ = false;
     if (buffer_ != 0) {
         textBufferReset(buffer_);
         if (syntax_ != 0) textBufferSetSyntaxStyle(buffer_, syntax_);
@@ -159,6 +160,10 @@ std::uint32_t SpanScrollAppender::style_id_for_key(const StyleKey& key) {
 void SpanScrollAppender::append_line(const StyledLine& line) {
     if (buffer_ == 0) return;
 
+    // Separate from the previous line; do not terminate with `\n` or the
+    // text buffer reports an extra empty visual row after every segment.
+    if (has_line_) emit_plain("\n", StyleId::Default);
+
     if (line.spans.empty()) {
         std::string chunk = utf8_hold_;
         utf8_hold_.clear();
@@ -183,7 +188,7 @@ void SpanScrollAppender::append_line(const StyledLine& line) {
         }
     }
 
-    emit_plain("\n", StyleId::Default);
+    has_line_ = true;
 }
 
 void SpanScrollAppender::compact_storage_if_needed() {
@@ -197,8 +202,10 @@ void SpanScrollAppender::rebuild_buffer_from_storage() {
     textBufferReset(buffer_);
     if (syntax_ != 0) textBufferSetSyntaxStyle(buffer_, syntax_);
 
+    has_line_ = false;
     for (const StoredRun& run : plain_storage_) {
         if (run.text.empty()) continue;
+        has_line_ = true;
         const std::uint32_t start = textBufferGetLength(buffer_);
         textBufferAppend(buffer_,
                          run.text.data(),

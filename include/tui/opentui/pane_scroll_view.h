@@ -358,6 +358,9 @@ private:
     [[nodiscard]] SegmentKind last_content_kind() const;
     // Drop trailing soft blank prose/text so BlankSegment gaps stay exact.
     void trim_trailing_soft_blanks();
+    // Empty visual rows already present at the end of scrollback (BlankSegments
+    // excluded — those are popped first): trailing empty prose / echo-pad lines.
+    [[nodiscard]] int trailing_separator_rows() const;
     // Ensure exactly `gap_rows` blank rows before a new content kind.
     // Tool→Tool stays tight unless `force` (turn boundary via new_block).
     void ensure_block_gap(SegmentKind next, int gap_rows, bool force = false);
