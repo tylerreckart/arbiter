@@ -98,7 +98,8 @@ TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
 
     view.append_prose(styled_user_echo_lines("hello"));
     const int after_echo = view.total_visual_rows();
-    CHECK(after_echo == 3);  // top pad + text + bottom pad (no phantom \\n row)
+    // Lead-in blank under the header + top pad + text + bottom pad.
+    CHECK(after_echo == 4);
 
     view.append_thinking("plan", /*new_block=*/true);
     const int after_think = view.total_visual_rows();
@@ -136,14 +137,14 @@ TEST_CASE("trailing prose blanks do not stack with block_gap") {
     prose.push_back(StyledLine{});
     view.append_prose(prose, /*new_block=*/true);
     const int after_prose = view.total_visual_rows();
-    CHECK(after_prose == 2);  // body + one soft blank (paragraph_gap)
+    CHECK(after_prose == 3);  // lead-in blank + body + one soft blank
 
     view.append_thinking("next", /*new_block=*/true);
     const int after = view.total_visual_rows();
     // Soft blank trimmed, replaced by exactly one BlankSegment + thinking(2).
     // Net: -1 soft +1 gap +2 think = +2 from after_prose.
     CHECK(after - after_prose == 2);
-    CHECK(after == 4);  // body + gap + thinking header + body
+    CHECK(after == 5);  // lead-in + body + gap + thinking header + body
 }
 
 TEST_CASE("prose to tool gap is exactly one blank with no trailing phantom") {
@@ -156,7 +157,7 @@ TEST_CASE("prose to tool gap is exactly one blank with no trailing phantom") {
     styled_append(line, StyleId::Default, "answer");
     view.append_prose({line}, /*new_block=*/true);
     const int after_prose = view.total_visual_rows();
-    CHECK(after_prose == 1);
+    CHECK(after_prose == 2);  // lead-in blank + body
 
     ToolActivityEvent start;
     start.phase = ToolActivityEvent::Phase::Started;
@@ -165,6 +166,18 @@ TEST_CASE("prose to tool gap is exactly one blank with no trailing phantom") {
     start.kind = "fetch";
     view.upsert_tool(start, /*new_block=*/false);
     CHECK(view.total_visual_rows() - after_prose == 1 /*gap*/ + 1 /*tool*/);
+}
+
+TEST_CASE("first user echo has a lead-in blank under the header") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    CHECK(view.total_visual_rows() == 0);
+
+    view.append_prose(styled_user_echo_lines("hi"), /*new_block=*/true);
+    // BlankSegment + echo top pad + text + bottom pad.
+    CHECK(view.total_visual_rows() == 4);
 }
 
 TEST_CASE("degenerate zero-size pane draw is a no-op") {

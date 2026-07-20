@@ -160,7 +160,7 @@ bool PaneScrollView::ProseSegment::is_empty() const {
 }
 
 int PaneScrollView::ProseSegment::visual_rows(int content_w) const {
-    if (view_ == 0) return 0;
+    if (view_ == 0 || is_empty()) return 0;
     const int next = std::max(1, content_w);
     // Keep emit pad / HR width in sync — do not mutate wrap_cols_ alone.
     if (next != wrap_cols_) {
@@ -265,7 +265,7 @@ bool PaneScrollView::TextSegment::is_empty() const {
 }
 
 int PaneScrollView::TextSegment::visual_rows(int content_w) const {
-    if (view_ == 0) return 0;
+    if (view_ == 0 || is_empty()) return 0;
     const_cast<TextSegment*>(this)->wrap_cols_ = content_w;
     textBufferViewSetWrapWidth(view_, static_cast<std::uint32_t>(content_w));
     return static_cast<int>(textBufferViewGetVirtualLineCount(view_));
@@ -1043,7 +1043,15 @@ int PaneScrollView::trailing_separator_rows() const {
 }
 
 void PaneScrollView::ensure_block_gap(SegmentKind next, int gap_rows, bool force) {
-    if (gap_rows <= 0 || !has_rendered_content()) return;
+    if (gap_rows <= 0) return;
+    // First content in an empty pane: leave one blank under the header chrome
+    // so the lead block (usually a user echo) doesn't kiss the top edge.
+    if (!has_rendered_content()) {
+        (void)next;
+        (void)force;
+        for (int i = 0; i < gap_rows; ++i) append_blank_row();
+        return;
+    }
     const SegmentKind prev = last_content_kind();
     if (prev == SegmentKind::None) return;
     // Consecutive tool rows form one timeline cluster — no gap unless a turn
