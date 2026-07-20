@@ -30,10 +30,8 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -52,10 +50,12 @@ struct OverlapServer {
     int         port      = 0;
     int         expected  = 2;
 
-    std::mutex              mu;
-    std::condition_variable cv;
-    std::atomic<int>        open_now{0};
-    std::atomic<int>        peak{0};
+    // Pure atomics — no mutex.  A prior unique_lock + condition_variable
+    // barrier tripped TSan "double lock" under halt_on_error=1 on CI
+    // (mutex lived on the main thread stack); the overlap proof only
+    // needs a peak counter and a wait-until-N-open gate.
+    std::atomic<int> open_now{0};
+    std::atomic<int> peak{0};
 
     std::thread              acceptor;
     std::vector<std::thread> handlers;
@@ -77,7 +77,6 @@ struct OverlapServer {
         REQUIRE(::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
         port = ntohs(addr.sin_port);
 
-        // Avoid realloc-while-running when accept_loop emplaces threads.
         handlers.reserve(static_cast<size_t>(expected));
         acceptor = std::thread([this] { accept_loop(); });
     }
@@ -95,24 +94,20 @@ struct OverlapServer {
         char scratch[4096];
         ::recv(cs, scratch, sizeof(scratch), 0);
 
-        // Atomic barrier — avoids a TSan double-lock false positive seen
-        // with unique_lock + condition_variable::wait_for on this fixture
-        // under halt_on_error=1 (mutex lives on the main thread stack).
         const int now = open_now.fetch_add(1, std::memory_order_acq_rel) + 1;
         int prev_peak = peak.load(std::memory_order_relaxed);
         while (now > prev_peak
                && !peak.compare_exchange_weak(prev_peak, now,
                                               std::memory_order_relaxed)) {
         }
-        {
-            std::lock_guard<std::mutex> lk(mu);
-            cv.notify_all();
-        }
-        {
-            std::unique_lock<std::mutex> lk(mu);
-            cv.wait_for(lk, 5s, [this] {
-                return open_now.load(std::memory_order_acquire) >= expected;
-            });
+
+        // Barrier: hold the connection open until every expected peer is
+        // also open.  The 5s cap only trips if the client failed to
+        // overlap (regression) — it keeps the test from hanging.
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (open_now.load(std::memory_order_acquire) < expected
+               && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(1ms);
         }
 
         // Non-chunked body with no Content-Length: the client streams until
