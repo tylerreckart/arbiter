@@ -125,15 +125,31 @@ void PtySession::spawn(const std::vector<std::string>& argv) {
 
     // Defaults — tests can override by calling env() before spawn().
     // Set first so explicit env() wins via order of iteration below.
+    // Sanitizer *_OPTIONS are forwarded from the parent when present so
+    // ASan/TSan CI legs actually instrument the PTY-spawned arbiter
+    // (spawn replaces the full environment and would otherwise drop them).
     bool has_home = false, has_key = false, has_term = false;
+    bool has_asan = false, has_tsan = false, has_lsan = false, has_ubsan = false;
     for (auto& kv : env_) {
         if (kv.first == "HOME") has_home = true;
         if (kv.first == "OPENROUTER_API_KEY") has_key = true;
         if (kv.first == "TERM") has_term = true;
+        if (kv.first == "ASAN_OPTIONS") has_asan = true;
+        if (kv.first == "TSAN_OPTIONS") has_tsan = true;
+        if (kv.first == "LSAN_OPTIONS") has_lsan = true;
+        if (kv.first == "UBSAN_OPTIONS") has_ubsan = true;
     }
     if (!has_home) env_.emplace_back("HOME", home_dir_);
     if (!has_key)  env_.emplace_back("OPENROUTER_API_KEY", "dummy-key-no-network");
     if (!has_term) env_.emplace_back("TERM", "xterm-256color");
+    auto forward_if_set = [&](bool already, const char* key) {
+        if (already) return;
+        if (const char* v = std::getenv(key)) env_.emplace_back(key, v);
+    };
+    forward_if_set(has_asan, "ASAN_OPTIONS");
+    forward_if_set(has_tsan, "TSAN_OPTIONS");
+    forward_if_set(has_lsan, "LSAN_OPTIONS");
+    forward_if_set(has_ubsan, "UBSAN_OPTIONS");
 
     struct winsize ws{};
     ws.ws_row = (unsigned short)rows_;

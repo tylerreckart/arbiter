@@ -125,15 +125,21 @@ jobs:
   sanitizers:
     name: linux-x86_64-${{ matrix.sanitizer }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    # TSan (and ASan+leaks) inflate build and especially ctest wall time;
+    # give these legs more headroom than the plain Debug OS matrix.
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - sanitizer: asan
             cmake_flag: -DARBITER_ASAN=ON
+            cache_expect: ARBITER_ASAN:BOOL=ON
+            timeout_minutes: 35
           - sanitizer: tsan
             cmake_flag: -DARBITER_TSAN=ON
+            cache_expect: ARBITER_TSAN:BOOL=ON
+            timeout_minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -148,10 +154,14 @@ jobs:
 
       - name: Configure
         run: |
+          set -euxo pipefail
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DINDEX_BUILD_TESTS=ON \
             ${{ matrix.cmake_flag }}
+          # Guard against a mistyped -D quietly leaving the sanitizer OFF
+          # (CMake treats unknown cache vars as unused, not as errors).
+          grep -F '${{ matrix.cache_expect }}' build/CMakeCache.txt
 
       - name: Build
         run: cmake --build build --config Debug -j "$(getconf _NPROCESSORS_ONLN)"
@@ -159,7 +169,8 @@ jobs:
       # Fail the step on the first sanitizer finding.  ASan leak detection
       # works on Linux (unlike macOS) — the reason these legs stay
       # Linux-only.  Unused *_OPTIONS vars are ignored by the other
-      # sanitizer runtime, so both can be set on every leg.
+      # sanitizer runtime, so both can be set on every leg.  PtySession
+      # forwards these into PTY-spawned arbiter children.
       - name: Test
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
