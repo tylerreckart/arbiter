@@ -102,11 +102,13 @@ TEST_CASE("backspace deletes the character before the cursor") {
 TEST_CASE("Ctrl-U kills the whole input line") {
     PtySession s = ready_editor();
     s.send("garbage");
-    s.read_for(200);
+    REQUIRE(wait_for_plain(s, "garbage", 8000));
     s.send("\x15");      // ^U
     s.read_for(200);
     s.send("ok");
-    s.read_for(300);
+    // Poll — fixed read_for races the input-row repaint on cold macOS CI
+    // (same flake class as "printable characters appear in the input row").
+    REQUIRE(wait_for_plain(s, "ok", 8000));
 
     // After ^U the buffer cleared, so "garbage" shouldn't be the most
     // recent content — "ok" should be.
