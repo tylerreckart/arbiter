@@ -97,6 +97,7 @@ set(ARBITER_SOURCES
     src/cli_helpers.cpp
     src/repl/queues.cpp
     src/repl/layout.cpp
+    src/repl/pane.cpp
     src/repl/pane_history.cpp
     src/repl/conversation_store.cpp
     src/repl/conversation_titling.cpp
@@ -343,6 +344,14 @@ if(INDEX_BUILD_TESTS)
     add_test(NAME chat_command_tui COMMAND chat_command_tui_tests)
     add_dependencies(chat_command_tui_tests arbiter)
 
+    # PTY integration tests drive the full arbiter binary (links prebuilt
+    # OpenTUI).  Label them so TSan CI can exclude the set — TSan + an
+    # unsanitized OpenTUI .so is timing-flaky and outside what unit TSan
+    # covers.  ASan CI still runs the full suite including these.
+    set_tests_properties(
+        line_editor sidebar_tui transcript_replay_tui chat_command_tui
+        PROPERTIES LABELS "pty")
+
     # --- Unit tests for security-critical command functions ---
     add_executable(unit_commands
         tests/test_commands.cpp
@@ -550,6 +559,15 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_kitty_key_decode COMMAND unit_kitty_key_decode)
+
+    add_executable(unit_confirm_keys
+        tests/test_confirm_keys.cpp
+    )
+    target_include_directories(unit_confirm_keys PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_confirm_keys COMMAND unit_confirm_keys)
 
     add_executable(unit_mouse_decode
         tests/test_mouse_decode.cpp

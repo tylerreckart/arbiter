@@ -21,6 +21,47 @@
 
 namespace arbiter {
 
+class ApiClient;
+
+// Per-request cancellation.  Esc / conversation-switch can cancel one pane's
+// in-flight LLM call without shutting down sibling panes' sockets (#46 / #48).
+// Bind via RequestCancelScope around complete()/stream() (or the higher-level
+// Orchestrator turn that calls them).
+class CancelToken {
+public:
+    void request_cancel();
+    [[nodiscard]] bool is_cancelled() const noexcept {
+        return cancelled_.load(std::memory_order_acquire);
+    }
+
+private:
+    friend class ApiClient;
+    friend class RequestCancelScope;
+
+    std::atomic<bool> cancelled_{false};
+    std::mutex        mu_;
+    ApiClient*        owner_ = nullptr;
+    void*             conn_  = nullptr;  // ApiClient::Conn* while leased
+};
+
+// Installs `token` as the current thread's request-cancel target for the
+// lifetime of the scope (nesting restores the previous token).
+class RequestCancelScope {
+public:
+    RequestCancelScope(ApiClient& client, std::shared_ptr<CancelToken> token);
+    ~RequestCancelScope();
+    RequestCancelScope(const RequestCancelScope&) = delete;
+    RequestCancelScope& operator=(const RequestCancelScope&) = delete;
+
+private:
+    ApiClient&                    client_;
+    std::shared_ptr<CancelToken>  token_;
+    std::shared_ptr<CancelToken>  prev_;
+};
+
+// Token installed by the current thread's RequestCancelScope, if any.
+std::shared_ptr<CancelToken> current_request_cancel_token();
+
 // Multipart content block.  Vision input requires interleaved text and
 // image parts; this carries either, with image data either inlined as base64
 // or referenced by URL.  The runtime never holds image bytes raw — they are
@@ -194,7 +235,12 @@ public:
 
     // Interrupt any in-progress streaming call.  Shuts down every open socket
     // so an in-flight SSL_read / read returns immediately.  Thread-safe.
+    // Prefer cancel(CancelToken&) when only one pane's turn should stop.
     void cancel();
+
+    // Cancel a single in-flight request identified by token.  Sibling panes
+    // streaming on other leases keep their sockets.  Thread-safe.
+    void cancel(CancelToken& token);
 
     // Pure helpers — request body builders.  Public so unit tests can verify
     // each provider's wire shape directly without spinning up a mock server.
@@ -217,6 +263,15 @@ public:
     };
 
 private:
+    friend class RequestCancelScope;
+    friend class CancelToken;
+
+    void register_token(CancelToken* token);
+    void unregister_token(CancelToken* token);
+    void bind_token_conn(CancelToken* token, Conn* conn);
+    void unbind_token_conn(CancelToken* token, Conn* conn);
+    [[nodiscard]] bool is_request_cancelled() const;
+    void shutdown_conn(Conn* conn);
     // Each provider's API key is stored XOR-masked at rest so a passive
     // memory scan / core dump / swap read doesn't surface the raw token.
     // The mask is a same-length random buffer generated at construction;
@@ -282,6 +337,7 @@ private:
         ConnLease& operator=(const ConnLease&) = delete;
         Conn& conn() { return *conn_; }
     private:
+        ApiClient& owner_;
         ProviderPool& pool_;
         Conn* conn_;
     };
@@ -289,6 +345,11 @@ private:
     std::atomic<int>  total_in_{0};
     std::atomic<int>  total_out_{0};
     std::atomic<bool> cancelled_{false};
+
+    // Tokens currently installed via RequestCancelScope.  cancel() fans out
+    // to every entry so a process-wide Esc still stops all in-flight turns.
+    std::mutex              tokens_mu_;
+    std::vector<CancelToken*> active_tokens_;
 
     // Process-wide observability hooks.  Both nullable; CLI / unit-test
     // contexts leave them null and complete() / stream() short-circuit
