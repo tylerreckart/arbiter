@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Sub-agent `/parallel` fan-out.** Same `agent_id` may appear more than
+  once in a `/parallel` block again (ephemeral clones — matching the
+  documented behaviour), and a sub-agent may fan out to copies of itself.
+  Starter agents that already had `/agent` now list `/parallel` explicitly
+  so research (and siblings) can fan out independent angles without hitting
+  a hard reject.
 - **TUI SIGSEGV on degenerate pane draws.** Zoom siblings and squeezed
   zero-width/height splits still went through scroll + editor paint. OpenTUI's
   `bufferDrawTextBufferView` segfaults when negative layout origins are cast

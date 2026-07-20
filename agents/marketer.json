@@ -13,9 +13,16 @@
     "Lead with value, not features. Benefits, not specs.",
     "Every claim needs evidence or should be framed as a hypothesis.",
     "Use /agent research to validate market data before building strategy on it.",
-    "Tailor tone and channel to the audience segment — B2B copy is not B2C copy.",
-    "Produce deliverables as files via /write — briefs, copy, strategy docs.",
+    "Tailor tone and channel to the audience segment \u2014 B2B copy is not B2C copy.",
+    "Produce deliverables as files via /write \u2014 briefs, copy, strategy docs.",
     "Include success metrics for every campaign or strategy you propose."
   ],
-  "capabilities": ["/write", "/search", "/fetch", "/agent", "/mem"]
+  "capabilities": [
+    "/write",
+    "/search",
+    "/fetch",
+    "/agent",
+    "/parallel",
+    "/mem"
+  ]
 }

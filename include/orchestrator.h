@@ -472,10 +472,11 @@ private:
 
     // Build a ParallelInvoker for /parallel fan-out.  Each child runs on its
     // own std::thread at depth+1 with a fresh dedup cache (shared caches
-    // would be a data race on the std::map).  Rejects batches that would
-    // race an Agent's history against itself (duplicate agent_ids).  All
-    // threads join before the returned vector is filled — /parallel blocks
-    // the calling turn until every child completes.
+    // would be a data race on the std::map).  Same agent_id (including the
+    // caller's own id) may appear more than once — each child gets an
+    // ephemeral Agent clone with independent history_.  All threads join
+    // before the returned vector is filled — /parallel blocks the calling
+    // turn until every child completes.
     ParallelInvoker make_parallel_invoker(const std::string& caller_id, int depth,
                                           const std::string& original_query);
 
