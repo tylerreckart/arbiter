@@ -343,6 +343,14 @@ if(INDEX_BUILD_TESTS)
     add_test(NAME chat_command_tui COMMAND chat_command_tui_tests)
     add_dependencies(chat_command_tui_tests arbiter)
 
+    # PTY integration tests drive the full arbiter binary (links prebuilt
+    # OpenTUI).  Label them so TSan CI can exclude the set — TSan + an
+    # unsanitized OpenTUI .so is timing-flaky and outside what unit TSan
+    # covers.  ASan CI still runs the full suite including these.
+    set_tests_properties(
+        line_editor sidebar_tui transcript_replay_tui chat_command_tui
+        PROPERTIES LABELS "pty")
+
     # --- Unit tests for security-critical command functions ---
     add_executable(unit_commands
         tests/test_commands.cpp

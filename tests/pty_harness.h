@@ -25,6 +25,11 @@
 
 namespace index_tests {
 
+// Stretch millisecond budgets under TSan (or ARBITER_TEST_TIME_SCALE).
+// Use for any test-local deadline that does not already go through
+// PtySession::read_for / read_until / wait_exited.
+int scale_timeout_ms(int ms);
+
 class PtySession {
 public:
     // rows/cols match the terminal geometry negotiated via TIOCSWINSZ before
