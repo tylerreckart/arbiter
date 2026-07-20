@@ -228,7 +228,7 @@ void OutputQueue::push_tool(const ToolActivityEvent& event) {
     if (fn) fn();
 }
 
-void OutputQueue::push_thinking(const std::string& delta) {
+void OutputQueue::push_thinking(const std::string& delta, const std::string& agent_id) {
     if (delta.empty()) return;
     std::function<void()> fn;
     {
@@ -246,10 +246,14 @@ void OutputQueue::push_thinking(const std::string& delta) {
         if (!items_.empty() && items_.back().kind == OutputItem::Kind::Thinking
             && !new_block) {
             items_.back().data += delta;
+            if (items_.back().agent_id.empty() && !agent_id.empty()) {
+                items_.back().agent_id = agent_id;
+            }
         } else {
             OutputItem item;
             item.kind = OutputItem::Kind::Thinking;
             item.data = delta;
+            item.agent_id = agent_id;
             item.new_block = new_block;
             items_.push_back(std::move(item));
         }

@@ -39,7 +39,9 @@ void drain_into(opentui::PaneScrollView& view, OutputQueue& queue) {
             view.upsert_tool(item.tool, item.new_block);
             break;
         case OutputItem::Kind::Thinking:
-            if (!item.data.empty()) view.append_thinking(item.data, item.new_block);
+            if (!item.data.empty()) {
+                view.append_thinking(item.data, item.new_block, item.agent_id);
+            }
             break;
         }
     }
@@ -52,7 +54,8 @@ void render_messages(opentui::PaneScrollView& view,
                      OutputQueue& queue,
                      const std::vector<Message>& history,
                      std::size_t begin,
-                     std::size_t end) {
+                     std::size_t end,
+                     const std::string& agent_id) {
     for (std::size_t i = begin; i < end; ++i) {
         const Message& m = history[i];
         if (is_replay_noise(m)) continue;
@@ -65,7 +68,7 @@ void render_messages(opentui::PaneScrollView& view,
 
         // Rebuild collapsible thinking before prose (matches live order).
         if (!m.thinking.empty()) {
-            queue.push_thinking(m.thinking);
+            queue.push_thinking(m.thinking, agent_id);
         }
         StreamRenderer renderer(kReplay, queue);
         renderer.feed(m.content);
@@ -97,7 +100,8 @@ void replay_transcript(Pane& pane,
     if (begin > end) begin = end;
     if (!pane.scroll) return;
 
-    render_messages(*pane.scroll, pane.output_queue, history, begin, end);
+    render_messages(*pane.scroll, pane.output_queue, history, begin, end,
+                    pane.current_agent);
     pane.scroll->set_gap(static_cast<int>(begin));
 }
 
@@ -114,7 +118,8 @@ bool replay_load_previous_chunk(Pane& pane, const std::vector<Message>& history)
     opentui::PaneScrollView scratch;
     scratch.bind(pane.tui);
     OutputQueue scratch_queue;
-    render_messages(scratch, scratch_queue, history, new_begin, begin);
+    render_messages(scratch, scratch_queue, history, new_begin, begin,
+                    pane.current_agent);
 
     const int before = pane_history_total_rows(pane);
     pane.scroll->splice_front(scratch.take_segments());

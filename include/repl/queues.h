@@ -61,6 +61,8 @@ struct OutputItem {
     bool new_block = false;
     // Kind::Tool — upsert ToolSegment by tool.id (Started then Finished).
     ToolActivityEvent tool{};
+    // Kind::Thinking — agent id for per-agent accent chrome (theme palette).
+    std::string agent_id;
 };
 
 class OutputQueue {
@@ -95,7 +97,8 @@ public:
 
     // Append a reasoning/thinking delta into the current ThinkingSegment
     // (creates one if needed). Collapsed by default in the scroll view.
-    void push_thinking(const std::string& delta);
+    // `agent_id` colors the left accent from the theme agent palette.
+    void push_thinking(const std::string& delta, const std::string& agent_id = {});
 
     std::vector<OutputItem> drain_items();
 

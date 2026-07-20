@@ -8,6 +8,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Changed
+- **Thinking blocks.** Reasoning rows render as markdown on the same
+  background as user echo / readline, with matching vertical pad and
+  inset, dimmed readable text, and a left accent from the theme’s
+  per-agent palette.
 - **Session sidebar.** Drop the always-on Task section. The MCP section
   only appears after an MCP tool has been used in the session (same
   pattern as Todos / Scheduled).
