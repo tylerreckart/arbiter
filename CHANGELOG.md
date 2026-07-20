@@ -13,6 +13,20 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   pattern as Todos / Scheduled).
 
 ### Fixed
+- **Sandbox workspace symlink escape.** `/write` and `/read` against the
+  per-tenant sandbox workspace now canonicalise the target and reject
+  paths that resolve outside `workspaces/t<tid>/`, so an in-workspace
+  symlink cannot reach host files.
+- **Host `/write` on A2A send + scheduler.** `wire_orch_tools` always
+  installs a write interceptor (with `file_max_bytes` accounting and
+  optional sandbox mirror) so agents no longer fall through to
+  `cmd_write` on the API server cwd.
+- **A2A HTTP SSRF guard.** The A2A client shares `/fetch`'s opensocket
+  denylist and http(s)-only redirect protocol limits, so federation
+  redirects cannot reach private/link-local/metadata addresses.
+- **MCP child env credential scrub.** Stdio MCP subprocesses inherit a
+  scrubbed parent environment (secret-shaped keys stripped); registry
+  `env` extras remain an explicit opt-in.
 - **Sub-agent `/parallel` fan-out.** Same `agent_id` may appear more than
   once in a `/parallel` block again (ephemeral clones — matching the
   documented behaviour), and a sub-agent may fan out to copies of itself.
