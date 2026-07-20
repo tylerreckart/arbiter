@@ -7,6 +7,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **Session sidebar.** Drop the always-on Task section. The MCP section
+  only appears after an MCP tool has been used in the session (same
+  pattern as Todos / Scheduled).
+
 ### Fixed
 - **Sub-agent `/parallel` fan-out.** Same `agent_id` may appear more than
   once in a `/parallel` block again (ephemeral clones — matching the
