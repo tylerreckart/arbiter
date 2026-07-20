@@ -8,14 +8,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
-- **Conversation switch/delete no longer freezes the TUI while cancel
-  unwinds (#46).** After confirming “switch anyway?” (or deleting a
-  conversation with a turn in flight), the main thread no longer spins in a
-  blind `sleep_for` loop. Cancel waits with `layout_mu` released so the
-  output pump keeps painting, a `cancelling… (Esc to abort)` spinner is
-  shown, and Esc / Ctrl-C abandons the pending switch or delete (the
-  in-flight turn still cancels). Queued follow-up commands on the affected
-  pane(s) are drained so cancel only has to finish the current turn.
+- **Conversation switch/delete cancel wait (#46).** After confirming
+  “switch anyway?” (or deleting a conversation with a turn in flight), the
+  main thread no longer spins in a blind `sleep_for` loop. Cancel is deferred
+  onto the REPL loop so input keeps running: a `cancelling… (Esc to abort)`
+  spinner paints via the output pump, Esc / Ctrl-C abandons the pending op
+  (queued follow-ups are preserved until a successful switch/delete), and the
+  turn is cancelled through a per-request `CancelToken` so sibling panes keep
+  streaming. Kitty CSI-u Esc/Ctrl-C is recognized the same way as the line
+  editor. Esc during a normal turn also uses the pane token when present.
 - **`/search` wiring.** Operator-typed `/search` in the TUI now mirrors
   `/fetch` (bypasses the focused agent's capability gate and injects
   results into the turn). `arbiter --send` wires the same search/MCP

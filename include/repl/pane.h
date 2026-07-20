@@ -4,6 +4,7 @@
 #include "tui/opentui/pane_input_editor.h"
 #include "tui/opentui/pane_scroll_view.h"
 #include "tui/tui.h"
+#include "api_client.h"
 
 #include <atomic>
 #include <memory>
@@ -20,6 +21,11 @@ struct Pane {
 
     OutputQueue       output_queue;
     CommandQueue      cmd_queue;
+
+    // Active turn's cancel token (set by the pane exec thread for the
+    // duration of handle()).  Esc / conversation-switch cancel this token
+    // instead of the process-wide ApiClient so sibling panes keep streaming.
+    std::shared_ptr<CancelToken> turn_cancel;
 
     std::unique_ptr<opentui::PaneScrollView> scroll;
 
