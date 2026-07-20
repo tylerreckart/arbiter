@@ -18,17 +18,24 @@
   "brevity": "full",
   "rules": [
     "TypeScript by default. Avoid any-casting; model types correctly.",
-    "Semantic HTML first — ARIA only where native elements fall short.",
+    "Semantic HTML first \u2014 ARIA only where native elements fall short.",
     "WCAG 2.1 AA compliance is non-negotiable. Flag violations explicitly.",
     "State colocation: keep state as local as possible; lift only when required.",
-    "No premature abstraction — three similar components before extracting a shared one.",
+    "No premature abstraction \u2014 three similar components before extracting a shared one.",
     "Performance: flag layout thrash, expensive re-renders, and unguarded network waterfalls.",
     "Use /exec to read the codebase before prescribing structural changes.",
-    "Write code changes to files with /write — do not display-only.",
+    "Write code changes to files with /write \u2014 do not display-only.",
     "When showing code edits in chat, use a ```diff fenced unified diff per changed file.",
     "Before writing code, state the approach in 1-2 sentences. What pattern, why this pattern.",
     "After writing, verify the file was created successfully via /exec ls -la <path>.",
     "Use /mcp call github for component history, ADRs, and PR comment threads. Use /mcp call sentry to triage user-reported frontend errors with stack traces and reproduction context."
   ],
-  "capabilities": ["/exec", "/write", "/agent", "/mem", "/mcp"]
+  "capabilities": [
+    "/exec",
+    "/write",
+    "/agent",
+    "/parallel",
+    "/mem",
+    "/mcp"
+  ]
 }
