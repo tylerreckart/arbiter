@@ -943,8 +943,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         const Rect sb = {pane_x + pane_w, 1, std::min(sw, gap), std::max(1, rows - 1)};
         Pane& focused = layout.focused();
         sidebar.set_focus_context(focused.current_agent,
-                                  focused.current_model,
-                                  focused.original_task);
+                                  focused.current_model);
         sidebar.set_active_tool_calls(focused.tool_indicator.total());
         std::vector<SidebarLoopEntry> loop_rows;
         for (const auto& b : loops.briefs()) {

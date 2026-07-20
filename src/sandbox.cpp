@@ -17,6 +17,7 @@
 #include <sstream>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 extern char** environ;
 
@@ -233,6 +234,73 @@ bool sanitize_rel(const std::string& raw, std::string& clean_out,
         out += parts[i];
     }
     clean_out = std::move(out);
+    return true;
+}
+
+// Resolve a workspace-relative path to an absolute host path that is
+// guaranteed to stay under `ws_root`.  Canonicalises existing ancestors
+// so a symlink planted inside the workspace (e.g. via /exec ln -s)
+// cannot escape to the host filesystem when arbiter opens the path.
+bool resolve_within_workspace(const fs::path& ws_root,
+                              const std::string& clean_rel,
+                              fs::path& target_out,
+                              std::string& err_out) {
+    std::error_code ec;
+    fs::path ws_canon = fs::weakly_canonical(ws_root, ec);
+    if (ec) ws_canon = ws_root.lexically_normal();
+    const std::string ws_str = ws_canon.string();
+
+    fs::path abs = ws_canon / clean_rel;
+    fs::path existing = abs;
+    std::vector<std::string> missing_names;
+    while (!existing.empty()) {
+        std::error_code e2;
+        if (fs::exists(existing, e2)) break;
+        // Collect leaf names as strings — `path / empty_path` on libstdc++
+        // yields a trailing slash (`ok.txt/`), which then makes
+        // create_directories() mkdir the leaf as a directory.
+        missing_names.push_back(existing.filename().string());
+        if (!existing.has_parent_path() || existing.parent_path() == existing) {
+            existing.clear();
+            break;
+        }
+        existing = existing.parent_path();
+    }
+
+    fs::path resolved;
+    if (!existing.empty()) {
+        std::error_code e3;
+        fs::path canon = fs::canonical(existing, e3);
+        if (e3) {
+            err_out = "invalid path: " + e3.message();
+            return false;
+        }
+        resolved = canon;
+        for (auto it = missing_names.rbegin(); it != missing_names.rend(); ++it)
+            resolved /= *it;
+    } else {
+        resolved = fs::weakly_canonical(abs, ec);
+        if (ec) {
+            err_out = "invalid path: " + ec.message();
+            return false;
+        }
+        resolved = resolved.lexically_normal();
+    }
+    const std::string resolved_str = resolved.lexically_normal().string();
+    // Drop a trailing slash so prefix checks and ofstream see a file path.
+    std::string normalized = resolved_str;
+    while (normalized.size() > 1 && normalized.back() == '/') normalized.pop_back();
+    resolved = fs::path(normalized);
+
+    const std::string final_str = resolved.string();
+    if (final_str.size() < ws_str.size() ||
+        final_str.compare(0, ws_str.size(), ws_str) != 0 ||
+        (final_str.size() > ws_str.size() &&
+         final_str[ws_str.size()] != '/')) {
+        err_out = "path escapes workspace";
+        return false;
+    }
+    target_out = std::move(resolved);
     return true;
 }
 
@@ -607,7 +675,9 @@ bool SandboxManager::write_to_workspace(int64_t tenant_id,
     std::string ws = ensure_workspace(tenant_id);
     if (ws.empty()) { err_out = "workspace mkdir failed"; return false; }
 
-    fs::path target = fs::path(ws) / clean;
+    fs::path target;
+    if (!resolve_within_workspace(fs::path(ws), clean, target, err_out))
+        return false;
 
     // Quota check.  Subtract any pre-existing entry's size before
     // testing the cap so an in-place overwrite of a 100 KB file with
@@ -639,6 +709,18 @@ bool SandboxManager::write_to_workspace(int64_t tenant_id,
     if (target.has_parent_path()) {
         fs::create_directories(target.parent_path(), ec);
         if (ec) { err_out = "mkdir parent: " + ec.message(); return false; }
+    }
+    // Refuse to follow a dangling or escape symlink at the leaf: open
+    // with no follow isn't portable via ofstream, so re-check after
+    // parent mkdir that the final path still resolves inside the root.
+    {
+        fs::path again;
+        std::string again_err;
+        if (!resolve_within_workspace(fs::path(ws), clean, again, again_err)) {
+            err_out = again_err;
+            return false;
+        }
+        target = std::move(again);
     }
     std::ofstream f(target, std::ios::out | std::ios::trunc | std::ios::binary);
     if (!f.is_open()) {
@@ -677,11 +759,26 @@ bool SandboxManager::read_from_workspace(int64_t tenant_id,
     std::string clean;
     if (!sanitize_rel(rel_path, clean, err_out)) return false;
 
-    fs::path target = fs::path(workspace_path_for(tenant_id)) / clean;
+    fs::path target;
+    if (!resolve_within_workspace(fs::path(workspace_path_for(tenant_id)),
+                                  clean, target, err_out))
+        return false;
     std::error_code ec;
     if (!fs::exists(target, ec) || fs::is_directory(target, ec)) {
         err_out = "no such file in workspace: " + clean;
         return false;
+    }
+    // Regular files only — refuse to read through a symlink leaf that
+    // somehow still points outside after the prefix check (defense in depth).
+    if (fs::is_symlink(target, ec)) {
+        fs::path again;
+        std::string again_err;
+        if (!resolve_within_workspace(fs::path(workspace_path_for(tenant_id)),
+                                      clean, again, again_err)) {
+            err_out = again_err;
+            return false;
+        }
+        target = std::move(again);
     }
     std::ifstream f(target, std::ios::in | std::ios::binary);
     if (!f.is_open()) { err_out = "open for reading failed"; return false; }
