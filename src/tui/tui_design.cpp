@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -826,6 +827,13 @@ int tui_bottom_pad_rows(bool footer_hint_visible, const TuiDesign& d) {
     const bool footer_on = footer_hint_visible && d.layout.show_footer;
     if (!footer_on && d.layout.chrome_compact_rows) return kCompact;
     return kFull;
+}
+
+TuiRgba tui_agent_accent(const std::string& agent_id) {
+    const TuiDesign& d = tui_design();
+    if (agent_id.empty() || agent_id == "index") return d.content.agent_master;
+    const size_t h = std::hash<std::string>{}(agent_id);
+    return d.content.agent_palette[h % d.content.agent_palette.size()];
 }
 
 TuiRgba tui_sidebar_bg(const TuiDesign& d) {

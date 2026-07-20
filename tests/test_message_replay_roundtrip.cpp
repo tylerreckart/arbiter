@@ -67,7 +67,9 @@ void replay_into(PaneScrollView& view, const std::vector<Message>& history) {
             view.upsert_tool(item.tool, item.new_block);
             break;
         case OutputItem::Kind::Thinking:
-            if (!item.data.empty()) view.append_thinking(item.data, item.new_block);
+            if (!item.data.empty()) {
+                view.append_thinking(item.data, item.new_block, item.agent_id);
+            }
             break;
         }
     }

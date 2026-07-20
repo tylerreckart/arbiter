@@ -47,7 +47,7 @@ void pane_history_drain_queue(Pane& pane) {
             break;
         case OutputItem::Kind::Thinking:
             if (pane.scroll && !item.data.empty()) {
-                pane.scroll->append_thinking(item.data, item.new_block);
+                pane.scroll->append_thinking(item.data, item.new_block, item.agent_id);
             }
             break;
         }

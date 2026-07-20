@@ -11,8 +11,8 @@ the model stream that emitted them):
 ```
 user echo strip (inset + vertical pad, input bg)
                                   ← one blank row
-thinking  ▸                                ThinkingSegment header (when provider emits)
-  first preview lines…                     up to 3 wrapped body rows when collapsed
+thinking strip (agent accent + input bg + pad) ThinkingSegment (when provider emits)
+  markdown body, dimmed…                   up to 3 wrapped body rows when collapsed
                                   ← one blank row
 assistant prose / markdown / code / diffs  (writ lines swallowed)
                                   ← one blank row
@@ -28,7 +28,7 @@ assistant prose / markdown / code / diffs  (writ lines swallowed)
 |-------|---------|-------|
 | User | `ProseSegment` + `UserEchoText` | Full-width strip with input inset + vertical pad |
 | Tools | `ToolSegment` | One row per `/cmd`; expand for args/result; clustered (no gap between tools) |
-| Reasoning | `ThinkingSegment` | Only when the provider streams a reasoning channel |
+| Reasoning | `ThinkingSegment` | Markdown body on input/echo bg; per-agent left accent from theme palette; dimmed readable text |
 | Assistant | `Prose` / `Code` / `Diff` | Same StreamRenderer path as before |
 | System | styled activity / delegation lines | Interrupts, advisor, `→ delegating:` |
 
@@ -74,11 +74,15 @@ When Anthropic emits `thinking_delta`, OpenAI-compat emits
 `reasoning_content` / `reasoning`, or Gemini streams parts with
 `"thought": true` (via `thinkingConfig.includeThoughts` on Gemini 2.5/3;
 Flash-Lite also sets `thinkingBudget`), deltas land in a collapsed
-`ThinkingSegment`. Models without a separate reasoning channel keep the
-header **thinking…** spinner only — Arbiter does not invent chain-of-thought
-from ordinary prose. Reasoning is stored on the assistant `Message.thinking`
-field (including nested `/agent` and `/parallel` deltas appended onto the
-pane agent’s open turn) and rebuilt on conversation switch.
+`ThinkingSegment`. The body is rendered as markdown on the same background
+as the user-echo / readline strip, with vertical pad + horizontal inset,
+dimmed readable text, and a left accent colored from the theme’s
+per-agent palette (`agent_master` / `agent_palette`). Models without a
+separate reasoning channel keep the header **thinking…** spinner only —
+Arbiter does not invent chain-of-thought from ordinary prose. Reasoning is
+stored on the assistant `Message.thinking` field (including nested `/agent`
+and `/parallel` deltas appended onto the pane agent’s open turn) and
+rebuilt on conversation switch.
 
 ## Replay
 

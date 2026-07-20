@@ -45,7 +45,10 @@ public:
     // Create or update an in-scroll tool activity row (by event.id).
     void upsert_tool(const ToolActivityEvent& event, bool new_block = false);
     // Append provider reasoning/thinking into a collapsible segment.
-    void append_thinking(std::string_view delta, bool new_block = false);
+    // `agent_id` selects the left accent from the theme agent palette.
+    void append_thinking(std::string_view delta,
+                         bool new_block = false,
+                         std::string_view agent_id = {});
     void clear();
 
     // Re-resolve scrollback colors after a TUI preset change.
@@ -239,16 +242,24 @@ private:
     };
 
     // Collapsible provider reasoning/thinking block. Collapsed by default.
+    // Chrome matches user-echo (input bg + vertical pad) with a per-agent
+    // left accent; body is markdown rendered in a dimmed readable style.
     struct ThinkingSegment final : Segment {
         std::string text_;
+        std::string agent_id_;
         bool expanded_ = false;
         mutable int wrap_cols_{80};
         static constexpr int kPreviewRows = 3;
+        static constexpr int kExpandedCap = 40;
+        static constexpr int kPadRows = 1;  // blank bg rows above/below
 
         void append(std::string_view delta);
+        void set_agent_id(std::string_view agent_id);
         void toggle_expanded();
         [[nodiscard]] bool can_expand() const;
         [[nodiscard]] std::string header_text() const;
+        [[nodiscard]] int body_content_cols(int content_w) const;
+        [[nodiscard]] const std::vector<StyledLine>& wrapped_body(int body_cols) const;
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
         void collect_lines(std::vector<std::string>& out) const override;
@@ -258,6 +269,12 @@ private:
                   int w,
                   int h,
                   int skip_rows) const override;
+
+    private:
+        void invalidate_cache() const;
+        mutable std::string cache_src_;
+        mutable int cache_cols_{-1};
+        mutable std::vector<StyledLine> body_cache_;
     };
 
     // Compact per-tool activity row (Claude Code–style timeline).
