@@ -1843,6 +1843,16 @@ static std::vector<Message> messages_from_json(const JsonValue* arr) {
     return decode_messages_json(json_serialize(*arr));
 }
 
+std::string Orchestrator::web_search(const std::string& query, int top_n) const {
+    if (!search_invoker_cb_) {
+        return "ERR: web search unavailable — configure a Brave Search API key "
+               "with `arbiter --setup-tools`, or set ARBITER_SEARCH_API_KEY / "
+               "BRAVE_SEARCH_API_KEY, then restart.";
+    }
+    if (query.empty()) return "ERR: empty query";
+    return search_invoker_cb_(query, top_n);
+}
+
 std::string Orchestrator::execute_slash_command(const std::string& line,
                                                 const std::string& agent_id) {
     auto cmds = parse_agent_commands(line);

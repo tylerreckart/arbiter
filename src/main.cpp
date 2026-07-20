@@ -1326,6 +1326,66 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 }
                 return;
             }
+            if (cmd == "search") {
+                // Operator /search mirrors /fetch: bypass the focused
+                // agent's capability gate, run the wired Brave invoker,
+                // and inject results into the conversation so the agent
+                // can synthesize — not just flash status text.
+                std::string rest;
+                std::getline(iss, rest);
+                if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+                while (!rest.empty() && (rest.back() == ' ' || rest.back() == '\t'))
+                    rest.pop_back();
+                std::string query = rest;
+                int top_n = 10;
+                {
+                    auto pos = query.rfind(" top=");
+                    if (pos != std::string::npos) {
+                        try {
+                            int parsed = std::stoi(query.substr(pos + 5));
+                            if (parsed > 0) {
+                                top_n = std::min(parsed, 20);
+                                query.resize(pos);
+                            }
+                        } catch (...) { /* keep query, default top_n */ }
+                    }
+                }
+                while (!query.empty() && (query.back() == ' ' || query.back() == '\t'))
+                    query.pop_back();
+                if (query.empty()) {
+                    push_status("Usage: /search <query> [top=N]");
+                    return;
+                }
+                thinking.start("searching");
+                std::string body = orch.web_search(query, top_n);
+                thinking.stop();
+                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0) {
+                    push_err(body);
+                    return;
+                }
+                static constexpr size_t kSearchLimit = 32768;
+                if (body.size() > kSearchLimit) {
+                    body.resize(kSearchLimit);
+                    body += "\n... [truncated]";
+                }
+                std::string msg = "[/search " + query + "]\n" + body;
+                if (msg.empty() || msg.back() != '\n') msg.push_back('\n');
+                msg += "[END SEARCH]\n";
+                try {
+                    thinking.start("generating");
+                    auto resp = orch.send(current_agent, msg);
+                    thinking.stop();
+                    if (resp.ok) {
+                        push_md(resp.content);
+                    } else {
+                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+                    }
+                } catch (const std::exception& ex) {
+                    thinking.stop();
+                    push_err("ERR: " + std::string(ex.what()));
+                }
+                return;
+            }
             if (cmd == "model") {
                 std::string id, model;
                 iss >> id >> model;
@@ -1430,7 +1490,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /mem search|entries|entry|add    — structured memory graph\n"
                     "\n"
                     "Tools  (same dispatch as API agent turns)\n"
-                    "  /search <query> [top=N]          — web search (Brave; needs API key)\n"
+                    "  /search <query> [top=N]          — web search; injects results like /fetch\n"
                     "  /browse <url>                    — fetch + extract readable text\n"
                     "  /todo list|add|start|done|…      — conversation-scoped task list\n"
                     "  /schedule list|<phrase>: <msg>   — schedule recurring/one-shot tasks\n"
