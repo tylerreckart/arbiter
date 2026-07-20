@@ -1,7 +1,5 @@
 # Arbiter
 
-**The agent that runs anywhere.**
-
 ![Release Version Shield](https://img.shields.io/github/v/release/tylerreckart/arbiter)
 ![License Shield](https://img.shields.io/github/license/tylerreckart/arbiter)
 
