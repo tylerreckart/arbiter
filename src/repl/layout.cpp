@@ -155,7 +155,11 @@ void LayoutTree::resize(const Rect& bounds) {
             if (p == zoomed_) {
                 p->tui.set_rect(bounds);
             } else {
-                p->tui.set_rect(Rect{bounds.x, bounds.y, 0, 0});
+                // Truly off-screen: same origin as the zoomed pane used to
+                // paint a 0×0 sibling on top of it, and negative chrome math
+                // from that degenerate rect could reach OpenTUI as uint32_t
+                // wraparound (SIGSEGV in bufferDrawTextBufferView).
+                p->tui.set_rect(Rect{-10000, -10000, 0, 0});
             }
         }
         // Keep Node::bounds in sync for the zoomed leaf so draw_borders skips

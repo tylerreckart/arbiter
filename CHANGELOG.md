@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **TUI SIGSEGV on degenerate pane draws.** Zoom siblings and squeezed
+  zero-width/height splits still went through scroll + editor paint. OpenTUI's
+  `bufferDrawTextBufferView` segfaults when negative layout origins are cast
+  to `uint32_t` (repro: x=-1, y=0). Degenerate panes are skipped, zoom
+  siblings are placed truly off-screen, and text-buffer / fill draws reject
+  negative coordinates. Fatal TUI logs now append a best-effort backtrace.
 - **Conversation switch/delete cancel wait (#46).** After confirming
   “switch anyway?” (or deleting a conversation with a turn in flight), the
   main thread no longer spins in a blind `sleep_for` loop. Cancel is deferred

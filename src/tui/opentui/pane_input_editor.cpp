@@ -409,8 +409,16 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     if (frame == 0) return;
     std::lock_guard<std::mutex> lk(mu_);
 
+    // Degenerate panes (zoom siblings / squeezed splits) produce negative
+    // input_top_row math; casting that to uint32_t reaches OpenTUI as a
+    // huge origin. Skip entirely — chrome already no-ops on w/h <= 0.
+    if (tui.cols() <= 0) return;
+    if (tui.left_col() < 1) return;
+    const int input_top = tui.input_top_row_pub();
+    if (input_top < 0) return;
+
     const std::uint32_t px = static_cast<std::uint32_t>(tui.left_col() - 1);
-    const std::uint32_t py = static_cast<std::uint32_t>(tui.input_top_row_pub());
+    const std::uint32_t py = static_cast<std::uint32_t>(input_top);
     const TuiDesign& d = tui_design();
     const int cols = std::max(1, tui.cols());
     const int outer_pad = tui_pane_edge_pad(cols, d);
