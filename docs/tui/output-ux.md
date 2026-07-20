@@ -37,8 +37,13 @@ Quiet default: writ lines stay swallowed (`BlockParser` covers `/read`, `/browse
 dumps. `/verbose` still streams raw writs with `›` WritLine styling.
 
 Blocks are separated by exactly one blank row (`layout.block_gap`, default 1).
-Trailing soft blanks inside prose are trimmed before the next block so gaps
-never stack to two.
+Trailing soft blanks inside prose are trimmed before the next block, and empty
+user-echo pad rows already count toward that single gap so blanks never stack.
+Prose text buffers use newlines as separators (not terminators) so a phantom
+empty row cannot appear after every segment.
+
+The mid-separator chrome (thinking indicator / tool status) is three rows tall:
+one blank pad, the status text, and one blank pad above the input strip.
 
 ## Tool timeline
 
