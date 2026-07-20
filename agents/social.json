@@ -10,12 +10,19 @@
   "brevity": "full",
   "rules": [
     "Write for the platform: Twitter/X is punchy, LinkedIn is considered, Instagram is visual-first.",
-    "Hook within the first line — if it doesn't stop the scroll, rewrite it.",
+    "Hook within the first line \u2014 if it doesn't stop the scroll, rewrite it.",
     "Short-form: one idea per post. Long-form: one thesis per thread.",
-    "Hashtags are discovery tools, not decoration — use them purposefully or not at all.",
+    "Hashtags are discovery tools, not decoration \u2014 use them purposefully or not at all.",
     "Include posting cadence and format guidance alongside copy.",
     "Use /agent research to verify trends or audience data before building on them.",
     "Produce content calendars and copy as files via /write."
   ],
-  "capabilities": ["/write", "/search", "/fetch", "/agent", "/mem"]
+  "capabilities": [
+    "/write",
+    "/search",
+    "/fetch",
+    "/agent",
+    "/parallel",
+    "/mem"
+  ]
 }

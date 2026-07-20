@@ -459,12 +459,10 @@ TEST_CASE("/mem add entry dispatcher rejects empty body and unclosed block") {
     }
 }
 
-TEST_CASE("/parallel duplicate agent_id produces explicit error") {
-    // When the same agent_id appears more than once in a /parallel block,
-    // execute_agent_commands must reject it with the exact error string
-    // defined in commands.cpp before calling the parallel_invoker.
-
-    // Build a /parallel command whose body lists the same agent twice.
+TEST_CASE("/parallel allows duplicate agent_id (ephemeral clones)") {
+    // Same agent_id may appear more than once — the orchestrator runs each
+    // child on an ephemeral Agent clone.  Sub-agents (e.g. research) rely on
+    // this to fan out multiple copies of themselves.
     AgentCommand cmd;
     cmd.name = "parallel";
     cmd.args = "";
@@ -474,26 +472,80 @@ TEST_CASE("/parallel duplicate agent_id produces explicit error") {
     std::vector<AgentCommand> cmds;
     cmds.push_back(cmd);
 
-    // The parallel_invoker must NOT be called — set it to one that panics
-    // so we detect any accidental call.
     bool invoker_called = false;
-    auto guard_invoker = [&](const std::vector<std::pair<std::string, std::string>>&)
+    std::vector<std::pair<std::string, std::string>> seen;
+    auto capture_invoker = [&](const std::vector<std::pair<std::string, std::string>>& kids)
         -> std::vector<std::string> {
         invoker_called = true;
-        return {};
+        seen = kids;
+        return {"ok-a", "ok-b"};
     };
 
     auto out = execute_agent_commands(
-        cmds, "index", "",
+        cmds, "research", "",
         /*agent_invoker=*/nullptr, /*confirm=*/nullptr,
         /*dedup_cache=*/nullptr, /*advisor_invoker=*/nullptr,
         /*tool_status=*/nullptr, /*pane_spawner=*/nullptr,
         /*write_interceptor=*/nullptr, /*exec_disabled=*/false,
-        /*parallel_invoker=*/guard_invoker);
+        /*parallel_invoker=*/capture_invoker);
 
-    CHECK(!invoker_called);
-    CHECK(out.find("ERR: /parallel cannot invoke 'researcher' twice in one batch") != std::string::npos);
-    CHECK(out.find("each agent_id must appear at most once") != std::string::npos);
+    CHECK(invoker_called);
+    REQUIRE(seen.size() == 2);
+    CHECK(seen[0].first == "researcher");
+    CHECK(seen[1].first == "researcher");
+    CHECK(out.find("ERR: /parallel cannot invoke") == std::string::npos);
+    CHECK(out.find("[child 1/2 — /agent researcher]") != std::string::npos);
+    CHECK(out.find("[child 2/2 — /agent researcher]") != std::string::npos);
+    CHECK(out.find("ok-a") != std::string::npos);
+    CHECK(out.find("ok-b") != std::string::npos);
+}
+
+TEST_CASE("/parallel from a sub-agent caller reaches the invoker") {
+    // Capability gate: /agent grants the delegation bundle, which includes
+    // /parallel.  A research-style caller must be able to fan out.
+    AgentCommand cmd;
+    cmd.name = "parallel";
+    cmd.content = "/agent backend dig A\n/agent frontend dig B\n";
+    cmd.truncated = false;
+
+    bool called = false;
+    auto inv = [&](const std::vector<std::pair<std::string, std::string>>& kids)
+        -> std::vector<std::string> {
+        called = true;
+        CHECK(kids.size() == 2);
+        return {"ra", "rb"};
+    };
+
+    auto out = execute_agent_commands(
+        {cmd}, "research", "",
+        /*agent_invoker=*/nullptr,
+        /*confirm=*/nullptr,
+        /*dedup_cache=*/nullptr,
+        /*advisor_invoker=*/nullptr,
+        /*tool_status=*/nullptr,
+        /*pane_spawner=*/nullptr,
+        /*write_interceptor=*/nullptr,
+        /*exec_disabled=*/false,
+        /*parallel_invoker=*/inv,
+        /*structured_memory_reader=*/nullptr,
+        /*structured_memory_writer=*/nullptr,
+        /*mcp_invoker=*/nullptr,
+        /*memory_scratchpad=*/nullptr,
+        /*search_invoker=*/nullptr,
+        /*artifact_writer=*/nullptr,
+        /*artifact_reader=*/nullptr,
+        /*artifact_lister=*/nullptr,
+        /*a2a_invoker=*/nullptr,
+        /*scheduler_invoker=*/nullptr,
+        /*todo_invoker=*/nullptr,
+        /*lesson_invoker=*/nullptr,
+        /*exec_invoker=*/nullptr,
+        /*capabilities=*/std::vector<std::string>{
+            "/search", "/fetch", "/browse", "/mem", "/agent", "/parallel", "/mcp"});
+
+    CHECK(called);
+    CHECK(out.find("ERR: capability not granted") == std::string::npos);
+    CHECK(out.find("ra") != std::string::npos);
 }
 
 TEST_CASE("/help dispatch returns topic body or ERR for unknown topic") {
