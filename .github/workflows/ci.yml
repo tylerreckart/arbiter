@@ -2,6 +2,8 @@ name: CI
 
 # Build + test on every PR and every push to main.  Mirrors the release
 # matrix so anything that breaks in release.yml is caught here first.
+# Also runs Linux-only AddressSanitizer and ThreadSanitizer legs that
+# flip the existing ARBITER_ASAN / ARBITER_TSAN CMake options.
 # Pull-request runs use the standard GITHUB_TOKEN with read-only perms;
 # no secrets needed.
 
@@ -111,6 +113,64 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ctest-logs-${{ matrix.os_slug }}-${{ matrix.arch_slug }}
+          path: build/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Sanitizer coverage is Linux-only.  macOS ASan cannot detect leaks
+  # ("detect_leaks is not supported on this platform"), and ASan/TSan
+  # cannot be combined in one configure (CMake FATAL_ERROR).  Separate
+  # matrix legs keep the plain Debug OS matrix lean while continuously
+  # exercising the existing ARBITER_ASAN / ARBITER_TSAN CMake options.
+  sanitizers:
+    name: linux-x86_64-${{ matrix.sanitizer }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: asan
+            cmake_flag: -DARBITER_ASAN=ON
+          - sanitizer: tsan
+            cmake_flag: -DARBITER_TSAN=ON
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps (Linux)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libssl-dev libcurl4-openssl-dev libsqlite3-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DINDEX_BUILD_TESTS=ON \
+            ${{ matrix.cmake_flag }}
+
+      - name: Build
+        run: cmake --build build --config Debug -j "$(getconf _NPROCESSORS_ONLN)"
+
+      # Fail the step on the first sanitizer finding.  ASan leak detection
+      # works on Linux (unlike macOS) — the reason these legs stay
+      # Linux-only.  Unused *_OPTIONS vars are ignored by the other
+      # sanitizer runtime, so both can be set on every leg.
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure --no-tests=error -j 1
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-linux-x86_64-${{ matrix.sanitizer }}
           path: build/Testing/Temporary/
           if-no-files-found: ignore
           retention-days: 7
