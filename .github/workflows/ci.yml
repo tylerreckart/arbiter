@@ -2,6 +2,8 @@ name: CI
 
 # Build + test on every PR and every push to main.  Mirrors the release
 # matrix so anything that breaks in release.yml is caught here first.
+# Also runs Linux-only AddressSanitizer and ThreadSanitizer legs that
+# flip the existing ARBITER_ASAN / ARBITER_TSAN CMake options.
 # Pull-request runs use the standard GITHUB_TOKEN with read-only perms;
 # no secrets needed.
 
@@ -111,6 +113,82 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ctest-logs-${{ matrix.os_slug }}-${{ matrix.arch_slug }}
+          path: build/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Sanitizer coverage is Linux-only.  macOS ASan cannot detect leaks
+  # ("detect_leaks is not supported on this platform"), and ASan/TSan
+  # cannot be combined in one configure (CMake FATAL_ERROR).  Separate
+  # matrix legs keep the plain Debug OS matrix lean while continuously
+  # exercising the existing ARBITER_ASAN / ARBITER_TSAN CMake options.
+  sanitizers:
+    name: linux-x86_64-${{ matrix.sanitizer }}
+    runs-on: ubuntu-22.04
+    # TSan (and ASan+leaks) inflate build and especially ctest wall time;
+    # give these legs more headroom than the plain Debug OS matrix.
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: asan
+            cmake_flag: -DARBITER_ASAN=ON
+            cache_expect: ARBITER_ASAN:BOOL=ON
+            timeout_minutes: 35
+            # Full suite including PTY (ASan is compatible enough with the
+            # prebuilt OpenTUI .so for these deadlines).
+            ctest_args: ""
+          - sanitizer: tsan
+            cmake_flag: -DARBITER_TSAN=ON
+            cache_expect: ARBITER_TSAN:BOOL=ON
+            timeout_minutes: 60
+            # Exclude PTY integration tests: they link prebuilt unsanitized
+            # OpenTUI and are deadline-flaky under TSan.  Unit/concurrency
+            # tests (the point of TSan for this issue) still run.
+            ctest_args: "--label-exclude pty"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps (Linux)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libssl-dev libcurl4-openssl-dev libsqlite3-dev
+
+      - name: Configure
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DINDEX_BUILD_TESTS=ON \
+            ${{ matrix.cmake_flag }}
+          # Guard against a mistyped -D quietly leaving the sanitizer OFF
+          # (CMake treats unknown cache vars as unused, not as errors).
+          grep -F '${{ matrix.cache_expect }}' build/CMakeCache.txt
+
+      - name: Build
+        run: cmake --build build --config Debug -j "$(getconf _NPROCESSORS_ONLN)"
+
+      # Fail the step on the first sanitizer finding.  ASan leak detection
+      # works on Linux (unlike macOS) — the reason these legs stay
+      # Linux-only.  Unused *_OPTIONS vars are ignored by the other
+      # sanitizer runtime, so both can be set on every leg.  PtySession
+      # forwards these into PTY-spawned arbiter children.
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure --no-tests=error -j 1 ${{ matrix.ctest_args }}
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-linux-x86_64-${{ matrix.sanitizer }}
           path: build/Testing/Temporary/
           if-no-files-found: ignore
           retention-days: 7
