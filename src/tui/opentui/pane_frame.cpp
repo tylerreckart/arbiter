@@ -102,12 +102,14 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
 
     fill_rect(frame, px, static_cast<std::uint32_t>(r.y), pw, static_cast<std::uint32_t>(r.h), d.bg.scroll);
 
-    const int sep_y = r.y + r.h - bottom_pad - chrome.input_rows - TUI::kSepRows;
-    const int input_top_y = sep_y + 1;
+    // Mid-separator region: blank pad, status row, blank pad (kSepRows == 3).
+    const int sep_top = r.y + r.h - bottom_pad - chrome.input_rows - TUI::kSepRows;
+    const int status_y = sep_top + TUI::kSepStatusOffset;
+    const int input_top_y = sep_top + TUI::kSepRows;
     const int input_bottom_y = r.y + r.h - bottom_pad - 1;
     const int hint_y = r.y + r.h - 2;
     const int scroll_top_y = r.y;
-    const int scroll_bottom_y = sep_y - 1;
+    const int scroll_bottom_y = sep_top - 1;
 
     if (scroll_top_y <= scroll_bottom_y) {
         fill_rect(frame,
@@ -118,13 +120,21 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                   d.bg.scroll);
     }
 
-    fill_rect(frame, block_x, static_cast<std::uint32_t>(sep_y), block_w, 1, d.bg.scroll);
+    // Paint the whole sep region (pads + status) with scroll bg.
+    if (TUI::kSepRows > 0) {
+        fill_rect(frame,
+                  block_x,
+                  static_cast<std::uint32_t>(sep_top),
+                  block_w,
+                  static_cast<std::uint32_t>(TUI::kSepRows),
+                  d.bg.scroll);
+    }
     if (!chrome.pre_input_status.empty()) {
         std::string pre = trim_to_cells(chrome.pre_input_status,
                                         std::max(0, content_w - header_pad));
         draw_text(frame,
                   block_x + static_cast<std::uint32_t>(header_pad),
-                  static_cast<std::uint32_t>(sep_y),
+                  static_cast<std::uint32_t>(status_y),
                   pre,
                   d.accent.info,
                   d.bg.scroll);
@@ -133,7 +143,7 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                                            std::max(0, content_w - header_pad));
         draw_text(frame,
                   block_x + static_cast<std::uint32_t>(header_pad),
-                  static_cast<std::uint32_t>(sep_y),
+                  static_cast<std::uint32_t>(status_y),
                   status,
                   d.accent.info,
                   d.bg.scroll);
@@ -151,7 +161,7 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                                                          : d.accent.success;
             draw_text(frame,
                       static_cast<std::uint32_t>(bx),
-                      static_cast<std::uint32_t>(sep_y),
+                      static_cast<std::uint32_t>(status_y),
                       badge,
                       color,
                       d.bg.scroll);
