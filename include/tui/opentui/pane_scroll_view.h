@@ -45,7 +45,7 @@ public:
     // Create or update an in-scroll tool activity row (by event.id).
     void upsert_tool(const ToolActivityEvent& event, bool new_block = false);
     // Append provider reasoning/thinking into a collapsible segment.
-    // `agent_id` selects the left accent from the theme agent palette.
+    // `agent_id` is retained for callers; chrome currently uses a shared label.
     void append_thinking(std::string_view delta,
                          bool new_block = false,
                          std::string_view agent_id = {});
@@ -126,6 +126,7 @@ private:
         [[nodiscard]] bool find_skip_line(std::size_t index) const override;
 
         void emit_line(const StyledLine& line);
+        void emit_echo_run(const StyledLine* begin, const StyledLine* end);
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,
@@ -242,8 +243,8 @@ private:
     };
 
     // Collapsible provider reasoning/thinking block. Collapsed by default.
-    // Chrome matches user-echo (input bg + vertical pad) with a per-agent
-    // left accent; body is markdown rendered in a dimmed readable style.
+    // Rounded-box chrome with plain "thinking" breaking the top border; body
+    // is markdown-rendered (StyledLine) with a one-cell inset.
     struct ThinkingSegment final : Segment {
         std::string text_;
         std::string agent_id_;
@@ -251,7 +252,8 @@ private:
         mutable int wrap_cols_{80};
         static constexpr int kPreviewRows = 3;
         static constexpr int kExpandedCap = 40;
-        static constexpr int kPadRows = 1;  // blank bg rows above/below
+        // Border column + one-cell inset on each side.
+        static constexpr int kBoxChromeCols = 4;
 
         void append(std::string_view delta);
         void set_agent_id(std::string_view agent_id);

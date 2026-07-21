@@ -250,6 +250,120 @@ StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols) {
     return out;
 }
 
+std::vector<StyledLine> wrap_pad_styled_user_echo_line(const StyledLine& line, int cols) {
+    const int width = cols < 1 ? 1 : cols;
+    // One cell of breathing room on each side when the band is wide enough.
+    const int hpad = (width >= 3) ? 1 : 0;
+    const int content_cols = width - 2 * hpad;
+
+    std::string body = line.text;
+    // Same over-budget trailing-space trim as pad_styled_user_echo_line.
+    while (!body.empty() && body.back() == ' '
+           && static_cast<int>(display_width(body)) > content_cols) {
+        body.pop_back();
+    }
+
+    std::vector<StyledLine> out;
+    auto flush_row = [&](std::string row) {
+        // Pad the content slice, then wrap with horizontal inset spaces so
+        // glyphs never sit on the band edge.
+        StyledLine content = pad_styled_user_echo_line(styled_user_echo(row), content_cols);
+        if (hpad == 0) {
+            out.push_back(std::move(content));
+            return;
+        }
+        std::string band(static_cast<size_t>(hpad), ' ');
+        band += content.text;
+        band.append(static_cast<size_t>(hpad), ' ');
+        out.push_back(styled_user_echo(band));
+    };
+
+    if (body.empty()) {
+        flush_row({});
+        return out;
+    }
+
+    // Greedy word wrap into the inset content width. Emitting one buffer line
+    // per visual row (each padded to `width`) means OpenTUI word-wrap cannot
+    // leave short rows with glyph-only backgrounds.
+    std::string row;
+    size_t i = 0;
+    while (i < body.size()) {
+        const bool is_space = body[i] == ' ';
+        size_t j = i + 1;
+        if (is_space) {
+            while (j < body.size() && body[j] == ' ') ++j;
+        } else {
+            while (j < body.size() && body[j] != ' ') ++j;
+        }
+        const std::string_view tok(body.data() + i, j - i);
+        const int tok_w = static_cast<int>(display_width(tok));
+        const int row_w = static_cast<int>(display_width(row));
+
+        if (!row.empty() && row_w + tok_w > content_cols) {
+            if (is_space) {
+                // Whitespace that caused the wrap is the break point — drop it.
+                flush_row(std::move(row));
+                row.clear();
+                i = j;
+                continue;
+            }
+            flush_row(std::move(row));
+            row.clear();
+        }
+
+        if (tok_w > content_cols) {
+            std::string remain(tok);
+            while (!remain.empty()) {
+                const int room = content_cols - static_cast<int>(display_width(row));
+                if (room < 1) {
+                    flush_row(std::move(row));
+                    row.clear();
+                    continue;
+                }
+                std::string chunk = trim_to_display_cols(remain, room);
+                if (chunk.empty()) chunk.assign(remain, 0, 1);
+                row += chunk;
+                remain.erase(0, chunk.size());
+                if (static_cast<int>(display_width(row)) >= content_cols) {
+                    flush_row(std::move(row));
+                    row.clear();
+                }
+            }
+        } else {
+            row.append(tok.data(), tok.size());
+            if (static_cast<int>(display_width(row)) >= content_cols) {
+                flush_row(std::move(row));
+                row.clear();
+            }
+        }
+        i = j;
+    }
+    if (!row.empty() || out.empty()) flush_row(std::move(row));
+    return out;
+}
+
+std::vector<StyledLine> wrap_pad_styled_user_echo_block(
+    const std::vector<StyledLine>& lines, int cols) {
+    const int width = cols < 1 ? 1 : cols;
+    std::vector<StyledLine> out;
+    const StyledLine blank = pad_styled_user_echo_line(styled_user_echo({}), width);
+    out.push_back(blank);
+    for (const StyledLine& line : lines) {
+        if (!is_styled_user_echo_line(line)) continue;
+        auto rows = wrap_pad_styled_user_echo_line(line, width);
+        out.insert(out.end(),
+                   std::make_move_iterator(rows.begin()),
+                   std::make_move_iterator(rows.end()));
+    }
+    if (out.size() == 1) {
+        // No content rows survived — still emit a text row between pads.
+        out.push_back(blank);
+    }
+    out.push_back(blank);
+    return out;
+}
+
 bool resize_styled_user_echo_lines(std::vector<StyledLine>& lines, int cols) {
     bool changed = false;
     for (StyledLine& line : lines) {

@@ -2,6 +2,7 @@
 
 #include "styled_text.h"
 #include "tui/opentui/engine.h"
+#include "tui/opentui/rounded_box.h"
 #include "tui/sidebar_format.h"
 #include "tui/tui_design.h"
 
@@ -16,6 +17,7 @@ namespace arbiter::opentui {
 namespace {
 
 constexpr std::uint32_t kAttrBold = 1u << 0;
+constexpr int kBoxPad = 1;  // breathing room inside the border
 
 std::string capitalize_label(std::string_view s) {
     if (s.empty()) return {};
@@ -44,16 +46,6 @@ void draw_text(OpenTuiHandle frame,
                    fg.data(),
                    bg.data(),
                    attrs);
-}
-
-void fill_rect(OpenTuiHandle frame,
-               std::uint32_t x,
-               std::uint32_t y,
-               std::uint32_t w,
-               std::uint32_t h,
-               const TuiRgba& bg) {
-    if (w == 0 || h == 0) return;
-    bufferFillRect(frame, x, y, w, h, bg.data());
 }
 
 std::string trim_to_cells(std::string s, int max_cells) {
@@ -252,36 +244,6 @@ int draw_loop_list(OpenTuiHandle frame,
     return row;
 }
 
-// A dithered shade block, not a thin rule (d.border.vertical) or a solid
-// block (too heavy) — a single-cell-wide glyph only covers part of the
-// cell, so whichever side of the seam it lands on, the other side still
-// reads as a gap. This still fills the whole column so it touches both
-// neighbors, but at partial density so it doesn't read as a solid wall.
-constexpr const char* kBorderGlyph = "▕";
-
-void draw_vertical_border(OpenTuiHandle frame,
-                          int x,
-                          int y0,
-                          int h,
-                          const TuiRgba& fg,
-                          const TuiRgba& bg) {
-    for (int yy = y0; yy < y0 + h; ++yy) {
-        draw_text(frame,
-                  static_cast<std::uint32_t>(x),
-                  static_cast<std::uint32_t>(yy),
-                  kBorderGlyph,
-                  fg,
-                  bg);
-    }
-}
-
-// Pane content is inset from its own rect by pane_padding_x (see
-// draw_pane_chrome); the border needs to sit in that gap, flush against
-// the pane's real content edge, or it reads as floating in dead space.
-int pane_edge_pad(const TuiDesign& d, int pane_w) {
-    return tui_pane_edge_pad(pane_w, d);
-}
-
 } // namespace
 
 void draw_sidebar(OpenTuiHandle frame,
@@ -296,41 +258,35 @@ void draw_sidebar(OpenTuiHandle frame,
     if (pr.h <= 0) return;
 
     const TuiDesign& d = tui_design();
-    const TuiRgba sbg = tui_sidebar_bg(d);
     const SidebarColors sc = tui_sidebar_colors(d);
-    const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
     const int bottom_pad = std::max(1, pane_bottom_pad_rows);
 
-    const int sidebar_top = r.y;
-    const int panel_top_y = sidebar_top;
-    const int sep_top = pr.y + pr.h - bottom_pad - pane_input_rows - TUI::kSepRows;
+    // One blank row above the box; bottom flush with the input box bottom.
+    const int panel_top_y = r.y + 1;
+    const int sep_y = pr.y + pr.h - bottom_pad - pane_input_rows - TUI::kSepRows;
     const int input_bottom_y = pr.y + pr.h - bottom_pad - 1;
-    if (input_bottom_y < panel_top_y) return;
+    if (input_bottom_y < panel_top_y + 1) return;
 
     const int block_x = r.x;
     const int block_w = r.w;
-    const int content_x = block_x + header_pad;
-    const int content_w = std::max(1, block_w - (header_pad * 2));
+    const int content_x = block_x + 1 + kBoxPad;
+    const int content_w = std::max(1, block_w - 2 - (kBoxPad * 2));
+    const int block_h = std::max(2, input_bottom_y - panel_top_y + 1);
 
-    const int panel_bottom_y = pr.y + pr.h - 1;
-    const int block_h = std::max(1, panel_bottom_y - panel_top_y + 1);
+    const TuiRgba& bg = d.bg.scroll;
+    draw_rounded_box(frame,
+                     block_x,
+                     panel_top_y,
+                     block_w,
+                     block_h,
+                     d.text.muted,
+                     bg,
+                     "Session",
+                     &d.accent.primary);
 
-    fill_rect(frame,
-              static_cast<std::uint32_t>(block_x),
-              static_cast<std::uint32_t>(panel_top_y),
-              static_cast<std::uint32_t>(block_w),
-              static_cast<std::uint32_t>(block_h),
-              sbg);
-
-    // Border sits flush against the pane's real content edge, inside its
-    // own padding gap, so it touches the content area with no dead space.
-    const int pane_pad = pane_edge_pad(d, pr.w);
-    const int border_x = pr.x + pr.w - 1 - std::max(0, pane_pad - 1);
-    draw_vertical_border(frame, border_x, panel_top_y, block_h, d.bg.status, d.bg.scroll);
-
-    int y = panel_top_y + 1;
-    const int scroll_bottom = sep_top - 1;
-    const TuiRgba& bg = sbg;
+    // Leave one blank row directly beneath the title-bearing top border.
+    int y = panel_top_y + 2;
+    const int scroll_bottom = sep_y;
 
     y = draw_section_label(frame, d, content_x, content_w, y, "Context", bg);
     if (snap.context_pct_current >= 0) {

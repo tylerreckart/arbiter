@@ -2,6 +2,7 @@
 
 #include "styled_text.h"
 #include "tui/opentui/engine.h"
+#include "tui/opentui/rounded_box.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
@@ -11,7 +12,6 @@ namespace arbiter::opentui {
 
 namespace {
 
-constexpr int kHeaderAccentCells = 1;
 constexpr std::uint32_t kAttrBold = 1u << 0;
 
 int cell_width(std::string_view s) {
@@ -102,14 +102,12 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
 
     fill_rect(frame, px, static_cast<std::uint32_t>(r.y), pw, static_cast<std::uint32_t>(r.h), d.bg.scroll);
 
-    // Mid-separator region: blank pad, status row, blank pad (kSepRows == 3).
-    const int sep_top = r.y + r.h - bottom_pad - chrome.input_rows - TUI::kSepRows;
-    const int status_y = sep_top + TUI::kSepStatusOffset;
-    const int input_top_y = sep_top + TUI::kSepRows;
+    const int sep_y = r.y + r.h - bottom_pad - chrome.input_rows - TUI::kSepRows;
+    const int input_top_y = sep_y + 1;
     const int input_bottom_y = r.y + r.h - bottom_pad - 1;
     const int hint_y = r.y + r.h - 2;
     const int scroll_top_y = r.y;
-    const int scroll_bottom_y = sep_top - 1;
+    const int scroll_bottom_y = sep_y - 1;
 
     if (scroll_top_y <= scroll_bottom_y) {
         fill_rect(frame,
@@ -120,70 +118,63 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                   d.bg.scroll);
     }
 
-    // Paint the whole sep region (pads + status) with scroll bg.
-    if (TUI::kSepRows > 0) {
-        fill_rect(frame,
-                  block_x,
-                  static_cast<std::uint32_t>(sep_top),
-                  block_w,
-                  static_cast<std::uint32_t>(TUI::kSepRows),
-                  d.bg.scroll);
-    }
-    if (!chrome.pre_input_status.empty()) {
-        std::string pre = trim_to_cells(chrome.pre_input_status,
-                                        std::max(0, content_w - header_pad));
-        draw_text(frame,
-                  block_x + static_cast<std::uint32_t>(header_pad),
-                  static_cast<std::uint32_t>(status_y),
-                  pre,
-                  d.accent.info,
-                  d.bg.scroll);
-    } else if (chrome.status_active && !chrome.status.empty()) {
-        std::string status = trim_to_cells(chrome.status,
-                                           std::max(0, content_w - header_pad));
-        draw_text(frame,
-                  block_x + static_cast<std::uint32_t>(header_pad),
-                  static_cast<std::uint32_t>(status_y),
-                  status,
-                  d.accent.info,
-                  d.bg.scroll);
-    } else if (!chrome.activity_badge.empty()) {
-        // Unfocused activity/completion indicator (#41) — right-aligned on
-        // the mid-separator so it doesn't collide with a focused prompt.
-        std::string badge = trim_to_cells(chrome.activity_badge,
-                                          std::max(0, content_w - header_pad));
-        const int badge_w = cell_width(badge);
-        const int bx = r.x + pad + static_cast<int>(block_w) - header_pad - badge_w;
-        if (bx >= r.x + pad) {
-            const TuiRgba& color = (badge.find("✗") != std::string::npos)
-                ? d.accent.error
-                : (badge.find("●") != std::string::npos) ? d.accent.warning
-                                                         : d.accent.success;
-            draw_text(frame,
-                      static_cast<std::uint32_t>(bx),
-                      static_cast<std::uint32_t>(status_y),
-                      badge,
-                      color,
-                      d.bg.scroll);
-        }
-    }
+    fill_rect(frame, block_x, static_cast<std::uint32_t>(sep_y), block_w, 1, d.bg.scroll);
 
-    if (input_top_y <= input_bottom_y) {
-        const int input_h = input_bottom_y - input_top_y + 1;
-        fill_rect(frame,
-                  block_x,
-                  static_cast<std::uint32_t>(input_top_y),
-                  block_w,
-                  static_cast<std::uint32_t>(input_h),
-                  d.bg.header);
-        const int accent_w = std::min(kHeaderAccentCells, static_cast<int>(block_w));
-        if (accent_w > 0) {
-            fill_rect(frame,
-                      block_x,
+    // Input box: rounded-corner border on the pane background (no fill, no
+    // accent strip).  The top border row doubles as the status line — the
+    // thinking/tool-call indicator paints over part of the horizontal run.
+    if (input_top_y < input_bottom_y && block_w >= 2) {
+        const TuiRgba& border_fg = chrome.focus_accent ? d.border.focus
+                                                       : d.text.muted;
+        const int box_h = input_bottom_y - input_top_y + 1;
+        draw_rounded_box(frame,
+                         static_cast<int>(block_x),
+                         input_top_y,
+                         static_cast<int>(block_w),
+                         box_h,
+                         border_fg,
+                         d.bg.scroll);
+
+        // Inline status — text framed by single spaces so it reads as a
+        // break in the border rather than an overlay.
+        const int inset = 1 + header_pad;           // corner + padding cells
+        const int status_budget = content_w - inset * 2 - 2;
+        const std::string* status_src = nullptr;
+        if (!chrome.pre_input_status.empty()) {
+            status_src = &chrome.pre_input_status;
+        } else if (chrome.status_active && !chrome.status.empty()) {
+            status_src = &chrome.status;
+        }
+        if (status_src && status_budget > 0) {
+            const std::string status =
+                " " + trim_to_cells(*status_src, status_budget) + " ";
+            draw_text(frame,
+                      block_x + static_cast<std::uint32_t>(inset),
                       static_cast<std::uint32_t>(input_top_y),
-                      static_cast<std::uint32_t>(accent_w),
-                      static_cast<std::uint32_t>(input_h),
-                      d.accent.primary);
+                      status,
+                      d.accent.info,
+                      d.bg.scroll);
+        } else if (!chrome.activity_badge.empty() && status_budget > 0) {
+            // Unfocused activity/completion indicator (#41) — right-aligned
+            // on the top border so it doesn't collide with a focused prompt.
+            std::string badge = trim_to_cells(chrome.activity_badge,
+                                              status_budget);
+            badge = " " + badge + " ";
+            const int badge_w = cell_width(badge);
+            const int right_x = static_cast<int>(block_x + block_w - 1);
+            const int bx = right_x - inset - badge_w + 1;
+            if (bx > static_cast<int>(block_x)) {
+                const TuiRgba& color = (badge.find("✗") != std::string::npos)
+                    ? d.accent.error
+                    : (badge.find("●") != std::string::npos) ? d.accent.warning
+                                                             : d.accent.success;
+                draw_text(frame,
+                          static_cast<std::uint32_t>(bx),
+                          static_cast<std::uint32_t>(input_top_y),
+                          badge,
+                          color,
+                          d.bg.scroll);
+            }
         }
     }
 
