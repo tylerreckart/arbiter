@@ -7,7 +7,29 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-## [0.8.0] — 2026-07-20
+## [0.8.1] — 2026-07-21
+
+Patch release: TUI chrome polish so live sessions and conversation
+replay share the same rounded frames, echo padding, and thinking-block
+rhythm.
+
+### Changed
+- **Rounded box chrome.** Readline input and history/session sidebars
+  share Unicode rounded frames (`╭──╮` / `╰──╯`); the Arbiter top header
+  is removed so scrollback keeps the vertical space. Status / activity
+  badges paint on the input top border.
+- **Thinking blocks.** Collapsed reasoning uses the same box chrome with
+  a markdown body, a gap before the box, and inline ellipsis truncation
+  instead of a dedicated ellipsis row.
+
+### Fixed
+- **User-echo wrap / padding.** Echo source rows stay unpadded so the
+  render path owns vertical chrome; wrapping applies a single horizontal
+  inset. Live and replayed echoes match.
+- **Transcript replay preamble.** Orchestrator / `AGENTS` preamble is
+  stripped on replay so conversation switch matches the live session
+  view.
+
 
 Minor release focused on the TUI activity timeline and multi-pane
 session model.  Turns render as expandable tool/thinking segments with
