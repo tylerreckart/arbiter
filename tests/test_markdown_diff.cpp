@@ -225,22 +225,20 @@ TEST_CASE("styled_user_echo has no caret and pads to wrap width") {
     CHECK(static_cast<int>(display_width(once[0].text)) == 8);
 }
 
-TEST_CASE("styled_user_echo_lines splits multiline and adds vertical pad") {
+TEST_CASE("styled_user_echo_lines returns unpadded multiline payload") {
     const auto lines = styled_user_echo_lines("one\ntwo\n");
-    // top pad + one + two + bottom pad (trailing \n absorbed into bottom pad)
-    REQUIRE(lines.size() == 4);
-    CHECK(lines[0].text.empty());
-    CHECK(lines[1].text == "one");
-    CHECK(lines[2].text == "two");
-    CHECK(lines[3].text.empty());
+    // The render path owns vertical chrome; source lines remain payload-only.
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[0].text == "one");
+    CHECK(lines[1].text == "two");
     CHECK(is_styled_user_echo_line(lines[0]));
-    CHECK(pad_styled_user_echo_line(lines[0], 4).text.size() >= 4);
+    CHECK(pad_styled_user_echo_line(styled_user_echo({}), 4).text.size() >= 4);
 
     const auto crlf = styled_user_echo_lines("a\r\nb\rc");
-    REQUIRE(crlf.size() == 5);  // pad + a + b + c + pad
-    CHECK(crlf[1].text == "a");
-    CHECK(crlf[2].text == "b");
-    CHECK(crlf[3].text == "c");
+    REQUIRE(crlf.size() == 3);
+    CHECK(crlf[0].text == "a");
+    CHECK(crlf[1].text == "b");
+    CHECK(crlf[2].text == "c");
 }
 
 TEST_CASE("pad_styled_user_echo_line fills last wrapped row") {
@@ -250,6 +248,39 @@ TEST_CASE("pad_styled_user_echo_line fills last wrapped row") {
     const StyledLine padded = pad_styled_user_echo_line(line, 4);
     CHECK(display_width(padded.text) % 4 == 0);
     CHECK(display_width(padded.text) >= 4);
+}
+
+TEST_CASE("wrap_pad_styled_user_echo_line fills every visual row") {
+    // Word wrap would leave "affects our" short; wrap_pad emits full-width rows.
+    const StyledLine line = styled_user_echo(
+        "commit to a recommendation — this decision affects our budget for a year.");
+    const auto rows = wrap_pad_styled_user_echo_line(line, 40);
+    REQUIRE(rows.size() >= 2);
+    for (const auto& row : rows) {
+        CHECK(display_width(row.text) == 40);
+        CHECK(is_styled_user_echo_line(row));
+        // Horizontal inset: leading/trailing cell is background padding.
+        REQUIRE(!row.text.empty());
+        CHECK(row.text.front() == ' ');
+        CHECK(row.text.back() == ' ');
+    }
+    // Short lines still become one full-width band with inset.
+    const auto once = wrap_pad_styled_user_echo_line(styled_user_echo("hi"), 8);
+    REQUIRE(once.size() == 1);
+    CHECK(once[0].text == " hi     ");
+}
+
+TEST_CASE("wrap_pad_styled_user_echo_block adds vertical breathing room") {
+    const auto block = wrap_pad_styled_user_echo_block(
+        {styled_user_echo("hi"), styled_user_echo("there")}, 10);
+    REQUIRE(block.size() == 4);  // blank + hi + there + blank
+    CHECK(display_width(block.front().text) == 10);
+    CHECK(block.front().text == std::string(10, ' '));
+    CHECK(display_width(block.back().text) == 10);
+    CHECK(block.back().text == std::string(10, ' '));
+    // Interior text rows keep horizontal inset.
+    CHECK(block[1].text.front() == ' ');
+    CHECK(block[1].text.find("hi") != std::string::npos);
 }
 
 TEST_CASE("is_user_echo_find_command is case-insensitive and echo-only") {

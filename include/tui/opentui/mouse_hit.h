@@ -48,8 +48,9 @@ inline int history_sidebar_row_at(const Rect& sidebar_rect,
                                   int list_row_count,
                                   bool filter_line_visible = false) {
     constexpr int kRowHeight = 2;
-    // Section label at y+1, then optional filter line, then list.
-    const int top = sidebar_rect.y + 2 + (filter_line_visible ? 1 : 0);
+    // Blank row above the box, title border, blank row inside, then optional
+    // filter and list. Keep in sync with history_sidebar_frame.cpp.
+    const int top = sidebar_rect.y + 3 + (filter_line_visible ? 1 : 0);
     if (y < top) return -1;
     if (visible_rows <= 0 || list_row_count <= 0) return -1;
     const int rel = y - top;
