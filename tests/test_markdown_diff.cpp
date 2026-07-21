@@ -225,22 +225,20 @@ TEST_CASE("styled_user_echo has no caret and pads to wrap width") {
     CHECK(static_cast<int>(display_width(once[0].text)) == 8);
 }
 
-TEST_CASE("styled_user_echo_lines splits multiline and adds vertical pad") {
+TEST_CASE("styled_user_echo_lines returns unpadded multiline payload") {
     const auto lines = styled_user_echo_lines("one\ntwo\n");
-    // top pad + one + two + bottom pad (trailing \n absorbed into bottom pad)
-    REQUIRE(lines.size() == 4);
-    CHECK(lines[0].text.empty());
-    CHECK(lines[1].text == "one");
-    CHECK(lines[2].text == "two");
-    CHECK(lines[3].text.empty());
+    // The render path owns vertical chrome; source lines remain payload-only.
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[0].text == "one");
+    CHECK(lines[1].text == "two");
     CHECK(is_styled_user_echo_line(lines[0]));
-    CHECK(pad_styled_user_echo_line(lines[0], 4).text.size() >= 4);
+    CHECK(pad_styled_user_echo_line(styled_user_echo({}), 4).text.size() >= 4);
 
     const auto crlf = styled_user_echo_lines("a\r\nb\rc");
-    REQUIRE(crlf.size() == 5);  // pad + a + b + c + pad
-    CHECK(crlf[1].text == "a");
-    CHECK(crlf[2].text == "b");
-    CHECK(crlf[3].text == "c");
+    REQUIRE(crlf.size() == 3);
+    CHECK(crlf[0].text == "a");
+    CHECK(crlf[1].text == "b");
+    CHECK(crlf[2].text == "c");
 }
 
 TEST_CASE("pad_styled_user_echo_line fills last wrapped row") {
