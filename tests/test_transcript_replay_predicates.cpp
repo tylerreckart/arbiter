@@ -40,3 +40,42 @@ TEST_CASE("is_replay_noise does not flag real user turns or assistant messages")
     assistant.content = "[END TOOL RESULTS]"; // wrong role — must not match
     CHECK_FALSE(is_replay_noise(assistant));
 }
+
+TEST_CASE("replay_user_echo_text strips master AGENTS/QUERY preamble") {
+    Message m;
+    m.role = "user";
+    m.content =
+        "AGENTS — delegate with /agent <id> <task>:\n"
+        "  research [research-analyst] sonnet-4-6 — gather facts\n"
+        "\n"
+        "QUERY: commit to a recommendation";
+    CHECK(replay_user_echo_text(m) == "commit to a recommendation");
+
+    m.content =
+        "[OPEN TODOS] (mark progress as you go):\n"
+        "1. ship it\n"
+        "[END OPEN TODOS]\n"
+        "\n"
+        "AGENTS: none loaded\n"
+        "\n"
+        "QUERY: ship it";
+    CHECK(replay_user_echo_text(m) == "ship it");
+
+    // Multipart history (send_streaming): concatenate_text inserts '\n'
+    // between the "QUERY: " prefix part and the user text part.
+    m.content =
+        "AGENTS — delegate with /agent <id> <task>:\n"
+        "  research [research-analyst]\n"
+        "\n"
+        "QUERY: \n"
+        "show me a binary search algorithm in zig";
+    CHECK(replay_user_echo_text(m) == "show me a binary search algorithm in zig");
+
+    // Plain user text (no master prefix) is unchanged.
+    m.content = "hello there";
+    CHECK(replay_user_echo_text(m) == "hello there");
+
+    // QUERY marker without an AGENTS roster is not stripped.
+    m.content = "see\n\nQUERY: docs";
+    CHECK(replay_user_echo_text(m) == "see\n\nQUERY: docs");
+}

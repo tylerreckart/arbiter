@@ -56,19 +56,116 @@ TEST_CASE("ThinkingSegment honors wrap width and kPreviewRows when collapsed") {
     bind_view(view, tui, 40, 40);
     const int baseline = view.total_visual_rows();
 
-    // Five short lines → collapsed shows pad + header + kPreviewRows (3) +
-    // ellipsis + pad.
+    // Five short lines → top border + kPreviewRows (3, last with inline …)
+    // + bottom border = 5 rows. Truncation no longer adds a dedicated row.
     view.append_thinking("one\ntwo\nthree\nfour\nfive");
     const int collapsed = view.total_visual_rows() - baseline;
-    // May include a leading block_gap blank; thinking chrome itself is 7 rows.
-    CHECK(collapsed >= 7);
-    CHECK(collapsed <= 9);
+    // May include a leading block_gap blank; the thinking box itself is 5 rows.
+    CHECK(collapsed >= 5);
+    CHECK(collapsed <= 7);
 
     CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
     const int expanded = view.total_visual_rows() - baseline;
     CHECK(expanded > collapsed);
-    // Expanding replaces the ellipsis with the remaining body lines (+1 net).
-    CHECK(expanded - collapsed == 1);
+    // Expanding reveals the two hidden body lines (no ellipsis-row swap).
+    CHECK(expanded - collapsed == 2);
+}
+
+TEST_CASE("ThinkingSegment rounded box adds top and bottom border rows") {
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    const int baseline = view.total_visual_rows();
+
+    // One short line → top border + 1 body row + bottom border = 3 rows,
+    // plus at most block_gap leading blanks.
+    view.append_thinking("brief");
+    const int rows = view.total_visual_rows() - baseline;
+    CHECK(rows >= 3);
+    CHECK(rows <= 4);
+}
+
+TEST_CASE("ThinkingSegment leaves block_gap after a tool row") {
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    ToolActivityEvent done;
+    done.phase = ToolActivityEvent::Phase::Finished;
+    done.id = "t1";
+    done.label = "mem:expand";
+    done.kind = "mem";
+    done.ok = true;
+    view.upsert_tool(done);
+    const int after_tool = view.total_visual_rows();
+    CHECK(after_tool >= 1);
+
+    // new_block=false mimics live tool→thinking (tools clear need_sep).
+    view.append_thinking("brief reasoning", /*new_block=*/false);
+    const int after_think = view.total_visual_rows();
+    // tool (1) + block_gap (1) + box (top + body + bottom = 3) = 5.
+    CHECK(after_think >= after_tool + 1 + 3);
+}
+
+TEST_CASE("ThinkingSegment streamed deltas grow one box, not stacked chrome") {
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    view.append_thinking("one");
+    const int after_first = view.total_visual_rows();
+
+    // Contiguous delta appends into the same segment: exactly one more body
+    // row; borders are counted once, so no duplicated chrome accumulates.
+    view.append_thinking("\ntwo");
+    CHECK(view.total_visual_rows() == after_first + 1);
+
+    view.append_thinking("\nthree");
+    CHECK(view.total_visual_rows() == after_first + 2);
+}
+
+TEST_CASE("ThinkingSegment find maps title to the top border row") {
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    view.append_thinking("alpha\nbeta");
+    const auto title_hits = view.find_rows("thinking");
+    REQUIRE(title_hits.size() == 1);
+
+    const auto body_hits = view.find_rows("beta");
+    REQUIRE(body_hits.size() == 1);
+    // Title sits on the top border; body rows start directly beneath it.
+    CHECK(body_hits[0] == title_hits[0] + 2);
+    CHECK(title_hits[0] + 2 < view.total_visual_rows());
+}
+
+TEST_CASE("ThinkingSegment renders markdown instead of raw asterisks") {
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    view.append_thinking("**Correcting memory links**\n\nbody text");
+    CHECK(view.find_rows("**Correcting").empty());
+    CHECK_FALSE(view.find_rows("Correcting memory links").empty());
+    CHECK_FALSE(view.find_rows("body text").empty());
+}
+
+TEST_CASE("ThinkingSegment folds truncation mark into the last preview row") {
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 40, 40);
+    const int baseline = view.total_visual_rows();
+
+    view.append_thinking("one\ntwo\nthree\nfour\nfive");
+    const int collapsed = view.total_visual_rows() - baseline;
+    // Box is top + 3 body + bottom (+ optional gap) — no lone ellipsis row.
+    // gap(0|1) + 5 box rows.
+    CHECK(collapsed >= 5);
+    CHECK(collapsed <= 6);
+    CHECK_FALSE(view.find_rows("three").empty());
+    // Inline … is searchable as part of the last preview line.
+    CHECK_FALSE(view.find_rows("\xE2\x80\xA6").empty());
 }
 
 TEST_CASE("ThinkingSegment wrap width grows visual rows for long lines") {

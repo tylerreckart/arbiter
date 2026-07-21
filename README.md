@@ -98,7 +98,5 @@ Backgrounds, text, borders, markdown and diff syntax colors, even the
 and column breakpoints. Full reference in
 [`docs/tui/themes.md`](docs/tui/themes.md).
 
-![Arbiter theme presets](assets/themes.jpg)
-
 
 Licensed under the [Apache License 2.0](LICENSE).

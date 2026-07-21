@@ -61,7 +61,7 @@ void render_messages(opentui::PaneScrollView& view,
         if (is_replay_noise(m)) continue;
 
         if (m.role == "user") {
-            queue.push_prose(styled_user_echo_lines(m.content));
+            queue.push_prose(styled_user_echo_lines(replay_user_echo_text(m)));
             queue.end_message();
             continue;
         }

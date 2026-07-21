@@ -41,7 +41,6 @@
 #include "tui/history_sidebar.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
-#include "tui/opentui/top_header_frame.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
 #include "tui/confirm_keys.h"
@@ -505,8 +504,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             cols, history_sidebar.enabled());
         const int panes = layout_ptr ? static_cast<int>(layout_ptr->pane_count()) : 1;
         const int trailing = sidebar.effective_width(cols, panes);
-        // Row 0 is reserved for the top header bar.
-        return Rect{leading, 1, std::max(1, cols - leading - trailing), std::max(1, rows - 1)};
+        // Full terminal height — no top header bar.
+        return Rect{leading, 0, std::max(1, cols - leading - trailing), std::max(1, rows)};
     };
 
     bool restored = conversation_store.load(conversation_store.active_id(), orch);
@@ -916,8 +915,6 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     pane_hooks.draw_overlays = [&](OpenTuiHandle frame, int cols, int rows) {
         if (frame == 0 || cols <= 0 || rows <= 0) return;
 
-        arbiter::opentui::draw_top_header(frame, cols);
-
         const Rect hb = HistorySidebarState::rect_for_terminal(
             cols, rows, history_sidebar.enabled());
         if (hb.w > 0) {
@@ -940,7 +937,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         int gap = cols - pane_x - pane_w;
         if (sw <= 0 || gap <= 0) return;
 
-        const Rect sb = {pane_x + pane_w, 1, std::min(sw, gap), std::max(1, rows - 1)};
+        const Rect sb = {pane_x + pane_w, 0, std::min(sw, gap), std::max(1, rows)};
         Pane& focused = layout.focused();
         sidebar.set_focus_context(focused.current_agent,
                                   focused.current_model);
@@ -2616,7 +2613,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         const int pane_w = layout.outer_bounds().w;
         const int gap = cols - pane_x - pane_w;
         if (gap <= 0) return {};
-        return Rect{pane_x + pane_w, 1, std::min(sw, gap), std::max(1, rows - 1)};
+        return Rect{pane_x + pane_w, 0, std::min(sw, gap), std::max(1, rows)};
     };
 
     auto history_visible_rows = [&](const Rect& hb) -> int {

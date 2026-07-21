@@ -230,7 +230,6 @@ target_sources(arbiter PRIVATE
     src/tui/history_sidebar.cpp
     src/tui/opentui/sidebar_frame.cpp
     src/tui/opentui/history_sidebar_frame.cpp
-    src/tui/opentui/top_header_frame.cpp
     src/tui/opentui/pane_frame.cpp
 )
 target_link_libraries(arbiter PRIVATE OpenTUI::core)
@@ -740,6 +739,7 @@ if(INDEX_BUILD_TESTS)
         src/message_codec.cpp
         src/json.cpp
         src/repl/queues.cpp
+        src/repl/transcript_replay_predicates.cpp
         src/stream_renderer.cpp
         src/tui/block_parser.cpp
         src/tui/stream_filter.cpp

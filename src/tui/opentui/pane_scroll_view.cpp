@@ -4,6 +4,7 @@
 #include "markdown.h"
 #include "styled_text.h"
 #include "tui/ansi_util.h"
+#include "tui/opentui/rounded_box.h"
 #include "tui/style_resolver.h"
 #include "tui/tui_design.h"
 
@@ -129,17 +130,43 @@ PaneScrollView::ProseSegment::~ProseSegment() {
 void PaneScrollView::ProseSegment::emit_line(const StyledLine& line) {
     if (!span_append_) return;
     if (arbiter::is_styled_user_echo_line(line)) {
-        span_append_->append_line(arbiter::pad_styled_user_echo_line(line, wrap_cols_));
+        // Prefer emit_echo_run for contiguous blocks (vertical pad). Single
+        // lines still get full-width fill + horizontal inset.
+        for (const StyledLine& row :
+             arbiter::wrap_pad_styled_user_echo_line(line, wrap_cols_)) {
+            span_append_->append_line(row);
+        }
     } else {
         span_append_->append_line(line);
     }
 }
 
+void PaneScrollView::ProseSegment::emit_echo_run(
+    const StyledLine* begin, const StyledLine* end) {
+    if (!span_append_ || begin >= end) return;
+    std::vector<StyledLine> block(begin, end);
+    for (const StyledLine& row :
+         arbiter::wrap_pad_styled_user_echo_block(block, wrap_cols_)) {
+        span_append_->append_line(row);
+    }
+}
+
 void PaneScrollView::ProseSegment::append(const std::vector<StyledLine>& lines) {
     if (!span_append_) return;
-    for (const StyledLine& line : lines) {
-        source_.push_back(line);
-        emit_line(line);
+    std::size_t i = 0;
+    while (i < lines.size()) {
+        if (!arbiter::is_styled_user_echo_line(lines[i])) {
+            source_.push_back(lines[i]);
+            emit_line(lines[i]);
+            ++i;
+            continue;
+        }
+        const std::size_t src_start = source_.size();
+        while (i < lines.size() && arbiter::is_styled_user_echo_line(lines[i])) {
+            source_.push_back(lines[i]);
+            ++i;
+        }
+        emit_echo_run(source_.data() + src_start, source_.data() + source_.size());
     }
 }
 
@@ -151,8 +178,18 @@ void PaneScrollView::ProseSegment::clear() {
 void PaneScrollView::ProseSegment::retheme() {
     if (!span_append_) return;
     span_append_->clear();
-    for (const StyledLine& line : source_) {
-        emit_line(line);
+    std::size_t i = 0;
+    while (i < source_.size()) {
+        if (!arbiter::is_styled_user_echo_line(source_[i])) {
+            emit_line(source_[i]);
+            ++i;
+            continue;
+        }
+        const std::size_t start = i;
+        while (i < source_.size() && arbiter::is_styled_user_echo_line(source_[i])) {
+            ++i;
+        }
+        emit_echo_run(source_.data() + start, source_.data() + i);
     }
 }
 
@@ -627,6 +664,7 @@ std::vector<StyledLine> render_thinking_markdown(const std::string& text) {
 }
 
 constexpr std::uint32_t kThinkingDimAttr = 1u << 1;  // matches style_resolver Dim
+constexpr std::string_view kTruncationMark = "\u2026";
 
 const TuiRgba& thinking_fg(StyleId id, const TuiDesign& d) {
     // Prefer muted/readable defaults; keep markdown accent hues for structure.
@@ -653,6 +691,53 @@ std::uint32_t thinking_attrs(StyleId id) {
     return rs.attrs | kThinkingDimAttr;
 }
 
+// Fold the truncation mark onto the last visible body row so it does not
+// sit alone against the bottom border.
+StyledLine with_truncation_mark(const StyledLine& line, int body_cols) {
+    const int mark_w = static_cast<int>(arbiter::display_width(kTruncationMark));
+    const int used = static_cast<int>(arbiter::display_width(line.text));
+    if (used + mark_w <= body_cols) {
+        StyledLine out = line;
+        styled_append(out, StyleId::Dim, kTruncationMark);
+        return out;
+    }
+
+    const int keep = std::max(0, body_cols - mark_w);
+    auto parts = wrap_styled_line(line, std::max(1, keep));
+    StyledLine out = parts.empty() ? StyledLine{} : std::move(parts.front());
+    // Ensure the kept prefix never exceeds `keep` cells (wrap may still
+    // produce a full-width first piece when keep==0).
+    if (static_cast<int>(arbiter::display_width(out.text)) > keep) {
+        const std::string trimmed =
+            arbiter::trim_to_display_cols(out.text, keep);
+        StyledLine rebuilt;
+        std::size_t cursor = 0;
+        for (const StyleSpan& span : out.spans) {
+            if (span.begin >= trimmed.size()) break;
+            if (span.begin > cursor) {
+                styled_append(rebuilt, StyleId::Default,
+                              std::string_view(trimmed).substr(
+                                  cursor, span.begin - cursor));
+            }
+            const std::size_t end =
+                std::min(static_cast<std::size_t>(span.end), trimmed.size());
+            if (end > span.begin) {
+                styled_append(rebuilt, span.id,
+                              std::string_view(trimmed).substr(
+                                  span.begin, end - span.begin));
+            }
+            cursor = end;
+        }
+        if (cursor < trimmed.size()) {
+            styled_append(rebuilt, StyleId::Default,
+                          std::string_view(trimmed).substr(cursor));
+        }
+        out = std::move(rebuilt);
+    }
+    styled_append(out, StyleId::Dim, kTruncationMark);
+    return out;
+}
+
 } // namespace
 
 void PaneScrollView::ThinkingSegment::invalidate_cache() const {
@@ -677,10 +762,8 @@ void PaneScrollView::ThinkingSegment::toggle_expanded() {
 }
 
 int PaneScrollView::ThinkingSegment::body_content_cols(int content_w) const {
-    const TuiDesign& d = tui_design();
     const int cols = std::max(1, content_w > 0 ? content_w : wrap_cols_);
-    const int inset = std::max(0, d.layout.header_padding_x);
-    return std::max(1, cols - 1 - inset);
+    return std::max(1, cols - kBoxChromeCols);
 }
 
 const std::vector<StyledLine>&
@@ -703,34 +786,27 @@ PaneScrollView::ThinkingSegment::wrapped_body(int body_cols) const {
 }
 
 bool PaneScrollView::ThinkingSegment::can_expand() const {
-    const int body_n = static_cast<int>(wrapped_body(body_content_cols(wrap_cols_)).size());
+    const int body_n =
+        static_cast<int>(wrapped_body(body_content_cols(wrap_cols_)).size());
     if (expanded_) return body_n > 0;
     return body_n > kPreviewRows;
 }
 
 std::string PaneScrollView::ThinkingSegment::header_text() const {
-    std::string text = "thinking";
-    if (can_expand() || expanded_) {
-        text += expanded_ ? "  \u25BE" : "  \u25B8";
-    }
-    return text;
+    return "thinking";
 }
 
 int PaneScrollView::ThinkingSegment::visual_rows(int content_w) const {
     const auto& body = wrapped_body(body_content_cols(content_w));
     const int body_n = static_cast<int>(body.size());
-    int body_rows = 0;
+    // Top border (inline title) + bottom border. Truncation mark folds into
+    // the last visible body row — no dedicated ellipsis row.
+    static constexpr int kChromeRows = 2;
     if (!expanded_) {
-        if (body_n > 0) {
-            body_rows = std::min(body_n, kPreviewRows);
-            if (body_n > kPreviewRows) ++body_rows;  // ellipsis
-        }
-    } else {
-        body_rows = std::min(body_n, kExpandedCap);
-        if (body_n > kExpandedCap) ++body_rows;
+        if (body_n == 0) return kChromeRows;
+        return kChromeRows + std::min(body_n, kPreviewRows);
     }
-    // pad + header + body + pad
-    return kPadRows + 1 + body_rows + kPadRows;
+    return kChromeRows + std::min(body_n, kExpandedCap);
 }
 
 void PaneScrollView::ThinkingSegment::set_wrap_cols(int cols) {
@@ -739,18 +815,30 @@ void PaneScrollView::ThinkingSegment::set_wrap_cols(int cols) {
 }
 
 void PaneScrollView::ThinkingSegment::collect_lines(std::vector<std::string>& out) const {
+    // Line k maps to visual row k: title-bearing top border is row 0, body
+    // follows, bottom border contributes a final blank.
     out.push_back(header_text());
-    if (text_.empty()) return;
-    const auto& body = wrapped_body(body_content_cols(wrap_cols_));
-    const int limit = expanded_
-        ? std::min(static_cast<int>(body.size()), kExpandedCap)
-        : std::min(static_cast<int>(body.size()), kPreviewRows);
-    for (int i = 0; i < limit; ++i) out.push_back(body[static_cast<size_t>(i)].text);
-    const int body_n = static_cast<int>(body.size());
-    if ((!expanded_ && body_n > kPreviewRows) ||
-        (expanded_ && body_n > kExpandedCap)) {
-        out.push_back("\u2026");
+    if (text_.empty()) {
+        out.emplace_back();
+        return;
     }
+    const int body_cols = body_content_cols(wrap_cols_);
+    const auto& body = wrapped_body(body_cols);
+    const int body_n = static_cast<int>(body.size());
+    const int limit = expanded_
+        ? std::min(body_n, kExpandedCap)
+        : std::min(body_n, kPreviewRows);
+    const bool truncated = expanded_ ? body_n > kExpandedCap
+                                     : body_n > kPreviewRows;
+    for (int i = 0; i < limit; ++i) {
+        if (truncated && i == limit - 1) {
+            out.push_back(with_truncation_mark(body[static_cast<size_t>(i)],
+                                               body_cols).text);
+        } else {
+            out.push_back(body[static_cast<size_t>(i)].text);
+        }
+    }
+    out.emplace_back();  // bottom border
 }
 
 void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
@@ -759,126 +847,103 @@ void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
                                            int w,
                                            int h,
                                            int skip_rows) const {
-    if (w <= 0 || h <= 0) return;
+    if (w < 2 || h <= 0) return;
     const TuiDesign& d = tui_design();
-    const TuiRgba& bg = d.content.user_echo_bg;
-    const TuiRgba accent = tui_agent_accent(agent_id_);
-    const int inset = std::max(0, d.layout.header_padding_x);
-    const int text_x = x + 1 + inset;
-    const int body_cols = std::max(1, w - 1 - inset);
+    const TuiRgba& bg = d.bg.scroll;
+    const TuiRgba& border_fg = d.text.muted;
+    const int body_cols = std::max(1, w - kBoxChromeCols);
+    const int text_x = x + 2;
 
-    auto paint_chrome_row = [&](int screen_row) {
-        fill_rect(frame, x, y + screen_row, w, 1, bg);
-        if (w > 0) fill_rect(frame, x, y + screen_row, 1, 1, accent);
-    };
-
-    auto advance = [&](int& row) -> bool {
-        if (row < skip_rows) {
-            ++row;
+    // Row-clipped painter: clears the full row width before painting so
+    // streaming growth never leaves stale border cells behind.
+    int screen_row = 0;
+    auto emit = [&](auto&& painter) -> bool {
+        if (screen_row < skip_rows) {
+            ++screen_row;
             return true;
         }
-        const int drawn = row - skip_rows;
+        const int drawn = screen_row - skip_rows;
         if (drawn >= h) return false;
-        paint_chrome_row(drawn);
-        ++row;
+        fill_rect(frame, x, y + drawn, w, 1, bg);
+        painter(y + drawn);
+        ++screen_row;
         return true;
     };
 
-    auto draw_plain = [&](const std::string& text,
-                          const TuiRgba& fg,
-                          std::uint32_t attrs,
-                          int& row) -> bool {
-        if (row < skip_rows) {
-            ++row;
-            return true;
-        }
-        const int drawn = row - skip_rows;
-        if (drawn >= h) return false;
-        paint_chrome_row(drawn);
-        if (!text.empty()) {
-            draw_text(frame,
-                      text_x,
-                      y + drawn,
-                      trim_to_cells(text, body_cols),
-                      fg,
-                      bg,
-                      attrs);
-        }
-        ++row;
-        return true;
-    };
+    // Top border — plain "thinking" breaks the horizontal run.
+    if (!emit([&](int yy) {
+            draw_rounded_box_row(frame, x, yy, w, /*top=*/true, border_fg, bg,
+                                 header_text(), &d.accent.info);
+        })) {
+        return;
+    }
 
-    auto draw_styled = [&](const StyledLine& line, int& row) -> bool {
-        if (row < skip_rows) {
-            ++row;
-            return true;
-        }
-        const int drawn = row - skip_rows;
-        if (drawn >= h) return false;
-        paint_chrome_row(drawn);
+    auto draw_styled_body = [&](const StyledLine& line) -> bool {
+        return emit([&](int yy) {
+            draw_text(frame, x, yy, d.border.vertical, border_fg, bg);
+            draw_text(frame, x + w - 1, yy, d.border.vertical, border_fg, bg);
 
-        int col = 0;
-        const auto emit_span = [&](std::size_t begin, std::size_t end, StyleId id) {
-            if (begin >= line.text.size() || end <= begin) return;
-            const std::size_t end_clamped = std::min(end, line.text.size());
-            const std::string chunk = trim_to_cells(
-                line.text.substr(begin, end_clamped - begin), body_cols - col);
-            if (chunk.empty()) return;
-            draw_text(frame,
-                      text_x + col,
-                      y + drawn,
-                      chunk,
-                      thinking_fg(id, d),
-                      bg,
-                      thinking_attrs(id));
-            col += cell_width(chunk);
-        };
+            int col = 0;
+            const auto emit_span = [&](std::size_t begin, std::size_t end,
+                                       StyleId id) {
+                if (begin >= line.text.size() || end <= begin) return;
+                const std::size_t end_clamped =
+                    std::min(end, line.text.size());
+                const std::string chunk = trim_to_cells(
+                    line.text.substr(begin, end_clamped - begin),
+                    body_cols - col);
+                if (chunk.empty()) return;
+                draw_text(frame,
+                          text_x + col,
+                          yy,
+                          chunk,
+                          thinking_fg(id, d),
+                          bg,
+                          thinking_attrs(id));
+                col += cell_width(chunk);
+            };
 
-        if (line.spans.empty()) {
-            emit_span(0, line.text.size(), StyleId::Default);
-        } else {
-            std::size_t cursor = 0;
-            for (const StyleSpan& span : line.spans) {
-                if (span.begin > line.text.size()) break;
-                if (span.begin > cursor) {
-                    emit_span(cursor, span.begin, StyleId::Default);
+            if (line.spans.empty()) {
+                emit_span(0, line.text.size(), StyleId::Default);
+            } else {
+                std::size_t cursor = 0;
+                for (const StyleSpan& span : line.spans) {
+                    if (span.begin > line.text.size()) break;
+                    if (span.begin > cursor) {
+                        emit_span(cursor, span.begin, StyleId::Default);
+                    }
+                    const std::size_t end = std::min(
+                        static_cast<std::size_t>(span.end), line.text.size());
+                    if (end > span.begin) emit_span(span.begin, end, span.id);
+                    cursor = end;
                 }
-                const std::size_t end =
-                    std::min(static_cast<std::size_t>(span.end), line.text.size());
-                if (end > span.begin) emit_span(span.begin, end, span.id);
-                cursor = end;
+                if (cursor < line.text.size()) {
+                    emit_span(cursor, line.text.size(), StyleId::Default);
+                }
             }
-            if (cursor < line.text.size()) {
-                emit_span(cursor, line.text.size(), StyleId::Default);
-            }
-        }
-        ++row;
-        return true;
+        });
     };
 
-    int row = 0;
-    for (int i = 0; i < kPadRows; ++i) {
-        if (!advance(row)) return;
+    if (!text_.empty()) {
+        const auto& body = wrapped_body(body_cols);
+        const int body_n = static_cast<int>(body.size());
+        const int limit = expanded_
+            ? std::min(body_n, kExpandedCap)
+            : std::min(body_n, kPreviewRows);
+        const bool truncated = expanded_ ? body_n > kExpandedCap
+                                         : body_n > kPreviewRows;
+        for (int i = 0; i < limit; ++i) {
+            StyledLine row = body[static_cast<size_t>(i)];
+            if (truncated && i == limit - 1) {
+                row = with_truncation_mark(row, body_cols);
+            }
+            if (!draw_styled_body(row)) return;
+        }
     }
 
-    if (!draw_plain(header_text(), d.content.system_fg, kThinkingDimAttr, row)) return;
-
-    const auto& body = wrapped_body(body_cols);
-    const int limit = expanded_
-        ? std::min(static_cast<int>(body.size()), kExpandedCap)
-        : std::min(static_cast<int>(body.size()), kPreviewRows);
-    for (int i = 0; i < limit; ++i) {
-        if (!draw_styled(body[static_cast<size_t>(i)], row)) return;
-    }
-    const int body_n = static_cast<int>(body.size());
-    if ((!expanded_ && body_n > kPreviewRows) ||
-        (expanded_ && body_n > kExpandedCap)) {
-        if (!draw_plain("\u2026", d.content.text_dim, kThinkingDimAttr, row)) return;
-    }
-
-    for (int i = 0; i < kPadRows; ++i) {
-        if (!advance(row)) return;
-    }
+    emit([&](int yy) {
+        draw_rounded_box_row(frame, x, yy, w, /*top=*/false, border_fg, bg);
+    });
 }
 
 // --- ToolSegment (per-tool activity timeline) ---------------------------------
@@ -1382,7 +1447,10 @@ void PaneScrollView::append_thinking(std::string_view delta,
         }
     }
     const TuiDesign& d = tui_design();
-    ensure_block_gap(SegmentKind::Thinking, d.layout.block_gap, new_block);
+    // Always leave block_gap before a new thinking box so tool rows / prose
+    // don't kiss the top border (new_block alone is insufficient — tools do
+    // not set need_sep for the following thinking stream).
+    start_block_gap(d.layout.block_gap);
     auto seg = std::make_unique<ThinkingSegment>();
     seg->set_wrap_cols(wrap_cols_);
     seg->set_agent_id(agent_id);
