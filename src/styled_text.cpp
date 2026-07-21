@@ -178,13 +178,10 @@ std::vector<StyledLine> styled_user_echo_lines(std::string_view text) {
     while (!body.empty() && body.back().text.empty()) body.pop_back();
     if (body.empty()) body.push_back(styled_user_echo({}));
 
-    // Mirror the live input strip: one blank bg row above and below content.
-    std::vector<StyledLine> out;
-    out.reserve(body.size() + 2);
-    out.push_back(styled_user_echo({}));
-    for (auto& line : body) out.push_back(std::move(line));
-    out.push_back(styled_user_echo({}));
-    return out;
+    // Vertical chrome is added when the contiguous echo run is rendered.
+    // Keeping source lines payload-only avoids applying the top/bottom pads
+    // again during replay, resize, or retheme.
+    return body;
 }
 
 bool is_styled_user_echo_line(const StyledLine& line) {
@@ -267,7 +264,15 @@ std::vector<StyledLine> wrap_pad_styled_user_echo_line(const StyledLine& line, i
     auto flush_row = [&](std::string row) {
         // Pad the content slice, then wrap with horizontal inset spaces so
         // glyphs never sit on the band edge.
-        StyledLine content = pad_styled_user_echo_line(styled_user_echo(row), content_cols);
+        StyledLine content = styled_user_echo(row);
+        const int row_w = static_cast<int>(display_width(content.text));
+        if (row_w < content_cols) {
+            content.text.append(static_cast<size_t>(content_cols - row_w), ' ');
+            content.spans.clear();
+            content.spans.push_back(
+                {0, static_cast<std::uint32_t>(content.text.size()),
+                 StyleId::UserEchoText});
+        }
         if (hpad == 0) {
             out.push_back(std::move(content));
             return;
