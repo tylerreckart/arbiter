@@ -80,6 +80,17 @@ void styled_append_char(StyledLine& line, StyleId id, char c);
 // Pad a user-echo line to `cols` with horizontal inset + trailing fill.
 // Expects an unpadded source line (does not mutate the source).
 [[nodiscard]] StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols);
+// Soft-wrap a user-echo line to `cols` and pad every visual row to full width
+// so the echo background paints as a continuous band (OpenTUI word-wrap alone
+// only styles glyph cells on short wrap rows). Each row also gets one cell of
+// horizontal inset when `cols` allows it.
+[[nodiscard]] std::vector<StyledLine> wrap_pad_styled_user_echo_line(
+    const StyledLine& line, int cols);
+// Soft-wrap a contiguous echo block (one or more logical lines) with the same
+// per-row fill/inset as wrap_pad_styled_user_echo_line, plus one blank
+// full-width background row above and below the text.
+[[nodiscard]] std::vector<StyledLine> wrap_pad_styled_user_echo_block(
+    const std::vector<StyledLine>& lines, int cols);
 // In-place pad helper for tests / callers that hold a temporary vector.
 bool resize_styled_user_echo_lines(std::vector<StyledLine>& lines, int cols);
 
