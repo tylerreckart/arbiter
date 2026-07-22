@@ -244,7 +244,7 @@ private:
 
     // Collapsible provider reasoning/thinking block. Collapsed by default.
     // Rounded-box chrome with plain "thinking" breaking the top border; body
-    // is markdown-rendered (StyledLine) with a one-cell inset.
+    // is markdown-rendered (StyledLine) with a two-cell inset.
     struct ThinkingSegment final : Segment {
         std::string text_;
         std::string agent_id_;
@@ -252,8 +252,9 @@ private:
         mutable int wrap_cols_{80};
         static constexpr int kPreviewRows = 3;
         static constexpr int kExpandedCap = 40;
-        // Border column + one-cell inset on each side.
-        static constexpr int kBoxChromeCols = 4;
+        // Border column + two-cell inset on each side.
+        static constexpr int kBoxChromeCols = 6;
+        static constexpr int kBodyInset = 2;
 
         void append(std::string_view delta);
         void set_agent_id(std::string_view agent_id);

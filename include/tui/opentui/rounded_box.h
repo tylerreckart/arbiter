@@ -1,5 +1,6 @@
 #pragma once
-// Shared rounded-corner box chrome for the input strip and sidebars.
+// Shared rounded-corner box chrome for the input strip, output pane, and
+// sidebars.
 
 #include "styled_text.h"
 #include "tui/opentui/c_api.h"

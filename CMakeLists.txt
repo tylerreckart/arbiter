@@ -113,6 +113,7 @@ set(ARBITER_SOURCES
     src/render_policy.cpp
     src/stream_renderer.cpp
     src/tui/tui.cpp
+    src/tui/spinner.cpp
     src/tui/tui_design.cpp
     src/tui/style_resolver.cpp
     src/tui/block_parser.cpp
@@ -486,6 +487,7 @@ if(INDEX_BUILD_TESTS)
         tests/test_tool_indicator.cpp
         tests/term_size_stub.cpp
         src/tui/tui.cpp
+        src/tui/spinner.cpp
         src/theme.cpp
         src/tui/tui_design.cpp
         src/json.cpp
@@ -498,6 +500,16 @@ if(INDEX_BUILD_TESTS)
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_tool_indicator COMMAND unit_tool_indicator)
 
+    add_executable(unit_spinner
+        tests/test_spinner.cpp
+        src/tui/spinner.cpp
+    )
+    target_include_directories(unit_spinner PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_spinner COMMAND unit_spinner)
+
     # PaneScrollView ToolSegment / ThinkingSegment geometry + toggle.
     add_executable(unit_pane_scroll_segments
         tests/test_pane_scroll_segments.cpp
@@ -507,6 +519,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/opentui/span_scroll_append.cpp
         src/tui/opentui/diff_panel.cpp
         src/tui/tui.cpp
+        src/tui/spinner.cpp
         src/tui/tui_design.cpp
         src/tui/style_resolver.cpp
         src/tui/ansi_util.cpp
@@ -748,6 +761,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/opentui/span_scroll_append.cpp
         src/tui/opentui/diff_panel.cpp
         src/tui/tui.cpp
+        src/tui/spinner.cpp
         src/tui/tui_design.cpp
         src/tui/style_resolver.cpp
         src/tui/ansi_util.cpp
