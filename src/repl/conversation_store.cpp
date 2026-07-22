@@ -294,10 +294,9 @@ void ConversationStore::load_manifest_unlocked() {
                     if (e.id.empty()) continue;
                     // Prefer the higher of manifest vs session-file usage so a
                     // partial manifest rewrite can't erase known totals.
-                    if (e.total_tokens <= 0) {
-                        e.total_tokens = read_session_total_tokens(
-                            session_path_unlocked(e.id));
-                    }
+                    const int session_tokens =
+                        read_session_total_tokens(session_path_unlocked(e.id));
+                    e.total_tokens = std::max(e.total_tokens, session_tokens);
                     entries_.push_back(std::move(e));
                 }
                 parsed_ok = true;
