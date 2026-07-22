@@ -8,6 +8,7 @@ Arbiter ships its own line editor. Bindings below are the complete set the edito
 |--------|--------|
 | Left-click pane | Focus that pane |
 | Left-click input | Focus pane + move caret |
+| Left-click expandable block | Expand or collapse thinking / tool / truncated code |
 | Wheel | Scroll pane / history list under the pointer |
 | Drag split gutter | Resize adjacent panes |
 | Left-click history row | Switch to that conversation |
@@ -40,7 +41,7 @@ Disable with `"mouse": false` under `layout` in `~/.arbiter/tui.json`.
 |-----------|------------------------------------------------------------------------------|
 | `PgUp`    | Scroll the focused pane's scroll region up by ~half a screen.                |
 | `PgDn`    | Scroll back down. At the live tail, PgDn is a no-op.                         |
-| `^O`      | Expand or collapse the truncated code block visible in the scroll region.      |
+| `^O`      | Expand or collapse the truncated code / tool / thinking block in view (or click it). |
 
 Scrollback is **visual-row aware**: a wrapped paragraph counts as multiple rows for navigation, matching what the terminal actually drew. The scrollback ring is bounded (default 20k logical lines) — older content is evicted when the buffer fills.
 

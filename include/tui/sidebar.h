@@ -70,6 +70,9 @@ struct SidebarSnapshot {
 // mutex for the output pump render path.
 class SidebarState {
 public:
+    // Blank column between the session box and the terminal's right edge.
+    static constexpr int kOuterGutter = 1;
+
     static int breakpoint_width(int cols);
 
     void toggle_visible();

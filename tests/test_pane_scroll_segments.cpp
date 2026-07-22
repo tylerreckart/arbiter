@@ -297,6 +297,38 @@ TEST_CASE("first user echo has a lead-in blank under the header") {
     CHECK(view.total_visual_rows() == 4);
 }
 
+TEST_CASE("click toggles expandable segment under the pointer") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    view.append_thinking("one\ntwo\nthree\nfour\nfive");
+    const int collapsed = view.total_visual_rows();
+    CHECK(collapsed >= 5);
+
+    // append_thinking inserts a leading block_gap blank; click past it into
+    // the thinking chrome (same geometry PaneScrollView::bind uses).
+    const TuiDesign& d = tui_design();
+    const int pad = tui_pane_edge_pad(tui.cols(), d);
+    const int inset = std::max(1, pad);
+    const int x = tui.left_col() - 1 + pad + 1 + inset;
+    const int y = tui.scroll_top_row() - 1 + 1 + 1
+        + std::max(0, d.layout.scroll_pad_y)
+        + std::max(1, d.layout.block_gap);
+
+    CHECK(view.toggle_expandable_at_click(tui, x, y, /*scroll_offset=*/0));
+    CHECK(view.total_visual_rows() > collapsed);
+
+    // Click again to collapse.
+    CHECK(view.toggle_expandable_at_click(tui, x, y, /*scroll_offset=*/0));
+    CHECK(view.total_visual_rows() == collapsed);
+
+    // Miss: far outside the content band.
+    CHECK_FALSE(view.toggle_expandable_at_click(tui, 0, 0, 0));
+}
+
 TEST_CASE("degenerate zero-size pane draw is a no-op") {
     // Zoom siblings / squeezed splits get w==0 (and often h==0). Painting
     // those used to reach OpenTUI with negative origins cast to uint32_t and

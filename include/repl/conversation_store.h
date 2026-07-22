@@ -21,6 +21,9 @@ struct ConversationEntry {
     // 0 = not deleted. Soft-deleted entries are filtered out of list() but
     // their session file stays on disk until purge().
     std::int64_t deleted_at = 0;
+    // Cumulative input+output tokens billed to this conversation (persisted
+    // in the manifest; updated on each completed turn).
+    int total_tokens = 0;
     // True once the title is locked against further auto-titling: either a
     // model-generated title landed (success or exhausted attempt) or the
     // user renamed it manually via /chat title.
@@ -93,6 +96,10 @@ public:
     // Sets the title AND locks it against further auto-titling. Used by the
     // manual /chat title command and by a successful model-generated title.
     void set_title_locked(const std::string& id, const std::string& title);
+
+    // Add `delta` tokens (typically input+output from one turn) to the
+    // conversation's running total and persist the manifest.
+    void add_tokens(const std::string& id, int delta);
 
     // Locks the current title without changing it — used when the model
     // title job fails/times out, so restarts don't retry it forever

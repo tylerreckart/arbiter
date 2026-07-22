@@ -35,8 +35,8 @@ TEST_CASE("effective_width gates on session, visibility, and pane count") {
 TEST_CASE("effective_width subtracts leading history sidebar columns") {
     SidebarState sb;
     sb.mark_prompt_started();
-    CHECK(sb.effective_width(120, 1, 26) == 0);
-    CHECK(sb.effective_width(146, 1, 26) == 28);
+    CHECK(sb.effective_width(120, 1, 27) == 0);
+    CHECK(sb.effective_width(147, 1, 27) == 28);
 }
 
 TEST_CASE("rect_for_terminal is empty when sidebar is hidden") {
@@ -52,7 +52,7 @@ TEST_CASE("rect_for_terminal is empty when sidebar is hidden") {
 
     const Rect wide = sb.rect_for_terminal(120, 40, 1);
     CHECK(wide.w == 28);
-    CHECK(wide.x == 92);
+    CHECK(wide.x == 120 - 28 - SidebarState::kOuterGutter);
     CHECK(wide.h == 40);
 }
 
