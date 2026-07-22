@@ -5,10 +5,9 @@
 
 ![Arbiter session sidebar and inline diff rendering](assets/terminal.jpg)
 
-Native reasoning runtime for agents. Compile once, run anywhere. Laptops, servers,
-edge boxes, or CI runners. Feed it prompts, webhooks, or events from firmware and sensors and
-it reasons, delegates to specialist sub-agents, acts through a constrained
-tool surface, and streams every step back as structured SSE in a native TUI, HTTP API, and one-shot CLI.
+**A local agent runtime in a single native binary.** Run multi-agent workflows on your machine — interactive TUI, one-shot CLI, or HTTP+SSE — with hard tool allowlists and a shared streaming event bus. Local-first; network is optional.
+
+Not a library. Not a hosted platform. A process you run.
 
 ## Quick start
 
@@ -17,70 +16,43 @@ tool surface, and streams every step back as structured SSE in a native TUI, HTT
 curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
   | tar xz -C /usr/local/bin
 
-# Launch the terminal client
-arbiter
+export OPENROUTER_API_KEY="sk-or-..."   # or use Ollama — see docs
+arbiter --init                          # seed starter agents under ~/.arbiter/
+arbiter                                 # open the TUI
 ```
 
-Linux binary, source builds, OpenRouter/Ollama setup, the API server, and
-one-shot mode are in [getting-started/local](docs/getting-started/local.md).
+Linux binaries, source builds, Ollama, `--send`, and `--api` are in
+[getting-started/local](docs/getting-started/local.md).
 
-## Documentation
+## Same agents, three faces
 
-- [`docs/getting-started`](https://arbiter.run/docs/getting-started/local) —
-  quickstart paths to first agent reply.
-- [`docs/philosophy`](https://arbiter.run/docs/philosophy) — design
-  philosophy: the six themes that explain why arbiter is shaped the way it is.
-- [`docs/api/`](https://arbiter.run/docs/api) — full HTTP API reference:
-  tenants, auth, SSE events, fleet streaming, MCP, A2A, artifacts, memory,
-  operations, and one page per endpoint.
-- [`docs/cli/`](https://arbiter.run/docs/cli) — non-interactive command-line
-  reference: `--init`, `--setup-tools`, `--send`, `--api`, tenant admin, environment variables.
-- [`docs/tui/`](https://arbiter.run/docs/tui) — interactive terminal client:
-  screen anatomy, slash commands, keybindings, multi-pane layouts, streaming
-  and turn lifecycle, session persistence.
-- [`CHANGELOG.md`](CHANGELOG.md) — what changed, when. Breaking changes are
-  flagged.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, tests, PR conventions.
-- [`SECURITY.md`](SECURITY.md) — disclosure path for security
-  vulnerabilities and operator hardening notes.
+| Mode | Command | For |
+|------|---------|-----|
+| Interactive | `arbiter` | Multi-pane TUI, persistent per-cwd sessions |
+| One-shot | `arbiter --send <agent> "..."` | Scripts, cron, CI |
+| Server | `arbiter --api` | HTTP+SSE API, tenant-isolated, A2A v1.0 |
 
-Arbiter is experimental. The event surface, agent constitutions, and HTTP
-shape are subject to change. `/exec` is unsandboxed by default; treat it
-accordingly.
+One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollama, …) are the only external dependency for model calls.
 
-## Run it anywhere
+## Why run it
 
-Same agent, three interfaces:
+**Own the harness.** Orchestrate specialists, durable memory, and tool use without duct-taping a chat CLI to FastAPI and SQLite. The runtime stays thin; agent behavior lives in constitutions (JSON: model, role, rules, tool allowlist).
 
-| Where | How |
-|-------|-----|
-| Locally | `arbiter` — interactive multi-pane TUI, persistent per-cwd sessions |
-| A script or cron job | `arbiter --send <agent> "..."` — one-shot dispatch |
-| Your stack | `arbiter --api` — HTTP+SSE server, tenant-isolated, speaks A2A v1.0 |
-| A device or robot | `POST /v1/events` from firmware or a bridge — the device sends a request, arbiter does the reasoning |
-| A webhook or queue | Declare a glob pattern per agent and arbiter routes matching events there — no dispatcher to write |
+**Hard limits, not prompt suggestions.** Every agent's tool surface is an allowlist checked at dispatch. Optional advisor gate: a second model signs off before consequential turns reach you.
 
-No runtime to install beyond the binary itself. Provider keys (OpenRouter,
-Ollama, etc.) are the only external dependency for model calls.
+**One event model everywhere.** The orchestration loop streams the same SSE-shaped events the TUI already consumes — text, tool calls, files, sub-agent responses, done. API clients get that stream over the wire; durable request logs make reconnect and replay possible.
 
-## What it does
+**Route work in, don't write a dispatcher.** Webhooks, queues, firmware, and sensors can `POST /v1/events`; declare a glob per agent and Arbiter routes matching events there.
 
-**Orchestrate any task.** Send a prompt from the TUI, CLI, or HTTP
-API. The runtime fans work out to specialist agents, consults durable
-memory, and streams the full reasoning trace back to the caller.
+## Design in one line
 
-**Route events from software and hardware.** Turn GitHub webhooks, incident
-feeds, sensor readings, and edge telemetry into supervised agent runs.
-Declare which event types an agent handles; arbiter matches and routes
-without a hand-written dispatcher.
+Process-local multi-agent orchestration with a prose-embedded command DSL, shared storage, and a streaming event bus exposed as TUI / CLI / HTTP.
 
-**Act with supervision.** Every agent's tool access is a hard allowlist, not
-a suggestion in the system prompt. Layer an advisor gate on top and
-consequential turns get a second model's sign-off before they reach you.
+Deeper tradeoffs — why commands are inline rather than JSON tool-calling, why ops (TLS, WAF, rate limits) stay at the reverse proxy, how memory and tenants work — are in [`docs/philosophy`](docs/philosophy.md).
 
 ## Themeable
 
-38 presets ship in the box (Nord, Dracula, Catppuccin, Gruvbox, Tokyo Night, Solarized, and more); 
+38 presets ship in the box (Nord, Dracula, Catppuccin, Gruvbox, Tokyo Night, Solarized, and more);
 export one as a starting point and edit hex values to make your own:
 
 ```bash
@@ -98,5 +70,15 @@ Backgrounds, text, borders, markdown and diff syntax colors, even the
 and column breakpoints. Full reference in
 [`docs/tui/themes.md`](docs/tui/themes.md).
 
+## Documentation
+
+- [`docs/getting-started`](https://arbiter.run/docs/getting-started/local) — first agent reply
+- [`docs/philosophy`](https://arbiter.run/docs/philosophy) — why Arbiter is shaped this way
+- [`docs/api/`](https://arbiter.run/docs/api) — HTTP API, tenants, SSE, MCP, A2A, memory
+- [`docs/cli/`](https://arbiter.run/docs/cli) — `--init`, `--send`, `--api`, env vars
+- [`docs/tui/`](https://arbiter.run/docs/tui) — panes, keybindings, themes, sessions
+- [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md)
+
+Arbiter is experimental. The event surface, agent constitutions, and HTTP shape may change. `/exec` is unsandboxed by default; treat it accordingly.
 
 Licensed under the [Apache License 2.0](LICENSE).
