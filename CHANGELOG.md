@@ -7,6 +7,36 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-07-22
+
+Patch release: theme catalog growth with an interactive picker, denser
+dual-sidebar chrome, session token persistence, and wait-state spinner
+unification.
+
+### Added
+- **Interactive `/theme` picker.** Browse and preview built-in and custom
+  themes without leaving the session; twenty more presets ship in-tree
+  (38 total).
+- **Session restore.** Last conversation reloads on restart; conversation
+  token totals persist with the session and surface in the history
+  sidebar.
+
+### Changed
+- **Dual-sidebar gutters and chrome.** History and stats sidebars share
+  tighter spacing; model labels shorten in the stats column.
+- **Expandable output blocks.** Click a collapsed output segment to
+  expand it in place.
+- **Unified wait-state spinners.** One Braille loader with rotating wait
+  phrases across thinking / tool wait chrome; output pane flush with
+  readline and inset scroll content to match inter-box gaps.
+
+### Fixed
+- **Stale token totals on save.** Concurrent `add_tokens` updates are no
+  longer overwritten by a pre-save snapshot.
+- **Manifest vs session totals on load.** Restart prefers the max of
+  manifest and `usage.total_tokens` so a stale positive manifest cannot
+  hide a higher session total.
+
 ## [0.8.1] — 2026-07-21
 
 Patch release: TUI chrome polish so live sessions and conversation
@@ -30,6 +60,7 @@ rhythm.
   stripped on replay so conversation switch matches the live session
   view.
 
+## [0.8.0] — 2026-07-20
 
 Minor release focused on the TUI activity timeline and multi-pane
 session model.  Turns render as expandable tool/thinking segments with
