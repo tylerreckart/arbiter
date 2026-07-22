@@ -92,6 +92,7 @@ When `layout.mouse` is enabled in `~/.arbiter/tui.json` (the default), the TUI e
 |--------|--------|
 | Left-click a pane | Focus that pane (also exits history-sidebar focus) |
 | Left-click the input row | Focus the pane and place the caret |
+| Left-click an expandable block | Expand or collapse thinking / tool / truncated code |
 | Wheel over scrollback | Scroll that pane (does not steal keyboard focus) |
 | Left-click a conversation in the history sidebar | Select and switch to it |
 | Drag a split gutter | Resize the two adjacent panes asymmetrically |

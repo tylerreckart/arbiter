@@ -822,7 +822,8 @@ int tui_input_pad_x(int cols, const TuiDesign& d) {
 
 int tui_bottom_pad_rows(bool footer_hint_visible, const TuiDesign& d) {
     // Keep in sync with TUI::kBottomPadRows / kCompactBottomPadRows.
-    constexpr int kFull = 3;
+    // Full chrome: hint row + one trailing pad (no blank spacer above the hint).
+    constexpr int kFull = 2;
     constexpr int kCompact = 1;
     const bool footer_on = footer_hint_visible && d.layout.show_footer;
     if (!footer_on && d.layout.chrome_compact_rows) return kCompact;
@@ -847,7 +848,8 @@ SidebarColors tui_sidebar_colors(const TuiDesign& d) {
     const TuiRgba strong_target = contrast_target_emphasis_on(sbg, light_bg);
 
     SidebarColors c;
-    const TuiRgba label_seed = blend_rgb(d.text.muted, d.text.primary, 0.45);
+    // Lean farther toward primary so labels/timestamps stay readable.
+    const TuiRgba label_seed = blend_rgb(d.text.muted, d.text.primary, 0.58);
     c.label = ensure_contrast(label_seed, sbg, 4.5, soft_target);
     c.value = ensure_contrast(d.text.primary, sbg, 4.5, strong_target);
     c.body = ensure_contrast(d.text.primary, sbg, 4.5, strong_target);

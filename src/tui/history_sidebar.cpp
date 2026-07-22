@@ -49,13 +49,13 @@ bool entry_matches(const ConversationEntry& e, const std::string& filter_lc) {
 
 int HistorySidebarState::width_for_terminal(int cols, bool enabled) {
     if (!enabled || cols < kMinCols) return 0;
-    return kWidth;
+    return kWidth + kOuterGutter;
 }
 
 Rect HistorySidebarState::rect_for_terminal(int cols, int rows, bool enabled) {
-    const int w = width_for_terminal(cols, enabled);
-    if (w <= 0 || cols <= w || rows <= 0) return {};
-    return Rect{0, 0, w, rows};
+    const int leading = width_for_terminal(cols, enabled);
+    if (leading <= 0 || cols <= leading || rows <= 0) return {};
+    return Rect{kOuterGutter, 0, kWidth, rows};
 }
 
 void HistorySidebarState::toggle_enabled(const std::string& config_dir) {

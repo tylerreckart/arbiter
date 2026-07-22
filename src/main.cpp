@@ -39,8 +39,10 @@
 #include "tui/opentui/session.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
+#include "tui/theme_picker.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
+#include "tui/opentui/theme_picker_frame.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
 #include "tui/confirm_keys.h"
@@ -318,6 +320,8 @@ using arbiter::ConversationStore;
 using arbiter::HistorySidebarState;
 using arbiter::HistorySidebarKey;
 using arbiter::HistorySidebarSnapshot;
+using arbiter::ThemePickerState;
+using arbiter::ThemePickerSnapshot;
 using arbiter::read_history_sidebar_key;
 
 // State the output-pump thread needs.  Points into cmd_interactive()'s stack
@@ -428,6 +432,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     ConversationStore conversation_store(dir);
     HistorySidebarState history_sidebar;
     history_sidebar.set_enabled(arbiter::tui_design().layout.show_history_sidebar, dir);
+    ThemePickerState theme_picker;
 
     // Signals the main thread to repaint the focused input after a layout mutation.
     std::atomic<bool> refresh_focused_input{false};
@@ -503,7 +508,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         const int leading = HistorySidebarState::width_for_terminal(
             cols, history_sidebar.enabled());
         const int panes = layout_ptr ? static_cast<int>(layout_ptr->pane_count()) : 1;
-        const int trailing = sidebar.effective_width(cols, panes);
+        const int session_w = sidebar.effective_width(cols, panes, leading);
+        // Reserve a trailing gutter so the session box isn't flush to the edge.
+        const int trailing = session_w > 0
+            ? session_w + SidebarState::kOuterGutter
+            : 0;
         // Full terminal height — no top header bar.
         return Rect{leading, 0, std::max(1, cols - leading - trailing), std::max(1, rows)};
     };
@@ -607,7 +616,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         {"/a2a",          "remote A2A agents"},
         {"/lesson",       "agent-scoped lessons"},
         {"/plan",         "execute a planner-produced plan file"},
-        {"/theme",        "switch TUI color theme in-session"},
+        {"/theme",        "browse themes (↑↓ preview, Enter select)"},
         {"/verbose",      "toggle raw /cmd line streaming"},
         {"/chat list",    "list conversations"},
         {"/chat new",     "start a new conversation"},
@@ -820,6 +829,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                  const std::string& model,
                                  const arbiter::ApiResponse& resp) {
         sidebar.record_turn(agent_id, model, resp);
+        // Prefer the ConversationScope key — cost_cb runs on the pane exec
+        // thread inside handle()'s scope, even when g_active_pane is unset
+        // (e.g. nested /parallel workers that re-pin late).
+        const std::string& cid = arbiter::agent_conversation_key();
+        const int delta = resp.input_tokens + resp.output_tokens;
+        if (delta > 0 && !cid.empty()) {
+            conversation_store.add_tokens(cid, delta);
+        }
     });
     orch.set_agent_start_callback([&](const std::string& /*agent_id*/) {
         Pane* p = g_active_pane;
@@ -875,6 +892,20 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         pane_history_set_cols(p, p.tui.cols());
     });
 
+    // Load already restored orch history for the active conversation; replay
+    // it into the pane so restart shows the prior transcript without needing
+    // a manual switch-away-and-back.
+    if (restored) {
+        Pane& pane = layout.focused();
+        ConversationScope scope(pane.conversation_id);
+        const auto history = orch.get_agent_history("index");
+        const size_t total = history.size();
+        if (total > 0) {
+            arbiter::replay_transcript(
+                pane, history, arbiter::replay_tail_begin(total), total);
+        }
+    }
+
     auto sync_layout_to_terminal = [&]() -> bool {
         const Rect want = layout_bounds();
         const Rect have = layout.outer_bounds();
@@ -928,16 +959,24 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
         if (layout.pane_count() > 1) layout.draw_borders(frame);
 
+        if (theme_picker.active()) {
+            arbiter::opentui::draw_theme_picker(
+                frame, theme_picker.snapshot(), layout.focused().tui);
+        }
+
         const int panes = static_cast<int>(layout.pane_count());
-        int sw = sidebar.effective_width(cols, panes);
+        const int leading = HistorySidebarState::width_for_terminal(
+            cols, history_sidebar.enabled());
+        int sw = sidebar.effective_width(cols, panes, leading);
         if (sw <= 0) return;
 
         int pane_x = layout.outer_bounds().x;
         int pane_w = layout.outer_bounds().w;
         int gap = cols - pane_x - pane_w;
-        if (sw <= 0 || gap <= 0) return;
+        // Trailing gutter is reserved in layout_bounds; keep the box width at sw.
+        if (sw <= 0 || gap < sw) return;
 
-        const Rect sb = {pane_x + pane_w, 0, std::min(sw, gap), std::max(1, rows)};
+        const Rect sb = {pane_x + pane_w, 0, sw, std::max(1, rows)};
         Pane& focused = layout.focused();
         sidebar.set_focus_context(focused.current_agent,
                                   focused.current_model);
@@ -1550,7 +1589,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /plan execute <path>             — execute a planner-produced plan file\n"
                     "\n"
                     "Session\n"
-                    "  /theme [list]|<preset>           — switch TUI color theme in-session\n"
+                    "  /theme                           — browse themes (↑↓ preview, Enter)\n"
+                    "  /theme list|<preset>             — list or switch TUI color theme\n"
                     "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
                     "  /chat title <text>               — rename the active conversation (locks title)\n"
                     "  /chat search <text>              — find text across saved conversations\n"
@@ -1729,7 +1769,34 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (cmd == "theme") {
                 std::string arg;
                 iss >> arg;
-                if (arg.empty() || arg == "list") {
+                if (arg.empty()) {
+                    auto themes = arbiter::tui_list_available_themes(dir);
+                    if (themes.empty()) {
+                        push_status("ERR: no themes found");
+                        return;
+                    }
+                    std::string active = arbiter::tui_active_preset();
+                    if (active.empty()) {
+                        // theme_file path → try basename stem so the picker
+                        // lands on the matching user theme when present.
+                        const std::string file = arbiter::tui_active_theme_file();
+                        if (!file.empty()) {
+                            const auto slash = file.find_last_of("/\\");
+                            const std::string base = (slash == std::string::npos)
+                                ? file : file.substr(slash + 1);
+                            if (base.size() > 5 && base.ends_with(".json")) {
+                                active = base.substr(0, base.size() - 5);
+                            }
+                        }
+                    }
+                    theme_picker.open(std::move(themes), active);
+                    // Wake the main loop so it takes stdin for ↑↓/Enter/Esc.
+                    refresh_focused_input.store(true);
+                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    if (pump_notify) pump_notify();
+                    return;
+                }
+                if (arg == "list") {
                     const std::string active_preset = arbiter::tui_active_preset();
                     const std::string active_file = arbiter::tui_active_theme_file();
                     std::ostringstream out;
@@ -1746,6 +1813,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         out << '\n';
                     }
                     out << "\nUsage:\n"
+                           "  /theme                    — browse themes (↑↓ preview, Enter select)\n"
                            "  /theme <preset>           — built-in or ~/.arbiter/themes/<name>.json\n"
                            "  /theme save <name>        — export current look to themes/<name>.json\n"
                            "  /theme file <path>        — load theme JSON (sets theme_file in tui.json)\n"
@@ -2607,13 +2675,15 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         const int cols = arbiter::term_cols();
         const int rows = arbiter::term_rows();
         const int panes = static_cast<int>(layout.pane_count());
-        const int sw = sidebar.effective_width(cols, panes);
+        const int leading = HistorySidebarState::width_for_terminal(
+            cols, history_sidebar.enabled());
+        const int sw = sidebar.effective_width(cols, panes, leading);
         if (sw <= 0) return {};
         const int pane_x = layout.outer_bounds().x;
         const int pane_w = layout.outer_bounds().w;
         const int gap = cols - pane_x - pane_w;
-        if (gap <= 0) return {};
-        return Rect{pane_x + pane_w, 0, std::min(sw, gap), std::max(1, rows)};
+        if (gap < sw) return {};
+        return Rect{pane_x + pane_w, 0, sw, std::max(1, rows)};
     };
 
     auto history_visible_rows = [&](const Rect& hb) -> int {
@@ -2729,10 +2799,15 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (hit.kind == HitKind::PaneInput) {
                     hit.pane->editor.set_cursor_from_click(ev.x, ev.y);
                 }
-                if (focus_changed || was_history) {
+                bool toggled = false;
+                if (hit.kind == HitKind::PaneScroll) {
+                    toggled = pane_history_toggle_expandable_at(
+                        *hit.pane, ev.x, ev.y);
+                }
+                if (focus_changed || was_history || toggled) {
                     refresh_focused_input.store(true);
                     if (pump_notify) pump_notify();
-                    return true;
+                    return focus_changed || was_history;
                 }
                 if (pump_notify) pump_notify();
                 return false;
@@ -2757,6 +2832,74 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         while (service_pending_conv_ops()) {}
         while (service_mouse_switch()) {}
         while (service_pending_after_cancel()) {}
+
+        if (theme_picker.active()) {
+            if (pump_notify) pump_notify();
+            const int visible_rows =
+                arbiter::opentui::theme_picker_visible_rows(layout.focused().tui);
+
+            char csi = 0;
+            std::string csi_params;
+            const int key = read_history_sidebar_key(csi, csi_params);
+            if (key < 0) break;
+
+            // Swallow mouse reports while the picker owns stdin.
+            if (key == 0x1B && (csi == 'M' || csi == 'm')
+                && !csi_params.empty() && csi_params[0] == '<') {
+                continue;
+            }
+
+            auto preview_selected = [&]() {
+                const std::string name = theme_picker.selected_theme();
+                if (name.empty()) return;
+                arbiter::load_tui_design(dir, name);
+                refresh_chrome();
+            };
+
+            // Up / Down / Left / Right cycle with live preview.
+            if (key == 0x1B && (csi == 'A' || csi == 'D')) {
+                theme_picker.move_selection(-1, visible_rows);
+                preview_selected();
+                continue;
+            }
+            if (key == 0x1B && (csi == 'B' || csi == 'C')) {
+                theme_picker.move_selection(1, visible_rows);
+                preview_selected();
+                continue;
+            }
+            // PgUp / PgDn (CSI 5~ / 6~)
+            if (key == 0x1B && csi == '~' && csi_params == "5") {
+                theme_picker.page_selection(-1, visible_rows);
+                preview_selected();
+                continue;
+            }
+            if (key == 0x1B && csi == '~' && csi_params == "6") {
+                theme_picker.page_selection(1, visible_rows);
+                preview_selected();
+                continue;
+            }
+            if (key == '\r' || key == '\n') {
+                const std::string name = theme_picker.selected_theme();
+                theme_picker.close();
+                if (!name.empty()) {
+                    arbiter::set_tui_preset(dir, name);
+                    refresh_chrome();
+                    layout.focused().output_queue.push_prose_msg(
+                        "theme: " + name, StyleId::System);
+                }
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (key == 0x1B && csi == 0) {
+                // Bare Esc — restore disk theme (previews never wrote tui.json).
+                theme_picker.close();
+                arbiter::load_tui_design(dir);
+                refresh_chrome();
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            continue;
+        }
 
         if (history_sidebar.focused()) {
             if (pump_notify) pump_notify();
@@ -2866,6 +3009,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             if (service_pending_conv_ops()) continue;
             if (service_mouse_switch()) continue;
             if (service_pending_after_cancel()) continue;
+            if (theme_picker.active()) continue;
             // Layout mutation woke us up just to repaint the focused
             // pane's prompt — loop back so begin_input paints a fresh
             // one.  Without this, read_line returning false here would

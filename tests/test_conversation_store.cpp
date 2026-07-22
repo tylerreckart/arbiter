@@ -228,6 +228,29 @@ TEST_CASE("titled flag round-trips through the manifest on disk") {
     fs::remove_all(dir);
 }
 
+TEST_CASE("add_tokens persists total_tokens across store reloads") {
+    const std::string dir = make_temp_dir();
+    std::string id;
+    {
+        ConversationStore store(dir);
+        id = store.active_id();
+        store.add_tokens(id, 1200);
+        store.add_tokens(id, 345);
+        CHECK(store.list().front().total_tokens == 1545);
+    }
+    {
+        ConversationStore store(dir);
+        REQUIRE_FALSE(store.list().empty());
+        CHECK(store.list().front().id == id);
+        CHECK(store.list().front().total_tokens == 1545);
+        // Session file also carries usage for manifest backfill.
+        const std::string session = read_all(store.session_path(id));
+        CHECK(session.find("\"total_tokens\"") != std::string::npos);
+        CHECK(session.find("1545") != std::string::npos);
+    }
+    fs::remove_all(dir);
+}
+
 TEST_CASE("equal updated_at ties break by id so list order is deterministic") {
     // updated_at has second resolution, so conversations created/saved in
     // the same second tie constantly.  The sidebar's keyboard navigation

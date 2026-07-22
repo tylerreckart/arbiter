@@ -31,3 +31,12 @@ TEST_CASE("format_context_pct uses model window and last-turn prompt tokens") {
     CHECK(context_pct_value(10'000, "ollama/llama3") == -1);
     CHECK(context_pct_value(0, "claude-sonnet-4-6") == -1);
 }
+
+TEST_CASE("format_sidebar_model keeps the portion after the first separator") {
+    CHECK(format_sidebar_model("openrouter/openai/gpt-5.2") == "openai/gpt-5.2");
+    CHECK(format_sidebar_model("openrouter\\anthropic/claude-sonnet-4.5")
+          == "anthropic/claude-sonnet-4.5");
+    CHECK(format_sidebar_model("ollama/llama3.2") == "llama3.2");
+    CHECK(format_sidebar_model("claude-sonnet-4-6") == "claude-sonnet-4-6");
+    CHECK(format_sidebar_model("") == "");
+}

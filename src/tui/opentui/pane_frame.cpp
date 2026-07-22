@@ -74,7 +74,7 @@ void draw_footer_hint(OpenTuiHandle frame,
                   cx,
                   y,
                   part,
-                  command ? d.text.primary : d.text.subtle,
+                  command ? d.text.primary : d.text.muted,
                   d.bg.scroll,
                   command ? kAttrBold : 0);
         cx += static_cast<std::uint32_t>(cell_width(part));
