@@ -5,8 +5,9 @@
 
 namespace arbiter::opentui {
 
-// Draw pane chrome (separators, hints, input background) into an OpenTUI
-// frame buffer.  Does not draw scrollback — PaneScrollView handles that.
+// Draw pane chrome (rounded output + input boxes, separators, hints) into
+// an OpenTUI frame buffer.  Does not draw scrollback — PaneScrollView
+// handles that inside the output box.
 void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui);
 
 } // namespace arbiter::opentui

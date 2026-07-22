@@ -21,6 +21,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -329,10 +330,15 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                     client_.reasoning_callback());
             }
         }
-        // Register child clients so cancel() can reach them while threads run.
+        // Register child clients so cancel()/cancel_token() can reach them
+        // while threads run.  Tag with the parent turn's CancelToken when
+        // one is installed on this thread.
+        const auto parent_token = current_request_cancel_token();
         {
             std::lock_guard<std::mutex> lk(parallel_clients_mu_);
-            for (auto& c : child_clients) parallel_clients_.push_back(c.get());
+            for (auto& c : child_clients) {
+                parallel_clients_.push_back({c.get(), parent_token});
+            }
         }
 
         std::vector<std::thread> threads;
@@ -352,11 +358,10 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                                    pane_binder, conv_key]() {
                 if (pane_binder) pane_binder();
                 ConversationScope scope(conv_key);
-                // Basic validations — mirror make_invoker's gates.
-                if (sub_id == caller_id) {
-                    results[i] = "ERR: agent cannot invoke itself";
-                    return;
-                }
+                // Basic validations — mirror make_invoker's gates, except
+                // self-invoke: /parallel always runs on an ephemeral Agent
+                // clone, so a sub-agent (e.g. research) may fan out to
+                // multiple copies of itself without racing its own history.
                 if (sub_id == "index") {
                     results[i] = "ERR: index cannot be delegated to";
                     return;
@@ -460,8 +465,9 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
         {
             std::lock_guard<std::mutex> lk(parallel_clients_mu_);
             for (auto& c : child_clients) {
-                auto it = std::find(parallel_clients_.begin(),
-                                    parallel_clients_.end(), c.get());
+                auto it = std::find_if(
+                    parallel_clients_.begin(), parallel_clients_.end(),
+                    [&](const ParallelClientEntry& e) { return e.client == c.get(); });
                 if (it != parallel_clients_.end())
                     parallel_clients_.erase(it);
             }
@@ -1901,7 +1907,18 @@ void Orchestrator::cancel() {
     client_.cancel();
     // Also cancel any per-child clients active inside a /parallel turn.
     std::lock_guard<std::mutex> lk(parallel_clients_mu_);
-    for (ApiClient* c : parallel_clients_) c->cancel();
+    for (auto& e : parallel_clients_) {
+        if (e.client) e.client->cancel();
+    }
+}
+
+void Orchestrator::cancel_token(const std::shared_ptr<CancelToken>& token) {
+    if (!token) return;
+    client_.cancel(*token);
+    std::lock_guard<std::mutex> lk(parallel_clients_mu_);
+    for (auto& e : parallel_clients_) {
+        if (e.client && e.token == token) e.client->cancel();
+    }
 }
 
 void Orchestrator::reset_all_histories() {

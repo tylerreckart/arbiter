@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.7.3 LANGUAGES CXX)
+project(arbiter VERSION 0.8.1 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -97,6 +97,7 @@ set(ARBITER_SOURCES
     src/cli_helpers.cpp
     src/repl/queues.cpp
     src/repl/layout.cpp
+    src/repl/pane.cpp
     src/repl/pane_history.cpp
     src/repl/conversation_store.cpp
     src/repl/conversation_titling.cpp
@@ -112,6 +113,7 @@ set(ARBITER_SOURCES
     src/render_policy.cpp
     src/stream_renderer.cpp
     src/tui/tui.cpp
+    src/tui/spinner.cpp
     src/tui/tui_design.cpp
     src/tui/style_resolver.cpp
     src/tui/block_parser.cpp
@@ -125,6 +127,7 @@ set(ARBITER_SOURCES
     src/advisor.cpp
     src/api_server.cpp
     src/sandbox.cpp
+    src/ssrf_guard.cpp
     src/idempotency_cache.cpp
     src/metrics.cpp
     src/circuit_breaker.cpp
@@ -228,7 +231,6 @@ target_sources(arbiter PRIVATE
     src/tui/history_sidebar.cpp
     src/tui/opentui/sidebar_frame.cpp
     src/tui/opentui/history_sidebar_frame.cpp
-    src/tui/opentui/top_header_frame.cpp
     src/tui/opentui/pane_frame.cpp
 )
 target_link_libraries(arbiter PRIVATE OpenTUI::core)
@@ -343,10 +345,19 @@ if(INDEX_BUILD_TESTS)
     add_test(NAME chat_command_tui COMMAND chat_command_tui_tests)
     add_dependencies(chat_command_tui_tests arbiter)
 
+    # PTY integration tests drive the full arbiter binary (links prebuilt
+    # OpenTUI).  Label them so TSan CI can exclude the set — TSan + an
+    # unsanitized OpenTUI .so is timing-flaky and outside what unit TSan
+    # covers.  ASan CI still runs the full suite including these.
+    set_tests_properties(
+        line_editor sidebar_tui transcript_replay_tui chat_command_tui
+        PROPERTIES LABELS "pty")
+
     # --- Unit tests for security-critical command functions ---
     add_executable(unit_commands
         tests/test_commands.cpp
         src/commands.cpp
+        src/ssrf_guard.cpp
         src/styled_text.cpp
         src/theme.cpp
         src/tui/tui_design.cpp
@@ -476,6 +487,7 @@ if(INDEX_BUILD_TESTS)
         tests/test_tool_indicator.cpp
         tests/term_size_stub.cpp
         src/tui/tui.cpp
+        src/tui/spinner.cpp
         src/theme.cpp
         src/tui/tui_design.cpp
         src/json.cpp
@@ -488,6 +500,16 @@ if(INDEX_BUILD_TESTS)
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_tool_indicator COMMAND unit_tool_indicator)
 
+    add_executable(unit_spinner
+        tests/test_spinner.cpp
+        src/tui/spinner.cpp
+    )
+    target_include_directories(unit_spinner PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_spinner COMMAND unit_spinner)
+
     # PaneScrollView ToolSegment / ThinkingSegment geometry + toggle.
     add_executable(unit_pane_scroll_segments
         tests/test_pane_scroll_segments.cpp
@@ -497,6 +519,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/opentui/span_scroll_append.cpp
         src/tui/opentui/diff_panel.cpp
         src/tui/tui.cpp
+        src/tui/spinner.cpp
         src/tui/tui_design.cpp
         src/tui/style_resolver.cpp
         src/tui/ansi_util.cpp
@@ -550,6 +573,15 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_kitty_key_decode COMMAND unit_kitty_key_decode)
+
+    add_executable(unit_confirm_keys
+        tests/test_confirm_keys.cpp
+    )
+    target_include_directories(unit_confirm_keys PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_confirm_keys COMMAND unit_confirm_keys)
 
     add_executable(unit_mouse_decode
         tests/test_mouse_decode.cpp
@@ -720,6 +752,7 @@ if(INDEX_BUILD_TESTS)
         src/message_codec.cpp
         src/json.cpp
         src/repl/queues.cpp
+        src/repl/transcript_replay_predicates.cpp
         src/stream_renderer.cpp
         src/tui/block_parser.cpp
         src/tui/stream_filter.cpp
@@ -728,6 +761,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/opentui/span_scroll_append.cpp
         src/tui/opentui/diff_panel.cpp
         src/tui/tui.cpp
+        src/tui/spinner.cpp
         src/tui/tui_design.cpp
         src/tui/style_resolver.cpp
         src/tui/ansi_util.cpp
@@ -943,6 +977,7 @@ if(INDEX_BUILD_TESTS)
         src/mcp/manager.cpp
         src/mcp/client.cpp
         src/commands.cpp
+        src/ssrf_guard.cpp
         src/json.cpp
     )
     target_include_directories(unit_mcp PRIVATE
@@ -956,6 +991,23 @@ if(INDEX_BUILD_TESTS)
         OpenSSL::Crypto
     )
     add_test(NAME unit_mcp COMMAND unit_mcp)
+
+    # Sandbox workspace path safety (symlink escape) + SSRF denylist.
+    add_executable(unit_sandbox_ssrf
+        tests/test_sandbox_ssrf.cpp
+        src/sandbox.cpp
+        src/ssrf_guard.cpp
+        src/metrics.cpp
+    )
+    target_include_directories(unit_sandbox_ssrf PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_sandbox_ssrf PRIVATE
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_sandbox_ssrf COMMAND unit_sandbox_ssrf)
 
     # A2A protocol layer.  Five slices exercised in-process:
     #   • wire-type round-trips for every public struct;

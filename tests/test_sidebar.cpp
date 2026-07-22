@@ -55,3 +55,16 @@ TEST_CASE("rect_for_terminal is empty when sidebar is hidden") {
     CHECK(wide.x == 92);
     CHECK(wide.h == 40);
 }
+
+TEST_CASE("mcp recent list stays empty until an mcp tool is recorded") {
+    SidebarState sb;
+    CHECK(sb.snapshot().mcp.empty());
+    sb.record_tool("bash", true);
+    CHECK(sb.snapshot().mcp.empty());
+    CHECK(sb.snapshot().tools.size() == 1);
+    sb.record_tool("mcp:filesystem/list", true);
+    const auto snap = sb.snapshot();
+    CHECK(snap.mcp.size() == 1);
+    CHECK(snap.mcp[0].name == "filesystem/list");
+    CHECK(snap.mcp[0].ok);
+}

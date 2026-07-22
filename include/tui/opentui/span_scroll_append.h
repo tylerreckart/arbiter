@@ -62,6 +62,9 @@ private:
     std::deque<StoredRun> plain_storage_;
     std::unordered_map<StyleKey, std::uint32_t, StyleKeyHash> style_cache_;
     std::uint32_t next_style_name_ = 0;
+    // Newlines are separators between lines, not terminators — a trailing `\n`
+    // would create a phantom empty visual row and stack with block_gap blanks.
+    bool has_line_ = false;
 };
 
 } // namespace arbiter::opentui

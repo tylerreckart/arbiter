@@ -24,6 +24,13 @@ inline constexpr std::size_t kReplayChunkMessages = 50;
 // agent), not something the user actually typed — replay skips these.
 [[nodiscard]] bool is_replay_noise(const Message& m);
 
+// Text to echo for a user history message. Master turns store
+// `global_status() + "\\n\\nQUERY: " + user_text` (and optionally an
+// [OPEN TODOS] / lesson preamble) in history; live scrollback only echoes
+// the raw user line. Replay strips that orchestrator prefix so switch
+// matches the initial session view.
+[[nodiscard]] std::string_view replay_user_echo_text(const Message& m);
+
 // Renders messages [begin, end) of a conversation's message history into
 // pane's scrollback through the same StreamRenderer/BlockParser pipeline a
 // live turn uses (kReplay policy), so replayed output is visually identical

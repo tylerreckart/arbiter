@@ -377,13 +377,88 @@ ApiClient::ProviderPool& ApiClient::pool_for(const std::string& provider) {
     return *slot;
 }
 
+namespace {
+
+// Current thread's request token installed by RequestCancelScope.
+thread_local std::shared_ptr<CancelToken> tls_request_token;
+
+}  // namespace
+
+void CancelToken::request_cancel() {
+    cancelled_.store(true, std::memory_order_release);
+    std::lock_guard<std::mutex> lk(mu_);
+    if (owner_ && conn_) {
+        owner_->shutdown_conn(static_cast<ApiClient::Conn*>(conn_));
+    }
+}
+
+RequestCancelScope::RequestCancelScope(ApiClient& client,
+                                       std::shared_ptr<CancelToken> token)
+    : client_(client), token_(std::move(token)), prev_(tls_request_token) {
+    tls_request_token = token_;
+    if (token_) client_.register_token(token_.get());
+}
+
+RequestCancelScope::~RequestCancelScope() {
+    if (token_) client_.unregister_token(token_.get());
+    tls_request_token = std::move(prev_);
+}
+
+std::shared_ptr<CancelToken> current_request_cancel_token() {
+    return tls_request_token;
+}
+
+void ApiClient::register_token(CancelToken* token) {
+    if (!token) return;
+    std::lock_guard<std::mutex> lk(tokens_mu_);
+    active_tokens_.push_back(token);
+}
+
+void ApiClient::unregister_token(CancelToken* token) {
+    if (!token) return;
+    std::lock_guard<std::mutex> lk(tokens_mu_);
+    active_tokens_.erase(
+        std::remove(active_tokens_.begin(), active_tokens_.end(), token),
+        active_tokens_.end());
+}
+
+void ApiClient::shutdown_conn(Conn* conn) {
+    if (!conn) return;
+    if (conn->sock >= 0) ::shutdown(conn->sock, SHUT_RDWR);
+}
+
+void ApiClient::bind_token_conn(CancelToken* token, Conn* conn) {
+    if (!token || !conn) return;
+    std::lock_guard<std::mutex> lk(token->mu_);
+    token->owner_ = this;
+    token->conn_ = conn;
+    if (token->cancelled_.load(std::memory_order_acquire) && conn->sock >= 0) {
+        ::shutdown(conn->sock, SHUT_RDWR);
+    }
+}
+
+void ApiClient::unbind_token_conn(CancelToken* token, Conn* conn) {
+    if (!token) return;
+    std::lock_guard<std::mutex> lk(token->mu_);
+    if (token->conn_ == conn) {
+        token->conn_ = nullptr;
+        token->owner_ = nullptr;
+    }
+}
+
+bool ApiClient::is_request_cancelled() const {
+    if (cancelled_.load(std::memory_order_acquire)) return true;
+    if (tls_request_token && tls_request_token->is_cancelled()) return true;
+    return false;
+}
+
 // Lease a Conn out of the provider's pool.  Prefer an idle Conn (reuse its
 // keep-alive socket); otherwise open a new slot up to the cap; otherwise wait
 // for a lease to be returned.  The leased Conn stays owned by the pool (via
 // unique_ptr) so cancel() and ~ApiClient can still reach its socket while it's
 // in use — the lease only hands out exclusive *use* of it, not ownership.
 ApiClient::ConnLease::ConnLease(ApiClient& owner, const std::string& provider)
-    : pool_(owner.pool_for(provider)), conn_(nullptr) {
+    : owner_(owner), pool_(owner.pool_for(provider)), conn_(nullptr) {
     std::unique_lock<std::mutex> lk(pool_.mu);
     pool_.cv.wait(lk, [&] {
         return !pool_.idle.empty() ||
@@ -396,9 +471,16 @@ ApiClient::ConnLease::ConnLease(ApiClient& owner, const std::string& provider)
         pool_.conns.push_back(std::make_unique<Conn>());
         conn_ = pool_.conns.back().get();
     }
+    lk.unlock();
+    if (tls_request_token) {
+        owner_.bind_token_conn(tls_request_token.get(), conn_);
+    }
 }
 
 ApiClient::ConnLease::~ConnLease() {
+    if (tls_request_token) {
+        owner_.unbind_token_conn(tls_request_token.get(), conn_);
+    }
     {
         std::lock_guard<std::mutex> lk(pool_.mu);
         pool_.idle.push_back(conn_);
@@ -406,8 +488,20 @@ ApiClient::ConnLease::~ConnLease() {
     pool_.cv.notify_one();
 }
 
+void ApiClient::cancel(CancelToken& token) {
+    token.request_cancel();
+}
+
 void ApiClient::cancel() {
     cancelled_.store(true);
+    // Fan out to every scoped token first so their conn_ pointers are shut
+    // down even if we also sweep the pools below.
+    {
+        std::lock_guard<std::mutex> lk(tokens_mu_);
+        for (CancelToken* t : active_tokens_) {
+            if (t) t->request_cancel();
+        }
+    }
     // Shut down every open socket across every provider pool so an in-flight
     // SSL_read / read returns immediately.  Lock order is pool_mutex_ then the
     // per-pool mu; leases only ever take the per-pool mu (pool_for releases
@@ -1110,7 +1204,7 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (cancelled_.load()) {
+        if (is_request_cancelled()) {
             // record_abandoned (not record_failure): the provider wasn't
             // proven bad, and a leaked HalfOpen probe would otherwise
             // reject the provider forever.
@@ -1484,11 +1578,11 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
     };
 
     if (chunked) {
-        while (!cancelled_.load()) {
+        while (!is_request_cancelled()) {
             std::string size_line;
             while (true) {
                 int n = recv_some(buf, 1);
-                if (n <= 0 || cancelled_.load()) goto stream_done;
+                if (n <= 0 || is_request_cancelled()) goto stream_done;
                 if (buf[0] == '\n') break;
                 if (buf[0] != '\r') size_line += buf[0];
             }
@@ -1497,7 +1591,7 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
 
             int read_so_far = 0;
             while (read_so_far < chunk_size) {
-                if (cancelled_.load()) goto stream_done;
+                if (is_request_cancelled()) goto stream_done;
                 int to_read = std::min(chunk_size - read_so_far, (int)sizeof(buf));
                 int n = recv_some(buf, to_read);
                 if (n <= 0) goto stream_done;
@@ -1506,14 +1600,14 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
             }
             recv_some(buf, 2);  // trailing \r\n
         }
-        if (!cancelled_.load()) recv_some(buf, 2);
+        if (!is_request_cancelled()) recv_some(buf, 2);
     } else {
         int content_length = -1;
         auto cl_pos = headers.find("Content-Length: ");
         if (cl_pos != std::string::npos)
             content_length = std::atoi(headers.c_str() + cl_pos + 16);
         int read_so_far = 0;
-        while ((content_length < 0 || read_so_far < content_length) && !cancelled_.load()) {
+        while ((content_length < 0 || read_so_far < content_length) && !is_request_cancelled()) {
             int n = recv_some(buf, sizeof(buf));
             if (n <= 0) break;
             feed(buf, n);

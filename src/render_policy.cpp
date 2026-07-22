@@ -131,6 +131,39 @@ StyledLine styled_interim_header(const std::string& agent_id) {
     return line;
 }
 
+StyledLine styled_delegation_line(std::string_view detail) {
+    StyledLine line;
+    styled_append(line, StyleId::Info, "\u2192 ");  // →
+    styled_append(line, StyleId::Bold, "delegating");
+    std::string_view rest = detail;
+    while (!rest.empty() && (rest.front() == ' ' || rest.front() == '\t')) {
+        rest.remove_prefix(1);
+    }
+    // Accept callers that pass the full "delegating: …" or just the payload.
+    static constexpr std::string_view kPrefix = "delegating:";
+    if (rest.size() >= kPrefix.size()) {
+        bool match = true;
+        for (size_t i = 0; i < kPrefix.size(); ++i) {
+            const char c = rest[i];
+            const char e = kPrefix[i];
+            const char lower = (c >= 'A' && c <= 'Z')
+                ? static_cast<char>(c - 'A' + 'a') : c;
+            if (lower != e) { match = false; break; }
+        }
+        if (match) rest.remove_prefix(kPrefix.size());
+    }
+    while (!rest.empty() && (rest.front() == ' ' || rest.front() == '\t')) {
+        rest.remove_prefix(1);
+    }
+    if (!rest.empty()) {
+        styled_append(line, StyleId::System, ": ");
+        styled_append(line, StyleId::Info, rest);
+    } else {
+        styled_append(line, StyleId::System, ":");
+    }
+    return line;
+}
+
 std::vector<StyledLine> styled_permission_card(
     const std::string& action,
     const std::string& target,

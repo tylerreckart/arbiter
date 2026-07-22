@@ -162,6 +162,10 @@ TuiRgba tui_rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b,
 // sidebars read as recessed relative to the main pane, regardless of theme.
 [[nodiscard]] TuiRgba tui_sidebar_bg(const TuiDesign& d);
 
+// Stable per-agent accent from the active theme (`agent_master` for "index"
+// / empty; otherwise hash into `content.agent_palette`).
+[[nodiscard]] TuiRgba tui_agent_accent(const std::string& agent_id);
+
 const TuiDesign& tui_design();
 // `cli_preset` overrides `"preset"` in tui.json for this session; other
 // tui.json tokens still apply on top.

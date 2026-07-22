@@ -5,6 +5,7 @@
 #include "doctest.h"
 #include "pty_harness.h"
 
+#include <chrono>
 #include <string>
 
 using namespace index_tests;
@@ -25,6 +26,18 @@ static std::string plain(const PtySession& s) {
     return PtySession::strip_ansi(s.output());
 }
 
+static bool wait_for_plain(PtySession& s, const std::string& token, int budget_ms) {
+    budget_ms = scale_timeout_ms(budget_ms);
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(budget_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        s.read_for(50);
+        if (PtySession::strip_ansi(s.output()).find(token) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
 TEST_CASE("sidebar section labels hidden below 96 columns after first prompt") {
     PtySession s = ready_repl(40, 80);
     s.send("hello\r");
@@ -38,8 +51,6 @@ TEST_CASE("sidebar section labels hidden below 96 columns after first prompt") {
 TEST_CASE("sidebar section labels appear at 120 columns after first prompt") {
     PtySession s = ready_repl(40, 120);
     s.send("hello\r");
-    s.read_for(5000);
-    const std::string out = plain(s);
-    CHECK(out.find("Context") != std::string::npos);
+    CHECK(wait_for_plain(s, "Context", 15000));
     s.terminate();
 }

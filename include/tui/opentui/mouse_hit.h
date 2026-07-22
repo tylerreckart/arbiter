@@ -48,8 +48,9 @@ inline int history_sidebar_row_at(const Rect& sidebar_rect,
                                   int list_row_count,
                                   bool filter_line_visible = false) {
     constexpr int kRowHeight = 2;
-    // Section label at y+1, then optional filter line, then list.
-    const int top = sidebar_rect.y + 2 + (filter_line_visible ? 1 : 0);
+    // Blank row above the box, title border, blank row inside, then optional
+    // filter and list. Keep in sync with history_sidebar_frame.cpp.
+    const int top = sidebar_rect.y + 3 + (filter_line_visible ? 1 : 0);
     if (y < top) return -1;
     if (visible_rows <= 0 || list_row_count <= 0) return -1;
     const int rel = y - top;
@@ -104,12 +105,11 @@ inline HitTarget hit_test(LayoutTree& layout,
     // Match pane_frame.cpp geometry (0-based OpenTUI cells).
     const TuiChromeSnapshot chrome = pane->tui.chrome_snapshot();
     const Rect& r = chrome.rect;
-    const int sep_y = r.y + r.h - TUI::kBottomPadRows - chrome.input_rows
-                    - TUI::kSepRows;
-    const int input_top = sep_y + 1;
-    const int input_bottom = r.y + r.h - TUI::kBottomPadRows - 1;
+    const int bottom_pad = std::max(1, chrome.bottom_pad_rows);
+    const int input_top = r.y + r.h - bottom_pad - chrome.input_rows;
+    const int input_bottom = r.y + r.h - bottom_pad - 1;
     const int scroll_top = r.y;
-    const int scroll_bottom = sep_y - 1;
+    const int scroll_bottom = input_top - 1;
 
     if (y >= input_top && y <= input_bottom
         && x >= r.x && x < r.x + r.w) {

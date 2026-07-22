@@ -1,6 +1,7 @@
 #include "styled_text.h"
 
 #include "theme.h"
+#include "tui/tui_design.h"
 
 #include <cwchar>
 #include <string>
@@ -69,7 +70,7 @@ std::string style_open(StyleId id) {
     case StyleId::Bullet:    return t.md_bullet;
     case StyleId::Blockquote:return t.dim;
     case StyleId::Rule:      return t.dim + t.md_rule;
-    case StyleId::WritLine:  return t.md_cmd_line + t.dim;
+    case StyleId::WritLine:  return t.bold + t.md_cmd_line;
     case StyleId::DiffAdd:   return t.accent_success;
     case StyleId::DiffRemove:return t.accent_error;
     case StyleId::DiffHunk:  return t.dim;
@@ -142,7 +143,7 @@ StyledLine styled_user_echo(std::string_view text) {
 }
 
 std::vector<StyledLine> styled_user_echo_lines(std::string_view text) {
-    std::vector<StyledLine> out;
+    std::vector<StyledLine> body;
     // Normalize CRLF / bare CR so `\` continuations and pasted text split cleanly.
     std::string normalized;
     normalized.reserve(text.size());
@@ -155,26 +156,32 @@ std::vector<StyledLine> styled_user_echo_lines(std::string_view text) {
         normalized.push_back(text[i]);
     }
     if (normalized.empty()) {
-        out.push_back(styled_user_echo({}));
-        return out;
-    }
-    size_t start = 0;
-    while (start <= normalized.size()) {
-        const size_t nl = normalized.find('\n', start);
-        if (nl == std::string::npos) {
-            out.push_back(styled_user_echo(std::string_view(normalized).substr(start)));
-            break;
+        body.push_back(styled_user_echo({}));
+    } else {
+        size_t start = 0;
+        while (start <= normalized.size()) {
+            const size_t nl = normalized.find('\n', start);
+            if (nl == std::string::npos) {
+                body.push_back(styled_user_echo(std::string_view(normalized).substr(start)));
+                break;
+            }
+            body.push_back(styled_user_echo(
+                std::string_view(normalized).substr(start, nl - start)));
+            start = nl + 1;
+            if (start == normalized.size()) {
+                // Trailing newline is absorbed into the bottom vertical pad.
+                break;
+            }
         }
-        out.push_back(styled_user_echo(
-            std::string_view(normalized).substr(start, nl - start)));
-        start = nl + 1;
-        if (start == normalized.size()) {
-            // Trailing newline → blank echo row (still gets the bg strip).
-            out.push_back(styled_user_echo({}));
-            break;
-        }
     }
-    return out;
+    // Drop a lone trailing blank body row — vertical pads own that chrome.
+    while (!body.empty() && body.back().text.empty()) body.pop_back();
+    if (body.empty()) body.push_back(styled_user_echo({}));
+
+    // Vertical chrome is added when the contiguous echo run is rendered.
+    // Keeping source lines payload-only avoids applying the top/bottom pads
+    // again during replay, resize, or retheme.
+    return body;
 }
 
 bool is_styled_user_echo_line(const StyledLine& line) {
@@ -191,6 +198,7 @@ bool is_user_echo_find_command(const StyledLine& line) {
     if (!is_styled_user_echo_line(line)) return false;
     std::string_view payload = line.text;
     while (!payload.empty() && payload.back() == ' ') payload.remove_suffix(1);
+    if (payload.empty()) return false;  // vertical pad rows
     static constexpr char kFind[] = "/find";
     static constexpr size_t kFindLen = sizeof(kFind) - 1;
     if (payload.size() < kFindLen) return false;
@@ -206,29 +214,158 @@ bool is_user_echo_find_command(const StyledLine& line) {
 
 StyledLine pad_styled_user_echo_line(const StyledLine& line, int cols) {
     const int width = cols < 1 ? 1 : cols;
+    const TuiDesign& d = tui_design();
+    const int inset = std::max(0, d.layout.header_padding_x);
+    const int first_row_budget = std::max(0, width - inset);
+
+    // Expects an unpadded source line (payload only). Emit chrome is applied here.
     std::string body = line.text;
-    // Idempotent when fed a previously padded line: trim trailing spaces only
-    // while over budget so intentional trailing spaces that still fit are kept.
-    while (!body.empty() && body.back() == ' '
-           && static_cast<int>(display_width(body)) > width) {
-        body.pop_back();
+
+    StyledLine out;
+    if (inset > 0) {
+        styled_append(out, StyleId::UserEchoText,
+                      std::string(static_cast<size_t>(inset), ' '));
     }
-    int w = static_cast<int>(display_width(body));
-    if (w < width) {
-        body.append(static_cast<size_t>(width - w), ' ');
-    } else if (w > width) {
-        // Fill the last wrapped visual row so the bg strip is full-width.
-        const int rem = w % width;
+
+    int bw = static_cast<int>(display_width(body));
+    if (bw <= first_row_budget) {
+        body.append(static_cast<size_t>(first_row_budget - bw), ' ');
+    } else {
+        // Long turns wrap in the text buffer; pad so the final visual row
+        // fills to `width` (inset occupies the start of row 0 only).
+        const int total = inset + bw;
+        const int rem = total % width;
         if (rem != 0) {
             body.append(static_cast<size_t>(width - rem), ' ');
         }
     }
-    StyledLine out;
-    if (body.empty()) {
+    if (body.empty() && out.text.empty()) {
         out.spans.push_back({0, 0, StyleId::UserEchoText});
         return out;
     }
     styled_append(out, StyleId::UserEchoText, body);
+    return out;
+}
+
+std::vector<StyledLine> wrap_pad_styled_user_echo_line(const StyledLine& line, int cols) {
+    const int width = cols < 1 ? 1 : cols;
+    // One cell of breathing room on each side when the band is wide enough.
+    const int hpad = (width >= 3) ? 1 : 0;
+    const int content_cols = width - 2 * hpad;
+
+    std::string body = line.text;
+    // Same over-budget trailing-space trim as pad_styled_user_echo_line.
+    while (!body.empty() && body.back() == ' '
+           && static_cast<int>(display_width(body)) > content_cols) {
+        body.pop_back();
+    }
+
+    std::vector<StyledLine> out;
+    auto flush_row = [&](std::string row) {
+        // Pad the content slice, then wrap with horizontal inset spaces so
+        // glyphs never sit on the band edge.
+        StyledLine content = styled_user_echo(row);
+        const int row_w = static_cast<int>(display_width(content.text));
+        if (row_w < content_cols) {
+            content.text.append(static_cast<size_t>(content_cols - row_w), ' ');
+            content.spans.clear();
+            content.spans.push_back(
+                {0, static_cast<std::uint32_t>(content.text.size()),
+                 StyleId::UserEchoText});
+        }
+        if (hpad == 0) {
+            out.push_back(std::move(content));
+            return;
+        }
+        std::string band(static_cast<size_t>(hpad), ' ');
+        band += content.text;
+        band.append(static_cast<size_t>(hpad), ' ');
+        out.push_back(styled_user_echo(band));
+    };
+
+    if (body.empty()) {
+        flush_row({});
+        return out;
+    }
+
+    // Greedy word wrap into the inset content width. Emitting one buffer line
+    // per visual row (each padded to `width`) means OpenTUI word-wrap cannot
+    // leave short rows with glyph-only backgrounds.
+    std::string row;
+    size_t i = 0;
+    while (i < body.size()) {
+        const bool is_space = body[i] == ' ';
+        size_t j = i + 1;
+        if (is_space) {
+            while (j < body.size() && body[j] == ' ') ++j;
+        } else {
+            while (j < body.size() && body[j] != ' ') ++j;
+        }
+        const std::string_view tok(body.data() + i, j - i);
+        const int tok_w = static_cast<int>(display_width(tok));
+        const int row_w = static_cast<int>(display_width(row));
+
+        if (!row.empty() && row_w + tok_w > content_cols) {
+            if (is_space) {
+                // Whitespace that caused the wrap is the break point — drop it.
+                flush_row(std::move(row));
+                row.clear();
+                i = j;
+                continue;
+            }
+            flush_row(std::move(row));
+            row.clear();
+        }
+
+        if (tok_w > content_cols) {
+            std::string remain(tok);
+            while (!remain.empty()) {
+                const int room = content_cols - static_cast<int>(display_width(row));
+                if (room < 1) {
+                    flush_row(std::move(row));
+                    row.clear();
+                    continue;
+                }
+                std::string chunk = trim_to_display_cols(remain, room);
+                if (chunk.empty()) chunk.assign(remain, 0, 1);
+                row += chunk;
+                remain.erase(0, chunk.size());
+                if (static_cast<int>(display_width(row)) >= content_cols) {
+                    flush_row(std::move(row));
+                    row.clear();
+                }
+            }
+        } else {
+            row.append(tok.data(), tok.size());
+            if (static_cast<int>(display_width(row)) >= content_cols) {
+                flush_row(std::move(row));
+                row.clear();
+            }
+        }
+        i = j;
+    }
+    if (!row.empty() || out.empty()) flush_row(std::move(row));
+    return out;
+}
+
+std::vector<StyledLine> wrap_pad_styled_user_echo_block(
+    const std::vector<StyledLine>& lines, int cols) {
+    const int width = cols < 1 ? 1 : cols;
+    std::vector<StyledLine> out;
+    const StyledLine blank = pad_styled_user_echo_line(styled_user_echo({}), width);
+    out.push_back(blank);
+    for (const StyledLine& line : lines) {
+        if (!is_styled_user_echo_line(line)) continue;
+        auto rows = wrap_pad_styled_user_echo_line(line, width);
+        out.insert(out.end(),
+                   std::make_move_iterator(rows.begin()),
+                   std::make_move_iterator(rows.end()));
+    }
+    if (out.size() == 1) {
+        // No content rows survived — still emit a text row between pads.
+        out.push_back(blank);
+    }
+    out.push_back(blank);
     return out;
 }
 

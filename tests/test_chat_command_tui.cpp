@@ -36,6 +36,7 @@ std::string plain(const PtySession& s) {
 // the "wait for the previous turn" mechanism.
 bool wait_for_token(PtySession& s, std::size_t offset, const std::string& token,
                     int budget_ms) {
+    budget_ms = scale_timeout_ms(budget_ms);
     const auto deadline = std::chrono::steady_clock::now()
                         + std::chrono::milliseconds(budget_ms);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -53,13 +54,22 @@ TEST_CASE("/chat new + /chat switch <n> performs a full switch with replay in a 
     // so /chat is the only way to switch conversations here.
     PtySession s = ready_repl(24, 60);
 
+    // Same race as transcript_replay_tui: switching while a turn is still
+    // in flight hits the "Turn in progress — switch anyway?" gate and hangs.
+    // Wait for the dummy-key auth failure before /chat new|/chat switch.
+    // Pane-edge clipping can drop the first glyph of a replayed line, so
+    // assert on an interior substring (matches transcript_replay_tui).
+    const std::string marker_probe = "conversation-marker";
+    const std::size_t before_first = s.output().size();
     s.send("first-conversation-marker\r");
-    s.read_for(1200);
+    REQUIRE(wait_for_token(s, before_first, marker_probe, 5000));
+    REQUIRE(wait_for_token(s, before_first, "Authentication header", 20000));
 
     s.send("/chat new\r");
     s.read_for(1000);
+    const std::size_t before_second = s.output().size();
     s.send("second-conversation-text\r");
-    s.read_for(1200);
+    REQUIRE(wait_for_token(s, before_second, "Authentication header", 20000));
 
     s.send("/chat list\r");
     s.read_for(800);
@@ -67,11 +77,9 @@ TEST_CASE("/chat new + /chat switch <n> performs a full switch with replay in a 
     const std::string before = s.output();
 
     s.send("/chat switch 2\r");
-    s.read_for(1500);
-
-    REQUIRE(s.output().size() > before.size());
-    const std::string new_bytes = PtySession::strip_ansi(s.output().substr(before.size()));
-    CHECK(new_bytes.find("first-conversation-marker") != std::string::npos);
+    // Poll for replay rather than a fixed settle window — CI runners
+    // (and sanitizer builds) routinely miss a single 1500ms read_for.
+    REQUIRE(wait_for_token(s, before.size(), marker_probe, 15000));
 
     s.terminate();
 }

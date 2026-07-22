@@ -3,10 +3,10 @@
 #include "tui/tui.h"
 #include "cli_helpers.h"
 #include "theme.h"
+#include "tui/spinner.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 
 namespace arbiter {
@@ -196,30 +196,11 @@ void TUI::clear_activity_badge() {
     activity_badge_.clear();
 }
 
-// ─── Braille spinner frames (shared by both indicators) ─────────────────────
-
-namespace {
-
-static const char* kSpinnerFrames[] = {
-    "\u2801", "\u2802", "\u2804", "\u2840", "\u2848", "\u2850",
-    "\u2860", "\u28C0", "\u28C1", "\u28C2", "\u28C4", "\u28CC",
-    "\u28D4", "\u28E4", "\u28E5", "\u28E6", "\u28EE", "\u28F6",
-    "\u28F7", "\u28FF", "\u287F", "\u283F", "\u281F", "\u281F",
-    "\u285B", "\u281B", "\u282B", "\u288B", "\u280B", "\u280D",
-    "\u2809", "\u2809", "\u2811", "\u2821", "\u2881"
-};
-static constexpr int kSpinnerFrameCount =
-    static_cast<int>(sizeof(kSpinnerFrames) / sizeof(kSpinnerFrames[0]));
-
-int spinner_frame_index() {
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    return static_cast<int>((ms / 80) % kSpinnerFrameCount);
-}
-
-} // namespace
-
 // ─── ThinkingIndicator ───────────────────────────────────────────────────────
+
+void ThinkingIndicator::start() {
+    start(std::string{});
+}
 
 void ThinkingIndicator::start(const std::string& label) {
     stop();
@@ -236,8 +217,11 @@ void ThinkingIndicator::stop() {
 void ThinkingIndicator::tick() {
     if (!active_.load() || !tui_) return;
     if (tui_->queue_indicator_active()) return;
-    const int i = spinner_frame_index();
-    tui_->set_status(label_ + " " + kSpinnerFrames[i]);
+    if (label_.empty()) {
+        tui_->set_status(wait_status_label());
+    } else {
+        tui_->set_status(spinner_status_label(label_));
+    }
 }
 
 // ─── ToolCallIndicator ───────────────────────────────────────────────────────
@@ -264,9 +248,7 @@ void ToolCallIndicator::update_status() {
     if (n == 0) return;
 
     const int f = failed_.load();
-    std::string label = kSpinnerFrames[spinner_frame_index()];
-    label += " ";
-    label += std::to_string(n);
+    std::string label = std::to_string(n);
     label += " tool call";
     if (n != 1) label += "s";
     label += "\u2026";
@@ -275,7 +257,7 @@ void ToolCallIndicator::update_status() {
         label += std::to_string(f);
         label += " failed)";
     }
-    tui_->set_pre_input_status(label);
+    tui_->set_pre_input_status(spinner_status_label(label));
 }
 
 void ToolCallIndicator::tick() {
