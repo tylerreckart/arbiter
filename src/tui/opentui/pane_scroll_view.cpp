@@ -1617,6 +1617,50 @@ bool PaneScrollView::toggle_code_block_in_view(int scroll_offset) {
     return true;
 }
 
+bool PaneScrollView::toggle_expandable_at_click(const TUI& tui,
+                                                 int term_x,
+                                                 int term_y,
+                                                 int scroll_offset) {
+    bind(tui);
+    if (viewport_w_ <= 0 || viewport_h_ <= 0) return false;
+    if (term_x < buf_x_ || term_x >= buf_x_ + viewport_w_) return false;
+    if (term_y < buf_y_ || term_y >= buf_y_ + viewport_h_) return false;
+
+    const int total = total_visual_rows();
+    int first_visible = 0;
+    if (total > viewport_h_) {
+        first_visible = total - viewport_h_ - scroll_offset;
+        if (first_visible < 0) first_visible = 0;
+    }
+    const int global_row = first_visible + (term_y - buf_y_);
+
+    int row = 0;
+    for (const auto& seg : segments_) {
+        const int h = seg->visual_rows(wrap_cols_);
+        const int seg_end = row + h;
+        if (global_row >= row && global_row < seg_end) {
+            if (auto* think = dynamic_cast<ThinkingSegment*>(seg.get())) {
+                if (!think->can_expand()) return false;
+                think->toggle_expanded();
+                return true;
+            }
+            if (auto* tool = dynamic_cast<ToolSegment*>(seg.get())) {
+                if (!tool->can_expand()) return false;
+                tool->toggle_expanded();
+                return true;
+            }
+            if (auto* code = dynamic_cast<CodeSegment*>(seg.get())) {
+                if (!code->is_truncated() && !code->expanded_) return false;
+                code->toggle_expanded();
+                return true;
+            }
+            return false;
+        }
+        row = seg_end;
+    }
+    return false;
+}
+
 int PaneScrollView::total_visual_rows() const {
     int total = 0;
     for (const auto& seg : segments_) {

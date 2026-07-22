@@ -28,4 +28,9 @@ int context_pct_value(int prompt_tokens, std::string_view model);
 // Percentage string ("42%") or empty when context window is unknown.
 std::string format_context_pct(int prompt_tokens, std::string_view model);
 
+// Short display label for the session sidebar model row: keeps only the
+// portion after the first `/` or `\` (e.g. `openrouter/openai/gpt-5.2` →
+// `openai/gpt-5.2`). Unprefixed ids are returned unchanged.
+std::string format_sidebar_model(std::string_view model);
+
 } // namespace arbiter

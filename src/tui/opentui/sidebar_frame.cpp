@@ -326,13 +326,15 @@ void draw_sidebar(OpenTuiHandle frame,
                          agent, sc.body, bg);
         if (!snap.focus_model.empty()) {
             y = draw_kv_line(frame, sc, content_x, content_w, y, "model",
-                             trim_to_cells(snap.focus_model, content_w - 7),
+                             trim_to_cells(format_sidebar_model(snap.focus_model),
+                                           content_w - 7),
                              sc.value, bg);
         }
         if (!snap.last_model.empty() &&
             (snap.last_model != snap.focus_model || snap.last_agent != snap.focus_agent)) {
             y = draw_kv_line(frame, sc, content_x, content_w, y, "last",
-                             trim_to_cells(snap.last_agent + " / " + snap.last_model,
+                             trim_to_cells(snap.last_agent + " / "
+                                               + format_sidebar_model(snap.last_model),
                                            content_w - 6),
                              sc.value, bg);
         }
@@ -380,6 +382,27 @@ void draw_sidebar(OpenTuiHandle frame,
         const int mcp_budget = std::max(1, scroll_bottom - y + 1);
         draw_tool_list(frame, d, sc, content_x, content_w, y, mcp_budget,
                        snap.mcp, "(none yet)", bg);
+    }
+
+#ifdef INDEX_VERSION
+    const std::string ver = std::string("v") + INDEX_VERSION;
+#else
+    const std::string ver = "dev";
+#endif
+    // Same row as the pane footer hints, right-justified under the session box.
+    const int hint_y = pr.y + pr.h - 2;
+    if (hint_y > input_bottom_y) {
+        const std::string label = trim_to_cells(ver, content_w);
+        const int ver_w = cell_width(label);
+        const int ver_x = block_x + block_w - 1 - ver_w;
+        if (ver_x >= block_x + 1 && ver_w > 0) {
+            draw_text(frame,
+                      static_cast<std::uint32_t>(ver_x),
+                      static_cast<std::uint32_t>(hint_y),
+                      label,
+                      sc.label,
+                      bg);
+        }
     }
 }
 

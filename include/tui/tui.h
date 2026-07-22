@@ -46,7 +46,7 @@ enum class FooterHintMode {
 struct TuiChromeSnapshot {
     Rect rect;
     int  input_rows = 1;
-    int  bottom_pad_rows = 3;
+    int  bottom_pad_rows = 2;
     bool status_active = false;
     bool focus_accent = false;
     FooterHintMode footer_hint_mode = FooterHintMode::Full;
@@ -63,7 +63,7 @@ class TUI {
 public:
     static constexpr int kSepRows              = 0;   // output box sits flush on input box
     static constexpr int kMaxInputRows         = 7;
-    static constexpr int kBottomPadRows        = 3;   // spacer + hint row + bottom pad
+    static constexpr int kBottomPadRows        = 2;   // hint row + bottom pad
     static constexpr int kCompactBottomPadRows = 1;   // trailing pad when footer reclaimed
 
     // Rows reserved below the input block (theme-aware; see tui_bottom_pad_rows).
