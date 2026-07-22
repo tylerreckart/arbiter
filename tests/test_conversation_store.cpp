@@ -251,6 +251,37 @@ TEST_CASE("add_tokens persists total_tokens across store reloads") {
     fs::remove_all(dir);
 }
 
+TEST_CASE("manifest load prefers higher of manifest and session totals") {
+    const std::string dir = make_temp_dir();
+    std::string id;
+    std::string session_path;
+    {
+        ConversationStore store(dir);
+        id = store.active_id();
+        session_path = store.session_path(id);
+        store.add_tokens(id, 5000);
+        CHECK(store.list().front().total_tokens == 5000);
+    }
+    // Stale lower manifest total with a fresher session-file total.
+    {
+        const std::string manifest_path = dir + "/conversations/manifest.json";
+        std::string manifest = read_all(manifest_path);
+        REQUIRE(manifest.find("\"total_tokens\":5000") != std::string::npos);
+        const auto pos = manifest.find("\"total_tokens\":5000");
+        manifest.replace(pos, std::string("\"total_tokens\":5000").size(),
+                         "\"total_tokens\":100");
+        CHECK(atomic_write_file(manifest_path, manifest));
+        CHECK(read_all(session_path).find("5000") != std::string::npos);
+    }
+    {
+        ConversationStore store(dir);
+        REQUIRE_FALSE(store.list().empty());
+        CHECK(store.list().front().id == id);
+        CHECK(store.list().front().total_tokens == 5000);
+    }
+    fs::remove_all(dir);
+}
+
 TEST_CASE("equal updated_at ties break by id so list order is deterministic") {
     // updated_at has second resolution, so conversations created/saved in
     // the same second tie constantly.  The sidebar's keyboard navigation
