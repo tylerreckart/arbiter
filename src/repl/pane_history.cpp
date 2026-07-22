@@ -47,7 +47,7 @@ void pane_history_drain_queue(Pane& pane) {
             break;
         case OutputItem::Kind::Thinking:
             if (pane.scroll && !item.data.empty()) {
-                pane.scroll->append_thinking(item.data, item.new_block);
+                pane.scroll->append_thinking(item.data, item.new_block, item.agent_id);
             }
             break;
         }
@@ -185,6 +185,13 @@ void pane_history_begin_frame(UiContext& ctx) {
 
 void pane_history_draw_pane(Pane& pane, UiContext& ctx, OpenTuiHandle frame) {
     if (!ctx.session || !pane.scroll || frame == 0) return;
+
+    // Zoom siblings and squeezed splits can receive a degenerate rect
+    // (w==0 and/or h==0). Chrome already no-ops on those; scroll/editor must
+    // too — OpenTUI's bufferDrawTextBufferView segfaults when negative layout
+    // math is cast to uint32_t (e.g. x=-1,y=0).
+    const arbiter::TuiChromeSnapshot chrome = pane.tui.chrome_snapshot();
+    if (chrome.rect.w <= 0 || chrome.rect.h <= 0) return;
 
     opentui::draw_pane_chrome(frame, pane.tui);
     pane.scroll->draw(frame,

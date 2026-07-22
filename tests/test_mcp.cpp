@@ -187,6 +187,35 @@ TEST_CASE("Subprocess: bad executable surfaces as immediate EOF") {
     CHECK_FALSE(got.has_value());
 }
 
+TEST_CASE("Subprocess: strips secret-shaped parent env; keeps env_extra") {
+    // Parent injects a fake provider key; child must not see it.  Registry
+    // env_extra is still passed through (operator-opted).
+    ::setenv("OPENROUTER_API_KEY", "sk-should-not-leak", 1);
+    ::setenv("ARBITER_ADMIN_TOKEN", "adm_should-not-leak", 1);
+    ::setenv("PATH", std::getenv("PATH") ? std::getenv("PATH") : "/usr/bin", 1);
+
+    // Printenv selected keys; /usr/bin/printenv is portable enough on CI.
+    Subprocess proc({"/usr/bin/printenv"},
+                    {"PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-ok",
+                     "OPENROUTER_API_KEY=from-registry-ok"});
+    // Drain until EOF (printenv exits immediately).
+    std::string dump;
+    for (;;) {
+        auto line = proc.recv_line(500ms);
+        if (!line) break;
+        dump += *line;
+        dump += '\n';
+    }
+    CHECK(dump.find("sk-should-not-leak") == std::string::npos);
+    CHECK(dump.find("adm_should-not-leak") == std::string::npos);
+    CHECK(dump.find("PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-ok") != std::string::npos);
+    // Explicit registry override of a secret key is intentional opt-in.
+    CHECK(dump.find("OPENROUTER_API_KEY=from-registry-ok") != std::string::npos);
+
+    ::unsetenv("OPENROUTER_API_KEY");
+    ::unsetenv("ARBITER_ADMIN_TOKEN");
+}
+
 // ── 3. /mcp slash dispatch ─────────────────────────────────────────
 
 TEST_CASE("parse_agent_commands recognises /mcp") {

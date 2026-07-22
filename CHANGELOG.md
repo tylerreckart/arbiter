@@ -7,19 +7,37 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-07-21
+
+Patch release: TUI chrome polish so live sessions and conversation
+replay share the same rounded frames, echo padding, and thinking-block
+rhythm.
+
+### Changed
+- **Rounded box chrome.** Readline input and history/session sidebars
+  share Unicode rounded frames (`╭──╮` / `╰──╯`); the Arbiter top header
+  is removed so scrollback keeps the vertical space. Status / activity
+  badges paint on the input top border.
+- **Thinking blocks.** Collapsed reasoning uses the same box chrome with
+  a markdown body, a gap before the box, and inline ellipsis truncation
+  instead of a dedicated ellipsis row.
+
 ### Fixed
-- **`/search` wiring.** Operator-typed `/search` in the TUI now mirrors
-  `/fetch` (bypasses the focused agent's capability gate and injects
-  results into the turn). `arbiter --send` wires the same search/MCP
-  tools as the TUI. Brave error responses surface `detail`/`code`
-  (including HTTP 422 invalid tokens), and responses are requested with
-  libcurl auto-decompression per Brave's documented client headers.
-  Research starter capabilities now list `/search` and `/browse`
-  explicitly.
-- **`chat_command_tui` sidebar rename flake.** Seed the conversation via
-  `/chat title` (no in-flight agent turn) and poll for the renamed title
-  so macos-arm64 CI no longer races sidebar focus against a dummy API
-  request.
+- **User-echo wrap / padding.** Echo source rows stay unpadded so the
+  render path owns vertical chrome; wrapping applies a single horizontal
+  inset. Live and replayed echoes match.
+- **Transcript replay preamble.** Orchestrator / `AGENTS` preamble is
+  stripped on replay so conversation switch matches the live session
+  view.
+
+
+Minor release focused on the TUI activity timeline and multi-pane
+session model.  Turns render as expandable tool/thinking segments with
+persisted chrome across conversation switches; panes bind independently
+to conversations (zoom, activity badges, mouse); and
+`arbiter --setup-tools` walks operators through search, browse, and MCP
+setup.  Also hardens sandbox path escapes, A2A SSRF, MCP child env, and
+a cluster of TUI/CI flakes.
 
 ### Added
 - **`arbiter --setup-tools`.** Interactive OpenTUI wizard for `/search`
@@ -55,6 +73,74 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **TUI mouse support.** SGR mouse tracking (click-to-focus, wheel scroll,
   input caret placement, history-sidebar clicks, drag-to-resize splits).
   Opt out with `"layout": { "mouse": false }` in `~/.arbiter/tui.json`.
+
+### Changed
+- **Thinking blocks.** Reasoning rows render as markdown on the same
+  background as user echo / readline, with matching vertical pad and
+  inset, dimmed readable text, and a left accent from the theme’s
+  per-agent palette.
+- **Session sidebar.** Drop the always-on Task section. The MCP section
+  only appears after an MCP tool has been used in the session (same
+  pattern as Todos / Scheduled).
+
+### Fixed
+- **Sandbox workspace symlink escape.** `/write` and `/read` against the
+  per-tenant sandbox workspace now canonicalise the target and reject
+  paths that resolve outside `workspaces/t<tid>/`, so an in-workspace
+  symlink cannot reach host files.
+- **Host `/write` on A2A send + scheduler.** `wire_orch_tools` always
+  installs a write interceptor (with `file_max_bytes` accounting and
+  optional sandbox mirror) so agents no longer fall through to
+  `cmd_write` on the API server cwd.
+- **A2A HTTP SSRF guard.** The A2A client shares `/fetch`'s opensocket
+  denylist and http(s)-only redirect protocol limits, so federation
+  redirects cannot reach private/link-local/metadata addresses.
+- **MCP child env credential scrub.** Stdio MCP subprocesses inherit a
+  scrubbed parent environment (secret-shaped keys stripped); registry
+  `env` extras remain an explicit opt-in.
+- **`unit_sandbox_ssrf` TSan flake.** Path-only sandbox workspace tests
+  set `idle_seconds = 0` so the idle reaper thread never starts.
+- **`chat_command_tui` switch/replay flake.** Wait for each dummy-key
+  turn to finish (auth error) before `/chat new` / `/chat switch`, and
+  match an interior marker substring so pane-edge clipping cannot
+  miss the replay assertion on macos-arm64.
+- **`line_editor` Ctrl-U flake.** Warm the input row, then assert
+  functionally via a post-kill `/agents` submit (rejecting a
+  `garbage/agents` echo) instead of relying on a fixed `read_for` or a
+  contiguous `"ok"` paint under OpenTUI cell diffs.
+- **Sub-agent `/parallel` fan-out.** Same `agent_id` may appear more than
+  once in a `/parallel` block again (ephemeral clones — matching the
+  documented behaviour), and a sub-agent may fan out to copies of itself.
+  Starter agents that already had `/agent` now list `/parallel` explicitly
+  so research (and siblings) can fan out independent angles without hitting
+  a hard reject.
+- **TUI SIGSEGV on degenerate pane draws.** Zoom siblings and squeezed
+  zero-width/height splits still went through scroll + editor paint. OpenTUI's
+  `bufferDrawTextBufferView` segfaults when negative layout origins are cast
+  to `uint32_t` (repro: x=-1, y=0). Degenerate panes are skipped, zoom
+  siblings are placed truly off-screen, and text-buffer / fill draws reject
+  negative coordinates. Fatal TUI logs now append a best-effort backtrace.
+- **Conversation switch/delete cancel wait (#46).** After confirming
+  “switch anyway?” (or deleting a conversation with a turn in flight), the
+  main thread no longer spins in a blind `sleep_for` loop. Cancel is deferred
+  onto the REPL loop so input keeps running: a `cancelling… (Esc to abort)`
+  spinner paints via the output pump, Esc / Ctrl-C abandons the pending op
+  (queued follow-ups are preserved until a successful switch/delete), and the
+  turn is cancelled through a per-request `CancelToken` so sibling panes keep
+  streaming. Kitty CSI-u Esc/Ctrl-C is recognized the same way as the line
+  editor. Esc during a normal turn also uses the pane token when present.
+- **`/search` wiring.** Operator-typed `/search` in the TUI now mirrors
+  `/fetch` (bypasses the focused agent's capability gate and injects
+  results into the turn). `arbiter --send` wires the same search/MCP
+  tools as the TUI. Brave error responses surface `detail`/`code`
+  (including HTTP 422 invalid tokens), and responses are requested with
+  libcurl auto-decompression per Brave's documented client headers.
+  Research starter capabilities now list `/search` and `/browse`
+  explicitly.
+- **`chat_command_tui` sidebar rename flake.** Seed the conversation via
+  `/chat title` (no in-flight agent turn) and poll for the renamed title
+  so macos-arm64 CI no longer races sidebar focus against a dummy API
+  request.
 
 ## [0.7.3] — 2026-07-09
 

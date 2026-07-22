@@ -3,6 +3,7 @@
 
 #include "message_codec.h"
 #include "repl/queues.h"
+#include "repl/transcript_replay.h"
 #include "render_policy.h"
 #include "stream_renderer.h"
 #include "styled_text.h"
@@ -20,7 +21,7 @@ void replay_into(PaneScrollView& view, const std::vector<Message>& history) {
     OutputQueue queue;
     for (const Message& m : history) {
         if (m.role == "user") {
-            queue.push_prose(styled_user_echo_lines(m.content));
+            queue.push_prose(styled_user_echo_lines(replay_user_echo_text(m)));
             queue.end_message();
             continue;
         }
@@ -67,7 +68,9 @@ void replay_into(PaneScrollView& view, const std::vector<Message>& history) {
             view.upsert_tool(item.tool, item.new_block);
             break;
         case OutputItem::Kind::Thinking:
-            if (!item.data.empty()) view.append_thinking(item.data, item.new_block);
+            if (!item.data.empty()) {
+                view.append_thinking(item.data, item.new_block, item.agent_id);
+            }
             break;
         }
     }

@@ -45,7 +45,10 @@ public:
     // Create or update an in-scroll tool activity row (by event.id).
     void upsert_tool(const ToolActivityEvent& event, bool new_block = false);
     // Append provider reasoning/thinking into a collapsible segment.
-    void append_thinking(std::string_view delta, bool new_block = false);
+    // `agent_id` is retained for callers; chrome currently uses a shared label.
+    void append_thinking(std::string_view delta,
+                         bool new_block = false,
+                         std::string_view agent_id = {});
     void clear();
 
     // Re-resolve scrollback colors after a TUI preset change.
@@ -123,6 +126,7 @@ private:
         [[nodiscard]] bool find_skip_line(std::size_t index) const override;
 
         void emit_line(const StyledLine& line);
+        void emit_echo_run(const StyledLine* begin, const StyledLine* end);
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,
@@ -239,16 +243,26 @@ private:
     };
 
     // Collapsible provider reasoning/thinking block. Collapsed by default.
+    // Rounded-box chrome with plain "thinking" breaking the top border; body
+    // is markdown-rendered (StyledLine) with a two-cell inset.
     struct ThinkingSegment final : Segment {
         std::string text_;
+        std::string agent_id_;
         bool expanded_ = false;
         mutable int wrap_cols_{80};
         static constexpr int kPreviewRows = 3;
+        static constexpr int kExpandedCap = 40;
+        // Border column + two-cell inset on each side.
+        static constexpr int kBoxChromeCols = 6;
+        static constexpr int kBodyInset = 2;
 
         void append(std::string_view delta);
+        void set_agent_id(std::string_view agent_id);
         void toggle_expanded();
         [[nodiscard]] bool can_expand() const;
         [[nodiscard]] std::string header_text() const;
+        [[nodiscard]] int body_content_cols(int content_w) const;
+        [[nodiscard]] const std::vector<StyledLine>& wrapped_body(int body_cols) const;
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
         void collect_lines(std::vector<std::string>& out) const override;
@@ -258,6 +272,12 @@ private:
                   int w,
                   int h,
                   int skip_rows) const override;
+
+    private:
+        void invalidate_cache() const;
+        mutable std::string cache_src_;
+        mutable int cache_cols_{-1};
+        mutable std::vector<StyledLine> body_cache_;
     };
 
     // Compact per-tool activity row (Claude Code–style timeline).
@@ -320,6 +340,17 @@ public:
     void splice_front(std::vector<std::unique_ptr<Segment>> segs);
 
 private:
+    enum class SegmentKind : std::uint8_t {
+        None,
+        Prose,
+        Text,
+        Code,
+        Diff,
+        Tool,
+        Thinking,
+        Other,
+    };
+
     TextSegment& current_text();
     ProseSegment& current_prose();
     CodeSegment& current_code();
@@ -327,6 +358,15 @@ private:
     void start_block_gap(int gap_rows);
     void append_blank_row();
     [[nodiscard]] bool has_rendered_content() const;
+    [[nodiscard]] SegmentKind last_content_kind() const;
+    // Drop trailing soft blank prose/text so BlankSegment gaps stay exact.
+    void trim_trailing_soft_blanks();
+    // Empty visual rows already present at the end of scrollback (BlankSegments
+    // excluded — those are popped first): trailing empty prose / echo-pad lines.
+    [[nodiscard]] int trailing_separator_rows() const;
+    // Ensure exactly `gap_rows` blank rows before a new content kind.
+    // Tool→Tool stays tight unless `force` (turn boundary via new_block).
+    void ensure_block_gap(SegmentKind next, int gap_rows, bool force = false);
 
     std::vector<std::unique_ptr<Segment>> segments_;
     int buf_x_{0};

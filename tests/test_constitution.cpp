@@ -128,7 +128,7 @@ TEST_CASE("starter-agent capability sets produce measurably smaller prompts") {
     // future drift between starters and the bundle splitter shows up here.
     auto master   = make_agent();   // empty caps → all default bundles
     auto devops   = make_agent({"/exec", "/write"});
-    auto research = make_agent({"/search", "/fetch", "/browse", "/mem", "/agent"});
+    auto research = make_agent({"/search", "/fetch", "/browse", "/mem", "/agent", "/parallel"});
     auto reviewer = make_agent({"/exec", "/write", "/agent"});
 
     auto p_master   = master  .build_system_prompt();

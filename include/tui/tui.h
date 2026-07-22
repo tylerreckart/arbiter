@@ -6,9 +6,10 @@
 // reads each frame.
 //
 // Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
-//   scroll region     streamed model output (grows when chrome shrinks)
-//   mid separator     tool-call / thinking indicator
-//   input area        dark bg + accent strip
+//   scroll region     rounded output box (floating one row below the pane
+//                     top, matching sidebar inset); streamed model output
+//   input area        rounded box flush beneath the output box; the top
+//                     border row doubles as the status line
 //   bottom pad        hint row + padding when footer is shown; with
 //                     layout.chrome_compact_rows (default) multi-pane /
 //                     footer-off layouts reclaim those rows for scroll
@@ -17,8 +18,8 @@
 // in rect_.y for scroll/input placement in OpenTUI draw calls.
 // bottom_pad_rows() is theme-driven (see tui_bottom_pad_rows).
 //
-// The mid separator shows tool-call or thinking spinners via
-// set_pre_input_status / set_status.
+// Tool-call / thinking spinners (set_pre_input_status / set_status) paint
+// inline over the input box's top border.
 
 #include <atomic>
 #include <functional>
@@ -60,7 +61,7 @@ struct TuiChromeSnapshot {
 
 class TUI {
 public:
-    static constexpr int kSepRows              = 1;   // mid separator above input area
+    static constexpr int kSepRows              = 0;   // output box sits flush on input box
     static constexpr int kMaxInputRows         = 7;
     static constexpr int kBottomPadRows        = 3;   // spacer + hint row + bottom pad
     static constexpr int kCompactBottomPadRows = 1;   // trailing pad when footer reclaimed
@@ -158,26 +159,30 @@ private:
 
     // Absolute 1-indexed terminal rows for each chrome slot within rect_.
     // Uses bottom_pad_rows() so compact chrome reclaims space when the
-    // footer hint is hidden.
-    int sep_row()        const { return rect_.y + rect_.h - bottom_pad_rows() - input_rows_; }
+    // footer hint is hidden.  With kSepRows==0 the last scroll row is
+    // immediately above the input box (boxes share an edge).
+    int sep_row()        const { return rect_.y + rect_.h - bottom_pad_rows() - input_rows_ - kSepRows; }
     int input_top_row()  const { return sep_row() + 1; }
     int input_row()      const { return rect_.y + rect_.h - bottom_pad_rows(); }
     int hint_sep_row()   const { return rect_.y + rect_.h - 1; }
     int pad_row()        const { return rect_.y + rect_.h; }
 };
 
-// Background spinner that updates TUI status state (animated in the UI loop).
+// Background wait-state spinner on the input-box top border (animated in the
+// UI loop).  Default start() rotates friendly wait phrases with the shared
+// Braille loader; an explicit label pins fixed copy (cancel / fetch / …).
 class ThinkingIndicator {
 public:
     explicit ThinkingIndicator(TUI* tui = nullptr) : tui_(tui) {}
 
-    void start(const std::string& label = "thinking");
+    void start();                                   // rotating wait phrases
+    void start(const std::string& label);           // fixed label + Braille
     void stop();
     void tick();
 
 private:
     TUI*              tui_ = nullptr;
-    std::string       label_;
+    std::string       label_;          // empty => rotating phrases
     std::atomic<bool> active_{false};
 };
 

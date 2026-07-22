@@ -345,6 +345,10 @@ public:
     // Thread-safe — can be called from the readline/main thread while the
     // exec thread is blocked in a streaming read.
     void cancel();
+    // Cancel only the in-flight request(s) bound to `token`, including any
+    // /parallel child clients registered under that token.  Sibling panes
+    // keep streaming.
+    void cancel_token(const std::shared_ptr<CancelToken>& token);
 
     // Run a user-typed slash command through the same tool dispatch path
     // agents use during a turn. Returns formatted tool-result text, or empty
@@ -388,11 +392,15 @@ private:
     // (each with its own connection pool) instead of sharing the parent's
     // conn_mutex_.  Keys are plaintext — same exposure as the constructor arg.
     std::map<std::string, std::string> api_keys_;
-    // Non-owning pointers to child ApiClients active during a /parallel turn.
-    // cancel() iterates this under parallel_clients_mu_ so a cancel request
-    // reaches in-flight parallel children, not just the parent client.
+    // Non-owning pointers to child ApiClients active during a /parallel turn,
+    // tagged with the parent turn's CancelToken (when one is installed) so
+    // cancel_token() can stop only that fan-out without touching siblings.
+    struct ParallelClientEntry {
+        ApiClient*                  client = nullptr;
+        std::shared_ptr<CancelToken> token;
+    };
     std::mutex parallel_clients_mu_;
-    std::vector<ApiClient*> parallel_clients_;
+    std::vector<ParallelClientEntry> parallel_clients_;
 
     std::unordered_map<std::string, std::unique_ptr<Agent>> agents_;
     mutable std::mutex agents_mutex_;
@@ -464,10 +472,11 @@ private:
 
     // Build a ParallelInvoker for /parallel fan-out.  Each child runs on its
     // own std::thread at depth+1 with a fresh dedup cache (shared caches
-    // would be a data race on the std::map).  Rejects batches that would
-    // race an Agent's history against itself (duplicate agent_ids).  All
-    // threads join before the returned vector is filled — /parallel blocks
-    // the calling turn until every child completes.
+    // would be a data race on the std::map).  Same agent_id (including the
+    // caller's own id) may appear more than once — each child gets an
+    // ephemeral Agent clone with independent history_.  All threads join
+    // before the returned vector is filled — /parallel blocks the calling
+    // turn until every child completes.
     ParallelInvoker make_parallel_invoker(const std::string& caller_id, int depth,
                                           const std::string& original_query);
 
