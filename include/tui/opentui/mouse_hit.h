@@ -106,12 +106,10 @@ inline HitTarget hit_test(LayoutTree& layout,
     const TuiChromeSnapshot chrome = pane->tui.chrome_snapshot();
     const Rect& r = chrome.rect;
     const int bottom_pad = std::max(1, chrome.bottom_pad_rows);
-    const int sep_top = r.y + r.h - bottom_pad - chrome.input_rows
-                      - TUI::kSepRows;
-    const int input_top = sep_top + TUI::kSepRows;
+    const int input_top = r.y + r.h - bottom_pad - chrome.input_rows;
     const int input_bottom = r.y + r.h - bottom_pad - 1;
     const int scroll_top = r.y;
-    const int scroll_bottom = sep_top - 1;
+    const int scroll_bottom = input_top - 1;
 
     if (y >= input_top && y <= input_bottom
         && x >= r.x && x < r.x + r.w) {

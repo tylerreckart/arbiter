@@ -663,32 +663,32 @@ std::vector<StyledLine> render_thinking_markdown(const std::string& text) {
     return lines;
 }
 
-constexpr std::uint32_t kThinkingDimAttr = 1u << 1;  // matches style_resolver Dim
 constexpr std::string_view kTruncationMark = "\u2026";
 
 const TuiRgba& thinking_fg(StyleId id, const TuiDesign& d) {
-    // Prefer muted/readable defaults; keep markdown accent hues for structure.
+    // Keep thinking readable across dark themes: primary for body, muted
+    // only for intentionally de-emphasized markdown (quotes, rules, etc.).
     switch (id) {
     case StyleId::Default:
     case StyleId::Bold:
     case StyleId::Italic:
-        return d.text.muted;
+        return d.text.primary;
     case StyleId::Dim:
     case StyleId::Strike:
     case StyleId::Blockquote:
     case StyleId::Rule:
     case StyleId::System:
-        return d.content.text_dim;
+        return d.text.muted;
     default:
         break;
     }
     const ResolvedStyle rs = resolve_style(id);
-    return rs.fg ? *rs.fg : d.text.muted;
+    return rs.fg ? *rs.fg : d.text.primary;
 }
 
 std::uint32_t thinking_attrs(StyleId id) {
-    const ResolvedStyle rs = resolve_style(id);
-    return rs.attrs | kThinkingDimAttr;
+    // Do not force Dim — that made body text unreadable on many themes.
+    return resolve_style(id).attrs;
 }
 
 // Fold the truncation mark onto the last visible body row so it does not
@@ -852,7 +852,7 @@ void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
     const TuiRgba& bg = d.bg.scroll;
     const TuiRgba& border_fg = d.text.muted;
     const int body_cols = std::max(1, w - kBoxChromeCols);
-    const int text_x = x + 2;
+    const int text_x = x + 1 + kBodyInset;
 
     // Row-clipped painter: clears the full row width before painting so
     // streaming growth never leaves stale border cells behind.
@@ -1146,16 +1146,23 @@ PaneScrollView::CodeSegment& PaneScrollView::current_code() {
 
 void PaneScrollView::bind(const TUI& tui) {
     const TuiDesign& d = tui_design();
+    // Match pane_frame's output box: 1 blank row above the box, 1-cell
+    // border on each side. Content is inset from the inner border by the
+    // same amount that separates adjacent chrome boxes (pane edge pad),
+    // with a minimum of one cell so narrow layouts still breathe.
+    constexpr int kBoxTopMargin = 1;
+    constexpr int kBoxBorder = 1;
     const int pad = tui_pane_edge_pad(tui.cols(), d);
-    const int gutter = std::max(0, std::min(d.layout.scroll_gutter_cols,
-                                            std::max(0, tui.cols() - pad * 2 - 1)));
+    const int inset = std::max(1, pad);
+    const int content_w = std::max(
+        1, tui.cols() - (pad * 2) - (kBoxBorder * 2) - (inset * 2));
     const int pad_y = std::max(0, d.layout.scroll_pad_y);
-    const int content_w = std::max(1, tui.cols() - (pad * 2) - gutter);
     const int region_h = tui.scroll_region_rows();
-    const int content_h = std::max(1, region_h - pad_y * 2);
+    const int content_h = std::max(
+        1, region_h - kBoxTopMargin - (kBoxBorder * 2) - pad_y * 2);
 
-    buf_x_ = tui.left_col() - 1 + pad + gutter;
-    buf_y_ = tui.scroll_top_row() - 1 + pad_y;
+    buf_x_ = tui.left_col() - 1 + pad + kBoxBorder + inset;
+    buf_y_ = tui.scroll_top_row() - 1 + kBoxTopMargin + kBoxBorder + pad_y;
     viewport_w_ = content_w;
     viewport_h_ = content_h;
     set_wrap_cols(content_w);
@@ -1670,20 +1677,6 @@ void PaneScrollView::draw(OpenTuiHandle frame,
     bind(tui);
 
     if (buf_x_ < 0 || buf_y_ < 0 || viewport_w_ <= 0 || viewport_h_ <= 0) return;
-
-    const TuiDesign& d = tui_design();
-    const int pad = tui_pane_edge_pad(tui.cols(), d);
-    const int gutter = std::max(0, std::min(d.layout.scroll_gutter_cols,
-                                            std::max(0, tui.cols() - pad * 2 - 1)));
-    if (gutter > 0) {
-        const int gutter_x = tui.left_col() - 1 + pad;
-        fill_rect(frame,
-                  gutter_x,
-                  buf_y_,
-                  gutter,
-                  viewport_h_,
-                  d.bg.gutter);
-    }
 
     const int total = total_visual_rows();
     int first_visible = 0;
