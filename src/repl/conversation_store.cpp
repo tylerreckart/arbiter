@@ -581,22 +581,25 @@ bool ConversationStore::load(const std::string& id, Orchestrator& orch) {
 
 void ConversationStore::save(const std::string& id, Orchestrator& orch) {
     std::string path;
-    int total_tokens = 0;
     {
         std::lock_guard<std::mutex> lk(mu_);
         path = session_path_unlocked(id);
-        for (const auto& e : entries_) {
-            if (e.id == id) {
-                total_tokens = e.total_tokens;
-                break;
-            }
-        }
     }
     ConversationScope scope(id);
     orch.save_session(path);
     // Re-attach usage after save_session rewrites the session document.
-    write_session_total_tokens(path, total_tokens);
+    // Read total_tokens under the same lock as the write so a concurrent
+    // add_tokens() cannot leave a higher on-disk total that we then clobber
+    // with a pre-save snapshot.
     std::lock_guard<std::mutex> lk(mu_);
+    int total_tokens = 0;
+    for (const auto& e : entries_) {
+        if (e.id == id) {
+            total_tokens = e.total_tokens;
+            break;
+        }
+    }
+    write_session_total_tokens(path, total_tokens);
     const std::int64_t ts = now_epoch();
     for (auto& e : entries_) {
         if (e.id == id) {
