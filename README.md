@@ -80,7 +80,7 @@ consequential turns get a second model's sign-off before they reach you.
 
 ## Themeable
 
-18 presets ship in the box (Nord, Dracula, Catppuccin, Gruvbox, Tokyo Night, Solarized, and more); 
+38 presets ship in the box (Nord, Dracula, Catppuccin, Gruvbox, Tokyo Night, Solarized, and more); 
 export one as a starting point and edit hex values to make your own:
 
 ```bash
