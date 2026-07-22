@@ -120,6 +120,12 @@ bool pane_history_toggle_code_block(Pane& pane, int scroll_offset) {
     return pane.scroll->toggle_code_block_in_view(scroll_offset);
 }
 
+bool pane_history_toggle_expandable_at(Pane& pane, int term_x, int term_y) {
+    if (!pane.scroll) return false;
+    return pane.scroll->toggle_expandable_at_click(
+        pane.tui, term_x, term_y, pane.scroll_offset);
+}
+
 int pane_history_total_rows(const Pane& pane) {
     if (pane.scroll) return pane.scroll->total_visual_rows();
     return 0;

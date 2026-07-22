@@ -57,8 +57,13 @@ class HistorySidebarState {
 public:
     static constexpr int kMinCols = 72;
     static constexpr int kWidth = 26;
+    // Blank column between the terminal edge and the conversations box so
+    // outer spacing matches the pane's edge pad beside the box.
+    static constexpr int kOuterGutter = 1;
 
+    // Columns reserved on the left (box width + outer gutter), or 0 when hidden.
     static int width_for_terminal(int cols, bool enabled);
+    // Drawn box rect (excludes the leading gutter column).
     static Rect rect_for_terminal(int cols, int rows, bool enabled);
 
     void set_enabled(bool on, const std::string& config_dir);

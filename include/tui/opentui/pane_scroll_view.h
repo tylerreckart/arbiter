@@ -57,6 +57,14 @@ public:
     // Toggle expand/collapse on a truncated code block or tool row in view.
     bool toggle_code_block_in_view(int scroll_offset);
 
+    // Toggle the expandable segment under a terminal click (thinking / tool /
+    // truncated code). Returns false when the click misses content or lands
+    // on a non-expandable row. Recomputes bind geometry from `tui`.
+    bool toggle_expandable_at_click(const TUI& tui,
+                                    int term_x,
+                                    int term_y,
+                                    int scroll_offset);
+
     [[nodiscard]] bool has_gap() const;
     [[nodiscard]] int gap_remaining() const;
     // Creates/updates/removes the front-of-scrollback gap marker.

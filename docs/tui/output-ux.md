@@ -58,7 +58,7 @@ one blank pad, the status text, and one blank pad above the input strip.
    `/agent` dispatched the tool, the same entry is mirrored onto the child.
 
 Expand/collapse: `^O` (same chord as code blocks) when a tool or thinking
-row is in view.
+row is in view, or left-click the block in the scroll region.
 
 ## Permission cards
 

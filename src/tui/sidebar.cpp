@@ -91,8 +91,8 @@ int SidebarState::effective_width(int cols, int pane_count,
 Rect SidebarState::rect_for_terminal(int cols, int rows, int pane_count,
                                      int leading_cols) const {
     const int w = effective_width(cols, pane_count, leading_cols);
-    if (w <= 0 || cols <= w || rows <= 0) return kEmptyRect;
-    return Rect{cols - w, 0, w, rows};
+    if (w <= 0 || cols <= w + kOuterGutter || rows <= 0) return kEmptyRect;
+    return Rect{cols - w - kOuterGutter, 0, w, rows};
 }
 
 void SidebarState::record_turn(const std::string& agent_id,

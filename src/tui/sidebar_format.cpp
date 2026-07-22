@@ -3,6 +3,7 @@
 #include <cctype>
 #include <algorithm>
 #include <cstdio>
+#include <regex>
 #include <string>
 
 namespace arbiter {
@@ -132,6 +133,17 @@ std::string format_context_pct(int prompt_tokens, std::string_view model) {
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%d%%", pct);
     return buf;
+}
+
+std::string format_sidebar_model(std::string_view model) {
+    if (model.empty()) return {};
+    // Drop the leading provider segment (`openrouter/…`, `ollama\…`, …).
+    static const std::regex kAfterSep(R"(^[^/\\]+[/\\](.+)$)");
+    std::cmatch match;
+    if (std::regex_match(model.data(), model.data() + model.size(), match, kAfterSep)) {
+        return match[1].str();
+    }
+    return std::string(model);
 }
 
 } // namespace arbiter
