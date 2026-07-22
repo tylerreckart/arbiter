@@ -821,9 +821,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                  const arbiter::ApiResponse& resp) {
         sidebar.record_turn(agent_id, model, resp);
     });
-    orch.set_agent_start_callback([&](const std::string& agent_id) {
+    orch.set_agent_start_callback([&](const std::string& /*agent_id*/) {
         Pane* p = g_active_pane;
-        if (p) p->thinking.start(agent_id + ": thinking");
+        if (p) p->thinking.start();
     });
     orch.set_escalation_callback([&](const std::string& agent_id,
                                       int /*stream_id*/,

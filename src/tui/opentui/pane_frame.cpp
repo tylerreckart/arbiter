@@ -102,12 +102,12 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
 
     fill_rect(frame, px, static_cast<std::uint32_t>(r.y), pw, static_cast<std::uint32_t>(r.h), d.bg.scroll);
 
-    const int sep_y = r.y + r.h - bottom_pad - chrome.input_rows - TUI::kSepRows;
-    const int input_top_y = sep_y + 1;
+    // Output and input boxes sit flush: no blank mid-separator between them.
+    const int input_top_y = r.y + r.h - bottom_pad - chrome.input_rows;
     const int input_bottom_y = r.y + r.h - bottom_pad - 1;
     const int hint_y = r.y + r.h - 2;
     const int scroll_top_y = r.y;
-    const int scroll_bottom_y = sep_y - 1;
+    const int scroll_bottom_y = input_top_y - 1;
 
     if (scroll_top_y <= scroll_bottom_y) {
         fill_rect(frame,
@@ -118,7 +118,20 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                   d.bg.scroll);
     }
 
-    fill_rect(frame, block_x, static_cast<std::uint32_t>(sep_y), block_w, 1, d.bg.scroll);
+    // Output box: same floating top inset as the sidebars (one blank row
+    // above); bottom border sits on the row immediately above the input box.
+    const int output_top_y = scroll_top_y + 1;
+    if (scroll_bottom_y > output_top_y && block_w >= 2) {
+        const TuiRgba& border_fg = chrome.focus_accent ? d.border.focus
+                                                       : d.text.muted;
+        draw_rounded_box(frame,
+                         static_cast<int>(block_x),
+                         output_top_y,
+                         static_cast<int>(block_w),
+                         scroll_bottom_y - output_top_y + 1,
+                         border_fg,
+                         d.bg.scroll);
+    }
 
     // Input box: rounded-corner border on the pane background (no fill, no
     // accent strip).  The top border row doubles as the status line — the
