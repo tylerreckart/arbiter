@@ -17,6 +17,9 @@ run the release packaging path on every PR.
   `libcurl.tbd` instead of `/usr/lib/libcurl.4.dylib` (dyld shared cache
   has no on-disk file, which left `IMPORTED_LOCATION` unset). Harden
   CMake to repair a missing curl import location.
+- **macOS portable smoke false positive.** `otool -L` prints the binary
+  path under `/Users/runner/...` before dependency lines; only scan
+  indented dylib entries for non-portable load paths.
 
 ### Added
 - **PR portable packaging check.** After the existing Debug suite,

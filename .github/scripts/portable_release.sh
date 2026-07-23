@@ -105,12 +105,16 @@ cmd_smoke() {
 
   if [ "$(uname -s)" = "Darwin" ]; then
     echo "otool -L:"
-    otool -L "${smoke}/arbiter"
-    if otool -L "${smoke}/arbiter" | grep -E '/opt/homebrew|/usr/local/opt|/Users/runner'; then
+    otool -L "${smoke}/arbiter" | tee /tmp/arbiter-otool.txt
+    # otool -L prints the binary path on the first line (under
+    # /Users/runner/work/_temp on GHA). Only inspect indented dependency
+    # lines for Homebrew / absolute runner load paths.
+    if awk '/^\t/ { print }' /tmp/arbiter-otool.txt \
+      | grep -E '/opt/homebrew|/usr/local/opt|/Users/runner'; then
       echo "portable check failed: non-portable dylib load path" >&2
       exit 1
     fi
-    otool -L "${smoke}/arbiter" | grep -E '@(loader_path|rpath)/libopentui\.dylib'
+    grep -E '@(loader_path|rpath)/libopentui\.dylib' /tmp/arbiter-otool.txt
   else
     echo "readelf deps:"
     readelf -d "${smoke}/arbiter" | tee /tmp/arbiter-readelf.txt
