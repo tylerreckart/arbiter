@@ -178,7 +178,7 @@ void draw_hint_text(OpenTuiHandle frame,
         const std::string_view part(trimmed.data() + start, i - start);
         const bool command = !space
             && (part == "esc" || part == "enter" || part == "pg" || part == "pgup/dn"
-                || part == "^W" || part == "b"
+                || part == "^W" || part == "b" || part == "m"
                 || part == "\u2191\u2193" || (!part.empty() && part.front() == '/'));
         draw_text(frame,
                   cx,
@@ -188,6 +188,42 @@ void draw_hint_text(OpenTuiHandle frame,
                   bg,
                   command ? kAttrBold : 0);
         cx += static_cast<std::uint32_t>(cell_width(part));
+    }
+}
+
+void draw_action_menu(OpenTuiHandle frame,
+                      const TuiDesign& d,
+                      int x,
+                      int y,
+                      int w,
+                      int menu_index,
+                      int max_bottom_y) {
+    static constexpr const char* kLabels[] = {"Open", "Rename", "Delete"};
+    static constexpr int kCount = 3;
+    const int h = std::min(kCount, std::max(0, max_bottom_y - y + 1));
+    if (h <= 0 || w <= 0) return;
+
+    fill_rect(frame,
+              static_cast<std::uint32_t>(x),
+              static_cast<std::uint32_t>(y),
+              static_cast<std::uint32_t>(w),
+              static_cast<std::uint32_t>(h),
+              d.bg.header);
+
+    for (int i = 0; i < h; ++i) {
+        const bool selected = i == menu_index;
+        std::string line = selected ? "\u203A " : "  ";
+        line += kLabels[i];
+        const TuiRgba& fg = selected ? d.text.inverse
+                          : (i == 2 ? d.accent.error : d.text.primary);
+        const TuiRgba& bg = selected ? d.accent.primary : d.bg.header;
+        draw_text(frame,
+                  static_cast<std::uint32_t>(x),
+                  static_cast<std::uint32_t>(y + i),
+                  trim_to_cells(std::move(line), w),
+                  fg,
+                  bg,
+                  selected ? kAttrBold : 0);
     }
 }
 
@@ -249,7 +285,8 @@ void draw_history_sidebar(OpenTuiHandle frame,
 
     const std::string_view sidebar_hint = snap.focused
         ? (snap.filtering ? "type to filter  esc clear"
-                          : "\u2191\u2193 select  enter  / filter")
+                          : snap.menu_open ? "\u2191\u2193 move  enter  esc"
+                                           : "\u2191\u2193 select  m menu  / filter")
         : "^W b focus";
     // Align with the pane's footer hints below the input box, not with the
     // sidebar border itself.
@@ -315,6 +352,7 @@ void draw_history_sidebar(OpenTuiHandle frame,
     const int total = static_cast<int>(rows.size());
     const int scroll = std::max(0, std::min(snap.scroll_offset, std::max(0, total - 1)));
 
+    int selected_row_y = -1;
     int row_y = y;
     for (int i = scroll; i < total && row_y + kRowHeight - 1 <= sep_y; ++i) {
         const bool selected = snap.focused && (i == snap.selected);
@@ -322,6 +360,10 @@ void draw_history_sidebar(OpenTuiHandle frame,
             && rows[static_cast<size_t>(i)].conv_id == snap.active_id;
         const bool editing = selected && snap.renaming;
         const bool confirming = selected && snap.confirming_delete;
+        if (selected) selected_row_y = row_y;
+        // While the action menu is open, keep the title visible but skip the
+        // subtitle — the overlay paints Open/Rename/Delete over that space.
+        const bool menu_here = selected && snap.menu_open;
         draw_row(frame,
                  d,
                  sc,
@@ -329,7 +371,7 @@ void draw_history_sidebar(OpenTuiHandle frame,
                  row_y,
                  content_w,
                  rows[static_cast<size_t>(i)].title,
-                 rows[static_cast<size_t>(i)].subtitle,
+                 menu_here ? std::string_view{} : rows[static_cast<size_t>(i)].subtitle,
                  selected,
                  active,
                  editing,
@@ -337,6 +379,18 @@ void draw_history_sidebar(OpenTuiHandle frame,
                  confirming,
                  bg);
         row_y += kRowHeight;
+    }
+
+    if (snap.menu_open && snap.focused && selected_row_y >= 0) {
+        // Anchor under the conversation title so Open/Rename/Delete read as
+        // a menu on the active row; clamp so we never paint past the list.
+        draw_action_menu(frame,
+                         d,
+                         content_x,
+                         selected_row_y + 1,
+                         content_w,
+                         snap.menu_index,
+                         sep_y);
     }
 }
 
