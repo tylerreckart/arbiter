@@ -2965,6 +2965,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (pump_notify) pump_notify();
                 continue;
             }
+            if (action == HistorySidebarKey::MenuOpen) {
+                if (pump_notify) pump_notify();
+                continue;
+            }
             if (action == HistorySidebarKey::RenameCommit) {
                 const std::string id = history_sidebar.selected_conversation_id();
                 const std::string text = history_sidebar.take_rename_buffer();
