@@ -96,11 +96,15 @@ jobs:
             OPENSSL_PREFIX="$(brew --prefix openssl@3)"
             SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
             # System libcurl only — never Homebrew curl (portable install).
+            # Link via the SDK .tbd stub: /usr/lib/libcurl.4.dylib is in the
+            # dyld shared cache and often has no on-disk file, which leaves
+            # CURL::libcurl without IMPORTED_LOCATION and breaks generate.
             # Static OpenSSL so users do not need brew's libssl/libcrypto.
             EXTRA="-DOPENSSL_ROOT_DIR=${OPENSSL_PREFIX}"
             EXTRA="${EXTRA} -DOPENSSL_USE_STATIC_LIBS=TRUE"
             EXTRA="${EXTRA} -DCURL_INCLUDE_DIR=${SDKROOT}/usr/include"
-            EXTRA="${EXTRA} -DCURL_LIBRARY=/usr/lib/libcurl.4.dylib"
+            EXTRA="${EXTRA} -DCURL_LIBRARY=${SDKROOT}/usr/lib/libcurl.tbd"
+            EXTRA="${EXTRA} -DCURL_NO_CURL_CONFIG=ON"
             # Keep pkg-config from preferring a Homebrew curl .pc if present.
             export PKG_CONFIG_PATH="${OPENSSL_PREFIX}/lib/pkgconfig"
             unset CURL_ROOT || true

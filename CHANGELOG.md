@@ -7,6 +7,16 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.6] — 2026-07-23
+
+Patch release: fix macOS release configure against system libcurl.
+
+### Fixed
+- **macOS release CURL::libcurl generate.** Point FindCURL at the SDK
+  `libcurl.tbd` instead of `/usr/lib/libcurl.4.dylib` (dyld shared cache
+  has no on-disk file, which left `IMPORTED_LOCATION` unset). Harden
+  CMake to repair a missing curl import location.
+
 ## [0.8.5] — 2026-07-23
 
 Patch release: fix the Linux release smoke test so portable
