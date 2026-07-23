@@ -3,7 +3,7 @@
 ![Release Version Shield](https://img.shields.io/github/v/release/tylerreckart/arbiter)
 ![License Shield](https://img.shields.io/github/license/tylerreckart/arbiter)
 
-![Arbiter session sidebar and inline diff rendering](assets/terminal.jpg)
+![Arbiter session sidebar and inline diff rendering](assets/vesper.jpg)
 
 **A local agent runtime in a single native binary.** Run multi-agent workflows on your machine — interactive TUI, one-shot CLI, or HTTP+SSE — with hard tool allowlists and a shared streaming event bus. Local-first; network is optional.
 

@@ -159,6 +159,7 @@ void HistorySidebarState::enter_focus(const ConversationStore& store,
     mode_ = Mode::Normal;
     rename_buffer_.clear();
     filter_.clear();
+    menu_index_ = 0;
     active_id_ = active_id;
     entries_ = store.list();
     pinned_new_ = true;
@@ -179,6 +180,23 @@ void HistorySidebarState::exit_focus() {
     mode_ = Mode::Normal;
     rename_buffer_.clear();
     filter_.clear();
+    menu_index_ = 0;
+}
+
+HistorySidebarKey HistorySidebarState::commit_menu_locked() {
+    mode_ = Mode::Normal;
+    const int pick = menu_index_;
+    menu_index_ = 0;
+    if (pick == kMenuRename) {
+        mode_ = Mode::Renaming;
+        rename_buffer_ = current_title_locked();
+        return HistorySidebarKey::RenameStart;
+    }
+    if (pick == kMenuDelete) {
+        mode_ = Mode::ConfirmDelete;
+        return HistorySidebarKey::DeleteStart;
+    }
+    return HistorySidebarKey::Enter;
 }
 
 void HistorySidebarState::refresh_entries(const ConversationStore& store) {
@@ -282,6 +300,41 @@ HistorySidebarKey HistorySidebarState::handle_key(int key_byte,
         return HistorySidebarKey::None;
     }
 
+    if (mode_ == Mode::Menu) {
+        // SGR mouse already filtered above. Arrows / j/k move the highlight;
+        // Enter commits; Esc / m closes without acting. First-letter
+        // shortcuts jump straight to that action.
+        if (csi_final == 'A' || key_byte == 'k') {
+            menu_index_ = (menu_index_ + kMenuCount - 1) % kMenuCount;
+            return HistorySidebarKey::None;
+        }
+        if (csi_final == 'B' || key_byte == 'j') {
+            menu_index_ = (menu_index_ + 1) % kMenuCount;
+            return HistorySidebarKey::None;
+        }
+        if (key_byte == '\r' || key_byte == '\n') {
+            return commit_menu_locked();
+        }
+        if (key_byte == 0x1B || key_byte == 'm') {
+            mode_ = Mode::Normal;
+            menu_index_ = 0;
+            return HistorySidebarKey::None;
+        }
+        if (key_byte == 'o' || key_byte == 'O') {
+            menu_index_ = kMenuOpen;
+            return commit_menu_locked();
+        }
+        if (key_byte == 'r' || key_byte == 'R') {
+            menu_index_ = kMenuRename;
+            return commit_menu_locked();
+        }
+        if (key_byte == 'd' || key_byte == 'D') {
+            menu_index_ = kMenuDelete;
+            return commit_menu_locked();
+        }
+        return HistorySidebarKey::None;
+    }
+
     if (mode_ == Mode::Filtering) {
         // Arrows still navigate the (filtered) list while typing.
         if (csi_final == 'A') return HistorySidebarKey::Up;
@@ -345,6 +398,12 @@ HistorySidebarKey HistorySidebarState::handle_key(int key_byte,
         mode_ = Mode::ConfirmDelete;
         return HistorySidebarKey::DeleteStart;
     }
+    if (key_byte == 'm') {
+        if (pinned_new_) return HistorySidebarKey::None;
+        mode_ = Mode::Menu;
+        menu_index_ = kMenuOpen;
+        return HistorySidebarKey::MenuOpen;
+    }
 
     return HistorySidebarKey::None;
 }
@@ -361,6 +420,8 @@ HistorySidebarSnapshot HistorySidebarState::snapshot() const {
     s.renaming = (mode_ == Mode::Renaming);
     s.rename_buffer = rename_buffer_;
     s.confirming_delete = (mode_ == Mode::ConfirmDelete);
+    s.menu_open = (mode_ == Mode::Menu);
+    s.menu_index = menu_index_;
     s.filtering = (mode_ == Mode::Filtering);
     s.filter = filter_;
     return s;

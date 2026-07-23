@@ -28,6 +28,10 @@ enum class HistorySidebarKey {
     // silently (handled internally, surfaces as None).
     DeleteStart,
     DeleteConfirmed,
+    // Opened the per-row action menu ('m'); callers redraw. Navigating and
+    // cancelling the menu are handled internally (None); committing an
+    // item surfaces as Enter / RenameStart / DeleteStart.
+    MenuOpen,
     PageUp,
     PageDown,
 };
@@ -40,11 +44,15 @@ struct HistorySidebarSnapshot {
     std::string active_id;
     // Entries surviving the active filter (all entries when no filter).
     std::vector<ConversationEntry> entries;
-    // Inline edit/confirm state for the frame drawer to render on the
+    // Inline edit/confirm/menu state for the frame drawer to render on the
     // selected row instead of its normal title/subtitle.
     bool renaming = false;
     std::string rename_buffer;
     bool confirming_delete = false;
+    // Per-row action menu ('m'): Open / Rename / Delete. `menu_index` is
+    // 0..2 while `menu_open` is true.
+    bool menu_open = false;
+    int  menu_index = 0;
     // Type-to-filter state: `filtering` while the filter line is being
     // edited ('/'), `filter` is the applied text (persists after Enter
     // commits the filter until Esc clears it or focus is re-entered).
@@ -102,7 +110,12 @@ public:
     [[nodiscard]] HistorySidebarSnapshot snapshot() const;
 
 private:
-    enum class Mode { Normal, Renaming, ConfirmDelete, Filtering };
+    enum class Mode { Normal, Renaming, ConfirmDelete, Filtering, Menu };
+    // Indices into the per-row action menu (Open / Rename / Delete).
+    static constexpr int kMenuOpen = 0;
+    static constexpr int kMenuRename = 1;
+    static constexpr int kMenuDelete = 2;
+    static constexpr int kMenuCount = 3;
 
     // Assumes mu_ is already held by the caller.
     int index_for_pin_locked() const;
@@ -114,6 +127,9 @@ private:
     // Re-pin after a filter edit: keep the pinned id if it's still
     // visible, otherwise pin the first visible entry (or "+ New").
     void repin_after_filter_locked();
+    // Commit the highlighted menu item: Open → Enter, Rename → Renaming,
+    // Delete → ConfirmDelete. Returns the corresponding HistorySidebarKey.
+    HistorySidebarKey commit_menu_locked();
 
     mutable std::mutex mu_;
     bool enabled_ = true;
@@ -130,6 +146,7 @@ private:
     Mode mode_ = Mode::Normal;
     std::string rename_buffer_;
     std::string filter_;
+    int menu_index_ = 0;
 };
 
 // Read one key for sidebar navigation (arrows, enter, esc, PgUp/PgDn).
