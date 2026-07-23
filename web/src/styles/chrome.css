@@ -22,7 +22,7 @@ body:not(.docs) .site-header {
   margin: 0 auto;
   max-width: var(--max);
   min-height: var(--header-h);
-  padding: 0 24px;
+  padding: 0 var(--gutter);
   position: relative;
   width: 100%;
   z-index: 1;
@@ -93,7 +93,7 @@ body:not(.docs) .site-header {
 body.docs .nav {
   max-width: none;
   padding-left: 14px;
-  padding-right: 40px;
+  padding-right: 20px;
 }
 
 .button {

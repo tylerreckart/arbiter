@@ -66,8 +66,12 @@
 }
 
 @media (max-width: 640px) {
+  :root {
+    --gutter: 16px;
+  }
+
   .nav {
-    padding: 0 10px 0 12px;
+    padding: 0 var(--gutter);
   }
 
   body:not(.docs) .nav-links a:not(.button) {
@@ -87,18 +91,13 @@
     padding: 8px 6px;
   }
 
-  .section,
-  .docs-main,
-  .trust-section,
-  .install-section {
+  .docs-main {
     padding-left: 16px;
     padding-right: 16px;
   }
 
   .hero-inner {
     min-height: 0;
-    padding-left: 16px;
-    padding-right: 16px;
   }
 
   .hero-stage {
@@ -120,6 +119,10 @@
   .install-step .button {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .hero-bridge {
+    margin-top: -96px;
   }
 
   .docs-index-card {

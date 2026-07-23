@@ -39,8 +39,9 @@
   margin: 0 auto;
   max-width: var(--max);
   min-height: calc(min(92vh, 920px) + 200px - var(--chrome-clearance) - 284px);
-  padding: 0 24px;
+  padding: 0 var(--gutter);
   position: relative;
+  width: 100%;
   z-index: 2;
 }
 
@@ -150,17 +151,36 @@
   padding: 0;
 }
 
-.section {
-  padding: 120px 24px;
+.hero-bridge {
+  margin: -184px auto 0;
+  max-width: var(--max);
+  padding: 0 var(--gutter);
+  position: relative;
+  width: 100%;
+  z-index: 3;
 }
 
-.reveal-section { 
-  padding: 0 24px 120px 24px;
+.hero-bridge img {
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.55);
+  border-radius: 12px;
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.section {
+  padding: 120px 0;
+}
+
+.reveal-section {
+  padding: 72px 0 120px;
 }
 
 .section-inner {
   margin: 0 auto;
   max-width: var(--max);
+  padding: 0 var(--gutter);
+  width: 100%;
 }
 
 .section-band {
@@ -304,7 +324,7 @@ h4 {
   background: transparent;
   border-bottom: 0;
   color: var(--ink);
-  padding: 120px 24px;
+  padding: 120px 0;
 }
 
 .trust-section h2 {
@@ -359,7 +379,7 @@ h4 {
   background-color: transparent;
   border-top: 1px solid var(--line-strong);
   color: var(--ink);
-  padding: 120px 24px 128px;
+  padding: 120px 0 128px;
 }
 
 .install-section .section-lede {
