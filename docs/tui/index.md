@@ -81,7 +81,7 @@ Themes are JSON-driven. See **[themes.md](themes.md)** for the full schema, expo
 Summary:
 
 - **`~/.arbiter/tui.json`** — `"preset": "nord"` or `"theme_file": "themes/mine.json"`, plus optional per-token overrides.
-- **`themes/*.json`** (in the repo / `share/arbiter/themes/` when installed) — all built-in presets as editable JSON; copied to `~/.arbiter/themes/` on `arbiter --init`.
+- **`themes/*.json`** (in the repo; **embedded into the binary** at build time) — all built-in presets; also written to `~/.arbiter/themes/` on `arbiter --init`.
 - **`~/.arbiter/themes/*.json`** — your custom themes or edited copies of built-ins.
 - **`arbiter --export-theme PRESET`** — dump a complete theme JSON to stdout (starter for editing).
 - **`/theme`**, **`/theme save`**, **`/theme file`** — browse with ↑↓ preview, export, or load themes in-session.
@@ -90,7 +90,8 @@ Built-in presets:
 
 | Preset | Character |
 |--------|-----------|
-| `onedark` | **Default.** Atom OneDark — blue focus, warm code, green/red diffs. |
+| `high-contrast` | **Default.** High-contrast dark — white on black, saturated accents. |
+| `onedark` | Atom OneDark — blue focus, warm code, green/red diffs. |
 | `modern` | Neutral black chrome with warm orange accent. |
 | `nord` | Cool arctic blues and muted frost tones. |
 | `dracula` | Purple/pink/cyan on `#282a36`. |
@@ -126,7 +127,6 @@ Built-in presets:
 | `vesper` | Vesper — minimal black with peach and mint accents. |
 | `moonlight` | Moonlight — soft indigo panels with pastel syntax. |
 | `material` | Material Oceanic — blue-gray chrome, Material accents. |
-| `high-contrast` | High-contrast dark — white on black, saturated accents. |
 | `andromeda` | Andromeda — cyan/magenta pops on slate. |
 
 Pick a preset in `tui.json`:

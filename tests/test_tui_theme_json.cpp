@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "tui/tui_design.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +27,30 @@ void write_file(const std::string& path, const std::string& body) {
 }
 
 } // namespace
+
+TEST_CASE("built-in themes are embedded; default is high-contrast") {
+    CHECK(std::string(kDefaultTuiPreset) == "high-contrast");
+    CHECK(tui_preset_is_valid("high-contrast"));
+    CHECK(tui_preset_is_valid("onedark"));
+    const auto presets = tui_builtin_presets();
+    CHECK(presets.size() >= 30);
+    CHECK(std::find(presets.begin(), presets.end(), "high-contrast") != presets.end());
+
+    const TuiDesign d = tui_design_for_preset("high-contrast");
+    // themes/high-contrast.json: bg.base #000000, text.primary white-ish
+    CHECK(d.bg.base[0] == 0);
+    CHECK(d.bg.base[1] == 0);
+    CHECK(d.bg.base[2] == 0);
+    CHECK(d.text.primary[0] > 200);
+}
+
+TEST_CASE("tui_install_bundled_themes writes embedded presets") {
+    const std::string dir = temp_dir() + "/install_themes";
+    std::filesystem::remove_all(dir);
+    tui_install_bundled_themes(dir, /*force=*/false);
+    CHECK(std::filesystem::exists(dir + "/themes/high-contrast.json"));
+    CHECK(std::filesystem::exists(dir + "/themes/onedark.json"));
+}
 
 TEST_CASE("tui_design_to_json exports color groups") {
     const std::string json = tui_design_to_json(tui_design_for_preset("nord"), "");
