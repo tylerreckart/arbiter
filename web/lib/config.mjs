@@ -12,15 +12,25 @@ export const dist = process.env.ARBITER_DIST_PATH
   ? path.resolve(process.env.ARBITER_DIST_PATH)
   : path.join(root, 'dist')
 export const viewsRoot = path.join(root, 'views')
-export const stylesPath = path.join(root, 'src', 'styles.css')
+export const stylesDir = path.join(root, 'src', 'styles')
+export const styleSheets = [
+  'tokens.css',
+  'base.css',
+  'chrome.css',
+  'marketing.css',
+  'docs.css',
+  'footer.css',
+  'responsive.css',
+]
 export const siteScriptPath = path.join(root, 'src', 'site.js')
+export const liquidHeroPath = path.join(root, 'src', 'liquid-hero.js')
 export const installPath = path.join(root, 'install.sh')
 export const assetsPath = path.join(repoRoot, 'assets')
 
 export const siteOrigin = 'https://arbiter.run'
 export const githubBlobBase = 'https://github.com/tylerreckart/arbiter/blob/main'
 export const installCommand = 'curl -fsSL https://arbiter.run/install.sh | sh'
-export const binaryRelease = 'v0.7.2'
+export const binaryRelease = 'v0.8.2'
 export const macDownloadUrl =
   `https://github.com/tylerreckart/arbiter/releases/download/${binaryRelease}/` +
   'arbiter-macos-arm64.tar.gz'
