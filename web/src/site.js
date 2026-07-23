@@ -102,7 +102,7 @@ function initDocsSearch() {
     results.innerHTML = hits
       .map(
         (hit, i) =>
-          `<a class="docs-search-hit${i === active ? ' is-active' : ''}" href="${hit.href}" role="option">` +
+          `<a class="docs-search-hit${i === active ? ' is-active' : ''}" href="${escapeText(hit.href)}" role="option">` +
           `<span class="docs-search-hit-title">${escapeText(hit.title)}</span>` +
           `<span class="docs-search-hit-meta">${escapeText(hit.section)}</span>` +
           `</a>`,
@@ -125,6 +125,7 @@ function initDocsSearch() {
     }
     await loadIndex()
     hits = (index || [])
+      .filter((entry) => safeInternalHref(entry.href))
       .map((entry) => {
         const title = entry.title.toLowerCase()
         const section = entry.section.toLowerCase()
@@ -164,7 +165,8 @@ function initDocsSearch() {
       render()
     } else if (event.key === 'Enter' && active >= 0) {
       event.preventDefault()
-      window.location.href = hits[active].href
+      const href = safeInternalHref(hits[active].href)
+      if (href) window.location.href = href
     } else if (event.key === 'Escape') {
       clear()
       input.blur()
@@ -217,4 +219,12 @@ function escapeText(value) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+function safeInternalHref(value) {
+  const href = String(value || '')
+  // Same-origin path only; reject protocol-relative and schemes.
+  if (!href.startsWith('/') || href.startsWith('//')) return null
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null
+  return href
 }

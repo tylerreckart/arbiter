@@ -57,9 +57,12 @@ elif ! release_assets_ready "$url"; then
   # In that case, select the newest published release that has this platform
   # asset (and checksum) instead of leaving the stable install URL broken.
   releases="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=10")"
+  # GitHub may return compact single-line JSON; split before each tag_name
+  # so line-oriented sed can extract every release tag.
   tags="$(
-    printf '%s\n' "$releases" |
-      sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p'
+    printf '%s' "$releases" |
+      sed 's/"tag_name"/\n&/g' |
+      sed -n 's/^"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
   )"
 
   for candidate in $tags; do
