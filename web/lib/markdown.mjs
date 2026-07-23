@@ -278,22 +278,34 @@ function looksLikeDocPath(label) {
 }
 
 function resolveHref(href, doc) {
-  if (/^(https?:|mailto:|#|\/)/.test(href)) return href
-  if (href.endsWith('.md') || href.includes('.md#')) {
-    const [filePart, hash] = href.split('#')
-    const sourceDir = path.posix.dirname(doc.relative)
-    const target = path.posix.normalize(path.posix.join(sourceDir, filePart))
+  const trimmed = String(href).trim()
 
-    if (target.startsWith('../') || target === '..') {
-      const repoPath = path.posix.normalize(path.posix.join('docs', sourceDir, filePart))
+  // Allow only safe absolute schemes; neutralize javascript:/data:/etc.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed
+    return '#'
+  }
+
+  if (trimmed.startsWith('#') || trimmed.startsWith('/')) return trimmed
+
+  if (trimmed.endsWith('.md') || trimmed.includes('.md#')) {
+    const [filePart, hash] = trimmed.split('#')
+    const sourceDir = path.posix.dirname(doc.relative)
+    const repoPath = path.posix.normalize(path.posix.join('docs', sourceDir, filePart))
+
+    // Links that climb out of docs/ (e.g. ../../CONTRIBUTING.md) point at GitHub.
+    if (!repoPath.startsWith('docs/') && repoPath !== 'docs') {
       const cleaned = repoPath.replace(/^(\.\.\/)+/, '').replace(/^\//, '')
       return `${githubBlobBase}/${cleaned}${hash ? `#${hash}` : ''}`
     }
 
-    const slug = target.replace(/\.md$/, '').replace(/\/index$/, '')
+    const slug = repoPath
+      .replace(/^docs\//, '')
+      .replace(/\.md$/, '')
+      .replace(/\/index$/, '')
     return `/docs/${slug}/${hash ? `#${hash}` : ''}`
   }
-  return href
+  return trimmed
 }
 
 function stripHashes(value) {

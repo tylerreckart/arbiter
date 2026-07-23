@@ -34,6 +34,7 @@ export const binaryRelease = 'v0.8.2'
 export const macDownloadUrl =
   `https://github.com/tylerreckart/arbiter/releases/download/${binaryRelease}/` +
   'arbiter-macos-arm64.tar.gz'
+export const installerHref = `${githubBlobBase}/web/install.sh`
 
 export const sectionOrder = [
   'getting-started',
