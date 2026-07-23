@@ -1,5 +1,7 @@
-// Sidebar visibility in the live TUI (PTY).  At <96 columns the session
-// sidebar must not paint section labels; at >=96 it may after first prompt.
+// Sidebar visibility in the live TUI (PTY).  Session sidebar width is based
+// on remaining columns after the history sidebar (26 + 1 gutter).  Below the
+// 96-col remaining breakpoint it must not paint section labels; above it may
+// after the first prompt.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -48,8 +50,10 @@ TEST_CASE("sidebar section labels hidden below 96 columns after first prompt") {
     s.terminate();
 }
 
-TEST_CASE("sidebar section labels appear at 120 columns after first prompt") {
-    PtySession s = ready_repl(40, 120);
+TEST_CASE("sidebar section labels appear when remaining width clears 96 cols") {
+    // History sidebar reserves 27 cols (26 box + outer gutter).  147 leaves
+    // 120 remaining → 28-col session sidebar (see SidebarState::breakpoint_width).
+    PtySession s = ready_repl(40, 147);
     s.send("hello\r");
     CHECK(wait_for_plain(s, "Context", 15000));
     s.terminate();

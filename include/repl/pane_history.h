@@ -60,6 +60,8 @@ void pane_history_upsert_tool(Pane& pane,
                               const ToolActivityEvent& event,
                               bool new_block = false);
 bool pane_history_toggle_code_block(Pane& pane, int scroll_offset);
+// Left-click expand/collapse for thinking / tool / truncated code blocks.
+bool pane_history_toggle_expandable_at(Pane& pane, int term_x, int term_y);
 [[nodiscard]] int pane_history_total_rows(const Pane& pane);
 [[nodiscard]] int pane_history_max_scroll(const Pane& pane);
 

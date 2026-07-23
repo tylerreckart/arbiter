@@ -84,7 +84,7 @@ Summary:
 - **`themes/*.json`** (in the repo / `share/arbiter/themes/` when installed) — all built-in presets as editable JSON; copied to `~/.arbiter/themes/` on `arbiter --init`.
 - **`~/.arbiter/themes/*.json`** — your custom themes or edited copies of built-ins.
 - **`arbiter --export-theme PRESET`** — dump a complete theme JSON to stdout (starter for editing).
-- **`/theme`**, **`/theme save`**, **`/theme file`** — switch, export, or load themes in-session.
+- **`/theme`**, **`/theme save`**, **`/theme file`** — browse with ↑↓ preview, export, or load themes in-session.
 
 Built-in presets:
 
@@ -108,6 +108,26 @@ Built-in presets:
 | `palenight` | Material purple and soft blue-gray panels. |
 | `synthwave` | Neon magenta and cyan on ultraviolet black. |
 | `zenburn` | Low-contrast olive-gray with sage accents. |
+| `solarized-light` | Solarized Light — cream paper with teal/blue accents. |
+| `github-light` | GitHub Light — white chrome, blue links, soft neutrals. |
+| `catppuccin-latte` | Catppuccin Latte — lavender pastels on soft paper. |
+| `gruvbox-light` | Gruvbox Light — warm parchment with earthy accents. |
+| `rose-pine-dawn` | Rosé Pine Dawn — muted rose and iris on ivory. |
+| `one-light` | Atom One Light — clean gray-white with blue focus. |
+| `papercolor` | PaperColor Light — high-legibility print palette. |
+| `flexoki-light` | Flexoki Light — ink-on-paper with restrained hues. |
+| `high-contrast-light` | High-contrast light — black text on white, vivid accents. |
+| `kanagawa` | Kanagawa Wave — ink blacks with soft gold and sea blues. |
+| `oxocarbon` | Oxocarbon — IBM Carbon blacks with neon pink/cyan. |
+| `night-owl` | Night Owl — deep navy with soft violet and mint. |
+| `horizon` | Horizon — warm rose accents on charcoal violet. |
+| `flexoki` | Flexoki Dark — near-black ink with earthy accents. |
+| `poimandres` | Poimandres — cool teal focus on midnight blue. |
+| `vesper` | Vesper — minimal black with peach and mint accents. |
+| `moonlight` | Moonlight — soft indigo panels with pastel syntax. |
+| `material` | Material Oceanic — blue-gray chrome, Material accents. |
+| `high-contrast` | High-contrast dark — white on black, saturated accents. |
+| `andromeda` | Andromeda — cyan/magenta pops on slate. |
 
 Pick a preset in `tui.json`:
 

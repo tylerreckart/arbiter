@@ -46,6 +46,40 @@ std::string read_file(const std::string& path) {
     return ss.str();
 }
 
+// Read usage.total_tokens from a session JSON file (0 if absent/unreadable).
+int read_session_total_tokens(const std::string& path) {
+    const std::string raw = read_file(path);
+    if (raw.empty()) return 0;
+    try {
+        auto root = json_parse(raw);
+        if (!root || !root->is_object()) return 0;
+        auto usage = root->get("usage");
+        if (!usage || !usage->is_object()) return 0;
+        return static_cast<int>(usage->get_number("total_tokens"));
+    } catch (...) {
+        return 0;
+    }
+}
+
+// Merge usage.total_tokens into an existing session file without clobbering
+// the conversation history orch.save_session() just wrote.
+void write_session_total_tokens(const std::string& path, int total_tokens) {
+    if (total_tokens <= 0) return;
+    const std::string raw = read_file(path);
+    if (raw.empty()) return;
+    try {
+        auto root = json_parse(raw);
+        if (!root || !root->is_object()) return;
+        auto usage = root->get("usage");
+        JsonObject usage_obj;
+        if (usage && usage->is_object()) usage_obj = usage->as_object();
+        usage_obj["total_tokens"] = jnum(static_cast<double>(total_tokens));
+        root->as_object_mut()["usage"] = jobj(std::move(usage_obj));
+        atomic_write_file(path, json_serialize(*root));
+    } catch (...) {
+    }
+}
+
 std::string cwd_session_hash(const std::string& cwd) {
     std::uint32_t h = 2166136261u;
     for (unsigned char c : cwd) {
@@ -255,8 +289,14 @@ void ConversationStore::load_manifest_unlocked() {
                     e.created_at = static_cast<std::int64_t>(v->get_number("created_at"));
                     e.updated_at = static_cast<std::int64_t>(v->get_number("updated_at"));
                     e.deleted_at = static_cast<std::int64_t>(v->get_number("deleted_at"));
+                    e.total_tokens = static_cast<int>(v->get_number("total_tokens"));
                     e.titled = v->get_bool("titled", false);
                     if (e.id.empty()) continue;
+                    // Prefer the higher of manifest vs session-file usage so a
+                    // partial manifest rewrite can't erase known totals.
+                    const int session_tokens =
+                        read_session_total_tokens(session_path_unlocked(e.id));
+                    e.total_tokens = std::max(e.total_tokens, session_tokens);
                     entries_.push_back(std::move(e));
                 }
                 parsed_ok = true;
@@ -312,6 +352,7 @@ void ConversationStore::save_manifest_unlocked() const {
         m["created_at"] = jnum(static_cast<double>(e.created_at));
         m["updated_at"] = jnum(static_cast<double>(e.updated_at));
         if (e.deleted_at != 0) m["deleted_at"] = jnum(static_cast<double>(e.deleted_at));
+        if (e.total_tokens > 0) m["total_tokens"] = jnum(static_cast<double>(e.total_tokens));
         if (e.titled) m["titled"] = jbool(true);
         arr.push_back(obj);
     }
@@ -545,7 +586,19 @@ void ConversationStore::save(const std::string& id, Orchestrator& orch) {
     }
     ConversationScope scope(id);
     orch.save_session(path);
+    // Re-attach usage after save_session rewrites the session document.
+    // Read total_tokens under the same lock as the write so a concurrent
+    // add_tokens() cannot leave a higher on-disk total that we then clobber
+    // with a pre-save snapshot.
     std::lock_guard<std::mutex> lk(mu_);
+    int total_tokens = 0;
+    for (const auto& e : entries_) {
+        if (e.id == id) {
+            total_tokens = e.total_tokens;
+            break;
+        }
+    }
+    write_session_total_tokens(path, total_tokens);
     const std::int64_t ts = now_epoch();
     for (auto& e : entries_) {
         if (e.id == id) {
@@ -595,6 +648,21 @@ void ConversationStore::set_title_locked(const std::string& id, const std::strin
     }
     sort_entries(entries_);
     save_manifest_unlocked();
+}
+
+void ConversationStore::add_tokens(const std::string& id, int delta) {
+    if (id.empty() || delta == 0) return;
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto& e : entries_) {
+        if (e.id == id) {
+            // Clamp against underflow if a negative delta is ever passed.
+            const long long next = static_cast<long long>(e.total_tokens) + delta;
+            e.total_tokens = static_cast<int>(std::max(0LL, next));
+            save_manifest_unlocked();
+            write_session_total_tokens(session_path_unlocked(id), e.total_tokens);
+            return;
+        }
+    }
 }
 
 void ConversationStore::lock_title(const std::string& id) {
