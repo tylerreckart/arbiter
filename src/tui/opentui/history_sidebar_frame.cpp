@@ -283,10 +283,12 @@ void draw_history_sidebar(OpenTuiHandle frame,
                      "Conversations",
                      &d.accent.primary);
 
+    // Focused hint must stay ≤ ~24 cells (box width minus padding) or
+    // trim_to_cells drops the trailing "/ filter" — PTY tests key on "filt".
     const std::string_view sidebar_hint = snap.focused
         ? (snap.filtering ? "type to filter  esc clear"
                           : snap.menu_open ? "\u2191\u2193 move  enter  esc"
-                                           : "\u2191\u2193 select  m menu  / filter")
+                                           : "\u2191\u2193 select  m  / filter")
         : "^W b focus";
     // Align with the pane's footer hints below the input box, not with the
     // sidebar border itself.
