@@ -1,5 +1,7 @@
+import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   copyAssets,
   renderRobots,
@@ -12,10 +14,12 @@ import {
   docsRoot,
   binaryRelease,
   installCommand,
+  installerHref,
   installPath,
   liquidHeroPath,
   macDownloadUrl,
   repoRoot,
+  root,
   siteScriptPath,
 } from '../lib/config.mjs'
 import { readDocs, sortDocs } from '../lib/docs.mjs'
@@ -30,6 +34,25 @@ import {
 } from '../lib/navigation.mjs'
 import { renderPage } from '../lib/render.mjs'
 import { writeStyles } from '../lib/styles.mjs'
+
+const buildScript = fileURLToPath(import.meta.url)
+
+// Production builds stage into a temp dir and swap on success so a failed or
+// interrupted run cannot wipe a previously good dist/. Dev already sets
+// ARBITER_DIST_PATH to its own staging dir and publishes itself.
+if (!process.env.ARBITER_DIST_PATH) {
+  const stagingDist = path.join(root, '.build-dist')
+  const exitCode = await runStagedBuild(stagingDist)
+  if (exitCode !== 0) {
+    await fs.rm(stagingDist, { force: true, recursive: true })
+    process.exit(exitCode)
+  }
+
+  await fs.rm(dist, { force: true, recursive: true })
+  await fs.rename(stagingDist, dist)
+  console.log(`Built site into ${path.relative(repoRoot, dist)}`)
+  process.exit(0)
+}
 
 await fs.rm(dist, { force: true, recursive: true })
 await fs.mkdir(dist, { recursive: true })
@@ -53,6 +76,7 @@ await writeFile(
       docs.find((doc) => doc.relative === 'getting-started/local.md')?.href ?? '/docs/',
     binaryRelease,
     installCommand,
+    installerHref,
     macDownloadUrl,
     ogImage: '/assets/terminal.jpg',
     philosophyHref: docs.find((doc) => doc.relative === 'philosophy.md')?.href ?? '/docs/',
@@ -100,3 +124,24 @@ await writeFile('robots.txt', renderRobots())
 await writeFile('sitemap.xml', renderSitemap(docs))
 
 console.log(`Built ${docs.length + 2} pages into ${path.relative(repoRoot, dist)}`)
+
+function runStagedBuild(stagingDist) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [buildScript], {
+      cwd: root,
+      env: {
+        ...process.env,
+        ARBITER_DIST_PATH: stagingDist,
+      },
+      stdio: 'inherit',
+    })
+
+    child.once('error', (error) => {
+      console.error('[build] failed to start:', error)
+      resolve(1)
+    })
+    child.once('close', (code) => {
+      resolve(code ?? 1)
+    })
+  })
+}
