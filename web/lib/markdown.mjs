@@ -2,7 +2,8 @@ import path from 'node:path'
 import { githubBlobBase } from './config.mjs'
 import { escapeAttribute, escapeHtml, slugify } from './html.mjs'
 
-export function markdownToHtml(markdown, doc) {
+export function markdownToHtml(markdown, doc, options = {}) {
+  const ctx = { doc, titlesByHref: options.titlesByHref ?? new Map() }
   const lines = markdown.replace(/\r\n/g, '\n').split('\n')
   const html = []
   let index = 0
@@ -40,7 +41,7 @@ export function markdownToHtml(markdown, doc) {
       const level = heading[1].length
       const text = stripHashes(heading[2])
       const id = slugify(text)
-      html.push(`<h${level} id="${id}">${inline(text, doc)}</h${level}>`)
+      html.push(`<h${level} id="${id}">${inline(text, ctx)}</h${level}>`)
       index += 1
       continue
     }
@@ -51,19 +52,19 @@ export function markdownToHtml(markdown, doc) {
         tableLines.push(lines[index])
         index += 1
       }
-      html.push(renderTable(tableLines, doc))
+      html.push(renderTable(tableLines, ctx))
       continue
     }
 
     if (/^\s*[-*]\s+/.test(line)) {
-      const list = renderList(lines, index, 'ul', doc)
+      const list = renderList(lines, index, 'ul', ctx)
       html.push(list.html)
       index = list.nextIndex
       continue
     }
 
     if (/^\s*\d+\.\s+/.test(line)) {
-      const list = renderList(lines, index, 'ol', doc)
+      const list = renderList(lines, index, 'ol', ctx)
       html.push(list.html)
       index = list.nextIndex
       continue
@@ -75,7 +76,7 @@ export function markdownToHtml(markdown, doc) {
         quote.push(lines[index].replace(/^>\s?/, ''))
         index += 1
       }
-      html.push(`<blockquote><p>${inline(quote.join(' '), doc)}</p></blockquote>`)
+      html.push(`<blockquote><p>${inline(quote.join(' '), ctx)}</p></blockquote>`)
       continue
     }
 
@@ -95,7 +96,7 @@ export function markdownToHtml(markdown, doc) {
       paragraph.push(lines[index].trim())
       index += 1
     }
-    html.push(`<p>${inline(paragraph.join(' '), doc)}</p>`)
+    html.push(`<p>${inline(paragraph.join(' '), ctx)}</p>`)
   }
 
   return html.join('\n')
@@ -138,7 +139,7 @@ export function extractToc(markdown) {
   for (const line of markdown.replace(/\r\n/g, '\n').split('\n')) {
     const match = line.match(/^(#{2,3})\s+(.+)$/)
     if (!match) continue
-    const text = stripHashes(match[2])
+    const text = stripHashes(match[2]).replace(/`/g, '')
     toc.push({
       id: slugify(text),
       level: match[1].length,
@@ -148,7 +149,7 @@ export function extractToc(markdown) {
   return toc
 }
 
-function renderList(lines, startIndex, type, doc) {
+function renderList(lines, startIndex, type, ctx) {
   const items = []
   let index = startIndex
   const itemRe = type === 'ul' ? /^(\s*)[-*]\s+(.*)$/ : /^(\s*)\d+\.\s+(.*)$/
@@ -162,12 +163,12 @@ function renderList(lines, startIndex, type, doc) {
     const match = line.match(itemRe)
     if (!match || match[1].length !== baseIndent) break
 
-    let itemHtml = inline(match[2], doc)
+    let itemHtml = inline(match[2], ctx)
     index += 1
 
     if (index < lines.length && anyItemRe.test(lines[index]) && leadingSpaces(lines[index]) > baseIndent) {
       const nestedType = /^\s*\d+\.\s+/.test(lines[index]) ? 'ol' : 'ul'
-      const nested = renderList(lines, index, nestedType, doc)
+      const nested = renderList(lines, index, nestedType, ctx)
       itemHtml += nested.html
       index = nested.nextIndex
     }
@@ -185,7 +186,7 @@ function leadingSpaces(value) {
   return value.match(/^\s*/)?.[0].length ?? 0
 }
 
-function renderTable(lines, doc) {
+function renderTable(lines, ctx) {
   const rows = lines
     .filter((_line, index) => index !== 1)
     .map((line) =>
@@ -198,9 +199,9 @@ function renderTable(lines, doc) {
 
   const [head = [], ...body] = rows
   return `<table><thead><tr>${head
-    .map((cell) => `<th>${inline(cell, doc)}</th>`)
+    .map((cell) => `<th>${inline(cell, ctx)}</th>`)
     .join('')}</tr></thead><tbody>${body
-    .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell, doc)}</td>`).join('')}</tr>`)
+    .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell, ctx)}</td>`).join('')}</tr>`)
     .join('')}</tbody></table>`
 }
 
@@ -211,14 +212,22 @@ function isTableStart(lines, index) {
   )
 }
 
-function inline(value, doc) {
+function inline(value, ctx) {
   const tokens = []
   let text = escapeHtml(value)
 
   text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, href) => {
     const token = `@@TOK${tokens.length}@@`
-    tokens.push(`<img src="${escapeAttribute(resolveHref(href, doc))}" alt="${escapeAttribute(alt)}">`)
+    tokens.push(
+      `<img src="${escapeAttribute(resolveHref(href, ctx.doc))}" alt="${escapeAttribute(alt)}">`,
+    )
     return token
+  })
+
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
+    const resolved = resolveHref(href, ctx.doc)
+    const display = formatLinkLabel(label, resolved, ctx)
+    return `<a href="${escapeAttribute(resolved)}">${display}</a>`
   })
 
   text = text.replace(/`([^`]+)`/g, (_, code) => {
@@ -227,9 +236,6 @@ function inline(value, doc) {
     return token
   })
 
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
-    return `<a href="${escapeAttribute(resolveHref(href, doc))}">${label}</a>`
-  })
   text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   text = text.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>')
 
@@ -237,6 +243,38 @@ function inline(value, doc) {
     text = text.replace(`@@TOK${index}@@`, tokens[index])
   }
   return text
+}
+
+function formatLinkLabel(label, resolvedHref, ctx) {
+  const plain = unescapeHtml(label).replace(/`/g, '').trim()
+  if (looksLikeDocPath(plain)) {
+    const baseHref = resolvedHref.split('#')[0]
+    const normalized = baseHref.endsWith('/') ? baseHref : `${baseHref}/`
+    if (normalized.startsWith('/docs/')) {
+      const title = ctx.titlesByHref.get(normalized)
+      if (title) return escapeHtml(title)
+    }
+  }
+
+  return label.replace(/`([^`]+)`/g, '<code>$1</code>')
+}
+
+function unescapeHtml(value) {
+  return String(value)
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
+function looksLikeDocPath(label) {
+  return (
+    /\.md\b/i.test(label) ||
+    /^docs\//i.test(label) ||
+    /^(?:\.\.\/)+(?:[a-z0-9._/-]+)$/i.test(label) ||
+    /^[a-z0-9_-]+(?:\/[a-z0-9._-]+)+\/?$/i.test(label)
+  )
 }
 
 function resolveHref(href, doc) {

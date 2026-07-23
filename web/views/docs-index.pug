@@ -7,9 +7,10 @@ block content
       .docs-main-inner
         .doc-shell.docs-index-inner
           h1 Build, operate, and extend Arbiter.
-          p.lead Generated from repository Markdown so implementation and documentation stay on the same path.
-          .flow
+          p.lead Start here to learn about the core concepts and features of Arbiter.
+          .docs-index-list
             each card in cards
-              a.flow-row(href=card.href)
-                code= card.label
-                span #{card.count} page#{card.count === 1 ? "" : "s"} covering #{card.preview}.
+              a.docs-index-card(href=card.href)
+                span.docs-index-label= card.label
+                p.docs-index-blurb= card.blurb
+                span.docs-index-meta #{card.count} page#{card.count === 1 ? "" : "s"}

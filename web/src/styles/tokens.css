@@ -19,7 +19,7 @@
   --code-bg: rgba(243, 239, 232, 0.06);
   --liquid-base: #0a0e27;
   --max: 1240px;
-  --docs-side: 280px;
+  --docs-side: 300px;
   --header-offset: 0px;
   --header-h: 64px;
   --chrome-clearance: calc(var(--header-h) + 28px);

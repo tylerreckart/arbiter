@@ -16,12 +16,18 @@ import {
   liquidHeroPath,
   macDownloadUrl,
   repoRoot,
-  sectionLabels,
   siteScriptPath,
 } from '../lib/config.mjs'
 import { readDocs, sortDocs } from '../lib/docs.mjs'
 import { extractToc, markdownToHtml } from '../lib/markdown.mjs'
-import { buildDocsIndexCards, buildSidebarModel } from '../lib/navigation.mjs'
+import {
+  buildBreadcrumbs,
+  buildDocsIndexCards,
+  buildSearchIndex,
+  buildSectionNeighbors,
+  buildSidebarModel,
+  buildTitleMap,
+} from '../lib/navigation.mjs'
 import { renderPage } from '../lib/render.mjs'
 import { writeStyles } from '../lib/styles.mjs'
 
@@ -35,6 +41,7 @@ await copyAssets()
 await writeFavicon()
 
 const docs = sortDocs(await readDocs(docsRoot))
+const titlesByHref = buildTitleMap(docs)
 
 await writeFile(
   'index.html',
@@ -60,29 +67,29 @@ await writeFile(
     cards: buildDocsIndexCards(docs),
     canonicalPath: '/docs/',
     description: 'Install, operate, and extend the Arbiter self-hosted agent runtime.',
-    sidebar: buildSidebarModel(docs, { href: '/docs/', section: 'getting-started' }),
+    sidebar: buildSidebarModel(docs, { href: '/docs/', section: null }),
     title: 'Arbiter Documentation',
     variant: 'docs',
   }),
 )
 
-for (let index = 0; index < docs.length; index += 1) {
-  const doc = docs[index]
-  const prev = docs[index - 1]
-  const next = docs[index + 1]
+await writeFile('docs/search-index.json', `${JSON.stringify(buildSearchIndex(docs), null, 2)}\n`)
+
+for (const doc of docs) {
+  const { next, prev } = buildSectionNeighbors(docs, doc)
   const toc = extractToc(doc.source)
 
   await writeFile(
     doc.outputPath,
     renderPage('doc.pug', {
-      breadcrumbs: `${sectionLabels[doc.section] ?? doc.section} / ${doc.title}`,
+      breadcrumbs: buildBreadcrumbs(doc),
       canonicalPath: doc.href,
-      contentHtml: markdownToHtml(doc.source, doc),
+      contentHtml: markdownToHtml(doc.source, doc, { titlesByHref }),
       description: doc.description,
       next,
       prev,
       sidebar: buildSidebarModel(docs, doc),
-      title: `${doc.title} — Arbiter Docs`,
+      title: `${titlesByHref.get(doc.href) ?? doc.title} — Arbiter Docs`,
       toc,
       variant: 'docs',
     }),
