@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.8.5 LANGUAGES CXX)
+project(arbiter VERSION 0.8.6 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -87,6 +87,42 @@ endif()
 # Prefer the platform curl (macOS system libcurl / distro libcurl) so
 # release binaries stay portable; do not auto-select Homebrew curl.
 find_package(CURL REQUIRED)
+
+# On modern macOS, /usr/lib/libcurl*.dylib may live only in the dyld
+# shared cache. FindCURL can then create CURL::libcurl without
+# IMPORTED_LOCATION (EXISTS fails on the cache stub), which breaks
+# generate for the Release config. Repair with an on-disk SDK .tbd.
+if(TARGET CURL::libcurl)
+    get_target_property(_arbiter_curl_loc CURL::libcurl IMPORTED_LOCATION)
+    get_target_property(_arbiter_curl_loc_rel CURL::libcurl IMPORTED_LOCATION_RELEASE)
+    if(NOT _arbiter_curl_loc AND NOT _arbiter_curl_loc_rel)
+        set(_arbiter_curl_path "")
+        if(CURL_LIBRARY AND EXISTS "${CURL_LIBRARY}")
+            set(_arbiter_curl_path "${CURL_LIBRARY}")
+        elseif(APPLE)
+            execute_process(
+                COMMAND xcrun --sdk macosx --show-sdk-path
+                OUTPUT_VARIABLE _arbiter_macos_sdk
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            if(_arbiter_macos_sdk AND EXISTS "${_arbiter_macos_sdk}/usr/lib/libcurl.tbd")
+                set(_arbiter_curl_path "${_arbiter_macos_sdk}/usr/lib/libcurl.tbd")
+            endif()
+        endif()
+        if(_arbiter_curl_path)
+            set_target_properties(CURL::libcurl PROPERTIES
+                IMPORTED_LOCATION "${_arbiter_curl_path}"
+                IMPORTED_LOCATION_RELEASE "${_arbiter_curl_path}"
+            )
+            message(STATUS "CURL::libcurl: set IMPORTED_LOCATION=${_arbiter_curl_path}")
+        else()
+            message(FATAL_ERROR
+                "CURL::libcurl has no IMPORTED_LOCATION.\n"
+                "  On macOS pass -DCURL_LIBRARY=\"$(xcrun --sdk macosx --show-sdk-path)/usr/lib/libcurl.tbd\"")
+        endif()
+    endif()
+endif()
 
 # SQLite3 for the tenant + usage-accounting store backing `arbiter --api`.
 # Ships in the macOS SDK; on Linux the `libsqlite3-dev` package provides it.
