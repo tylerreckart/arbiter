@@ -58,4 +58,5 @@ export const assetAllowlist = new Set([
   'themes.jpg',
   'terminal_crop.jpg',
   'themes_crop.jpg',
+  'vesper.jpg',
 ])

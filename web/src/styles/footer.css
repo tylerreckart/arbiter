@@ -4,16 +4,28 @@
   border-top: 1px solid var(--line);
   color: var(--muted);
   font-size: 0.88rem;
-  padding: 28px 24px 40px;
+  padding: 28px 0 40px;
 }
 
 .site-footer-inner {
-  align-items: center;
+  align-items: start;
   display: flex;
-  gap: 14px;
+  gap: 14px 28px;
   justify-content: space-between;
   margin: 0 auto;
   max-width: var(--max);
+  padding: 0 var(--gutter);
+  width: 100%;
+}
+
+.footer-copy {
+  display: grid;
+  gap: 6px;
+  max-width: 42rem;
+}
+
+.footer-credit {
+  color: var(--muted);
 }
 
 .site-footer a {
@@ -28,6 +40,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px 18px;
+  justify-content: flex-end;
 }
 
 .site-footer a:hover {
