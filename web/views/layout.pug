@@ -1,0 +1,13 @@
+doctype html
+html(lang="en")
+  head
+    include /includes/head.pug
+  body(class=variant === "docs" ? "docs" : undefined)
+    a.skip-link(href="#main") Skip to content
+    include /includes/header.pug
+    #main
+      block content
+    include /includes/footer.pug
+    script(src="/site.js" defer)
+    if variant !== "docs"
+      script(type="module" src="/liquid-hero.js")

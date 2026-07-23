@@ -1,0 +1,124 @@
+/* ——— Full-width system header ——— */
+
+.site-header {
+  left: 0;
+  position: relative;
+  top: var(--header-offset);
+  width: 100%;
+  z-index: 40;
+}
+
+/* Marketing: float over the hero liquid instead of sitting on the page chrome. */
+body:not(.docs) .site-header {
+  background: transparent;
+  position: absolute;
+}
+
+.nav {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin: 0 auto;
+  max-width: var(--max);
+  min-height: var(--header-h);
+  padding: 0 var(--gutter);
+  position: relative;
+  width: 100%;
+  z-index: 1;
+}
+
+.brand {
+  align-items: center;
+  color: #fff;
+  display: inline-flex;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.brand-mark {
+  color: #fff;
+  display: block;
+  flex-shrink: 0;
+  height: 24px;
+  width: 24px;
+}
+
+.nav-links {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  justify-content: flex-end;
+}
+
+.nav-links a {
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  min-height: 34px;
+  padding: 8px 10px;
+  text-decoration: none;
+}
+
+.nav-links a:hover {
+  color: #fff;
+  opacity: 0.7;
+}
+
+.nav > .button {
+  align-items: center;
+  background: #fff;
+  border: 0;
+  color: #0b0b0b;
+  cursor: pointer;
+  display: inline-flex;
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  min-height: 34px;
+  padding: 8px 12px;
+  text-decoration: none;
+}
+
+.nav > .button:hover {
+  background: rgba(255, 255, 255, 0.82);
+  color: #0b0b0b;
+}
+
+/* Docs: span the full shell so brand/Install track the sidebar + content edges. */
+body.docs .nav {
+  max-width: none;
+  padding-left: 14px;
+  padding-right: 20px;
+}
+
+.button {
+  align-items: center;
+  background: var(--signal);
+  border: 0;
+  color: var(--signal-ink);
+  cursor: pointer;
+  display: inline-flex;
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  min-height: 34px;
+  padding: 8px 12px;
+  text-decoration: none;
+}
+
+.button:hover,
+.button.signal:hover {
+  background: var(--signal-hover);
+  color: var(--signal-ink);
+}
+
+.button.signal {
+  background: var(--signal);
+  color: var(--signal-ink);
+}

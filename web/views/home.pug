@@ -1,0 +1,123 @@
+extends layout.pug
+
+block content
+  section.hero
+    .hero-stage
+      .hero-liquid(data-hero-liquid aria-hidden="true")
+      .hero-inner
+        .hero-copy.reveal
+          p.brand-lockup Arbiter
+          h1.hero-title The agent runtime that lives on your machine.
+          p.hero-lede One native binary for multi-agent workflows — terminal, CLI, or HTTP — with hard tool allowlists. Local-first; network optional.
+          .install-callout(aria-label="Install command")
+            span Install Arbiter
+            code= installCommand
+            button.button(
+              type="button"
+              data-copy-install=installCommand
+            ) Copy
+          .hero-actions
+            a.text-link(href="#surfaces") Three faces ↓
+            a.text-link(href="/docs/getting-started/local/") Read local setup →
+        p.hero-qualifier.reveal Prebuilt for macOS Apple silicon and Linux x86_64.#[br] Apache-2.0. Bring an OpenRouter key or configure Ollama.
+
+  figure.hero-bridge
+    img(
+      src="/assets/vesper.jpg"
+      alt="Arbiter TUI with conversations, agent reply, and session context"
+      width="3008"
+      height="1802"
+      loading="lazy"
+      decoding="async"
+    )
+
+  section#surfaces.section.reveal-section
+    .section-inner
+      .surfaces-heading.reveal
+        h2 Same agents. Three faces.
+        p.section-lede One orchestration loop and shared storage under #[code ~/.arbiter/]. Start in the terminal; script it or serve it when you need a wire.
+      .surface-list.reveal
+        article
+          span.surface-index 01
+          strong Interactive
+          code arbiter
+          p Multi-pane TUI with persistent per-cwd sessions.
+        article
+          span.surface-index 02
+          strong One-shot
+          code arbiter --send
+          p Dispatch from scripts, cron, or CI.
+        article
+          span.surface-index 03
+          strong Server
+          code arbiter --api
+          p HTTP+SSE, tenant-isolated, with MCP and A2A bridges.
+
+  section#why.section.section-band
+    .section-inner
+      h2.reveal Built as a runtime, not a chat box.
+      .rule-list.reveal
+        .rule-row
+          strong Own the harness
+          p Agent behavior lives in editable constitutions — model, role, rules, and tool allowlist — not behind a hosted UI.
+          code definitions: ~/.arbiter/agents/*.json
+        .rule-row
+          strong Hard limits, not suggestions
+          p Every agent’s tool surface is an allowlist checked at dispatch. Optional advisor gates can sign off before a result reaches you.
+          code capabilities: explicit allowlist
+        .rule-row
+          strong One event model
+          p The orchestration loop streams the same events the TUI consumes. API clients get that stream over the wire; durable logs make reconnect possible.
+          code wire: SSE-shaped events
+
+  section#trust.section.trust-section.reveal-section
+    .section-inner
+      h2.reveal Local control, with explicit boundaries.
+      .trust-grid.reveal
+        article
+          strong Local state
+          p Configuration and runtime data live under #[code ~/.arbiter/]. Model requests go only to the provider you configure.
+        article
+          strong Shell access
+          p Agents can reach anything your user account can. Start with #[code arbiter --no-exec] when you do not want command execution.
+        article
+          strong Pre-1.0
+          p Arbiter is experimental software. Interfaces and configuration may change between releases.
+      .link-row.reveal
+        a.text-link(href="https://github.com/tylerreckart/arbiter/blob/main/SECURITY.md") Read the security model →
+        a.text-link(href=philosophyHref) Read the philosophy →
+
+  section#install.install-section.reveal-section
+    .section-inner
+      .install-copy.reveal
+        h2 From download to first agent in three commands.
+        p.section-lede Prebuilt for macOS Apple silicon and Linux x86_64. Other platforms can build from source.
+      .direct-download.reveal
+        a.mac-download-button(href=macDownloadUrl)
+          span.download-glyph(aria-hidden="true") ↓
+          span
+            strong Download for macOS
+            small Apple silicon · #{binaryRelease} · tar.gz
+      .install-console.reveal
+        .install-steps
+          .install-step
+            span 01
+            code= installCommand
+            button.button(
+              type="button"
+              data-copy-install=installCommand
+            ) Copy
+          .install-step
+            span 02
+            code arbiter --init
+            small Seed editable starter agent constitutions.
+          .install-step
+            span 03
+            code arbiter
+            small Launch the terminal face of the runtime.
+      .first-prompt.reveal
+        p “Map every place this repo talks to the payments API, then draft a migration plan to the new client — call out anything that will break auth or retries.”
+      .link-row.reveal
+        a.text-link(href=gettingStartedHref) Read local setup →
+        a.text-link(href=installerHref) Review the installer →
+        a.text-link(href="/docs/getting-started/local/#from-source") Build from source →

@@ -3,9 +3,11 @@
 /build-*/
 .cache/
 compile_commands.json
-
-# Local docs site build output (dist + node_modules)
-/web/
+/web/dist/
+/web/dist/*
+/web/.build-dist/
+/web/.dev-dist/
+/web/node_modules/
 
 # Editor / IDE droppings
 .vscode/
