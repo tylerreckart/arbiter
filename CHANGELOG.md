@@ -7,6 +7,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.5] — 2026-07-23
+
+Patch release: fix the Linux release smoke test so portable
+`$ORIGIN`-resolved `libopentui` is not rejected as a CI path.
+
+### Fixed
+- **Release smoke false positive.** `ldd` prints absolute paths under
+  the runner temp dir for correctly `$ORIGIN`-resolved libraries;
+  require same-directory resolve instead of treating any `/home/runner`
+  path as non-portable.
+
 ## [0.8.4] — 2026-07-23
 
 Patch release: portable macOS/Linux release binaries so `curl | sh`
