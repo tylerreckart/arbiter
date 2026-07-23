@@ -187,7 +187,7 @@ void cmd_init(bool force) {
             tf << "{\n  \"preset\": \"" << arbiter::kDefaultTuiPreset << "\"\n}\n";
             std::cout << "\nWrote " << tui_path << " (preset: "
                       << arbiter::kDefaultTuiPreset << ")\n";
-            std::cout << "  Customize: arbiter --export-theme onedark > "
+            std::cout << "  Customize: arbiter --export-theme high-contrast > "
                       << dir << "/themes/mine.json\n";
             std::cout << "  Then set \"theme_file\": \"themes/mine.json\" in tui.json\n";
         }

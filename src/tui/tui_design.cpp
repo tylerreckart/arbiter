@@ -1,6 +1,7 @@
 #include "tui/tui_design.h"
 
 #include "json.h"
+#include "themes_data.h"  // generated header (build/generated/)
 
 #include <algorithm>
 #include <atomic>
@@ -356,31 +357,6 @@ std::string bundled_themes_dir() {
     return cached;
 }
 
-std::string resolve_theme_path(const std::string& config_dir, std::string_view name) {
-    if (name.empty()) return {};
-    const std::string stem(name);
-    if (!config_dir.empty()) {
-        const std::string user = config_dir + "/themes/" + stem + ".json";
-        if (std::filesystem::exists(user)) return user;
-    }
-    const std::string bundled = bundled_themes_dir() + "/" + stem + ".json";
-    if (std::filesystem::exists(bundled)) return bundled;
-    return {};
-}
-
-std::vector<std::string> list_bundled_theme_names() {
-    std::vector<std::string> out;
-    const std::string dir = bundled_themes_dir();
-    if (dir.empty() || !std::filesystem::is_directory(dir)) return out;
-    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-        if (!entry.is_regular_file()) continue;
-        if (entry.path().extension() != ".json") continue;
-        out.push_back(entry.path().stem().string());
-    }
-    std::sort(out.begin(), out.end());
-    return out;
-}
-
 std::shared_ptr<JsonValue> parse_json_file(const std::string& path);
 bool apply_theme_from_path(TuiDesign& d,
                            const std::string& path,
@@ -388,6 +364,60 @@ bool apply_theme_from_path(TuiDesign& d,
 bool resolve_and_apply_theme(TuiDesign& d,
                              const std::string& config_dir,
                              std::string_view name);
+
+std::string resolve_theme_path(const std::string& config_dir, std::string_view name) {
+    if (name.empty()) return {};
+    const std::string stem(name);
+    if (!config_dir.empty()) {
+        const std::string user = config_dir + "/themes/" + stem + ".json";
+        if (std::filesystem::exists(user)) return user;
+    }
+    // Prefer a live ARBITER_THEMES_DIR / share overlay when present so
+    // developers can edit themes/*.json without rebuilding.  Embedded
+    // JSON is the fallback (and the only source for release binaries).
+    const std::string dir = bundled_themes_dir();
+    if (!dir.empty()) {
+        const std::string bundled = dir + "/" + stem + ".json";
+        if (std::filesystem::exists(bundled)) return bundled;
+    }
+    return {};
+}
+
+// Load a theme document by name: user file → filesystem bundled → embedded.
+std::shared_ptr<JsonValue> load_theme_document(const std::string& config_dir,
+                                               std::string_view name) {
+    if (name.empty()) return nullptr;
+    const std::string path = resolve_theme_path(config_dir, name);
+    if (!path.empty()) {
+        if (auto root = parse_json_file(path)) return root;
+    }
+    if (const char* json = embedded_theme_json(std::string(name))) {
+        try {
+            return json_parse(json);
+        } catch (...) {
+            return nullptr;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<std::string> list_bundled_theme_names() {
+    // Embedded table is the canonical built-in set.  Merge any extra
+    // stems found on disk (ARBITER_THEMES_DIR / share) so a developer
+    // can drop a new JSON without rebuilding.
+    std::vector<std::string> out = embedded_theme_names();
+    const std::string dir = bundled_themes_dir();
+    if (!dir.empty() && std::filesystem::is_directory(dir)) {
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+            if (!entry.is_regular_file()) continue;
+            if (entry.path().extension() != ".json") continue;
+            out.push_back(entry.path().stem().string());
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
 
 void apply_color_overrides(TuiDesign& d, const JsonValue& root) {
     color(root, "bg", "base", d.bg.base);
@@ -588,15 +618,12 @@ std::string resolve_config_relative_path(const std::string& config_dir,
 
 TuiDesign default_design() {
     TuiDesign d;
-    const std::string path = resolve_theme_path("", kDefaultTuiPreset);
-    if (!path.empty()) {
-        if (auto root = parse_json_file(path)) {
-            const ChromeSnapshot before = capture_chrome(d);
-            apply_color_overrides(d, *root);
-            apply_layout_component_overrides(d, *root);
-            derive_unset_code_syntax_colors(d.content);
-            finalize_panel_surfaces(d, root.get(), &before);
-        }
+    if (auto root = load_theme_document("", kDefaultTuiPreset)) {
+        const ChromeSnapshot before = capture_chrome(d);
+        apply_color_overrides(d, *root);
+        apply_layout_component_overrides(d, *root);
+        derive_unset_code_syntax_colors(d.content);
+        finalize_panel_surfaces(d, root.get(), &before);
     } else {
         derive_unset_code_syntax_colors(d.content);
         finalize_panel_surfaces(d, nullptr, nullptr);
@@ -611,11 +638,8 @@ void apply_theme_document(TuiDesign& d,
     if (depth > 8) return;
     const std::string preset = doc.get_string("preset", "");
     if (!preset.empty()) {
-        const std::string base_path = resolve_theme_path(config_dir, preset);
-        if (!base_path.empty()) {
-            if (auto nested = parse_json_file(base_path)) {
-                apply_theme_document(d, *nested, config_dir, depth + 1);
-            }
+        if (auto nested = load_theme_document(config_dir, preset)) {
+            apply_theme_document(d, *nested, config_dir, depth + 1);
         }
     }
     const ChromeSnapshot before = capture_chrome(d);
@@ -645,9 +669,9 @@ bool resolve_and_apply_theme(TuiDesign& d,
         return apply_theme_from_path(d, as_path, config_dir);
     }
 
-    const std::string theme_path = resolve_theme_path(config_dir, name);
-    if (!theme_path.empty()) {
-        return apply_theme_from_path(d, theme_path, config_dir);
+    if (auto root = load_theme_document(config_dir, name)) {
+        apply_theme_document(d, *root, config_dir);
+        return true;
     }
     return false;
 }
@@ -861,8 +885,11 @@ std::vector<std::string> tui_builtin_presets() {
 }
 
 bool tui_preset_is_valid(std::string_view name) {
-    const std::string bundled = bundled_themes_dir() + "/" + std::string(name) + ".json";
-    return std::filesystem::exists(bundled);
+    if (name.empty()) return false;
+    if (embedded_theme_json(std::string(name))) return true;
+    const std::string dir = bundled_themes_dir();
+    if (dir.empty()) return false;
+    return std::filesystem::exists(dir + "/" + std::string(name) + ".json");
 }
 
 TuiDesign tui_design_for_preset(std::string_view preset) {
@@ -965,10 +992,23 @@ std::string tui_bundled_themes_dir() {
 }
 
 void tui_install_bundled_themes(const std::string& config_dir, bool force) {
-    const std::string src = bundled_themes_dir();
     const std::string dest = tui_themes_dir(config_dir);
-    if (src.empty() || !std::filesystem::is_directory(src)) return;
     std::filesystem::create_directories(dest);
+
+    // Prefer writing from the embedded table so `--init` works for
+    // single-binary installs with no share/arbiter/themes tree.
+    for (const auto& [id, json] : theme_json_table()) {
+        const auto out = std::filesystem::path(dest) / (id + ".json");
+        if (!force && std::filesystem::exists(out)) continue;
+        std::ofstream ofs(out);
+        if (!ofs) continue;
+        ofs << json << '\n';
+    }
+
+    // Copy any extra on-disk themes (ARBITER_THEMES_DIR / share overlay)
+    // that aren't in the embedded set — keeps live-edited JSON installable.
+    const std::string src = bundled_themes_dir();
+    if (src.empty() || !std::filesystem::is_directory(src)) return;
     for (const auto& entry : std::filesystem::directory_iterator(src)) {
         if (!entry.is_regular_file()) continue;
         if (entry.path().extension() != ".json") continue;

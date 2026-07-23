@@ -1820,7 +1820,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                            "\nConfig (~/.arbiter/tui.json):\n"
                            "  { \"preset\": \"nord\" }   or   { \"theme_file\": \"themes/mine.json\" }\n"
                            "Override any token with bg/text/accent/border/content groups (#RRGGBB).\n"
-                           "Export a starter: arbiter --export-theme onedark > ~/.arbiter/themes/mine.json";
+                           "Export a starter: arbiter --export-theme high-contrast > ~/.arbiter/themes/mine.json";
                     push_status(out.str());
                     return;
                 }
@@ -3280,9 +3280,9 @@ int main(int argc, char* argv[]) {
                 "  arbiter [--theme PRESET]           Interactive REPL\n"
                 "  arbiter --no-exec [--theme PRESET] Interactive REPL with /exec disabled\n"
                 "                                     (agents cannot run shell commands)\n"
-                "                                     --theme: onedark (default), modern, nord,\n"
-                "                                     dracula, solarized, light, gruvbox,\n"
-                "                                     catppuccin, tokyo-night, monokai, …\n"
+                "                                     --theme: high-contrast (default), onedark,\n"
+                "                                     modern, nord, dracula, solarized, light,\n"
+                "                                     gruvbox, catppuccin, tokyo-night, …\n"
                 "                                     (/theme list for all presets)\n"
                 "  arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]\n"
                 "                                     HTTP+SSE orchestration API (default 127.0.0.1:8080).\n"
