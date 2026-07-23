@@ -108,30 +108,64 @@ export function extractTitle(markdown) {
 
 export function extractDescription(markdown, fallback) {
   const lines = markdown.replace(/\r\n/g, '\n').split('\n')
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (
-      !trimmed ||
-      trimmed.startsWith('#') ||
-      trimmed.startsWith('```') ||
-      trimmed.startsWith('|') ||
-      trimmed.startsWith('>') ||
-      trimmed.startsWith('-') ||
-      /^\d+\./.test(trimmed)
-    ) {
-      continue
-    }
-    const plain = trimmed
+  let inFence = false
+  const paragraphs = []
+  let current = []
+
+  const flush = () => {
+    if (!current.length) return
+    const plain = current
+      .join(' ')
       .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
       .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
       .replace(/[`*_]/g, '')
       .replace(/\s+/g, ' ')
       .trim()
-    if (plain.length > 40) {
-      return plain.slice(0, 180).replace(/\s+\S*$/, '') + (plain.length > 180 ? '…' : '')
+    current = []
+    if (
+      plain.length >= 40 &&
+      !/^https?:\/\//i.test(plain) &&
+      !/^[A-Z][A-Za-z0-9_./:-]*\s+[-|]/.test(plain)
+    ) {
+      paragraphs.push(plain)
     }
   }
-  return `Arbiter documentation: ${fallback}`
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('```')) {
+      flush()
+      inFence = !inFence
+      continue
+    }
+    if (inFence) continue
+    if (
+      !trimmed ||
+      trimmed.startsWith('#') ||
+      trimmed.startsWith('|') ||
+      trimmed.startsWith('>') ||
+      trimmed.startsWith('-') ||
+      trimmed.startsWith('*') ||
+      /^\d+\./.test(trimmed) ||
+      /^\*\*[A-Za-z][^:*]*:\*\*/.test(trimmed)
+    ) {
+      flush()
+      continue
+    }
+    current.push(trimmed)
+  }
+  flush()
+
+  const plain = paragraphs[0]
+  if (!plain) {
+    const cleanFallback = String(fallback ?? '')
+      .replace(/`/g, '')
+      .trim()
+    return `Arbiter documentation for ${cleanFallback}.`
+  }
+  if (plain.length <= 160) return plain
+  const clipped = plain.slice(0, 157).replace(/\s+\S*$/, '').replace(/[,:;–—-]\s*$/, '')
+  return `${clipped}…`
 }
 
 export function extractToc(markdown) {

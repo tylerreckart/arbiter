@@ -134,8 +134,15 @@ export function buildDocsIndexCards(docs) {
 
 export function buildBreadcrumbs(doc) {
   const section = sectionLabels[doc.section] ?? titleCase(doc.section)
-  if (isSectionIndex(doc)) return section
-  return `${section} / ${displayTitle(doc.title)}`
+  const sectionHref = `/docs/${doc.section}/`
+  const crumbs = [
+    { href: '/docs/', label: 'Docs' },
+    { href: sectionHref, label: section },
+  ]
+  if (!isSectionIndex(doc)) {
+    crumbs.push({ href: doc.href, label: displayTitle(doc.title) })
+  }
+  return crumbs
 }
 
 export function buildSectionNeighbors(docs, doc) {

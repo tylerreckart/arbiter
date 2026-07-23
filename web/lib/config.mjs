@@ -55,7 +55,6 @@ export const sectionLabels = {
 }
 
 export const assetAllowlist = new Set([
-  'terminal.jpg',
-  'themes.jpg',
+  'og_image.jpg',
   'vesper.jpg',
 ])

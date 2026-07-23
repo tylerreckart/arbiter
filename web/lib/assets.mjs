@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { assetAllowlist, assetsPath, dist, siteOrigin } from './config.mjs'
+import { renderLlmsTxt } from './seo.mjs'
 
 export async function writeFile(relativePath, contents) {
   const target = path.join(dist, relativePath)
@@ -37,14 +38,43 @@ export async function writeFavicon() {
 }
 
 export function renderSitemap(docs) {
-  const urls = ['/', '/docs/', ...docs.map((doc) => doc.href)]
+  const today = new Date().toISOString().slice(0, 10)
+  const entries = [
+    { loc: '/', lastmod: today, changefreq: 'weekly', priority: '1.0' },
+    { loc: '/docs/', lastmod: today, changefreq: 'weekly', priority: '0.9' },
+    ...docs.map((doc) => ({
+      loc: doc.href,
+      lastmod: doc.lastmod ?? today,
+      changefreq: 'monthly',
+      priority: doc.relative.endsWith('/index.md') || !doc.relative.includes('/') ? '0.8' : '0.6',
+    })),
+  ]
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map((url) => `  <url><loc>${siteOrigin}${url}</loc></url>`).join('\n')}
+${entries
+  .map(
+    (entry) => `  <url>
+    <loc>${siteOrigin}${entry.loc}</loc>
+    <lastmod>${entry.lastmod}</lastmod>
+    <changefreq>${entry.changefreq}</changefreq>
+    <priority>${entry.priority}</priority>
+  </url>`,
+  )
+  .join('\n')}
 </urlset>
 `
 }
 
 export function renderRobots() {
-  return `User-agent: *\nAllow: /\nSitemap: ${siteOrigin}/sitemap.xml\n`
+  return `User-agent: *
+Allow: /
+Disallow: /docs/search-index.json
+
+Sitemap: ${siteOrigin}/sitemap.xml
+`
+}
+
+export function renderLlms(docs) {
+  return renderLlmsTxt(docs)
 }

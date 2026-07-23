@@ -12,6 +12,7 @@ export async function readDocs(base) {
   for (const file of markdownFiles) {
     const relative = slash(path.relative(base, file))
     const source = await fs.readFile(file, 'utf8')
+    const stat = await fs.stat(file)
     const title = extractTitle(source) ?? titleFromSlug(relative)
     const description = extractDescription(source, title)
     const slug = relative.replace(/\.md$/, '').replace(/\/index$/, '')
@@ -20,6 +21,7 @@ export async function readDocs(base) {
     docs.push({
       description,
       href,
+      lastmod: stat.mtime.toISOString().slice(0, 10),
       outputPath: `docs/${slug}/index.html`,
       relative,
       section,
