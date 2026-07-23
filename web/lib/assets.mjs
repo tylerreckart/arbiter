@@ -31,8 +31,7 @@ const brandMarkPath =
 
 export async function writeFavicon() {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
-  <rect width="64" height="64" fill="#0b0b0b"/>
-  <path fill="#f15a22" d="${brandMarkPath}"/>
+  <path fill="#fff" d="${brandMarkPath}"/>
 </svg>`
   await writeFile('favicon.svg', svg)
 }

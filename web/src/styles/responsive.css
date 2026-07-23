@@ -67,7 +67,7 @@
 
 @media (max-width: 640px) {
   :root {
-    --gutter: 16px;
+    --gutter: 20px;
   }
 
   .nav {
@@ -96,16 +96,32 @@
     padding-right: 16px;
   }
 
-  .hero-inner {
+  .hero-stage {
     min-height: 0;
+    padding: calc(var(--chrome-clearance) + 20px) 0 120px;
   }
 
-  .hero-stage {
+  .hero-inner {
+    gap: 32px;
     min-height: 0;
   }
 
   .hero .brand-lockup {
     font-size: clamp(3.4rem, 18vw, 5.5rem);
+    margin-bottom: 14px;
+  }
+
+  .hero-title {
+    margin-bottom: 12px;
+  }
+
+  .hero-lede {
+    margin-bottom: 22px;
+  }
+
+  .hero-actions,
+  .link-row {
+    gap: 14px 20px;
   }
 
   .install-callout {
@@ -122,7 +138,56 @@
   }
 
   .hero-bridge {
-    margin-top: -96px;
+    margin-top: -72px;
+  }
+
+  .hero-bridge + .section {
+    padding-top: 72px;
+  }
+
+  .section {
+    padding: 64px 0;
+  }
+
+  .reveal-section {
+    padding: 48px 0 64px;
+  }
+
+  .surface-list article,
+  .trust-grid article {
+    padding: 24px 0;
+  }
+
+  .trust-section {
+    padding: 64px 0;
+  }
+
+  .trust-section h2 {
+    margin-bottom: 28px;
+  }
+
+  .install-section {
+    padding: 64px 0 72px;
+  }
+
+  .surfaces-heading {
+    margin-bottom: 32px;
+  }
+
+  .rule-list {
+    margin-top: 28px;
+  }
+
+  .rule-row {
+    padding: 24px 0;
+  }
+
+  .direct-download {
+    margin-top: 32px;
+  }
+
+  .first-prompt {
+    margin-top: 32px;
   }
 
   .docs-index-card {
