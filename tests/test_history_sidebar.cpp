@@ -141,6 +141,48 @@ TEST_CASE("rename/delete are no-ops on the '+ New conversation' row") {
     CHECK_FALSE(sidebar.snapshot().renaming);
     CHECK(sidebar.handle_key('d', 0, "") == HistorySidebarKey::None);
     CHECK_FALSE(sidebar.snapshot().confirming_delete);
+    CHECK(sidebar.handle_key('m', 0, "") == HistorySidebarKey::None);
+    CHECK_FALSE(sidebar.snapshot().menu_open);
+}
+
+TEST_CASE("menu: m opens Open/Rename/Delete; Enter commits; Esc cancels") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    HistorySidebarState sidebar;
+    sidebar.enter_focus(store, store.active_id());
+
+    CHECK(sidebar.handle_key('m', 0, "") == HistorySidebarKey::MenuOpen);
+    auto snap = sidebar.snapshot();
+    CHECK(snap.menu_open);
+    CHECK(snap.menu_index == 0);
+
+    // Down moves highlight to Rename; Esc cancels without acting.
+    CHECK(sidebar.handle_key('j', 0, "") == HistorySidebarKey::None);
+    CHECK(sidebar.snapshot().menu_index == 1);
+    CHECK(sidebar.handle_key(0x1B, 0, "") == HistorySidebarKey::None);
+    CHECK_FALSE(sidebar.snapshot().menu_open);
+
+    // Re-open and commit Open (default highlight).
+    CHECK(sidebar.handle_key('m', 0, "") == HistorySidebarKey::MenuOpen);
+    CHECK(sidebar.handle_key('\r', 0, "") == HistorySidebarKey::Enter);
+    CHECK_FALSE(sidebar.snapshot().menu_open);
+
+    // First-letter shortcut: r jumps to rename.
+    CHECK(sidebar.handle_key('m', 0, "") == HistorySidebarKey::MenuOpen);
+    CHECK(sidebar.handle_key('r', 0, "") == HistorySidebarKey::RenameStart);
+    CHECK(sidebar.snapshot().renaming);
+    CHECK_FALSE(sidebar.snapshot().menu_open);
+    sidebar.handle_key(0x1B, 0, "");   // cancel rename
+
+    // Menu → Delete lands in the same confirm step as a bare 'd'.
+    CHECK(sidebar.handle_key('m', 0, "") == HistorySidebarKey::MenuOpen);
+    CHECK(sidebar.handle_key('d', 0, "") == HistorySidebarKey::DeleteStart);
+    CHECK(sidebar.snapshot().confirming_delete);
+    CHECK_FALSE(sidebar.snapshot().menu_open);
+    CHECK(sidebar.handle_key('y', 0, "") == HistorySidebarKey::DeleteConfirmed);
+
+    fs::remove_all(dir);
 }
 
 TEST_CASE("'/' filters entries; Enter commits; Esc clears") {
