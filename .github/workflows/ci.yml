@@ -3,7 +3,10 @@ name: CI
 # Build + test on every PR and every push to main.  Mirrors the release
 # matrix so anything that breaks in release.yml is caught here first.
 # Also runs Linux-only AddressSanitizer and ThreadSanitizer legs that
-# flip the existing ARBITER_ASAN / ARBITER_TSAN CMake options.
+# flip the existing ARBITER_ASAN / ARBITER_TSAN CMake options, plus a
+# `portable_release` job that builds with the same Release configure /
+# package / smoke path as tag publishes (static OpenSSL + SDK curl on
+# macOS, same-directory OpenTUI RPATH).
 # Pull-request runs use the standard GITHUB_TOKEN with read-only perms;
 # no secrets needed.
 
@@ -192,3 +195,82 @@ jobs:
           path: build/Testing/Temporary/
           if-no-files-found: ignore
           retention-days: 7
+
+  # Release-shaped packaging without publishing.  Catches the failures that
+  # Debug CI misses: CURL::libcurl SDK .tbd / IMPORTED_LOCATION, static
+  # OpenSSL, missing libopentui in the tarball, and non-portable RPATHs.
+  # Shares `.github/scripts/portable_release.sh` with release.yml.
+  portable_release:
+    name: portable-release-${{ matrix.os_slug }}-${{ matrix.arch_slug }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs_on:   macos-14
+            os_slug:   macos
+            arch_slug: arm64
+          - runs_on:   ubuntu-22.04
+            os_slug:   linux
+            arch_slug: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euxo pipefail
+          brew update --quiet
+          brew install --formula openssl@3
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libssl-dev libcurl4-openssl-dev libsqlite3-dev
+
+      - name: Configure (release / portable)
+        run: |
+          set -euxo pipefail
+          chmod +x .github/scripts/portable_release.sh
+          .github/scripts/portable_release.sh configure build-release
+
+      - name: Build
+        run: cmake --build build-release --config Release -j "$(getconf _NPROCESSORS_ONLN)"
+
+      - name: Strip symbols
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            strip -S build-release/arbiter
+          else
+            strip --strip-unneeded build-release/arbiter
+          fi
+
+      - name: Stage + tarball
+        id: pkg
+        run: |
+          set -euxo pipefail
+          .github/scripts/portable_release.sh package build-release \
+            "${{ matrix.os_slug }}" "${{ matrix.arch_slug }}"
+
+      - name: Smoke test (portable extract + deps)
+        run: |
+          set -euxo pipefail
+          .github/scripts/portable_release.sh smoke \
+            "${{ steps.pkg.outputs.name }}" \
+            "${{ steps.pkg.outputs.opentui_lib }}"
+
+      - name: Upload packaging artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-${{ steps.pkg.outputs.name }}
+          path: |
+            ${{ steps.pkg.outputs.name }}.tar.gz
+            ${{ steps.pkg.outputs.name }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 3

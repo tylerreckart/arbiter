@@ -9,13 +9,21 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.8.6] — 2026-07-23
 
-Patch release: fix macOS release configure against system libcurl.
+Patch release: fix macOS release configure against system libcurl, and
+run the release packaging path on every PR.
 
 ### Fixed
 - **macOS release CURL::libcurl generate.** Point FindCURL at the SDK
   `libcurl.tbd` instead of `/usr/lib/libcurl.4.dylib` (dyld shared cache
   has no on-disk file, which left `IMPORTED_LOCATION` unset). Harden
   CMake to repair a missing curl import location.
+
+### Added
+- **PR portable-release CI.** `ci.yml` runs the same Release configure /
+  package / smoke path as tag publishes via
+  `.github/scripts/portable_release.sh` (macOS + Linux), so curl.tbd,
+  static OpenSSL, and OpenTUI RPATH regressions fail on the PR instead
+  of at tag time.
 
 ## [0.8.5] — 2026-07-23
 
