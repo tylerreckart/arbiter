@@ -56,7 +56,9 @@ elif ! release_assets_ready "$url"; then
   # A release can be published before its build workflow attaches binaries.
   # In that case, select the newest published release that has this platform
   # asset (and checksum) instead of leaving the stable install URL broken.
-  releases="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=10")"
+  # Don't let a transient API failure abort under `set -e` — fall through to
+  # the same "no published binary" error users already see.
+  releases="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=10" 2>/dev/null || true)"
   # GitHub may return compact single-line JSON; split before each tag_name
   # so line-oriented sed can extract every release tag.
   tags="$(
