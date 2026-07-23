@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.8.3 LANGUAGES CXX)
+project(arbiter VERSION 0.8.4 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -60,7 +60,10 @@ find_package(Threads REQUIRED)
 
 include(${CMAKE_SOURCE_DIR}/cmake/HomebrewHints.cmake)
 
-# OpenSSL / LibreSSL for TLS (1.1+ required; deprecated init APIs removed)
+# OpenSSL / LibreSSL for TLS (1.1+ required; deprecated init APIs removed).
+# Release builds on macOS pass -DOPENSSL_USE_STATIC_LIBS=TRUE so the
+# shipped binary does not depend on Homebrew's libssl/libcrypto dylibs
+# (see .github/workflows/release.yml).
 find_package(OpenSSL 1.1)
 if(NOT OpenSSL_FOUND)
     if(APPLE)
@@ -74,7 +77,15 @@ if(NOT OpenSSL_FOUND)
     endif()
 endif()
 
-# libcurl for safe HTTP fetching (no shell injection via popen)
+# Static OpenSSL pulls zlib; dynamic Homebrew OpenSSL already carries that
+# dependency via its dylib, so only add it when linking the .a archives.
+if(OPENSSL_USE_STATIC_LIBS)
+    find_package(ZLIB REQUIRED)
+endif()
+
+# libcurl for safe HTTP fetching (no shell injection via popen).
+# Prefer the platform curl (macOS system libcurl / distro libcurl) so
+# release binaries stay portable; do not auto-select Homebrew curl.
 find_package(CURL REQUIRED)
 
 # SQLite3 for the tenant + usage-accounting store backing `arbiter --api`.
@@ -216,6 +227,9 @@ target_link_libraries(arbiter PRIVATE
     CURL::libcurl
     SQLite3::SQLite3
 )
+if(OPENSSL_USE_STATIC_LIBS)
+    target_link_libraries(arbiter PRIVATE ZLIB::ZLIB)
+endif()
 
 target_sources(arbiter PRIVATE
     src/tui/opentui/engine.cpp
@@ -236,6 +250,22 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/pane_frame.cpp
 )
 target_link_libraries(arbiter PRIVATE OpenTUI::core)
+
+# OpenTUI ships as a shared library that must travel with the arbiter
+# binary.  Stage a copy next to the executable and use a same-directory
+# RPATH (@loader_path / $ORIGIN) so release tarballs and `install.sh`
+# do not bake the CI/build-tree absolute path into the Mach-O/ELF header
+# (that made runner smoke tests pass while installed copies failed).
+get_filename_component(ARBITER_OPENTUI_LIB_BASENAME
+    "${ARBITER_OPENTUI_LIBRARY}" NAME)
+add_custom_command(TARGET arbiter POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${ARBITER_OPENTUI_LIBRARY}"
+        "$<TARGET_FILE_DIR:arbiter>/${ARBITER_OPENTUI_LIB_BASENAME}"
+    COMMENT "Staging ${ARBITER_OPENTUI_LIB_BASENAME} next to arbiter"
+    VERBATIM
+)
+
 if(APPLE)
     target_link_libraries(arbiter PRIVATE
         "-framework CoreFoundation"
@@ -244,19 +274,22 @@ if(APPLE)
     )
     target_link_options(arbiter PRIVATE "-Wl,-ld_classic")
     set_target_properties(arbiter PROPERTIES
-        BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
-        INSTALL_RPATH "@executable_path/../lib/opentui"
+        BUILD_RPATH "@loader_path"
+        INSTALL_RPATH "@loader_path"
     )
 elseif(UNIX)
     target_link_libraries(arbiter PRIVATE dl pthread)
     set_target_properties(arbiter PROPERTIES
-        BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}"
-        INSTALL_RPATH "$ORIGIN/../lib/opentui"
+        BUILD_RPATH "$ORIGIN"
+        INSTALL_RPATH "$ORIGIN"
+        BUILD_RPATH_USE_ORIGIN TRUE
     )
 endif()
 
 # --- Install ---
 install(TARGETS arbiter RUNTIME DESTINATION bin)
+# Same-directory layout as the release tarball / curl|sh installer.
+install(FILES "${ARBITER_OPENTUI_LIBRARY}" DESTINATION bin)
 install(DIRECTORY agents/ DESTINATION share/arbiter/agents
         FILES_MATCHING PATTERN "*.json")
 install(DIRECTORY themes/ DESTINATION share/arbiter/themes

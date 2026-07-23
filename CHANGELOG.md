@@ -7,6 +7,19 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.4] — 2026-07-23
+
+Patch release: portable macOS/Linux release binaries so `curl | sh`
+installs work without Homebrew curl/openssl.
+
+### Fixed
+- **Portable macOS/Linux release binaries.** Release builds no longer
+  embed Homebrew (`/opt/homebrew/opt/curl`, `openssl@3`) or CI absolute
+  RPATHs. macOS links system libcurl and static OpenSSL; both platforms
+  ship `libopentui` next to `arbiter` with a same-directory RPATH.
+  `install.sh` installs the companion library. Fixes
+  `Library not loaded: .../libcurl.4.dylib` after `curl | sh` install.
+
 ## [0.8.3] — 2026-07-23
 
 Patch release: conversation sidebar action menu, the arbiter.run

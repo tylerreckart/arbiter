@@ -33,6 +33,11 @@ cmake -B build -DCMAKE_BUILD_TYPE=Debug \
     -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
 ```
 
+Use the system libcurl (default). Preferring Homebrew curl embeds
+`/opt/homebrew/opt/curl/...` into the binary and breaks machines that
+don't have that formula; only pass `-DCURL_ROOT="$(brew --prefix curl)"`
+if you intentionally want that for local development.
+
 ## Running
 
 The dev binary lands at `build/arbiter`.
