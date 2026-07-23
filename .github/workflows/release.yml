@@ -188,14 +188,22 @@ jobs:
               echo "portable check failed: non-portable RUNPATH/RPATH" >&2
               exit 1
             fi
-            # Same-directory resolution: no LD_LIBRARY_PATH needed.
+            # Same-directory resolution via $ORIGIN — no LD_LIBRARY_PATH.
+            # ldd prints the absolute resolved path, which will be under
+            # $SMOKE (and therefore often under /home/runner/work/_temp on
+            # GHA). That is expected; only reject "not found" or a resolve
+            # into the checkout build tree.
             ldd "$SMOKE/arbiter" | tee /tmp/arbiter-ldd.txt
             if grep -E 'libopentui\.so => not found' /tmp/arbiter-ldd.txt; then
               echo "portable check failed: libopentui.so not resolved from \$ORIGIN" >&2
               exit 1
             fi
-            if grep -E 'libopentui\.so => /home/runner' /tmp/arbiter-ldd.txt; then
-              echo "portable check failed: libopentui resolved via CI path" >&2
+            if ! grep -F "libopentui.so => ${SMOKE}/${OPENTUI_LIB}" /tmp/arbiter-ldd.txt; then
+              echo "portable check failed: libopentui.so did not resolve next to arbiter" >&2
+              exit 1
+            fi
+            if grep -E 'libopentui\.so => .*/build/' /tmp/arbiter-ldd.txt; then
+              echo "portable check failed: libopentui resolved via build-tree path" >&2
               exit 1
             fi
           fi
