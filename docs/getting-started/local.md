@@ -34,7 +34,9 @@ Pin a specific release:
 curl -fsSL https://arbiter.run/install.sh | ARBITER_VERSION=v0.8.2 sh
 ```
 
-**From source** (any platform with C++20)
+### From source
+
+Any platform with C++20:
 
 ```bash
 git clone https://github.com/tylerreckart/arbiter.git
