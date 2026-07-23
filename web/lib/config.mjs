@@ -30,7 +30,7 @@ export const assetsPath = path.join(repoRoot, 'assets')
 export const siteOrigin = 'https://arbiter.run'
 export const githubBlobBase = 'https://github.com/tylerreckart/arbiter/blob/main'
 export const installCommand = 'curl -fsSL https://arbiter.run/install.sh | sh'
-export const binaryRelease = 'v0.8.4'
+export const binaryRelease = 'v0.8.5'
 export const macDownloadUrl =
   `https://github.com/tylerreckart/arbiter/releases/download/${binaryRelease}/` +
   'arbiter-macos-arm64.tar.gz'
