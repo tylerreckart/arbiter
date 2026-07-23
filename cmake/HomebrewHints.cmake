@@ -37,11 +37,9 @@ if(NOT OPENSSL_ROOT_DIR)
     endforeach()
 endif()
 
-# libcurl from Homebrew when the system framework isn't visible to FindCURL.
-if(NOT CURL_ROOT AND NOT DEFINED ENV{CURL_ROOT})
-    _arbiter_brew_prefix("curl" _curl_prefix)
-    if(_curl_prefix AND EXISTS "${_curl_prefix}/include/curl/curl.h")
-        set(CURL_ROOT "${_curl_prefix}" CACHE PATH "libcurl root (Homebrew)" FORCE)
-        message(STATUS "Homebrew hint: CURL_ROOT=${CURL_ROOT}")
-    endif()
-endif()
+# Intentionally do NOT prefer Homebrew's keg-only curl here.
+# macOS ships a system libcurl that FindCURL resolves without help, and
+# release binaries must not embed `/opt/homebrew/opt/curl/...` load paths
+# (those only exist on machines with that Homebrew formula installed).
+# Developers who specifically want brew curl can still pass
+# -DCURL_ROOT="$(brew --prefix curl)" at configure time.
