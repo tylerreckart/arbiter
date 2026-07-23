@@ -19,11 +19,10 @@ run the release packaging path on every PR.
   CMake to repair a missing curl import location.
 
 ### Added
-- **PR portable-release CI.** `ci.yml` runs the same Release configure /
-  package / smoke path as tag publishes via
-  `.github/scripts/portable_release.sh` (macOS + Linux), so curl.tbd,
-  static OpenSSL, and OpenTUI RPATH regressions fail on the PR instead
-  of at tag time.
+- **PR portable packaging check.** After the existing Debug suite,
+  `build_and_test` runs `.github/scripts/portable_release.sh` (Release
+  reconfigure on macOS only; Linux reuses the Debug binary) so curl.tbd
+  / OpenTUI RPATH regressions fail on the PR without extra CI jobs.
 
 ## [0.8.5] — 2026-07-23
 
