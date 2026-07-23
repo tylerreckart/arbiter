@@ -75,7 +75,7 @@ If the chord byte doesn't match any of the above, it's silently dropped — the 
 | `↑` / `↓` | Move selection (`+ New conversation` at top, then prior threads newest-first). |
 | `j` / `k` | Vim-style aliases for down / up.                                             |
 | `Enter`   | Attach the selected conversation (or start a new one) to the **focused pane**. Sibling panes and the split layout are left alone. |
-| `m`       | Open an action menu on the selected conversation: **Open**, **Rename**, or **Delete**. `↑`/`↓` move; `Enter` commits; `Esc` (or `m` again) cancels. First-letter shortcuts (`o` / `r` / `d`) jump straight to that action. No-op on `+ New conversation`. |
+| `m`       | Open an action menu on the selected conversation: **Open**, **Rename**, or **Delete** (footer shows `m`). `↑`/`↓` move; `Enter` commits; `Esc` (or `m` again) cancels. First-letter shortcuts (`o` / `r` / `d`) jump straight to that action. No-op on `+ New conversation`. |
 | `r`       | Rename the selected conversation inline (Enter commits, Esc cancels).        |
 | `d`       | Soft-delete the selected conversation after a `Delete? [y/N]` confirm.       |
 | `n`       | Start a new conversation on the focused pane.                                |
