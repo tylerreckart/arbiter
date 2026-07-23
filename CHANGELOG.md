@@ -7,6 +7,35 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-07-23
+
+Patch release: conversation sidebar action menu, the arbiter.run
+marketing/docs site and installer, plus SEO and installer robustness
+fixes.
+
+### Added
+- **Conversation sidebar action menu.** Press `m` on a history row for
+  Open / Rename / Delete (first-letter shortcuts `o` / `r` / `d`);
+  documented vim `j`/`k`, rename, soft-delete, new conversation, and
+  type-to-filter bindings.
+- **arbiter.run web surface.** Marketing homepage and docs site with
+  Pug templates, direct macOS binary download, and an installer that
+  selects the newest published release with a compatible verified
+  binary.
+
+### Changed
+- **Site SEO.** Open Graph image, structured data, richer
+  sitemap/robots/llms.txt, and Google Analytics on every page.
+
+### Fixed
+- **Installer resilience.** Tag parsing from compact GitHub JSON;
+  GitHub releases API failures fall through to the no-binary path
+  instead of aborting under `set -e`.
+- **Docs search href escaping.** Attribute-escape and validate search
+  result hrefs before render/navigation.
+- **Sidebar focus hint length.** Menu footer stays within the PTY
+  focus-check trim budget so `/ filter` remains visible to tests.
+
 ## [0.8.2] — 2026-07-22
 
 Patch release: theme catalog growth with an interactive picker, denser
