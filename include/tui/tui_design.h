@@ -174,9 +174,11 @@ void load_tui_design(const std::string& config_dir,
 // Bumps when load_tui_design() completes — theme() uses this to invalidate cache.
 [[nodiscard]] std::uint32_t tui_design_generation();
 
-// Built-in themes ship as JSON in share/arbiter/themes (or ARBITER_THEMES_DIR at
-// build time). Set `"preset"` or `"theme_file"` in ~/.arbiter/tui.json.
-inline constexpr const char* kDefaultTuiPreset = "onedark";
+// Built-in themes are embedded from themes/*.json at build time (see
+// cmake/embed_themes.cmake). Set `"preset"` or `"theme_file"` in
+// ~/.arbiter/tui.json. ARBITER_THEMES_DIR still overlays the filesystem tree
+// for live editing during development.
+inline constexpr const char* kDefaultTuiPreset = "high-contrast";
 
 [[nodiscard]] std::string tui_bundled_themes_dir();
 [[nodiscard]] std::vector<std::string> tui_builtin_presets();

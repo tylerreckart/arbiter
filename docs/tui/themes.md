@@ -1,10 +1,16 @@
 # TUI theme JSON
 
-Themes are JSON documents — no colors are hard-coded in the binary. Built-in themes ship as `themes/*.json` (installed to `share/arbiter/themes/`; copied to `~/.arbiter/themes/` on `arbiter --init`). Your config file is `~/.arbiter/tui.json`; custom theme documents live in `~/.arbiter/themes/`.
+Themes are JSON documents. Built-in presets are **embedded into the binary**
+from `themes/*.json` at build time (same pattern as starter agents), so
+`curl | sh` installs and single-binary releases still have the full catalog.
+`arbiter --init` also writes them to `~/.arbiter/themes/` for editing. Your
+config file is `~/.arbiter/tui.json`; custom theme documents live in
+`~/.arbiter/themes/`. Set `ARBITER_THEMES_DIR` to overlay a filesystem tree
+during development without rebuilding.
 
 ## Quick start
 
-Pick a built-in preset:
+Pick a built-in preset (default is `high-contrast`):
 
 ```json
 {
@@ -27,7 +33,7 @@ Paths in `theme_file` are relative to `~/.arbiter/` unless absolute (or `~/…`)
 1. Export a built-in preset as a starting point:
 
 ```bash
-arbiter --export-theme onedark > ~/.arbiter/themes/mine.json
+arbiter --export-theme high-contrast > ~/.arbiter/themes/mine.json
 ```
 
 2. Edit colors (`#RRGGBB` hex). For a variant of an existing theme, add `"preset": "nord"` and only the keys you want to change; for a standalone theme, export a full file and edit it directly.
@@ -74,7 +80,7 @@ Example partial override on a preset (in `tui.json` or a theme file):
 
 ```json
 {
-  "preset": "onedark",
+  "preset": "high-contrast",
   "accent": { "primary": "#c678dd" },
   "content": {
     "heading": ["#61afef", "#c678dd", "#56b6c2", "#d19a66"]

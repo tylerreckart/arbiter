@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.8.6 LANGUAGES CXX)
+project(arbiter VERSION 0.8.7 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -230,8 +230,38 @@ add_custom_command(
 # Phony target so anything that needs the embedded header can depend on it.
 add_custom_target(starters_data_header DEPENDS ${STARTERS_GENERATED_HEADER})
 
+# --- Built-in TUI themes: embed themes/*.json into the binary ---------------
+# Release tarballs and `curl | sh` installs ship a single binary without
+# share/arbiter/themes.  Mirror the starters embed so `--init` and preset
+# loading work without a filesystem theme tree.  themes/*.json remain the
+# editable source of truth; ARBITER_THEMES_DIR still overlays for live edits.
+set(THEMES_GENERATED_HEADER "${STARTERS_GENERATED_DIR}/themes_data.h")
+file(GLOB THEME_JSON_INPUTS "${CMAKE_SOURCE_DIR}/themes/*.json")
+
+add_custom_command(
+    OUTPUT ${THEMES_GENERATED_HEADER}
+    COMMAND ${CMAKE_COMMAND}
+        -DTHEMES_DIR=${CMAKE_SOURCE_DIR}/themes
+        -DOUT_FILE=${THEMES_GENERATED_HEADER}
+        -P ${CMAKE_SOURCE_DIR}/cmake/embed_themes.cmake
+    DEPENDS
+        ${THEME_JSON_INPUTS}
+        ${CMAKE_SOURCE_DIR}/cmake/embed_themes.cmake
+    COMMENT "Embedding themes/*.json into themes_data.h"
+    VERBATIM
+)
+
+add_custom_target(themes_data_header DEPENDS ${THEMES_GENERATED_HEADER})
+
+# Targets that compile tui_design.cpp need the generated themes header.
+function(arbiter_use_embedded_themes target)
+    target_include_directories(${target} PRIVATE ${STARTERS_GENERATED_DIR})
+    add_dependencies(${target} themes_data_header)
+endfunction()
+
 add_executable(arbiter ${ARBITER_SOURCES})
 add_dependencies(arbiter starters_data_header)
+arbiter_use_embedded_themes(arbiter)
 target_include_directories(arbiter PRIVATE ${STARTERS_GENERATED_DIR})
 
 # Surface the project version to C++ (sidebar version label, etc.).
@@ -1182,4 +1212,22 @@ if(INDEX_BUILD_TESTS)
     )
     target_link_libraries(unit_advisor_gate PRIVATE CURL::libcurl)
     add_test(NAME unit_advisor_gate COMMAND unit_advisor_gate)
+
+    # tui_design.cpp includes themes_data.h — wire every unit target that
+    # compiles it to the embed generator (same header as the main binary).
+    foreach(_t
+        unit_commands
+        unit_markdown_diff
+        unit_code_highlighter
+        unit_tui_theme_json
+        unit_tool_indicator
+        unit_pane_scroll_segments
+        unit_history_sidebar
+        unit_conversation_store
+        unit_conversation_store_autosave
+        unit_conversation_titling
+        unit_message_replay_roundtrip
+    )
+        arbiter_use_embedded_themes(${_t})
+    endforeach()
 endif()

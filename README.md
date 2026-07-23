@@ -56,7 +56,7 @@ Deeper tradeoffs — why commands are inline rather than JSON tool-calling, why 
 export one as a starting point and edit hex values to make your own:
 
 ```bash
-arbiter --export-theme onedark > ~/.arbiter/themes/mine.json
+arbiter --export-theme high-contrast > ~/.arbiter/themes/mine.json
 ```
 
 ```

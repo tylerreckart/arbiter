@@ -7,6 +7,21 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.7] — 2026-07-23
+
+Patch release: embed built-in TUI themes in the binary and default to
+`high-contrast`.
+
+### Added
+- **Embedded themes.** `themes/*.json` are compiled into the binary via
+  `cmake/embed_themes.cmake` (same pattern as starter agents), so
+  single-binary / `curl | sh` installs still have the full preset
+  catalog. `--init` writes them from the embed table.
+
+### Changed
+- **Default TUI preset is `high-contrast`.** Replaces `onedark` as
+  `kDefaultTuiPreset` for new `tui.json` files and first-run design.
+
 ## [0.8.6] — 2026-07-23
 
 Patch release: fix macOS release configure against system libcurl, and
