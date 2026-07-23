@@ -90,7 +90,8 @@ Built-in presets:
 
 | Preset | Character |
 |--------|-----------|
-| `onedark` | **Default.** Atom OneDark — blue focus, warm code, green/red diffs. |
+| `high-contrast` | **Default.** High-contrast dark — white on black, saturated accents. |
+| `onedark` | Atom OneDark — blue focus, warm code, green/red diffs. |
 | `modern` | Neutral black chrome with warm orange accent. |
 | `nord` | Cool arctic blues and muted frost tones. |
 | `dracula` | Purple/pink/cyan on `#282a36`. |
@@ -126,7 +127,6 @@ Built-in presets:
 | `vesper` | Vesper — minimal black with peach and mint accents. |
 | `moonlight` | Moonlight — soft indigo panels with pastel syntax. |
 | `material` | Material Oceanic — blue-gray chrome, Material accents. |
-| `high-contrast` | High-contrast dark — white on black, saturated accents. |
 | `andromeda` | Andromeda — cyan/magenta pops on slate. |
 
 Pick a preset in `tui.json`:
