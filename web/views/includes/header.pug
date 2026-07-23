@@ -1,0 +1,15 @@
+header.site-header
+  nav.nav(aria-label="Main navigation")
+    a.brand(href="/" aria-label="Arbiter")
+      include /includes/brand-mark.pug
+    .nav-links
+      if variant === "docs"
+        a(href="/") Home
+        a(href="/docs/") Documentation
+        a(href="https://github.com/tylerreckart/arbiter") GitHub
+      else
+        a(href="#surfaces") Surfaces
+        a(href="#why") Why Arbiter
+        a(href="/docs/") Documentation
+        a(href="https://github.com/tylerreckart/arbiter") GitHub
+    a.button(href="/#install") Install

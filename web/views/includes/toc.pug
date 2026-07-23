@@ -1,0 +1,9 @@
+if toc && toc.length >= 3
+  nav.doc-toc(aria-label="On this page")
+    p On this page
+    each entry in toc
+      a(
+        class=entry.level === 3 ? "toc-h3" : undefined
+        href=`#${entry.id}`
+        data-toc-link=entry.id
+      )= entry.text

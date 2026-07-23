@@ -1,0 +1,30 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0b0b;
+  --bg-mute: #0b0b0b;
+  --ink: #f3efe8;
+  --muted: rgba(243, 239, 232, 0.64);
+  --line: rgba(243, 239, 232, 0.1);
+  --line-strong: rgba(243, 239, 232, 0.2);
+  --signal: #f15a22;
+  --signal-hover: #ff7a45;
+  --signal-ink: #0b0b0b;
+  --signal-soft: rgba(241, 90, 34, 0.14);
+  --panel: #111111;
+  --panel-raised: #1a1a1a;
+  --panel-line: rgba(243, 239, 232, 0.1);
+  --panel-fg: #f3efe8;
+  --panel-muted: #8a8680;
+  --code: rgba(243, 239, 232, 0.55);
+  --code-bg: rgba(243, 239, 232, 0.06);
+  --liquid-base: #0a0e27;
+  --max: 1240px;
+  --gutter: 24px;
+  --docs-side: 300px;
+  --header-offset: 0px;
+  --header-h: 64px;
+  --chrome-clearance: calc(var(--header-h) + 28px);
+  --font-display: "Syne", "Avenir Next", "Segoe UI", sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}

@@ -1,0 +1,150 @@
+@media (max-width: 920px) {
+  .feature,
+  .split-section,
+  .docs-shell,
+  .docs-main-inner,
+  .trust-grid,
+  .surface-list {
+    grid-template-columns: 1fr;
+  }
+
+  .trust-grid article,
+  .trust-grid article + article,
+  .surface-list article,
+  .surface-list article + article {
+    border-bottom: 1px solid var(--line);
+    border-right: 0;
+    padding: 20px 0;
+  }
+
+  .trust-grid article:last-child,
+  .surface-list article:last-child {
+    border-bottom: 0;
+  }
+
+  .rule-row {
+    grid-template-columns: 1fr;
+  }
+
+  .rule-row code {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .docs-sidebar {
+    border-bottom: 1px solid var(--panel-line);
+    border-right: 0;
+    max-height: none;
+    position: static;
+  }
+
+  .docs-nav {
+    border-top: 1px solid var(--panel-line);
+    max-height: 240px;
+    overflow: auto;
+  }
+
+  .docs-main {
+    padding: 24px 20px 72px;
+  }
+
+  .doc-toc {
+    display: none;
+  }
+
+  .docs-start-path li {
+    grid-template-columns: 1fr;
+  }
+
+  .docs-index-card {
+    grid-template-columns: 1fr auto;
+  }
+
+  .docs-index-blurb {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --gutter: 16px;
+  }
+
+  .nav {
+    padding: 0 var(--gutter);
+  }
+
+  body:not(.docs) .nav-links a:not(.button) {
+    display: none;
+  }
+
+  body.docs .nav {
+    max-width: none;
+  }
+
+  body.docs .nav-links {
+    gap: 0;
+  }
+
+  body.docs .nav-links a {
+    font-size: 0.78rem;
+    padding: 8px 6px;
+  }
+
+  .docs-main {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .hero-inner {
+    min-height: 0;
+  }
+
+  .hero-stage {
+    min-height: 0;
+  }
+
+  .hero .brand-lockup {
+    font-size: clamp(3.4rem, 18vw, 5.5rem);
+  }
+
+  .install-callout {
+    grid-template-columns: 1fr;
+  }
+
+  .install-step {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+
+  .install-step .button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .hero-bridge {
+    margin-top: -96px;
+  }
+
+  .docs-index-card {
+    gap: 6px 12px;
+    padding: 18px 0;
+  }
+
+  .docs-sections {
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 8px;
+  }
+
+  .doc-nav {
+    flex-direction: column;
+  }
+
+  .doc-nav a {
+    width: 100%;
+  }
+
+  .site-footer-inner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
