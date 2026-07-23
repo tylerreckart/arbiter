@@ -1,26 +1,54 @@
 -
   const canonical = `${siteOrigin}${canonicalPath || "/"}`
   const themeColor = "#0b0b0b"
-  const shareImage = `${siteOrigin}${ogImage || "/assets/terminal.jpg"}`
+  const shareImagePath = ogImage || defaultOgImage
+  const shareImage = `${siteOrigin}${shareImagePath}`
+  const shareImageAlt = ogImageAlt || defaultOgImageAlt
+  const shareWidth = ogImageWidth || defaultOgImageWidth
+  const shareHeight = ogImageHeight || defaultOgImageHeight
+  const pageType = ogType || (variant === "docs" ? "article" : "website")
+  const jsonLd = buildJsonLd({
+    breadcrumbs: breadcrumbs || null,
+    canonical,
+    description,
+    title,
+    variant,
+  })
 
 meta(charset="utf-8")
 meta(name="viewport" content="width=device-width, initial-scale=1")
 meta(name="description" content=description)
+meta(name="robots" content="index,follow,max-image-preview:large")
 meta(name="theme-color" content=themeColor)
+meta(name="color-scheme" content="dark")
 link(rel="canonical" href=canonical)
-meta(property="og:type" content="website")
+meta(property="og:type" content=pageType)
 meta(property="og:site_name" content="Arbiter")
+meta(property="og:locale" content="en_US")
 meta(property="og:title" content=title)
 meta(property="og:description" content=description)
 meta(property="og:url" content=canonical)
 meta(property="og:image" content=shareImage)
+meta(property="og:image:type" content="image/jpeg")
+meta(property="og:image:width" content=String(shareWidth))
+meta(property="og:image:height" content=String(shareHeight))
+meta(property="og:image:alt" content=shareImageAlt)
 meta(name="twitter:card" content="summary_large_image")
 meta(name="twitter:title" content=title)
 meta(name="twitter:description" content=description)
 meta(name="twitter:image" content=shareImage)
+meta(name="twitter:image:alt" content=shareImageAlt)
 title= title
 link(rel="icon" href="/favicon.svg" type="image/svg+xml")
+link(rel="apple-touch-icon" href="/favicon.svg")
 link(rel="preconnect" href="https://fonts.googleapis.com")
 link(rel="preconnect" href="https://fonts.gstatic.com" crossorigin)
 link(href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Syne:wght@500;600;700;800&display=swap" rel="stylesheet")
 link(rel="stylesheet" href="/styles.css")
+script(type="application/ld+json")!= JSON.stringify(jsonLd)
+script(async src="https://www.googletagmanager.com/gtag/js?id=G-MZEX86EKHZ")
+script.
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-MZEX86EKHZ');

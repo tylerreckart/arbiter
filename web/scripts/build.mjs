@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   copyAssets,
+  renderLlms,
   renderRobots,
   renderSitemap,
   writeFavicon,
@@ -33,6 +34,12 @@ import {
   buildTitleMap,
 } from '../lib/navigation.mjs'
 import { renderPage } from '../lib/render.mjs'
+import {
+  defaultOgImage,
+  defaultOgImageAlt,
+  defaultOgImageHeight,
+  defaultOgImageWidth,
+} from '../lib/seo.mjs'
 import { writeStyles } from '../lib/styles.mjs'
 
 const buildScript = fileURLToPath(import.meta.url)
@@ -78,7 +85,10 @@ await writeFile(
     installCommand,
     installerHref,
     macDownloadUrl,
-    ogImage: '/assets/terminal.jpg',
+    ogImage: defaultOgImage,
+    ogImageAlt: defaultOgImageAlt,
+    ogImageHeight: defaultOgImageHeight,
+    ogImageWidth: defaultOgImageWidth,
     philosophyHref: docs.find((doc) => doc.relative === 'philosophy.md')?.href ?? '/docs/',
     title: 'Arbiter — the agent runtime that lives on your machine',
     variant: 'marketing',
@@ -91,6 +101,10 @@ await writeFile(
     cards: buildDocsIndexCards(docs),
     canonicalPath: '/docs/',
     description: 'Install, operate, and extend the Arbiter self-hosted agent runtime.',
+    ogImage: defaultOgImage,
+    ogImageAlt: defaultOgImageAlt,
+    ogImageHeight: defaultOgImageHeight,
+    ogImageWidth: defaultOgImageWidth,
     sidebar: buildSidebarModel(docs, { href: '/docs/', section: null }),
     title: 'Arbiter Documentation',
     variant: 'docs',
@@ -111,6 +125,10 @@ for (const doc of docs) {
       contentHtml: markdownToHtml(doc.source, doc, { titlesByHref }),
       description: doc.description,
       next,
+      ogImage: defaultOgImage,
+      ogImageAlt: defaultOgImageAlt,
+      ogImageHeight: defaultOgImageHeight,
+      ogImageWidth: defaultOgImageWidth,
       prev,
       sidebar: buildSidebarModel(docs, doc),
       title: `${titlesByHref.get(doc.href) ?? doc.title} — Arbiter Docs`,
@@ -122,6 +140,7 @@ for (const doc of docs) {
 
 await writeFile('robots.txt', renderRobots())
 await writeFile('sitemap.xml', renderSitemap(docs))
+await writeFile('llms.txt', renderLlms(docs))
 
 console.log(`Built ${docs.length + 2} pages into ${path.relative(repoRoot, dist)}`)
 
