@@ -89,6 +89,13 @@ body:not(.docs) .site-header {
   color: #0b0b0b;
 }
 
+/* Docs: span the full shell so brand/Install track the sidebar + content edges. */
+body.docs .nav {
+  max-width: none;
+  padding-left: 14px;
+  padding-right: 40px;
+}
+
 .button {
   align-items: center;
   background: var(--signal);

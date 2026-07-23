@@ -1,28 +1,46 @@
 aside.docs-sidebar(aria-label="Documentation")
   .docs-side-head
-    h2 Docs
-    .docs-section-tabs
-      each tab in sidebar.tabs
-        a(class=tab.active ? "active" : undefined href=tab.href)= tab.label
+    label.docs-search
+      span.visually-hidden Search documentation
+      input(
+        type="search"
+        placeholder="Search docs…"
+        autocomplete="off"
+        spellcheck="false"
+        data-docs-search
+      )
+    .docs-search-results(hidden data-docs-search-results role="listbox" aria-label="Search results")
+    nav.docs-sections(aria-label="Documentation sections")
+      each section in sidebar.sections
+        a.docs-section-link(
+          class=section.active ? "active" : undefined
+          href=section.href
+        )= section.label
   .docs-nav
     if sidebar.nav.kind === "api"
       .docs-group
         p.docs-group-title= sidebar.nav.title
         each link in sidebar.nav.topLevel
-          a.docs-link(class=link.active ? "active" : undefined href=link.href)= link.label
+          a.docs-link(
+            class=[link.active ? "active" : "", link.api ? "api" : ""].filter(Boolean).join(" ") || undefined
+            href=link.href
+          )= link.label
         each group in sidebar.nav.subgroups
           details.docs-subgroup(open=group.open || undefined)
             summary= group.label
             .docs-subgroup-body
               each link in group.links
-                a.docs-link(class=link.active ? "active" : undefined href=link.href)= link.label
+                a.docs-link(
+                  class=[link.active ? "active" : "", link.api ? "api" : ""].filter(Boolean).join(" ") || undefined
+                  href=link.href
+                )= link.label
     else if sidebar.nav.kind === "groups"
       each group in sidebar.nav.groups
         .docs-group
           p.docs-group-title= group.title
           each link in group.links
             a.docs-link(class=link.active ? "active" : undefined href=link.href)= link.label
-    else
+    else if sidebar.nav.kind === "list"
       .docs-group
         p.docs-group-title= sidebar.nav.title
         each link in sidebar.nav.links
