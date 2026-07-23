@@ -14,7 +14,15 @@ name: Build and publish release
 # as a stable URL in install scripts):
 #   arbiter-macos-arm64.tar.gz    (+ .sha256 sibling)
 #   arbiter-linux-x86_64.tar.gz   (+ .sha256)
-# Each tarball is flat: `arbiter` binary + LICENSE + README.md at the root.
+# Each tarball is flat: `arbiter` binary + `libopentui.*` + LICENSE +
+# README.md at the root.  OpenTUI is loaded via a same-directory RPATH
+# (@loader_path / $ORIGIN).
+#
+# macOS release binaries intentionally:
+#   - link the system libcurl (never Homebrew curl — that embeds
+#     /opt/homebrew/opt/curl/... and breaks machines without the formula)
+#   - statically link Homebrew openssl@3 so libssl/libcrypto dylibs are
+#     not required at runtime
 #
 # x86_64 macOS is intentionally NOT shipped as a separate slice.  GitHub
 # retired the `macos-13` Intel runner in Dec 2025; the remaining options
@@ -82,9 +90,20 @@ jobs:
 
       - name: Configure
         run: |
+          set -euxo pipefail
           EXTRA=""
           if [ "${{ runner.os }}" = "macOS" ]; then
-            EXTRA="-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)"
+            OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+            SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+            # System libcurl only — never Homebrew curl (portable install).
+            # Static OpenSSL so users do not need brew's libssl/libcrypto.
+            EXTRA="-DOPENSSL_ROOT_DIR=${OPENSSL_PREFIX}"
+            EXTRA="${EXTRA} -DOPENSSL_USE_STATIC_LIBS=TRUE"
+            EXTRA="${EXTRA} -DCURL_INCLUDE_DIR=${SDKROOT}/usr/include"
+            EXTRA="${EXTRA} -DCURL_LIBRARY=/usr/lib/libcurl.4.dylib"
+            # Keep pkg-config from preferring a Homebrew curl .pc if present.
+            export PKG_CONFIG_PATH="${OPENSSL_PREFIX}/lib/pkgconfig"
+            unset CURL_ROOT || true
           fi
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -108,10 +127,23 @@ jobs:
       - name: Stage + tarball
         id: pkg
         run: |
+          set -euxo pipefail
           NAME="arbiter-${{ matrix.os_slug }}-${{ matrix.arch_slug }}"
           STAGE="stage-${NAME}"
           mkdir -p "$STAGE"
           install -m 755 build/arbiter "$STAGE/arbiter"
+          # OpenTUI shared lib must sit next to the binary (@loader_path/$ORIGIN).
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            OPENTUI_LIB="libopentui.dylib"
+          else
+            OPENTUI_LIB="libopentui.so"
+          fi
+          if [ ! -f "build/${OPENTUI_LIB}" ]; then
+            echo "missing staged OpenTUI library: build/${OPENTUI_LIB}" >&2
+            ls -la build/ build/opentui/ >&2 || true
+            exit 1
+          fi
+          install -m 755 "build/${OPENTUI_LIB}" "$STAGE/${OPENTUI_LIB}"
           [ -f LICENSE ]   && cp LICENSE   "$STAGE/"
           [ -f README.md ] && cp README.md "$STAGE/"
           tar -C "$STAGE" -czf "${NAME}.tar.gz" .
@@ -123,13 +155,53 @@ jobs:
             shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
           fi
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "opentui_lib=${OPENTUI_LIB}" >> "$GITHUB_OUTPUT"
 
-      - name: Smoke test (extract + run --help)
+      - name: Smoke test (portable extract + deps)
         run: |
-          mkdir -p smoke
-          tar -xzf "${{ steps.pkg.outputs.name }}.tar.gz" -C smoke
-          ./smoke/arbiter --help > /dev/null
-          echo "smoke: --help exit 0"
+          set -euxo pipefail
+          NAME="${{ steps.pkg.outputs.name }}"
+          OPENTUI_LIB="${{ steps.pkg.outputs.opentui_lib }}"
+
+          # Extract outside the build tree so a baked-in CI absolute RPATH
+          # cannot accidentally satisfy libopentui and greenwash the test.
+          SMOKE="$(mktemp -d "${RUNNER_TEMP}/arbiter-smoke.XXXXXX")"
+          tar -xzf "${NAME}.tar.gz" -C "$SMOKE"
+          test -x "$SMOKE/arbiter"
+          test -f "$SMOKE/${OPENTUI_LIB}"
+
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            echo "otool -L:"
+            otool -L "$SMOKE/arbiter"
+            # Fail on Homebrew or runner-absolute dylib paths — those only
+            # resolve on the build machine.
+            if otool -L "$SMOKE/arbiter" | grep -E '/opt/homebrew|/usr/local/opt|/Users/runner'; then
+              echo "portable check failed: non-portable dylib load path" >&2
+              exit 1
+            fi
+            # OpenTUI must resolve via @rpath/@loader_path, not an abs path.
+            otool -L "$SMOKE/arbiter" | grep -E '@(loader_path|rpath)/libopentui\.dylib'
+          else
+            echo "readelf deps:"
+            readelf -d "$SMOKE/arbiter" | tee /tmp/arbiter-readelf.txt
+            if grep -E 'RPATH|RUNPATH' /tmp/arbiter-readelf.txt | grep -E '/home/runner|/opt/'; then
+              echo "portable check failed: non-portable RUNPATH/RPATH" >&2
+              exit 1
+            fi
+            # Same-directory resolution: no LD_LIBRARY_PATH needed.
+            ldd "$SMOKE/arbiter" | tee /tmp/arbiter-ldd.txt
+            if grep -E 'libopentui\.so => not found' /tmp/arbiter-ldd.txt; then
+              echo "portable check failed: libopentui.so not resolved from \$ORIGIN" >&2
+              exit 1
+            fi
+            if grep -E 'libopentui\.so => /home/runner' /tmp/arbiter-ldd.txt; then
+              echo "portable check failed: libopentui resolved via CI path" >&2
+              exit 1
+            fi
+          fi
+
+          "$SMOKE/arbiter" --help >/dev/null
+          echo "smoke: --help exit 0 (portable extract)"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

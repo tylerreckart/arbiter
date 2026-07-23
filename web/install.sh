@@ -125,5 +125,14 @@ fi
 $mkdir_cmd "$INSTALL_DIR"
 $install_cmd "$tmp/arbiter" "$INSTALL_DIR/arbiter"
 
+# OpenTUI shared library ships next to the binary (same-directory RPATH).
+# Older release tarballs may omit it; keep installing the binary anyway so
+# upgrades from a fixed release still work once republished.
+for lib in libopentui.dylib libopentui.so; do
+  if [ -f "$tmp/$lib" ]; then
+    $install_cmd "$tmp/$lib" "$INSTALL_DIR/$lib"
+  fi
+done
+
 echo "Installed arbiter to $INSTALL_DIR/arbiter"
 echo "Run: arbiter --init"
