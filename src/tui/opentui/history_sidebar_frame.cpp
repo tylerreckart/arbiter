@@ -3,6 +3,7 @@
 #include "styled_text.h"
 #include "tui/opentui/engine.h"
 #include "tui/opentui/rounded_box.h"
+#include "tui/sidebar_format.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
@@ -56,13 +57,6 @@ std::string trim_to_cells(std::string s, int max_cells) {
     return arbiter::trim_to_display_cols(std::move(s), max_cells);
 }
 
-std::string basename_hint(std::string_view path) {
-    if (path.empty()) return {};
-    const size_t pos = path.find_last_of('/');
-    if (pos == std::string_view::npos) return std::string(path);
-    return std::string(path.substr(pos + 1));
-}
-
 // "now" / "5m ago" / "2h ago" / "3d ago" / "Jun 12" (calendar date once it's
 // been more than a week, since "40d ago" stops being a useful at-a-glance
 // unit).
@@ -112,15 +106,20 @@ void draw_row(OpenTuiHandle frame,
               bool confirming,
               const TuiRgba& bg) {
     const TuiRgba& row_bg = selected ? d.accent.primary : bg;
-    const TuiRgba& title_fg = selected ? d.text.inverse : sc.body;
+    // Active (open) conversation: accent text, not a background fill.
+    const TuiRgba& title_fg = selected ? d.text.inverse
+                            : active   ? d.accent.primary
+                                       : sc.body;
     const TuiRgba& sub_fg = selected ? d.text.inverse : sc.label;
+    // Selection covers title + subtitle so inverse text stays readable.
+    const TuiRgba& sub_bg = selected ? row_bg : bg;
 
     if (selected) {
         fill_rect(frame,
                   static_cast<std::uint32_t>(x),
                   static_cast<std::uint32_t>(y),
                   static_cast<std::uint32_t>(w),
-                  1,
+                  static_cast<std::uint32_t>(kRowHeight),
                   row_bg);
     }
 
@@ -149,7 +148,7 @@ void draw_row(OpenTuiHandle frame,
                   static_cast<std::uint32_t>(y + 1),
                   trim_to_cells("Delete? [y/N]", w),
                   d.accent.error,
-                  bg,
+                  sub_bg,
                   kAttrBold);
     } else if (!subtitle.empty()) {
         draw_text(frame,
@@ -157,7 +156,7 @@ void draw_row(OpenTuiHandle frame,
                   static_cast<std::uint32_t>(y + 1),
                   trim_to_cells(std::string(subtitle), w),
                   sub_fg,
-                  bg);
+                  sub_bg);
     }
 }
 
@@ -185,7 +184,7 @@ void draw_hint_text(OpenTuiHandle frame,
                   cx,
                   y,
                   part,
-                  command ? d.text.primary : d.text.subtle,
+                  command ? d.text.primary : d.text.muted,
                   bg,
                   command ? kAttrBold : 0);
         cx += static_cast<std::uint32_t>(cell_width(part));
@@ -276,7 +275,7 @@ void draw_history_sidebar(OpenTuiHandle frame,
                   static_cast<std::uint32_t>(content_x),
                   static_cast<std::uint32_t>(y),
                   trim_to_cells(line, content_w),
-                  snap.filtering ? d.accent.primary : d.text.subtle,
+                  snap.filtering ? d.accent.primary : d.text.muted,
                   bg);
         y += 1;
     }
@@ -288,7 +287,7 @@ void draw_history_sidebar(OpenTuiHandle frame,
                   static_cast<std::uint32_t>(y + 1),
                   trim_to_cells(filtered ? "No matches" : "No conversations yet",
                                 content_w),
-                  d.text.subtle,
+                  d.text.muted,
                   bg);
     }
 
@@ -304,7 +303,11 @@ void draw_history_sidebar(OpenTuiHandle frame,
     for (const auto& e : snap.entries) {
         RowItem ri;
         ri.title = e.title.empty() ? "Untitled" : e.title;
-        ri.subtitle = relative_time(e.updated_at, now) + " · " + basename_hint(e.cwd);
+        ri.subtitle = relative_time(e.updated_at, now);
+        if (e.total_tokens > 0) {
+            ri.subtitle += " · " + format_token_count(e.total_tokens)
+                + (e.total_tokens == 1 ? " tok" : " toks");
+        }
         ri.conv_id = e.id;
         rows.push_back(std::move(ri));
     }

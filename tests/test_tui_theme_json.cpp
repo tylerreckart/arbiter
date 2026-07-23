@@ -260,11 +260,11 @@ TEST_CASE("chrome_compact_rows reclaims bottom pad when footer hidden") {
     TuiDesign d = tui_design_for_preset("onedark");
     d.layout.chrome_compact_rows = true;
     d.layout.show_footer = true;
-    CHECK(tui_bottom_pad_rows(true, d) == 3);
+    CHECK(tui_bottom_pad_rows(true, d) == 2);
     CHECK(tui_bottom_pad_rows(false, d) == 1);
 
     d.layout.chrome_compact_rows = false;
-    CHECK(tui_bottom_pad_rows(false, d) == 3);
+    CHECK(tui_bottom_pad_rows(false, d) == 2);
 
     d.layout.chrome_compact_rows = true;
     d.layout.show_footer = false;

@@ -93,7 +93,7 @@ These commands use the same dispatch path as agent tool calls during `/v1/orches
 
 | Command                        | Effect                                                              |
 |--------------------------------|---------------------------------------------------------------------|
-| `/theme [list\|`<name>`]` | Switch theme. Built-in presets or `~/.arbiter/themes/<name>.json`. `/theme save <name>` exports current colors; `/theme file <path>` loads a JSON file. See [themes.md](themes.md). |
+| `/theme` | Browse themes with ↑↓ live preview; Enter selects, Esc cancels. `/theme list`, `/theme <name>`, `/theme save <name>`, `/theme file <path>` also supported. See [themes.md](themes.md). |
 | `/verbose [on\|off]`           | Toggle raw `/cmd` line streaming. Off (default): tool-call lines are swallowed and replaced by the spinner on the mid-separator. On: every `/fetch`, `/exec`, `/agent`, `/mem` line lands in the scroll region as the agent emits it. |
 | `/help`                        | Print this command reference.                                       |
 | `/help <topic>`                | Detailed reference for one slash command (same text agents see).    |

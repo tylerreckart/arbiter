@@ -439,6 +439,12 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
 
     bind_viewport(tui, editor_w);
 
+    // EditBuffer defaults to a light-on-dark fg; pin theme primary so light
+    // presets stay readable.
+    if (const OpenTuiHandle tb = editBufferGetTextBuffer(edit_); tb != 0) {
+        textBufferSetDefaultFg(tb, d.text.primary.data());
+    }
+
     bufferDrawEditorView(frame, view_,
                          static_cast<int32_t>(ex),
                          static_cast<int32_t>(py));

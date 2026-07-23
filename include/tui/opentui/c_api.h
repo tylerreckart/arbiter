@@ -141,6 +141,11 @@ void editBufferMoveCursorRight(OpenTuiHandle edit);
 void editBufferSetText(OpenTuiHandle edit, const char* text, uint32_t text_len);
 void editBufferSetCursorByOffset(OpenTuiHandle edit, uint32_t offset);
 void editBufferGetText(OpenTuiHandle edit, uint8_t* out, uint32_t max_len);
+OpenTuiHandle editBufferGetTextBuffer(OpenTuiHandle edit);
+
+void textBufferSetDefaultFg(OpenTuiHandle buffer, const uint16_t* fg);
+void textBufferSetDefaultBg(OpenTuiHandle buffer, const uint16_t* bg);
+void textBufferResetDefaults(OpenTuiHandle buffer);
 
 OpenTuiHandle createEditorView(OpenTuiHandle edit,
                                uint32_t viewport_width,
