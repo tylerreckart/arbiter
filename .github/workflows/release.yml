@@ -25,9 +25,9 @@ name: Build and publish release
 #     not required at runtime
 #
 # Configure / package / smoke live in
-# `.github/scripts/portable_release.sh` and are also exercised on every
-# PR by the `portable_release` job in ci.yml — keep those in sync by
-# editing the script, not by duplicating flags here.
+# `.github/scripts/portable_release.sh`.  Tag publishes call it from
+# release.yml; PRs exercise it at the end of the existing
+# `build_and_test` job in ci.yml (no extra parallel CI legs).
 #
 # x86_64 macOS is intentionally NOT shipped as a separate slice.  GitHub
 # retired the `macos-13` Intel runner in Dec 2025; the remaining options
