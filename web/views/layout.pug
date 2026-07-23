@@ -9,3 +9,5 @@ html(lang="en")
       block content
     include /includes/footer.pug
     script(src="/site.js" defer)
+    if variant !== "docs"
+      script(type="module" src="/liquid-hero.js")

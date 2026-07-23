@@ -33,8 +33,8 @@ npm run serve
 | `scripts/dev.mjs` | Watch, rebuild, and live-reload server |
 | `lib/` | Docs discovery, Markdown, navigation models, assets |
 | `views/` | Pug templates (`layout`, pages, includes) |
-| `src/styles.css` | Visual system |
-| `src/site.js` | Install copy button |
+| `src/styles/` | Visual system (`tokens`, `base`, `chrome`, `marketing`, `docs`, `footer`, `responsive`) |
+| `src/site.js` | Install copy button + reveal motion |
 
 `install.sh` is copied to `dist/install.sh` during the build so the homepage can
 advertise:

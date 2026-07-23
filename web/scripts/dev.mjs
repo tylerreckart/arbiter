@@ -10,7 +10,8 @@ import {
   installPath,
   root,
   siteScriptPath,
-  stylesPath,
+  liquidHeroPath,
+  stylesDir,
   viewsRoot,
 } from '../lib/config.mjs'
 
@@ -28,8 +29,9 @@ let shuttingDown = false
 const watchPaths = [
   viewsRoot,
   path.join(root, 'lib'),
-  stylesPath,
+  stylesDir,
   siteScriptPath,
+  liquidHeroPath,
   installPath,
   docsRoot,
   assetsPath,

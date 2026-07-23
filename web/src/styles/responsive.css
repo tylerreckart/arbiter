@@ -1,0 +1,109 @@
+@media (max-width: 920px) {
+  .feature,
+  .split-section,
+  .docs-shell,
+  .docs-main-inner,
+  .trust-grid,
+  .surface-list {
+    grid-template-columns: 1fr;
+  }
+
+  .trust-grid article,
+  .trust-grid article + article,
+  .surface-list article,
+  .surface-list article + article {
+    border-bottom: 1px solid var(--line);
+    border-right: 0;
+    padding: 20px 0;
+  }
+
+  .trust-grid article:last-child,
+  .surface-list article:last-child {
+    border-bottom: 0;
+  }
+
+  .rule-row {
+    grid-template-columns: 1fr;
+  }
+
+  .rule-row code {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .docs-sidebar {
+    border-bottom: 1px solid var(--panel-line);
+    border-right: 0;
+    max-height: 300px;
+    position: static;
+  }
+
+  .doc-toc {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .nav {
+    padding: 0 10px 0 12px;
+  }
+
+  .nav-links a:not(.button) {
+    display: none;
+  }
+
+  .section,
+  .docs-main,
+  .trust-section,
+  .install-section {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .hero-inner {
+    min-height: 0;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .hero-stage {
+    min-height: 0;
+  }
+
+  .hero .brand-lockup {
+    font-size: clamp(3.4rem, 18vw, 5.5rem);
+  }
+
+  .install-callout {
+    grid-template-columns: 1fr;
+  }
+
+  .install-step {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+
+  .install-step .button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .flow-row {
+    align-items: flex-start;
+    flex-direction: column;
+    grid-template-columns: 1fr;
+  }
+
+  .doc-nav {
+    flex-direction: column;
+  }
+
+  .doc-nav a {
+    width: 100%;
+  }
+
+  .site-footer-inner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
