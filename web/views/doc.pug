@@ -3,10 +3,18 @@ extends layout.pug
 block content
   .docs-shell
     include /includes/docs-sidebar.pug
-    main.docs-main
+    .docs-main
       .docs-main-inner
         article.doc-shell
-          .breadcrumbs= breadcrumbs
+          if breadcrumbs && breadcrumbs.length
+            nav.breadcrumbs(aria-label="Breadcrumb")
+              ol
+                each crumb, index in breadcrumbs
+                  li
+                    if index < breadcrumbs.length - 1
+                      a(href=crumb.href)= crumb.label
+                    else
+                      span(aria-current="page")= crumb.label
           .doc-content!= contentHtml
           nav.doc-nav(aria-label="Documentation pagination")
             if prev
