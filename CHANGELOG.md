@@ -7,6 +7,26 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.6] — 2026-07-23
+
+Patch release: fix macOS release configure against system libcurl, and
+run the release packaging path on every PR.
+
+### Fixed
+- **macOS release CURL::libcurl generate.** Point FindCURL at the SDK
+  `libcurl.tbd` instead of `/usr/lib/libcurl.4.dylib` (dyld shared cache
+  has no on-disk file, which left `IMPORTED_LOCATION` unset). Harden
+  CMake to repair a missing curl import location.
+- **macOS portable smoke false positive.** `otool -L` prints the binary
+  path under `/Users/runner/...` before dependency lines; only scan
+  indented dylib entries for non-portable load paths.
+
+### Added
+- **PR portable packaging check.** After the existing Debug suite,
+  `build_and_test` runs `.github/scripts/portable_release.sh` (Release
+  reconfigure on macOS only; Linux reuses the Debug binary) so curl.tbd
+  / OpenTUI RPATH regressions fail on the PR without extra CI jobs.
+
 ## [0.8.5] — 2026-07-23
 
 Patch release: fix the Linux release smoke test so portable

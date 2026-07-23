@@ -4,6 +4,9 @@ name: CI
 # matrix so anything that breaks in release.yml is caught here first.
 # Also runs Linux-only AddressSanitizer and ThreadSanitizer legs that
 # flip the existing ARBITER_ASAN / ARBITER_TSAN CMake options.
+# After the Debug suite, `build_and_test` runs the shared portable
+# package/smoke script (Release reconfigure on macOS only) so curl.tbd /
+# OpenTUI RPATH regressions fail here without extra parallel jobs.
 # Pull-request runs use the standard GITHUB_TOKEN with read-only perms;
 # no secrets needed.
 
@@ -116,6 +119,45 @@ jobs:
           path: build/Testing/Temporary/
           if-no-files-found: ignore
           retention-days: 7
+
+      # Portable packaging checks share `.github/scripts/portable_release.sh`
+      # with release.yml.  Folded into this job (no extra matrix legs) so PR
+      # check UI stays at the existing OS + sanitizer set.
+      #
+      # macOS: Debug links Homebrew OpenSSL, so reconfigure Release with the
+      # real publish flags (SDK curl.tbd + static OpenSSL) before packaging.
+      # Linux: system libssl/libcurl match the published binary; reuse `build`.
+      - name: Portable release configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euxo pipefail
+          chmod +x .github/scripts/portable_release.sh
+          .github/scripts/portable_release.sh configure build-release
+
+      - name: Portable release build (macOS)
+        if: runner.os == 'macOS'
+        run: cmake --build build-release --config Release -j "$(getconf _NPROCESSORS_ONLN)"
+
+      - name: Portable package + smoke
+        run: |
+          set -euxo pipefail
+          chmod +x .github/scripts/portable_release.sh
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            PKG_BUILD=build-release
+            strip -S "${PKG_BUILD}/arbiter"
+          else
+            PKG_BUILD=build
+          fi
+          .github/scripts/portable_release.sh package "${PKG_BUILD}" \
+            "${{ matrix.os_slug }}" "${{ matrix.arch_slug }}"
+          # package writes name= / opentui_lib= to GITHUB_OUTPUT when set.
+          NAME="arbiter-${{ matrix.os_slug }}-${{ matrix.arch_slug }}"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            OPENTUI_LIB=libopentui.dylib
+          else
+            OPENTUI_LIB=libopentui.so
+          fi
+          .github/scripts/portable_release.sh smoke "${NAME}" "${OPENTUI_LIB}"
 
   # Sanitizer coverage is Linux-only.  macOS ASan cannot detect leaks
   # ("detect_leaks is not supported on this platform"), and ASan/TSan
