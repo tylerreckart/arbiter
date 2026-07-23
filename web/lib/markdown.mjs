@@ -246,7 +246,8 @@ function inline(value, ctx) {
 }
 
 function formatLinkLabel(label, resolvedHref, ctx) {
-  const plain = unescapeHtml(label).replace(/`/g, '').trim()
+  const raw = unescapeHtml(label)
+  const plain = raw.replace(/`/g, '').trim()
   if (looksLikeDocPath(plain)) {
     const baseHref = resolvedHref.split('#')[0]
     const normalized = baseHref.endsWith('/') ? baseHref : `${baseHref}/`
@@ -256,7 +257,15 @@ function formatLinkLabel(label, resolvedHref, ctx) {
     }
   }
 
-  return label.replace(/`([^`]+)`/g, '<code>$1</code>')
+  // Always escape label text; only inject <code> for backtick spans.
+  return raw
+    .split(/(`[^`]+`)/g)
+    .map((part) => {
+      const code = part.match(/^`([^`]+)`$/)
+      if (code) return `<code>${escapeHtml(code[1])}</code>`
+      return escapeHtml(part)
+    })
+    .join('')
 }
 
 function unescapeHtml(value) {
@@ -285,6 +294,9 @@ function resolveHref(href, doc) {
     if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed
     return '#'
   }
+
+  // Protocol-relative URLs (//evil.example) look like paths but leave the origin.
+  if (trimmed.startsWith('//')) return '#'
 
   if (trimmed.startsWith('#') || trimmed.startsWith('/')) return trimmed
 

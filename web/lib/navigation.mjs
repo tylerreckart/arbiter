@@ -139,7 +139,11 @@ export function buildBreadcrumbs(doc) {
 }
 
 export function buildSectionNeighbors(docs, doc) {
-  const sectionDocs = docs.filter((entry) => entry.section === doc.section)
+  // Walk docs in the same order the sidebar presents them.
+  const sectionDocs = orderedSectionDocs(
+    docs.filter((entry) => entry.section === doc.section),
+    doc.section,
+  )
   const index = sectionDocs.findIndex((entry) => entry.href === doc.href)
   if (index === -1) return { next: null, prev: null }
   return {
@@ -150,6 +154,68 @@ export function buildSectionNeighbors(docs, doc) {
       ? { href: sectionDocs[index - 1].href, title: displayTitle(sectionDocs[index - 1].title) }
       : null,
   }
+}
+
+function orderedSectionDocs(sectionDocs, section) {
+  if (section === 'concepts') return orderConceptDocs(sectionDocs)
+  if (section === 'api') return orderApiDocs(sectionDocs)
+  return sectionDocs
+}
+
+function orderConceptDocs(sectionDocs) {
+  const bySlug = new Map()
+  let overview = null
+
+  for (const doc of sectionDocs) {
+    if (doc.relative === 'concepts/index.md') {
+      overview = doc
+      continue
+    }
+    const slug = doc.relative.replace(/^concepts\//, '').replace(/\.md$/, '')
+    bySlug.set(slug, doc)
+  }
+
+  const ordered = []
+  if (overview) ordered.push(overview)
+
+  const used = new Set()
+  for (const group of conceptGroups) {
+    for (const slug of group.slugs) {
+      const doc = bySlug.get(slug)
+      if (!doc) continue
+      used.add(slug)
+      ordered.push(doc)
+    }
+  }
+
+  for (const [slug, doc] of [...bySlug.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (!used.has(slug)) ordered.push(doc)
+  }
+
+  return ordered
+}
+
+function orderApiDocs(sectionDocs) {
+  const subgroups = new Map()
+  const topLevel = []
+
+  for (const doc of sectionDocs) {
+    const parts = doc.relative.replace(/^api\//, '').split('/')
+    if (parts.length === 1) {
+      topLevel.push(doc)
+      continue
+    }
+    const key = parts[0]
+    const list = subgroups.get(key) ?? []
+    list.push(doc)
+    subgroups.set(key, list)
+  }
+
+  const ordered = [...topLevel]
+  for (const [, docsInGroup] of [...subgroups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    ordered.push(...docsInGroup)
+  }
+  return ordered
 }
 
 export function buildSearchIndex(docs) {

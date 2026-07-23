@@ -44,12 +44,18 @@ url="https://github.com/$REPO/releases/latest/download/$asset"
 archive="$tmp/$asset"
 version="${ARBITER_VERSION:-}"
 
+# Require both the archive and its .sha256 sidecar before selecting a release.
+# A tag can publish the tarball before checksums land (or vice versa).
+release_assets_ready() {
+  curl -fsIL "$1" >/dev/null 2>&1 && curl -fsIL "$1.sha256" >/dev/null 2>&1
+}
+
 if [ -n "$version" ]; then
   url="https://github.com/$REPO/releases/download/$version/$asset"
-elif ! curl -fsIL "$url" >/dev/null 2>&1; then
+elif ! release_assets_ready "$url"; then
   # A release can be published before its build workflow attaches binaries.
   # In that case, select the newest published release that has this platform
-  # asset instead of leaving the stable install URL broken.
+  # asset (and checksum) instead of leaving the stable install URL broken.
   releases="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=10")"
   tags="$(
     printf '%s\n' "$releases" |
@@ -58,10 +64,10 @@ elif ! curl -fsIL "$url" >/dev/null 2>&1; then
 
   for candidate in $tags; do
     candidate_url="https://github.com/$REPO/releases/download/$candidate/$asset"
-    if curl -fsIL "$candidate_url" >/dev/null 2>&1; then
+    if release_assets_ready "$candidate_url"; then
       version="$candidate"
       url="$candidate_url"
-      echo "Latest release has no $asset; using newest available binary: $version"
+      echo "Latest release has no complete $asset; using newest available binary: $version"
       break
     fi
   done
