@@ -77,6 +77,7 @@ and column breakpoints. Full reference in
 - [`docs/api/`](https://arbiter.run/docs/api) — HTTP API, tenants, SSE, MCP, A2A, memory
 - [`docs/cli/`](https://arbiter.run/docs/cli) — `--init`, `--send`, `--api`, env vars
 - [`docs/tui/`](https://arbiter.run/docs/tui) — panes, keybindings, themes, sessions
+- [`ROADMAP.md`](ROADMAP.md) — phased plan toward 1.0 readiness
 - [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md)
 
 Arbiter is experimental. The event surface, agent constitutions, and HTTP shape may change. `/exec` is unsandboxed by default; treat it accordingly.
