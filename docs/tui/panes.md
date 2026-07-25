@@ -15,7 +15,7 @@ Launching `arbiter` opens one pane covering the whole terminal, bound to the las
 
 Splits divide the focused pane's rect equally (or by drag-adjusted weights). The new pane inherits the focused pane's conversation (same buffer in a new window); switch with `/chat switch` or the history sidebar. New panes use the `index` master agent by default; change with `/use <agent>`.
 
-In multi-pane layouts the focused pane shows a compact chord hint (`^W w focus · ^W z zoom · ^W c close`); unfocused panes hide the hint. With the default `layout.chrome_compact_rows` theme setting, those rows are reclaimed for scrollback; set `"chrome_compact_rows": false` in `tui.json` / a theme file to keep blank placeholders so the input row does not shift.
+In multi-pane layouts the compact chord hint (`^W w focus · ^W z zoom · ^W c close`) paints on the focused column's outer-bottom pane (including when focus is mid-stack). Every pane on the layout's outer bottom keeps the same footer pad so column bottoms stay aligned; panes stacked above that edge use a single trailing pad so horizontal gutters stay uniform. With `layout.chrome_compact_rows` (the default), pad is reclaimed only when `show_footer` is off — set `"chrome_compact_rows": false` in `tui.json` / a theme file to keep blank placeholders when the footer is disabled.
 
 Splitting twice in the same orientation does **not** wrap a new node — the new sibling is appended to the existing split, so N panes share `1/N` each. Splitting in the other orientation wraps the focused leaf in a fresh 2-child node.
 
