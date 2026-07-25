@@ -7,6 +7,16 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Periodic conversation autosave.**  Dirty conversations flush on a
+  background timer (default 30s, `ARBITER_AUTOSAVE_INTERVAL_SEC`; `0`
+  disables the tick).  Post-turn `save_async` remains immediate.
+
+### Changed
+- **Multi-conversation autosave queue.**  `ConversationStore::save_async`
+  keeps a per-id pending slot so multi-pane turns do not drop each other's
+  saves.  `/reset` and `/compact` also queue an autosave.
+
 ## [0.8.7] — 2026-07-23
 
 Patch release: embed built-in TUI themes in the binary and default to
