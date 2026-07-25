@@ -1,11 +1,15 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace arbiter {
@@ -78,14 +82,27 @@ public:
     bool load(const std::string& id, Orchestrator& orch);
     void save(const std::string& id, Orchestrator& orch);
 
-    // Marshal a save onto the store's single background thread. A one-deep
-    // "latest wins" queue: if a save is already pending, this replaces it
-    // rather than piling up. Call after every completed turn so nothing is
-    // lost on crash; the blocking flush() below drains it on exit.
+    // Marshal a save onto the store's single background thread.  Per-id
+    // "latest wins": a burst of saves for the same conversation coalesces,
+    // but distinct conversation ids (multi-pane) each keep a pending slot.
+    // Call after every completed turn.  Also marks the id dirty for the
+    // periodic flusher.  `flush()` drains pending work on exit / search.
     void save_async(const std::string& id, Orchestrator& orch);
 
-    // Blocks until any pending/in-flight save_async() call has completed.
+    // Mark `id` dirty without immediately queueing a save.  The periodic
+    // worker will persist it on the next interval tick (and `save_async`
+    // still coalesces an immediate write when called).
+    void mark_dirty(const std::string& id, Orchestrator& orch);
+
+    // Blocks until any pending/in-flight autosave has completed.
     void flush();
+
+    // Autosave interval used by the background worker (0 = periodic off).
+    // Default 30s; override with ARBITER_AUTOSAVE_INTERVAL_SEC.
+    [[nodiscard]] static std::chrono::seconds autosave_interval_from_env();
+    [[nodiscard]] std::chrono::seconds autosave_interval() const {
+        return autosave_interval_;
+    }
 
     void set_active(const std::string& id);
 
@@ -154,6 +171,7 @@ private:
     void remove_and_reassign_active_unlocked(const std::string& id,
                                              bool delete_file);
     void save_worker_loop();
+    void autosave_timer_loop();
 
     struct TitleJob {
         std::string id;
@@ -171,16 +189,24 @@ private:
     std::string active_id_;
     std::vector<ConversationEntry> entries_;
 
-    // Background autosave: a single pending slot (not a real queue) so a
-    // burst of turn-completions coalesces into one save of the latest state.
+    // Background autosave: per-conversation pending map (latest orch wins
+    // per id) plus a dirty set for periodic ticks.  Shared orch pointer is
+    // the TUI's long-lived Orchestrator (same lifetime assumption as before).
+    // Periodic wakes come from autosave_timer_thread_ (chunked sleep + flag)
+    // so the save worker only uses condition_variable::wait — wait_for on
+    // this mutex races destructor/mark_dirty under Linux TSan.
     std::thread save_thread_;
+    std::thread autosave_timer_thread_;
     std::mutex async_mu_;
     std::condition_variable async_cv_;
-    bool pending_ = false;
     bool busy_ = false;
     bool stop_ = false;
-    std::string pending_id_;
-    Orchestrator* pending_orch_ = nullptr;
+    bool periodic_due_ = false;
+    std::atomic<bool> timer_stop_{false};
+    std::unordered_map<std::string, Orchestrator*> pending_saves_;
+    std::unordered_set<std::string> dirty_ids_;
+    Orchestrator* last_orch_ = nullptr;
+    std::chrono::seconds autosave_interval_{30};
 
     // Background titling: a real FIFO (unlike the autosave slot) since each
     // conversation's title job must run at most once, ever — dropping one

@@ -22,11 +22,13 @@ On first launch after upgrading, legacy per-cwd session files under `~/.arbiter/
 | Event             | What happens                                                       |
 |-------------------|--------------------------------------------------------------------|
 | `arbiter` startup | The last active conversation is loaded. Agent histories are restored before the first prompt. |
-| Switch conversation (`Ctrl-w b` → Enter) | Focused pane's conversation is saved; selected thread attaches to that pane only. Other panes and the split layout stay put. |
-| `/quit` / Ctrl-D  | Every distinct open-pane conversation is written to disk. Pane layout is **not** saved. |
-| `/reset [agent]`  | Clears the named (or focused) agent's history and compaction state in memory only. The next save snapshots the new state. |
+| After each completed turn | Background autosave (`save_async`) writes that pane's conversation. Distinct conversation ids (multi-pane) each keep a pending slot. |
+| Periodic tick | Dirty conversations are flushed every 30s by default (`ARBITER_AUTOSAVE_INTERVAL_SEC`; `0` disables the timer). |
+| `/reset` / `/compact` | History/compaction changes are queued for autosave immediately. |
+| Switch conversation (`Ctrl-w b` → Enter) | Focused pane's conversation is flushed and saved; selected thread attaches to that pane only. Other panes and the split layout stay put. |
+| `/quit` / Ctrl-D  | Pending autosaves drain, then every distinct open-pane conversation is written to disk. Pane layout is **not** saved. |
 
-Saves are not incremental — `/quit` and conversation switches write the full snapshot. A hard kill (`SIGKILL`, terminal close, power loss) loses any history accumulated since the last save.
+Saves write a full conversation snapshot (not an incremental journal). A hard kill (`SIGKILL`, terminal close, power loss) can still lose an **in-flight** turn; completed turns and dirty state older than the autosave interval should already be on disk.
 
 ## What's in a conversation file
 

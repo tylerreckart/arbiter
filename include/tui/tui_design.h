@@ -62,8 +62,11 @@ struct TuiDesign {
         bool show_footer = true;
         bool status_pill = true;
         bool show_history_sidebar = true;
-        // When true, reclaim the blank hint/pad rows in multi-pane (or when
-        // show_footer is false) so scroll gets the vertical space back.
+        // When true and show_footer is false, reclaim the blank hint/pad
+        // rows for scroll.  Outer-bottom panes keep a shared footer pad
+        // whenever the footer is enabled so multi-pane column bottoms stay
+        // aligned; stacked panes above the outer bottom always use a
+        // single trailing pad for uniform horizontal gutters.
         bool chrome_compact_rows = true;
         // SGR mouse tracking: click-to-focus, wheel scroll, drag-resize.
         // Set false in tui.json to keep keyboard-only input.
@@ -152,9 +155,14 @@ TuiRgba tui_rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b,
 // Soft input inner pad — follows the same compact/dense ramp as pane pad.
 [[nodiscard]] int tui_input_pad_x(int cols, const TuiDesign& d);
 
-// Rows reserved below the input block.  Full budget (3) when the footer
-// hint is shown; shrinks to 1 when chrome_compact_rows reclaims space.
-[[nodiscard]] int tui_bottom_pad_rows(bool footer_hint_visible, const TuiDesign& d);
+// Rows reserved below the input block.  Full budget (2) when the footer
+// hint is shown, or when reserve_footer_space keeps outer-bottom columns
+// aligned; shrinks to 1 when chrome_compact_rows reclaims space.
+[[nodiscard]] int tui_bottom_pad_rows(bool footer_hint_visible, const TuiDesign& d,
+                                      bool reserve_footer_space = false);
+
+// Bottom pad for sidebars / outer-bottom alignment (independent of focus).
+[[nodiscard]] int tui_outer_bottom_pad_rows(const TuiDesign& d);
 
 [[nodiscard]] SidebarColors tui_sidebar_colors(const TuiDesign& d);
 

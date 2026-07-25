@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <string>
 
 namespace arbiter {
@@ -81,6 +82,7 @@ LayoutTree::LayoutTree(std::unique_ptr<Pane> first, const Rect& bounds) {
     focused_ = root_->pane.get();
     bounds_ = bounds;
     compute_bounds(*root_, bounds);
+    apply_chrome_flags();
 }
 
 LayoutTree::~LayoutTree() = default;
@@ -125,22 +127,69 @@ void LayoutTree::compute_bounds(Node& n, const Rect& r) {
 }
 
 void LayoutTree::apply_chrome_flags() {
+    if (!root_) return;
     std::vector<Pane*> leaves;
     collect_leaves(*root_, leaves);
     const bool multi = leaves.size() > 1 || zoomed_ != nullptr;
-    for (auto* p : leaves) {
-        // Zoomed: only the zoomed pane is visible → Full hint.
-        // Multi: focused gets Compact chord hint; others Hidden (row reserved).
-        // Single: Full.
-        FooterHintMode mode = FooterHintMode::Full;
-        if (zoomed_) {
-            mode = (p == zoomed_) ? FooterHintMode::Full : FooterHintMode::Hidden;
-        } else if (multi) {
-            mode = (p == focused_) ? FooterHintMode::Compact : FooterHintMode::Hidden;
+    const int outer_bottom = bounds_.y + bounds_.h;
+
+    // Resolve the focused leaf's tree bounds so a mid-column focus can still
+    // host the compact hint on that column's outer-bottom pane.
+    Rect focused_bounds{};
+    bool have_focused_bounds = false;
+    std::function<void(const Node&)> find_focused = [&](const Node& n) {
+        if (have_focused_bounds) return;
+        if (n.is_leaf()) {
+            if (n.pane.get() == focused_) {
+                focused_bounds = n.bounds;
+                have_focused_bounds = true;
+            }
+            return;
         }
-        p->tui.set_footer_hint_mode(mode);
-        p->tui.set_focus_accent(multi && p == focused_);
-    }
+        for (const auto& child : n.children) find_focused(*child);
+    };
+    find_focused(*root_);
+
+    // Walk leaves with their node bounds so stacked panes above the outer
+    // bottom drop the footer pad (uniform horizontal gutters) while every
+    // outer-bottom pane keeps a shared pad for column alignment.
+    std::function<void(const Node&)> apply = [&](const Node& n) {
+        if (n.is_leaf()) {
+            Pane* p = n.pane.get();
+            // While zoomed, only the visible pane owns the outer bottom —
+            // off-screen siblings keep their tree slots but must not reserve
+            // sidebar/footer chrome against the zoomed input band.
+            const bool on_bottom = zoomed_
+                ? (p == zoomed_)
+                : ((n.bounds.y + n.bounds.h) == outer_bottom);
+            p->tui.set_outer_bottom(on_bottom);
+
+            // Zoomed: only the zoomed pane is visible → Full hint.
+            // Multi: Compact chord hint on the focused pane when it sits on
+            // the outer bottom; if focus is mid-column, paint the hint on
+            // that column's outer-bottom pane instead (same x/w).
+            // Single: Full.
+            FooterHintMode mode = FooterHintMode::Full;
+            if (zoomed_) {
+                mode = (p == zoomed_) ? FooterHintMode::Full
+                                      : FooterHintMode::Hidden;
+            } else if (multi) {
+                const bool same_column = have_focused_bounds
+                    && n.bounds.x == focused_bounds.x
+                    && n.bounds.w == focused_bounds.w;
+                const bool show_compact =
+                    (p == focused_ && on_bottom)
+                    || (on_bottom && p != focused_ && same_column);
+                mode = show_compact ? FooterHintMode::Compact
+                                    : FooterHintMode::Hidden;
+            }
+            p->tui.set_footer_hint_mode(mode);
+            p->tui.set_focus_accent(multi && p == focused_);
+            return;
+        }
+        for (const auto& child : n.children) apply(*child);
+    };
+    apply(*root_);
 }
 
 void LayoutTree::resize(const Rect& bounds) {
