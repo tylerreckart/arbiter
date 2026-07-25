@@ -1256,6 +1256,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 try {
                     orch.get_agent(id).reset_history();
                     push_status("History cleared: " + id);
+                    conversation_store.save_async(pane.conversation_id, orch);
                 } catch (const std::exception& e) {
                     push_status("ERR: " + std::string(e.what()));
                 }
@@ -1272,6 +1273,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         push_status(note.empty()
                             ? ("Compacted: " + id)
                             : note);
+                        conversation_store.save_async(pane.conversation_id, orch);
                     } else {
                         push_status("Nothing to compact for " + id +
                                     " (history already within keep window, "
