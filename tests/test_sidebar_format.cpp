@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "model_context.h"
 #include "tui/sidebar_format.h"
 
 using namespace arbiter;

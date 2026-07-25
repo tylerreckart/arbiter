@@ -34,10 +34,10 @@ curl -N \
 
 1. Conversation lookup — `404` if missing or wrong tenant. Validation surfaces as a clean JSON error before the SSE stream opens.
 2. The conversation's snapshotted `agent_def` is applied to the orchestrator (unless the request body supplied its own, which wins). This is what makes follow-ups work without re-sending the agent definition.
-3. Prior messages loaded from the DB and replayed into the agent's history (capped at the most recent 100 turns to keep request payload bounded).
+3. Prior messages loaded from the DB and replayed into the agent's history (capped at the newest 100 turns to keep request payload bounded). Any rolling context-compaction summary is restored by locating the saved boundary (prefer durable `boundary_db_id`, else a unique content match) in that hydrated tail. If the boundary has fallen off the cap, messages between the boundary and the replay window are folded into the rolling summary before the turn proceeds.
 4. The user's `message` is persisted with the `request_id` issued for this stream.
 5. The orchestrator runs and streams events exactly as [`POST /v1/orchestrate`](../orchestrate.md) would.
-6. On a successful `done`, the assistant's full cumulative response (across every tool-call re-entry iteration) is persisted alongside the request's `input_tokens` / `output_tokens` totals.
+6. On a successful `done`, the assistant's full cumulative response (across every tool-call re-entry iteration) is persisted alongside the request's `input_tokens` / `output_tokens` totals, and the conversation's compaction summary is updated when compaction ran.
 7. On failure (`done.ok = false`), the assistant message is **not** persisted — only the user message remains. Retry is safe.
 
 ## Response

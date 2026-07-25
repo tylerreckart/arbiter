@@ -1,6 +1,7 @@
 // arbiter/src/agent.cpp
 #include "agent.h"
 #include "json.h"
+#include <algorithm>
 #include <sstream>
 
 namespace arbiter {
@@ -9,6 +10,85 @@ Agent::Agent(const std::string& id, Constitution config, ApiClient& client)
     : id_(id), config_(std::move(config)), client_(client)
 {
     stats_.created = std::chrono::steady_clock::now();
+}
+
+std::vector<Message> Agent::model_messages_locked(const std::string& key) const {
+    CompactionState state;
+    auto cit = compaction_.find(key);
+    if (cit != compaction_.end()) state = cit->second;
+    auto hit = histories_.find(key);
+    if (hit == histories_.end()) return build_model_messages({}, state);
+    return build_model_messages(hit->second, state);
+}
+
+bool Agent::maybe_compact(bool force) {
+    std::string key;
+    std::vector<Message> hist;
+    CompactionState state;
+    int last_tok = 0;
+    std::string pinned;
+    {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        key = agent_conversation_key();
+        hist = histories_[key];
+        state = compaction_[key];
+        last_tok = last_input_tokens_[key];
+        auto pit = pinned_facts_.find(key);
+        if (pit != pinned_facts_.end()) pinned = pit->second;
+    }
+
+    const auto model_view = build_model_messages(hist, state);
+    const size_t view_chars = model_view_char_count(model_view);
+
+    if (!force) {
+        if (!should_auto_compact(compact_cfg_, last_tok, config_.model,
+                                 hist.size(), view_chars)) {
+            return false;
+        }
+    } else if (hist.size() <= compact_cfg_.keep_messages) {
+        return false;
+    }
+
+    const std::string advisor =
+        !config_.advisor.model.empty() ? config_.advisor.model
+                                       : config_.advisor_model;
+    const std::string summarize_model =
+        resolve_summarize_model(advisor, config_.model);
+
+    CompactionState updated = state;
+    if (!run_compaction(client_, summarize_model, hist, updated,
+                        compact_cfg_, pinned)) {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        // History may have grown; drop the result if indices no longer fit.
+        sanitize_compaction_state(updated, histories_[key].size());
+        if (updated.summary.empty()) return false;
+        // covered_until==0 with a summary is valid (API remap / prefix-only).
+        compaction_[key] = std::move(updated);
+        // Estimate post-compact prompt size so auto-compact does not
+        // immediately re-fire on the next tool re-entry; when the live
+        // provider input_tokens climb again, compaction can run again.
+        const auto new_view =
+            build_model_messages(histories_[key], compaction_[key]);
+        last_input_tokens_[key] = static_cast<int>(
+            std::max<size_t>(1, model_view_char_count(new_view) / 4));
+        compaction_notice_[key] =
+            "Context compacted (summary covers " +
+            std::to_string(compaction_[key].covered_until) +
+            " earlier messages).";
+    }
+    return true;
+}
+
+bool Agent::force_compact(const std::string& pinned_facts) {
+    if (!pinned_facts.empty()) {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        pinned_facts_[agent_conversation_key()] = pinned_facts;
+    }
+    return maybe_compact(/*force=*/true);
 }
 
 void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
@@ -30,6 +110,10 @@ void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
     while (resp.ok && resp.stop_reason == "max_tokens" && continues < kMaxContinues) {
         ++continues;
 
+        // Compact before re-send when the threshold says so (cooldown skips
+        // if this outer turn already advanced generation).
+        maybe_compact(/*force=*/false);
+
         ApiRequest req;
         req.model         = config_.model;
         req.system_prompt = config_.build_system_prompt();
@@ -37,10 +121,11 @@ void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
         req.temperature   = config_.temperature;
         {
             std::lock_guard<std::mutex> lk(history_mu_);
-            auto& hist = histories_[agent_conversation_key()];
+            const std::string key = agent_conversation_key();
+            auto& hist = histories_[key];
             hist.push_back(Message{"assistant", resp.content});
             hist.push_back(Message{"user", kContinuePrompt});
-            req.messages = hist;
+            req.messages = model_messages_locked(key);
         }
 
         ApiResponse more = cb ? client_.stream(req, cb) : client_.complete(req);
@@ -50,6 +135,9 @@ void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
             auto& hist = histories_[agent_conversation_key()];
             hist.pop_back();   // remove continue prompt
             hist.pop_back();   // remove partial assistant
+            if (more.ok) {
+                last_input_tokens_[agent_conversation_key()] = more.input_tokens;
+            }
         }
 
         if (!more.ok) {
@@ -113,7 +201,13 @@ ApiResponse Agent::send(std::vector<ContentPart> parts) {
         user_msg.parts   = std::move(parts);
     }
 
-    // Build request
+    {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        histories_[agent_conversation_key()].push_back(std::move(user_msg));
+    }
+
+    maybe_compact(/*force=*/false);
+
     ApiRequest req;
     req.model         = config_.model;
     req.system_prompt = config_.build_system_prompt();
@@ -121,14 +215,16 @@ ApiResponse Agent::send(std::vector<ContentPart> parts) {
     req.temperature   = config_.temperature;
     {
         std::lock_guard<std::mutex> lk(history_mu_);
-        auto& hist = histories_[agent_conversation_key()];
-        hist.push_back(std::move(user_msg));
-        req.messages = hist;
+        req.messages = model_messages_locked(agent_conversation_key());
     }
 
     auto resp = client_.complete(req);
 
     if (resp.ok) {
+        {
+            std::lock_guard<std::mutex> lk(history_mu_);
+            last_input_tokens_[agent_conversation_key()] = resp.input_tokens;
+        }
         continue_until_done(resp, nullptr);
         // Add assistant response to history
         std::lock_guard<std::mutex> lk(history_mu_);
@@ -166,6 +262,13 @@ ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
         user_msg.parts   = std::move(parts);
     }
 
+    {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        histories_[agent_conversation_key()].push_back(std::move(user_msg));
+    }
+
+    maybe_compact(/*force=*/false);
+
     ApiRequest req;
     req.model         = config_.model;
     req.system_prompt = config_.build_system_prompt();
@@ -173,14 +276,16 @@ ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
     req.temperature   = config_.temperature;
     {
         std::lock_guard<std::mutex> lk(history_mu_);
-        auto& hist = histories_[agent_conversation_key()];
-        hist.push_back(std::move(user_msg));
-        req.messages = hist;
+        req.messages = model_messages_locked(agent_conversation_key());
     }
 
     auto resp = client_.stream(req, cb);
 
     if (resp.ok) {
+        {
+            std::lock_guard<std::mutex> lk(history_mu_);
+            last_input_tokens_[agent_conversation_key()] = resp.input_tokens;
+        }
         continue_until_done(resp, cb);
         std::lock_guard<std::mutex> lk(history_mu_);
         Message am{"assistant", resp.content};
@@ -220,17 +325,30 @@ void Agent::append_thinking(std::string_view delta) {
 
 void Agent::reset_history() {
     std::lock_guard<std::mutex> lk(history_mu_);
-    histories_[agent_conversation_key()].clear();
+    const std::string key = agent_conversation_key();
+    histories_[key].clear();
+    compaction_[key] = CompactionState{};
+    last_input_tokens_[key] = 0;
+    pinned_facts_.erase(key);
+    compaction_notice_.erase(key);
 }
 
 void Agent::reset_all_histories() {
     std::lock_guard<std::mutex> lk(history_mu_);
     histories_.clear();
+    compaction_.clear();
+    last_input_tokens_.clear();
+    pinned_facts_.clear();
+    compaction_notice_.clear();
 }
 
 void Agent::erase_conversation(const std::string& conversation_id) {
     std::lock_guard<std::mutex> lk(history_mu_);
     histories_.erase(conversation_id);
+    compaction_.erase(conversation_id);
+    last_input_tokens_.erase(conversation_id);
+    pinned_facts_.erase(conversation_id);
+    compaction_notice_.erase(conversation_id);
 }
 
 std::string Agent::status_summary() const {
