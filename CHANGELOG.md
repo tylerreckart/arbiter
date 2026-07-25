@@ -7,6 +7,29 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.8] — 2026-07-25
+
+Patch release: Phase 1 context compaction for long TUI/API sessions, plus
+community docs (Contributor Covenant, issue templates) and a refreshed
+roadmap toward 1.0.
+
+### Added
+- **Context compaction.** Threshold-triggered summarize of older turns
+  keeps full histories for replay while sending a summary envelope plus a
+  recent window to the provider. Session JSON v2 persists
+  `CompactionState`; `/compact [agent]` forces it; `/reset` clears it.
+  HTTP replay restores the rolling summary via durable boundary tracking
+  (`boundary_db_id`, with content-match fallback and gap-fold when the
+  boundary falls outside the newest-100 hydrate cap). Fail-open on
+  summarize errors. See `docs/tui/sessions.md`.
+- **Contributor Covenant Code of Conduct.**
+- **Phased roadmap toward 1.0.** Feature audit and phased `ROADMAP.md`
+  (with a README pointer).
+
+### Changed
+- **Issue templates.** Updated GitHub feature-request / issue templates.
+- **Open Graph image.** Refreshed arbiter.run OG asset.
+
 ## [0.8.7] — 2026-07-23
 
 Patch release: embed built-in TUI themes in the binary and default to
