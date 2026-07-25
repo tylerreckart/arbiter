@@ -844,14 +844,23 @@ int tui_input_pad_x(int cols, const TuiDesign& d) {
     return std::max(0, std::min(max_pad, tui_pane_pad_x(cols, d)));
 }
 
-int tui_bottom_pad_rows(bool footer_hint_visible, const TuiDesign& d) {
+int tui_bottom_pad_rows(bool footer_hint_visible, const TuiDesign& d,
+                        bool reserve_footer_space) {
     // Keep in sync with TUI::kBottomPadRows / kCompactBottomPadRows.
     // Full chrome: hint row + one trailing pad (no blank spacer above the hint).
     constexpr int kFull = 2;
     constexpr int kCompact = 1;
-    const bool footer_on = footer_hint_visible && d.layout.show_footer;
+    const bool footer_on =
+        (footer_hint_visible || reserve_footer_space) && d.layout.show_footer;
     if (!footer_on && d.layout.chrome_compact_rows) return kCompact;
     return kFull;
+}
+
+int tui_outer_bottom_pad_rows(const TuiDesign& d) {
+    // Sidebars and column bottoms ignore focus — reserve the footer pad
+    // whenever the footer is enabled so frames stay aligned.
+    return tui_bottom_pad_rows(/*footer_hint_visible=*/false, d,
+                               /*reserve_footer_space=*/true);
 }
 
 TuiRgba tui_agent_accent(const std::string& agent_id) {

@@ -287,6 +287,10 @@ TEST_CASE("chrome_compact_rows reclaims bottom pad when footer hidden") {
     d.layout.show_footer = true;
     CHECK(tui_bottom_pad_rows(true, d) == 2);
     CHECK(tui_bottom_pad_rows(false, d) == 1);
+    // Outer-bottom panes reserve the footer pad even when the hint is hidden
+    // so side-by-side column bottoms stay aligned.
+    CHECK(tui_bottom_pad_rows(false, d, /*reserve_footer_space=*/true) == 2);
+    CHECK(tui_outer_bottom_pad_rows(d) == 2);
 
     d.layout.chrome_compact_rows = false;
     CHECK(tui_bottom_pad_rows(false, d) == 2);
@@ -294,6 +298,7 @@ TEST_CASE("chrome_compact_rows reclaims bottom pad when footer hidden") {
     d.layout.chrome_compact_rows = true;
     d.layout.show_footer = false;
     CHECK(tui_bottom_pad_rows(true, d) == 1);
+    CHECK(tui_outer_bottom_pad_rows(d) == 1);
 }
 
 TEST_CASE("tui_pane_edge_pad and tui_input_pad_x share density ramp") {

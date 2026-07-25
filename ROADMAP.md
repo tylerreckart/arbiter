@@ -24,8 +24,8 @@ Phased by dependency and philosophy fit. Versions are directional, not
 calendar commitments.
 
 ### Phase 1 — Make long sessions survivable (1.0 blockers)
-- [ ] **Context compaction / summarization-** Threshold-triggered summarize of older turns; preserve recent window + pinned facts; optional advisor-assisted summarize; keep full history on disk for replay 
-- [ ] **Conversation autosave-** Periodic + post-turn save so SIGKILL doesn’t lose work
+- [x] **Context compaction / summarization-** Threshold-triggered summarize of older turns; preserve recent window + pinned facts; optional advisor-assisted summarize; keep full history on disk for replay 
+- [x] **Conversation autosave-** Periodic + post-turn save so SIGKILL doesn’t lose work
 - [ ] **In-flight turn recovery (TUI)-** Mirror durable request log pattern into local conversations, or at least don’t drop completed tool results on quit
 - [ ] **Doc drift pass-** Align sessions/scheduler/memory docs with shipped TUI parity; fix sandbox env docs vs code
 

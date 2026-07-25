@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -110,11 +111,26 @@ void sort_entries(std::vector<ConversationEntry>& entries) {
 
 } // namespace
 
+std::chrono::seconds ConversationStore::autosave_interval_from_env() {
+    const char* env = std::getenv("ARBITER_AUTOSAVE_INTERVAL_SEC");
+    if (!env || !*env) return std::chrono::seconds(30);
+    char* end = nullptr;
+    long v = std::strtol(env, &end, 10);
+    if (end == env || v < 0) return std::chrono::seconds(30);
+    // 0 disables periodic ticks (post-turn save_async still works).
+    return std::chrono::seconds(v);
+}
+
 ConversationStore::ConversationStore(std::string config_dir)
     : config_dir_(std::move(config_dir)),
-      store_dir_(config_dir_ + "/conversations") {
+      store_dir_(config_dir_ + "/conversations"),
+      autosave_interval_(autosave_interval_from_env()) {
     ensure_initialized();
     save_thread_ = std::thread(&ConversationStore::save_worker_loop, this);
+    if (autosave_interval_.count() > 0) {
+        autosave_timer_thread_ =
+            std::thread(&ConversationStore::autosave_timer_loop, this);
+    }
     title_thread_ = std::thread(&ConversationStore::title_worker_loop, this);
 }
 
@@ -124,7 +140,9 @@ ConversationStore::~ConversationStore() {
         stop_ = true;
     }
     async_cv_.notify_all();
+    timer_stop_.store(true, std::memory_order_release);
     if (save_thread_.joinable()) save_thread_.join();
+    if (autosave_timer_thread_.joinable()) autosave_timer_thread_.join();
 
     // Titling is best-effort metadata, not durability-critical like saves —
     // don't make shutdown wait on a queue of network calls. Any job already
@@ -138,28 +156,75 @@ ConversationStore::~ConversationStore() {
     if (title_thread_.joinable()) title_thread_.join();
 }
 
+void ConversationStore::autosave_timer_loop() {
+    // Chunked sleep (no mutex) so destructor can join within ~100ms instead
+    // of waiting out a full interval.  On each tick, set periodic_due_ and
+    // wake the save worker — which only uses condition_variable::wait.
+    const auto interval_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(autosave_interval_);
+    while (!timer_stop_.load(std::memory_order_acquire)) {
+        auto remaining = interval_ms;
+        while (remaining.count() > 0 &&
+               !timer_stop_.load(std::memory_order_acquire)) {
+            const auto chunk =
+                std::min(remaining, std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(chunk);
+            remaining -= chunk;
+        }
+        if (timer_stop_.load(std::memory_order_acquire)) return;
+        {
+            std::lock_guard<std::mutex> lk(async_mu_);
+            if (stop_) return;
+            periodic_due_ = true;
+        }
+        async_cv_.notify_all();
+    }
+}
+
 void ConversationStore::save_worker_loop() {
     for (;;) {
         std::string id;
         Orchestrator* orch = nullptr;
         {
             std::unique_lock<std::mutex> lk(async_mu_);
-            async_cv_.wait(lk, [&] { return pending_ || stop_; });
-            if (pending_) {
-                id = pending_id_;
-                orch = pending_orch_;
-                pending_ = false;
-                pending_orch_ = nullptr;
-                busy_ = true;
-            } else {
-                return;
+            async_cv_.wait(lk, [&] {
+                return !pending_saves_.empty() || stop_ || periodic_due_;
+            });
+
+            // Periodic tick: promote dirty ids that were only mark_dirty'd.
+            if (pending_saves_.empty() && periodic_due_) {
+                periodic_due_ = false;
+                if (last_orch_ && !dirty_ids_.empty()) {
+                    for (const auto& did : dirty_ids_)
+                        pending_saves_[did] = last_orch_;
+                }
             }
+
+            // Shutdown: drain any remaining dirty before exit.
+            if (pending_saves_.empty() && stop_) {
+                if (last_orch_ && !dirty_ids_.empty()) {
+                    for (const auto& did : dirty_ids_)
+                        pending_saves_[did] = last_orch_;
+                }
+                if (pending_saves_.empty()) return;
+            }
+
+            if (pending_saves_.empty()) continue;
+
+            auto it = pending_saves_.begin();
+            id = it->first;
+            orch = it->second;
+            pending_saves_.erase(it);
+            busy_ = true;
         }
 
-        save(id, *orch);
+        if (orch) save(id, *orch);
 
         {
             std::lock_guard<std::mutex> lk(async_mu_);
+            // Clear dirty only if this id was not re-queued while we wrote.
+            if (pending_saves_.find(id) == pending_saves_.end())
+                dirty_ids_.erase(id);
             busy_ = false;
         }
         async_cv_.notify_all();
@@ -169,16 +234,42 @@ void ConversationStore::save_worker_loop() {
 void ConversationStore::save_async(const std::string& id, Orchestrator& orch) {
     {
         std::lock_guard<std::mutex> lk(async_mu_);
-        pending_id_ = id;
-        pending_orch_ = &orch;
-        pending_ = true;
+        last_orch_ = &orch;
+        dirty_ids_.insert(id);
+        pending_saves_[id] = &orch;
     }
+    async_cv_.notify_all();
+}
+
+void ConversationStore::mark_dirty(const std::string& id, Orchestrator& orch) {
+    {
+        std::lock_guard<std::mutex> lk(async_mu_);
+        last_orch_ = &orch;
+        dirty_ids_.insert(id);
+    }
+    // Dirty ids are picked up on the next timer tick (or by flush /
+    // save_async).  Notify is a no-op for the save worker's wait predicate
+    // unless periodic_due_/pending/stop is already set — kept for symmetry
+    // with save_async and so a concurrent tick is not missed.
     async_cv_.notify_all();
 }
 
 void ConversationStore::flush() {
     std::unique_lock<std::mutex> lk(async_mu_);
-    async_cv_.wait(lk, [&] { return !pending_ && !busy_; });
+    // Promote dirty → pending so flush drains everything, not just an
+    // already-queued save_async.
+    if (last_orch_) {
+        for (const auto& did : dirty_ids_)
+            pending_saves_[did] = last_orch_;
+    }
+    if (!pending_saves_.empty()) {
+        lk.unlock();
+        async_cv_.notify_all();
+        lk.lock();
+    }
+    async_cv_.wait(lk, [&] {
+        return pending_saves_.empty() && !busy_;
+    });
 }
 
 void ConversationStore::ensure_initialized() {
