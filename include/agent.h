@@ -4,6 +4,7 @@
 #include "constitution.h"
 #include "api_client.h"
 #include "agent_conversation.h"
+#include "context_compaction.h"
 #include <atomic>
 #include <functional>
 #include <mutex>
@@ -48,7 +49,14 @@ public:
     // Replace history for the current ConversationScope (session restore).
     void set_history(std::vector<Message> h) {
         std::lock_guard<std::mutex> lk(history_mu_);
-        histories_[agent_conversation_key()] = std::move(h);
+        const std::string key = agent_conversation_key();
+        histories_[key] = std::move(h);
+        // History replace invalidates index-based compaction; caller may
+        // restore CompactionState afterwards (session load / API hydrate).
+        compaction_[key] = CompactionState{};
+        last_input_tokens_[key] = 0;
+        pinned_facts_.erase(key);
+        compaction_notice_.erase(key);
     }
 
     // Append a finished tool row onto the most recent assistant message in
@@ -84,6 +92,54 @@ public:
         return it != histories_.end() && !it->second.empty();
     }
 
+    // Compaction state for the current ConversationScope (full history is
+    // never trimmed — this only affects the model-facing request view).
+    CompactionState compaction_state() const {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        auto it = compaction_.find(agent_conversation_key());
+        if (it == compaction_.end()) return {};
+        return it->second;
+    }
+    void set_compaction_state(CompactionState state) {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        const std::string key = agent_conversation_key();
+        sanitize_compaction_state(state, histories_[key].size());
+        compaction_[key] = std::move(state);
+    }
+
+    // Force compaction for the current scope (TUI /compact).  Returns true
+    // when the state advanced.  Fail-open on summarize errors.
+    bool force_compact(const std::string& pinned_facts = {});
+
+    // Pop a one-shot UX note set when compaction succeeds for the current
+    // ConversationScope (empty if none).  Scoped so concurrent panes cannot
+    // steal each other's notices.
+    std::string take_compaction_notice() {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        const std::string key = agent_conversation_key();
+        auto it = compaction_notice_.find(key);
+        if (it == compaction_notice_.end()) return {};
+        std::string n = std::move(it->second);
+        compaction_notice_.erase(it);
+        return n;
+    }
+
+    // Optional pinned facts (open todos, etc.) for the current ConversationScope,
+    // merged into summarize prompts.  Scoped so pane/thread switches do not leak.
+    void set_compaction_pinned_facts(std::string facts) {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        pinned_facts_[agent_conversation_key()] = std::move(facts);
+    }
+    std::string compaction_pinned_facts() const {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        auto it = pinned_facts_.find(agent_conversation_key());
+        if (it == pinned_facts_.end()) return {};
+        return it->second;
+    }
+
+    // Compaction knobs (threshold / keep window) for remap helpers.
+    const CompactionConfig& compaction_config() const { return compact_cfg_; }
+
     std::string status_summary() const;
 
     std::string to_json() const;
@@ -95,7 +151,19 @@ private:
     mutable std::mutex history_mu_;
     // Histories keyed by ConversationScope id ("" outside a scope).
     std::unordered_map<std::string, std::vector<Message>> histories_;
+    std::unordered_map<std::string, CompactionState> compaction_;
+    std::unordered_map<std::string, int> last_input_tokens_;
+    std::unordered_map<std::string, std::string> pinned_facts_;
+    std::unordered_map<std::string, std::string> compaction_notice_;
+    CompactionConfig compact_cfg_ = compaction_config_from_env();
     AgentStats stats_;
+
+    // Build provider messages under history_mu_ (caller must hold the lock).
+    std::vector<Message> model_messages_locked(const std::string& key) const;
+
+    // Maybe run auto-compaction.  Must NOT be called while holding history_mu_.
+    // Returns true if compaction advanced.
+    bool maybe_compact(bool force);
 
     // Concat continuation turns onto `resp` until the model actually finishes
     // (stop_reason != "max_tokens") or a cap is hit.  Pushes partial assistant

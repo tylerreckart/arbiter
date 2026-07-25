@@ -281,6 +281,35 @@ public:
     list_messages(int64_t tenant_id, int64_t conversation_id,
                   int64_t after_id, int limit) const;
 
+    // Newest `limit` messages in chronological order (oldest→newest among
+    // the tail).  Used for conversation replay into Agent history.
+    std::vector<ConversationMessage>
+    list_messages_tail(int64_t tenant_id, int64_t conversation_id,
+                       int limit) const;
+
+    // Messages with id in [from_id, before_id), oldest first.  Used to fold
+    // compaction gaps that fell off the newest-N replay window.  Hard-capped
+    // at 500 rows per call — callers must page (advance from_id past the
+    // last returned id) until the range is exhausted.
+    std::vector<ConversationMessage>
+    list_messages_range(int64_t tenant_id, int64_t conversation_id,
+                        int64_t from_id, int64_t before_id) const;
+
+    // Newest `limit` messages with id < before_id, returned oldest→newest.
+    // Used to locate a compaction boundary that fell off the replay window
+    // when boundary_db_id is unknown.
+    std::vector<ConversationMessage>
+    list_messages_before(int64_t tenant_id, int64_t conversation_id,
+                         int64_t before_id, int limit) const;
+
+    // Per-conversation context-compaction blob (JSON object matching
+    // CompactionState).  Empty string when unset / cleared.  Tenant-scoped.
+    std::string get_conversation_compaction_json(int64_t tenant_id,
+                                                 int64_t conversation_id) const;
+    bool set_conversation_compaction_json(int64_t tenant_id,
+                                          int64_t conversation_id,
+                                          const std::string& json);
+
     // ── Tenant-stored agent definitions ────────────────────────────────
     //
     // Per-tenant catalog of agent constitutions sent from the front-end.

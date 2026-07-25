@@ -24,7 +24,7 @@ On first launch after upgrading, legacy per-cwd session files under `~/.arbiter/
 | `arbiter` startup | The last active conversation is loaded. Agent histories are restored before the first prompt. |
 | Switch conversation (`Ctrl-w b` → Enter) | Focused pane's conversation is saved; selected thread attaches to that pane only. Other panes and the split layout stay put. |
 | `/quit` / Ctrl-D  | Every distinct open-pane conversation is written to disk. Pane layout is **not** saved. |
-| `/reset [agent]`  | Clears the named (or focused) agent's history in memory only. The next save snapshots the new state. |
+| `/reset [agent]`  | Clears the named (or focused) agent's history and compaction state in memory only. The next save snapshots the new state. |
 
 Saves are not incremental — `/quit` and conversation switches write the full snapshot. A hard kill (`SIGKILL`, terminal close, power loss) loses any history accumulated since the last save.
 
@@ -55,11 +55,19 @@ To purge everything: `rm -rf ~/.arbiter/conversations/`.
 
 ## Context Length
 
-Arbiter preserves the full conversation history it has for each agent. It does
-not summarize, trim, or rewrite old turns before sending a model request.
-Context-window behavior is delegated to the selected model provider. If a
-conversation outgrows the provider's context handling, use `/reset [agent]` to
-clear that agent's history.
+Arbiter keeps the **full** conversation history on disk and in memory (for
+transcript replay and session restore). Separately, before each model request
+it may build a compacted *view*: a rolling summary of older turns plus a recent
+message window.
+
+Compaction triggers automatically when the last turn's prompt tokens reach
+~75% of the model's known context window (or an approximate character budget
+when the window is unknown). Use `/compact [agent]` to force it. `/reset`
+clears both history and compaction state for that agent.
+
+The summary call uses `constitution.advisor.model` when set, otherwise the
+executor model. Failures are fail-open: the turn proceeds with the uncompacted
+view and a warning is logged.
 
 ## Sessions vs the structured memory graph
 

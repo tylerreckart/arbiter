@@ -168,6 +168,8 @@ set(ARBITER_SOURCES
     src/tui/stream_filter.cpp
     src/api_client.cpp
     src/agent.cpp
+    src/model_context.cpp
+    src/context_compaction.cpp
     src/constitution.cpp
     src/orchestrator.cpp
     src/advisor_gate.cpp
@@ -696,6 +698,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_sidebar_format
         tests/test_sidebar_format.cpp
         src/tui/sidebar_format.cpp
+        src/model_context.cpp
     )
     target_include_directories(unit_sidebar_format PRIVATE
         ${CMAKE_SOURCE_DIR}/include
@@ -707,6 +710,7 @@ if(INDEX_BUILD_TESTS)
         tests/test_sidebar.cpp
         src/tui/sidebar.cpp
         src/tui/sidebar_format.cpp
+        src/model_context.cpp
     )
     target_include_directories(unit_sidebar PRIVATE
         ${CMAKE_SOURCE_DIR}/include
@@ -1178,6 +1182,8 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_agent_conversation
         tests/test_agent_conversation.cpp
         src/agent.cpp
+        src/context_compaction.cpp
+        src/model_context.cpp
         src/constitution.cpp
         src/api_client.cpp
         src/circuit_breaker.cpp
@@ -1196,6 +1202,29 @@ if(INDEX_BUILD_TESTS)
         Threads::Threads
     )
     add_test(NAME unit_agent_conversation COMMAND unit_agent_conversation)
+
+    # Context compaction: model-facing view, cut rules, threshold, session v2.
+    add_executable(unit_context_compaction
+        tests/test_context_compaction.cpp
+        src/context_compaction.cpp
+        src/model_context.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_context_compaction PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_context_compaction PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_context_compaction COMMAND unit_context_compaction)
 
     # Advisor gate signal parser.  The parser is the only thing translating
     # an advisor's reply into a CONTINUE/REDIRECT/HALT decision; format
