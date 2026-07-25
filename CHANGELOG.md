@@ -7,15 +7,41 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.8] — 2026-07-25
+
+Patch release: Phase 1 context compaction, periodic conversation autosave,
+multi-pane outer-bottom alignment, plus community docs (Contributor
+Covenant, issue templates) and a refreshed roadmap toward 1.0.
+
 ### Added
-- **Periodic conversation autosave.**  Dirty conversations flush on a
+- **Context compaction.** Threshold-triggered summarize of older turns
+  keeps full histories for replay while sending a summary envelope plus a
+  recent window to the provider. Session JSON v2 persists
+  `CompactionState`; `/compact [agent]` forces it; `/reset` clears it.
+  HTTP replay restores the rolling summary via durable boundary tracking
+  (`boundary_db_id`, with content-match fallback and gap-fold when the
+  boundary falls outside the newest-100 hydrate cap). Fail-open on
+  summarize errors. See `docs/tui/sessions.md`.
+- **Periodic conversation autosave.** Dirty conversations flush on a
   background timer (default 30s, `ARBITER_AUTOSAVE_INTERVAL_SEC`; `0`
-  disables the tick).  Post-turn `save_async` remains immediate.
+  disables the tick). Post-turn `save_async` remains immediate.
+- **Contributor Covenant Code of Conduct.**
+- **Phased roadmap toward 1.0.** Feature audit and phased `ROADMAP.md`
+  (with a README pointer).
 
 ### Changed
-- **Multi-conversation autosave queue.**  `ConversationStore::save_async`
+- **Multi-conversation autosave queue.** `ConversationStore::save_async`
   keeps a per-id pending slot so multi-pane turns do not drop each other's
-  saves.  `/reset` and `/compact` also queue an autosave.
+  saves. `/reset` and `/compact` also queue an autosave.
+- **Issue templates.** Updated GitHub feature-request / issue templates.
+- **Open Graph image.** Refreshed arbiter.run OG asset.
+
+### Fixed
+- **Multi-pane outer-bottom alignment.** Shared footer pad on every
+  outer-bottom pane keeps column bottoms and sidebars aligned; stacked
+  panes use a single trailing pad so horizontal gutters stay uniform.
+  Mid-stack focus paints the chord hint on that column's outer-bottom
+  pane; zoomed layouts ignore off-screen siblings for chrome budget.
 
 ## [0.8.7] — 2026-07-23
 
