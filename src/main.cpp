@@ -940,6 +940,19 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         layout.focused().editor.interrupt();
     };
 
+    // Tallest live input among outer-bottom panes — sidebars must reserve
+    // the same band so list/scroll bottoms don't spill into multiline input.
+    auto outer_bottom_input_rows = [&]() -> int {
+        int rows = 1;
+        layout.for_each_pane([&](Pane& p) {
+            const arbiter::TuiChromeSnapshot chrome = p.tui.chrome_snapshot();
+            if (chrome.outer_bottom) {
+                rows = std::max(rows, chrome.input_rows);
+            }
+        });
+        return rows;
+    };
+
     PaneFrameHooks pane_hooks;
     pane_hooks.for_each_pane = [&](const std::function<void(Pane&)>& fn) {
         layout.for_each_pane(fn);
@@ -953,7 +966,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         const Rect outer = layout.outer_bounds();
         const int outer_bottom_pad =
             arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
-        constexpr int kSidebarInputRows = 1;
+        const int sidebar_input_rows = outer_bottom_input_rows();
 
         const Rect hb = HistorySidebarState::rect_for_terminal(
             cols, rows, history_sidebar.enabled());
@@ -962,7 +975,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             HistorySidebarSnapshot hs = history_sidebar.snapshot();
             hs.active_id = conversation_store.active_id();
             arbiter::opentui::draw_history_sidebar(
-                frame, hs, hb, outer, kSidebarInputRows, outer_bottom_pad);
+                frame, hs, hb, outer, sidebar_input_rows, outer_bottom_pad);
         }
 
         if (layout.pane_count() > 1) layout.draw_borders(frame);
@@ -1001,7 +1014,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         sidebar.set_loops(std::move(loop_rows));
         const arbiter::SidebarSnapshot snap = sidebar.snapshot();
         arbiter::opentui::draw_sidebar(
-            frame, snap, sb, outer, kSidebarInputRows, outer_bottom_pad);
+            frame, snap, sb, outer, sidebar_input_rows, outer_bottom_pad);
     };
     auto present_unlocked = [&]() {
         pane_history_present(ui_ctx, pane_hooks);
@@ -2724,7 +2737,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         const int outer_bottom_pad =
             arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
         return arbiter::opentui::history_sidebar_visible_rows(
-            hb, outer, /*pane_input_rows=*/1, history_sidebar.focused(),
+            hb, outer, outer_bottom_input_rows(), history_sidebar.focused(),
             history_sidebar.filter_line_visible(), outer_bottom_pad);
     };
 
@@ -2945,7 +2958,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             const int outer_bottom_pad =
                 arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
             const int visible_rows = arbiter::opentui::history_sidebar_visible_rows(
-                hb, outer, /*pane_input_rows=*/1, true,
+                hb, outer, outer_bottom_input_rows(), true,
                 history_sidebar.filter_line_visible(), outer_bottom_pad);
 
             char csi = 0;
