@@ -22,7 +22,8 @@ Plain text (no leading `/`) is treated as a message to the focused pane's curren
 | `/tokens`                      | Full token + cost breakdown: per-agent and total since process start. |
 | `/create <id>`                 | Create an agent with default config; opens `~/.arbiter/agents/<id>.json` for edit. |
 | `/remove <id>`                 | Remove an agent (deletes the JSON; history in memory is dropped).   |
-| `/reset [id]`                  | Clear an agent's conversation history. Default target is the focused pane's agent. |
+| `/reset [id]`                  | Clear an agent's conversation history and compaction state. Default target is the focused pane's agent. |
+| `/compact [id]`                | Force context compaction: summarize older turns, keep a recent window for the next model request. Full history stays on disk. |
 | `/model <agent> <model-id>`    | Change an agent's model at runtime without editing the JSON.        |
 
 ## Panes

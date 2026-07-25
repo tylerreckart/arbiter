@@ -8894,11 +8894,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         try {
             // Hard-cap history replay at 100 turns to keep token usage and
             // request payload size bounded.  If a thread is older, the
-            // tail (most recent) is what gets sent — older context falls
+            // newest N messages are what get hydrated — older context falls
             // off, which matches both Claude's and ChatGPT's default UX.
             const int kReplayCap = 100;
-            auto prior = tenants.list_messages(tenant.id, conversation_id,
-                                                /*after_id=*/0, kReplayCap);
+            auto prior = tenants.list_messages_tail(tenant.id, conversation_id,
+                                                    kReplayCap);
             std::vector<Message> hist;
             hist.reserve(prior.size());
             for (auto& pm : prior) hist.push_back({pm.role, pm.content});

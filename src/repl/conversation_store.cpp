@@ -530,9 +530,10 @@ std::string ConversationStore::create_unlocked(const std::string& cwd) {
     entries_.insert(entries_.begin(), e);
 
     auto empty = jobj();
-    empty->as_object_mut()["version"] = jnum(1);
+    empty->as_object_mut()["version"] = jnum(2);
     empty->as_object_mut()["index"] = jarr();
     empty->as_object_mut()["agents"] = jobj();
+    empty->as_object_mut()["compaction"] = jobj();
     atomic_write_file(session_path_unlocked(id), json_serialize(*empty));
 
     save_manifest_unlocked();

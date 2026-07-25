@@ -1334,6 +1334,28 @@ TenantStore::list_messages(int64_t tenant_id, int64_t conversation_id,
     return out;
 }
 
+std::vector<ConversationMessage>
+TenantStore::list_messages_tail(int64_t tenant_id, int64_t conversation_id,
+                                int limit) const {
+    std::vector<ConversationMessage> out;
+    if (!db_) return out;
+    if (!get_conversation(tenant_id, conversation_id)) return out;
+
+    const int cap = (limit > 0 && limit <= 500) ? limit : 200;
+    // Newest-first fetch, then reverse so callers get chronological order.
+    const std::string sql = std::string("SELECT ") + kMsgCols +
+        " FROM messages WHERE conversation_id = ?"
+        " ORDER BY id DESC LIMIT ?;";
+
+    Stmt q(db_, sql.c_str());
+    q.bind(1, conversation_id);
+    q.bind(2, static_cast<int64_t>(cap));
+
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_message(q));
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
 bool TenantStore::reload_tenant(int64_t id, Tenant& t) const {
     auto r = get_tenant(id);
     if (!r) return false;

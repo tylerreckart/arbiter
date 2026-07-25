@@ -281,6 +281,12 @@ public:
     list_messages(int64_t tenant_id, int64_t conversation_id,
                   int64_t after_id, int limit) const;
 
+    // Newest `limit` messages in chronological order (oldest→newest among
+    // the tail).  Used for conversation replay into Agent history.
+    std::vector<ConversationMessage>
+    list_messages_tail(int64_t tenant_id, int64_t conversation_id,
+                       int limit) const;
+
     // ── Tenant-stored agent definitions ────────────────────────────────
     //
     // Per-tenant catalog of agent constitutions sent from the front-end.
