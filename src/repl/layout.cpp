@@ -133,6 +133,23 @@ void LayoutTree::apply_chrome_flags() {
     const bool multi = leaves.size() > 1 || zoomed_ != nullptr;
     const int outer_bottom = bounds_.y + bounds_.h;
 
+    // Resolve the focused leaf's tree bounds so a mid-column focus can still
+    // host the compact hint on that column's outer-bottom pane.
+    Rect focused_bounds{};
+    bool have_focused_bounds = false;
+    std::function<void(const Node&)> find_focused = [&](const Node& n) {
+        if (have_focused_bounds) return;
+        if (n.is_leaf()) {
+            if (n.pane.get() == focused_) {
+                focused_bounds = n.bounds;
+                have_focused_bounds = true;
+            }
+            return;
+        }
+        for (const auto& child : n.children) find_focused(*child);
+    };
+    find_focused(*root_);
+
     // Walk leaves with their node bounds so stacked panes above the outer
     // bottom drop the footer pad (uniform horizontal gutters) while every
     // outer-bottom pane keeps a shared pad for column alignment.
@@ -144,16 +161,23 @@ void LayoutTree::apply_chrome_flags() {
             p->tui.set_outer_bottom(on_bottom);
 
             // Zoomed: only the zoomed pane is visible → Full hint.
-            // Multi: Compact chord hint only on the focused outer-bottom pane
-            // (mid-column focus must not paint a footer between stacked frames).
+            // Multi: Compact chord hint on the focused pane when it sits on
+            // the outer bottom; if focus is mid-column, paint the hint on
+            // that column's outer-bottom pane instead (same x/w).
             // Single: Full.
             FooterHintMode mode = FooterHintMode::Full;
             if (zoomed_) {
                 mode = (p == zoomed_) ? FooterHintMode::Full
                                       : FooterHintMode::Hidden;
             } else if (multi) {
-                mode = (p == focused_ && on_bottom) ? FooterHintMode::Compact
-                                                    : FooterHintMode::Hidden;
+                const bool same_column = have_focused_bounds
+                    && n.bounds.x == focused_bounds.x
+                    && n.bounds.w == focused_bounds.w;
+                const bool show_compact =
+                    (p == focused_ && on_bottom)
+                    || (on_bottom && p != focused_ && same_column);
+                mode = show_compact ? FooterHintMode::Compact
+                                    : FooterHintMode::Hidden;
             }
             p->tui.set_footer_hint_mode(mode);
             p->tui.set_focus_accent(multi && p == focused_);
