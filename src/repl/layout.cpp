@@ -156,8 +156,12 @@ void LayoutTree::apply_chrome_flags() {
     std::function<void(const Node&)> apply = [&](const Node& n) {
         if (n.is_leaf()) {
             Pane* p = n.pane.get();
-            const bool on_bottom = (n.bounds.y + n.bounds.h) == outer_bottom
-                                || (zoomed_ && p == zoomed_);
+            // While zoomed, only the visible pane owns the outer bottom —
+            // off-screen siblings keep their tree slots but must not reserve
+            // sidebar/footer chrome against the zoomed input band.
+            const bool on_bottom = zoomed_
+                ? (p == zoomed_)
+                : ((n.bounds.y + n.bounds.h) == outer_bottom);
             p->tui.set_outer_bottom(on_bottom);
 
             // Zoomed: only the zoomed pane is visible → Full hint.
