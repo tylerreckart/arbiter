@@ -1,6 +1,7 @@
 // arbiter/src/agent.cpp
 #include "agent.h"
 #include "json.h"
+#include <algorithm>
 #include <sstream>
 
 namespace arbiter {
@@ -24,7 +25,6 @@ bool Agent::maybe_compact(bool force) {
     std::string key;
     std::vector<Message> hist;
     CompactionState state;
-    bool already = false;
     int last_tok = 0;
     std::string pinned;
     {
@@ -32,9 +32,9 @@ bool Agent::maybe_compact(bool force) {
         key = agent_conversation_key();
         hist = histories_[key];
         state = compaction_[key];
-        already = compacted_this_turn_[key];
         last_tok = last_input_tokens_[key];
-        pinned = pinned_facts_;
+        auto pit = pinned_facts_.find(key);
+        if (pit != pinned_facts_.end()) pinned = pit->second;
     }
 
     const auto model_view = build_model_messages(hist, state);
@@ -42,7 +42,7 @@ bool Agent::maybe_compact(bool force) {
 
     if (!force) {
         if (!should_auto_compact(compact_cfg_, last_tok, config_.model,
-                                 hist.size(), view_chars, already)) {
+                                 hist.size(), view_chars)) {
             return false;
         }
     } else if (hist.size() <= compact_cfg_.keep_messages) {
@@ -65,10 +65,17 @@ bool Agent::maybe_compact(bool force) {
         std::lock_guard<std::mutex> lk(history_mu_);
         // History may have grown; drop the result if indices no longer fit.
         sanitize_compaction_state(updated, histories_[key].size());
-        if (updated.summary.empty() || updated.covered_until == 0) return false;
+        if (updated.summary.empty()) return false;
+        // covered_until==0 with a summary is valid (API remap / prefix-only).
         compaction_[key] = std::move(updated);
-        compacted_this_turn_[key] = true;
-        compaction_notice_ =
+        // Estimate post-compact prompt size so auto-compact does not
+        // immediately re-fire on the next tool re-entry; when the live
+        // provider input_tokens climb again, compaction can run again.
+        const auto new_view =
+            build_model_messages(histories_[key], compaction_[key]);
+        last_input_tokens_[key] = static_cast<int>(
+            std::max<size_t>(1, model_view_char_count(new_view) / 4));
+        compaction_notice_[key] =
             "Context compacted (summary covers " +
             std::to_string(compaction_[key].covered_until) +
             " earlier messages).";
@@ -79,7 +86,7 @@ bool Agent::maybe_compact(bool force) {
 bool Agent::force_compact(const std::string& pinned_facts) {
     if (!pinned_facts.empty()) {
         std::lock_guard<std::mutex> lk(history_mu_);
-        pinned_facts_ = pinned_facts;
+        pinned_facts_[agent_conversation_key()] = pinned_facts;
     }
     return maybe_compact(/*force=*/true);
 }
@@ -194,12 +201,9 @@ ApiResponse Agent::send(std::vector<ContentPart> parts) {
         user_msg.parts   = std::move(parts);
     }
 
-    const bool outer_user = !is_tool_results_message(user_msg);
     {
         std::lock_guard<std::mutex> lk(history_mu_);
-        const std::string key = agent_conversation_key();
-        histories_[key].push_back(std::move(user_msg));
-        if (outer_user) compacted_this_turn_[key] = false;
+        histories_[agent_conversation_key()].push_back(std::move(user_msg));
     }
 
     maybe_compact(/*force=*/false);
@@ -258,12 +262,9 @@ ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
         user_msg.parts   = std::move(parts);
     }
 
-    const bool outer_user = !is_tool_results_message(user_msg);
     {
         std::lock_guard<std::mutex> lk(history_mu_);
-        const std::string key = agent_conversation_key();
-        histories_[key].push_back(std::move(user_msg));
-        if (outer_user) compacted_this_turn_[key] = false;
+        histories_[agent_conversation_key()].push_back(std::move(user_msg));
     }
 
     maybe_compact(/*force=*/false);
@@ -327,24 +328,27 @@ void Agent::reset_history() {
     const std::string key = agent_conversation_key();
     histories_[key].clear();
     compaction_[key] = CompactionState{};
-    compacted_this_turn_[key] = false;
     last_input_tokens_[key] = 0;
+    pinned_facts_.erase(key);
+    compaction_notice_.erase(key);
 }
 
 void Agent::reset_all_histories() {
     std::lock_guard<std::mutex> lk(history_mu_);
     histories_.clear();
     compaction_.clear();
-    compacted_this_turn_.clear();
     last_input_tokens_.clear();
+    pinned_facts_.clear();
+    compaction_notice_.clear();
 }
 
 void Agent::erase_conversation(const std::string& conversation_id) {
     std::lock_guard<std::mutex> lk(history_mu_);
     histories_.erase(conversation_id);
     compaction_.erase(conversation_id);
-    compacted_this_turn_.erase(conversation_id);
     last_input_tokens_.erase(conversation_id);
+    pinned_facts_.erase(conversation_id);
+    compaction_notice_.erase(conversation_id);
 }
 
 std::string Agent::status_summary() const {

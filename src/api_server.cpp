@@ -12,6 +12,7 @@
 #include "commands.h"
 #include "config.h"
 #include "constitution.h"
+#include "context_compaction.h"
 #include "json.h"
 #include "a2a/event_translator.h"
 #include "a2a/manager.h"
@@ -8900,9 +8901,131 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             auto prior = tenants.list_messages_tail(tenant.id, conversation_id,
                                                     kReplayCap);
             std::vector<Message> hist;
+            std::vector<int64_t> hist_ids;
             hist.reserve(prior.size());
-            for (auto& pm : prior) hist.push_back({pm.role, pm.content});
+            hist_ids.reserve(prior.size());
+            for (auto& pm : prior) {
+                hist.push_back({pm.role, pm.content});
+                hist_ids.push_back(pm.id);
+            }
             orch->set_agent_history(agent_id, std::move(hist));
+            // Restore rolling summary across HTTP turns.  set_agent_history
+            // clears in-memory compaction; remap locates the saved boundary
+            // (prefer DB id) in the hydrated tail.  If the boundary fell off
+            // the newest-N window, fold the DB gap into the summary so
+            // unsummarized turns between the old cut and the replay window
+            // are not silently dropped.
+            try {
+                auto& agent = orch->get_agent(agent_id);
+                const std::string blob =
+                    tenants.get_conversation_compaction_json(
+                        tenant.id, conversation_id);
+                CompactionState st;
+                if (!blob.empty()) {
+                    auto parsed = json_parse(blob);
+                    st = compaction_from_json(parsed.get());
+                }
+                const size_t keep = agent.compaction_config().keep_messages;
+                remap_compaction_onto_history(st, agent.history(), keep,
+                                              &hist_ids);
+                // Boundary missing from the hydrated tail: fold the DB gap
+                // (messages from the saved boundary up to the replay window)
+                // into the rolling summary.  If boundary_db_id is unset,
+                // locate a unique content match older than the tail first.
+                if (!st.summary.empty() && st.covered_until == 0 &&
+                    !prior.empty()) {
+                    if (st.boundary_db_id <= 0 &&
+                        (!st.boundary_role.empty() ||
+                         !st.boundary_content.empty())) {
+                        int64_t cursor = prior.front().id;
+                        int64_t found_id = 0;
+                        int match_count = 0;
+                        // Page older messages (newest-first pages) looking
+                        // for a unique boundary content match.
+                        for (int page = 0; page < 20 && cursor > 1; ++page) {
+                            auto older = tenants.list_messages_before(
+                                tenant.id, conversation_id, cursor, 500);
+                            if (older.empty()) break;
+                            for (auto& m : older) {
+                                if (m.role != st.boundary_role) continue;
+                                if (!boundary_content_matches(
+                                        m.content, st.boundary_content))
+                                    continue;
+                                ++match_count;
+                                found_id = m.id;
+                            }
+                            if (match_count > 1) {
+                                found_id = 0;
+                                break;  // ambiguous — refuse
+                            }
+                            cursor = older.front().id;
+                            if (older.size() < 500) break;
+                        }
+                        if (match_count == 1) st.boundary_db_id = found_id;
+                    }
+                    if (st.boundary_db_id > 0 &&
+                        prior.front().id > st.boundary_db_id) {
+                        const std::string advisor =
+                            !agent.config().advisor.model.empty()
+                                ? agent.config().advisor.model
+                                : agent.config().advisor_model;
+                        const std::string model = resolve_summarize_model(
+                            advisor, agent.config().model);
+                        bool fold_ok = true;
+                        std::vector<Message> prepend_gap;
+                        int64_t from_id = st.boundary_db_id;
+                        const int64_t before_id = prior.front().id;
+                        while (from_id < before_id) {
+                            auto gap_rows = tenants.list_messages_range(
+                                tenant.id, conversation_id, from_id,
+                                before_id);
+                            if (gap_rows.empty()) break;
+                            std::vector<Message> gap;
+                            gap.reserve(gap_rows.size());
+                            for (auto& gm : gap_rows)
+                                gap.push_back({gm.role, gm.content});
+                            if (fold_ok) {
+                                if (!fold_compaction_gap(
+                                        orch->client(), model, gap, st,
+                                        agent.compaction_config(),
+                                        agent.compaction_pinned_facts())) {
+                                    fold_ok = false;
+                                    for (auto& m : gap)
+                                        prepend_gap.push_back(m);
+                                }
+                            } else {
+                                for (auto& m : gap) prepend_gap.push_back(m);
+                            }
+                            const int64_t last_id = gap_rows.back().id;
+                            if (last_id < from_id) break;
+                            from_id = last_id + 1;
+                            if (gap_rows.size() < 500) break;
+                        }
+                        if (fold_ok && prepend_gap.empty()) {
+                            st.boundary_role = prior.front().role;
+                            st.boundary_content = compaction_boundary_content(
+                                prior.front().content);
+                            st.boundary_db_id = prior.front().id;
+                            st.covered_until = 0;
+                        } else if (!prepend_gap.empty()) {
+                            std::vector<Message> expanded;
+                            expanded.reserve(prepend_gap.size() +
+                                             agent.history().size());
+                            for (auto& m : prepend_gap)
+                                expanded.push_back(m);
+                            for (auto& m : agent.history())
+                                expanded.push_back(m);
+                            orch->set_agent_history(agent_id,
+                                                    std::move(expanded));
+                            st.covered_until = 0;
+                        }
+                    }
+                }
+                agent.set_compaction_state(std::move(st));
+            } catch (...) {
+                // Best-effort — missing column / parse errors must not
+                // block the turn.
+            }
         } catch (const std::out_of_range&) {
             // Agent isn't loaded — surface as SSE error.
             log_error("agent '" + agent_id + "' not loaded for "
@@ -9426,6 +9549,70 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 // Best-effort persistence; emit but don't fail the stream.
                 log_error("assistant message could not be persisted to "
                           "conversation");
+            }
+            // Persist compaction so the next hydrate can resume the
+            // rolling summary.  Only write when we have live compaction
+            // state — never clear the DB blob on a failed restore (empty
+            // in-memory state after set_agent_history), which would erase
+            // the rolling summary across requests.
+            try {
+                auto& agent = orch->get_agent(agent_id);
+                auto st = agent.compaction_state();
+                if (!st.summary.empty() || st.covered_until > 0 ||
+                    st.generation > 0) {
+                    // Resolve a durable DB id for the boundary.
+                    // Unique recent match → adopt it.
+                    // Ambiguous recent matches → clear (do not keep a stale
+                    // prev_id that may point at an older duplicate "yes").
+                    // None in recent window → keep prev_id only if that row
+                    // still matches the current boundary text.
+                    if (!st.boundary_role.empty() ||
+                        !st.boundary_content.empty()) {
+                        const int64_t prev_id = st.boundary_db_id;
+                        auto recent = tenants.list_messages_tail(
+                            tenant.id, conversation_id, /*limit=*/200);
+                        std::vector<std::string> roles, contents;
+                        std::vector<int64_t> ids;
+                        roles.reserve(recent.size());
+                        contents.reserve(recent.size());
+                        ids.reserve(recent.size());
+                        for (auto& m : recent) {
+                            roles.push_back(m.role);
+                            contents.push_back(m.content);
+                            ids.push_back(m.id);
+                        }
+                        const auto resolved =
+                            resolve_boundary_db_id(roles, contents, ids, st);
+                        if (resolved.status ==
+                            BoundaryResolve::Status::Unique) {
+                            st.boundary_db_id = resolved.id;
+                        } else if (prev_id > 0) {
+                            // None or Ambiguous in the recent window: keep
+                            // prev_id only when that exact row still matches
+                            // the current boundary text.  Re-compaction
+                            // clears boundary_db_id to 0, so a moved cut
+                            // cannot reuse an older duplicate via this path.
+                            auto row = tenants.list_messages_range(
+                                tenant.id, conversation_id, prev_id,
+                                prev_id + 1);
+                            const bool still_matches =
+                                row.size() == 1 &&
+                                row[0].role == st.boundary_role &&
+                                boundary_content_matches(row[0].content,
+                                                         st.boundary_content);
+                            st.boundary_db_id = still_matches ? prev_id : 0;
+                        } else {
+                            st.boundary_db_id = 0;
+                        }
+                    } else {
+                        st.boundary_db_id = 0;
+                    }
+                    tenants.set_conversation_compaction_json(
+                        tenant.id, conversation_id,
+                        json_serialize(*compaction_to_json(st)));
+                }
+            } catch (...) {
+                log_error("conversation compaction could not be persisted");
             }
         }
     } catch (const std::exception& e) {

@@ -49,12 +49,15 @@ size_t compute_cut_index(const std::vector<Message>& history,
     if (is_good_start(cut)) return cut;
 
     // Walk back so the kept tail starts on a real user turn (not a tool
-    // re-entry frame) when the raw cut would orphan mid-turn.
+    // re-entry frame) when the raw cut would orphan mid-turn.  If no safe
+    // start exists, refuse the cut (0) so callers skip compaction rather
+    // than emit a model view with broken role alternation after the
+    // summary envelope.
     for (size_t i = cut; i > 0;) {
         --i;
         if (is_good_start(i)) return i;
     }
-    return cut;
+    return 0;
 }
 
 std::vector<Message>
@@ -89,16 +92,166 @@ bool should_auto_compact(const CompactionConfig& cfg,
                          int last_input_tokens,
                          const std::string& model,
                          size_t history_len,
-                         size_t model_view_chars,
-                         bool already_compacted_this_turn) {
+                         size_t model_view_chars) {
     if (!cfg.enabled) return false;
-    if (already_compacted_this_turn) return false;
     if (history_len <= cfg.keep_messages) return false;
 
     const int pct = context_pct_value(last_input_tokens, model);
     if (pct >= 0) return pct >= cfg.threshold_pct;
 
     return model_view_chars >= cfg.char_budget_fallback;
+}
+
+std::string compaction_boundary_content(std::string_view content) {
+    if (content.size() <= kCompactionBoundaryMax)
+        return std::string(content);
+    return std::string(content.substr(0, kCompactionBoundaryMax));
+}
+
+std::string strip_compaction_preambles(std::string_view content) {
+    std::string s(content);
+    // Drop [OPEN TODOS]…[END OPEN TODOS] blocks injected before the turn.
+    for (;;) {
+        const auto start = s.find("[OPEN TODOS]");
+        if (start == std::string::npos) break;
+        const auto end = s.find("[END OPEN TODOS]", start);
+        if (end == std::string::npos) break;
+        size_t erase_to = end + std::string_view("[END OPEN TODOS]").size();
+        while (erase_to < s.size() &&
+               (s[erase_to] == '\n' || s[erase_to] == '\r'))
+            ++erase_to;
+        s.erase(start, erase_to - start);
+    }
+    // Index master wraps the user line as "…\n\nQUERY: <text>".
+    static constexpr std::string_view kQuery = "\n\nQUERY: ";
+    const auto q = s.rfind(kQuery);
+    if (q != std::string::npos)
+        s = s.substr(q + kQuery.size());
+    // Known-pitfalls / lesson blocks end before the real user text; if a
+    // double newline remains after a leading bracket block, keep the tail.
+    if (!s.empty() && s.front() == '[') {
+        const auto sep = s.find("\n\n");
+        if (sep != std::string::npos) s = s.substr(sep + 2);
+    }
+    return s;
+}
+
+bool boundary_content_matches(std::string_view db_content,
+                              std::string_view boundary_content) {
+    const std::string db = compaction_boundary_content(db_content);
+    const std::string boundary(boundary_content);
+    if (db == boundary) return true;
+    // In-memory boundary may still carry a preamble the DB row lacks.
+    if (boundary.size() > db.size() &&
+        boundary.compare(boundary.size() - db.size(), db.size(), db) == 0)
+        return true;
+    return false;
+}
+
+size_t find_compaction_boundary(const std::vector<Message>& history,
+                                const CompactionState& state,
+                                const std::vector<int64_t>* message_db_ids) {
+    // Prefer durable DB id — immune to "yes"/"continue" content collisions.
+    if (message_db_ids && state.boundary_db_id > 0 &&
+        message_db_ids->size() == history.size()) {
+        for (size_t i = 0; i < message_db_ids->size(); ++i) {
+            if ((*message_db_ids)[i] == state.boundary_db_id) return i;
+        }
+        return kCompactionBoundaryNpos;
+    }
+
+    if (state.boundary_role.empty() && state.boundary_content.empty())
+        return kCompactionBoundaryNpos;
+
+    // Content match only when unambiguous.
+    size_t found = kCompactionBoundaryNpos;
+    for (size_t i = 0; i < history.size(); ++i) {
+        if (history[i].role != state.boundary_role) continue;
+        if (!boundary_content_matches(history[i].content,
+                                      state.boundary_content)) {
+            continue;
+        }
+        if (found != kCompactionBoundaryNpos)
+            return kCompactionBoundaryNpos;  // ambiguous
+        found = i;
+    }
+    return found;
+}
+
+BoundaryResolve resolve_boundary_db_id(const std::vector<std::string>& roles,
+                                       const std::vector<std::string>& contents,
+                                       const std::vector<int64_t>& ids,
+                                       const CompactionState& state) {
+    BoundaryResolve out;
+    if (roles.size() != contents.size() || roles.size() != ids.size())
+        return out;
+    if (state.boundary_role.empty() && state.boundary_content.empty())
+        return out;
+
+    std::vector<size_t> matches;
+    for (size_t i = 0; i < roles.size(); ++i) {
+        if (roles[i] != state.boundary_role) continue;
+        if (!boundary_content_matches(contents[i], state.boundary_content))
+            continue;
+        matches.push_back(i);
+    }
+    if (matches.empty()) return out;
+    if (matches.size() != 1) {
+        out.status = BoundaryResolve::Status::Ambiguous;
+        return out;
+    }
+    out.status = BoundaryResolve::Status::Unique;
+    out.id = ids[matches[0]];
+    return out;
+}
+
+void remap_compaction_onto_history(CompactionState& state,
+                                   const std::vector<Message>& history,
+                                   size_t /*keep_messages*/,
+                                   const std::vector<int64_t>* message_db_ids) {
+    if (state.summary.empty()) {
+        state = CompactionState{};
+        return;
+    }
+
+    const size_t boundary =
+        find_compaction_boundary(history, state, message_db_ids);
+    if (boundary == kCompactionBoundaryNpos) {
+        // Missing / ambiguous / fell off replay cap.  Caller should fold
+        // any DB gap into the summary before relying on covered_until=0.
+        state.covered_until = 0;
+    } else {
+        state.covered_until = boundary;
+    }
+    sanitize_compaction_state(state, history.size());
+}
+
+bool fold_compaction_gap(ApiClient& client,
+                         const std::string& summarize_model,
+                         const std::vector<Message>& gap,
+                         CompactionState& state,
+                         const CompactionConfig& cfg,
+                         const std::string& pinned_facts) {
+    if (gap.empty() || summarize_model.empty() || state.summary.empty())
+        return false;
+
+    std::string summary = summarize_history_slice(
+        client, summarize_model, gap, state.summary, pinned_facts,
+        cfg.summary_max_tokens);
+    if (summary.empty()) {
+        std::fprintf(stderr,
+                     "WARN: compaction gap fold failed (model=%s, gap=%zu "
+                     "msgs) — gap may be missing from model context\n",
+                     summarize_model.c_str(), gap.size());
+        return false;
+    }
+
+    state.summary = std::move(summary);
+    state.covered_until = 0;
+    ++state.generation;
+    // Boundary advances to the start of the hydrated tail (caller sets
+    // boundary_role/content/db_id from prior.front() after a successful fold).
+    return true;
 }
 
 std::string resolve_summarize_model(const std::string& advisor_model,
@@ -184,14 +337,27 @@ bool run_compaction(ApiClient& client,
         return false;
     }
 
-    state.summary       = std::move(summary);
-    state.covered_until = cut;
+    state.summary          = std::move(summary);
+    state.covered_until    = cut;
+    state.boundary_role    = history[cut].role;
+    // Strip orchestrator preambles so the boundary matches raw DB rows.
+    state.boundary_content = compaction_boundary_content(
+        strip_compaction_preambles(history[cut].content));
+    // Invalidate any prior DB id — it referred to the previous cut. Persist
+    // must re-resolve against the new boundary text.
+    state.boundary_db_id = 0;
     ++state.generation;
     return true;
 }
 
 void sanitize_compaction_state(CompactionState& state, size_t history_len) {
     if (state.covered_until > history_len) {
+        state = CompactionState{};
+        return;
+    }
+    // A covered_until without a summary would silently drop history from
+    // the model view with nothing to replace it — treat as corrupt.
+    if (state.summary.empty() && state.covered_until > 0) {
         state = CompactionState{};
     }
 }
@@ -202,6 +368,12 @@ std::shared_ptr<JsonValue> compaction_to_json(const CompactionState& s) {
     m["summary"]       = jstr(s.summary);
     m["covered_until"] = jnum(static_cast<double>(s.covered_until));
     m["generation"]    = jnum(static_cast<double>(s.generation));
+    if (!s.boundary_role.empty() || !s.boundary_content.empty()) {
+        m["boundary_role"]    = jstr(s.boundary_role);
+        m["boundary_content"] = jstr(s.boundary_content);
+    }
+    if (s.boundary_db_id > 0)
+        m["boundary_db_id"] = jnum(static_cast<double>(s.boundary_db_id));
     return obj;
 }
 
@@ -212,6 +384,10 @@ CompactionState compaction_from_json(const JsonValue* v) {
     const double cu = v->get_number("covered_until", 0.0);
     s.covered_until = cu < 0 ? 0 : static_cast<size_t>(cu);
     s.generation = v->get_int("generation", 0);
+    s.boundary_role = v->get_string("boundary_role");
+    s.boundary_content = v->get_string("boundary_content");
+    const double bid = v->get_number("boundary_db_id", 0.0);
+    s.boundary_db_id = bid < 0 ? 0 : static_cast<int64_t>(bid);
     return s;
 }
 
