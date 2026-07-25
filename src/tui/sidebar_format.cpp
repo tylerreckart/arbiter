@@ -1,4 +1,5 @@
 #include "tui/sidebar_format.h"
+#include "model_context.h"
 
 #include <cctype>
 #include <algorithm>
@@ -96,35 +97,6 @@ std::string cost_basis_label(std::string_view primary_model, bool mixed_models) 
         starts_with_ci(primary_model, "local/"))
         return "local";
     return std::string(primary_model);
-}
-
-int context_window_for_model(std::string_view model) {
-    if (model.empty()) return 0;
-    if (starts_with_ci(model, "ollama/") || starts_with_ci(model, "local/"))
-        return 0;
-
-    if (model.find("opus") != std::string_view::npos ||
-        model.find("sonnet") != std::string_view::npos ||
-        model.find("haiku") != std::string_view::npos)
-        return 200'000;
-
-    if (model.find("gpt-4o-mini") != std::string_view::npos)
-        return 128'000;
-    if (model.find("gpt-4o") != std::string_view::npos)
-        return 128'000;
-    if (model.find("gpt-4") != std::string_view::npos)
-        return 128'000;
-    if (model.find("gpt-3.5") != std::string_view::npos)
-        return 16'385;
-
-    return 128'000;
-}
-
-int context_pct_value(int prompt_tokens, std::string_view model) {
-    if (prompt_tokens <= 0) return -1;
-    const int window = context_window_for_model(model);
-    if (window <= 0) return -1;
-    return std::min(100, (prompt_tokens * 100) / window);
 }
 
 std::string format_context_pct(int prompt_tokens, std::string_view model) {

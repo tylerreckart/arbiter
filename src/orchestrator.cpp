@@ -4,6 +4,7 @@
 #include "atomic_file.h"
 #include "commands.h"
 #include "config.h"
+#include "context_compaction.h"
 #include "message_codec.h"
 #include "tui/stream_filter.h"
 #include <cctype>
@@ -1949,21 +1950,34 @@ static constexpr size_t kAgentWarnBytes   = 512 * 1024;        // per-agent
 void Orchestrator::save_session(const std::string& path) const {
     auto root = jobj();
     auto& m = root->as_object_mut();
-    m["version"] = jnum(1);
+    m["version"] = jnum(2);
 
     // Index master history
     m["index"] = messages_to_json(index_master_->history());
 
     // All loaded agents
     auto agents_obj = jobj();
+    auto compaction_obj = jobj();
     {
+        auto idx_state = index_master_->compaction_state();
+        if (!idx_state.summary.empty() || idx_state.covered_until > 0 ||
+            idx_state.generation > 0) {
+            compaction_obj->as_object_mut()["index"] =
+                compaction_to_json(idx_state);
+        }
         std::lock_guard<std::mutex> lk(agents_mutex_);
         for (auto& [id, agent] : agents_) {
             if (!agent->history().empty())
                 agents_obj->as_object_mut()[id] = messages_to_json(agent->history());
+            auto st = agent->compaction_state();
+            if (!st.summary.empty() || st.covered_until > 0 ||
+                st.generation > 0) {
+                compaction_obj->as_object_mut()[id] = compaction_to_json(st);
+            }
         }
     }
     m["agents"] = agents_obj;
+    m["compaction"] = compaction_obj;
 
     std::string serialized = json_serialize(*root);
 
@@ -2035,6 +2049,26 @@ bool Orchestrator::load_session(const std::string& path) {
                     it->second->set_history(std::move(msgs));
                     any_restored = true;
                 }
+            }
+        }
+
+        // Version 2+: restore per-agent compaction (after histories so
+        // set_history's clear doesn't wipe restored state).
+        auto cval_comp = root->get("compaction");
+        if (cval_comp && cval_comp->is_object()) {
+            for (auto& [id, vptr] : cval_comp->as_object()) {
+                CompactionState st = compaction_from_json(vptr.get());
+                if (id == "index") {
+                    sanitize_compaction_state(
+                        st, index_master_->history().size());
+                    index_master_->set_compaction_state(std::move(st));
+                    continue;
+                }
+                std::lock_guard<std::mutex> lk(agents_mutex_);
+                auto it = agents_.find(id);
+                if (it == agents_.end()) continue;
+                sanitize_compaction_state(st, it->second->history().size());
+                it->second->set_compaction_state(std::move(st));
             }
         }
         return any_restored;

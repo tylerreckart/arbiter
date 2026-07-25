@@ -1,5 +1,6 @@
 #include "tui/sidebar.h"
 
+#include "model_context.h"
 #include "tui/sidebar_format.h"
 
 #include <algorithm>

@@ -133,3 +133,31 @@ TEST_CASE("append_thinking no-ops when latest message is not assistant") {
     REQUIRE(agent.history().size() == 1);
     CHECK(agent.history()[0].thinking.empty());
 }
+
+TEST_CASE("reset_history clears compaction state for the scope") {
+    ApiClient client({});
+    Constitution cfg;
+    cfg.name = "tester";
+    cfg.model = "test-model";
+    Agent agent("tester", cfg, client);
+
+    ConversationScope scope("conv-compact");
+    agent.set_history({
+        Message{"user", "a"},
+        Message{"assistant", "b"},
+        Message{"user", "c"},
+        Message{"assistant", "d"},
+    });
+    CompactionState st;
+    st.summary = "prior work";
+    st.covered_until = 2;
+    st.generation = 1;
+    agent.set_compaction_state(st);
+    REQUIRE(agent.compaction_state().generation == 1);
+
+    agent.reset_history();
+    CHECK(agent.history().empty());
+    CHECK(agent.compaction_state().summary.empty());
+    CHECK(agent.compaction_state().covered_until == 0);
+    CHECK(agent.compaction_state().generation == 0);
+}

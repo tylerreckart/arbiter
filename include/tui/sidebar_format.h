@@ -18,12 +18,8 @@ std::string format_cost_usd(double usd);
 // Short label for the pricing table used (model id, "mixed", or "local").
 std::string cost_basis_label(std::string_view primary_model, bool mixed_models);
 
-// Provider-reported prompt tokens from the latest turn vs the model's context
-// window.  Returns 0 when unknown (e.g. local ollama models).
-int context_window_for_model(std::string_view model);
-
-// Percentage 0–100, or -1 when the context window is unknown.
-int context_pct_value(int prompt_tokens, std::string_view model);
+// context_window_for_model / context_pct_value live in model_context.h
+// (shared with Agent compaction).  Re-exported via that header for TUI code.
 
 // Percentage string ("42%") or empty when context window is unknown.
 std::string format_context_pct(int prompt_tokens, std::string_view model);

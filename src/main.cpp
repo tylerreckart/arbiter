@@ -591,6 +591,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         {"/create",       "create agent with default config"},
         {"/remove",       "remove agent"},
         {"/reset",        "clear an agent's history"},
+        {"/compact",      "summarize older turns to free context"},
         {"/model",        "change agent model at runtime"},
         {"/pane",         "spawn a parallel pane running an agent"},
         {"/find",         "search the focused pane's scrollback"},
@@ -669,7 +670,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 bool only_cmd = (buf.find(' ') == std::string::npos);
                 if (only_cmd || buf.empty()) {
                     return match({"/send","/ask","/use","/agents","/status","/tokens",
-                                  "/create","/remove","/reset","/model",
+                                  "/create","/remove","/reset","/compact","/model",
                                   "/pane","/find",
                                   "/loop","/loops","/log","/watch",
                                   "/kill","/suspend","/resume","/inject",
@@ -679,7 +680,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                   "/plan","/theme","/verbose","/chat","/quit","/help"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
-                    cmd == "reset" || cmd == "pane") {
+                    cmd == "reset" || cmd == "compact" || cmd == "pane") {
                     auto agents = orch.list_agents();
                     agents.push_back("index");
                     return match(agents);
@@ -1260,6 +1261,27 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 }
                 return;
             }
+            if (cmd == "compact") {
+                std::string id;
+                iss >> id;
+                if (id.empty()) id = current_agent;
+                try {
+                    auto& agent = orch.get_agent(id);
+                    if (agent.force_compact()) {
+                        auto note = agent.take_compaction_notice();
+                        push_status(note.empty()
+                            ? ("Compacted: " + id)
+                            : note);
+                    } else {
+                        push_status("Nothing to compact for " + id +
+                                    " (history already within keep window, "
+                                    "or summarize failed).");
+                    }
+                } catch (const std::exception& e) {
+                    push_status("ERR: " + std::string(e.what()));
+                }
+                return;
+            }
             if (cmd == "loop") {
                 std::string id;
                 iss >> id;
@@ -1542,6 +1564,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /create <id>                     — create agent with default config\n"
                     "  /remove <id>                     — remove agent\n"
                     "  /reset [id]                      — clear an agent's history (default: focused)\n"
+                    "  /compact [id]                    — summarize older turns to free context\n"
                     "  /model <agent> <model-id>        — change agent model at runtime\n"
                     "\n"
                     "Panes  (each pane is an independent conversation view)\n"
@@ -1906,6 +1929,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             pane.last_response = resp.ok ? resp.content
                                          : ("ERR: " + resp.error);
             update_pane_original_task(pane, line, resp);
+            try {
+                auto note = orch.get_agent(current_agent).take_compaction_notice();
+                if (!note.empty()) push_status(note);
+            } catch (...) {}
             if (!resp.ok) {
                 output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
             } else {
