@@ -31,6 +31,16 @@ TEST_CASE("build_model_messages: empty summary returns full history") {
     CHECK(view[3].content == "asst-3");
 }
 
+TEST_CASE("build_model_messages: covered_until without summary does not drop") {
+    auto hist = make_history(6);
+    CompactionState st;
+    st.covered_until = 4;  // corrupt / partial JSON — no summary
+    auto view = build_model_messages(hist, st);
+    REQUIRE(view.size() == 6);
+    CHECK(view[0].content == "user-0");
+    CHECK(view[5].content == "asst-5");
+}
+
 TEST_CASE("build_model_messages: summary envelope + recent tail") {
     auto hist = make_history(6);
     CompactionState st;
@@ -86,7 +96,146 @@ TEST_CASE("compute_cut_index skips TOOL RESULTS as start of kept tail") {
     CHECK(compute_cut_index(hist, 3) == 0);
 }
 
-TEST_CASE("should_auto_compact: threshold and cooldown") {
+TEST_CASE("compute_cut_index refuses unsafe cut when no user start exists") {
+    // Only tool-result "user" frames after the opener — keep window that
+    // would start mid-chain must not return a raw assistant/tool cut.
+    std::vector<Message> hist = {
+        {"assistant", "orphan-start"},
+        {"user", "[TOOL RESULTS]\na"},
+        {"assistant", "mid"},
+        {"user", "[TOOL RESULTS]\nb"},
+        {"assistant", "end"},
+    };
+    CHECK(compute_cut_index(hist, 2) == 0);
+}
+
+TEST_CASE("remap without boundary prefixes full hydrated history") {
+    // Legacy blob / boundary fell off replay cap.
+    auto hist = make_history(4);
+    CompactionState st;
+    st.summary = "older context beyond replay cap";
+    st.covered_until = 99;
+    st.generation = 2;
+    remap_compaction_onto_history(st, hist, /*keep=*/16);
+    CHECK(st.summary == "older context beyond replay cap");
+    CHECK(st.covered_until == 0);
+    CHECK(st.generation == 2);
+    auto view = build_model_messages(hist, st);
+    REQUIRE(view.size() == 6);  // summary pair + 4
+    CHECK(view[0].content.find("older context") != std::string::npos);
+    CHECK(view[2].content == "user-0");
+}
+
+TEST_CASE("remap with unique boundary restores cut") {
+    auto hist = make_history(40);
+    CompactionState st;
+    st.summary = "prior compacted context";
+    st.covered_until = 99;
+    st.generation = 1;
+    st.boundary_role = "user";
+    st.boundary_content = "user-4";
+    remap_compaction_onto_history(st, hist, /*keep=*/16);
+    CHECK(st.covered_until == 4);
+    auto view = build_model_messages(hist, st);
+    REQUIRE(view.size() == 38);
+    CHECK(view[2].content == "user-4");
+}
+
+TEST_CASE("remap with boundary_db_id prefers id over content") {
+    auto hist = make_history(10);
+    // Duplicate content at index 2 and 6.
+    hist[2].content = "same";
+    hist[6].content = "same";
+    hist[2].role = "user";
+    hist[6].role = "user";
+    std::vector<int64_t> ids = {10, 11, 12, 13, 14, 15, 16, 17, 18, 19};
+    CompactionState st;
+    st.summary = "s";
+    st.boundary_role = "user";
+    st.boundary_content = "same";
+    st.boundary_db_id = 16;  // index 6
+    remap_compaction_onto_history(st, hist, /*keep=*/4, &ids);
+    CHECK(st.covered_until == 6);
+}
+
+TEST_CASE("find_compaction_boundary refuses ambiguous content matches") {
+    std::vector<Message> hist = {
+        {"user", "yes"},
+        {"assistant", "ok"},
+        {"user", "yes"},
+        {"assistant", "ok2"},
+    };
+    CompactionState st;
+    st.boundary_role = "user";
+    st.boundary_content = "yes";
+    CHECK(find_compaction_boundary(hist, st) == kCompactionBoundaryNpos);
+}
+
+TEST_CASE("remap with missing boundary falls back to full-tail prefix") {
+    auto hist = make_history(40);
+    CompactionState st;
+    st.summary = "prior compacted context";
+    st.covered_until = 4;
+    st.generation = 1;
+    st.boundary_role = "user";
+    st.boundary_content = "user-gone";
+    remap_compaction_onto_history(st, hist, /*keep=*/16);
+    CHECK(st.covered_until == 0);
+}
+
+TEST_CASE("resolve_boundary_db_id unique / ambiguous / none") {
+    std::vector<std::string> roles = {"user", "assistant", "user", "assistant"};
+    std::vector<std::string> contents = {"a", "b", "a", "c"};
+    std::vector<int64_t> ids = {1, 2, 3, 4};
+    CompactionState st;
+    st.boundary_role = "user";
+    st.boundary_content = "a";
+    auto amb = resolve_boundary_db_id(roles, contents, ids, st);
+    CHECK(amb.status == BoundaryResolve::Status::Ambiguous);
+    st.boundary_role = "assistant";
+    st.boundary_content = "c";
+    auto ok = resolve_boundary_db_id(roles, contents, ids, st);
+    CHECK(ok.status == BoundaryResolve::Status::Unique);
+    CHECK(ok.id == 4);
+    st.boundary_content = "unique-nope";
+    auto miss = resolve_boundary_db_id(roles, contents, ids, st);
+    CHECK(miss.status == BoundaryResolve::Status::None);
+}
+
+TEST_CASE("strip_compaction_preambles removes todos and QUERY wrapper") {
+    const std::string raw =
+        "[OPEN TODOS]\n1. x\n[END OPEN TODOS]\n\n"
+        "status\n\nQUERY: real user text";
+    CHECK(strip_compaction_preambles(raw) == "real user text");
+    CHECK(boundary_content_matches("real user text",
+                                   compaction_boundary_content(
+                                       strip_compaction_preambles(raw))));
+}
+
+TEST_CASE("remap_compaction_onto_history clears empty summary") {
+    auto hist = make_history(20);
+    CompactionState st;
+    st.covered_until = 10;
+    remap_compaction_onto_history(st, hist, 16);
+    CHECK(st.summary.empty());
+    CHECK(st.covered_until == 0);
+}
+
+TEST_CASE("compaction JSON round-trip includes boundary") {
+    CompactionState st;
+    st.summary = "hello";
+    st.covered_until = 8;
+    st.generation = 2;
+    st.boundary_role = "user";
+    st.boundary_content = "keep-from-here";
+    auto j = compaction_to_json(st);
+    auto back = compaction_from_json(j.get());
+    CHECK(back.boundary_role == "user");
+    CHECK(back.boundary_content == "keep-from-here");
+    CHECK(back.covered_until == 8);
+}
+
+TEST_CASE("should_auto_compact: threshold") {
     CompactionConfig cfg;
     cfg.threshold_pct = 75;
     cfg.keep_messages = 16;
@@ -94,14 +243,11 @@ TEST_CASE("should_auto_compact: threshold and cooldown") {
 
     // 200k window sonnet: 150k tokens = 75%
     CHECK(should_auto_compact(cfg, 150'000, "claude-sonnet-4-6",
-                              /*history_len=*/40, /*chars=*/1000,
-                              /*already=*/false));
-    CHECK_FALSE(should_auto_compact(cfg, 150'000, "claude-sonnet-4-6",
-                                     40, 1000, /*already=*/true));
+                              /*history_len=*/40, /*chars=*/1000));
     CHECK_FALSE(should_auto_compact(cfg, 100'000, "claude-sonnet-4-6",
-                                     40, 1000, false));
+                                     40, 1000));
     CHECK_FALSE(should_auto_compact(cfg, 150'000, "claude-sonnet-4-6",
-                                     /*history_len=*/10, 1000, false));
+                                     /*history_len=*/10, 1000));
 }
 
 TEST_CASE("should_auto_compact: char budget fallback when window unknown") {
@@ -110,9 +256,9 @@ TEST_CASE("should_auto_compact: char budget fallback when window unknown") {
     cfg.char_budget_fallback = 1000;
 
     CHECK(should_auto_compact(cfg, /*tokens=*/0, "ollama/llama3",
-                              40, /*chars=*/1000, false));
+                              40, /*chars=*/1000));
     CHECK_FALSE(should_auto_compact(cfg, 0, "ollama/llama3",
-                                     40, /*chars=*/999, false));
+                                     40, /*chars=*/999));
 }
 
 TEST_CASE("resolve_summarize_model prefers advisor") {
@@ -139,11 +285,15 @@ TEST_CASE("compaction JSON round-trip") {
     st.summary = "hello \"world\"";
     st.covered_until = 12;
     st.generation = 3;
+    st.boundary_role = "user";
+    st.boundary_content = "boundary-msg";
     auto j = compaction_to_json(st);
     auto back = compaction_from_json(j.get());
     CHECK(back.summary == st.summary);
     CHECK(back.covered_until == st.covered_until);
     CHECK(back.generation == st.generation);
+    CHECK(back.boundary_role == st.boundary_role);
+    CHECK(back.boundary_content == st.boundary_content);
 }
 
 TEST_CASE("session v2 compaction map round-trip shape") {
@@ -198,6 +348,16 @@ TEST_CASE("sanitize_compaction_state clears when past history") {
     sanitize_compaction_state(ok, 5);
     CHECK(ok.summary == "y");
     CHECK(ok.covered_until == 5);
+}
+
+TEST_CASE("sanitize_compaction_state clears covered_until without summary") {
+    CompactionState st;
+    st.covered_until = 4;
+    st.generation = 1;
+    sanitize_compaction_state(st, 10);
+    CHECK(st.summary.empty());
+    CHECK(st.covered_until == 0);
+    CHECK(st.generation == 0);
 }
 
 TEST_CASE("is_tool_results_message detects prefix") {

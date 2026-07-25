@@ -49,12 +49,14 @@ public:
     // Replace history for the current ConversationScope (session restore).
     void set_history(std::vector<Message> h) {
         std::lock_guard<std::mutex> lk(history_mu_);
-        histories_[agent_conversation_key()] = std::move(h);
+        const std::string key = agent_conversation_key();
+        histories_[key] = std::move(h);
         // History replace invalidates index-based compaction; caller may
-        // restore CompactionState afterwards (session load).
-        compaction_[agent_conversation_key()] = CompactionState{};
-        compacted_this_turn_[agent_conversation_key()] = false;
-        last_input_tokens_[agent_conversation_key()] = 0;
+        // restore CompactionState afterwards (session load / API hydrate).
+        compaction_[key] = CompactionState{};
+        last_input_tokens_[key] = 0;
+        pinned_facts_.erase(key);
+        compaction_notice_.erase(key);
     }
 
     // Append a finished tool row onto the most recent assistant message in
@@ -109,19 +111,34 @@ public:
     // when the state advanced.  Fail-open on summarize errors.
     bool force_compact(const std::string& pinned_facts = {});
 
-    // Pop a one-shot UX note set when compaction succeeds (empty if none).
+    // Pop a one-shot UX note set when compaction succeeds for the current
+    // ConversationScope (empty if none).  Scoped so concurrent panes cannot
+    // steal each other's notices.
     std::string take_compaction_notice() {
         std::lock_guard<std::mutex> lk(history_mu_);
-        std::string n = std::move(compaction_notice_);
-        compaction_notice_.clear();
+        const std::string key = agent_conversation_key();
+        auto it = compaction_notice_.find(key);
+        if (it == compaction_notice_.end()) return {};
+        std::string n = std::move(it->second);
+        compaction_notice_.erase(it);
         return n;
     }
 
-    // Optional pinned facts (open todos, etc.) merged into summarize prompts.
+    // Optional pinned facts (open todos, etc.) for the current ConversationScope,
+    // merged into summarize prompts.  Scoped so pane/thread switches do not leak.
     void set_compaction_pinned_facts(std::string facts) {
         std::lock_guard<std::mutex> lk(history_mu_);
-        pinned_facts_ = std::move(facts);
+        pinned_facts_[agent_conversation_key()] = std::move(facts);
     }
+    std::string compaction_pinned_facts() const {
+        std::lock_guard<std::mutex> lk(history_mu_);
+        auto it = pinned_facts_.find(agent_conversation_key());
+        if (it == pinned_facts_.end()) return {};
+        return it->second;
+    }
+
+    // Compaction knobs (threshold / keep window) for remap helpers.
+    const CompactionConfig& compaction_config() const { return compact_cfg_; }
 
     std::string status_summary() const;
 
@@ -135,10 +152,9 @@ private:
     // Histories keyed by ConversationScope id ("" outside a scope).
     std::unordered_map<std::string, std::vector<Message>> histories_;
     std::unordered_map<std::string, CompactionState> compaction_;
-    std::unordered_map<std::string, bool> compacted_this_turn_;
     std::unordered_map<std::string, int> last_input_tokens_;
-    std::string pinned_facts_;
-    std::string compaction_notice_;
+    std::unordered_map<std::string, std::string> pinned_facts_;
+    std::unordered_map<std::string, std::string> compaction_notice_;
     CompactionConfig compact_cfg_ = compaction_config_from_env();
     AgentStats stats_;
 

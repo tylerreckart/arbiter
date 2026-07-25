@@ -121,6 +121,7 @@ Agent& Orchestrator::create_agent(const std::string& id, Constitution config) {
 }
 
 Agent& Orchestrator::get_agent(const std::string& id) {
+    if (id == "index") return *index_master_;
     std::lock_guard<std::mutex> lock(agents_mutex_);
     auto it = agents_.find(id);
     if (it == agents_.end()) throw std::runtime_error("No agent: " + id);
@@ -751,6 +752,8 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     // because delegated sub-agents already get the same data inside
     // [DELEGATION CONTEXT].  Best-effort: any failure or empty result
     // degrades silently rather than blocking dispatch.
+    // Also feeds compaction's pinned-facts block so summarize keeps the
+    // in-flight board across a threshold compact.
     if (todo_invoker_cb_ && depth == 0 && !current_msg.empty()) {
         try {
             std::string body = todo_invoker_cb_("list", "", agent_id);
@@ -763,6 +766,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                 if (preamble.back() != '\n') preamble += '\n';
                 preamble += "[END OPEN TODOS]";
                 current_msg = preamble + "\n\n" + current_msg;
+                agent.set_compaction_pinned_facts("Open todos:\n" + body);
+            } else {
+                agent.set_compaction_pinned_facts({});
             }
         } catch (...) { /* never let todo probe break dispatch */ }
     }
@@ -1181,6 +1187,52 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     } else {
         agent_ptr = &get_agent(agent_id);
         current_parts = std::move(parts);
+    }
+
+    // Pre-turn lesson + open-todo injection.  send_streaming is always
+    // depth 0 (top-level TUI/API path); mirror run_dispatch so streaming
+    // turns get the same preamble and compaction pinned-facts wiring.
+    auto prepend_to_parts = [&](const std::string& preamble) {
+        if (preamble.empty()) return;
+        for (auto& p : current_parts) {
+            if (p.kind == ContentPart::TEXT) {
+                p.text = preamble + "\n\n" + p.text;
+                return;
+            }
+        }
+        ContentPart lead;
+        lead.kind = ContentPart::TEXT;
+        lead.text = preamble;
+        current_parts.insert(current_parts.begin(), std::move(lead));
+    };
+    if (lesson_invoker_cb_ && !message.empty()) {
+        try {
+            std::string block =
+                lesson_invoker_cb_("preamble", message, agent_id);
+            if (!block.empty() &&
+                block.compare(0, 4, "ERR:") != 0 &&
+                block.compare(0, 11, "(no lessons") != 0) {
+                prepend_to_parts(block);
+            }
+        } catch (...) { /* never let lesson probe break dispatch */ }
+    }
+    if (todo_invoker_cb_ && !message.empty()) {
+        try {
+            std::string body = todo_invoker_cb_("list", "", agent_id);
+            if (!body.empty() &&
+                body.compare(0, 4, "ERR:") != 0 &&
+                body.compare(0, 10, "(no todos)") != 0) {
+                std::string preamble =
+                    "[OPEN TODOS] (mark progress as you go — "
+                    "/todo start <id>, /todo done <id>):\n" + body;
+                if (preamble.back() != '\n') preamble += '\n';
+                preamble += "[END OPEN TODOS]";
+                prepend_to_parts(preamble);
+                agent_ptr->set_compaction_pinned_facts("Open todos:\n" + body);
+            } else {
+                agent_ptr->set_compaction_pinned_facts({});
+            }
+        } catch (...) { /* never let todo probe break dispatch */ }
     }
 
     // Helper: reset current_parts to a single text part.  Used for re-entry

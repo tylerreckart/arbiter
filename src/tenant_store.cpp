@@ -358,6 +358,23 @@ void TenantStore::open(const std::string& path) {
         CREATE INDEX IF NOT EXISTS conversations_tenant_updated
             ON conversations(tenant_id, updated_at DESC);
     )SQL");
+    // Rolling context-compaction summary for HTTP conversation threads.
+    // Guarded ADD COLUMN so older DBs migrate in place.
+    {
+        bool has_compaction = false;
+        Stmt q(db_, "PRAGMA table_info(conversations);");
+        while (q.step() == SQLITE_ROW) {
+            if (q.column_text(1) == "compaction_json") {
+                has_compaction = true;
+                break;
+            }
+        }
+        if (!has_compaction) {
+            exec_sql(db_,
+                     "ALTER TABLE conversations ADD COLUMN "
+                     "compaction_json TEXT NOT NULL DEFAULT '';");
+        }
+    }
     exec_sql(db_, R"SQL(
         CREATE TABLE IF NOT EXISTS messages (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1354,6 +1371,73 @@ TenantStore::list_messages_tail(int64_t tenant_id, int64_t conversation_id,
     while (q.step() == SQLITE_ROW) out.push_back(row_to_message(q));
     std::reverse(out.begin(), out.end());
     return out;
+}
+
+std::vector<ConversationMessage>
+TenantStore::list_messages_range(int64_t tenant_id, int64_t conversation_id,
+                                 int64_t from_id, int64_t before_id) const {
+    std::vector<ConversationMessage> out;
+    if (!db_ || from_id <= 0 || before_id <= from_id) return out;
+    if (!get_conversation(tenant_id, conversation_id)) return out;
+
+    const std::string sql = std::string("SELECT ") + kMsgCols +
+        " FROM messages WHERE conversation_id = ?"
+        " AND id >= ? AND id < ?"
+        " ORDER BY id ASC LIMIT 500;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, conversation_id);
+    q.bind(2, from_id);
+    q.bind(3, before_id);
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_message(q));
+    return out;
+}
+
+std::vector<ConversationMessage>
+TenantStore::list_messages_before(int64_t tenant_id, int64_t conversation_id,
+                                  int64_t before_id, int limit) const {
+    std::vector<ConversationMessage> out;
+    if (!db_ || before_id <= 1) return out;
+    if (!get_conversation(tenant_id, conversation_id)) return out;
+
+    const int cap = (limit > 0 && limit <= 500) ? limit : 200;
+    const std::string sql = std::string("SELECT ") + kMsgCols +
+        " FROM messages WHERE conversation_id = ?"
+        " AND id < ?"
+        " ORDER BY id DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, conversation_id);
+    q.bind(2, before_id);
+    q.bind(3, static_cast<int64_t>(cap));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_message(q));
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+std::string
+TenantStore::get_conversation_compaction_json(int64_t tenant_id,
+                                              int64_t conversation_id) const {
+    if (!db_) return {};
+    if (!get_conversation(tenant_id, conversation_id)) return {};
+    Stmt q(db_,
+           "SELECT compaction_json FROM conversations "
+           "WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, conversation_id);
+    if (q.step() != SQLITE_ROW) return {};
+    return q.column_text(0);
+}
+
+bool TenantStore::set_conversation_compaction_json(
+    int64_t tenant_id, int64_t conversation_id, const std::string& json) {
+    if (!db_) return false;
+    if (!get_conversation(tenant_id, conversation_id)) return false;
+    Stmt q(db_,
+           "UPDATE conversations SET compaction_json = ? "
+           "WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, json);
+    q.bind(2, tenant_id);
+    q.bind(3, conversation_id);
+    return q.step() == SQLITE_DONE;
 }
 
 bool TenantStore::reload_tenant(int64_t id, Tenant& t) const {

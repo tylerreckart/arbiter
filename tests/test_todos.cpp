@@ -251,3 +251,34 @@ TEST_CASE("filter: status + agent_id") {
     REQUIRE(w.size() == 1);
     CHECK(w[0].subject == "c");
 }
+
+TEST_CASE("conversation compaction_json persists across reopen") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "compact");
+    auto conv = s.create_conversation(tid, "thread", "index");
+    CHECK(s.get_conversation_compaction_json(tid, conv.id).empty());
+
+    const std::string blob =
+        R"({"summary":"prior work","covered_until":8,"generation":2})";
+    CHECK(s.set_conversation_compaction_json(tid, conv.id, blob));
+    CHECK(s.get_conversation_compaction_json(tid, conv.id) == blob);
+
+    // Wrong tenant must not read/write.
+    const int64_t other = make_tenant(s, "other");
+    CHECK(s.get_conversation_compaction_json(other, conv.id).empty());
+    CHECK_FALSE(s.set_conversation_compaction_json(other, conv.id, "x"));
+}
+
+TEST_CASE("list_messages_range returns [from, before)") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "range");
+    auto conv = s.create_conversation(tid, "t", "index");
+    auto m1 = s.append_message(tid, conv.id, "user", "a", 0, 0, "");
+    auto m2 = s.append_message(tid, conv.id, "assistant", "b", 0, 0, "");
+    auto m3 = s.append_message(tid, conv.id, "user", "c", 0, 0, "");
+    auto m4 = s.append_message(tid, conv.id, "assistant", "d", 0, 0, "");
+    auto gap = s.list_messages_range(tid, conv.id, m2.id, m4.id);
+    REQUIRE(gap.size() == 2);
+    CHECK(gap[0].id == m2.id);
+    CHECK(gap[1].id == m3.id);
+}
