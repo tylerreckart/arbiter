@@ -56,8 +56,14 @@ int TUI::input_rows() const {
 
 int TUI::bottom_pad_rows() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    // Stacked panes above the outer bottom never reserve a footer row —
+    // one trailing pad keeps horizontal gutters uniform (pad + sep +
+    // top-float) regardless of focus.
+    if (!outer_bottom_) return kCompactBottomPadRows;
     const bool visible = footer_hint_mode_ != FooterHintMode::Hidden;
-    return tui_bottom_pad_rows(visible, tui_design());
+    // Outer-bottom panes keep the full pad whenever the footer is enabled
+    // so side-by-side column bottoms stay aligned.
+    return tui_bottom_pad_rows(visible, tui_design(), /*reserve_footer_space=*/true);
 }
 
 int TUI::last_scroll_row() const {
@@ -164,12 +170,19 @@ TuiChromeSnapshot TUI::chrome_snapshot() const {
     TuiChromeSnapshot s;
     s.rect = rect_;
     s.input_rows = input_rows_;
-    const bool visible = footer_hint_mode_ != FooterHintMode::Hidden;
-    s.bottom_pad_rows = tui_bottom_pad_rows(visible, tui_design());
+    s.outer_bottom = outer_bottom_;
+    // Mirror bottom_pad_rows() without re-entering the mutex.
+    if (!outer_bottom_) {
+        s.bottom_pad_rows = kCompactBottomPadRows;
+    } else {
+        const bool visible = footer_hint_mode_ != FooterHintMode::Hidden;
+        s.bottom_pad_rows = tui_bottom_pad_rows(visible, tui_design(),
+                                                /*reserve_footer_space=*/true);
+    }
     s.status_active = status_active_;
     s.focus_accent = focus_accent_;
     s.footer_hint_mode = footer_hint_mode_;
-    s.footer_hint_visible = visible;
+    s.footer_hint_visible = footer_hint_mode_ != FooterHintMode::Hidden;
     s.status = current_status_;
     s.pre_input_status = current_pre_input_status_;
     s.activity_badge = activity_badge_;
@@ -179,6 +192,16 @@ TuiChromeSnapshot TUI::chrome_snapshot() const {
 void TUI::set_footer_hint_mode(FooterHintMode mode) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     footer_hint_mode_ = mode;
+}
+
+void TUI::set_outer_bottom(bool on_bottom) {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    outer_bottom_ = on_bottom;
+}
+
+bool TUI::outer_bottom() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return outer_bottom_;
 }
 
 void TUI::set_focus_accent(bool active) {
