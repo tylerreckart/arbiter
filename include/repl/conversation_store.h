@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -170,6 +171,7 @@ private:
     void remove_and_reassign_active_unlocked(const std::string& id,
                                              bool delete_file);
     void save_worker_loop();
+    void autosave_timer_loop();
 
     struct TitleJob {
         std::string id;
@@ -190,11 +192,17 @@ private:
     // Background autosave: per-conversation pending map (latest orch wins
     // per id) plus a dirty set for periodic ticks.  Shared orch pointer is
     // the TUI's long-lived Orchestrator (same lifetime assumption as before).
+    // Periodic wakes come from autosave_timer_thread_ (chunked sleep + flag)
+    // so the save worker only uses condition_variable::wait — wait_for on
+    // this mutex races destructor/mark_dirty under Linux TSan.
     std::thread save_thread_;
+    std::thread autosave_timer_thread_;
     std::mutex async_mu_;
     std::condition_variable async_cv_;
     bool busy_ = false;
     bool stop_ = false;
+    bool periodic_due_ = false;
+    std::atomic<bool> timer_stop_{false};
     std::unordered_map<std::string, Orchestrator*> pending_saves_;
     std::unordered_set<std::string> dirty_ids_;
     Orchestrator* last_orch_ = nullptr;
