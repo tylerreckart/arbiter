@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -110,9 +111,20 @@ void sort_entries(std::vector<ConversationEntry>& entries) {
 
 } // namespace
 
+std::chrono::seconds ConversationStore::autosave_interval_from_env() {
+    const char* env = std::getenv("ARBITER_AUTOSAVE_INTERVAL_SEC");
+    if (!env || !*env) return std::chrono::seconds(30);
+    char* end = nullptr;
+    long v = std::strtol(env, &end, 10);
+    if (end == env || v < 0) return std::chrono::seconds(30);
+    // 0 disables periodic ticks (post-turn save_async still works).
+    return std::chrono::seconds(v);
+}
+
 ConversationStore::ConversationStore(std::string config_dir)
     : config_dir_(std::move(config_dir)),
-      store_dir_(config_dir_ + "/conversations") {
+      store_dir_(config_dir_ + "/conversations"),
+      autosave_interval_(autosave_interval_from_env()) {
     ensure_initialized();
     save_thread_ = std::thread(&ConversationStore::save_worker_loop, this);
     title_thread_ = std::thread(&ConversationStore::title_worker_loop, this);
@@ -144,22 +156,46 @@ void ConversationStore::save_worker_loop() {
         Orchestrator* orch = nullptr;
         {
             std::unique_lock<std::mutex> lk(async_mu_);
-            async_cv_.wait(lk, [&] { return pending_ || stop_; });
-            if (pending_) {
-                id = pending_id_;
-                orch = pending_orch_;
-                pending_ = false;
-                pending_orch_ = nullptr;
-                busy_ = true;
+            // wait_for+predicate returns false on timeout, true when the
+            // predicate is satisfied (pending work or stop).
+            bool timed_out = false;
+            if (autosave_interval_.count() > 0) {
+                timed_out = !async_cv_.wait_for(lk, autosave_interval_, [&] {
+                    return !pending_saves_.empty() || stop_;
+                });
             } else {
-                return;
+                async_cv_.wait(lk, [&] {
+                    return !pending_saves_.empty() || stop_;
+                });
             }
+
+            // Periodic tick or shutdown: promote dirty ids that were only
+            // mark_dirty'd (or whose prior save_async hasn't cleared yet).
+            if (pending_saves_.empty() && last_orch_ && !dirty_ids_.empty() &&
+                (timed_out || stop_)) {
+                for (const auto& did : dirty_ids_)
+                    pending_saves_[did] = last_orch_;
+            }
+
+            if (pending_saves_.empty()) {
+                if (stop_) return;
+                continue;
+            }
+
+            auto it = pending_saves_.begin();
+            id = it->first;
+            orch = it->second;
+            pending_saves_.erase(it);
+            busy_ = true;
         }
 
-        save(id, *orch);
+        if (orch) save(id, *orch);
 
         {
             std::lock_guard<std::mutex> lk(async_mu_);
+            // Clear dirty only if this id was not re-queued while we wrote.
+            if (pending_saves_.find(id) == pending_saves_.end())
+                dirty_ids_.erase(id);
             busy_ = false;
         }
         async_cv_.notify_all();
@@ -169,16 +205,41 @@ void ConversationStore::save_worker_loop() {
 void ConversationStore::save_async(const std::string& id, Orchestrator& orch) {
     {
         std::lock_guard<std::mutex> lk(async_mu_);
-        pending_id_ = id;
-        pending_orch_ = &orch;
-        pending_ = true;
+        last_orch_ = &orch;
+        dirty_ids_.insert(id);
+        pending_saves_[id] = &orch;
     }
+    async_cv_.notify_all();
+}
+
+void ConversationStore::mark_dirty(const std::string& id, Orchestrator& orch) {
+    {
+        std::lock_guard<std::mutex> lk(async_mu_);
+        last_orch_ = &orch;
+        dirty_ids_.insert(id);
+    }
+    // Wake the worker so a soon-due periodic tick (or an immediate one if
+    // the wait_for interval has elapsed) can pick it up.  Does not force
+    // an out-of-band save — that remains save_async's job.
     async_cv_.notify_all();
 }
 
 void ConversationStore::flush() {
     std::unique_lock<std::mutex> lk(async_mu_);
-    async_cv_.wait(lk, [&] { return !pending_ && !busy_; });
+    // Promote dirty → pending so flush drains everything, not just an
+    // already-queued save_async.
+    if (last_orch_) {
+        for (const auto& did : dirty_ids_)
+            pending_saves_[did] = last_orch_;
+    }
+    if (!pending_saves_.empty()) {
+        lk.unlock();
+        async_cv_.notify_all();
+        lk.lock();
+    }
+    async_cv_.wait(lk, [&] {
+        return pending_saves_.empty() && !busy_;
+    });
 }
 
 void ConversationStore::ensure_initialized() {
