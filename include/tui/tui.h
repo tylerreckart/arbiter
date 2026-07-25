@@ -10,9 +10,10 @@
 //                     top, matching sidebar inset); streamed model output
 //   input area        rounded box flush beneath the output box; the top
 //                     border row doubles as the status line
-//   bottom pad        hint row + padding when footer is shown; with
-//                     layout.chrome_compact_rows (default) multi-pane /
-//                     footer-off layouts reclaim those rows for scroll
+//   bottom pad        outer-bottom panes reserve hint row + trailing pad so
+//                     column bottoms stay aligned; stacked panes above the
+//                     outer bottom keep a single trailing pad so horizontal
+//                     gutters stay uniform (pad + sep + top-float)
 //
 // All `*_row()` accessors return absolute 1-indexed terminal rows — they fold
 // in rect_.y for scroll/input placement in OpenTUI draw calls.
@@ -51,8 +52,12 @@ struct TuiChromeSnapshot {
     bool focus_accent = false;
     FooterHintMode footer_hint_mode = FooterHintMode::Full;
     // True when mode is Full or Compact (hint text may still be empty when
-    // show_footer is off). Used with chrome_compact_rows to reclaim pad.
+    // show_footer is off).
     bool footer_hint_visible = true;
+    // True when this pane's rect touches the layout's outer bottom edge.
+    // Outer-bottom panes keep a shared footer pad so column bottoms align;
+    // stacked panes above that edge use a compact trailing pad only.
+    bool outer_bottom = true;
     std::string status;
     std::string pre_input_status;
     // Unfocused activity badge drawn on the mid-separator when set.
@@ -120,11 +125,15 @@ public:
     [[nodiscard]] bool queue_indicator_active() const;
 
     // Footer hint presentation.  Single-pane uses Full; multi-pane focused
-    // uses Compact (chord-only); multi-pane unfocused uses Hidden.  When
-    // layout.chrome_compact_rows is true, Hidden also reclaims those rows
-    // for the scroll region; otherwise the rows stay blank so the input
-    // row does not shift.
+    // outer-bottom uses Compact (chord-only); other panes use Hidden.
+    // Outer-bottom panes still reserve the footer pad for column alignment;
+    // chrome_compact_rows only reclaims pad when show_footer is off.
     void set_footer_hint_mode(FooterHintMode mode);
+
+    // Whether this pane sits on the layout's outer bottom edge.  LayoutTree
+    // updates this after every resize / split / focus change.
+    void set_outer_bottom(bool on_bottom);
+    [[nodiscard]] bool outer_bottom() const;
 
     // Accent split separators when this pane is focused in a multi-pane layout.
     // LayoutTree flips this on the focused leaf and off on all others after
@@ -150,6 +159,7 @@ private:
     int  input_rows_ = 1;
     bool status_active_ = false;
     FooterHintMode footer_hint_mode_ = FooterHintMode::Full;
+    bool outer_bottom_ = true;         // touches layout outer bottom edge
     bool focus_accent_ = false;        // reserved for multi-pane chrome accents
     std::atomic<bool> queue_indicator_shown_{false};
     std::string current_status_;

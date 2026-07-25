@@ -947,15 +947,22 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     pane_hooks.draw_overlays = [&](OpenTuiHandle frame, int cols, int rows) {
         if (frame == 0 || cols <= 0 || rows <= 0) return;
 
+        // Align both sidebars to the layout's outer bottom chrome, not the
+        // focused pane — mid-column focus must not shorten Conversations /
+        // Session relative to the column bottoms.
+        const Rect outer = layout.outer_bounds();
+        const int outer_bottom_pad =
+            arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
+        constexpr int kSidebarInputRows = 1;
+
         const Rect hb = HistorySidebarState::rect_for_terminal(
             cols, rows, history_sidebar.enabled());
         if (hb.w > 0) {
             history_sidebar.refresh_entries(conversation_store);
             HistorySidebarSnapshot hs = history_sidebar.snapshot();
             hs.active_id = conversation_store.active_id();
-            const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
             arbiter::opentui::draw_history_sidebar(
-                frame, hs, hb, chrome.rect, chrome.input_rows, chrome.bottom_pad_rows);
+                frame, hs, hb, outer, kSidebarInputRows, outer_bottom_pad);
         }
 
         if (layout.pane_count() > 1) layout.draw_borders(frame);
@@ -971,8 +978,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         int sw = sidebar.effective_width(cols, panes, leading);
         if (sw <= 0) return;
 
-        int pane_x = layout.outer_bounds().x;
-        int pane_w = layout.outer_bounds().w;
+        int pane_x = outer.x;
+        int pane_w = outer.w;
         int gap = cols - pane_x - pane_w;
         // Trailing gutter is reserved in layout_bounds; keep the box width at sw.
         if (sw <= 0 || gap < sw) return;
@@ -993,9 +1000,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         }
         sidebar.set_loops(std::move(loop_rows));
         const arbiter::SidebarSnapshot snap = sidebar.snapshot();
-        const arbiter::TuiChromeSnapshot chrome = focused.tui.chrome_snapshot();
         arbiter::opentui::draw_sidebar(
-            frame, snap, sb, chrome.rect, chrome.input_rows, chrome.bottom_pad_rows);
+            frame, snap, sb, outer, kSidebarInputRows, outer_bottom_pad);
     };
     auto present_unlocked = [&]() {
         pane_history_present(ui_ctx, pane_hooks);
@@ -2714,10 +2720,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     };
 
     auto history_visible_rows = [&](const Rect& hb) -> int {
-        const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
+        const Rect outer = layout.outer_bounds();
+        const int outer_bottom_pad =
+            arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
         return arbiter::opentui::history_sidebar_visible_rows(
-            hb, chrome.rect, chrome.input_rows, history_sidebar.focused(),
-            history_sidebar.filter_line_visible(), chrome.bottom_pad_rows);
+            hb, outer, /*pane_input_rows=*/1, history_sidebar.focused(),
+            history_sidebar.filter_line_visible(), outer_bottom_pad);
     };
 
     // Returns true when the focused editor should exit read_line (focus moved
@@ -2933,10 +2941,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             const int cols = arbiter::term_cols();
             const int rows = arbiter::term_rows();
             const Rect hb = HistorySidebarState::rect_for_terminal(cols, rows, true);
-            const arbiter::TuiChromeSnapshot chrome = layout.focused().tui.chrome_snapshot();
+            const Rect outer = layout.outer_bounds();
+            const int outer_bottom_pad =
+                arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
             const int visible_rows = arbiter::opentui::history_sidebar_visible_rows(
-                hb, chrome.rect, chrome.input_rows, true,
-                history_sidebar.filter_line_visible(), chrome.bottom_pad_rows);
+                hb, outer, /*pane_input_rows=*/1, true,
+                history_sidebar.filter_line_visible(), outer_bottom_pad);
 
             char csi = 0;
             std::string csi_params;

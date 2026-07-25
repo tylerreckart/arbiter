@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <string>
 
 namespace arbiter {
@@ -81,6 +82,7 @@ LayoutTree::LayoutTree(std::unique_ptr<Pane> first, const Rect& bounds) {
     focused_ = root_->pane.get();
     bounds_ = bounds;
     compute_bounds(*root_, bounds);
+    apply_chrome_flags();
 }
 
 LayoutTree::~LayoutTree() = default;
@@ -125,22 +127,41 @@ void LayoutTree::compute_bounds(Node& n, const Rect& r) {
 }
 
 void LayoutTree::apply_chrome_flags() {
+    if (!root_) return;
     std::vector<Pane*> leaves;
     collect_leaves(*root_, leaves);
     const bool multi = leaves.size() > 1 || zoomed_ != nullptr;
-    for (auto* p : leaves) {
-        // Zoomed: only the zoomed pane is visible → Full hint.
-        // Multi: focused gets Compact chord hint; others Hidden (row reserved).
-        // Single: Full.
-        FooterHintMode mode = FooterHintMode::Full;
-        if (zoomed_) {
-            mode = (p == zoomed_) ? FooterHintMode::Full : FooterHintMode::Hidden;
-        } else if (multi) {
-            mode = (p == focused_) ? FooterHintMode::Compact : FooterHintMode::Hidden;
+    const int outer_bottom = bounds_.y + bounds_.h;
+
+    // Walk leaves with their node bounds so stacked panes above the outer
+    // bottom drop the footer pad (uniform horizontal gutters) while every
+    // outer-bottom pane keeps a shared pad for column alignment.
+    std::function<void(const Node&)> apply = [&](const Node& n) {
+        if (n.is_leaf()) {
+            Pane* p = n.pane.get();
+            const bool on_bottom = (n.bounds.y + n.bounds.h) == outer_bottom
+                                || (zoomed_ && p == zoomed_);
+            p->tui.set_outer_bottom(on_bottom);
+
+            // Zoomed: only the zoomed pane is visible → Full hint.
+            // Multi: Compact chord hint only on the focused outer-bottom pane
+            // (mid-column focus must not paint a footer between stacked frames).
+            // Single: Full.
+            FooterHintMode mode = FooterHintMode::Full;
+            if (zoomed_) {
+                mode = (p == zoomed_) ? FooterHintMode::Full
+                                      : FooterHintMode::Hidden;
+            } else if (multi) {
+                mode = (p == focused_ && on_bottom) ? FooterHintMode::Compact
+                                                    : FooterHintMode::Hidden;
+            }
+            p->tui.set_footer_hint_mode(mode);
+            p->tui.set_focus_accent(multi && p == focused_);
+            return;
         }
-        p->tui.set_footer_hint_mode(mode);
-        p->tui.set_focus_accent(multi && p == focused_);
-    }
+        for (const auto& child : n.children) apply(*child);
+    };
+    apply(*root_);
 }
 
 void LayoutTree::resize(const Rect& bounds) {
