@@ -20,6 +20,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   and host-exec flags documented. Phase 1 roadmap items and acceptance
   criteria checked.
 
+### Fixed
+- **Sandbox cold-start lock scope (#95).** `ensure_container` no longer
+  holds the process-wide map mutex across `docker inspect` / `docker run`
+  (up to ~30s). Map mutations stay under `mu_`; same-tenant start/stop
+  races use a per-tenant mutex so cross-tenant cold-starts overlap.
+
 ## [0.8.8] — 2026-07-25
 
 Patch release: Phase 1 context compaction, periodic conversation autosave,

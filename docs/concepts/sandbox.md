@@ -108,6 +108,7 @@ Key properties:
 - **No network.** `/exec` can't talk to anything off the host. `/fetch` and `/search` still work because those run in the arbiter process itself.
 - **Per-tenant uid mapping (Linux).** The container runs as the arbiter process's host uid/gid so files written by `/exec` are owned by arbiter and readable back through the bind mount. On macOS, Docker Desktop already does this mapping; the `--user` flag is skipped.
 - **Sleep-infinity keep-alive.** Containers stay warm across requests. `docker exec` against the running container is the per-`/exec` path; cold-starts only happen once per tenant per server lifetime.
+- **Overlapping cold-starts.** Per-tenant start/stop mutexes serialize rebuilds for the same tenant, but `docker run` for different tenants proceeds concurrently — the process-wide map lock is held only for `running_` / `last_access_` mutations.
 
 `docker exec` is invoked with `-i --workdir /workspace <name> sh -c "<command>"`. Output is captured to combined stdout+stderr, capped at 32 KB, with `[exit N]` appended on non-zero exits and `[timed out after Ns]` appended when the wall-clock kill fires.
 
