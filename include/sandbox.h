@@ -192,8 +192,10 @@ private:
     std::string                                unusable_reason_;
     Metrics*                                   metrics_ = nullptr;
 
-    // Guards `running_` against concurrent ensure_container / stop calls
-    // when two requests on the same tenant race a cold-start.
+    // Guards `running_` / `last_access_` map mutations only.  Docker CLI
+    // (inspect / run / rm) must not run under this lock — concurrent
+    // tenants would otherwise serialize behind a ~30s `docker run`.
+    // Same-tenant start/stop races use `start_mu_` instead.
     std::mutex                                 mu_;
     // tenant_id → container name.  Container names are deterministic so
     // a server restart can re-attach without losing track, but we keep
@@ -204,6 +206,15 @@ private:
     // against cfg_.idle_seconds.  Guarded by mu_.
     std::unordered_map<int64_t, std::chrono::steady_clock::time_point>
                                                 last_access_;
+    // Per-tenant start/stop critical section.  Held across docker CLI
+    // for that tenant only, so cross-tenant cold-starts overlap.
+    // shared_ptr so callers can release mu_ before locking the tenant
+    // mutex (never lock start_mu while holding mu_).
+    std::unordered_map<int64_t, std::shared_ptr<std::mutex>> start_mu_;
+    // Set by stop_all() before it sweeps.  ensure_container refuses to
+    // cold-start once set, so a start racing shutdown can't create a
+    // container after its tenant was already swept.  Guarded by mu_.
+    bool                                       stopping_ = false;
 
     // Reaper thread.  Spawned in the ctor when usable_ && idle_seconds>0.
     // Joined in the dtor.
@@ -214,6 +225,7 @@ private:
     // Helpers (implementation detail).
     std::string container_name_for(int64_t tenant_id) const;
     std::string workspace_path_for(int64_t tenant_id) const;
+    std::shared_ptr<std::mutex> start_mutex_for(int64_t tenant_id);
     bool        container_is_running(const std::string& name) const;
     bool        container_is_responsive(const std::string& name) const;
     bool        start_container(int64_t tenant_id, std::string& err_out);
