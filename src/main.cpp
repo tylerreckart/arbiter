@@ -29,6 +29,7 @@
 #include "tui/stream_filter.h"
 #include "repl/pane.h"
 #include "repl/layout.h"
+#include "repl/layout_snapshot.h"
 #include "repl/pane_history.h"
 #include "theme.h"
 #include "config.h"
@@ -64,6 +65,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 #include <ctime>
 #include <cstdio>
 #include <unistd.h>
@@ -312,6 +314,12 @@ using arbiter::OutputQueue;
 using arbiter::LoopManager;
 using arbiter::Pane;
 using arbiter::LayoutTree;
+using arbiter::LayoutSnapshot;
+using arbiter::layout_snapshot_path;
+using arbiter::load_layout_snapshot;
+using arbiter::save_layout_snapshot;
+using arbiter::validate_layout_snapshot;
+using arbiter::for_each_layout_leaf;
 using arbiter::PaneFrameHooks;
 using arbiter::Rect;
 using arbiter::SidebarState;
@@ -897,22 +905,67 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // ── Layout + initial pane ──────────────────────────────────────────────
     LayoutTree layout(make_pane(), layout_bounds());
     layout_ptr = &layout;
+
+    auto persist_layout = [&]() {
+        if (!layout_ptr) return;
+        save_layout_snapshot(layout_snapshot_path(dir),
+                             layout_ptr->capture_snapshot());
+    };
+
+    // Restore multi-pane layout + per-pane conversation bindings (#42).
+    // Missing/deleted conversation ids fall back to the store's active id;
+    // corrupt or oversized snapshots keep the single-pane default.
+    if (auto snap = load_layout_snapshot(layout_snapshot_path(dir))) {
+        std::unordered_set<std::string> known;
+        for (const auto& e : conversation_store.list()) known.insert(e.id);
+        const std::string fallback = conversation_store.active_id();
+        for_each_layout_leaf(snap->root, [&](LayoutSnapshot::Node& leaf) {
+            if (leaf.conversation_id.empty() ||
+                !known.count(leaf.conversation_id)) {
+                leaf.conversation_id = fallback;
+            }
+            if (leaf.agent.empty()) leaf.agent = "index";
+        });
+        if (validate_layout_snapshot(*snap)) {
+            layout.restore_snapshot(*snap, make_pane, layout_bounds());
+        }
+    }
+
     layout.for_each_pane([&](Pane& p) {
         pane_history_set_cols(p, p.tui.cols());
+        if (p.current_agent != "index" && !orch.has_agent(p.current_agent)) {
+            p.current_agent = "index";
+        }
+        p.current_model = orch.get_agent_model(p.current_agent);
     });
 
-    // Load already restored orch history for the active conversation; replay
-    // it into the pane so restart shows the prior transcript without needing
-    // a manual switch-away-and-back.
-    if (restored) {
-        Pane& pane = layout.focused();
-        ConversationScope scope(pane.conversation_id);
-        const auto history = orch.get_agent_history("index");
-        const size_t total = history.size();
-        if (total > 0) {
-            arbiter::replay_transcript(
-                pane, history, arbiter::replay_tail_begin(total), total);
+    // Load each open conversation into orch (active may already be loaded)
+    // and replay transcript tails into every pane so relaunch matches the
+    // prior multi-pane arrangement without a manual switch.
+    {
+        std::set<std::string> loaded_ids;
+        bool any_history = restored;
+        layout.for_each_pane([&](Pane& pane) {
+            const std::string& id = pane.conversation_id;
+            if (id.empty()) return;
+            if (loaded_ids.insert(id).second) {
+                if (!orch.has_conversation_loaded(id)) {
+                    if (conversation_store.load(id, orch)) any_history = true;
+                }
+            }
+            ConversationScope scope(id);
+            const auto history = orch.get_agent_history("index");
+            const size_t total = history.size();
+            if (total > 0) {
+                any_history = true;
+                arbiter::replay_transcript(
+                    pane, history, arbiter::replay_tail_begin(total), total);
+            }
+        });
+        if (!layout.focused().conversation_id.empty()) {
+            conversation_store.set_active(layout.focused().conversation_id);
         }
+        if (any_history) sidebar.mark_prompt_started();
     }
 
     auto sync_layout_to_terminal = [&]() -> bool {
@@ -2124,6 +2177,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
         });
+        persist_layout();
         ui_ctx.present_all();
 
         refresh_focused_input.store(true);
@@ -2166,10 +2220,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         pump_cv.notify_one();
     };
 
-    // Start exec thread after pump_notify is assigned — the exec thread
+    // Start exec threads after pump_notify is assigned — each exec thread
     // captures pump_notify by reference via OutputQueue::notify_fn_ and
-    // may call push() on its first tick.
-    start_pane_thread(layout.focused());
+    // may call push() on its first tick.  Restored multi-pane layouts need
+    // a thread per leaf, not only the focused pane.
+    layout.for_each_pane([&](Pane& p) { start_pane_thread(p); });
 
     std::atomic<bool> pump_stop{false};
     std::thread output_pump([&]() {
@@ -2381,6 +2436,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         layout.for_each_pane([&](Pane& p) {
             pane_history_set_cols(p, p.tui.cols());
         });
+        // Split / close / focus change the persisted tree (#42).
+        persist_layout();
         present_unlocked();
         g_getc_state.pane = &layout.focused();
         ui_ctx.focused_pane = &layout.focused();
@@ -2462,6 +2519,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             history_sidebar.exit_focus();
             apply_conversation_to_pane(focused, after, /*replay=*/false);
             history_sidebar.refresh_entries(conversation_store);
+            persist_layout();
             present_unlocked();
             g_getc_state.pane = &layout.focused();
             ui_ctx.focused_pane = &layout.focused();
@@ -2478,6 +2536,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         history_sidebar.exit_focus();
         apply_conversation_to_pane(focused, picked, /*replay=*/true);
         history_sidebar.refresh_entries(conversation_store);
+        persist_layout();
         present_unlocked();
         g_getc_state.pane = &layout.focused();
         ui_ctx.focused_pane = &layout.focused();
@@ -2517,6 +2576,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
         history_sidebar.refresh_entries(conversation_store);
         if (rebound) {
+            persist_layout();
             present_unlocked();
             g_getc_state.pane = &layout.focused();
             ui_ctx.focused_pane = &layout.focused();
@@ -2768,11 +2828,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         if (mouse_drag.active) {
             if (ev.type == MouseType::Up) {
                 mouse_drag.active = false;
+                // Persist asymmetric weights after a completed drag (#42).
+                persist_layout();
                 return false;
             }
             if (ev.type == MouseType::Drag && ev.button == MouseButton::Left) {
                 if (!layout.drag_separator(mouse_drag.sep, ev.x, ev.y)) {
                     mouse_drag.active = false;
+                    persist_layout();
                 } else {
                     layout.for_each_pane([&](Pane& p) {
                         pane_history_set_cols(p, p.tui.cols());
@@ -2784,6 +2847,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             if (ev.type == MouseType::Move) return false;
             // Any other event cancels an in-progress drag.
             mouse_drag.active = false;
+            persist_layout();
         }
 
         const int cols = arbiter::term_cols();
@@ -3167,7 +3231,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         for (auto& h : merged) hf << h << '\n';
     }
     // Drain any autosave still in flight, then save every distinct open
-    // pane conversation (and fall back to the store's active id).
+    // pane conversation (and fall back to the store's active id). Persist
+    // the pane layout last so relaunch restores the same split tree (#42).
     conversation_store.flush();
     {
         std::set<std::string> saved;
@@ -3181,6 +3246,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             conversation_store.set_active(layout.focused().conversation_id);
         }
     }
+    persist_layout();
 
     scheduler.stop();
 

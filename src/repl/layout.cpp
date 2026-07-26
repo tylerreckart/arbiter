@@ -1,6 +1,7 @@
 // arbiter/src/repl/layout.cpp — see repl/layout.h
 
 #include "repl/layout.h"
+#include "repl/layout_snapshot.h"
 #include "repl/layout_weights.h"
 #include "tui/opentui/engine.h"
 #include "tui/tui_design.h"
@@ -507,6 +508,95 @@ Pane* LayoutTree::split_focused(Orient orient, const PaneFactory& make_pane,
     if (focus_new) focused_ = new_pane_ptr;
     resize(bounds_);
     return new_pane_ptr;
+}
+
+namespace {
+
+LayoutSnapshot::Node capture_node_(const LayoutTree::Node& n) {
+    LayoutSnapshot::Node out;
+    out.weight = n.weight > 0.0 ? n.weight : 1.0;
+    if (n.is_leaf()) {
+        out.kind = LayoutSnapshot::Node::Kind::Leaf;
+        out.conversation_id = n.pane->conversation_id;
+        out.agent = n.pane->current_agent.empty() ? "index"
+                                                  : n.pane->current_agent;
+        return out;
+    }
+    out.kind = LayoutSnapshot::Node::Kind::Split;
+    out.orient = n.orient;
+    out.children.reserve(n.children.size());
+    for (const auto& child : n.children) {
+        out.children.push_back(capture_node_(*child));
+    }
+    return out;
+}
+
+std::unique_ptr<LayoutTree::Node>
+build_node_(const LayoutSnapshot::Node& snap,
+            const LayoutTree::PaneFactory& make_pane,
+            std::vector<Pane*>& leaves_out) {
+    if (snap.kind == LayoutSnapshot::Node::Kind::Leaf) {
+        auto pane = make_pane();
+        if (!pane) return nullptr;
+        pane->conversation_id = snap.conversation_id;
+        pane->current_agent =
+            snap.agent.empty() ? "index" : snap.agent;
+        auto leaf = std::make_unique<LayoutTree::Node>();
+        leaf->weight = snap.weight > 0.0 ? snap.weight : 1.0;
+        leaf->pane = std::move(pane);
+        leaves_out.push_back(leaf->pane.get());
+        return leaf;
+    }
+
+    auto split = std::make_unique<LayoutTree::Node>();
+    split->orient = snap.orient;
+    split->weight = snap.weight > 0.0 ? snap.weight : 1.0;
+    split->children.reserve(snap.children.size());
+    for (const auto& child_snap : snap.children) {
+        auto child = build_node_(child_snap, make_pane, leaves_out);
+        if (!child) return nullptr;
+        split->children.push_back(std::move(child));
+    }
+    return split;
+}
+
+}  // namespace
+
+LayoutSnapshot LayoutTree::capture_snapshot() const {
+    LayoutSnapshot snap;
+    if (!root_) return snap;
+    snap.root = capture_node_(*root_);
+    std::vector<Pane*> leaves;
+    collect_leaves(*root_, leaves);
+    snap.focused_leaf = 0;
+    for (size_t i = 0; i < leaves.size(); ++i) {
+        if (leaves[i] == focused_) {
+            snap.focused_leaf = i;
+            break;
+        }
+    }
+    return snap;
+}
+
+bool LayoutTree::restore_snapshot(const LayoutSnapshot& snap,
+                                  const PaneFactory& make_pane,
+                                  const Rect& bounds) {
+    if (!validate_layout_snapshot(snap)) return false;
+    if (!make_pane) return false;
+
+    std::vector<Pane*> leaves;
+    auto new_root = build_node_(snap.root, make_pane, leaves);
+    if (!new_root || leaves.empty()) return false;
+    if (snap.focused_leaf >= leaves.size()) return false;
+
+    // Drop zoom — persisted layouts always restore un-zoomed.
+    zoomed_ = nullptr;
+    root_ = std::move(new_root);
+    focused_ = leaves[snap.focused_leaf];
+    bounds_ = bounds;
+    compute_bounds(*root_, bounds_);
+    apply_chrome_flags();
+    return true;
 }
 
 bool LayoutTree::close_focused(const std::function<void(Pane&)>& on_destroy) {
