@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.8.9] — 2026-07-26
+
+Patch release: pane layout persistence across TUI relaunch, mid-turn
+recovery, Phase 1 doc alignment, plus capability-gate and sandbox/API
+race fixes.
+
 ### Added
 - **Pane layout persistence (TUI, #42).** Multi-pane split trees (orientation,
   weights, focus, per-pane conversation id + agent) save to
@@ -37,6 +43,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   holds the process-wide map mutex across `docker inspect` / `docker run`
   (up to ~30s). Map mutations stay under `mu_`; same-tenant start/stop
   races use a per-tenant mutex so cross-tenant cold-starts overlap.
+- **Tenant kill-switch (#90).** `resolve_primary_tenant` skips disabled
+  tenants; API returns `403` when all tenants are disabled; `--api`
+  startup no longer auto-re-enables a disabled primary.
+- **Atomic `file_max_bytes` (#92).** SSE and A2A write interceptors reserve
+  bytes with `compare_exchange_weak` so parallel `/write` cannot exceed
+  the per-turn file cap.
+- **Sandbox workspace quota race (#129).** `write_to_workspace` holds the
+  per-tenant start mutex across quota measurement and write so parallel
+  children cannot overshoot `workspace_max_bytes`.
 
 ## [0.8.8] — 2026-07-25
 
