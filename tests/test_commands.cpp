@@ -541,7 +541,7 @@ TEST_CASE("/parallel from a sub-agent caller reaches the invoker") {
         /*lesson_invoker=*/nullptr,
         /*exec_invoker=*/nullptr,
         /*capabilities=*/std::vector<std::string>{
-            "/search", "/fetch", "/browse", "/mem", "/agent", "/parallel", "/mcp"});
+            "/search", "/fetch", "/browse", "/mem", "/todo", "/agent", "/parallel", "/mcp"});
 
     CHECK(called);
     CHECK(out.find("ERR: capability not granted") == std::string::npos);
@@ -863,6 +863,121 @@ TEST_CASE("capability denial still emits Started then Finished pairing") {
     CHECK(events[1].phase == ToolActivityEvent::Phase::Finished);
     CHECK(events[1].id == events[0].id);
     CHECK_FALSE(events[1].ok);
+}
+
+TEST_CASE("capability gate denies /todo /schedule /lesson without warrant") {
+    // Probe PROBE-006 / issue #91: these three writs used to bypass the
+    // allowlist because bundle_of returned "" for them.
+    struct Case { const char* name; const char* bundle; };
+    for (Case c : {Case{"todo", "todos"},
+                   Case{"schedule", "schedule"},
+                   Case{"lesson", "lessons"}}) {
+        AgentCommand cmd;
+        cmd.name = c.name;
+        cmd.args = "probe";
+        auto result = execute_agent_commands(
+            {cmd}, "restricted", "",
+            /*agent_invoker=*/nullptr,
+            /*confirm=*/nullptr,
+            /*dedup_cache=*/nullptr,
+            /*advisor_invoker=*/nullptr,
+            /*tool_status=*/nullptr,
+            /*pane_spawner=*/nullptr,
+            /*write_interceptor=*/nullptr,
+            /*exec_disabled=*/false,
+            /*parallel_invoker=*/nullptr,
+            /*structured_memory_reader=*/nullptr,
+            /*structured_memory_writer=*/nullptr,
+            /*mcp_invoker=*/nullptr,
+            /*memory_scratchpad=*/nullptr,
+            /*search_invoker=*/nullptr,
+            /*artifact_writer=*/nullptr,
+            /*artifact_reader=*/nullptr,
+            /*artifact_lister=*/nullptr,
+            /*a2a_invoker=*/nullptr,
+            /*scheduler_invoker=*/nullptr,
+            /*todo_invoker=*/nullptr,
+            /*lesson_invoker=*/nullptr,
+            /*exec_invoker=*/nullptr,
+            /*capabilities=*/std::vector<std::string>{"/search"});
+
+        CHECK(result.find("capability not granted") != std::string::npos);
+        CHECK(result.find(std::string("bundle '") + c.bundle + "'")
+              != std::string::npos);
+    }
+}
+
+TEST_CASE("capability gate allows /todo /schedule /lesson with explicit caps") {
+    bool todo_called = false;
+    bool sched_called = false;
+    bool lesson_called = false;
+
+    TodoInvoker todo_inv = [&](const std::string&, const std::string&,
+                               const std::string&) {
+        todo_called = true;
+        return std::string("OK: todo");
+    };
+    SchedulerInvoker sched_inv = [&](const std::string&, const std::string&,
+                                     const std::string&) {
+        sched_called = true;
+        return std::string("OK: schedule");
+    };
+    LessonInvoker lesson_inv = [&](const std::string&, const std::string&,
+                                   const std::string&) {
+        lesson_called = true;
+        return std::string("OK: lesson");
+    };
+
+    auto run = [&](const char* name, const char* args,
+                   const std::vector<std::string>& caps) {
+        AgentCommand c;
+        c.name = name;
+        c.args = args;
+        return execute_agent_commands(
+            {c}, "warranted", "",
+            /*agent_invoker=*/nullptr,
+            /*confirm=*/nullptr,
+            /*dedup_cache=*/nullptr,
+            /*advisor_invoker=*/nullptr,
+            /*tool_status=*/nullptr,
+            /*pane_spawner=*/nullptr,
+            /*write_interceptor=*/nullptr,
+            /*exec_disabled=*/false,
+            /*parallel_invoker=*/nullptr,
+            /*structured_memory_reader=*/nullptr,
+            /*structured_memory_writer=*/nullptr,
+            /*mcp_invoker=*/nullptr,
+            /*memory_scratchpad=*/nullptr,
+            /*search_invoker=*/nullptr,
+            /*artifact_writer=*/nullptr,
+            /*artifact_reader=*/nullptr,
+            /*artifact_lister=*/nullptr,
+            /*a2a_invoker=*/nullptr,
+            /*scheduler_invoker=*/sched_inv,
+            /*todo_invoker=*/todo_inv,
+            /*lesson_invoker=*/lesson_inv,
+            /*exec_invoker=*/nullptr,
+            /*capabilities=*/caps);
+    };
+
+    {
+        auto r = run("todo", "add x", {"/todo"});
+        CHECK(todo_called);
+        CHECK(r.find("capability not granted") == std::string::npos);
+        CHECK(r.find("OK: todo") != std::string::npos);
+    }
+    {
+        auto r = run("schedule", "list", {"/schedule"});
+        CHECK(sched_called);
+        CHECK(r.find("capability not granted") == std::string::npos);
+        CHECK(r.find("OK: schedule") != std::string::npos);
+    }
+    {
+        auto r = run("lesson", "list", {"/lesson"});
+        CHECK(lesson_called);
+        CHECK(r.find("capability not granted") == std::string::npos);
+        CHECK(r.find("OK: lesson") != std::string::npos);
+    }
 }
 
 TEST_CASE("dedup hit still emits Started/Finished with cached ok flag") {

@@ -32,6 +32,7 @@
     "/agent",
     "/parallel",
     "/mem",
+    "/todo",
     "/mcp"
   ]
 }
