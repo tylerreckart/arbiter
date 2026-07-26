@@ -10,7 +10,7 @@ Already called out in CHANGELOG / docs / code comments:
 - Idempotency cache in-memory only
 - Circuit breaker thresholds hard-coded
 - Sandbox: Docker-only; idle reaper documented but not implemented; no workspace-root env
-- Pane layout not persisted; hard kill loses unsaved turns; loops die on exit
+- Hard kill can still lose an unfinished model stream; loops die on exit; queue depth is dropped
 - A2A push notifications unsupported; event routing still experimental
 - Documentation drift
 - TUI `/exec` is host shell, not sandboxed by default
@@ -30,6 +30,7 @@ calendar commitments.
 
 **Acceptance criteria:** 
 - [x] Multi-hour multi-pane sessions survive restart and provider context limits without manual `/reset`.
+- [x] Restart restores the prior split layout and per-pane conversation bindings (`layout.json`).
 
 ### Phase 2 — Production-grade local server
 - [ ] **Durable idempotency-** Persist `(tenant, key) → request_id` across restarts

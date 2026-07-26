@@ -8,6 +8,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Pane layout persistence (TUI, #42).** Multi-pane split trees (orientation,
+  weights, focus, per-pane conversation id + agent) save to
+  `~/.arbiter/conversations/layout.json` on quit and after split / close /
+  focus / conversation switch / separator drag. Relaunch restores the
+  arrangement and replays each pane's transcript tail. Missing or deleted
+  conversation ids remap to the active conversation; corrupt snapshots fall
+  back to a single pane.
 - **In-flight turn recovery (TUI).** Tool-result envelopes are committed to
   agent history immediately after tools finish, and mid-turn
   `save_async` checkpoints run after each model iteration and each tool
