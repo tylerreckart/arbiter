@@ -404,7 +404,7 @@ Constraints:
 - **Conversation-scoped only.** Entries written in *this* conversation, not the tenant's full history. A sub-agent on a fresh conversation sees an empty pipeline memory rather than residue from prior runs.
 - **Capped at 15 entries.** Newest first. Designed to be a compact pointer list, not a content dump — sub-agents `/mem entry #<id>` to read the full body of any entry that looks relevant.
 - **Title + type + tags only.** Bodies are not included; the agent fetches them on demand.
-- **No active conversation → empty.** Raw `/v1/orchestrate` calls (no `conversation_id`) and CLI / REPL contexts (no tenant store wired) skip the probe entirely. Pipeline memory is an HTTP-API affordance.
+- **No active conversation → empty.** Raw `/v1/orchestrate` calls (and `--send`) with no positive `conversation_id` skip the probe. The interactive TUI wires a conversation id and the same structured-memory callbacks as the API, so pipeline memory injects there too.
 - **`#`-prefixed ids.** The rendered ids carry a `#` — exactly the form `/mem entry`, `/mem expand`, `/mem density`, `/mem invalidate`, `/mem add link` accept.
 
 The injected section reads like:
@@ -430,7 +430,7 @@ This structurally addresses one of the most common multi-agent failure modes: th
 
 ## Tenant scoping
 
-The reader and writer are both bound to the request's authenticated tenant — sub-agents invoked via `/agent` and parallel children spawned via `/parallel` inherit the same tenant scope. CLI/REPL contexts (`arbiter --send`, the interactive REPL) don't have a tenant; both `/mem entries…` and `/mem add…` return ERR there. This surface is API-only.
+The reader and writer are both bound to a tenant — sub-agents invoked via `/agent` and parallel children spawned via `/parallel` inherit the same tenant scope. The interactive TUI and `arbiter --send` open `tenants.db`, ensure a primary tenant, and wire the same `/mem` slash surface as HTTP orchestrate turns (scratchpad + structured graph). HTTP-only pieces are the REST routes under `/v1/memory/*` (including `GET /v1/memory/graph`) and admin/tenant HTTP scoping — not the agent `/mem` writ.
 
 ## See also
 

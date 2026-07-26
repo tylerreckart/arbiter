@@ -3,14 +3,15 @@
 Run arbiter as an HTTP+SSE orchestration server. Long-running, multi-tenant, bearer-token authenticated. The on-the-wire protocol is documented in [`docs/api/`](../api/index.md); this page covers the CLI flags and operational behaviour.
 
 ```
-arbiter --api [--port N] [--bind ADDR] [--verbose]
+arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]
 ```
 
-| Flag        | Default       | What it does                                                |
-|-------------|---------------|-------------------------------------------------------------|
-| `--port`    | `8080`        | TCP port to listen on.                                      |
-| `--bind`    | `127.0.0.1`   | Bind address. `0.0.0.0` to accept remote traffic.           |
-| `--verbose` | off           | Mirror every SSE event (text deltas, tool calls, thinking) to stderr. Equivalent to `ARBITER_API_VERBOSE=1`. Verbose flag wins over the env var. |
+| Flag                 | Default       | What it does                                                |
+|----------------------|---------------|-------------------------------------------------------------|
+| `--port`             | `8080`        | TCP port to listen on.                                      |
+| `--bind`             | `127.0.0.1`   | Bind address. `0.0.0.0` to accept remote traffic.           |
+| `--verbose`          | off           | Mirror every SSE event (text deltas, tool calls, thinking) to stderr. Equivalent to `ARBITER_API_VERBOSE=1`. Verbose flag wins over the env var. |
+| `--allow-host-exec`  | off           | Allow unsandboxed host `/exec` (also `ARBITER_ALLOW_HOST_EXEC=1`). Prefer `ARBITER_SANDBOX_IMAGE` instead. |
 
 ## What it does on startup
 

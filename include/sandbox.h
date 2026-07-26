@@ -19,11 +19,10 @@
 // SIGKILLing the `docker exec` driver process when the deadline elapses;
 // best-effort container-side killing is a follow-up.
 //
-// Containers are started lazily on first ensure_container() per tenant
-// and stopped only via explicit stop_container() / stop_all() (e.g.
-// ApiServer shutdown).  Idle reaping is intentionally not implemented
-// here — operators run with `docker container prune` cadence of their
-// choice; the v1 contract is "warm until shutdown".
+// Containers are started lazily on first ensure_container() per tenant.
+// Idle reaping (ARBITER_SANDBOX_IDLE_SECONDS) stops warm containers after
+// the idle threshold; stop_all() still runs on ApiServer shutdown.
+// Workspace bytes survive both paths.
 
 #include <chrono>
 #include <condition_variable>

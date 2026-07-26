@@ -93,9 +93,9 @@ Authenticate with `Authorization: Bearer <token>`. The endpoint catalogue is at 
 ├── agents/*.json          agent constitutions (edit these)
 ├── openrouter_api_key     OpenRouter key (alternative to env var)
 ├── search_api_key         Brave Search key for /search (via --setup-tools)
-├── tenants.db             tenant identities for --api
-├── sessions/              per-cwd TUI session snapshots
-├── memory/                per-agent persistent scratchpads
+├── tenants.db             tenants, scratchpads, memory graph, schedules (TUI + --api)
+├── conversations/         global TUI conversation store
+├── sessions/              legacy per-cwd snapshots (imported once)
 ├── mcp_servers.json       optional MCP server registry (via --setup-tools)
 └── a2a_agents.json        optional remote A2A agent registry
 ```

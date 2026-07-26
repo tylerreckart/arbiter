@@ -63,7 +63,7 @@ A loop runs an agent repeatedly with its own buffered output, decoupled from any
 | `/fetch <url>`                 | TUI shortcut: fetch the URL, strip to readable text, and send the result to the focused agent as context. |
 | `/mem write\|read\|show\|clear` | Per-agent scratchpad in `tenants.db` (same store the API uses).     |
 | `/mem shared write\|read\|clear` | Tenant-wide shared scratchpad.                                    |
-| `/mem search\|entries\|entry\|add entry` | Structured memory graph — FTS-ranked search, typed entries, relations. See [`docs/concepts/structured-memory.md`](../concepts/structured-memory.md). |
+| `/mem search\|entries\|entry\|expand\|density\|add entry\|add link\|invalidate` | Structured memory graph — FTS-ranked search, typed entries, relations. Block form: `/mem add entry …` then body then `/endmem`. See [`docs/concepts/structured-memory.md`](../concepts/structured-memory.md). |
 
 ## Tools (API parity)
 
@@ -76,8 +76,8 @@ These commands use the same dispatch path as agent tool calls during `/v1/orches
 | `/todo list\|add\|start\|done\|…` | Conversation-scoped task list (`~/.arbiter/tenants.db`).         |
 | `/schedule list\|<phrase>: <msg>` | Create or list scheduled tasks; background scheduler fires them while the TUI runs. |
 | `/schedule cancel\|pause\|resume <id>` | Manage scheduled tasks.                                      |
-| `/exec <cmd>`                  | Shell command (confirm gate; disabled unless started with host exec allowed). |
-| `/write <path>`                | Write a file (confirm gate). `/write --persist` stores in the conversation artifact store. |
+| `/exec <cmd>`                  | Host shell (confirm gate; **on by default** in the TUI). Disable with `--no-exec`. Not Docker-sandboxed — see Phase 2 roadmap. |
+| `/write <path>`                | Write via the shared tool path (`/write --persist` stores in the conversation artifact store). |
 | `/read <path>` \| `/list`      | Read or list conversation artifacts.                                |
 | `/mcp tools\|call`             | MCP servers from `~/.arbiter/mcp_servers.json`.                     |
 | `/a2a list\|call`              | Remote A2A agents from `~/.arbiter/a2a_agents.json`.               |
@@ -96,9 +96,11 @@ These commands use the same dispatch path as agent tool calls during `/v1/orches
 |--------------------------------|---------------------------------------------------------------------|
 | `/theme` | Browse themes with ↑↓ live preview; Enter selects, Esc cancels. `/theme list`, `/theme <name>`, `/theme save <name>`, `/theme file <path>` also supported. See [themes.md](themes.md). |
 | `/verbose [on\|off]`           | Toggle raw `/cmd` line streaming. Off (default): tool-call lines are swallowed and replaced by the spinner on the mid-separator. On: every `/fetch`, `/exec`, `/agent`, `/mem` line lands in the scroll region as the agent emits it. |
+| `/chat list\|new\|switch\|title\|search\|delete\|purge` | Manage global conversations from the REPL (sidebar is the visual twin). |
+| `/find <text>` \| `next` \| `prev` | Search the focused pane's scrollback.                            |
 | `/help`                        | Print this command reference.                                       |
 | `/help <topic>`                | Detailed reference for one slash command (same text agents see).    |
-| `/quit` / `/exit` / `/q`       | Save the session snapshot and exit.                                 |
+| `/quit` / `/exit` / `/q`       | Drain autosave, save open conversations, and exit.                  |
 
 ## Notes on argument parsing
 

@@ -43,7 +43,7 @@ arbiter --help                             Print built-in help
 
 ## Choosing a mode
 
-**Interactive.** The default. Multi-pane TUI, persistent session per cwd, all slash commands available. Built for humans typing into a terminal. Reach for it when exploring, iterating with an agent, or running long sessions.
+**Interactive.** The default. Multi-pane TUI, global conversation store under `~/.arbiter/conversations/`, all slash commands available. Built for humans typing into a terminal. Reach for it when exploring, iterating with an agent, or running long sessions.
 
 **One-shot (`--send`).** No TTY, no panes, no streaming. Sends one message to one agent, prints the reply on stdout, exits non-zero on error. Built for scripts and pipelines:
 
