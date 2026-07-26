@@ -95,11 +95,10 @@ TEST_CASE("resolve_primary_tenant: re-enable restores lowest id") {
 // Issue #90: --disable-tenant must survive API restart and block traffic.
 TEST_CASE("tenant kill-switch: disabled flag persists across store reopen") {
     TempDb db;
-    int64_t tid = 0;
     {
         TenantStore store;
         store.open(db.path.string());
-        tid = store.create_tenant("primary").tenant.id;
+        const int64_t tid = store.create_tenant("primary").tenant.id;
         REQUIRE(store.set_disabled(std::to_string(tid), true));
     }
     {
