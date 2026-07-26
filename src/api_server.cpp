@@ -13,6 +13,7 @@
 #include "config.h"
 #include "constitution.h"
 #include "context_compaction.h"
+#include "file_cap.h"
 #include "json.h"
 #include "a2a/event_translator.h"
 #include "a2a/manager.h"
@@ -575,21 +576,6 @@ std::string extract_bearer(const HttpRequest& req) {
         return {};
     return hdr.substr(kPrefixLen);
 }
-
-// Atomically reserve `size` bytes against a per-response file cap.
-// Returns false when the reservation would exceed `cap`.
-bool try_reserve_file_bytes(std::atomic<size_t>& captured,
-                            size_t size, size_t cap) {
-    size_t prev = captured.load(std::memory_order_relaxed);
-    for (;;) {
-        if (prev + size > cap) return false;
-        if (captured.compare_exchange_weak(
-                prev, prev + size, std::memory_order_relaxed))
-            return true;
-    }
-}
-
-// ─── Orchestrate endpoint ───────────────────────────────────────────────────
 
 // EventLogger — mirrors SSE events to stderr in real time so the operator
 // running `arbiter --api` can watch what every tenant request is doing
