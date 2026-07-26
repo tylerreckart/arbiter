@@ -68,12 +68,12 @@ Per-user state lives under `~/.arbiter/`:
 |----------------------------|---------------------------------------------------------|
 | `openrouter_api_key`       | OpenRouter API key for hosted models.                   |
 | `agents/*.json`            | Agent constitutions — one file per agent.               |
-| `conversations/`           | Global conversation store (`manifest.json`, `<uuid>.json`, `active`). |
+| `conversations/`           | Global conversation store (`manifest.json`, `<uuid>.json`, `active`, `layout.json`). |
 | `tenants.db`               | Tenant store: scratchpads, structured memory, schedules, todos, lessons (TUI and `--api`). |
 | `sessions/*.json`          | Legacy per-cwd snapshots (imported once into `conversations/`). |
 | `memory/t<tid>/`           | Legacy filesystem scratchpad fallback (DB is primary).  |
 
-Pane layout and painted scrollback are in-memory only. Conversation histories restore on relaunch from `conversations/` (last active id); see [Sessions](sessions.md).
+Pane layout restores from `conversations/layout.json` on relaunch (split tree + per-pane conversation bindings). Painted scrollback is rebuilt via transcript replay, not a pixel buffer; see [Sessions](sessions.md).
 
 ## TUI design config
 

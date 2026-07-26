@@ -144,6 +144,7 @@ set(ARBITER_SOURCES
     src/cli_helpers.cpp
     src/repl/queues.cpp
     src/repl/layout.cpp
+    src/repl/layout_snapshot.cpp
     src/repl/pane.cpp
     src/repl/pane_history.cpp
     src/repl/conversation_store.cpp
@@ -694,6 +695,66 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_mouse_decode COMMAND unit_mouse_decode)
+
+    # Pane layout snapshot JSON + LayoutTree capture/restore (#42).
+    add_executable(unit_layout_snapshot
+        tests/test_layout_snapshot.cpp
+        tests/term_size_stub.cpp
+        src/repl/layout.cpp
+        src/repl/layout_snapshot.cpp
+        src/repl/pane.cpp
+        src/repl/queues.cpp
+        src/atomic_file.cpp
+        src/json.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/tui/opentui/pane_input_editor.cpp
+        src/tui/opentui/pane_scroll_view.cpp
+        src/tui/opentui/ansi_scroll_append.cpp
+        src/tui/opentui/span_scroll_append.cpp
+        src/tui/opentui/diff_panel.cpp
+        src/tui/palette.cpp
+        src/tui/tui.cpp
+        src/tui/spinner.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/tui/ansi_util.cpp
+        src/code_highlighter.cpp
+        src/markdown.cpp
+        src/styled_text.cpp
+        src/render_policy.cpp
+        src/theme.cpp
+    )
+    target_include_directories(unit_layout_snapshot PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_compile_definitions(unit_layout_snapshot PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    target_link_libraries(unit_layout_snapshot PRIVATE
+        OpenTUI::core
+        Threads::Threads
+        CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    if(APPLE)
+        target_link_libraries(unit_layout_snapshot PRIVATE
+            "-framework CoreFoundation"
+            "-framework CoreAudio"
+            "-framework AudioToolbox"
+        )
+        target_link_options(unit_layout_snapshot PRIVATE "-Wl,-ld_classic")
+        set_target_properties(unit_layout_snapshot PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    elseif(UNIX)
+        target_link_libraries(unit_layout_snapshot PRIVATE dl pthread)
+        set_target_properties(unit_layout_snapshot PROPERTIES
+            BUILD_RPATH "${ARBITER_OPENTUI_LIB_DIR}")
+    endif()
+    add_test(NAME unit_layout_snapshot COMMAND unit_layout_snapshot)
 
     add_executable(unit_sidebar_format
         tests/test_sidebar_format.cpp
@@ -1291,6 +1352,7 @@ if(INDEX_BUILD_TESTS)
         unit_tui_theme_json
         unit_tool_indicator
         unit_pane_scroll_segments
+        unit_layout_snapshot
         unit_history_sidebar
         unit_conversation_store
         unit_conversation_store_autosave

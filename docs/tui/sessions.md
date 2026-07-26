@@ -12,6 +12,7 @@ Storage layout:
 ~/.arbiter/conversations/
   manifest.json     # [{id, title, cwd, created_at, updated_at}]
   active            # UUID of the last-open conversation
+  layout.json       # multi-pane tree + per-pane conversation ids
   <uuid>.json       # agent histories (index + loaded agents)
 ```
 
@@ -21,13 +22,14 @@ On first launch after upgrading, legacy per-cwd session files under `~/.arbiter/
 
 | Event             | What happens                                                       |
 |-------------------|--------------------------------------------------------------------|
-| `arbiter` startup | The last active conversation is loaded. Agent histories are restored before the first prompt. |
+| `arbiter` startup | The last layout snapshot is restored when valid (split tree + per-pane conversation ids); each open conversation's agent history is loaded and a transcript tail is replayed into its pane. Missing snapshot → single pane on the active conversation. |
 | After each completed turn | Background autosave (`save_async`) writes that pane's conversation. Distinct conversation ids (multi-pane) each keep a pending slot. |
 | Mid-turn checkpoints | After each successful model iteration and after each tool-result envelope is committed to history, `save_async` runs so completed tool work survives quit/cancel/SIGKILL. |
 | Periodic tick | Dirty conversations are flushed every 30s by default (`ARBITER_AUTOSAVE_INTERVAL_SEC`; `0` disables the timer). |
 | `/reset` / `/compact` | History/compaction changes are queued for autosave immediately. |
-| Switch conversation (`Ctrl-w b` → Enter) | Focused pane's conversation is flushed and saved; selected thread attaches to that pane only. Other panes and the split layout stay put. |
-| `/quit` / Ctrl-D  | Pending autosaves drain, then every distinct open-pane conversation is written to disk. Pane layout is **not** saved. |
+| Switch conversation (`Ctrl-w b` → Enter) | Focused pane's conversation is flushed and saved; selected thread attaches to that pane only. Other panes and the split layout stay put. Layout snapshot is rewritten. |
+| Split / close / focus / separator drag | `layout.json` is rewritten so relaunch matches the live tree (including asymmetric weights). |
+| `/quit` / Ctrl-D  | Pending autosaves drain, every distinct open-pane conversation is written to disk, then the pane layout snapshot is saved. |
 
 Saves write a full conversation snapshot (not an incremental journal). A hard kill can still lose an **unfinished** model stream (tokens not yet committed as an assistant message). Completed tool-result envelopes are committed to history and checkpoint-saved before the next LLM wait.
 
@@ -44,11 +46,13 @@ Conversation **titles** are auto-generated from the first exchange (visible in t
 
 ## What's not persisted
 
-- **Pane layout.** Restarting always opens a single pane. Switching conversations no longer collapses splits — only the focused pane rebinds.
-- **Scrollback.** On relaunch the painted history is gone (conversation switch replays a transcript tail into the pane). Type a follow-up and the agent answers in context.
+- **Scrollback pixels.** On relaunch the painted history is rebuilt from a transcript tail replay (same as conversation switch), not from a pixel buffer.
+- **Zoom.** `Ctrl-w z` is session-local; relaunch restores the un-zoomed split tree.
 - **Unfinished model streams.** Assistant text still being streamed when you quit is not committed; prior iterations and completed tool-result envelopes from the same turn are.
 - **Background loops.** `/loop`-spawned processes are killed on exit.
 - **Queue depth.** Any queued user inputs are dropped on exit.
+
+Deleted conversations referenced by `layout.json` are remapped to the active conversation on restore. Corrupt or oversized snapshots are ignored and the TUI starts with a single pane.
 
 ## Cleaning up
 

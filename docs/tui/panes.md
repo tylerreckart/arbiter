@@ -103,4 +103,4 @@ Set `"layout": { "mouse": false }` to keep keyboard-only input (useful inside tm
 ## Limits
 
 - No keyboard shortcut yet to resize a split asymmetrically (mouse drag works; see above). Chord-based weights are tracked as #44.
-- Layout is not persisted — relaunching restores conversations' agent histories but always starts as a single pane. Sessions restore content; layouts are ephemeral.
+- Layout is persisted to `~/.arbiter/conversations/layout.json` (tree shape, split weights, per-pane conversation id + agent). Relaunch restores the arrangement and replays each pane's transcript tail; painted scrollback and zoom are not saved. See [Sessions](sessions.md).
