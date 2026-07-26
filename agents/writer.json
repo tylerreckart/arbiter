@@ -24,6 +24,7 @@
     "/exec",
     "/agent",
     "/parallel",
-    "/mem"
+    "/mem",
+    "/todo"
   ]
 }

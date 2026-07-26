@@ -23,6 +23,7 @@
     "/fetch",
     "/agent",
     "/parallel",
-    "/mem"
+    "/mem",
+    "/todo"
   ]
 }

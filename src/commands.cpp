@@ -1757,6 +1757,12 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 allowed_bundles.insert("a2a");
             else if (cap == "/advise")
                 allowed_bundles.insert("advise");
+            else if (cap == "/todo")
+                allowed_bundles.insert("todos");
+            else if (cap == "/schedule")
+                allowed_bundles.insert("schedule");
+            else if (cap == "/lesson")
+                allowed_bundles.insert("lessons");
         }
     }
 
@@ -1770,6 +1776,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         if (name == "mcp")                                           return "mcp";
         if (name == "a2a")                                           return "a2a";
         if (name == "advise")                                        return "advise";
+        if (name == "todo")                                          return "todos";
+        if (name == "schedule")                                      return "schedule";
+        if (name == "lesson")                                        return "lessons";
         return "";   // "help" and unknowns are always allowed
     };
 

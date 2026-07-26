@@ -21,6 +21,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   criteria checked.
 
 ### Fixed
+- **Capability gate for /todo /schedule /lesson (#91).** Dispatcher
+  `bundle_of` now maps these writs into allowlist bundles so constrained
+  agents can no longer bypass `capabilities`. Starter agents list `/todo`
+  so delegated specialists can mark progress when `[DELEGATION CONTEXT]`
+  injects open todos; `/schedule` and `/lesson` remain opt-in.
 - **Sandbox cold-start lock scope (#95).** `ensure_container` no longer
   holds the process-wide map mutex across `docker inspect` / `docker run`
   (up to ~30s). Map mutations stay under `mu_`; same-tenant start/stop
