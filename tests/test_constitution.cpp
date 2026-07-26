@@ -123,6 +123,30 @@ TEST_CASE("mcp must be opt-in via /mcp in capabilities") {
     CHECK(with   .build_system_prompt().find("/mcp tools") != std::string::npos);
 }
 
+TEST_CASE("schedule and lessons are opt-in; todos remain in the default set") {
+    // Empty capabilities → default bundles include todos (legacy master
+    // surface) but not schedule/lessons (same opt-in posture as /mcp).
+    auto master = make_agent();
+    auto pm = master.build_system_prompt();
+    CHECK(pm.find("/todo add") != std::string::npos);
+    CHECK(pm.find("/schedule ") == std::string::npos);
+    CHECK(pm.find("/lesson ") == std::string::npos);
+
+    // Narrow warrant that lists only /search omits all three inventories.
+    auto narrow = make_agent({"/search"});
+    auto pn = narrow.build_system_prompt();
+    CHECK(pn.find("/todo add") == std::string::npos);
+    CHECK(pn.find("/schedule ") == std::string::npos);
+    CHECK(pn.find("/lesson ") == std::string::npos);
+
+    // Explicit caps pull the matching inventory into the prompt.
+    auto with_all = make_agent({"/todo", "/schedule", "/lesson"});
+    auto pa = with_all.build_system_prompt();
+    CHECK(pa.find("/todo add") != std::string::npos);
+    CHECK(pa.find("/schedule ") != std::string::npos);
+    CHECK(pa.find("/lesson ") != std::string::npos);
+}
+
 TEST_CASE("starter-agent capability sets produce measurably smaller prompts") {
     // Anchored on the actual capability sets in src/starters.cpp so any
     // future drift between starters and the bundle splitter shows up here.

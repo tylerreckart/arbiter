@@ -39,6 +39,10 @@ static std::set<std::string> resolve_bundles(
             out.insert("a2a");
         else if (cap == "/todo")
             out.insert("todos");
+        else if (cap == "/schedule")
+            out.insert("schedule");
+        else if (cap == "/lesson")
+            out.insert("lessons");
         // Unknown capability strings are silently dropped — they're routing
         // hints from older agent_defs and may not map to any bundle today.
     }
@@ -198,6 +202,24 @@ static const char* bundle_todos_inventory() {
         "  /todo delete <id>                          — hard remove (no undo)\n";
 }
 
+static const char* bundle_schedule_inventory() {
+    return
+        "  /schedule <phrase>: <message>              — defer or recur work (e.g. in 1 hour, every monday at 09:00)\n"
+        "  /schedule list                             — list active schedules\n"
+        "  /schedule cancel|pause|resume <id>         — manage a schedule\n";
+}
+
+static const char* bundle_lessons_inventory() {
+    return
+        "  /lesson <signature>: <text>                — record a hard-won remediation (single-line)\n"
+        "  /lesson <signature>                        — block form:\n"
+        "  <body lines>\n"
+        "  /endlesson\n"
+        "  /lesson list                               — list this agent's lessons\n"
+        "  /lesson search <query>                     — substring match on signature + text\n"
+        "  /lesson delete <id>                        — hard remove\n";
+}
+
 static const char* bundle_mcp_inventory() {
     return
         "  /mcp tools                                 — list available MCP tools\n"
@@ -253,6 +275,16 @@ static std::string compose_command_rules(const std::set<std::string>& b) {
             "  delegation that completed three steps closes three todos in the synthesis\n"
             "  turn; sub-agents see the open list in their [DELEGATION CONTEXT] envelope\n"
             "  and may have already marked some.  Don't double-close.\n";
+
+    if (b.count("schedule"))
+        s +=
+            "- /schedule — defer or recur work the runtime will fire later.  Use for\n"
+            "  follow-ups you cannot finish this turn, not as a substitute for /todo.\n";
+
+    if (b.count("lessons"))
+        s +=
+            "- /lesson — after a hard-won fix, record the signature + remediation so future\n"
+            "  turns surface it as a KNOWN PITFALL.  Don't re-discover the same failure.\n";
 
     // Artifact pairing pattern requires write + mem (and read to retrieve).
     if (b.count("write") && b.count("mem"))
@@ -391,6 +423,8 @@ static std::string compose_help_inventory(const std::set<std::string>& b) {
     if (b.count("mem"))        add("mem");
     if (b.count("read"))       add("artifacts");
     if (b.count("todos"))      add("todos");
+    if (b.count("schedule"))   add("schedule");
+    if (b.count("lessons"))    add("lessons");
     if (b.count("mcp"))        add("mcp");
     add("advise");   // help corpus carries this regardless of /advise wiring
 
@@ -420,6 +454,8 @@ static std::string arbiter_prompt(Brevity level,
         if (bundles.count("read"))       s += bundle_read_inventory();
         if (bundles.count("mem"))        s += bundle_mem_inventory();
         if (bundles.count("todos"))      s += bundle_todos_inventory();
+        if (bundles.count("schedule"))   s += bundle_schedule_inventory();
+        if (bundles.count("lessons"))    s += bundle_lessons_inventory();
         if (bundles.count("mcp"))        s += bundle_mcp_inventory();
 
         s += compose_help_inventory(bundles);
