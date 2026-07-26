@@ -1079,6 +1079,14 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_tenant_primary COMMAND unit_tenant_primary)
 
+    add_executable(unit_file_cap tests/test_file_cap.cpp)
+    target_include_directories(unit_file_cap PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_file_cap PRIVATE Threads::Threads)
+    add_test(NAME unit_file_cap COMMAND unit_file_cap)
+
     # Per-tenant + per-conversation artifact store (POST/GET/DELETE
     # /v1/.../artifacts and the agent /write --persist surface).
     add_executable(unit_artifacts
