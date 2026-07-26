@@ -1139,6 +1139,22 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_sandbox_ssrf COMMAND unit_sandbox_ssrf)
 
+    add_executable(unit_sandbox_quota
+        tests/test_sandbox_quota.cpp
+        src/sandbox.cpp
+        src/ssrf_guard.cpp
+        src/metrics.cpp
+    )
+    target_include_directories(unit_sandbox_quota PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_sandbox_quota PRIVATE
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_sandbox_quota COMMAND unit_sandbox_quota)
+
     # A2A protocol layer.  Five slices exercised in-process:
     #   • wire-type round-trips for every public struct;
     #   • JSON-RPC envelope serialise + parse + error shaping;
