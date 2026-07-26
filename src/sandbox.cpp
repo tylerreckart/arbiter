@@ -380,6 +380,13 @@ void SandboxManager::touch_access(int64_t tenant_id) {
     last_access_[tenant_id] = std::chrono::steady_clock::now();
 }
 
+std::shared_ptr<std::mutex> SandboxManager::start_mutex_for(int64_t tenant_id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto& slot = start_mu_[tenant_id];
+    if (!slot) slot = std::make_shared<std::mutex>();
+    return slot;
+}
+
 void SandboxManager::reaper_loop() {
     using clock = std::chrono::steady_clock;
     // Tick cadence is bounded by idle_seconds so a 60s idle threshold
@@ -543,15 +550,44 @@ bool SandboxManager::ensure_container(int64_t tenant_id, std::string& err_out) {
     if (!usable_) { err_out = unusable_reason_; return false; }
     const std::string name = container_name_for(tenant_id);
 
-    std::lock_guard<std::mutex> lk(mu_);
-    auto it = running_.find(tenant_id);
-    if (it != running_.end()) {
+    // Per-tenant critical section, held across the docker CLI (inspect,
+    // probe, run) for this tenant only — different tenants hold different
+    // mutexes, so cross-tenant warm checks and cold-starts all overlap.
+    // stop_container takes the same mutex, so a concurrent reap cannot
+    // `docker rm` between our inspect and a successful return.
+    auto tenant_mu = start_mutex_for(tenant_id);
+    std::lock_guard<std::mutex> start_lk(*tenant_mu);
+
+    bool tracked = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        // Checked under the tenant mutex: stop_all sets stopping_ before
+        // sweeping, so either we see the flag and bail, or we started
+        // before the sweep and stop_container waits behind our mutex and
+        // removes whatever we start.
+        if (stopping_) {
+            err_out = "sandbox manager is shutting down";
+            return false;
+        }
+        tracked = running_.find(tenant_id) != running_.end();
+    }
+    if (tracked) {
         // We think it's running; verify and re-create if it died.  No
         // responsive-probe here — that's a 30-100ms tax on every /exec
         // and the next /exec will catch a wedged container via the
         // post-exec eviction path anyway.
-        if (container_is_running(it->second)) return true;
-        running_.erase(it);
+        if (container_is_running(name)) {
+            // Re-assert the map entry: exec()'s self-heal (which takes
+            // only mu_, not the tenant start mutex) may have erased it
+            // while our inspect was in flight.  Without this the live
+            // container would go untracked — invisible to the idle
+            // reaper and leaked past stop_all.
+            std::lock_guard<std::mutex> lk(mu_);
+            running_[tenant_id] = name;
+            return true;
+        }
+        std::lock_guard<std::mutex> lk(mu_);
+        running_.erase(tenant_id);
     } else if (container_is_running(name)) {
         // Stale survivor from a previous server run with the same
         // workspace root — re-attach only after a `docker exec true`
@@ -559,6 +595,7 @@ bool SandboxManager::ensure_container(int64_t tenant_id, std::string& err_out) {
         // or a kernel-side namespace teardown can leave the inspect
         // saying "Running" while exec hangs; rebuild in that case.
         if (container_is_responsive(name)) {
+            std::lock_guard<std::mutex> lk(mu_);
             running_[tenant_id] = name;
             return true;
         }
@@ -568,15 +605,19 @@ bool SandboxManager::ensure_container(int64_t tenant_id, std::string& err_out) {
         if (metrics_) metrics_->inc_sandbox_container_rebuilt();
         std::vector<std::string> rm{cfg_.runtime, "rm", "-f", name};
         std::string ignore; bool to = false;
-        run_capture(rm, /*timeout_seconds=*/10, /*output_cap=*/512, ignore, to);
+        run_capture(rm, /*timeout_seconds=*/10, /*output_cap=*/512,
+                     ignore, to);
     }
 
     if (!start_container(tenant_id, err_out)) return false;
-    running_[tenant_id] = name;
-    if (metrics_) {
-        metrics_->inc_sandbox_container_started();
-        metrics_->set_sandbox_containers_running(
-            static_cast<int>(running_.size()));
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        running_[tenant_id] = name;
+        if (metrics_) {
+            metrics_->inc_sandbox_container_started();
+            metrics_->set_sandbox_containers_running(
+                static_cast<int>(running_.size()));
+        }
     }
     return true;
 }
@@ -817,6 +858,10 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
 }
 
 void SandboxManager::stop_container(int64_t tenant_id) {
+    // Serialize with ensure_container for this tenant so docker rm cannot
+    // race a concurrent docker run on the same container name.
+    auto tenant_mu = start_mutex_for(tenant_id);
+    std::lock_guard<std::mutex> start_lk(*tenant_mu);
     std::string name;
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -832,11 +877,22 @@ void SandboxManager::stop_container(int64_t tenant_id) {
 }
 
 void SandboxManager::stop_all() {
+    // Sweep tenants with a start mutex as well as those in `running_`:
+    // a cold-start in flight holds its tenant mutex but isn't registered
+    // in `running_` until `docker run` returns.  stop_container blocks
+    // on that mutex, so it waits out the start and then removes the
+    // freshly started container instead of leaking it past shutdown.
     std::vector<int64_t> ids;
     {
         std::lock_guard<std::mutex> lk(mu_);
-        ids.reserve(running_.size());
-        for (auto& kv : running_) ids.push_back(kv.first);
+        stopping_ = true;
+        ids.reserve(start_mu_.size() + running_.size());
+        for (auto& kv : start_mu_) ids.push_back(kv.first);
+        for (auto& kv : running_) {
+            if (start_mu_.find(kv.first) == start_mu_.end()) {
+                ids.push_back(kv.first);
+            }
+        }
     }
     for (int64_t id : ids) stop_container(id);
 }
