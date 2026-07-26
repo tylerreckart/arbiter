@@ -40,6 +40,18 @@ public:
     // Send with streaming — chunks delivered via callback as they arrive.
     ApiResponse stream(const std::string& user_message, StreamCallback cb);
     ApiResponse stream(std::vector<ContentPart> parts, StreamCallback cb);
+
+    // Append a user message to the current ConversationScope without calling
+    // the model.  Used to commit tool-result envelopes (and similar synthetic
+    // user turns) into history before the next LLM wait so quit/cancel/kill
+    // cannot drop completed tool work.  Pair with send_continue/stream_continue
+    // so the follow-up model call does not double-append the same user turn.
+    void commit_user_message(const std::string& text);
+    void commit_user_message(std::vector<ContentPart> parts);
+
+    // Model call using whatever is already in history (no new user push).
+    ApiResponse send_continue();
+    ApiResponse stream_continue(StreamCallback cb);
     // Clear the current ConversationScope's history (keep constitution).
     void reset_history();
     // Drop every conversation slot (used when tearing down an agent).

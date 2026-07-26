@@ -38,7 +38,7 @@ If the env var named by `token_env` isn't set, registry load logs a warning and 
 
 ## `/a2a` slash command
 
-Three subcommands, dispatched in `commands.cpp` and routed through the per-request `a2a::Manager`. Available wherever the manager is wired — i.e., any path that builds a request orchestrator (`/v1/orchestrate`, `/v1/conversations/:id/messages`, `/v1/agents/:id/chat`, `/v1/a2a/agents/:id`). The CLI/REPL mode is **not** wired; agents in those contexts get `ERR: A2A unavailable in this context`.
+Three subcommands, dispatched in `commands.cpp` and routed through the per-request `a2a::Manager`. Available wherever the manager is wired — HTTP orchestrate/chat/A2A routes, the interactive TUI, and `arbiter --send` (same `wire_orchestrator_tools` path). Without a registry (`~/.arbiter/a2a_agents.json`) calls return unavailable.
 
 | Command                         | Effect |
 |---------------------------------|--------|

@@ -25,7 +25,7 @@ Writs factor into a small number of orthogonal axes. Each axis has one primary v
 | Consultation | `/advise` | A higher-capability model as second opinion. See [Advisor](advisor.md). |
 | Persistence | `/mem` | Structured memory across turns and conversations. See [Structured memory](structured-memory.md). |
 | Federation | `/mcp`, `/a2a` | External tool ecosystems and remote agents. See [MCP](mcp.md) and [A2A](a2a.md). |
-| Scheduling | `/schedule` | Defer or recur agent work; runs fire under the API server's tick thread and surface as runs + notifications. See [Scheduler](scheduler.md). |
+| Scheduling | `/schedule` | Defer or recur agent work; runs fire under the TUI or `--api` tick thread and surface as runs (+ SSE notifications under `--api`). See [Scheduler](scheduler.md). |
 | Progress tracking | `/todo` | Capture and mark progress on the steps of a request. Tenant-scoped; survives across conversations and pipeline-injects into delegated sub-agents. See [Todos](todos.md). |
 | Self-reflection | `/lesson` | Record "this approach failed; try this instead" after a hard-won fix. Agent-scoped; surfaces as a `KNOWN PITFALLS` block at the top of future turns whose prompt matches. See [Lessons](lessons.md). |
 
@@ -33,7 +33,7 @@ Most writs are single-line. A few are blocks with explicit terminators:
 
 - `/write <path>` … `/endwrite` — persist a file.
 - `/parallel` … `/endparallel` — fan-out enclosed `/agent` calls concurrently.
-- `/mem add entry` … `/endentry` — commit a structured memory entry.
+- `/mem add entry` … `/endmem` — commit a structured memory entry.
 - `/todo add <subject>` … `/endtodo` — capture a todo with a multi-line description (single-line form has no terminator).
 
 Block terminators are used instead of indentation or braces because models reliably produce closing tokens but don't reliably produce balanced indentation, and terminators survive line-by-line streaming without buffering.

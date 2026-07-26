@@ -182,6 +182,15 @@ public:
     using AdvisorEventCallback = std::function<void(const AdvisorEvent&)>;
     void set_advisor_event_callback(AdvisorEventCallback cb) { advisor_event_cb_ = std::move(cb); }
 
+    // Fired after mid-turn history commits that should hit disk promptly —
+    // successful model iterations and committed tool-result user messages.
+    // The TUI wires this to ConversationStore::save_async so SIGKILL/quit
+    // after tools finish cannot lose the envelopes the model needs next.
+    using HistoryCheckpointCallback = std::function<void()>;
+    void set_history_checkpoint_callback(HistoryCheckpointCallback cb) {
+        history_checkpoint_cb_ = std::move(cb);
+    }
+
     // Read the current thread's streaming context.  Callbacks (tool_status,
     // cost, progress, etc.) invoke these at emit time so every event carries
     // the `stream_id` and `agent` of whichever turn produced it — even when
@@ -433,8 +442,10 @@ private:
     StreamEndCallback   stream_end_cb_;
     EscalationCallback  escalation_cb_;
     AdvisorEventCallback advisor_event_cb_;
+    HistoryCheckpointCallback history_checkpoint_cb_;
     std::atomic<int>    stream_counter_{-1};   // next_stream_id returns 0 first
     int                 next_stream_id();
+    void fire_history_checkpoint();
 
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;

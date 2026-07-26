@@ -2190,8 +2190,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                   << "]\n";
             if (!scheduler_invoker) {
                 block << "ERR: scheduling unavailable in this context — "
-                         "the /schedule writ requires the HTTP API's "
-                         "scheduler subsystem.  Run under /v1/orchestrate.\n";
+                         "no scheduler bridge is wired (TUI and --api both "
+                         "start a ticker; --send persists tasks but does not "
+                         "fire them).\n";
                 cache_result = false;
             } else {
                 std::string body = scheduler_invoker(callback_kind, callback_args, agent_id);
