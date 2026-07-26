@@ -224,17 +224,11 @@ void cmd_api(int port, const std::string& bind, bool verbose,
         auto created = tenants.create_tenant("default");
         all.push_back(created.tenant);
     }
-    int64_t primary_id = all.front().id;
-    for (const auto& t : all) {
-        if (t.id < primary_id) primary_id = t.id;
-    }
-    if (auto primary = tenants.get_tenant(primary_id); primary && primary->disabled) {
+    const auto active_primary = resolve_primary_tenant(all);
+    if (!active_primary) {
         ::fprintf(stderr,
-            "WARN: primary tenant %lld is disabled — "
-            "API requests will be rejected until re-enabled "
-            "(arbiter --enable-tenant %lld)\n",
-            static_cast<long long>(primary_id),
-            static_cast<long long>(primary_id));
+            "WARN: all tenants are disabled — API requests will be rejected "
+            "until one is re-enabled (arbiter --enable-tenant <id|name>)\n");
     }
 
     bool fresh_admin = false;
@@ -373,7 +367,8 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     if (all.size() > 1) {
         std::cerr << "WARN: legacy multi-tenant DB detected (" << all.size()
                   << " tenant rows). Running in single-tenant mode with tenant #"
-                  << primary_id << ".\n";
+                  << (active_primary ? active_primary->id : all.front().id)
+                  << ".\n";
     }
     std::cout << "\n";
 
