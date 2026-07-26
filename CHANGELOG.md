@@ -7,6 +7,19 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **In-flight turn recovery (TUI).** Tool-result envelopes are committed to
+  agent history immediately after tools finish, and mid-turn
+  `save_async` checkpoints run after each model iteration and each tool
+  batch so quit/cancel/SIGKILL cannot drop completed tool work.
+
+### Changed
+- **Doc drift pass (Phase 1).** Sessions / scheduler / memory / sandbox docs
+  aligned with shipped TUI parity: global `conversations/` store, TUI
+  scheduler ticker, DB-backed `/mem` graph + scratchpad, sandbox idle reaper
+  and host-exec flags documented. Phase 1 roadmap items and acceptance
+  criteria checked.
+
 ## [0.8.8] — 2026-07-25
 
 Patch release: Phase 1 context compaction, periodic conversation autosave,

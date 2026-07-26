@@ -51,13 +51,13 @@ arbiter --send reviewer "$(git diff main...HEAD)" \
 | Aspect                      | Interactive (`arbiter`)                | One-shot (`--send`)                   |
 |-----------------------------|----------------------------------------|---------------------------------------|
 | TTY                         | Required (alt-screen)                  | Not required; works under pipes / cron |
-| Session persistence         | Per-cwd snapshot                       | None — fresh history every run        |
+| Session persistence         | Global `conversations/` store          | None — fresh history every run        |
 | Tool-call output            | Streams into scrollback                | Hidden; agent consumes internally     |
 | Streaming visibility        | Real-time deltas                       | Reply printed once, on completion     |
 | Multi-agent panes           | Yes (`/pane`, `^W` chords)             | No — single agent per invocation      |
 | Background loops            | `/loop`, `/watch`, etc.                | No                                    |
 | `/cmd` slash commands       | Available                              | Not parsed — message is sent verbatim |
-| Memory scratchpad reads     | Persisted across sessions              | Same disk files — agent can `/mem read` internally |
+| Memory / scratchpad         | `tenants.db` via wired `/mem`          | Same DB wiring — agent can `/mem` internally; schedules persist but do not fire until TUI/`--api` |
 
 `--send` is intentionally minimal. Anything that needs streaming, queueing, or multi-agent coordination should use either the interactive mode or the [HTTP API](api.md).
 

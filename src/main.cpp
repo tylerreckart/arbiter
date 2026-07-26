@@ -843,6 +843,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         Pane* p = g_active_pane;
         if (p) p->thinking.start();
     });
+    // Mid-turn durability: after each committed model iteration and each
+    // tool-result envelope, queue an autosave so quit/cancel/SIGKILL cannot
+    // drop completed tool work that is already in histories_.
+    orch.set_history_checkpoint_callback([&]() {
+        const std::string& cid = arbiter::agent_conversation_key();
+        if (cid.empty()) return;
+        conversation_store.save_async(cid, orch);
+    });
     orch.set_escalation_callback([&](const std::string& agent_id,
                                       int /*stream_id*/,
                                       const std::string& reason) {
@@ -1611,9 +1619,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "\n"
                     "Fetch + memory\n"
                     "  /fetch <url>                     — fetch URL, send readable text to agent\n"
-                    "  /mem write|read|show|clear       — scratchpad (same as API / agents)\n"
+                    "  /mem write|read|show|clear       — scratchpad (tenants.db, same as API)\n"
                     "  /mem shared write|read|clear     — tenant shared scratchpad\n"
-                    "  /mem search|entries|entry|add    — structured memory graph\n"
+                    "  /mem search|entries|entry|expand|density|add|invalidate — memory graph\n"
                     "\n"
                     "Tools  (same dispatch as API agent turns)\n"
                     "  /search <query> [top=N]          — web search; injects results like /fetch\n"
@@ -1621,8 +1629,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /todo list|add|start|done|…      — conversation-scoped task list\n"
                     "  /schedule list|<phrase>: <msg>   — schedule recurring/one-shot tasks\n"
                     "  /schedule cancel|pause|resume    — manage scheduled tasks by id\n"
-                    "  /exec <cmd>                      — shell (confirm gate; off by default)\n"
-                    "  /write <path>                    — write file (confirm gate)\n"
+                    "  /exec <cmd>                      — host shell (confirm gate; on by default; --no-exec disables)\n"
+                    "  /write <path>                    — write file / --persist to artifact store\n"
                     "  /read <path> | /list             — conversation artifacts\n"
                     "  /mcp tools|call                  — MCP server registry\n"
                     "  /a2a list|call                   — remote A2A agents\n"

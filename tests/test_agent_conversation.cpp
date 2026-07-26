@@ -209,3 +209,61 @@ TEST_CASE("set_history clears pinned facts and notices for the scope") {
     CHECK(agent.compaction_state().summary.empty());
 }
 
+TEST_CASE("commit_user_message persists tool envelopes without a model call") {
+    ApiClient client({});
+    Constitution cfg;
+    cfg.name = "tester";
+    cfg.model = "test-model";
+    Agent agent("tester", cfg, client);
+
+    ConversationScope scope("conv-tools");
+    agent.set_history({
+        Message{"user", "fetch it"},
+        Message{"assistant", "/fetch https://example.com"},
+    });
+
+    const std::string envelope =
+        "[TOOL RESULTS]\n[/fetch https://example.com]\nok\n[END FETCH]\n"
+        "[END TOOL RESULTS]";
+    agent.commit_user_message(envelope);
+
+    const auto hist = agent.history();
+    REQUIRE(hist.size() == 3);
+    CHECK(hist[2].role == "user");
+    CHECK(hist[2].content == envelope);
+
+    // Mid-turn quit simulation: history already contains the envelope the
+    // model needs on the next turn, even though stream_continue never ran.
+    const std::string json = agent.to_json();
+    CHECK(json.find("[END TOOL RESULTS]") != std::string::npos);
+    CHECK(json.find("/fetch https://example.com") != std::string::npos);
+}
+
+TEST_CASE("commit_user_message multipart keeps image parts") {
+    ApiClient client({});
+    Constitution cfg;
+    cfg.name = "tester";
+    cfg.model = "test-model";
+    Agent agent("tester", cfg, client);
+
+    ConversationScope scope("conv-img");
+    std::vector<ContentPart> parts;
+    ContentPart text;
+    text.kind = ContentPart::TEXT;
+    text.text = "[TOOL RESULTS]\n[/fetch img]\n[END FETCH]\n[END TOOL RESULTS]";
+    parts.push_back(std::move(text));
+    ContentPart img;
+    img.kind = ContentPart::IMAGE;
+    img.media_type = "image/png";
+    img.image_data = "abc";
+    parts.push_back(std::move(img));
+
+    agent.commit_user_message(std::move(parts));
+    const auto hist = agent.history();
+    REQUIRE(hist.size() == 1);
+    CHECK(hist[0].role == "user");
+    REQUIRE(hist[0].parts.size() == 2);
+    CHECK(hist[0].parts[0].kind == ContentPart::TEXT);
+    CHECK(hist[0].parts[1].kind == ContentPart::IMAGE);
+}
+

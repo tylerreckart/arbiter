@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-List the file-scratchpad memory entries for the authenticated tenant. These are the per-agent markdown surfaces written via the agent's `/mem write` slash command, plus the optional shared pipeline scratchpad.
+List the scratchpad memory entries for the authenticated tenant. These are the per-agent surfaces written via the agent's `/mem write` slash command, plus the optional shared pipeline scratchpad. Rows come from the `agent_scratchpad` table in `tenants.db` (filesystem `memory/t<tid>/*.md` is legacy fallback only when the DB bridge is unwired).
 
 For the structured graph (typed nodes + directed edges), see [`GET /v1/memory/entries`](entries/list.md) instead.
 
@@ -27,14 +27,12 @@ curl -H "Authorization: Bearer atr_…" \
     {
       "kind": "agent",
       "agent_id": "550e8400-e29b-41d4-a716-446655440000",
-      "size": 1247,
-      "modified_at": 1777058449
+      "size": 1247
     },
     {
       "kind": "shared",
       "agent_id": "",
-      "size": 320,
-      "modified_at": 1777058020
+      "size": 320
     }
   ]
 }
@@ -42,10 +40,9 @@ curl -H "Authorization: Bearer atr_…" \
 
 | Field         | Type    | Description |
 |---------------|---------|-------------|
-| `kind`        | string  | `"shared"` for the pipeline scratchpad (`shared.md`), `"agent"` for per-agent memory. |
+| `kind`        | string  | `"shared"` for the pipeline scratchpad (`scope_key=""`), `"agent"` for per-agent memory. |
 | `agent_id`    | string  | Empty for `shared`; otherwise the agent's id. |
 | `size`        | integer | Bytes. |
-| `modified_at` | integer | Epoch seconds. |
 
 The endpoint returns an empty list — **not a 404** — when the tenant has never triggered a memory write.
 

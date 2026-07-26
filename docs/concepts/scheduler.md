@@ -1,8 +1,8 @@
 # Scheduler
 
-A persistent background scheduler for agent work. Agents emit `/schedule "<phrase>": <message>` to defer or recur a task; the API server's tick thread fires due tasks through the same orchestrator path that `/v1/orchestrate` uses, persists the result as a run row, and publishes a notification on the SSE stream.
+A persistent background scheduler for agent work. Agents emit `/schedule <phrase>: <message>` to defer or recur a task; a tick thread fires due tasks through the same orchestrator path that `/v1/orchestrate` uses, persists the result as a run row, and (under `--api`) publishes a notification on the SSE stream.
 
-The scheduler runs only under `arbiter --api`. CLI / TUI / `--send` contexts do not have a long-running ticker; `/schedule` returns ERR there.
+The ticker runs in **`arbiter --api` and the interactive TUI** (`Scheduler::start` in both). Tasks created during `arbiter --send` are written to `tenants.db` but do not fire until a later TUI or `--api` process starts the ticker. SSE notifications (`GET /v1/notifications/stream`) remain API-only.
 
 ## Why it exists
 

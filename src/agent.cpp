@@ -175,21 +175,21 @@ static std::string concatenate_text(const std::vector<ContentPart>& parts) {
     return out;
 }
 
-ApiResponse Agent::send(const std::string& user_message) {
+void Agent::commit_user_message(const std::string& text) {
     std::vector<ContentPart> parts;
     ContentPart p;
     p.kind = ContentPart::TEXT;
-    p.text = user_message;
+    p.text = text;
     parts.push_back(std::move(p));
-    return send(std::move(parts));
+    commit_user_message(std::move(parts));
 }
 
-ApiResponse Agent::send(std::vector<ContentPart> parts) {
-    // Add user message to history.  Invariant: `parts` is populated only
-    // when the message is genuinely multipart (image-bearing or multi-text).
-    // A single text part collapses back to the legacy `content`-only shape
-    // so downstream inspection and the body builders' fast path keep working. Images
-    // contribute zero bytes to `content` regardless.
+void Agent::commit_user_message(std::vector<ContentPart> parts) {
+    // Invariant: `parts` is populated only when the message is genuinely
+    // multipart (image-bearing or multi-text).  A single text part collapses
+    // back to the legacy `content`-only shape so downstream inspection and
+    // the body builders' fast path keep working. Images contribute zero
+    // bytes to `content` regardless.
     Message user_msg;
     user_msg.role = "user";
     const bool is_single_text =
@@ -201,11 +201,25 @@ ApiResponse Agent::send(std::vector<ContentPart> parts) {
         user_msg.parts   = std::move(parts);
     }
 
-    {
-        std::lock_guard<std::mutex> lk(history_mu_);
-        histories_[agent_conversation_key()].push_back(std::move(user_msg));
-    }
+    std::lock_guard<std::mutex> lk(history_mu_);
+    histories_[agent_conversation_key()].push_back(std::move(user_msg));
+}
 
+ApiResponse Agent::send(const std::string& user_message) {
+    std::vector<ContentPart> parts;
+    ContentPart p;
+    p.kind = ContentPart::TEXT;
+    p.text = user_message;
+    parts.push_back(std::move(p));
+    return send(std::move(parts));
+}
+
+ApiResponse Agent::send(std::vector<ContentPart> parts) {
+    commit_user_message(std::move(parts));
+    return send_continue();
+}
+
+ApiResponse Agent::send_continue() {
     maybe_compact(/*force=*/false);
 
     ApiRequest req;
@@ -249,24 +263,11 @@ ApiResponse Agent::stream(const std::string& user_message, StreamCallback cb) {
 }
 
 ApiResponse Agent::stream(std::vector<ContentPart> parts, StreamCallback cb) {
-    // Same invariant as Agent::send — collapse single-text parts back to the
-    // legacy content shape so we don't bloat text-only messages.
-    Message user_msg;
-    user_msg.role = "user";
-    const bool is_single_text =
-        parts.size() == 1 && parts.front().kind == ContentPart::TEXT;
-    if (is_single_text) {
-        user_msg.content = std::move(parts.front().text);
-    } else {
-        user_msg.content = concatenate_text(parts);
-        user_msg.parts   = std::move(parts);
-    }
+    commit_user_message(std::move(parts));
+    return stream_continue(std::move(cb));
+}
 
-    {
-        std::lock_guard<std::mutex> lk(history_mu_);
-        histories_[agent_conversation_key()].push_back(std::move(user_msg));
-    }
-
+ApiResponse Agent::stream_continue(StreamCallback cb) {
     maybe_compact(/*force=*/false);
 
     ApiRequest req;

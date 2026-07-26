@@ -28,7 +28,7 @@ Linux binaries, source builds, Ollama, `--send`, and `--api` are in
 
 | Mode | Command | For |
 |------|---------|-----|
-| Interactive | `arbiter` | Multi-pane TUI, persistent per-cwd sessions |
+| Interactive | `arbiter` | Multi-pane TUI, global conversation store |
 | One-shot | `arbiter --send <agent> "..."` | Scripts, cron, CI |
 | Server | `arbiter --api` | HTTP+SSE API, tenant-isolated, A2A v1.0 |
 
