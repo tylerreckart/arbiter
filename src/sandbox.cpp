@@ -15,6 +15,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sstream>
+#include <thread>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
@@ -716,6 +717,12 @@ bool SandboxManager::write_to_workspace(int64_t tenant_id,
     std::string clean;
     if (!sanitize_rel(rel_path, clean, err_out)) return false;
 
+    // Serialize quota check + write for this tenant so parallel /write
+    // children (e.g. from /parallel) cannot both pass measure_workspace
+    // and exceed workspace_max_bytes.  Same mutex as ensure_container.
+    auto tenant_mu = start_mutex_for(tenant_id);
+    std::lock_guard<std::mutex> write_lk(*tenant_mu);
+
     std::string ws = ensure_workspace(tenant_id);
     if (ws.empty()) { err_out = "workspace mkdir failed"; return false; }
 
@@ -746,6 +753,10 @@ bool SandboxManager::write_to_workspace(int64_t tenant_id,
                       ", attempted " + std::to_string(content.size()) +
                       " (existing " + std::to_string(existing) + ")";
             return false;
+        }
+        if (cfg_.quota_check_pause_ms > 0) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(cfg_.quota_check_pause_ms));
         }
     }
 

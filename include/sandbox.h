@@ -79,6 +79,12 @@ struct SandboxConfig {
     // what's there and clean up.  0 = no quota.  Default 1 GiB.
     int64_t workspace_max_bytes = 1ll * 1024 * 1024 * 1024;
 
+    // Test-only: milliseconds to sleep after a successful quota check and
+    // before the write lands.  Unit tests set this to widen the measure-
+    // then-write race window so parallel /write regressions are caught
+    // deterministically.  0 in production (default).
+    int quota_check_pause_ms = 0;
+
     // Idle-reaping threshold, seconds.  A background reaper stops
     // tenant containers whose last sandbox operation (/exec, /write,
     // /read, /list) was longer ago than this.  Workspace files are
