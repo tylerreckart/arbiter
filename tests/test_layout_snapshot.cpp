@@ -175,3 +175,50 @@ TEST_CASE("LayoutTree capture/restore round-trips conversation bindings") {
     CHECK(agents[1] == "backend");
     CHECK(restored.focused().conversation_id == "second");
 }
+
+TEST_CASE("LayoutTree restore preserves nested split orientation and weights") {
+    Rect bounds{0, 0, 160, 48};
+    LayoutTree tree(make_test_pane(), bounds);
+    tree.focused().conversation_id = "a";
+
+    Pane* right = tree.split_focused(LayoutTree::Orient::Vertical, make_test_pane);
+    REQUIRE(right != nullptr);
+    right->conversation_id = "b";
+    right->current_agent = "reviewer";
+    REQUIRE(tree.focus_pane(right));
+
+    Pane* bottom = tree.split_focused(LayoutTree::Orient::Horizontal, make_test_pane);
+    REQUIRE(bottom != nullptr);
+    bottom->conversation_id = "c";
+    bottom->current_agent = "frontend";
+
+    // Skew the root vertical split via separator drag (index 0).
+    auto sep = tree.hit_separator(bounds.w / 2, 1);
+    REQUIRE(sep.has_value());
+    REQUIRE(tree.drag_separator(*sep, bounds.w / 3, 1));
+
+    const auto snap = tree.capture_snapshot();
+    REQUIRE(validate_layout_snapshot(snap));
+    CHECK(snap.root.kind == LayoutSnapshot::Node::Kind::Split);
+    CHECK(snap.root.orient == LayoutTree::Orient::Vertical);
+    REQUIRE(snap.root.children.size() == 2);
+    CHECK(snap.root.children[1].kind == LayoutSnapshot::Node::Kind::Split);
+    CHECK(snap.root.children[1].orient == LayoutTree::Orient::Horizontal);
+
+    LayoutTree restored(make_test_pane(), bounds);
+    REQUIRE(restored.restore_snapshot(snap, make_test_pane, bounds));
+    CHECK(restored.pane_count() == 3);
+
+    auto again = restored.capture_snapshot();
+    CHECK(again.root.orient == LayoutTree::Orient::Vertical);
+    REQUIRE(again.root.children.size() == 2);
+    CHECK(again.root.children[0].weight == doctest::Approx(snap.root.children[0].weight));
+    CHECK(again.root.children[1].weight == doctest::Approx(snap.root.children[1].weight));
+    CHECK(again.root.children[1].orient == LayoutTree::Orient::Horizontal);
+
+    std::vector<std::string> agents;
+    restored.for_each_pane([&](Pane& p) { agents.push_back(p.current_agent); });
+    REQUIRE(agents.size() == 3);
+    CHECK(agents[1] == "reviewer");
+    CHECK(agents[2] == "frontend");
+}
