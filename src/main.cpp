@@ -718,7 +718,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 // the gap marker (see replay_transcript/kReplayTailMessages).
                 if (raw->scroll_offset >= max_off && raw->scroll && raw->scroll->has_gap()) {
                     ConversationScope scope(raw->conversation_id);
-                    const auto history = orch.get_agent_history("index");
+                    const std::string& agent = raw->current_agent.empty()
+                        ? "index" : raw->current_agent;
+                    const auto history = orch.get_agent_history(agent);
                     arbiter::replay_load_previous_chunk(*raw, history);
                 }
             } else {
@@ -926,8 +928,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             if (leaf.agent.empty()) leaf.agent = "index";
         });
-        if (validate_layout_snapshot(*snap)) {
-            layout.restore_snapshot(*snap, make_pane, layout_bounds());
+        if (validate_layout_snapshot(*snap) &&
+            layout.restore_snapshot(*snap, make_pane, layout_bounds())) {
+            // layout_bounds() above used pane_count==1 (pre-restore). The
+            // session sidebar hides when pane_count > 1, so recompute now
+            // before col sync / transcript replay.
+            layout.resize(layout_bounds());
         }
     }
 
@@ -954,7 +960,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 }
             }
             ConversationScope scope(id);
-            const auto history = orch.get_agent_history("index");
+            // Replay the pane's bound agent (restored from layout.json), not
+            // always index — non-index panes would otherwise show the wrong
+            // transcript after relaunch.
+            const std::string& agent = pane.current_agent.empty()
+                ? "index" : pane.current_agent;
+            const auto history = orch.get_agent_history(agent);
             const size_t total = history.size();
             if (total > 0) {
                 any_history = true;
@@ -2362,6 +2373,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 layout.for_each_pane([&](Pane& p) {
                     pane_history_set_cols(p, p.tui.cols());
                 });
+                persist_layout();
                 present_unlocked();
             }
         }
@@ -2776,7 +2788,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         if (direction < 0) {
             pane.scroll_offset = std::min(pane.scroll_offset + step, max_off);
             if (pane.scroll_offset >= max_off && pane.scroll && pane.scroll->has_gap()) {
-                const auto history = orch.get_agent_history("index");
+                ConversationScope scope(pane.conversation_id);
+                const std::string& agent = pane.current_agent.empty()
+                    ? "index" : pane.current_agent;
+                const auto history = orch.get_agent_history(agent);
                 arbiter::replay_load_previous_chunk(pane, history);
             }
         } else {
