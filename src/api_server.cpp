@@ -577,6 +577,8 @@ std::string extract_bearer(const HttpRequest& req) {
     return hdr.substr(kPrefixLen);
 }
 
+// ─── Orchestrate endpoint ───────────────────────────────────────────────────
+
 // EventLogger — mirrors SSE events to stderr in real time so the operator
 // running `arbiter --api` can watch what every tenant request is doing
 // without a packet capture.  Thread-safe: parallel sub-agents emit
