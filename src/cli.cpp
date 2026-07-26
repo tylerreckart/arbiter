@@ -228,9 +228,13 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     for (const auto& t : all) {
         if (t.id < primary_id) primary_id = t.id;
     }
-    auto primary = tenants.get_tenant(primary_id);
-    if (primary && primary->disabled) {
-        tenants.set_disabled(std::to_string(primary->id), false);
+    if (auto primary = tenants.get_tenant(primary_id); primary && primary->disabled) {
+        ::fprintf(stderr,
+            "WARN: primary tenant %lld is disabled — "
+            "API requests will be rejected until re-enabled "
+            "(arbiter --enable-tenant %lld)\n",
+            static_cast<long long>(primary_id),
+            static_cast<long long>(primary_id));
     }
 
     bool fresh_admin = false;
@@ -414,15 +418,12 @@ Tenant ensure_primary_tenant(TenantStore& store) {
     if (all.empty()) {
         return store.create_tenant("default").tenant;
     }
-    size_t best = 0;
-    for (size_t i = 1; i < all.size(); ++i) {
-        if (all[i].id < all[best].id) best = i;
+    if (auto primary = resolve_primary_tenant(all)) {
+        return *primary;
     }
-    if (all[best].disabled) {
-        store.set_disabled(std::to_string(all[best].id), false);
-        all[best].disabled = false;
-    }
-    return all[best];
+    throw std::runtime_error(
+        "all tenants are disabled — re-enable with: "
+        "arbiter --enable-tenant <id|name>");
 }
 
 void cmd_oneshot(const std::string& agent_id, const std::string& msg) {
@@ -436,7 +437,13 @@ void cmd_oneshot(const std::string& agent_id, const std::string& msg) {
     // degrade to "unavailable" mid-turn even when keys/registry exist.
     TenantStore tenants;
     tenants.open(dir + "/tenants.db");
-    Tenant primary = ensure_primary_tenant(tenants);
+    Tenant primary;
+    try {
+        primary = ensure_primary_tenant(tenants);
+    } catch (const std::exception& e) {
+        std::cerr << "ERR: " << e.what() << "\n";
+        std::exit(1);
+    }
     ApiServerOptions api_opts = make_cli_api_options(dir, get_api_keys(),
                                                      /*exec_allowed=*/false);
     wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
