@@ -46,6 +46,8 @@
 
 namespace arbiter {
 
+struct LayoutSnapshot;
+
 class LayoutTree {
 public:
     enum class Orient { Vertical, Horizontal };
@@ -157,6 +159,19 @@ public:
     [[nodiscard]] bool zoomed() const { return zoomed_ != nullptr; }
     [[nodiscard]] Pane* zoomed_pane() const { return zoomed_; }
     void clear_zoom();
+
+    // Capture the current tree shape + per-leaf conversation/agent (zoom is
+    // not persisted).  See layout_snapshot.h for the on-disk format.
+    [[nodiscard]] LayoutSnapshot capture_snapshot() const;
+
+    // Replace the tree from a validated snapshot.  Builds a fresh Pane per
+    // leaf via `make_pane`, then overwrites conversation_id / current_agent
+    // from the snapshot.  Returns false without mutating when the snapshot
+    // fails validation or the factory returns null.  Caller must not have
+    // started exec threads on the old panes (or must join them first).
+    bool restore_snapshot(const LayoutSnapshot& snap,
+                          const PaneFactory& make_pane,
+                          const Rect& bounds);
 
 private:
     void compute_bounds(Node& n, const Rect& r);
