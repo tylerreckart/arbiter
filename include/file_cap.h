@@ -14,9 +14,11 @@ namespace arbiter {
 // Returns false when the reservation would exceed `cap`.
 inline bool try_reserve_file_bytes(std::atomic<size_t>& captured,
                                    size_t size, size_t cap) {
+    if (size > cap) return false;
     size_t prev = captured.load(std::memory_order_relaxed);
     for (;;) {
-        if (prev + size > cap) return false;
+        // Guard against size_t wrap on prev + size.
+        if (prev > cap - size) return false;
         if (captured.compare_exchange_weak(
                 prev, prev + size, std::memory_order_relaxed))
             return true;

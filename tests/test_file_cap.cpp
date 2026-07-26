@@ -5,6 +5,7 @@
 #include "file_cap.h"
 
 #include <atomic>
+#include <cstdint>
 #include <thread>
 #include <vector>
 
@@ -65,4 +66,22 @@ TEST_CASE("try_reserve_file_bytes: individually fitting chunks jointly exceed ca
 
     CHECK(captured.load() <= kCap);
     CHECK(successes.load() == static_cast<int>(kCap / kChunk));
+}
+
+TEST_CASE("try_reserve_file_bytes: rejects overflow-prone addition") {
+    std::atomic<size_t> captured{SIZE_MAX - 10};
+    CHECK_FALSE(try_reserve_file_bytes(captured, 20, SIZE_MAX));
+    CHECK(captured.load() == SIZE_MAX - 10);
+}
+
+TEST_CASE("try_reserve_file_bytes: rejects overflow-prone addition") {
+    std::atomic<size_t> captured{SIZE_MAX - 10};
+    CHECK_FALSE(try_reserve_file_bytes(captured, 20, SIZE_MAX));
+    CHECK(captured.load() == SIZE_MAX - 10);
+}
+
+TEST_CASE("try_reserve_file_bytes: rejects overflow-prone addition") {
+    std::atomic<size_t> captured{SIZE_MAX - 10};
+    CHECK_FALSE(try_reserve_file_bytes(captured, 20, SIZE_MAX));
+    CHECK(captured.load() == SIZE_MAX - 10);
 }
