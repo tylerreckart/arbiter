@@ -1,7 +1,6 @@
 # Arbiter feature roadmap
 
-Living document: where Arbiter stands today, how it compares to peer TUIs and
-agent orchestration tools, and a prioritized path toward a complete 1.0.
+Living document: where Arbiter stands today and a prioritized path toward a complete 1.0.
 
 ### Known sharp edges
 
@@ -26,14 +25,14 @@ calendar commitments.
 ### Phase 1 — Make long sessions survivable (1.0 blockers)
 - [x] **Context compaction / summarization-** Threshold-triggered summarize of older turns; preserve recent window + pinned facts; optional advisor-assisted summarize; keep full history on disk for replay 
 - [x] **Conversation autosave-** Periodic + post-turn save so SIGKILL doesn’t lose work
-- [ ] **In-flight turn recovery (TUI)-** Mirror durable request log pattern into local conversations, or at least don’t drop completed tool results on quit
-- [ ] **Doc drift pass-** Align sessions/scheduler/memory docs with shipped TUI parity; fix sandbox env docs vs code
+- [x] **In-flight turn recovery (TUI)-** Mirror durable request log pattern into local conversations, or at least don’t drop completed tool results on quit
+- [x] **Doc drift pass-** Align sessions/scheduler/memory docs with shipped TUI parity; fix sandbox env docs vs code
 
 **Acceptance criteria:** 
-- [ ] Multi-hour multi-pane sessions survive restart and provider context limits without manual `/reset`.
+- [x] Multi-hour multi-pane sessions survive restart and provider context limits without manual `/reset`.
 
 ### Phase 2 — Production-grade local server
-- [ ] **Durable idempotency-** Persist `(tenant, key) → request_id` acriss restarts
+- [ ] **Durable idempotency-** Persist `(tenant, key) → request_id` across restarts
 - [ ] **Tunable circuit breaker-** `ARBITER_CIRCUIT_*` env
 - [ ] **Sandbox completion-** Idle reaper; exec-timeout kill inside container
 - [ ] **TUI sandbox path-** Opt-in Docker for interactive `/exec`. default remains confirm-gated host with clearer danger UX
