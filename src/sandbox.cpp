@@ -15,6 +15,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sstream>
+#include <thread>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
@@ -752,6 +753,10 @@ bool SandboxManager::write_to_workspace(int64_t tenant_id,
                       ", attempted " + std::to_string(content.size()) +
                       " (existing " + std::to_string(existing) + ")";
             return false;
+        }
+        if (cfg_.quota_check_pause_ms > 0) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(cfg_.quota_check_pause_ms));
         }
     }
 

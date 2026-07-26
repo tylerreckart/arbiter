@@ -46,6 +46,7 @@ SandboxConfig make_quota_config(const std::string& root, int64_t quota) {
     cfg.runtime = "docker";
     cfg.idle_seconds = 0;
     cfg.workspace_max_bytes = quota;
+    cfg.quota_check_pause_ms = 50;
     return cfg;
 }
 
@@ -117,7 +118,9 @@ TEST_CASE("sandbox write_to_workspace: in-place overwrite charges delta only") {
     CHECK(mgr.measure_workspace_bytes(tid) == 400);
 
     // Would exceed quota by 200 bytes.
+    err.clear();
     CHECK_FALSE(mgr.write_to_workspace(tid, "data.txt", std::string(700, 'z'), err));
+    CHECK(err.find("quota exceeded") != std::string::npos);
 
     fs::remove_all(root);
 }
