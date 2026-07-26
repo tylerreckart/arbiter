@@ -33,6 +33,7 @@
     "/fetch",
     "/browse",
     "/mem",
+    "/todo",
     "/agent",
     "/parallel",
     "/mcp"

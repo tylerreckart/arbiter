@@ -41,6 +41,9 @@ const std::map<std::string, SkillSpec>& skill_catalog() {
         {"/agent",    {"delegate",      "delegate a sub-task to another arbiter agent"}},
         {"/parallel", {"parallel-fanout","dispatch the same prompt to multiple agents in parallel"}},
         {"/advise",   {"advisor-consult","consult a higher-capability advisor model mid-turn"}},
+        {"/todo",     {"todos",         "capture and mark progress on open work items"}},
+        {"/schedule", {"schedule",      "defer or recur agent work on a natural-language schedule"}},
+        {"/lesson",   {"lessons",       "record hard-won remediations for future turns"}},
     };
     return kSpecs;
 }

@@ -541,7 +541,7 @@ TEST_CASE("/parallel from a sub-agent caller reaches the invoker") {
         /*lesson_invoker=*/nullptr,
         /*exec_invoker=*/nullptr,
         /*capabilities=*/std::vector<std::string>{
-            "/search", "/fetch", "/browse", "/mem", "/agent", "/parallel", "/mcp"});
+            "/search", "/fetch", "/browse", "/mem", "/todo", "/agent", "/parallel", "/mcp"});
 
     CHECK(called);
     CHECK(out.find("ERR: capability not granted") == std::string::npos);
