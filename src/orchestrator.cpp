@@ -843,6 +843,10 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     // block is usually enough to get it to break out.
     std::vector<std::pair<std::string, std::string>> prev_failed_signatures;
 
+    // When true, current_msg was already commit_user_message'd (tool-result
+    // envelope) so the next model call must use send/stream_continue.
+    bool user_already_committed = false;
+
     for (int i = 0; i < kMaxTurns; ++i) {
         // Notify UI that a sub-agent is about to make an API call.
         if (depth > 0 && start_cb_) start_cb_(agent_id);
@@ -852,12 +856,20 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             // block state must not carry state across unrelated turns.
             auto filter = make_filter();
             auto* f = filter.get();
-            resp = agent_ptr->stream(current_msg,
-                [f](const std::string& chunk) { f->feed(chunk); });
+            if (user_already_committed) {
+                resp = agent_ptr->stream_continue(
+                    [f](const std::string& chunk) { f->feed(chunk); });
+            } else {
+                resp = agent_ptr->stream(current_msg,
+                    [f](const std::string& chunk) { f->feed(chunk); });
+            }
             filter->flush();
+        } else if (user_already_committed) {
+            resp = agent_ptr->send_continue();
         } else {
             resp = agent_ptr->send(current_msg);
         }
+        user_already_committed = false;
         if (!resp.ok) {
             if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
             // Surface what we got so far so a downstream caller can show
@@ -867,6 +879,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             resp.output_tokens = total_output_tok + resp.output_tokens;
             return resp;
         }
+        // Assistant turn (and any prior tool envelopes) are in histories_ —
+        // checkpoint before the next long wait (tools or another LLM call).
+        fire_history_checkpoint();
 
         if (depth > 0 && resp.ok) {
             // Notify the UI (progress) and record cost for sub-agent turns.
@@ -1072,6 +1087,12 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         // Stash for the gate's tool summary on the eventual terminating turn.
         last_cmds         = cmds;
         last_tool_results = current_msg;
+
+        // Commit tool envelopes before the next LLM wait so quit/cancel
+        // cannot drop completed tool work from the model-facing history.
+        agent_ptr->commit_user_message(current_msg);
+        user_already_committed = true;
+        fire_history_checkpoint();
     }
 
     // Cumulative content/tokens replace the last iteration's values so the
@@ -1388,6 +1409,13 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     const int                 max_redirects  = gate_cfg.max_redirects;
     bool                      had_any_tool_calls = !cmds.empty();
 
+    // Iter 0 already committed its assistant turn into histories_.
+    fire_history_checkpoint();
+
+    // When true, current_parts were commit_user_message'd (tool results)
+    // so the next model call uses stream_continue.
+    bool user_already_committed = false;
+
     // Unified main loop — kMaxIters bounds total trips through stream(),
     // including iter 0 (already done above).  Loop body branches on
     // (cmds.empty + gate state) into one of: terminate, halt, redirect,
@@ -1515,9 +1543,19 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                 for (auto& img : image_parts)
                     current_parts.push_back(std::move(img));
             }
+            // Commit before the next LLM wait so completed tool envelopes
+            // survive quit/cancel/SIGKILL (not only tool_trace previews).
+            agent_ptr->commit_user_message(std::move(current_parts));
+            user_already_committed = true;
+            fire_history_checkpoint();
         }
 
-        resp = agent_ptr->stream(std::move(current_parts), gated_cb);
+        if (user_already_committed) {
+            resp = agent_ptr->stream_continue(gated_cb);
+            user_already_committed = false;
+        } else {
+            resp = agent_ptr->stream(std::move(current_parts), gated_cb);
+        }
         if (!resp.ok) {
             if (!iter_buffer.empty() && cb) cb(iter_buffer);
             iter_buffer.clear();
@@ -1529,6 +1567,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             return resp;
         }
         if (cost_cb_) cost_cb_(agent_id, agent_ptr->config().model, resp);
+        fire_history_checkpoint();
         if (!total_content.empty() && total_content.back() != '\n') total_content += "\n";
         total_content   += resp.content;
         total_input_tok += resp.input_tokens;
@@ -1954,6 +1993,15 @@ std::string Orchestrator::execute_slash_command(const std::string& line,
                                   lesson_invoker_cb_,
                                   exec_invoker_cb_,
                                   agent_ptr->config().capabilities);
+}
+
+void Orchestrator::fire_history_checkpoint() {
+    if (!history_checkpoint_cb_) return;
+    try {
+        history_checkpoint_cb_();
+    } catch (...) {
+        // Persistence must never abort an in-flight turn.
+    }
 }
 
 void Orchestrator::cancel() {

@@ -56,7 +56,7 @@ Token totals also appear in the pane header stats row (right side of row 1) when
 - **[Keybindings](keybindings.md)** — every key, chord, and modifier the editor recognizes.
 - **[Panes](panes.md)** — multi-pane layouts: split, focus, close, `/pane` spawn semantics.
 - **[Streaming](streaming.md)** — what you see during a turn: thinking spinner, tool-call indicator, verbose mode, cancellation.
-- **[Sessions](sessions.md)** — history persistence, session restore on relaunch, per-cwd scoping.
+- **[Sessions](sessions.md)** — global conversations, autosave / mid-turn checkpoints, compaction.
 - **[Output UX](output-ux.md)** — tool timeline, thinking rows, permission cards, replay chrome.
 - **[Themes](themes.md)** — `TuiDesign` schema, theme tokens, and spacing.
 
@@ -68,11 +68,12 @@ Per-user state lives under `~/.arbiter/`:
 |----------------------------|---------------------------------------------------------|
 | `openrouter_api_key`       | OpenRouter API key for hosted models.                   |
 | `agents/*.json`            | Agent constitutions — one file per agent.               |
-| `sessions/*.json`          | Per-cwd session snapshots (auto-saved on `/quit`).      |
-| `memory/<agent>/*.md`      | Per-agent persistent scratchpads (`/mem write`).        |
-| `tenants.db`               | Tenant identity store. Only used when running `--api`.  |
+| `conversations/`           | Global conversation store (`manifest.json`, `<uuid>.json`, `active`). |
+| `tenants.db`               | Tenant store: scratchpads, structured memory, schedules, todos, lessons (TUI and `--api`). |
+| `sessions/*.json`          | Legacy per-cwd snapshots (imported once into `conversations/`). |
+| `memory/t<tid>/`           | Legacy filesystem scratchpad fallback (DB is primary).  |
 
-Everything else (current pane layout, scrollback, in-flight turns) is in-memory only and gone when the process exits — except for the session snapshot, which is restored automatically the next time you `arbiter` from the same directory.
+Pane layout and painted scrollback are in-memory only. Conversation histories restore on relaunch from `conversations/` (last active id); see [Sessions](sessions.md).
 
 ## TUI design config
 

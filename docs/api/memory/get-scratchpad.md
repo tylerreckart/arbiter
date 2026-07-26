@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Read one agent's persistent memory file (or the shared pipeline scratchpad). Use `:agent_id = "shared"` to read `shared.md`.
+Read one agent's persistent scratchpad (or the shared pipeline scratchpad). Use `:agent_id = "shared"` for the tenant-wide shared scope. Content lives in the `agent_scratchpad` table in `tenants.db` (not on the filesystem).
 
 ## Request
 
@@ -31,7 +31,7 @@ curl -H "Authorization: Bearer atr_…" \
 
 If the agent has never written memory, `exists: false` and `content: ""` — **not** a 404. Rendering a "(no memory yet)" state in your UI doesn't need a special path.
 
-The `content` is the raw markdown file — it's whatever the agent wrote via `/mem write`, including the timestamp headers arbiter's `cmd_mem_write` injects.
+The `content` is the raw markdown text — whatever the agent wrote via `/mem write`, including the timestamp headers arbiter's `cmd_mem_write` injects.
 
 ## Failure modes
 

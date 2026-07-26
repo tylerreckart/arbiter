@@ -62,13 +62,14 @@ row is in view, or left-click the block in the scroll region.
 
 ## Permission cards
 
-Destructive `/exec` and disk `/write` confirms render a multi-line card:
+Host `/exec` (when enabled) prompts with a multi-line permission card before
+running the shell command. Plain `/write` in the TUI uses the shared write
+interceptor (capture / optional sandbox workspace / `--persist` artifacts) and
+does **not** prompt — confirm only fires for host disk writes when no interceptor
+is installed.
 
 ```
-permission write  src/main.cpp
-  12 lines, 340 bytes
-  #include …
-  …
+permission exec  git status
   allow? [y/N]
 ```
 

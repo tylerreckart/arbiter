@@ -7,14 +7,12 @@ agent orchestration tools, and a prioritized path toward a complete 1.0.
 
 Already called out in CHANGELOG / docs / code comments:
 
-- Context summarization / trim — ([`docs/tui/sessions.md`](docs/tui/sessions.md))
 - Idempotency cache in-memory only
 - Circuit breaker thresholds hard-coded
-- Sandbox: Docker-only; idle reaper documented but not implemented; no workspace-root env
-- Pane layout not persisted; hard kill loses unsaved turns; loops die on exit
+- Sandbox: Docker-only; no workspace-root env; container-side exec kill is still a follow-up (parent-side `ARBITER_SANDBOX_EXEC_TIMEOUT` + idle reaper already ship)
+- Pane layout not persisted; unfinished streaming assistant text can still be lost on hard kill; `/loop` processes die on exit
 - A2A push notifications unsupported; event routing still experimental
-- Documentation drift
-- TUI `/exec` is host shell, not sandboxed by default
+- TUI `/exec` is host shell (confirm-gated), not Docker-sandboxed by default
 
 ---
 
@@ -26,16 +24,16 @@ calendar commitments.
 ### Phase 1 — Make long sessions survivable (1.0 blockers)
 - [x] **Context compaction / summarization-** Threshold-triggered summarize of older turns; preserve recent window + pinned facts; optional advisor-assisted summarize; keep full history on disk for replay 
 - [x] **Conversation autosave-** Periodic + post-turn save so SIGKILL doesn’t lose work
-- [ ] **In-flight turn recovery (TUI)-** Mirror durable request log pattern into local conversations, or at least don’t drop completed tool results on quit
-- [ ] **Doc drift pass-** Align sessions/scheduler/memory docs with shipped TUI parity; fix sandbox env docs vs code
+- [x] **In-flight turn recovery (TUI)-** Mirror durable request log pattern into local conversations, or at least don’t drop completed tool results on quit
+- [x] **Doc drift pass-** Align sessions/scheduler/memory docs with shipped TUI parity; fix sandbox env docs vs code
 
 **Acceptance criteria:** 
-- [ ] Multi-hour multi-pane sessions survive restart and provider context limits without manual `/reset`.
+- [x] Multi-hour multi-pane sessions survive restart and provider context limits without manual `/reset` (conversation histories + compaction + mid-turn tool checkpoints; pane layout still resets to a single pane).
 
 ### Phase 2 — Production-grade local server
 - [ ] **Durable idempotency-** Persist `(tenant, key) → request_id` acriss restarts
 - [ ] **Tunable circuit breaker-** `ARBITER_CIRCUIT_*` env
-- [ ] **Sandbox completion-** Idle reaper; exec-timeout kill inside container
+- [ ] **Sandbox completion-** Exec-timeout kill *inside* the container (parent-side timeout + idle reaper already ship)
 - [ ] **TUI sandbox path-** Opt-in Docker for interactive `/exec`. default remains confirm-gated host with clearer danger UX
 - [ ] **CORS allowlist env** `ARBITER_CORS_ORIGINS` as a documented alternative to the proxy
 - [ ] **Event routing for API-created agents-** Complete buildout of currrent experimental implementation
@@ -100,7 +98,7 @@ Keep these out unless philosophy changes — they dilute the product:
 
 Use these to decide whether a phase actually “completed” Arbiter:
 
-1. **Survive the afternoon** — 4+ hour TUI session with parallel panes, no forced `/reset`, restart restores layout + history.
+1. **Survive the afternoon** — 4+ hour TUI session with parallel panes, no forced `/reset`, restart restores conversation histories (pane layout still opens as a single pane).
 2. **Unattended hour** — `--api` job with sandbox + schedule + reconnect after process restart; idempotent client retry safe.
 3. **Repo PR loop** — reviewer+backend crew proposes diff → user applies → tests via `/exec` → commit via git/MCP without leaving Arbiter.
 4. **Cold start** — new machine, one key, `--init`, first specialist reply under five minutes.

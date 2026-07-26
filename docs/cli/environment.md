@@ -24,9 +24,29 @@ Env-var values take precedence over the file values. The file is read once at pr
 | `ARBITER_DRAIN_SECONDS`   | Wall-clock grace period on `SIGTERM` / `SIGINT` shutdown. The listen socket closes immediately and every in-flight orchestration is signalled to cancel; the server then waits up to this many seconds for connection threads to finish before tearing down sandbox containers. `0` skips the wait. Default `30`. See [Operations → Graceful shutdown](../concepts/operations.md#graceful-shutdown). |
 | `ARBITER_LOG_FORMAT`      | Output format for operational stderr events (startup, recovery sweep, drain, sandbox lifecycle). `human` (default) renders `[HH:MM:SS] [level] event key=value`. `json` emits one JSON object per line for log aggregators. The per-request SSE-mirror verbose mode keeps its existing human format regardless. See [Operations → Structured logging](../concepts/operations.md#structured-logging). |
 
+## TUI session durability
+
+| Variable                         | Purpose                                                                 | Default |
+|----------------------------------|-------------------------------------------------------------------------|---------|
+| `ARBITER_AUTOSAVE_INTERVAL_SEC`  | Periodic dirty flush for conversation files. `0` disables the timer (post-turn and mid-turn `save_async` still run). | `30` |
+| `ARBITER_COMPACT_THRESHOLD`      | Fraction of the model context window (0–1) that triggers auto-compaction. | `0.75` |
+| `ARBITER_COMPACT_DISABLED`       | When set to a non-empty, non-`0` value, disables automatic compaction. `/compact` still works. | unset |
+
+See [`docs/tui/sessions.md`](../tui/sessions.md).
+
+## Host `/exec` (TUI / `--send`)
+
+| Variable / flag              | Purpose |
+|------------------------------|---------|
+| `--no-exec`                  | Disable host `/exec` in the TUI (default is **enabled** with a confirm gate). |
+| `--allow-host-exec`          | Allow host `/exec` when running `arbiter --api` (unsafe; prefer the Docker sandbox). |
+| `ARBITER_ALLOW_HOST_EXEC`    | Same as `--allow-host-exec` when set to a non-empty, non-`0` value. |
+
+The API server keeps `/exec` **disabled** unless the per-tenant Docker sandbox is configured (below) or host exec is explicitly allowed.
+
 ## Per-tenant sandbox
 
-Arbiter's `/exec` writ is disabled by default in the API. Setting `ARBITER_SANDBOX_IMAGE` enables a per-tenant Docker sandbox that confines `/exec` to a workspace volume shared with `/write` and `/read`. The full walkthrough is in [`docs/concepts/sandbox.md`](../concepts/sandbox.md); the env-var surface:
+Arbiter's `/exec` writ is disabled by default in the API. Setting `ARBITER_SANDBOX_IMAGE` enables a per-tenant Docker sandbox that confines `/exec` to a workspace volume shared with `/write` and `/read`. The idle reaper (`ARBITER_SANDBOX_IDLE_SECONDS`) is implemented. There is **no** env var for the workspaces root path yet (`~/.arbiter/workspaces/`). The full walkthrough is in [`docs/concepts/sandbox.md`](../concepts/sandbox.md); the env-var surface:
 
 | Variable                                | Purpose                                                                                                | Default        |
 |-----------------------------------------|--------------------------------------------------------------------------------------------------------|----------------|
@@ -73,10 +93,11 @@ Distinct from env vars but listed here for completeness, since the env-vs-file p
 | `openrouter_api_key`       | OpenRouter API key (one line, no whitespace).                        |
 | `search_api_key`           | Brave Search API key for `/search` (one line). Written by `--setup-tools`. |
 | `admin_token`              | Admin token used by `/v1/admin/*`. Generated automatically on first `--api` launch if missing. |
-| `tenants.db`               | Tenant identity store (SQLite).                                      |
+| `tenants.db`               | Tenant store (SQLite): identities, scratchpads, structured memory, schedules, todos, lessons. Used by TUI and `--api`. |
 | `agents/*.json`            | Agent constitutions.                                                 |
-| `sessions/*.json`          | Per-cwd interactive session snapshots.                               |
-| `memory/<agent>/notes.md`  | Per-agent persistent scratchpad (`/mem write`).                      |
+| `conversations/`           | Global TUI conversation store (`manifest.json`, `<uuid>.json`, `active`). |
+| `sessions/*.json`          | Legacy per-cwd snapshots (imported into `conversations/` on first launch). |
+| `memory/t<tid>/`           | Legacy filesystem scratchpad fallback; DB `agent_scratchpad` is primary. |
 | `workspaces/t<id>/…`       | Per-tenant sandbox workspace (mode 0700). Created on demand when the sandbox is enabled. See [`docs/concepts/sandbox.md`](../concepts/sandbox.md). |
 | `mcp_servers.json`         | Optional MCP server registry. See [`docs/concepts/mcp.md`](../concepts/mcp.md). Editable via `arbiter --setup-tools`. |
 | `history`                  | Merged TUI editor history across panes.                              |
