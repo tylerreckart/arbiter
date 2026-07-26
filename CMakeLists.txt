@@ -1063,6 +1063,22 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_tenant_agents COMMAND unit_tenant_agents)
 
+    add_executable(unit_tenant_primary
+        tests/test_tenant_primary.cpp
+        src/tenant_store.cpp
+    )
+    target_include_directories(unit_tenant_primary PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_tenant_primary PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_tenant_primary COMMAND unit_tenant_primary)
+
     # Per-tenant + per-conversation artifact store (POST/GET/DELETE
     # /v1/.../artifacts and the agent /write --persist surface).
     add_executable(unit_artifacts

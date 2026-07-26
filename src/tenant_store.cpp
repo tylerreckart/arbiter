@@ -1035,6 +1035,17 @@ std::vector<Tenant> TenantStore::list_tenants() const {
     return out;
 }
 
+std::optional<Tenant> resolve_primary_tenant(
+        const std::vector<Tenant>& tenants) {
+    std::optional<size_t> best;
+    for (size_t i = 0; i < tenants.size(); ++i) {
+        if (tenants[i].disabled) continue;
+        if (!best || tenants[i].id < tenants[*best].id) best = i;
+    }
+    if (!best) return std::nullopt;
+    return tenants[*best];
+}
+
 std::optional<Tenant> TenantStore::get_tenant(int64_t id) const {
     if (!db_) return std::nullopt;
     Stmt q(db_, (std::string("SELECT ") + kTenantCols +

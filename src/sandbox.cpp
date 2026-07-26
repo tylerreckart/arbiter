@@ -465,7 +465,10 @@ bool SandboxManager::container_is_running(const std::string& name) const {
                           out, timed_out);
     if (rc != 0 || timed_out) return false;
     // `docker inspect` prints `true\n` or `false\n`.
-    return out.find("true") == 0;
+    while (!out.empty() &&
+           (out.back() == '\n' || out.back() == '\r' || out.back() == ' '))
+        out.pop_back();
+    return out == "true";
 }
 
 // `docker exec <name> true` — catches containers that are "running" per inspect
