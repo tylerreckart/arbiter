@@ -366,9 +366,13 @@ void cmd_api(int port, const std::string& bind, bool verbose,
 
     if (all.size() > 1) {
         std::cerr << "WARN: legacy multi-tenant DB detected (" << all.size()
-                  << " tenant rows). Running in single-tenant mode with tenant #"
-                  << (active_primary ? active_primary->id : all.front().id)
-                  << ".\n";
+                  << " tenant rows). Running in single-tenant mode";
+        if (active_primary) {
+            std::cerr << " with tenant #" << active_primary->id;
+        } else {
+            std::cerr << " but no enabled tenant is active";
+        }
+        std::cerr << ".\n";
     }
     std::cout << "\n";
 
