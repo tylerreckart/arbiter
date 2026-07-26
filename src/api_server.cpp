@@ -576,17 +576,17 @@ std::string extract_bearer(const HttpRequest& req) {
     return hdr.substr(kPrefixLen);
 }
 
-// Single-tenant mode: pick the lowest-id tenant row as the process-wide
-// primary tenant. This keeps legacy multi-tenant DBs readable without
-// requiring table rewrites during startup.
-std::optional<Tenant> resolve_primary_tenant(TenantStore& tenants) {
-    auto rows = tenants.list_tenants();
-    if (rows.empty()) return std::nullopt;
-    size_t best = 0;
-    for (size_t i = 1; i < rows.size(); ++i) {
-        if (rows[i].id < rows[best].id) best = i;
+// Atomically reserve `size` bytes against a per-response file cap.
+// Returns false when the reservation would exceed `cap`.
+bool try_reserve_file_bytes(std::atomic<size_t>& captured,
+                            size_t size, size_t cap) {
+    size_t prev = captured.load(std::memory_order_relaxed);
+    for (;;) {
+        if (prev + size > cap) return false;
+        if (captured.compare_exchange_weak(
+                prev, prev + size, std::memory_order_relaxed))
+            return true;
     }
-    return rows[best];
 }
 
 // ─── Orchestrate endpoint ───────────────────────────────────────────────────
@@ -7445,16 +7445,10 @@ void wire_orch_tools_impl(Orchestrator& orch,
             [bytes, cap, sandbox_mgr, tenant_id](const std::string& path,
                                                   const std::string& content) -> std::string {
                 const size_t size = content.size();
-                size_t prev = bytes->load(std::memory_order_relaxed);
-                for (;;) {
-                    if (prev + size > cap) {
-                        return "ERR: per-response file-size cap (" +
-                               std::to_string(cap) +
-                               " bytes) reached — this file was NOT written.";
-                    }
-                    if (bytes->compare_exchange_weak(
-                            prev, prev + size, std::memory_order_relaxed))
-                        break;
+                if (!try_reserve_file_bytes(*bytes, size, cap)) {
+                    return "ERR: per-response file-size cap (" +
+                           std::to_string(cap) +
+                           " bytes) reached — this file was NOT written.";
                 }
                 std::string note = "OK: captured " + std::to_string(size) +
                     " bytes for '" + path +
@@ -7817,13 +7811,11 @@ void handle_a2a_message_stream(int fd,
         [&writer, &bytes_captured, cap](const std::string& path,
                                          const std::string& content) -> std::string {
             const size_t size = content.size();
-            const size_t prev = bytes_captured.load();
-            if (prev + size > cap) {
+            if (!try_reserve_file_bytes(bytes_captured, size, cap)) {
                 return "ERR: per-response file-size cap (" +
                        std::to_string(cap) + " bytes) reached — this file "
                        "was NOT included in the response.";
             }
-            bytes_captured.fetch_add(size);
             writer.emit_file(path, content, "text/plain");
             return "OK: captured " + std::to_string(size) +
                    " bytes for '" + path + "' (streamed to client)";
@@ -9074,13 +9066,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
          sandbox_mgr, sandbox_tid](const std::string& path,
                                     const std::string& content) -> std::string {
         size_t size = content.size();
-        size_t prev = bytes_captured.load();
-        if (prev + size > cap) {
+        if (!try_reserve_file_bytes(bytes_captured, size, cap)) {
             return "ERR: per-response file-size cap (" + std::to_string(cap) +
                    " bytes) reached — this file was NOT included in the "
                    "response.  Reduce the file size or split across requests.";
         }
-        bytes_captured.fetch_add(size);
 
         auto p = jobj();
         auto& m = p->as_object_mut();
@@ -10134,8 +10124,14 @@ void ApiServer::handle_connection(int fd) {
         return;
     }
 
-    std::optional<Tenant> tenant = resolve_primary_tenant(tenants_);
+    const auto all_tenants = tenants_.list_tenants();
+    std::optional<Tenant> tenant = resolve_primary_tenant(all_tenants);
     if (!tenant) {
+        if (!all_tenants.empty()) {
+            write_plain_response(fd, 403, "Forbidden",
+                                 "tenant is disabled\n");
+            return;
+        }
         write_plain_response(fd, 503, "Service Unavailable",
                              "tenant database is not initialized\n");
         return;

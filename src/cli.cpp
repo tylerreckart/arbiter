@@ -224,13 +224,11 @@ void cmd_api(int port, const std::string& bind, bool verbose,
         auto created = tenants.create_tenant("default");
         all.push_back(created.tenant);
     }
-    int64_t primary_id = all.front().id;
-    for (const auto& t : all) {
-        if (t.id < primary_id) primary_id = t.id;
-    }
-    auto primary = tenants.get_tenant(primary_id);
-    if (primary && primary->disabled) {
-        tenants.set_disabled(std::to_string(primary->id), false);
+    const auto active_primary = resolve_primary_tenant(all);
+    if (!active_primary) {
+        ::fprintf(stderr,
+            "WARN: all tenants are disabled — API requests will be rejected "
+            "until one is re-enabled (arbiter --enable-tenant <id|name>)\n");
     }
 
     bool fresh_admin = false;
@@ -368,8 +366,13 @@ void cmd_api(int port, const std::string& bind, bool verbose,
 
     if (all.size() > 1) {
         std::cerr << "WARN: legacy multi-tenant DB detected (" << all.size()
-                  << " tenant rows). Running in single-tenant mode with tenant #"
-                  << primary_id << ".\n";
+                  << " tenant rows). Running in single-tenant mode";
+        if (active_primary) {
+            std::cerr << " with tenant #" << active_primary->id;
+        } else {
+            std::cerr << " but no enabled tenant is active";
+        }
+        std::cerr << ".\n";
     }
     std::cout << "\n";
 
@@ -414,15 +417,12 @@ Tenant ensure_primary_tenant(TenantStore& store) {
     if (all.empty()) {
         return store.create_tenant("default").tenant;
     }
-    size_t best = 0;
-    for (size_t i = 1; i < all.size(); ++i) {
-        if (all[i].id < all[best].id) best = i;
+    if (auto primary = resolve_primary_tenant(all)) {
+        return *primary;
     }
-    if (all[best].disabled) {
-        store.set_disabled(std::to_string(all[best].id), false);
-        all[best].disabled = false;
-    }
-    return all[best];
+    throw std::runtime_error(
+        "all tenants are disabled — re-enable with: "
+        "arbiter --enable-tenant <id|name>");
 }
 
 void cmd_oneshot(const std::string& agent_id, const std::string& msg) {
@@ -436,7 +436,13 @@ void cmd_oneshot(const std::string& agent_id, const std::string& msg) {
     // degrade to "unavailable" mid-turn even when keys/registry exist.
     TenantStore tenants;
     tenants.open(dir + "/tenants.db");
-    Tenant primary = ensure_primary_tenant(tenants);
+    Tenant primary;
+    try {
+        primary = ensure_primary_tenant(tenants);
+    } catch (const std::exception& e) {
+        std::cerr << "ERR: " << e.what() << "\n";
+        std::exit(1);
+    }
     ApiServerOptions api_opts = make_cli_api_options(dir, get_api_keys(),
                                                      /*exec_allowed=*/false);
     wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
