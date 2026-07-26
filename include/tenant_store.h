@@ -31,6 +31,11 @@ struct Tenant {
     int64_t     last_used_at       = 0;  // epoch seconds (0 if never)
 };
 
+// Single-tenant mode: return the enabled tenant with the lowest id.
+// Disabled rows are skipped so `--disable-tenant` acts as a kill-switch.
+// Returns nullopt when `tenants` is empty or every row is disabled.
+std::optional<Tenant> resolve_primary_tenant(const std::vector<Tenant>& tenants);
+
 // One row from the conversations table.  Each conversation is a thread of
 // messages between a tenant's user and one agent (master or sub-agent).
 // This table owns the thread-level metadata so the frontend can show a
