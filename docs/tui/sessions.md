@@ -81,11 +81,3 @@ The conversation file is per-thread continuity. The **structured memory graph** 
 - Memory graph: "what facts has the agent recorded over time" — queried via `/mem …` in the TUI or `/v1/memory/entries?q=…` over HTTP.
 
 `/mem write` appends to the per-agent **scratchpad** (`agent_scratchpad` in `tenants.db`), not the graph. Use `/mem add entry … /endmem` for graph nodes. See [`docs/concepts/structured-memory.md`](../concepts/structured-memory.md).
-
-## Long-session survival (Phase 1)
-
-Multi-hour multi-pane sessions are meant to survive restart and provider context limits without a manual `/reset`:
-
-- **Compaction** keeps the model-facing view under the provider window while full history stays on disk.
-- **Autosave + mid-turn checkpoints** persist completed turns and tool-result envelopes so SIGKILL/quit cannot drop finished tool work.
-- **Pane layout is still not restored** (always a single pane on relaunch); conversation histories and titles are.
