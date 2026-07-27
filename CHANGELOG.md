@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Durable idempotency map.** `Idempotency-Key` mappings now persist in
+  `tenants.db` (`idempotency_keys`) with the same 24h TTL. A client retry
+  after an API server restart joins the original `request_id` instead of
+  starting a second run. The in-process table remains an L1 cache;
+  SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
+
 ## [0.8.9] — 2026-07-26
 
 Patch release: pane layout persistence across TUI relaunch, mid-turn
@@ -710,9 +717,6 @@ test suite and safe to depend on.
   testing is via `examples/sandbox/setup.sh --check`.  A test suite
   exercising container lifecycle, quota enforcement, survivor re-attach,
   and reaper behavior is targeted for the 0.5.x point releases.
-- **Idempotency cache is in-memory.**  A server restart loses the
-  table; a retry after restart triggers a fresh execution.  Durable
-  dedup is gated on full crash resumption (Phase 3).
 - **Circuit breaker thresholds are hard-coded.**  Env-var tunables
   (`ARBITER_CIRCUIT_*`) are a Phase-5 follow-up.
 

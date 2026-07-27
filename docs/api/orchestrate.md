@@ -141,7 +141,7 @@ Constraints and caveats:
 
 - Keys are scoped per tenant. Two tenants using the same `abc` string don't collide.
 - Keys are opaque to the server — any non-empty UTF-8 string ≤ 256 chars works. Most clients send a UUID per logical action.
-- The dedup cache is **in-memory** and has a **24h TTL**. A server restart loses the table; a retry after restart triggers a fresh execution. Durable dedup (survives restarts) is a Phase-3 follow-up gated on full crash resumption.
+- The dedup map is **durable** in `tenants.db` (`idempotency_keys`) with a **24h TTL**, and an in-process L1 cache for the hot path. A server restart keeps the mapping; a retry after restart still joins the original `request_id` (or returns `404` if that request row was deleted).
 - The request body is **not** part of the dedup contract for v1. Reusing a key with a different body returns the original execution's stream, not a 409. Don't reuse keys across logically different requests.
 - The header is supported on every write-creating POST: `/v1/orchestrate`, [`/v1/conversations/:id/messages`](conversations/messages-post.md), and [`/v1/agents/:id/chat`](agents/chat.md). It is **not** supported on cancel, A2A, or admin routes.
 

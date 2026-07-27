@@ -809,6 +809,25 @@ void TenantStore::open(const std::string& path) {
             ON request_events(request_id, seq);
     )SQL");
 
+    // Durable Idempotency-Key map.  Survives process restart so a
+    // client retry of POST /v1/orchestrate (and /messages, /chat)
+    // still joins the original request_id.  No FK to request_status:
+    // deleting a request must not free the key for re-execution.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS idempotency_keys (
+            tenant_id   INTEGER NOT NULL,
+            key         TEXT    NOT NULL,
+            request_id  TEXT    NOT NULL,
+            created_at  INTEGER NOT NULL,
+            PRIMARY KEY (tenant_id, key),
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS idempotency_keys_created
+            ON idempotency_keys(created_at);
+    )SQL");
+
     // Lessons: agent-scoped "learned-from-failure" record.  Indexed by
     // (tenant, agent, last_seen_at DESC) for the agent's at-a-glance
     // list and (tenant, agent, signature) for the loop detector's
@@ -2943,6 +2962,110 @@ TenantStore::list_request_events(int64_t tenant_id,
     q.bind(4, static_cast<int64_t>(limit));
     while (q.step() == SQLITE_ROW) out.push_back(row_to_request_event(q));
     return out;
+}
+
+std::optional<std::string>
+TenantStore::get_idempotency_key(int64_t tenant_id,
+                                  const std::string& key,
+                                  int64_t ttl_seconds,
+                                  int64_t now) {
+    if (!db_ || key.empty()) return std::nullopt;
+    if (ttl_seconds <= 0) ttl_seconds = 86400;
+    if (now <= 0) now = now_epoch();
+
+    Stmt q(db_,
+        "SELECT request_id, created_at FROM idempotency_keys "
+        " WHERE tenant_id = ? AND key = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, key);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+
+    const std::string request_id = q.column_text(0);
+    const int64_t created_at = q.column_int64(1);
+    if (now - created_at >= ttl_seconds) {
+        Stmt del(db_,
+            "DELETE FROM idempotency_keys "
+            " WHERE tenant_id = ? AND key = ?;");
+        del.bind(1, tenant_id);
+        del.bind(2, key);
+        del.step();
+        return std::nullopt;
+    }
+    return request_id;
+}
+
+bool TenantStore::put_idempotency_key(int64_t tenant_id,
+                                       const std::string& key,
+                                       const std::string& request_id,
+                                       int64_t ttl_seconds,
+                                       int64_t created_at) {
+    if (!db_ || key.empty() || request_id.empty()) return false;
+    if (ttl_seconds <= 0) ttl_seconds = 86400;
+    if (created_at <= 0) created_at = now_epoch();
+
+    // Serialize concurrent reserves for the same key so two racing
+    // inserts can't both believe they won.
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    try {
+        std::string existing_id;
+        int64_t existing_created = 0;
+        bool found = false;
+        {
+            Stmt q(db_,
+                "SELECT request_id, created_at FROM idempotency_keys "
+                " WHERE tenant_id = ? AND key = ?;");
+            q.bind(1, tenant_id);
+            q.bind(2, key);
+            if (q.step() == SQLITE_ROW) {
+                found = true;
+                existing_id = q.column_text(0);
+                existing_created = q.column_int64(1);
+            }
+        }
+
+        if (found) {
+            if (created_at - existing_created >= ttl_seconds) {
+                Stmt u(db_,
+                    "UPDATE idempotency_keys "
+                    "   SET request_id = ?, created_at = ? "
+                    " WHERE tenant_id = ? AND key = ?;");
+                u.bind(1, request_id);
+                u.bind(2, created_at);
+                u.bind(3, tenant_id);
+                u.bind(4, key);
+                u.step();
+                exec_sql(db_, "COMMIT;");
+                return true;
+            }
+            exec_sql(db_, "COMMIT;");
+            return existing_id == request_id;
+        }
+
+        Stmt ins(db_,
+            "INSERT INTO idempotency_keys "
+            "(tenant_id, key, request_id, created_at) "
+            "VALUES (?, ?, ?, ?);");
+        ins.bind(1, tenant_id);
+        ins.bind(2, key);
+        ins.bind(3, request_id);
+        ins.bind(4, created_at);
+        int rc = ins.step();
+        if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert idempotency_key");
+        exec_sql(db_, "COMMIT;");
+        return true;
+    } catch (...) {
+        try { exec_sql(db_, "ROLLBACK;"); } catch (...) {}
+        throw;
+    }
+}
+
+int64_t TenantStore::prune_idempotency_keys(int64_t older_than_epoch) {
+    if (!db_) return 0;
+    Stmt q(db_,
+        "DELETE FROM idempotency_keys WHERE created_at < ?;");
+    q.bind(1, older_than_epoch);
+    q.step();
+    return static_cast<int64_t>(sqlite3_changes(db_));
 }
 
 // ── Lessons ─────────────────────────────────────────────────────────────

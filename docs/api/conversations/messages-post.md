@@ -28,7 +28,7 @@ curl -N \
 
 ### Headers
 
-`Idempotency-Key` is honoured here on the same terms as on [`POST /v1/orchestrate`](../orchestrate.md#idempotency) — retries replay the original execution instead of triggering a duplicate, the assistant turn isn't persisted twice, and the dedup is in-memory with a 24h TTL.
+`Idempotency-Key` is honoured here on the same terms as on [`POST /v1/orchestrate`](../orchestrate.md#idempotency) — retries replay the original execution instead of triggering a duplicate, the assistant turn isn't persisted twice, and the dedup map is durable in `tenants.db` with a 24h TTL.
 
 ## What happens server-side
 
