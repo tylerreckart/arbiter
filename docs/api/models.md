@@ -4,6 +4,8 @@
 
 List the models arbiter knows how to route. Powers the frontend's model picker. The catalogue changes only when the operator deploys a new build — clients should cache it briefly and re-fetch on a fresh session.
 
+Hosted traffic routes through OpenRouter; catalogue ids are OpenRouter slugs (plus a few short Claude aliases rewritten to dotted Anthropic slugs at request time).
+
 ## Request
 
 No path params, no query params, no body.
@@ -19,13 +21,15 @@ curl -H "Authorization: Bearer atr_…" \
 
 ```json
 {
-  "count": 15,
+  "count": 24,
   "models": [
-    { "id": "claude-opus-4-7",          "provider": "anthropic" },
-    { "id": "claude-sonnet-4-6",        "provider": "anthropic" },
-    { "id": "openai/gpt-5.4",           "provider": "openai" },
-    { "id": "gemini/gemini-2.5-pro",    "provider": "gemini" },
-    { "id": "gemini/gemini-2.5-flash",  "provider": "gemini" }
+    { "id": "anthropic/claude-sonnet-5",     "provider": "openrouter" },
+    { "id": "anthropic/claude-opus-5",       "provider": "openrouter" },
+    { "id": "openai/gpt-5.5",                "provider": "openrouter" },
+    { "id": "openai/gpt-5.6-sol",            "provider": "openrouter" },
+    { "id": "google/gemini-3.6-flash",       "provider": "openrouter" },
+    { "id": "x-ai/grok-4.5",                 "provider": "openrouter" },
+    { "id": "claude-sonnet-4-6",             "provider": "openrouter" }
   ]
 }
 ```
@@ -33,7 +37,7 @@ curl -H "Authorization: Bearer atr_…" \
 | Field      | Type   | Description |
 |------------|--------|-------------|
 | `id`       | string | Matches what you pass in `agent_def.model` (or as the model on a stored agent). |
-| `provider` | string | `anthropic`, `openai`, `gemini`, or `ollama`. |
+| `provider` | string | Today: `openrouter` for hosted models (Ollama ids use the `ollama/` prefix and are not listed here). |
 
 ## Failure modes
 
