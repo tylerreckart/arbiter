@@ -2642,17 +2642,26 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
         char decision = 0;
         while (true) {
-            const int key = read_confirm_key();
+            char csi = 0;
+            std::string csi_params;
+            const int key = arbiter::read_history_sidebar_key(csi, csi_params);
             if (key < 0) {
                 decision = 0;
                 break;
+            }
+            // Swallow SGR mouse reports (same as read_confirm_key).
+            if (key == 0x1B && (csi == 'M' || csi == 'm')
+                && !csi_params.empty() && csi_params[0] == '<') {
+                continue;
             }
             if (key == 'a' || key == 'A' || key == 'r' || key == 'R') {
                 decision = static_cast<char>(key);
                 break;
             }
-            // Bare Esc (no CSI) cancels; mouse reports already skipped.
-            if (key == 0x1B) {
+            // Bare Esc cancels.  Arrow / function CSI also returns 0x1B but
+            // with a non-zero final — ignore those so navigation keys do not
+            // abort review.
+            if (key == 0x1B && csi == 0) {
                 decision = 0;
                 break;
             }

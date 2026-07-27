@@ -492,10 +492,19 @@ DiffApplyResult apply_unified_diff(std::string_view patch,
     } else {
         // File does not exist: create it from the patch's new side.
         // `/diff apply` is the user's grant — no write confirm, and we
-        // do not require a /dev/null new-file header.  Context and '-'
-        // lines are ignored for matching; only '+' and context contribute
-        // to the created content (context lines are part of the new file
-        // body in unified diffs).
+        // do not require a /dev/null new-file header.
+        //
+        // Multi-hunk *edit* patches omit unchanged lines between hunks, so
+        // concatenating new-side lines would drop those gaps.  Only create
+        // from a single hunk, or from an explicit new-file patch (where
+        // every hunk is a pure insert against /dev/null).
+        if (parsed.hunks.size() > 1 && !parsed.is_new_file) {
+            result.error =
+                "cannot create missing file from multi-hunk edit patch: " + rel +
+                " (gaps between hunks are unknown; use a single hunk or "
+                "--- /dev/null new-file patch)";
+            return result;
+        }
         result.had_file = false;
         result.pre_image.clear();
 

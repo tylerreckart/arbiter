@@ -159,6 +159,25 @@ TEST_CASE("apply_unified_diff: delete refuses missing file") {
     CHECK(r.error.find("missing") != std::string::npos);
 }
 
+TEST_CASE("apply_unified_diff: multi-hunk edit refuses create-when-missing") {
+    TempDir dir;
+    const char* patch =
+        "--- a/multi.txt\n"
+        "+++ b/multi.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        " a\n"
+        "-b\n"
+        "+B\n"
+        "@@ -10,2 +10,2 @@\n"
+        " i\n"
+        "-j\n"
+        "+J\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("multi-hunk") != std::string::npos);
+    CHECK_FALSE(fs::exists(dir.path / "multi.txt"));
+}
+
 TEST_CASE("apply_unified_diff: stale context fails") {
     TempDir dir;
     write_text(dir.path / "foo.txt", "a\nCHANGED\nc\n");
