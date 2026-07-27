@@ -3,9 +3,10 @@
 //
 // First-class apply/undo for unified ```diff fences streamed into the TUI.
 // Parses one-file unified diffs, validates paths stay under a workspace
-// root (process cwd by default), applies with exact hunk matching, and
-// returns an undo snapshot so `/diff undo` can restore the pre-image
-// when the file has not changed since apply.
+// root (process cwd by default), applies with exact hunk-header matching
+// (no whole-file context scan), and returns an undo snapshot so
+// `/diff undo` can restore the pre-image when the file has not changed
+// since apply.
 
 #include <cstdint>
 #include <optional>

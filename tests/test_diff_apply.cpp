@@ -161,6 +161,68 @@ TEST_CASE("undo refuses when file changed after apply") {
     CHECK(u.error.find("changed since apply") != std::string::npos);
 }
 
+TEST_CASE("apply_unified_diff: exact offset only — no context scan") {
+    TempDir dir;
+    // Same context appears twice; hunk targets the second occurrence.
+    write_text(dir.path / "foo.txt", "x\na\nb\nc\na\nb\nc\n");
+    const char* wrong_offset =
+        "--- a/foo.txt\n"
+        "+++ b/foo.txt\n"
+        "@@ -2,3 +2,3 @@\n"   // first "a b c" block
+        " a\n"
+        "-b\n"
+        "+B\n"
+        " c\n";
+    auto ok_first = apply_unified_diff(wrong_offset, dir.path.string());
+    REQUIRE(ok_first.ok);
+    CHECK(read_text(dir.path / "foo.txt") == "x\na\nB\nc\na\nb\nc\n");
+
+    // Reset and aim the header at a non-matching offset while identical
+    // context exists elsewhere — must fail, not silently patch the other copy.
+    write_text(dir.path / "bar.txt", "a\nb\nc\nx\na\nb\nc\n");
+    const char* bad_offset =
+        "--- a/bar.txt\n"
+        "+++ b/bar.txt\n"
+        "@@ -1,3 +1,3 @@\n"
+        " x\n"
+        "-y\n"
+        "+Y\n"
+        " z\n";
+    auto stale = apply_unified_diff(bad_offset, dir.path.string());
+    CHECK_FALSE(stale.ok);
+    CHECK(stale.error.find("stale") != std::string::npos);
+    CHECK(read_text(dir.path / "bar.txt") == "a\nb\nc\nx\na\nb\nc\n");
+}
+
+TEST_CASE("apply_unified_diff: preserves missing final newline") {
+    TempDir dir;
+    write_text(dir.path / "foo.txt", "a\nb\nc");  // no trailing \n
+    const char* patch =
+        "--- a/foo.txt\n"
+        "+++ b/foo.txt\n"
+        "@@ -1,3 +1,3 @@\n"
+        " a\n"
+        "-b\n"
+        "+B\n"
+        " c\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    REQUIRE(r.ok);
+    CHECK(read_text(dir.path / "foo.txt") == "a\nB\nc");
+}
+
+TEST_CASE("apply_unified_diff: refuses -0,0 insert on non-empty file") {
+    TempDir dir;
+    write_text(dir.path / "foo.txt", "keep\nme\n");
+    const char* patch =
+        "--- a/foo.txt\n"
+        "+++ b/foo.txt\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+injected\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    CHECK_FALSE(r.ok);
+    CHECK(read_text(dir.path / "foo.txt") == "keep\nme\n");
+}
+
 TEST_CASE("DiffProposalStore: add / apply / reject / undo lifecycle") {
     DiffProposalStore store;
     const char* patch =
