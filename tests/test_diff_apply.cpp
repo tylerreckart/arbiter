@@ -124,6 +124,60 @@ TEST_CASE("apply_unified_diff: create new file + undo deletes it") {
     CHECK_FALSE(fs::exists(dir.path / "new.txt"));
 }
 
+TEST_CASE("apply_unified_diff: missing file created from edit-style hunks") {
+    // Agent emitted an edit hunk but the file is absent — create from new side.
+    TempDir dir;
+    const char* patch =
+        "--- a/subdir/missing.txt\n"
+        "+++ b/subdir/missing.txt\n"
+        "@@ -1,3 +1,3 @@\n"
+        " keep\n"
+        "-old\n"
+        "+new\n"
+        " tail\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    REQUIRE(r.ok);
+    CHECK(r.path == "subdir/missing.txt");
+    CHECK_FALSE(r.had_file);
+    CHECK(read_text(dir.path / "subdir" / "missing.txt") == "keep\nnew\ntail\n");
+
+    DiffUndoSnapshot snap{r.resolved_path, r.had_file, r.pre_image, r.post_image};
+    auto u = undo_unified_diff(snap);
+    REQUIRE(u.ok);
+    CHECK_FALSE(fs::exists(dir.path / "subdir" / "missing.txt"));
+}
+
+TEST_CASE("apply_unified_diff: delete refuses missing file") {
+    TempDir dir;
+    const char* patch =
+        "--- a/gone.txt\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-x\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("missing") != std::string::npos);
+}
+
+TEST_CASE("apply_unified_diff: multi-hunk edit refuses create-when-missing") {
+    TempDir dir;
+    const char* patch =
+        "--- a/multi.txt\n"
+        "+++ b/multi.txt\n"
+        "@@ -1,2 +1,2 @@\n"
+        " a\n"
+        "-b\n"
+        "+B\n"
+        "@@ -10,2 +10,2 @@\n"
+        " i\n"
+        "-j\n"
+        "+J\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("multi-hunk") != std::string::npos);
+    CHECK_FALSE(fs::exists(dir.path / "multi.txt"));
+}
+
 TEST_CASE("apply_unified_diff: stale context fails") {
     TempDir dir;
     write_text(dir.path / "foo.txt", "a\nCHANGED\nc\n");

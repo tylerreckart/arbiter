@@ -437,6 +437,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         std::promise<bool>*      pending = nullptr;
     } confirm_state;
 
+    // Interactive `/diff` / `/diff review`: pane thread posts a card, main
+    // thread reads a/r/Esc (same interrupt bridge as ConfirmState).
+    struct DiffReviewState {
+        std::mutex               mu;
+        std::promise<char>*      pending = nullptr;  // 'a' | 'r' | 0 cancel
+        int                      patch_id = 0;
+        std::string              path;
+        std::string              summary;
+        std::vector<std::string> preview_lines;
+    } diff_review_state;
+
     std::atomic<bool> quit_requested{false};
 
     ConversationStore conversation_store(dir);
@@ -620,7 +631,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         {"/todo",         "todo tracker"},
         {"/schedule",     "schedule recurring/one-shot tasks"},
         {"/exec",         "shell command (confirm gate)"},
-        {"/diff",         "apply/reject/undo streamed ```diff patches"},
+        {"/diff",         "review/apply/reject/undo streamed ```diff patches"},
         {"/write",        "write a file"},
         {"/read",         "conversation artifacts"},
         {"/list",         "list conversation artifacts"},
@@ -691,7 +702,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                   "/plan","/theme","/verbose","/chat","/quit","/help"});
                 }
                 if (cmd == "diff") {
-                    return match({"apply","reject","undo","list"});
+                    return match({"review","list","apply","reject","undo"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
                     cmd == "reset" || cmd == "compact" || cmd == "pane") {
@@ -1632,12 +1643,174 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     return std::nullopt;
                 };
 
-                if (sub.empty() || sub == "list") {
+                auto patch_preview = [](const std::string& patch)
+                    -> std::vector<std::string> {
+                    std::vector<std::string> out;
+                    std::istringstream ps(patch);
+                    std::string line;
+                    while (std::getline(ps, line) && out.size() < 6) {
+                        if (line.rfind("---", 0) == 0 ||
+                            line.rfind("+++", 0) == 0 ||
+                            line.rfind("@@", 0) == 0 ||
+                            line.rfind("diff ", 0) == 0 ||
+                            line.rfind("index ", 0) == 0) {
+                            continue;
+                        }
+                        if (line.size() > 72) line = line.substr(0, 69) + "...";
+                        out.push_back(std::move(line));
+                    }
+                    return out;
+                };
+
+                auto apply_proposal = [&](int id) -> bool {
+                    auto prop = store.get(id);
+                    if (!prop) {
+                        push_status("ERR: no patch #" + std::to_string(id));
+                        return false;
+                    }
+                    if (prop->status == arbiter::DiffProposalStatus::Applied) {
+                        push_status("ERR: patch #" + std::to_string(id) +
+                                    " already applied — /diff undo " +
+                                    std::to_string(id) + " to revert");
+                        return false;
+                    }
+                    if (prop->status == arbiter::DiffProposalStatus::Rejected) {
+                        push_status("ERR: patch #" + std::to_string(id) +
+                                    " was rejected");
+                        return false;
+                    }
+                    // Apply is the user's grant: write immediately (create
+                    // missing files). No /write confirm gate.
+                    auto applied = arbiter::apply_unified_diff(prop->patch);
+                    if (!applied.ok) {
+                        store.mark_failed(id, applied.error);
+                        push_status("ERR: apply #" + std::to_string(id) +
+                                    " failed: " + applied.error);
+                        return false;
+                    }
+                    arbiter::DiffUndoSnapshot snap;
+                    snap.resolved_path = applied.resolved_path;
+                    snap.had_file = applied.had_file;
+                    snap.pre_image = applied.pre_image;
+                    snap.post_image = applied.post_image;
+                    store.mark_applied(id, std::move(snap));
+                    std::string msg = "applied patch #" + std::to_string(id) +
+                        ": " + applied.path;
+                    if (!applied.had_file) msg += " (created)";
+                    msg += "\n  /diff undo " + std::to_string(id) +
+                        " to restore the previous contents";
+                    push_status(msg);
+                    return true;
+                };
+
+                auto request_review_key = [&](int id,
+                                              const std::string& path,
+                                              const std::string& summary,
+                                              std::vector<std::string> preview)
+                    -> char {
+                    std::promise<char> done;
+                    auto fut = done.get_future();
+                    {
+                        std::lock_guard<std::mutex> lk(diff_review_state.mu);
+                        diff_review_state.patch_id = id;
+                        diff_review_state.path = path;
+                        diff_review_state.summary = summary;
+                        diff_review_state.preview_lines = std::move(preview);
+                        diff_review_state.pending = &done;
+                    }
+                    pane.editor.interrupt();
+                    return fut.get();
+                };
+
+                auto run_interactive_review = [&](std::optional<int> only_id) {
+                    std::vector<int> ids;
+                    if (only_id) {
+                        auto prop = store.get(*only_id);
+                        if (!prop) {
+                            push_status("ERR: no patch #" +
+                                        std::to_string(*only_id));
+                            return;
+                        }
+                        if (prop->status != arbiter::DiffProposalStatus::Pending &&
+                            prop->status != arbiter::DiffProposalStatus::Failed) {
+                            push_status("ERR: patch #" + std::to_string(*only_id) +
+                                        " is " +
+                                        diff_proposal_status_label(prop->status) +
+                                        " — only pending/failed can be reviewed");
+                            return;
+                        }
+                        ids.push_back(*only_id);
+                    } else {
+                        for (const auto& p : store.list()) {
+                            if (p.status == arbiter::DiffProposalStatus::Pending ||
+                                p.status == arbiter::DiffProposalStatus::Failed) {
+                                ids.push_back(p.id);
+                            }
+                        }
+                    }
+                    if (ids.empty()) {
+                        push_status("No pending patches to review.\n"
+                                    "  /diff list — all proposals; "
+                                    "agent ```diff fences register as Patch #N");
+                        return;
+                    }
+                    for (int id : ids) {
+                        auto prop = store.get(id);
+                        if (!prop) continue;
+                        if (prop->status != arbiter::DiffProposalStatus::Pending &&
+                            prop->status != arbiter::DiffProposalStatus::Failed) {
+                            continue;
+                        }
+                        std::string summary =
+                            "Apply under process cwd. Missing files are created; "
+                            "no write confirm.";
+                        if (!prop->error.empty()) {
+                            summary = "Previously failed: " + prop->error;
+                        }
+                        const char key = request_review_key(
+                            id, prop->path, summary, patch_preview(prop->patch));
+                        if (key == 'a' || key == 'A') {
+                            apply_proposal(id);
+                        } else if (key == 'r' || key == 'R') {
+                            if (store.mark_rejected(id)) {
+                                push_status("rejected patch #" +
+                                            std::to_string(id) + ": " +
+                                            prop->path);
+                            } else {
+                                push_status("ERR: could not reject patch #" +
+                                            std::to_string(id));
+                            }
+                        } else {
+                            push_status("review cancelled"
+                                        " (remaining patches stay pending)");
+                            return;
+                        }
+                    }
+                };
+
+                if (sub.empty() || sub == "review") {
+                    // Optional N: review one patch.  Bare `/diff` / `/diff review`
+                    // walks every pending/failed proposal.
+                    std::string id_tok;
+                    iss >> id_tok;
+                    if (!id_tok.empty()) {
+                        try {
+                            run_interactive_review(std::stoi(id_tok));
+                        } catch (...) {
+                            push_status("Usage: /diff review [N]");
+                        }
+                    } else {
+                        run_interactive_review(std::nullopt);
+                    }
+                    return;
+                }
+
+                if (sub == "list") {
                     auto items = store.list();
                     if (items.empty()) {
                         push_status("No diff proposals in this pane yet.\n"
                                     "  Agent ```diff fences register as Patch #N — "
-                                    "then /diff apply N");
+                                    "then /diff or /diff apply N");
                         return;
                     }
                     std::ostringstream out;
@@ -1649,7 +1822,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         if (!p.error.empty()) out << "  (" << p.error << ")";
                         out << "\n";
                     }
-                    out << "\n  /diff apply [N]   /diff reject [N]   /diff undo [N]";
+                    out << "\n  /diff [review] [N]   /diff apply [N]   "
+                           "/diff reject [N]   /diff undo [N]";
                     push_status(out.str());
                     return;
                 }
@@ -1682,42 +1856,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     if (!id) {
                         push_status("Usage: /diff apply [N]\n"
                                     "  N defaults to the latest pending proposal.\n"
-                                    "  Applies under the process cwd; /diff undo N to revert.");
+                                    "  Applies under the process cwd (creates missing "
+                                    "files; no write confirm); /diff undo N to revert.");
                         return;
                     }
-                    auto prop = store.get(*id);
-                    if (!prop) {
-                        push_status("ERR: no patch #" + std::to_string(*id));
-                        return;
-                    }
-                    if (prop->status == arbiter::DiffProposalStatus::Applied) {
-                        push_status("ERR: patch #" + std::to_string(*id) +
-                                    " already applied — /diff undo " +
-                                    std::to_string(*id) + " to revert");
-                        return;
-                    }
-                    if (prop->status == arbiter::DiffProposalStatus::Rejected) {
-                        push_status("ERR: patch #" + std::to_string(*id) +
-                                    " was rejected");
-                        return;
-                    }
-                    auto applied = arbiter::apply_unified_diff(prop->patch);
-                    if (!applied.ok) {
-                        store.mark_failed(*id, applied.error);
-                        push_status("ERR: apply #" + std::to_string(*id) +
-                                    " failed: " + applied.error);
-                        return;
-                    }
-                    arbiter::DiffUndoSnapshot snap;
-                    snap.resolved_path = applied.resolved_path;
-                    snap.had_file = applied.had_file;
-                    snap.pre_image = applied.pre_image;
-                    snap.post_image = applied.post_image;
-                    store.mark_applied(*id, std::move(snap));
-                    push_status("applied patch #" + std::to_string(*id) +
-                                ": " + applied.path +
-                                "\n  /diff undo " + std::to_string(*id) +
-                                " to restore the previous contents");
+                    apply_proposal(*id);
                     return;
                 }
 
@@ -1751,8 +1894,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     return;
                 }
 
-                push_status("Usage: /diff [list]|apply [N]|reject [N]|undo [N]\n"
-                            "  Applies agent ```diff fences under the process cwd.\n"
+                push_status("Usage: /diff [review] [N]|list|apply [N]|reject [N]|undo [N]\n"
+                            "  /diff or /diff review — interactive [a]pply / [r]eject.\n"
+                            "  Apply writes under the process cwd; missing files are created\n"
+                            "  (apply is the permission grant — no write confirm).\n"
                             "  Omit N to target the latest pending (apply/reject) or applied (undo).");
                 return;
             }
@@ -1851,7 +1996,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /schedule list|<phrase>: <msg>   — schedule recurring/one-shot tasks\n"
                     "  /schedule cancel|pause|resume    — manage scheduled tasks by id\n"
                     "  /exec <cmd>                      — host shell (confirm gate; on by default; --no-exec disables)\n"
-                    "  /diff [list]|apply|reject|undo   — apply streamed ```diff patches (with undo)\n"
+                    "  /diff [review]|list|apply|reject|undo — interactive a/r or apply streamed ```diff\n"
                     "  /write <path>                    — write file / --persist to artifact store\n"
                     "  /read <path> | /list             — conversation artifacts\n"
                     "  /mcp tools|call                  — MCP server registry\n"
@@ -2468,6 +2613,75 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             true);
         ui_ctx.present_all();
         pending->set_value(yes);
+        return true;
+    };
+
+    // Interactive `/diff` review: [a]pply / [r]eject / Esc cancel.
+    auto service_diff_review = [&]() -> bool {
+        std::promise<char>* pending = nullptr;
+        int patch_id = 0;
+        std::string path;
+        std::string summary;
+        std::vector<std::string> preview;
+        {
+            std::lock_guard<std::mutex> lk(diff_review_state.mu);
+            pending = diff_review_state.pending;
+            patch_id = diff_review_state.patch_id;
+            path = diff_review_state.path;
+            summary = diff_review_state.summary;
+            preview = diff_review_state.preview_lines;
+            diff_review_state.pending = nullptr;
+        }
+        if (!pending) return false;
+
+        Pane& pane = layout.focused();
+        auto card = arbiter::styled_diff_review_card(
+            patch_id, path, summary, preview);
+        pane_history_push_prose(pane, card, true);
+        ui_ctx.present_all();
+
+        char decision = 0;
+        while (true) {
+            char csi = 0;
+            std::string csi_params;
+            const int key = arbiter::read_history_sidebar_key(csi, csi_params);
+            if (key < 0) {
+                decision = 0;
+                break;
+            }
+            // Swallow SGR mouse reports (same as read_confirm_key).
+            if (key == 0x1B && (csi == 'M' || csi == 'm')
+                && !csi_params.empty() && csi_params[0] == '<') {
+                continue;
+            }
+            if (key == 'a' || key == 'A' || key == 'r' || key == 'R') {
+                decision = static_cast<char>(key);
+                break;
+            }
+            // Bare Esc cancels.  Arrow / function CSI also returns 0x1B but
+            // with a non-zero final — ignore those so navigation keys do not
+            // abort review.
+            if (key == 0x1B && csi == 0) {
+                decision = 0;
+                break;
+            }
+            // Ignore other keys (keep prompting via the card already shown).
+        }
+
+        const char* label =
+            (decision == 'a' || decision == 'A') ? "[diff apply]"
+            : (decision == 'r' || decision == 'R') ? "[diff reject]"
+            : "[diff review cancelled]";
+        const StyleId style =
+            (decision == 'a' || decision == 'A') ? StyleId::Success
+            : (decision == 'r' || decision == 'R') ? StyleId::Warning
+            : StyleId::Dim;
+        pane_history_push_prose(
+            pane,
+            {arbiter::styled_activity_line(label, style)},
+            true);
+        ui_ctx.present_all();
+        pending->set_value(decision);
         return true;
     };
 
@@ -3133,6 +3347,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // ── Main readline loop ──────────────────────────────────────────────────
     while (!quit_requested) {
         while (service_confirm()) {}
+        while (service_diff_review()) {}
         while (service_pending_closes()) {}
         while (service_pending_conv_ops()) {}
         while (service_mouse_switch()) {}
@@ -3316,6 +3531,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 continue;
             }
             if (service_confirm()) continue;
+            if (service_diff_review()) continue;
             if (service_pending_closes()) continue;
             if (service_pending_conv_ops()) continue;
             if (service_mouse_switch()) continue;
