@@ -8471,7 +8471,7 @@ bool parse_message_field(const std::shared_ptr<JsonValue>& msg_val,
 // Read the `Idempotency-Key` header, trim whitespace, length-cap.
 // Returns empty string when absent or invalid — caller proceeds normally
 // without dedup.  The cap (256 chars) keeps a malicious client from
-// bloating the in-memory cache with arbitrarily long keys.
+// bloating the durable / in-process maps with arbitrarily long keys.
 std::string read_idempotency_key(const HttpRequest& req) {
     auto it = req.headers.find("idempotency-key");
     if (it == req.headers.end()) return {};
@@ -8542,8 +8542,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // already have a request_id for, redirect into the resubscribe path
     // so the retry receives the same SSE stream (live tail or
     // backlog replay, depending on the original's state) instead of
-    // triggering a second execution.  In-memory cache; a process
-    // restart resets it.  Body is intentionally not part of the dedup
+    // triggering a second execution.  The mapping is durable in
+    // TenantStore (survives process restart); the in-process table is
+    // an L1 cache.  Body is intentionally not part of the dedup
     // contract for v1 — clients retrying after a network blip send the
     // same body.
     if (auto replay_id = check_idempotency_replay(opts, req, tenant.id)) {
@@ -9716,7 +9717,11 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
 
     // Idempotency cache for retry-safe POSTs.  Always present; an
     // absent Idempotency-Key header on a request bypasses it entirely.
+    // Bound to TenantStore so (tenant, key) → request_id survives
+    // process restart; prune any rows past the 24h TTL on start.
     idempotency_  = std::make_unique<IdempotencyCache>();
+    idempotency_->bind_store(&tenants_);
+    idempotency_->prune_expired();
     opts_.idempotency = idempotency_.get();
 
     // Metrics registry; rendered at GET /v1/metrics.

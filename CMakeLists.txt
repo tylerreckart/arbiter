@@ -1047,10 +1047,17 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_idempotency_cache
         tests/test_idempotency_cache.cpp
         src/idempotency_cache.cpp
+        src/tenant_store.cpp
     )
     target_include_directories(unit_idempotency_cache PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_idempotency_cache PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
     )
     add_test(NAME unit_idempotency_cache COMMAND unit_idempotency_cache)
 
