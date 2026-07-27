@@ -14,12 +14,13 @@ The durable log fixes all three: every event lands in SQLite as it's emitted, re
 
 ## Storage
 
-Two SQLite tables on `tenants.db`:
+Two SQLite tables on `tenants.db` (plus `idempotency_keys` for durable retry dedup — see [Idempotency](../api/orchestrate.md#idempotency)):
 
 | Table             | Purpose |
 |-------------------|---------|
 | `request_status`  | One row per orchestrate call. State (`running` / `completed` / `failed` / `canceled`), agent, conversation, started_at, completed_at, error_message, last_seq. |
 | `request_events`  | Append-only event log. Each row carries `(request_id, seq, event_kind, payload_json, created_at_ms)`. Unique on `(request_id, seq)`; FK cascades from both `tenants` and `request_status`. |
+| `idempotency_keys` | `(tenant_id, key) → request_id` with `created_at` for the 24h TTL. Survives process restart so `Idempotency-Key` retries still join the original run. |
 
 `request_events.seq` is per-request monotonic, assigned by the SSE writer. The unique index prevents duplicate inserts.
 

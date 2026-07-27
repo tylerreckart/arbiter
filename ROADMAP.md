@@ -6,8 +6,6 @@ Living document: where Arbiter stands today and a prioritized path toward a comp
 
 Already called out in CHANGELOG / docs / code comments:
 
-- Context summarization / trim — ([`docs/tui/sessions.md`](docs/tui/sessions.md))
-- Idempotency cache in-memory only
 - Circuit breaker thresholds hard-coded
 - Sandbox: Docker-only; idle reaper documented but not implemented; no workspace-root env
 - Hard kill can still lose an unfinished model stream; loops die on exit; queue depth is dropped
@@ -33,7 +31,7 @@ calendar commitments.
 - [x] Restart restores the prior split layout and per-pane conversation bindings (`layout.json`).
 
 ### Phase 2 — Production-grade local server
-- [ ] **Durable idempotency-** Persist `(tenant, key) → request_id` across restarts
+- [x] **Durable idempotency-** Persist `(tenant, key) → request_id` across restarts
 - [ ] **Tunable circuit breaker-** `ARBITER_CIRCUIT_*` env
 - [ ] **Sandbox completion-** Idle reaper; exec-timeout kill inside container
 - [ ] **TUI sandbox path-** Opt-in Docker for interactive `/exec`. default remains confirm-gated host with clearer danger UX
