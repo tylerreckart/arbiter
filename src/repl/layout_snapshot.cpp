@@ -132,7 +132,10 @@ layout_snapshot_from_json(std::string_view json) {
     snap.version = parsed->get_int("version", 0);
     if (snap.version != LayoutSnapshot::kVersion) return std::nullopt;
     const int focused = parsed->get_int("focused_leaf", 0);
-    if (focused < 0) return std::nullopt;
+    if (focused < 0 ||
+        focused > static_cast<int>(kMaxLayoutSnapshotLeaves)) {
+        return std::nullopt;
+    }
     snap.focused_leaf = static_cast<size_t>(focused);
     auto root_v = parsed->get("root");
     auto root = node_from_json_(root_v);
