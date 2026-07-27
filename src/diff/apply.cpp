@@ -196,8 +196,11 @@ std::optional<std::size_t> find_hunk(const std::vector<std::string>& file_lines,
     // Exact offset only — no whole-file scan.  Duplicate context elsewhere
     // must not silently patch the wrong line.
     if (expected.empty()) {
-        // Pure insertion.  Unified-diff rule: with old_count==0, old_start
-        // is the line *after* which to insert (index == old_start).
+        // Pure insertion.  Unified-diff / GNU patch rule: with old_count==0,
+        // old_start is the line *after which* to insert, so the 0-based
+        // index equals old_start (NOT old_start-1).  Empirically:
+        //   @@ -2,0 +3,1 @@ on "a\\nb\\nc\\n" inserts between b and c.
+        //   @@ -3,0 +4,1 @@ appends after the last line.
         // @@ -0,0 @@ is the new-file / empty-file form only.
         if (hunk.old_count != 0) return std::nullopt;
         if (hunk.old_start == 0) {
