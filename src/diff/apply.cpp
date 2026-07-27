@@ -486,28 +486,44 @@ DiffApplyResult apply_unified_diff(std::string_view patch,
         }
         result.had_file = true;
         result.pre_image = pre;
-    } else if (!parsed.is_new_file && !parsed.is_delete) {
-        // Editing a missing file is only OK when every hunk has empty
-        // old side — treat as create.
-        for (const auto& h : parsed.hunks) {
-            for (const auto& hl : h.lines) {
-                if (hl.tag != DiffHunkLine::Tag::Add) {
-                    result.error = "file does not exist: " + rel;
-                    return result;
-                }
+    } else if (parsed.is_delete) {
+        result.error = "cannot delete missing file: " + rel;
+        return result;
+    } else {
+        // File does not exist: create it from the patch's new side.
+        // `/diff apply` is the user's grant — no write confirm, and we
+        // do not require a /dev/null new-file header.  Context and '-'
+        // lines are ignored for matching; only '+' and context contribute
+        // to the created content (context lines are part of the new file
+        // body in unified diffs).
+        result.had_file = false;
+        result.pre_image.clear();
+
+        std::vector<DiffHunk> hunks = parsed.hunks;
+        std::stable_sort(hunks.begin(), hunks.end(),
+                         [](const DiffHunk& a, const DiffHunk& b) {
+                             return a.new_start < b.new_start;
+                         });
+        std::vector<std::string> new_lines;
+        for (const auto& hunk : hunks) {
+            for (const auto& hl : hunk.lines) {
+                if (hl.tag == DiffHunkLine::Tag::Remove) continue;
+                new_lines.push_back(hl.text);
             }
         }
+        const std::string post = join_lines(new_lines, /*trailing_nl=*/true);
+        if (!write_file_bytes(path, post, err)) {
+            result.error = err;
+            return result;
+        }
+        result.post_image = post;
+        result.ok = true;
+        return result;
     }
 
     if (parsed.is_delete) {
-        if (!exists) {
-            result.error = "cannot delete missing file: " + rel;
-            return result;
-        }
         // Verify delete hunks match current content when present.
         auto lines = split_lines_keep_nl(pre);
-        const bool trailing_nl = !pre.empty() && pre.back() == '\n';
-        (void)trailing_nl;
         for (const auto& hunk : parsed.hunks) {
             auto at = find_hunk(lines, hunk);
             if (!at) {
