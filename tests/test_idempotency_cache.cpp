@@ -4,15 +4,43 @@
 // inserts of the same triple are idempotent, races on different
 // request_ids report false (caller falls back to get()), and TTL
 // eviction fires lazily on get() / put() as well as on prune.
+// With a TenantStore bound, mappings also survive a process-restart
+// simulation (new cache instance, same DB).
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "idempotency_cache.h"
+#include "tenant_store.h"
 
 #include <chrono>
+#include <filesystem>
 #include <thread>
+#include <unistd.h>
 
+namespace fs = std::filesystem;
 using namespace arbiter;
+
+namespace {
+
+struct TempDb {
+    fs::path path;
+    TempDb() {
+        const auto pid = static_cast<long long>(::getpid());
+        const auto now = std::chrono::steady_clock::now()
+                              .time_since_epoch().count();
+        path = fs::temp_directory_path() /
+               ("arbiter_idemp_" + std::to_string(pid) + "_" +
+                std::to_string(now) + ".db");
+    }
+    ~TempDb() {
+        std::error_code ec;
+        fs::remove(path, ec);
+        fs::remove(path.string() + "-wal", ec);
+        fs::remove(path.string() + "-shm", ec);
+    }
+};
+
+} // namespace
 
 TEST_CASE("missing key returns empty optional") {
     IdempotencyCache c;
@@ -93,4 +121,57 @@ TEST_CASE("unique keys don't accumulate past the TTL (amortized prune)") {
     }
     CHECK(c.size() <= 600 + 512);
     CHECK(c.size() < 1200);
+}
+
+TEST_CASE("durable store: mapping survives cache rebuild (restart)") {
+    TempDb db;
+    TenantStore store;
+    store.open(db.path.string());
+    const int64_t tid = store.create_tenant("acme").tenant.id;
+
+    {
+        IdempotencyCache c;
+        c.bind_store(&store);
+        CHECK(c.put(tid, "client-key", "req-original"));
+        REQUIRE(c.get(tid, "client-key").has_value());
+        CHECK(c.get(tid, "client-key")->request_id == "req-original");
+    }
+
+    // Simulate process restart: fresh L1, same SQLite file.
+    IdempotencyCache after;
+    after.bind_store(&store);
+    CHECK(after.size() == 0);
+    auto e = after.get(tid, "client-key");
+    REQUIRE(e.has_value());
+    CHECK(e->request_id == "req-original");
+    CHECK(e->wall_created_at > 0);
+
+    // A post-restart put with a different request_id must lose.
+    CHECK(!after.put(tid, "client-key", "req-new"));
+    CHECK(after.get(tid, "client-key")->request_id == "req-original");
+}
+
+TEST_CASE("durable store: L1 rehydration preserves wall-clock TTL") {
+    TempDb db;
+    TenantStore store;
+    store.open(db.path.string());
+    const int64_t tid = store.create_tenant("acme").tenant.id;
+    const int64_t ttl = 2;
+
+    // Seed a durable row that is already near expiry.
+    const int64_t created = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count() - 1;
+    CHECK(store.put_idempotency_key(tid, "near-expiry", "req-old", ttl, created));
+
+    IdempotencyCache c{std::chrono::seconds(ttl)};
+    c.bind_store(&store);
+    auto hit = c.get(tid, "near-expiry");
+    REQUIRE(hit);
+    CHECK(hit->request_id == "req-old");
+    CHECK(hit->wall_created_at == created);
+
+    // After the wall TTL elapses, L1 must not keep serving the mapping
+    // just because it was rehydrated recently on the steady clock.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    CHECK(!c.get(tid, "near-expiry").has_value());
 }

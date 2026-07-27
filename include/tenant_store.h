@@ -444,6 +444,50 @@ public:
                          int64_t since_seq,
                          int limit) const;
 
+    // ── Idempotency keys (durable Idempotency-Key → request_id) ─────────
+    //
+    // Persists the `(tenant_id, key) → request_id` mapping that the
+    // in-process IdempotencyCache mirrors so a client retry after an
+    // API server restart still replays the original run instead of
+    // starting a second one.  No FK to request_status: if the request
+    // row is later deleted, the mapping must remain so an aged retry
+    // gets 404 rather than silently re-executing.
+    //
+    // TTL is wall-clock (epoch seconds).  Expired rows are dropped
+    // lazily on get/put and by prune_idempotency_keys.
+
+    struct IdempotencyMapping {
+        std::string request_id;
+        int64_t     created_at = 0;   // epoch seconds
+    };
+
+    // Look up an unexpired mapping.  `ttl_seconds` defaults to 24h.
+    // `now_epoch` of 0 stamps "now".  Expired rows are deleted as a
+    // side effect (only the observed created_at, so a concurrent put
+    // that refreshed the row is not clobbered) and yield nullopt.
+    std::optional<IdempotencyMapping>
+    get_idempotency_key(int64_t tenant_id,
+                        const std::string& key,
+                        int64_t ttl_seconds = 86400,
+                        int64_t now_epoch = 0);
+
+    // Reserve `(tenant_id, key) → request_id`.  Returns true on first
+    // insert, on overwrite of an expired row, or when the same
+    // request_id already owns the slot.  Returns false when a
+    // different unexpired request_id already claims the key (caller
+    // should get_idempotency_key and replay).  `created_at` of 0
+    // stamps "now".
+    bool put_idempotency_key(int64_t tenant_id,
+                             const std::string& key,
+                             const std::string& request_id,
+                             int64_t ttl_seconds = 86400,
+                             int64_t created_at = 0);
+
+    // Delete rows with created_at < older_than_epoch.  Returns the
+    // number of rows removed.  Called on API server start and
+    // amortized from the in-process cache.
+    int64_t prune_idempotency_keys(int64_t older_than_epoch);
+
     // ── Lessons (self-reflection / learned-from-failure) ─────────────────
     //
     // Agent-scoped record of "this approach failed, try this instead."

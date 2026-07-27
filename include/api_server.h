@@ -251,7 +251,8 @@ private:
     // the legacy disabled behaviour (cmd_exec gated by exec_disabled).
     std::unique_ptr<SandboxManager>  sandbox_;
     // Idempotency-Key dedup cache for the write-creating POST routes.
-    // Always constructed; absence of an Idempotency-Key header on a
+    // Always constructed and bound to `tenants_` so mappings survive
+    // process restart; absence of an Idempotency-Key header on a
     // request skips it entirely.
     std::unique_ptr<IdempotencyCache> idempotency_;
     // In-process Prometheus-style metrics registry.  Always

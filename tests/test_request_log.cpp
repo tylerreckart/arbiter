@@ -198,3 +198,81 @@ TEST_CASE("event seqs preserve insert order on read") {
         CHECK(events[i].seq == static_cast<int64_t>(i + 1));
     }
 }
+
+TEST_CASE("idempotency_keys: put / get / race / ttl / prune") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t ttl = 3600;
+
+    CHECK(s.put_idempotency_key(tid, "k1", "req-A", ttl, /*created_at=*/1000));
+    auto got = s.get_idempotency_key(tid, "k1", ttl, /*now=*/1500);
+    REQUIRE(got);
+    CHECK(got->request_id == "req-A");
+    CHECK(got->created_at == 1000);
+
+    SUBCASE("same request_id is idempotent") {
+        CHECK(s.put_idempotency_key(tid, "k1", "req-A", ttl, 1500));
+    }
+
+    SUBCASE("different request_id loses while unexpired") {
+        CHECK(!s.put_idempotency_key(tid, "k1", "req-B", ttl, 1500));
+        CHECK(s.get_idempotency_key(tid, "k1", ttl, 1500)->request_id == "req-A");
+    }
+
+    SUBCASE("expired row is overwritten") {
+        CHECK(s.put_idempotency_key(tid, "k1", "req-C", ttl, /*created_at=*/5000));
+        CHECK(s.get_idempotency_key(tid, "k1", ttl, 5000)->request_id == "req-C");
+    }
+
+    SUBCASE("get lazily evicts expired") {
+        CHECK(!s.get_idempotency_key(tid, "k1", ttl, /*now=*/1000 + ttl + 1));
+        CHECK(!s.get_idempotency_key(tid, "k1", ttl, 1000 + ttl + 1));
+    }
+
+    SUBCASE("expired get does not delete a refreshed row") {
+        // Put old, then refresh via expired overwrite.  A stale DELETE
+        // targeting created_at=1000 must not remove the refreshed row.
+        CHECK(s.put_idempotency_key(tid, "race", "old", ttl, 1000));
+        CHECK(s.put_idempotency_key(tid, "race", "new", ttl, 1000 + ttl + 10));
+        auto live = s.get_idempotency_key(tid, "race", ttl, 1000 + ttl + 20);
+        REQUIRE(live);
+        CHECK(live->request_id == "new");
+        CHECK(live->created_at == 1000 + ttl + 10);
+        CHECK(s.put_idempotency_key(tid, "sib", "keep", ttl, 9000));
+        CHECK(!s.get_idempotency_key(tid, "race", ttl,
+                                     /*now=*/1000 + ttl + 10 + ttl + 1));
+        CHECK(s.get_idempotency_key(tid, "sib", ttl, 9000)->request_id == "keep");
+    }
+
+    SUBCASE("tenants are scoped independently") {
+        const int64_t other = make_tenant(s, "other");
+        CHECK(s.put_idempotency_key(other, "k1", "req-Z", ttl, 1000));
+        CHECK(s.get_idempotency_key(tid, "k1", ttl, 1500)->request_id == "req-A");
+        CHECK(s.get_idempotency_key(other, "k1", ttl, 1500)->request_id == "req-Z");
+    }
+
+    SUBCASE("prune removes only old rows") {
+        CHECK(s.put_idempotency_key(tid, "fresh", "req-F", ttl, 9000));
+        const int64_t n = s.prune_idempotency_keys(/*older_than=*/2000);
+        CHECK(n >= 1);
+        CHECK(!s.get_idempotency_key(tid, "k1", ttl, 9000));
+        CHECK(s.get_idempotency_key(tid, "fresh", ttl, 9000)->request_id == "req-F");
+    }
+}
+
+TEST_CASE("idempotency_keys survive across TenantStore reopen") {
+    TempDb db;
+    const int64_t ttl = 86400;
+    int64_t tid = 0;
+    {
+        TenantStore s; s.open(db.path.string());
+        tid = make_tenant(s, "acme");
+        CHECK(s.put_idempotency_key(tid, "restart-key", "req-persist", ttl));
+    }
+    {
+        TenantStore s; s.open(db.path.string());
+        auto got = s.get_idempotency_key(tid, "restart-key", ttl);
+        REQUIRE(got);
+        CHECK(got->request_id == "req-persist");
+    }
+}
