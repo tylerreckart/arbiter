@@ -1,6 +1,7 @@
 #include "repl/transcript_replay.h"
 
 #include "render_policy.h"
+#include "repl/diff_proposals.h"
 #include "repl/pane.h"
 #include "repl/pane_history.h"
 #include "stream_renderer.h"
@@ -12,7 +13,9 @@ namespace arbiter {
 
 namespace {
 
-void drain_into(opentui::PaneScrollView& view, OutputQueue& queue) {
+void drain_into(opentui::PaneScrollView& view,
+                OutputQueue& queue,
+                DiffProposalStore* proposals) {
     auto items = queue.drain_items();
     for (const auto& item : items) {
         switch (item.kind) {
@@ -33,7 +36,13 @@ void drain_into(opentui::PaneScrollView& view, OutputQueue& queue) {
             }
             break;
         case OutputItem::Kind::Diff:
-            view.append_diff(item.data);
+            // Keep /diff apply targets across relaunch / conversation switch
+            // by registering proposals the same way live drain does.
+            if (proposals) {
+                pane_history_append_diff_proposal(view, *proposals, item.data);
+            } else {
+                view.append_diff(item.data);
+            }
             break;
         case OutputItem::Kind::Tool:
             view.upsert_tool(item.tool, item.new_block);
@@ -55,7 +64,8 @@ void render_messages(opentui::PaneScrollView& view,
                      const std::vector<Message>& history,
                      std::size_t begin,
                      std::size_t end,
-                     const std::string& agent_id) {
+                     const std::string& agent_id,
+                     DiffProposalStore* proposals) {
     for (std::size_t i = begin; i < end; ++i) {
         const Message& m = history[i];
         if (is_replay_noise(m)) continue;
@@ -87,7 +97,7 @@ void render_messages(opentui::PaneScrollView& view,
         }
         queue.end_message();
     }
-    drain_into(view, queue);
+    drain_into(view, queue, proposals);
 }
 
 } // namespace
@@ -101,7 +111,7 @@ void replay_transcript(Pane& pane,
     if (!pane.scroll) return;
 
     render_messages(*pane.scroll, pane.output_queue, history, begin, end,
-                    pane.current_agent);
+                    pane.current_agent, &pane.diff_proposals);
     pane.scroll->set_gap(static_cast<int>(begin));
 }
 
@@ -119,7 +129,7 @@ bool replay_load_previous_chunk(Pane& pane, const std::vector<Message>& history)
     scratch.bind(pane.tui);
     OutputQueue scratch_queue;
     render_messages(scratch, scratch_queue, history, new_begin, begin,
-                    pane.current_agent);
+                    pane.current_agent, &pane.diff_proposals);
 
     const int before = pane_history_total_rows(pane);
     pane.scroll->splice_front(scratch.take_segments());
