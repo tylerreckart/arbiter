@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
+#include <string>
 #include <string_view>
 
 namespace arbiter {
@@ -18,6 +20,33 @@ bool starts_with_ci(std::string_view hay, std::string_view needle) {
     return true;
 }
 
+// Mirror api_client's OpenRouter Claude rewrite for window classification:
+// bare catalog aliases (`claude-sonnet-4-6`) must score like their dotted
+// slugs (`anthropic/claude-sonnet-4.6`).  Sidebar fill and auto-compaction
+// see the stored agent model id, not the post-rewrite request id.
+std::string normalize_claude_version(std::string_view model) {
+    std::string m(model);
+    static const char* kFamilies[] = {
+        "claude-opus-", "claude-sonnet-", "claude-haiku-",
+    };
+    for (const char* fam : kFamilies) {
+        const auto pos = m.find(fam);
+        if (pos == std::string::npos) continue;
+        size_t i = pos + std::strlen(fam);
+        const size_t major_start = i;
+        while (i < m.size() && m[i] >= '0' && m[i] <= '9') ++i;
+        if (i == major_start || i >= m.size() || m[i] != '-') break;
+        const size_t hyphen = i;
+        ++i;
+        const size_t minor_start = i;
+        while (i < m.size() && m[i] >= '0' && m[i] <= '9') ++i;
+        if (i == minor_start) break;
+        m[hyphen] = '.';
+        break;
+    }
+    return m;
+}
+
 } // namespace
 
 int context_window_for_model(std::string_view model) {
@@ -26,15 +55,15 @@ int context_window_for_model(std::string_view model) {
         return 0;
 
     // Current OpenRouter Claude / GPT-5.x / Gemini 3.x windows are 1M-class;
-    // keep a conservative 200k for older Claude short ids without a "5"/"4.6"+
-    // marker so sidebar % does not under-report fill on large contexts.
+    // keep a conservative 200k for older Claude ids (haiku, pre-4.6 sonnet).
     if (model.find("claude") != std::string_view::npos) {
-        if (model.find("sonnet-5") != std::string_view::npos ||
-            model.find("opus-5") != std::string_view::npos ||
-            model.find("sonnet-4.6") != std::string_view::npos ||
-            model.find("opus-4.") != std::string_view::npos ||
-            model.find("claude-sonnet-latest") != std::string_view::npos ||
-            model.find("claude-opus-latest") != std::string_view::npos)
+        const std::string key = normalize_claude_version(model);
+        if (key.find("sonnet-5") != std::string::npos ||
+            key.find("opus-5") != std::string::npos ||
+            key.find("sonnet-4.6") != std::string::npos ||
+            key.find("opus-4.") != std::string::npos ||
+            key.find("claude-sonnet-latest") != std::string::npos ||
+            key.find("claude-opus-latest") != std::string::npos)
             return 1'000'000;
         return 200'000;
     }

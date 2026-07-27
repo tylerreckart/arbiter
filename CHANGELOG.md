@@ -37,6 +37,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   the ADVISOR prompt block.
 - **OpenRouter Claude id rewrite.** Bare `claude-sonnet-4-6`-style ids
   now map to dotted OpenRouter slugs (`anthropic/claude-sonnet-4.6`).
+  Context-window estimates use the same normalization so sidebar fill
+  and auto-compaction match the live 1M-class windows.
 - **Models catalogue / setup wizard.** `/v1/models` and first-run picks
   list current OpenRouter ids used by the starters.
 ## [0.8.9] — 2026-07-26
