@@ -319,6 +319,7 @@ using arbiter::layout_snapshot_path;
 using arbiter::load_layout_snapshot;
 using arbiter::save_layout_snapshot;
 using arbiter::validate_layout_snapshot;
+using arbiter::kMaxLayoutSnapshotLeaves;
 using arbiter::for_each_layout_leaf;
 using arbiter::PaneFrameHooks;
 using arbiter::Rect;
@@ -910,8 +911,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     auto persist_layout = [&]() {
         if (!layout_ptr) return;
-        save_layout_snapshot(layout_snapshot_path(dir),
-                             layout_ptr->capture_snapshot());
+        if (!save_layout_snapshot(layout_snapshot_path(dir),
+                                  layout_ptr->capture_snapshot())) {
+            std::fprintf(stderr,
+                         "[layout] failed to persist pane layout to %s\n",
+                         layout_snapshot_path(dir).c_str());
+        }
     };
 
     // Restore multi-pane layout + per-pane conversation bindings (#42).
@@ -2145,7 +2150,6 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         });
     };
 
-    static constexpr size_t kMaxPanes = 8;
     spawn_pane_fn = [&](const std::string& req_agent,
                          const std::string& message) -> std::string {
         if (req_agent != "index" && !orch.has_agent(req_agent))
@@ -2154,8 +2158,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
         clear_mouse_drag();
 
-        if (layout.pane_count() >= kMaxPanes) {
-            return "ERR: pane cap reached (" + std::to_string(kMaxPanes) +
+        if (layout.pane_count() >= kMaxLayoutSnapshotLeaves) {
+            return "ERR: pane cap reached (" +
+                   std::to_string(kMaxLayoutSnapshotLeaves) +
                    " open); close one before spawning more";
         }
 
@@ -2404,13 +2409,23 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 }
                 break;
             case 'h':
-                if (Pane* np = layout.split_focused(
+                if (layout.pane_count() >= kMaxLayoutSnapshotLeaves) {
+                    layout.focused().tui.set_status(
+                        "pane cap reached (" +
+                        std::to_string(kMaxLayoutSnapshotLeaves) +
+                        ") — close one before splitting");
+                } else if (Pane* np = layout.split_focused(
                         LayoutTree::Orient::Horizontal, make_pane)) {
                     start_pane_thread(*np);
                 }
                 break;
             case 'v':
-                if (Pane* np = layout.split_focused(
+                if (layout.pane_count() >= kMaxLayoutSnapshotLeaves) {
+                    layout.focused().tui.set_status(
+                        "pane cap reached (" +
+                        std::to_string(kMaxLayoutSnapshotLeaves) +
+                        ") — close one before splitting");
+                } else if (Pane* np = layout.split_focused(
                         LayoutTree::Orient::Vertical, make_pane)) {
                     start_pane_thread(*np);
                 }

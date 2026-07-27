@@ -112,6 +112,9 @@ TEST_CASE("from_json rejects corrupt and unknown-version payloads") {
     CHECK_FALSE(layout_snapshot_from_json(
                     R"({"version":1,"focused_leaf":0,"root":{"type":"split","orient":"diagonal","children":[]}})")
                     .has_value());
+    CHECK_FALSE(layout_snapshot_from_json(
+                    R"({"version":1,"focused_leaf":99,"root":{"type":"leaf","conversation_id":"x"}})")
+                    .has_value());
 }
 
 TEST_CASE("save/load round-trip via atomic file") {
