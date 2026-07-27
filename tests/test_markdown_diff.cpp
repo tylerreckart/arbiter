@@ -463,6 +463,18 @@ TEST_CASE("styled_permission_card includes action target preview and prompt") {
     CHECK(card.back().text.find("[y/N]") != std::string::npos);
 }
 
+TEST_CASE("styled_diff_review_card includes apply reject Esc prompt") {
+    auto card = styled_diff_review_card(
+        3, "src/foo.cpp", "Apply under process cwd.",
+        {"-old", "+new"});
+    REQUIRE(card.size() >= 3);
+    CHECK(card.front().text.find("review") != std::string::npos);
+    CHECK(card.front().text.find("#3") != std::string::npos);
+    CHECK(card.front().text.find("src/foo.cpp") != std::string::npos);
+    CHECK(card.back().text.find("[a]pply") != std::string::npos);
+    CHECK(card.back().text.find("[r]eject") != std::string::npos);
+}
+
 TEST_CASE("indented code block routes to code sink when wired") {
     std::vector<std::string> bodies;
     bool opened = false;

@@ -59,4 +59,12 @@ void apply_base_style(StyledLine& line, StyleId base);
     const std::string& target,
     const std::vector<std::string>& preview_lines);
 
+// Interactive `/diff` review card: apply / reject a streamed patch.
+// Prompt line is `[a]pply  [r]eject  Esc cancel`.
+[[nodiscard]] std::vector<StyledLine> styled_diff_review_card(
+    int patch_id,
+    const std::string& path,
+    const std::string& summary,
+    const std::vector<std::string>& preview_lines);
+
 } // namespace arbiter

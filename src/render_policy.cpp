@@ -192,4 +192,41 @@ std::vector<StyledLine> styled_permission_card(
     return lines;
 }
 
+std::vector<StyledLine> styled_diff_review_card(
+    int patch_id,
+    const std::string& path,
+    const std::string& summary,
+    const std::vector<std::string>& preview_lines) {
+    std::vector<StyledLine> lines;
+    StyledLine header;
+    styled_append(header, StyleId::Warning, "diff ");
+    styled_append(header, StyleId::Bold, "review");
+    styled_append(header, StyleId::System, "  #");
+    styled_append(header, StyleId::Code, std::to_string(patch_id));
+    if (!path.empty()) {
+        styled_append(header, StyleId::System, "  ");
+        styled_append(header, StyleId::Code, path);
+    }
+    lines.push_back(std::move(header));
+
+    if (!summary.empty()) {
+        StyledLine sum;
+        styled_append(sum, StyleId::Dim, "  ");
+        styled_append(sum, StyleId::System, summary);
+        lines.push_back(std::move(sum));
+    }
+    for (const auto& prev : preview_lines) {
+        if (prev.empty()) continue;
+        StyledLine row;
+        styled_append(row, StyleId::Dim, "  ");
+        styled_append(row, StyleId::System, prev);
+        lines.push_back(std::move(row));
+    }
+
+    StyledLine prompt;
+    styled_append(prompt, StyleId::Warning, "  [a]pply  [r]eject  Esc cancel");
+    lines.push_back(std::move(prompt));
+    return lines;
+}
+
 } // namespace arbiter
