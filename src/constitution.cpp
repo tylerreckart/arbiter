@@ -37,6 +37,8 @@ static std::set<std::string> resolve_bundles(
             out.insert("mcp");
         else if (cap == "/a2a")
             out.insert("a2a");
+        else if (cap == "/advise")
+            out.insert("advise");
         else if (cap == "/todo")
             out.insert("todos");
         else if (cap == "/schedule")
@@ -408,8 +410,9 @@ static const char* prompt_code_change_format() {
         "  are not diffs against existing code.\n";
 }
 
-// /help inventory line.  Topic list reflects actually-loaded bundles plus
-// "advise" (which is gated on advisor_model, not on bundles).
+// /help inventory line.  Topic list reflects actually-loaded bundles.
+// "advise" is included when the advise bundle is granted via capabilities
+// (or always for the empty-capabilities master default — see below).
 static std::string compose_help_inventory(const std::set<std::string>& b) {
     std::string topics;
     auto add = [&](const char* t) {
@@ -426,7 +429,9 @@ static std::string compose_help_inventory(const std::set<std::string>& b) {
     if (b.count("schedule"))   add("schedule");
     if (b.count("lessons"))    add("lessons");
     if (b.count("mcp"))        add("mcp");
-    add("advise");   // help corpus carries this regardless of /advise wiring
+    // Help text for /advise is always useful when an advisor may be wired;
+    // the dispatcher still hard-gates on the advise capability bundle.
+    add("advise");
 
     return std::string(
         "  /help [<topic>]                            — detailed reference for a slash command\n"

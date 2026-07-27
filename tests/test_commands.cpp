@@ -865,13 +865,15 @@ TEST_CASE("capability denial still emits Started then Finished pairing") {
     CHECK_FALSE(events[1].ok);
 }
 
-TEST_CASE("capability gate denies /todo /schedule /lesson without warrant") {
-    // Probe PROBE-006 / issue #91: these three writs used to bypass the
-    // allowlist because bundle_of returned "" for them.
+TEST_CASE("capability gate denies /todo /schedule /lesson /advise without warrant") {
+    // Probe PROBE-006 / issue #91: these writs used to bypass the
+    // allowlist because bundle_of returned "" for them.  /advise must
+    // likewise stay gated — advisor-enabled starters list it explicitly.
     struct Case { const char* name; const char* bundle; };
     for (Case c : {Case{"todo", "todos"},
                    Case{"schedule", "schedule"},
-                   Case{"lesson", "lessons"}}) {
+                   Case{"lesson", "lessons"},
+                   Case{"advise", "advise"}}) {
         AgentCommand cmd;
         cmd.name = c.name;
         cmd.args = "probe";
@@ -907,10 +909,11 @@ TEST_CASE("capability gate denies /todo /schedule /lesson without warrant") {
     }
 }
 
-TEST_CASE("capability gate allows /todo /schedule /lesson with explicit caps") {
+TEST_CASE("capability gate allows /todo /schedule /lesson /advise with explicit caps") {
     bool todo_called = false;
     bool sched_called = false;
     bool lesson_called = false;
+    bool advise_called = false;
 
     TodoInvoker todo_inv = [&](const std::string&, const std::string&,
                                const std::string&) {
@@ -927,6 +930,10 @@ TEST_CASE("capability gate allows /todo /schedule /lesson with explicit caps") {
         lesson_called = true;
         return std::string("OK: lesson");
     };
+    AdvisorInvoker advise_inv = [&](const std::string&) {
+        advise_called = true;
+        return std::string("OK: advise");
+    };
 
     auto run = [&](const char* name, const char* args,
                    const std::vector<std::string>& caps) {
@@ -938,7 +945,7 @@ TEST_CASE("capability gate allows /todo /schedule /lesson with explicit caps") {
             /*agent_invoker=*/nullptr,
             /*confirm=*/nullptr,
             /*dedup_cache=*/nullptr,
-            /*advisor_invoker=*/nullptr,
+            /*advisor_invoker=*/advise_inv,
             /*tool_status=*/nullptr,
             /*pane_spawner=*/nullptr,
             /*write_interceptor=*/nullptr,
@@ -977,6 +984,12 @@ TEST_CASE("capability gate allows /todo /schedule /lesson with explicit caps") {
         CHECK(lesson_called);
         CHECK(r.find("capability not granted") == std::string::npos);
         CHECK(r.find("OK: lesson") != std::string::npos);
+    }
+    {
+        auto r = run("advise", "should we ship?", {"/advise"});
+        CHECK(advise_called);
+        CHECK(r.find("capability not granted") == std::string::npos);
+        CHECK(r.find("OK: advise") != std::string::npos);
     }
 }
 
