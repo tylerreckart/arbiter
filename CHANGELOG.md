@@ -8,6 +8,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **`/diff` apply / reject / undo (TUI).** Streamed ` ```diff ` fences
+  register as pane-local `Patch #N` proposals with an action line above
+  the rendered panel. `/diff apply [N]` writes the unified patch under
+  the process cwd (exact hunk match; refuses absolute/escaping paths and
+  stale context); `/diff undo [N]` restores the pre-image when the file
+  is unchanged since apply; `/diff reject [N]` keeps the render and
+  marks the proposal rejected. See [`docs/tui/commands.md`](docs/tui/commands.md).
 - **Durable idempotency map.** `Idempotency-Key` mappings now persist in
   `tenants.db` (`idempotency_keys`) with the same 24h TTL. A client retry
   after an API server restart joins the original `request_id` instead of

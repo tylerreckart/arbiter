@@ -1,6 +1,8 @@
 #include "repl/pane_history.h"
 
 #include "repl/pane.h"
+#include "render_policy.h"
+#include "styled_text.h"
 #include "tui/opentui/c_api.h"
 #include "tui/opentui/pane_frame.h"
 #include "tui/opentui/pane_scroll_view.h"
@@ -71,6 +73,7 @@ void pane_history_set_cols(Pane& pane, int /*cols*/) {
 
 void pane_history_clear(Pane& pane) {
     if (pane.scroll) pane.scroll->clear();
+    pane.diff_proposals.clear();
 }
 
 void pane_history_retheme(Pane& pane) {
@@ -82,6 +85,17 @@ void pane_history_push(Pane& pane, std::string_view text, bool new_block) {
 }
 
 void pane_history_push_diff(Pane& pane, std::string_view patch) {
+    // Register before rendering so the action line id matches the panel.
+    if (auto prop = pane.diff_proposals.add_patch(patch)) {
+        std::string line = "Patch #" + std::to_string(prop->id) + " " +
+            diff_proposal_status_label(prop->status) + ": " + prop->path +
+            "  |  /diff apply " + std::to_string(prop->id) +
+            "  /diff reject " + std::to_string(prop->id);
+        if (pane.scroll) {
+            pane.scroll->append_prose(
+                {styled_plain_line(std::move(line), StyleId::System)}, true);
+        }
+    }
     if (pane.scroll) pane.scroll->append_diff(patch);
 }
 

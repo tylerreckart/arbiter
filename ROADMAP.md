@@ -43,7 +43,7 @@ calendar commitments.
 
 ### Phase 3 — Project-aware agents
 - [ ] **Workspace / repo map writ-** Cheap structural index (tree + symbols/outline) injected or fetchable; not a full LSP server in-process if avoidable
-- [ ] **`/diff` + apply workflow-** First-class apply/reject for ` ```diff ` proposals; keep rendering; add staged apply **with** undo
+- [x] **`/diff` + apply workflow-** First-class apply/reject for ` ```diff ` proposals; keep rendering; add staged apply **with** undo
 - [ ] **Git status surface-** Git branch, dirty files, last agent touches surfaced in session sidebar
 - [ ] **PR helper agent pattern-** Agent constitution + MCP Github
 - [ ] **Project lessons boostrap-** On first open of a cwd, optional scan of lessons/memory seeds
