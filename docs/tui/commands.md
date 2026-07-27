@@ -77,6 +77,7 @@ These commands use the same dispatch path as agent tool calls during `/v1/orches
 | `/schedule list\|<phrase>: <msg>` | Create or list scheduled tasks; background scheduler fires them while the TUI runs. |
 | `/schedule cancel\|pause\|resume <id>` | Manage scheduled tasks.                                      |
 | `/exec <cmd>`                  | Host shell (confirm gate; **on by default** in the TUI). Disable with `--no-exec`. Not Docker-sandboxed — see Phase 2 roadmap. |
+| `/diff [list]` \| `apply` \| `reject` \| `undo` `[N]` | Apply, reject, or undo a streamed ` ```diff ` patch under the process cwd. Patches register as `Patch #N` when the agent emits a fence (also on transcript replay). Apply uses exact hunk-header matching and preserves the file’s final-newline convention; omit `N` to target the latest pending (apply/reject) or applied (undo) proposal. Undo refuses if the file changed after apply. |
 | `/write <path>`                | Write via the shared tool path (`/write --persist` stores in the conversation artifact store). |
 | `/read <path>` \| `/list`      | Read or list conversation artifacts.                                |
 | `/mcp tools\|call`             | MCP servers from `~/.arbiter/mcp_servers.json`.                     |

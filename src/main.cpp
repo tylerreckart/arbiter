@@ -31,6 +31,7 @@
 #include "repl/layout.h"
 #include "repl/layout_snapshot.h"
 #include "repl/pane_history.h"
+#include "diff/apply.h"
 #include "theme.h"
 #include "config.h"
 #include "repl/repl_argv.h"
@@ -619,6 +620,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         {"/todo",         "todo tracker"},
         {"/schedule",     "schedule recurring/one-shot tasks"},
         {"/exec",         "shell command (confirm gate)"},
+        {"/diff",         "apply/reject/undo streamed ```diff patches"},
         {"/write",        "write a file"},
         {"/read",         "conversation artifacts"},
         {"/list",         "list conversation artifacts"},
@@ -684,9 +686,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                   "/loop","/loops","/log","/watch",
                                   "/kill","/suspend","/resume","/inject",
                                   "/fetch","/mem","/search","/browse",
-                                  "/todo","/schedule","/exec","/write",
+                                  "/todo","/schedule","/exec","/diff","/write",
                                   "/read","/list","/mcp","/a2a","/lesson",
                                   "/plan","/theme","/verbose","/chat","/quit","/help"});
+                }
+                if (cmd == "diff") {
+                    return match({"apply","reject","undo","list"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
                     cmd == "reset" || cmd == "compact" || cmd == "pane") {
@@ -1604,6 +1609,153 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 }
                 return;
             }
+            if (cmd == "diff") {
+                std::string sub;
+                iss >> sub;
+                auto& store = pane.diff_proposals;
+
+                auto resolve_id = [&](bool prefer_pending) -> std::optional<int> {
+                    std::string id_tok;
+                    iss >> id_tok;
+                    if (!id_tok.empty()) {
+                        try {
+                            return std::stoi(id_tok);
+                        } catch (...) {
+                            return std::nullopt;
+                        }
+                    }
+                    if (prefer_pending) {
+                        if (auto p = store.latest_pending()) return p->id;
+                    } else {
+                        if (auto p = store.latest_applied()) return p->id;
+                    }
+                    return std::nullopt;
+                };
+
+                if (sub.empty() || sub == "list") {
+                    auto items = store.list();
+                    if (items.empty()) {
+                        push_status("No diff proposals in this pane yet.\n"
+                                    "  Agent ```diff fences register as Patch #N — "
+                                    "then /diff apply N");
+                        return;
+                    }
+                    std::ostringstream out;
+                    out << "Diff proposals (this pane)\n";
+                    for (const auto& p : items) {
+                        out << "  #" << p.id << "  "
+                            << diff_proposal_status_label(p.status)
+                            << "  " << p.path;
+                        if (!p.error.empty()) out << "  (" << p.error << ")";
+                        out << "\n";
+                    }
+                    out << "\n  /diff apply [N]   /diff reject [N]   /diff undo [N]";
+                    push_status(out.str());
+                    return;
+                }
+
+                if (sub == "reject") {
+                    auto id = resolve_id(/*prefer_pending=*/true);
+                    if (!id) {
+                        push_status("Usage: /diff reject [N]\n"
+                                    "  N defaults to the latest pending proposal.");
+                        return;
+                    }
+                    auto prop = store.get(*id);
+                    if (!prop) {
+                        push_status("ERR: no patch #" + std::to_string(*id));
+                        return;
+                    }
+                    if (!store.mark_rejected(*id)) {
+                        push_status("ERR: patch #" + std::to_string(*id) +
+                                    " is " + diff_proposal_status_label(prop->status) +
+                                    " — only pending/failed can be rejected");
+                        return;
+                    }
+                    push_status("rejected patch #" + std::to_string(*id) +
+                                ": " + prop->path);
+                    return;
+                }
+
+                if (sub == "apply") {
+                    auto id = resolve_id(/*prefer_pending=*/true);
+                    if (!id) {
+                        push_status("Usage: /diff apply [N]\n"
+                                    "  N defaults to the latest pending proposal.\n"
+                                    "  Applies under the process cwd; /diff undo N to revert.");
+                        return;
+                    }
+                    auto prop = store.get(*id);
+                    if (!prop) {
+                        push_status("ERR: no patch #" + std::to_string(*id));
+                        return;
+                    }
+                    if (prop->status == arbiter::DiffProposalStatus::Applied) {
+                        push_status("ERR: patch #" + std::to_string(*id) +
+                                    " already applied — /diff undo " +
+                                    std::to_string(*id) + " to revert");
+                        return;
+                    }
+                    if (prop->status == arbiter::DiffProposalStatus::Rejected) {
+                        push_status("ERR: patch #" + std::to_string(*id) +
+                                    " was rejected");
+                        return;
+                    }
+                    auto applied = arbiter::apply_unified_diff(prop->patch);
+                    if (!applied.ok) {
+                        store.mark_failed(*id, applied.error);
+                        push_status("ERR: apply #" + std::to_string(*id) +
+                                    " failed: " + applied.error);
+                        return;
+                    }
+                    arbiter::DiffUndoSnapshot snap;
+                    snap.resolved_path = applied.resolved_path;
+                    snap.had_file = applied.had_file;
+                    snap.pre_image = applied.pre_image;
+                    snap.post_image = applied.post_image;
+                    store.mark_applied(*id, std::move(snap));
+                    push_status("applied patch #" + std::to_string(*id) +
+                                ": " + applied.path +
+                                "\n  /diff undo " + std::to_string(*id) +
+                                " to restore the previous contents");
+                    return;
+                }
+
+                if (sub == "undo") {
+                    auto id = resolve_id(/*prefer_pending=*/false);
+                    if (!id) {
+                        push_status("Usage: /diff undo [N]\n"
+                                    "  N defaults to the latest applied proposal.");
+                        return;
+                    }
+                    auto prop = store.get(*id);
+                    if (!prop) {
+                        push_status("ERR: no patch #" + std::to_string(*id));
+                        return;
+                    }
+                    if (prop->status != arbiter::DiffProposalStatus::Applied) {
+                        push_status("ERR: patch #" + std::to_string(*id) +
+                                    " is " + diff_proposal_status_label(prop->status) +
+                                    " — nothing to undo");
+                        return;
+                    }
+                    auto undone = arbiter::undo_unified_diff(prop->undo);
+                    if (!undone.ok) {
+                        push_status("ERR: undo #" + std::to_string(*id) +
+                                    " failed: " + undone.error);
+                        return;
+                    }
+                    store.clear_undo_after_revert(*id);
+                    push_status("undid patch #" + std::to_string(*id) +
+                                ": " + prop->path + " (pending again)");
+                    return;
+                }
+
+                push_status("Usage: /diff [list]|apply [N]|reject [N]|undo [N]\n"
+                            "  Applies agent ```diff fences under the process cwd.\n"
+                            "  Omit N to target the latest pending (apply/reject) or applied (undo).");
+                return;
+            }
             if (cmd == "plan") {
                 std::string subcmd;
                 iss >> subcmd;
@@ -1699,6 +1851,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /schedule list|<phrase>: <msg>   — schedule recurring/one-shot tasks\n"
                     "  /schedule cancel|pause|resume    — manage scheduled tasks by id\n"
                     "  /exec <cmd>                      — host shell (confirm gate; on by default; --no-exec disables)\n"
+                    "  /diff [list]|apply|reject|undo   — apply streamed ```diff patches (with undo)\n"
                     "  /write <path>                    — write file / --persist to artifact store\n"
                     "  /read <path> | /list             — conversation artifacts\n"
                     "  /mcp tools|call                  — MCP server registry\n"

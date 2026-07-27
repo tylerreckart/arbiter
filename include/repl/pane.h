@@ -1,6 +1,7 @@
 #pragma once
 
 #include "repl/queues.h"
+#include "repl/diff_proposals.h"
 #include "tui/opentui/pane_input_editor.h"
 #include "tui/opentui/pane_scroll_view.h"
 #include "tui/tui.h"
@@ -32,6 +33,9 @@ struct Pane {
     std::shared_ptr<CancelToken> turn_cancel;
 
     std::unique_ptr<opentui::PaneScrollView> scroll;
+
+    // ```diff patches streamed into this pane — /diff apply|reject|undo.
+    DiffProposalStore diff_proposals;
 
     std::thread       exec_thread;
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "commands.h"
+#include "repl/diff_proposals.h"
 #include "styled_text.h"
 #include "tui/opentui/c_api.h"
 #include "tui/tui.h"
@@ -45,6 +46,13 @@ void pane_history_clear(Pane& pane);
 void pane_history_retheme(Pane& pane);
 void pane_history_push(Pane& pane, std::string_view text, bool new_block = false);
 void pane_history_push_diff(Pane& pane, std::string_view patch);
+
+// Register `patch` in `store` (action line + DiffSegment) onto an arbitrary
+// scroll view.  Used by live drain and transcript replay so relaunched /
+// switched conversations keep `/diff apply` targets.
+void pane_history_append_diff_proposal(opentui::PaneScrollView& view,
+                                       DiffProposalStore& store,
+                                       std::string_view patch);
 
 void pane_history_push_prose(Pane& pane,
                              const std::vector<StyledLine>& lines,

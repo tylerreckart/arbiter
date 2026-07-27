@@ -147,6 +147,8 @@ set(ARBITER_SOURCES
     src/repl/layout_snapshot.cpp
     src/repl/pane.cpp
     src/repl/pane_history.cpp
+    src/repl/diff_proposals.cpp
+    src/diff/apply.cpp
     src/repl/conversation_store.cpp
     src/repl/conversation_titling.cpp
     src/repl/transcript_replay.cpp
@@ -558,6 +560,17 @@ if(INDEX_BUILD_TESTS)
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_markdown_diff COMMAND unit_markdown_diff)
 
+    add_executable(unit_diff_apply
+        tests/test_diff_apply.cpp
+        src/diff/apply.cpp
+        src/repl/diff_proposals.cpp
+    )
+    target_include_directories(unit_diff_apply PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_diff_apply COMMAND unit_diff_apply)
+
     add_executable(unit_code_highlighter
         tests/test_code_highlighter.cpp
         src/code_highlighter.cpp
@@ -704,6 +717,8 @@ if(INDEX_BUILD_TESTS)
         src/repl/layout_snapshot.cpp
         src/repl/pane.cpp
         src/repl/queues.cpp
+        src/repl/diff_proposals.cpp
+        src/diff/apply.cpp
         src/atomic_file.cpp
         src/json.cpp
         src/api_client.cpp
