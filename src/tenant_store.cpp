@@ -2993,7 +2993,22 @@ TenantStore::get_idempotency_key(int64_t tenant_id,
         del.bind(2, key);
         del.bind(3, mapping.created_at);
         del.step();
-        return std::nullopt;
+        if (sqlite3_changes(db_) > 0) return std::nullopt;
+
+        // DELETE matched nothing — a concurrent put refreshed the
+        // slot.  Re-read and return the live mapping (or nullopt if
+        // it vanished / is still expired under the new stamp).
+        Stmt again(db_,
+            "SELECT request_id, created_at FROM idempotency_keys "
+            " WHERE tenant_id = ? AND key = ?;");
+        again.bind(1, tenant_id);
+        again.bind(2, key);
+        if (again.step() != SQLITE_ROW) return std::nullopt;
+        IdempotencyMapping live;
+        live.request_id = again.column_text(0);
+        live.created_at = again.column_int64(1);
+        if (now - live.created_at >= ttl_seconds) return std::nullopt;
+        return live;
     }
     return mapping;
 }
