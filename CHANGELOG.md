@@ -8,6 +8,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Interactive `/diff` review (TUI).** `/diff` and `/diff review [N]` prompt
+  `[a]pply` / `[r]eject` / Esc on pending patches (same interrupt bridge as
+  tool confirms). `/diff apply` remains a direct write. Missing target files
+  are created from the patch’s new-side lines; apply is the permission grant
+  (no `/write` confirm). See [`docs/tui/commands.md`](docs/tui/commands.md).
 - **`/diff` apply / reject / undo (TUI).** Streamed ` ```diff ` fences
   register as pane-local `Patch #N` proposals with an action line above
   the rendered panel. `/diff apply [N]` writes the unified patch under

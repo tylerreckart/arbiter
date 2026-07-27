@@ -63,7 +63,10 @@ struct DiffUndoSnapshot {
 
 // Apply `patch` under `workspace_root` (must be an existing directory).
 // Empty workspace_root ⇒ current_path().  Refuses absolute/escaping
-// paths, stale context, and unsupported patch shapes.
+// paths, stale context (when the target already exists), and unsupported
+// patch shapes.  If the target file does not exist, it is created from
+// the patch's new-side lines (context + additions); callers treat apply
+// as the permission grant — no separate write confirm.
 DiffApplyResult apply_unified_diff(std::string_view patch,
                                    std::string_view workspace_root = {});
 

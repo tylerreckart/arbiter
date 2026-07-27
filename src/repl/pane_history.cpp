@@ -97,7 +97,7 @@ void pane_history_append_diff_proposal(opentui::PaneScrollView& view,
     if (auto prop = store.add_patch(patch)) {
         std::string line = "Patch #" + std::to_string(prop->id) + " " +
             diff_proposal_status_label(prop->status) + ": " + prop->path +
-            "  |  /diff apply " + std::to_string(prop->id) +
+            "  |  /diff  or  /diff apply " + std::to_string(prop->id) +
             "  /diff reject " + std::to_string(prop->id);
         view.append_prose(
             {styled_plain_line(std::move(line), StyleId::System)}, true);
