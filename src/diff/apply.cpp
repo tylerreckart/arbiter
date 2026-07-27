@@ -193,27 +193,26 @@ std::optional<std::size_t> find_hunk(const std::vector<std::string>& file_lines,
         if (hl.tag != DiffHunkLine::Tag::Add) expected.push_back(hl.text);
     }
 
-    // Empty old side (new file / empty hunk): only valid at offset 0 on
-    // an empty file, or as a pure-addition at the stated new_start.
+    // Exact offset only — no whole-file scan.  Duplicate context elsewhere
+    // must not silently patch the wrong line.
     if (expected.empty()) {
-        if (file_lines.empty()) return 0;
-        // Pure insertion into an existing file — place at old_start.
-        const std::size_t prefer = (hunk.old_start > 0)
-            ? static_cast<std::size_t>(hunk.old_start - 1) : 0;
-        if (prefer <= file_lines.size()) return prefer;
-        return std::nullopt;
+        // Pure insertion.  Unified-diff rule: with old_count==0, old_start
+        // is the line *after* which to insert (index == old_start).
+        // @@ -0,0 @@ is the new-file / empty-file form only.
+        if (hunk.old_count != 0) return std::nullopt;
+        if (hunk.old_start == 0) {
+            if (!file_lines.empty()) return std::nullopt;
+            return 0;
+        }
+        const std::size_t at = static_cast<std::size_t>(hunk.old_start);
+        if (at > file_lines.size()) return std::nullopt;
+        return at;
     }
 
-    const std::size_t prefer = (hunk.old_start > 0)
-        ? static_cast<std::size_t>(hunk.old_start - 1) : 0;
-    if (match_hunk_at(file_lines, prefer, hunk, expected)) return prefer;
-
-    // Scan for exact context match so a slight drift still applies.
-    for (std::size_t at = 0; at <= file_lines.size(); ++at) {
-        if (at == prefer) continue;
-        if (match_hunk_at(file_lines, at, hunk, expected)) return at;
-    }
-    return std::nullopt;
+    if (hunk.old_start <= 0) return std::nullopt;
+    const std::size_t at = static_cast<std::size_t>(hunk.old_start - 1);
+    if (!match_hunk_at(file_lines, at, hunk, expected)) return std::nullopt;
+    return at;
 }
 
 } // namespace
@@ -524,7 +523,11 @@ DiffApplyResult apply_unified_diff(std::string_view patch,
     }
 
     auto lines = split_lines_keep_nl(pre);
-    bool trailing_nl = pre.empty() ? true : (pre.back() == '\n');
+    // Preserve the pre-image EOF convention.  New files (empty pre) default
+    // to a trailing newline — common text-file norm — without rewriting
+    // existing no-final-newline files on edit.
+    const bool trailing_nl = pre.empty() ? true : (pre.back() == '\n');
+
     // Apply hunks from bottom to top so earlier offsets stay valid.
     std::vector<DiffHunk> hunks = parsed.hunks;
     std::stable_sort(hunks.begin(), hunks.end(),
@@ -551,11 +554,6 @@ DiffApplyResult apply_unified_diff(std::string_view patch,
                      replacement.begin(), replacement.end());
     }
 
-    // Prefer trailing newline for text files (match /write behaviour)
-    // unless the original lacked one and the patch didn't add content
-    // that implies otherwise.  Default: always end with '\n' for
-    // non-empty results.
-    if (!lines.empty()) trailing_nl = true;
     const std::string post = join_lines(lines, trailing_nl && !lines.empty());
     if (!write_file_bytes(path, post, err)) {
         result.error = err;

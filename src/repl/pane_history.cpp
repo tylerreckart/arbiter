@@ -85,18 +85,24 @@ void pane_history_push(Pane& pane, std::string_view text, bool new_block) {
 }
 
 void pane_history_push_diff(Pane& pane, std::string_view patch) {
+    if (pane.scroll) {
+        pane_history_append_diff_proposal(*pane.scroll, pane.diff_proposals, patch);
+    }
+}
+
+void pane_history_append_diff_proposal(opentui::PaneScrollView& view,
+                                       DiffProposalStore& store,
+                                       std::string_view patch) {
     // Register before rendering so the action line id matches the panel.
-    if (auto prop = pane.diff_proposals.add_patch(patch)) {
+    if (auto prop = store.add_patch(patch)) {
         std::string line = "Patch #" + std::to_string(prop->id) + " " +
             diff_proposal_status_label(prop->status) + ": " + prop->path +
             "  |  /diff apply " + std::to_string(prop->id) +
             "  /diff reject " + std::to_string(prop->id);
-        if (pane.scroll) {
-            pane.scroll->append_prose(
-                {styled_plain_line(std::move(line), StyleId::System)}, true);
-        }
+        view.append_prose(
+            {styled_plain_line(std::move(line), StyleId::System)}, true);
     }
-    if (pane.scroll) pane.scroll->append_diff(patch);
+    view.append_diff(patch);
 }
 
 void pane_history_push_prose(Pane& pane,
