@@ -16,7 +16,8 @@
 // TTL: 24h.  Expired entries are evicted lazily on `get`/`put`, and a
 // full sweep runs amortized inside `put` (every kPruneEvery inserts) so
 // unique keys — the common case, since clients mint a fresh key per
-// request — can't grow the table unboundedly.  `prune_expired` remains
+// request — can't grow the table unboundedly.  With a store bound the
+// amortized sweep also prunes SQLite.  `prune_expired` remains
 // callable for an explicit sweep (tests, API-server startup).
 
 #include <chrono>
@@ -35,6 +36,11 @@ public:
     struct Entry {
         std::string                          request_id;
         std::chrono::steady_clock::time_point created_at;
+        // Wall-clock stamp from SQLite (epoch seconds).  Non-zero when
+        // the entry was loaded from or written through the durable
+        // store — L1 expiry then follows wall TTL so rehydration
+        // cannot extend the documented 24h window.
+        int64_t                              wall_created_at = 0;
     };
 
     explicit IdempotencyCache(
@@ -83,9 +89,18 @@ private:
         return std::to_string(tenant_id) + ":" + k;
     }
 
-    void prune_expired_locked(std::chrono::steady_clock::time_point now);
+    static int64_t wall_now_seconds();
+
+    bool l1_expired_locked(const Entry& e,
+                           std::chrono::steady_clock::time_point now,
+                           int64_t wall_now) const;
+
+    void prune_expired_locked(std::chrono::steady_clock::time_point now,
+                              int64_t wall_now);
+    void prune_store(TenantStore* store) const;
     void remember_locked(const std::string& k, const std::string& request_id,
-                         std::chrono::steady_clock::time_point now);
+                         std::chrono::steady_clock::time_point now,
+                         int64_t wall_created_at);
 
     static constexpr int kPruneEvery = 512;   // puts between amortized sweeps
 

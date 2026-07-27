@@ -2964,7 +2964,7 @@ TenantStore::list_request_events(int64_t tenant_id,
     return out;
 }
 
-std::optional<std::string>
+std::optional<TenantStore::IdempotencyMapping>
 TenantStore::get_idempotency_key(int64_t tenant_id,
                                   const std::string& key,
                                   int64_t ttl_seconds,
@@ -2980,18 +2980,22 @@ TenantStore::get_idempotency_key(int64_t tenant_id,
     q.bind(2, key);
     if (q.step() != SQLITE_ROW) return std::nullopt;
 
-    const std::string request_id = q.column_text(0);
-    const int64_t created_at = q.column_int64(1);
-    if (now - created_at >= ttl_seconds) {
+    IdempotencyMapping mapping;
+    mapping.request_id = q.column_text(0);
+    mapping.created_at = q.column_int64(1);
+    if (now - mapping.created_at >= ttl_seconds) {
+        // Conditional delete: only remove the expired stamp we observed
+        // so a concurrent put that refreshed the row is not clobbered.
         Stmt del(db_,
             "DELETE FROM idempotency_keys "
-            " WHERE tenant_id = ? AND key = ?;");
+            " WHERE tenant_id = ? AND key = ? AND created_at = ?;");
         del.bind(1, tenant_id);
         del.bind(2, key);
+        del.bind(3, mapping.created_at);
         del.step();
         return std::nullopt;
     }
-    return request_id;
+    return mapping;
 }
 
 bool TenantStore::put_idempotency_key(int64_t tenant_id,
