@@ -238,14 +238,6 @@ TEST_CASE("idempotency_keys: put / get / race / ttl / prune") {
         REQUIRE(live);
         CHECK(live->request_id == "new");
         CHECK(live->created_at == 1000 + ttl + 10);
-        // Explicit stale-stamp delete (what get used to do unconditionally).
-        // Drive it by expiring a *different* key after a refresh on k1 —
-        // covered by get's AND created_at = ? clause: expire-view then
-        // confirm refresh of k1 from the parent put still readable after
-        // an expired get on an unrelated timeline is not needed; the
-        // conditional clause is what matters and is exercised whenever
-        // get evicts — verify eviction of a truly expired key leaves
-        // siblings alone.
         CHECK(s.put_idempotency_key(tid, "sib", "keep", ttl, 9000));
         CHECK(!s.get_idempotency_key(tid, "race", ttl,
                                      /*now=*/1000 + ttl + 10 + ttl + 1));
