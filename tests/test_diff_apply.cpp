@@ -223,6 +223,30 @@ TEST_CASE("apply_unified_diff: refuses -0,0 insert on non-empty file") {
     CHECK(read_text(dir.path / "foo.txt") == "keep\nme\n");
 }
 
+TEST_CASE("apply_unified_diff: pure-insert uses after-line offset (GNU patch)") {
+    TempDir dir;
+    write_text(dir.path / "foo.txt", "a\nb\nc\n");
+    // @@ -2,0 @@ → insert after line 2 (between b and c), matching GNU patch.
+    const char* mid =
+        "--- a/foo.txt\n"
+        "+++ b/foo.txt\n"
+        "@@ -2,0 +3,1 @@\n"
+        "+INSERTED\n";
+    auto r = apply_unified_diff(mid, dir.path.string());
+    REQUIRE(r.ok);
+    CHECK(read_text(dir.path / "foo.txt") == "a\nb\nINSERTED\nc\n");
+
+    write_text(dir.path / "bar.txt", "a\nb\nc\n");
+    const char* append =
+        "--- a/bar.txt\n"
+        "+++ b/bar.txt\n"
+        "@@ -3,0 +4,1 @@\n"
+        "+APPEND\n";
+    auto a = apply_unified_diff(append, dir.path.string());
+    REQUIRE(a.ok);
+    CHECK(read_text(dir.path / "bar.txt") == "a\nb\nc\nAPPEND\n");
+}
+
 TEST_CASE("DiffProposalStore: add / apply / reject / undo lifecycle") {
     DiffProposalStore store;
     const char* patch =
