@@ -26,9 +26,10 @@ TEST_CASE("cost_basis_label reflects mixed and local models") {
 }
 
 TEST_CASE("format_context_pct uses model window and last-turn prompt tokens") {
-    CHECK(context_pct_value(40'000, "claude-sonnet-4-6") == 20);
+    CHECK(context_pct_value(40'000, "claude-sonnet-4-6") == 4);
+    CHECK(context_pct_value(40'000, "claude-haiku-4-5") == 20);
     CHECK(context_pct_value(64'000, "gpt-4o") == 50);
-    CHECK(format_context_pct(40'000, "claude-sonnet-4-6") == "20%");
+    CHECK(format_context_pct(40'000, "claude-haiku-4-5") == "20%");
     CHECK(context_pct_value(10'000, "ollama/llama3") == -1);
     CHECK(context_pct_value(0, "claude-sonnet-4-6") == -1);
 }
