@@ -8771,12 +8771,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     }
 
-    // Register the idempotency key now that we have a request_id a
-    // replay can target.  Racing retries from the same client will
-    // either land here first (winner inserts; loser's check_idempotency
-    // hit replays the winner) or land here second (their put() returns
-    // false; both executions run, but subsequent retries dedup).
-    record_idempotency_key(opts, req, tenant.id, request_id);
+    // Register the idempotency key only when a request_status row exists
+    // for replay to target.  If persist init failed, writing a durable
+    // mapping would strand post-restart retries on 404 until TTL.
+    // Non-persist callers (tests / legacy) still record so in-process
+    // retries dedup as before.
+    if (request_status_created || !persist_events) {
+        record_idempotency_key(opts, req, tenant.id, request_id);
+    }
 
     auto emit = [&sse, &logger](const std::string& ev,
                                  const std::shared_ptr<JsonValue>& p) {

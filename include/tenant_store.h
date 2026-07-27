@@ -456,10 +456,16 @@ public:
     // TTL is wall-clock (epoch seconds).  Expired rows are dropped
     // lazily on get/put and by prune_idempotency_keys.
 
+    struct IdempotencyMapping {
+        std::string request_id;
+        int64_t     created_at = 0;   // epoch seconds
+    };
+
     // Look up an unexpired mapping.  `ttl_seconds` defaults to 24h.
     // `now_epoch` of 0 stamps "now".  Expired rows are deleted as a
-    // side effect and yield nullopt.
-    std::optional<std::string>
+    // side effect (only the observed created_at, so a concurrent put
+    // that refreshed the row is not clobbered) and yield nullopt.
+    std::optional<IdempotencyMapping>
     get_idempotency_key(int64_t tenant_id,
                         const std::string& key,
                         int64_t ttl_seconds = 86400,

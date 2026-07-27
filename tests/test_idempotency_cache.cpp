@@ -144,8 +144,34 @@ TEST_CASE("durable store: mapping survives cache rebuild (restart)") {
     auto e = after.get(tid, "client-key");
     REQUIRE(e.has_value());
     CHECK(e->request_id == "req-original");
+    CHECK(e->wall_created_at > 0);
 
     // A post-restart put with a different request_id must lose.
     CHECK(!after.put(tid, "client-key", "req-new"));
     CHECK(after.get(tid, "client-key")->request_id == "req-original");
+}
+
+TEST_CASE("durable store: L1 rehydration preserves wall-clock TTL") {
+    TempDb db;
+    TenantStore store;
+    store.open(db.path.string());
+    const int64_t tid = store.create_tenant("acme").tenant.id;
+    const int64_t ttl = 2;
+
+    // Seed a durable row that is already near expiry.
+    const int64_t created = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count() - 1;
+    CHECK(store.put_idempotency_key(tid, "near-expiry", "req-old", ttl, created));
+
+    IdempotencyCache c{std::chrono::seconds(ttl)};
+    c.bind_store(&store);
+    auto hit = c.get(tid, "near-expiry");
+    REQUIRE(hit);
+    CHECK(hit->request_id == "req-old");
+    CHECK(hit->wall_created_at == created);
+
+    // After the wall TTL elapses, L1 must not keep serving the mapping
+    // just because it was rehydrated recently on the steady clock.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    CHECK(!c.get(tid, "near-expiry").has_value());
 }
