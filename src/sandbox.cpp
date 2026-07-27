@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <limits>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -793,12 +794,21 @@ int64_t SandboxManager::measure_workspace_bytes(int64_t tenant_id) const {
     std::error_code ec;
     if (!fs::exists(ws, ec) || !fs::is_directory(ws, ec)) return 0;
     int64_t total = 0;
+    const int64_t kSaturation = cfg_.workspace_max_bytes > 0
+        ? cfg_.workspace_max_bytes + 1
+        : std::numeric_limits<int64_t>::max();
     for (auto& entry : fs::recursive_directory_iterator(ws, ec)) {
         if (ec) break;
         std::error_code sec;
         if (entry.is_regular_file(sec)) {
             auto sz = fs::file_size(entry.path(), sec);
-            if (!sec) total += static_cast<int64_t>(sz);
+            if (!sec) {
+                const int64_t file_sz = static_cast<int64_t>(sz);
+                if (total > kSaturation - file_sz) {
+                    return kSaturation;
+                }
+                total += file_sz;
+            }
         }
     }
     return total;
