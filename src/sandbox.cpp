@@ -660,12 +660,40 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         "sh", "-c", command
     };
 
+    // When a workspace quota is configured, hold the same per-tenant mutex
+    // as write_to_workspace for the entire docker exec so a concurrent
+    // /write cannot grow the workspace between measure and flush (#136).
+    // Post-exec measurement surfaces shell redirects that bypass /write.
+    std::shared_ptr<std::mutex> quota_mu;
+    std::unique_lock<std::mutex> quota_lk;
+    const bool quota_enforced = cfg_.workspace_max_bytes > 0;
+    if (quota_enforced) {
+        quota_mu = start_mutex_for(tenant_id);
+        quota_lk = std::unique_lock<std::mutex>(*quota_mu);
+    }
+
     bool timed_out = false;
     int rc = run_capture(argv, cfg_.exec_timeout_seconds,
                           static_cast<size_t>(cfg_.output_max_bytes),
                           r.output, timed_out);
     r.timed_out  = timed_out;
     r.exit_status = rc;
+
+    if (quota_enforced) {
+        if (cfg_.quota_exec_pause_ms > 0) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(cfg_.quota_exec_pause_ms));
+        }
+        const int64_t used = measure_workspace_bytes(tenant_id);
+        if (used > cfg_.workspace_max_bytes) {
+            r.ok = false;
+            r.error = "workspace quota exceeded after /exec (" +
+                      std::to_string(cfg_.workspace_max_bytes) +
+                      " bytes); used " + std::to_string(used);
+            if (r.output.empty()) r.output = "ERR: " + r.error;
+            else r.output += "\nERR: " + r.error;
+        }
+    }
     if (metrics_) {
         metrics_->inc_sandbox_exec();
         if (timed_out) metrics_->inc_sandbox_exec_timeout();
