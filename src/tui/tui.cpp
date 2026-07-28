@@ -72,13 +72,15 @@ int TUI::last_scroll_row() const {
 
 int TUI::scroll_top_row() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    return rect_.y + 1;
+    // 1-indexed top of the output box. Outer-top panes float one blank row
+    // (sidebar rhythm); panes below a horizontal split start flush.
+    return rect_.y + 1 + (outer_top_ ? 1 : 0);
 }
 
 int TUI::scroll_region_rows() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     const int last = rect_.y + rect_.h - bottom_pad_rows() - input_rows_ - kSepRows;
-    const int top  = rect_.y + 1;
+    const int top  = rect_.y + 1 + (outer_top_ ? 1 : 0);
     return last - top + 1;
 }
 
