@@ -30,9 +30,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Stacked pane gutters.** Inactive panes are content-only (no readline);
   only the focused pane paints an input box. Stacked gutters are a single
   separator cell (matching vertical splits): no trailing pad on mid-stack
-  panes, and the one-row output float only on outer-top panes. Focus
-  changes that show/hide the readline band adjust `scroll_offset` so a
-  scrolled viewport does not jump.
+  panes, and the one-row output float only on outer-top panes.
+  `scroll_top_row` / `scroll_region_rows` follow that same `outer_top` rule
+  so mid-stack viewports match the drawn output box. Focus changes that
+  show/hide the readline band adjust `scroll_offset` so a scrolled
+  viewport does not jump.
 - **Empty sub-pane pollution on restore.** Layout restore replays each
   `(conversation_id, agent)` transcript at most once (pre-order first leaf),
   matching live `^W` splits that inherit a conversation with empty scrollback.
