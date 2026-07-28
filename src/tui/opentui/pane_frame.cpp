@@ -91,7 +91,7 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
     const TuiDesign& d = tui_design();
     const int pad = tui_pane_edge_pad(r.w, d);
     const int header_pad = std::max(0, std::min(d.layout.header_padding_x, std::max(0, r.w - 1)));
-    const int bottom_pad = std::max(1, chrome.bottom_pad_rows);
+    const int bottom_pad = std::max(0, chrome.bottom_pad_rows);
     const bool paint_footer = chrome.footer_hint_visible && d.layout.show_footer;
 
     const std::uint32_t px = static_cast<std::uint32_t>(r.x);
@@ -118,9 +118,11 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                   d.bg.scroll);
     }
 
-    // Output box: same floating top inset as the sidebars (one blank row
-    // above); bottom border sits on the row immediately above the input box.
-    const int output_top_y = scroll_top_y + 1;
+    // Output box: outer-top panes float one blank row (sidebar rhythm);
+    // panes below a horizontal split start flush so the gutter is just the
+    // 1-cell separator — same as vertical splits.
+    const int output_top_y = chrome.outer_top ? scroll_top_y + 1 : scroll_top_y;
+    const bool has_input = input_top_y < input_bottom_y && block_w >= 2;
     if (scroll_bottom_y > output_top_y && block_w >= 2) {
         const TuiRgba& border_fg = chrome.focus_accent ? d.border.focus
                                                        : d.text.muted;
@@ -133,23 +135,7 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                          d.bg.scroll);
     }
 
-    // Input box: rounded-corner border on the pane background (no fill, no
-    // accent strip).  The top border row doubles as the status line — the
-    // thinking/tool-call indicator paints over part of the horizontal run.
-    if (input_top_y < input_bottom_y && block_w >= 2) {
-        const TuiRgba& border_fg = chrome.focus_accent ? d.border.focus
-                                                       : d.text.muted;
-        const int box_h = input_bottom_y - input_top_y + 1;
-        draw_rounded_box(frame,
-                         static_cast<int>(block_x),
-                         input_top_y,
-                         static_cast<int>(block_w),
-                         box_h,
-                         border_fg,
-                         d.bg.scroll);
-
-        // Inline status — text framed by single spaces so it reads as a
-        // break in the border rather than an overlay.
+    auto paint_status_or_badge = [&](int row_y) {
         const int inset = 1 + header_pad;           // corner + padding cells
         const int status_budget = content_w - inset * 2 - 2;
         const std::string* status_src = nullptr;
@@ -163,13 +149,13 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                 " " + trim_to_cells(*status_src, status_budget) + " ";
             draw_text(frame,
                       block_x + static_cast<std::uint32_t>(inset),
-                      static_cast<std::uint32_t>(input_top_y),
+                      static_cast<std::uint32_t>(row_y),
                       status,
                       d.accent.info,
                       d.bg.scroll);
         } else if (!chrome.activity_badge.empty() && status_budget > 0) {
             // Unfocused activity/completion indicator (#41) — right-aligned
-            // on the top border so it doesn't collide with a focused prompt.
+            // on the border so it doesn't collide with a focused prompt.
             std::string badge = trim_to_cells(chrome.activity_badge,
                                               status_budget);
             badge = " " + badge + " ";
@@ -183,12 +169,34 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
                                                              : d.accent.success;
                 draw_text(frame,
                           static_cast<std::uint32_t>(bx),
-                          static_cast<std::uint32_t>(input_top_y),
+                          static_cast<std::uint32_t>(row_y),
                           badge,
                           color,
                           d.bg.scroll);
             }
         }
+    };
+
+    // Input box: focused panes only. Inactive panes stay content-only so
+    // stacked gutters remain a single separator cell.
+    if (has_input) {
+        const TuiRgba& border_fg = chrome.focus_accent ? d.border.focus
+                                                       : d.text.muted;
+        const int box_h = input_bottom_y - input_top_y + 1;
+        draw_rounded_box(frame,
+                         static_cast<int>(block_x),
+                         input_top_y,
+                         static_cast<int>(block_w),
+                         box_h,
+                         border_fg,
+                         d.bg.scroll);
+        paint_status_or_badge(input_top_y);
+    } else if (scroll_bottom_y > output_top_y && block_w >= 2
+               && (!chrome.activity_badge.empty()
+                   || !chrome.pre_input_status.empty()
+                   || (chrome.status_active && !chrome.status.empty()))) {
+        // No readline — park status / activity on the output box bottom edge.
+        paint_status_or_badge(scroll_bottom_y);
     }
 
     // Only reserve/paint the hint row when the footer is shown, or when

@@ -426,8 +426,8 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     const std::uint32_t content_x = px
         + static_cast<std::uint32_t>(outer_pad + chrome_inset);
 
-    if (!focused) {
-        draw_plain_text(frame, content_x, py, d.component.inactive_prompt, d.text.subtle);
+    if (!focused || tui.input_rows() < 2) {
+        // Inactive / content-only panes omit readline entirely.
         return;
     }
 
