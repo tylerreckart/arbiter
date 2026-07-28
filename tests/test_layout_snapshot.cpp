@@ -7,6 +7,8 @@
 #include "repl/layout_snapshot.h"
 #include "repl/pane.h"
 #include "repl/transcript_replay.h"
+#include "styled_text.h"
+#include "tui/opentui/pane_scroll_view.h"
 #include "tui/tui.h"
 
 #include <cmath>
@@ -22,6 +24,8 @@ using arbiter::LayoutSnapshot;
 using arbiter::LayoutTree;
 using arbiter::Pane;
 using arbiter::Rect;
+using arbiter::StyleId;
+using arbiter::StyledLine;
 using arbiter::TUI;
 using arbiter::claim_pane_transcript_replay;
 using arbiter::for_each_layout_leaf;
@@ -31,6 +35,7 @@ using arbiter::layout_snapshot_path;
 using arbiter::layout_snapshot_to_json;
 using arbiter::load_layout_snapshot;
 using arbiter::save_layout_snapshot;
+using arbiter::styled_append;
 using arbiter::validate_layout_snapshot;
 
 namespace {
@@ -266,6 +271,75 @@ TEST_CASE("LayoutTree restore reserves readline only on the focused leaf") {
         }
     });
     CHECK(n == 3);
+}
+
+TEST_CASE("focus toggle preserves scrolled viewport when readline appears") {
+    Rect bounds{0, 0, 100, 40};
+    LayoutTree tree(make_test_pane(), bounds);
+    Pane* right = tree.split_focused(LayoutTree::Orient::Vertical, make_test_pane);
+    REQUIRE(right != nullptr);
+
+    Pane* left_ptr = nullptr;
+    tree.for_each_pane([&](Pane& p) {
+        if (!left_ptr) left_ptr = &p;
+    });
+    REQUIRE(left_ptr != nullptr);
+    REQUIRE(left_ptr != right);
+    REQUIRE(tree.focus_pane(right)); // right focused → left input_rows=0
+
+    left_ptr->scroll = std::make_unique<arbiter::opentui::PaneScrollView>();
+    left_ptr->scroll->bind(left_ptr->tui);
+    for (int i = 0; i < 80; ++i) {
+        StyledLine line;
+        styled_append(line, StyleId::Default, "line-" + std::to_string(i));
+        left_ptr->scroll->append_prose({line}, /*new_block=*/true);
+    }
+    left_ptr->scroll->bind(left_ptr->tui);
+    const int max_off = left_ptr->scroll->max_scroll_offset();
+    REQUIRE(max_off > TUI::kDefaultInputRows);
+    left_ptr->scroll_offset = max_off / 2;
+    const int offset_while_inactive = left_ptr->scroll_offset;
+    CHECK(left_ptr->tui.input_rows() == 0);
+
+    // Focus left → readline appears, viewport shrinks; offset should rise so
+    // first_visible stays put.
+    REQUIRE(tree.focus_pane(left_ptr));
+    CHECK(left_ptr->tui.input_rows() == TUI::kDefaultInputRows);
+    CHECK(left_ptr->scroll_offset == offset_while_inactive + TUI::kDefaultInputRows);
+
+    const int offset_while_focused = left_ptr->scroll_offset;
+
+    // Unfocus → readline disappears, viewport grows; offset should fall back.
+    REQUIRE(tree.focus_pane(right));
+    CHECK(left_ptr->tui.input_rows() == 0);
+    CHECK(left_ptr->scroll_offset == offset_while_focused - TUI::kDefaultInputRows);
+    CHECK(left_ptr->scroll_offset == offset_while_inactive);
+}
+
+TEST_CASE("live-tail scroll_offset stays zero across focus readline toggle") {
+    Rect bounds{0, 0, 100, 40};
+    LayoutTree tree(make_test_pane(), bounds);
+    Pane* right = tree.split_focused(LayoutTree::Orient::Vertical, make_test_pane);
+    REQUIRE(right != nullptr);
+
+    Pane* left_ptr = nullptr;
+    tree.for_each_pane([&](Pane& p) {
+        if (!left_ptr) left_ptr = &p;
+    });
+    REQUIRE(tree.focus_pane(right));
+    left_ptr->scroll = std::make_unique<arbiter::opentui::PaneScrollView>();
+    left_ptr->scroll->bind(left_ptr->tui);
+    for (int i = 0; i < 40; ++i) {
+        StyledLine line;
+        styled_append(line, StyleId::Default, "tail-" + std::to_string(i));
+        left_ptr->scroll->append_prose({line}, /*new_block=*/true);
+    }
+    left_ptr->scroll_offset = 0;
+
+    REQUIRE(tree.focus_pane(left_ptr));
+    CHECK(left_ptr->scroll_offset == 0);
+    REQUIRE(tree.focus_pane(right));
+    CHECK(left_ptr->scroll_offset == 0);
 }
 
 TEST_CASE("stacked pane placement screenshot geometry after restore") {
