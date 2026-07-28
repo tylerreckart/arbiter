@@ -559,3 +559,36 @@ TEST_CASE("MarkdownRenderer renders $$ display math") {
     CHECK(out.find("\u03b2") != std::string::npos);
     CHECK(out.find("$$") == std::string::npos);
 }
+
+TEST_CASE("same-line display math with trailing prose does not open a block") {
+    MarkdownRenderer md;
+    std::string out = md.feed(
+        "\\[E=mc^2\\] is famous.\n"
+        "Still prose with **bold**.\n"
+        "$$a+b$$ and more.\n"
+        "Final line.\n");
+    out += md.flush();
+
+    CHECK(out.find("E=mc\u00b2") != std::string::npos);
+    CHECK(out.find("is famous") != std::string::npos);
+    CHECK(out.find("Still prose") != std::string::npos);
+    CHECK(out.find("bold") != std::string::npos);
+    CHECK(out.find("a+b") != std::string::npos);
+    CHECK(out.find("and more") != std::string::npos);
+    CHECK(out.find("Final line") != std::string::npos);
+    // Delimiters must not linger, and later prose must not be swallowed as math.
+    CHECK(out.find("\\[") == std::string::npos);
+    CHECK(out.find("\\]") == std::string::npos);
+    CHECK(out.find("$$") == std::string::npos);
+}
+
+TEST_CASE("multi-line display math opener with body still buffers until closer") {
+    MarkdownRenderer md;
+    std::string out = md.feed(
+        "\\[ E = mc^2\n"
+        "\\]\n"
+        "after\n");
+    out += md.flush();
+    CHECK(out.find("E = mc\u00b2") != std::string::npos);
+    CHECK(out.find("after") != std::string::npos);
+}

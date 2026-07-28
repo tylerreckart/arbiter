@@ -260,20 +260,43 @@ StyledLine make_display_math_line(std::string_view latex) {
     return line;
 }
 
-// Same-line display math: \[...\] or $$...$$
+// First unescaped \] after `from`, or npos.
+size_t find_bracket_math_close(std::string_view text, size_t from) {
+    for (size_t j = from; j + 1 < text.size(); ++j) {
+        if (text[j] == '\\' && text[j + 1] == ']') return j;
+    }
+    return std::string_view::npos;
+}
+
+// Complete same-line display math into `out`, appending any trailing prose.
+// Returns true when the line opened and closed display math on one line.
 bool try_same_line_display_math(const std::string& line, StyledLine& out) {
     const std::string_view trimmed = trim_view(line);
-    if (trimmed.size() >= 4 && trimmed.substr(0, 2) == "\\[" &&
-        trimmed.substr(trimmed.size() - 2) == "\\]") {
-        out = make_display_math_line(trimmed.substr(2, trimmed.size() - 4));
+
+    if (trimmed.size() >= 2 && trimmed.substr(0, 2) == "\\[") {
+        const size_t close = find_bracket_math_close(trimmed, 2);
+        if (close == std::string_view::npos) return false;
+        out = make_display_math_line(trimmed.substr(2, close - 2));
+        const std::string_view rest = trim_view(trimmed.substr(close + 2));
+        if (!rest.empty()) {
+            if (!out.text.empty()) styled_append(out, StyleId::Default, " ");
+            render_inline_styled(out, std::string(rest));
+        }
         return true;
     }
-    if (trimmed.size() >= 4 && trimmed.substr(0, 2) == "$$" &&
-        trimmed.substr(trimmed.size() - 2) == "$$" &&
-        trimmed.find("$$", 2) == trimmed.size() - 2) {
-        out = make_display_math_line(trimmed.substr(2, trimmed.size() - 4));
+
+    if (trimmed.size() >= 2 && trimmed.substr(0, 2) == "$$") {
+        const size_t close = trimmed.find("$$", 2);
+        if (close == std::string_view::npos) return false;
+        out = make_display_math_line(trimmed.substr(2, close - 2));
+        const std::string_view rest = trim_view(trimmed.substr(close + 2));
+        if (!rest.empty()) {
+            if (!out.text.empty()) styled_append(out, StyleId::Default, " ");
+            render_inline_styled(out, std::string(rest));
+        }
         return true;
     }
+
     return false;
 }
 
