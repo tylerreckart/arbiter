@@ -12,9 +12,7 @@
 #include "tui/tui.h"
 
 #include <cmath>
-#include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <unordered_set>
@@ -342,7 +340,7 @@ TEST_CASE("live-tail scroll_offset stays zero across focus readline toggle") {
     CHECK(left_ptr->scroll_offset == 0);
 }
 
-TEST_CASE("stacked pane placement screenshot geometry after restore") {
+TEST_CASE("stacked pane placement geometry after restore") {
     const Rect bounds{0, 0, 120, 40};
     LayoutTree live(make_test_pane(), bounds);
     live.focused().conversation_id = "shared-conv";
@@ -446,51 +444,4 @@ TEST_CASE("stacked pane placement screenshot geometry after restore") {
     CHECK_FALSE(panes[1].has_content);
     CHECK_FALSE(panes[2].has_content);
     CHECK_FALSE(panes[3].has_content);
-
-    const char* env_dir = std::getenv("ARBITER_PLACEMENT_ARTIFACT_DIR");
-    const std::string dir = (env_dir && *env_dir)
-        ? env_dir
-        : "/opt/cursor/artifacts/screenshots";
-    std::filesystem::create_directories(dir);
-
-    auto write_json = [&](const std::string& path, const std::vector<PaneGeom>& gs) {
-        std::ofstream out(path);
-        REQUIRE(out.good());
-        out << "{\n  \"cols\": " << bounds.w << ",\n  \"rows\": " << bounds.h
-            << ",\n  \"separators\": [],\n  \"panes\": [\n";
-        for (size_t n = 0; n < gs.size(); ++n) {
-            const auto& p = gs[n];
-            out << "    {\n"
-                << "      \"index\": " << p.index << ",\n"
-                << "      \"label\": \"" << p.label << "\",\n"
-                << "      \"rect\": {\"x\": " << p.rect.x
-                << ", \"y\": " << p.rect.y
-                << ", \"w\": " << p.rect.w
-                << ", \"h\": " << p.rect.h << "},\n"
-                << "      \"input_rows\": " << p.input_rows << ",\n"
-                << "      \"bottom_pad_rows\": " << p.bottom_pad << ",\n"
-                << "      \"outer_bottom\": " << (p.outer_bottom ? "true" : "false") << ",\n"
-                << "      \"outer_top\": "
-                << (p.rect.y == bounds.y ? "true" : "false") << ",\n"
-                << "      \"focused\": " << (p.focused ? "true" : "false") << ",\n"
-                << "      \"has_content\": " << (p.has_content ? "true" : "false") << ",\n"
-                << "      \"polluted\": " << (p.polluted ? "true" : "false") << "\n"
-                << "    }" << (n + 1 < gs.size() ? "," : "") << "\n";
-        }
-        out << "  ]\n}\n";
-    };
-
-    write_json(dir + "/pane_placement_restored.json", panes);
-
-    // Regress fixture: idle input chrome on every pane (uneven stacked gaps)
-    // plus transcript pollution into empty siblings.
-    auto broken = panes;
-    for (size_t n = 0; n < broken.size(); ++n) {
-        broken[n].input_rows = TUI::kDefaultInputRows;
-        if (n > 0) {
-            broken[n].has_content = true;
-            broken[n].polluted = true;
-        }
-    }
-    write_json(dir + "/pane_placement_broken.json", broken);
 }
