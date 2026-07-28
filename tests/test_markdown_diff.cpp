@@ -492,3 +492,103 @@ TEST_CASE("indented code block routes to code sink when wired") {
     CHECK(bodies[0] == "int x = 1;");
     CHECK(bodies[1] == "int y = 2;");
 }
+
+TEST_CASE("latex_math_to_plain converts screenshot-style equations") {
+    CHECK(latex_math_to_plain(R"(M=\frac{rc^2}{2G})") == "M=(rc\u00b2)/(2G)");
+    CHECK(latex_math_to_plain(R"(M \approx 8.1\times10^{25}\text{ kg})") ==
+          "M \u2248 8.1\u00d710\u00b2\u2075 kg");
+    CHECK(latex_math_to_plain(R"(N=\frac{8.1\times10^{25}}{0.004})") ==
+          "N=(8.1\u00d710\u00b2\u2075)/(0.004)");
+}
+
+TEST_CASE("MarkdownRenderer renders display and inline math as Unicode") {
+    MarkdownRenderer md;
+    const char* input =
+        "For that sphere to lie within its Schwarzschild radius:\n"
+        "\\[\n"
+        "M=\\frac{rc^2}{2G}\n"
+        "\\]\n"
+        "At \\(r=0.12\\text{ m}\\), required mass is approximately:\n"
+        "\\[\n"
+        "M \\approx 8.1\\times10^{25}\\text{ kg}\n"
+        "\\]\n"
+        "That is roughly **14 Earth masses**. Assuming one raspberry weighs **4 grams**:\n"
+        "\\[\n"
+        "N=\\frac{8.1\\times10^{25}}{0.004}\n"
+        "\\approx 2\\times10^{28}\n"
+        "\\]\n";
+
+    std::string out = md.feed(input);
+    out += md.flush();
+
+    CHECK(out.find("\\[") == std::string::npos);
+    CHECK(out.find("\\]") == std::string::npos);
+    CHECK(out.find("\\(") == std::string::npos);
+    CHECK(out.find("\\frac") == std::string::npos);
+    CHECK(out.find("\\times") == std::string::npos);
+    CHECK(out.find("M=(rc\u00b2)/(2G)") != std::string::npos);
+    CHECK(out.find("r=0.12 m") != std::string::npos);
+    CHECK(out.find("8.1\u00d710\u00b2\u2075 kg") != std::string::npos);
+    CHECK(out.find("N=(8.1\u00d710\u00b2\u2075)/(0.004)") != std::string::npos);
+    CHECK(out.find("\u2248 2\u00d710\u00b2\u2078") != std::string::npos);
+    CHECK(out.find("14 Earth masses") != std::string::npos);
+}
+
+TEST_CASE("MarkdownRenderer styles inline math as italic") {
+    MarkdownRenderer md;
+    auto lines = md.feed_styled("mass \\(M\\approx 1\\) kg\n");
+    REQUIRE_FALSE(lines.empty());
+    bool saw_italic_math = false;
+    for (const auto& span : lines.front().spans) {
+        if (span.id == StyleId::Italic) {
+            const auto piece = lines.front().text.substr(span.begin, span.end - span.begin);
+            if (piece.find("M") != std::string::npos &&
+                piece.find("\u2248") != std::string::npos) {
+                saw_italic_math = true;
+            }
+        }
+    }
+    CHECK(saw_italic_math);
+}
+
+TEST_CASE("MarkdownRenderer renders $$ display math") {
+    MarkdownRenderer md;
+    std::string out = md.feed("$$\\alpha + \\beta$$\n");
+    out += md.flush();
+    CHECK(out.find("\u03b1") != std::string::npos);
+    CHECK(out.find("\u03b2") != std::string::npos);
+    CHECK(out.find("$$") == std::string::npos);
+}
+
+TEST_CASE("same-line display math with trailing prose does not open a block") {
+    MarkdownRenderer md;
+    std::string out = md.feed(
+        "\\[E=mc^2\\] is famous.\n"
+        "Still prose with **bold**.\n"
+        "$$a+b$$ and more.\n"
+        "Final line.\n");
+    out += md.flush();
+
+    CHECK(out.find("E=mc\u00b2") != std::string::npos);
+    CHECK(out.find("is famous") != std::string::npos);
+    CHECK(out.find("Still prose") != std::string::npos);
+    CHECK(out.find("bold") != std::string::npos);
+    CHECK(out.find("a+b") != std::string::npos);
+    CHECK(out.find("and more") != std::string::npos);
+    CHECK(out.find("Final line") != std::string::npos);
+    // Delimiters must not linger, and later prose must not be swallowed as math.
+    CHECK(out.find("\\[") == std::string::npos);
+    CHECK(out.find("\\]") == std::string::npos);
+    CHECK(out.find("$$") == std::string::npos);
+}
+
+TEST_CASE("multi-line display math opener with body still buffers until closer") {
+    MarkdownRenderer md;
+    std::string out = md.feed(
+        "\\[ E = mc^2\n"
+        "\\]\n"
+        "after\n");
+    out += md.flush();
+    CHECK(out.find("E = mc\u00b2") != std::string::npos);
+    CHECK(out.find("after") != std::string::npos);
+}

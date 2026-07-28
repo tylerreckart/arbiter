@@ -205,6 +205,7 @@ set(ARBITER_SOURCES
     src/a2a/client.cpp
     src/a2a/manager.cpp
     src/markdown.cpp
+    src/latex_math.cpp
     src/code_highlighter.cpp
 )
 
@@ -545,6 +546,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_markdown_diff
         tests/test_markdown_diff.cpp
         src/markdown.cpp
+        src/latex_math.cpp
         src/styled_text.cpp
         src/render_policy.cpp
         src/theme.cpp
@@ -642,6 +644,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/ansi_util.cpp
         src/code_highlighter.cpp
         src/markdown.cpp
+        src/latex_math.cpp
         src/styled_text.cpp
         src/render_policy.cpp
         src/theme.cpp
@@ -746,6 +749,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/ansi_util.cpp
         src/code_highlighter.cpp
         src/markdown.cpp
+        src/latex_math.cpp
         src/styled_text.cpp
         src/render_policy.cpp
         src/theme.cpp
@@ -966,6 +970,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/ansi_util.cpp
         src/code_highlighter.cpp
         src/markdown.cpp
+        src/latex_math.cpp
         src/styled_text.cpp
         src/render_policy.cpp
         src/theme.cpp
