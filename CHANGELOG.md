@@ -68,6 +68,13 @@ race fixes.
   criteria checked.
 
 ### Fixed
+- **Esc/interrupt during in-progress confirm or turn (crash/hang).** Esc
+  no longer races `Pane::turn_cancel` (`shared_ptr` assign vs cancel),
+  drops confirm/diff wakeups by clearing `interrupt_flag_` at `read_line`
+  entry, or leaves stack `promise` waiters hung so pane close deadlocks
+  under `layout_mu`. Confirm/diff posts use heap promises; Esc/cancel/
+  teardown always completes them; exec threads wake input via
+  `active_readline` / try-lock instead of unlocked `layout.focused()`.
 - **Capability gate for /todo /schedule /lesson (#91).** Dispatcher
   `bundle_of` now maps these writs into allowlist bundles so constrained
   agents can no longer bypass `capabilities`. Starter agents list `/todo`
