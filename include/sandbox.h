@@ -73,10 +73,13 @@ struct SandboxConfig {
     // ceiling so the agent sees uniform behaviour regardless of sandbox.
     int output_max_bytes = 32768;
 
-    // Per-tenant workspace disk quota, bytes.  Enforced at /write time:
-    // a write that would push the workspace over the cap is rejected
-    // with a clean ERR.  Reads remain available, so the agent can list
-    // what's there and clean up.  0 = no quota.  Default 1 GiB.
+    // Per-tenant workspace disk quota, bytes.  Enforced on host-visible
+    // workspace mutations: /write rejects writes that would exceed the
+    // cap; /exec holds the per-tenant quota mutex for the duration of
+    // docker exec and fails when the workspace ends over the cap (so
+    // shell redirects cannot bypass /write enforcement).  Reads remain
+    // available so the agent can inspect usage and clean up.  0 = no
+    // quota.  Default 1 GiB.
     int64_t workspace_max_bytes = 1ll * 1024 * 1024 * 1024;
 
     // Test-only: milliseconds to sleep after a successful quota check and
@@ -84,6 +87,11 @@ struct SandboxConfig {
     // then-write race window so parallel /write regressions are caught
     // deterministically.  0 in production (default).
     int quota_check_pause_ms = 0;
+
+    // Test-only: milliseconds to sleep after docker exec returns while the
+    // per-tenant quota mutex is still held.  Unit tests use this to prove
+    // parallel /write cannot interleave with /exec (#136).  0 in production.
+    int quota_exec_pause_ms = 0;
 
     // Idle-reaping threshold, seconds.  A background reaper stops
     // tenant containers whose last sandbox operation (/exec, /write,
