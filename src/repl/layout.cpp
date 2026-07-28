@@ -75,6 +75,35 @@ ParentOfNode find_parent_of_node(LayoutTree::Node& node,
     return {nullptr, -1};
 }
 
+// Approximate PaneScrollView::bind content height so focus/unfocus can keep
+// a scrolled viewport stable when the readline band appears or disappears.
+int approx_scroll_content_h(const TUI& tui) {
+    const int margin = tui.outer_top() ? 1 : 0;
+    constexpr int kBoxBorder = 1;
+    const int pad_y = std::max(0, tui_design().layout.scroll_pad_y);
+    return std::max(1, tui.scroll_region_rows() - margin - (kBoxBorder * 2)
+                            - pad_y * 2);
+}
+
+// scroll_offset counts rows up from the live tail. Live-tail (0) stays
+// pinned; a non-zero offset is adjusted by the viewport delta so
+// first_visible ≈ total - vh - offset does not jump on focus changes.
+void adjust_scroll_for_viewport_change(Pane& pane, int old_h, int new_h) {
+    if (old_h == new_h) return;
+    if (pane.scroll_offset <= 0) {
+        pane.scroll_offset = 0;
+        if (pane.scroll) pane.scroll->bind(pane.tui);
+        return;
+    }
+    // vh shrinks → increase offset; vh grows → decrease offset.
+    pane.scroll_offset = std::max(0, pane.scroll_offset + (old_h - new_h));
+    if (pane.scroll) {
+        pane.scroll->bind(pane.tui);
+        const int max_off = pane.scroll->max_scroll_offset();
+        if (pane.scroll_offset > max_off) pane.scroll_offset = max_off;
+    }
+}
+
 } // namespace
 
 LayoutTree::LayoutTree(std::unique_ptr<Pane> first, const Rect& bounds) {
@@ -158,6 +187,8 @@ void LayoutTree::apply_chrome_flags() {
     std::function<void(const Node&)> apply = [&](const Node& n) {
         if (n.is_leaf()) {
             Pane* p = n.pane.get();
+            const int old_content_h = approx_scroll_content_h(p->tui);
+
             // While zoomed, only the visible pane owns the outer bottom —
             // off-screen siblings keep their tree slots but must not reserve
             // sidebar/footer chrome against the zoomed input band.
@@ -202,6 +233,10 @@ void LayoutTree::apply_chrome_flags() {
             } else {
                 p->tui.set_input_rows(0);
             }
+
+            // Keep scrolled history stable when the readline band toggles.
+            adjust_scroll_for_viewport_change(
+                *p, old_content_h, approx_scroll_content_h(p->tui));
             return;
         }
         for (const auto& child : n.children) apply(*child);
