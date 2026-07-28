@@ -967,10 +967,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     });
 
     // Load each open conversation into orch (active may already be loaded)
-    // and replay transcript tails into every pane so relaunch matches the
-    // prior multi-pane arrangement without a manual switch.
+    // and replay transcript tails into panes so relaunch matches the prior
+    // multi-pane arrangement.  Each (conversation_id, agent) binding is
+    // replayed once — live ^W splits share a conversation but start with
+    // empty scrollback, so replaying into every sibling would pollute those
+    // empty windows with the parent transcript.
     {
         std::set<std::string> loaded_ids;
+        std::unordered_set<std::string> replayed_bindings;
         bool any_history = restored;
         layout.for_each_pane([&](Pane& pane) {
             const std::string& id = pane.conversation_id;
@@ -980,12 +984,15 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     if (conversation_store.load(id, orch)) any_history = true;
                 }
             }
+            const std::string& agent = pane.current_agent.empty()
+                ? "index" : pane.current_agent;
+            if (!arbiter::claim_pane_transcript_replay(replayed_bindings, id, agent)) {
+                return;
+            }
             ConversationScope scope(id);
             // Replay the pane's bound agent (restored from layout.json), not
             // always index — non-index panes would otherwise show the wrong
             // transcript after relaunch.
-            const std::string& agent = pane.current_agent.empty()
-                ? "index" : pane.current_agent;
             const auto history = orch.get_agent_history(agent);
             const size_t total = history.size();
             if (total > 0) {
@@ -1035,8 +1042,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     // Tallest live input among outer-bottom panes — sidebars must reserve
     // the same band so list/scroll bottoms don't spill into multiline input.
+    // Inactive panes use input_rows=0 (content-only); only the focused
+    // outer-bottom pane contributes a readline band.
     auto outer_bottom_input_rows = [&]() -> int {
-        int rows = 1;
+        int rows = 0;
         layout.for_each_pane([&](Pane& p) {
             const arbiter::TuiChromeSnapshot chrome = p.tui.chrome_snapshot();
             if (chrome.outer_bottom) {

@@ -1146,11 +1146,12 @@ PaneScrollView::CodeSegment& PaneScrollView::current_code() {
 
 void PaneScrollView::bind(const TUI& tui) {
     const TuiDesign& d = tui_design();
-    // Match pane_frame's output box: 1 blank row above the box, 1-cell
-    // border on each side. Content is inset from the inner border by the
-    // same amount that separates adjacent chrome boxes (pane edge pad),
-    // with a minimum of one cell so narrow layouts still breathe.
-    constexpr int kBoxTopMargin = 1;
+    // Match pane_frame's output box: outer-top panes keep one blank row
+    // above the box; stacked panes below a split start flush. 1-cell border
+    // on each side. Content is inset from the inner border by the same
+    // amount that separates adjacent chrome boxes (pane edge pad), with a
+    // minimum of one cell so narrow layouts still breathe.
+    const int kBoxTopMargin = tui.outer_top() ? 1 : 0;
     constexpr int kBoxBorder = 1;
     const int pad = tui_pane_edge_pad(tui.cols(), d);
     const int inset = std::max(1, pad);

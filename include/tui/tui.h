@@ -8,12 +8,17 @@
 // Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
 //   scroll region     rounded output box (floating one row below the pane
 //                     top, matching sidebar inset); streamed model output
-//   input area        rounded box flush beneath the output box; the top
-//                     border row doubles as the status line
+//   input area        focused pane only — rounded box flush beneath the
+//                     output box; the top border row doubles as the status
+//                     line. Inactive panes omit readline so stacked gutters
+//                     stay a single separator cell.
 //   bottom pad        outer-bottom panes reserve hint row + trailing pad so
-//                     column bottoms stay aligned; stacked panes above the
-//                     outer bottom keep a single trailing pad so horizontal
-//                     gutters stay uniform (pad + sep + top-float)
+//                     column bottoms stay aligned; stacked panes above that
+//                     edge use no trailing pad so the gutter is a single
+//                     separator cell (same rhythm as vertical splits).
+//   top inset         outer-top panes float the output box one row down
+//                     (matches sidebar inset); panes below a split start
+//                     flush so stacked gutters stay one cell.
 //
 // All `*_row()` accessors return absolute 1-indexed terminal rows — they fold
 // in rect_.y for scroll/input placement in OpenTUI draw calls.
@@ -46,7 +51,8 @@ enum class FooterHintMode {
 
 struct TuiChromeSnapshot {
     Rect rect;
-    int  input_rows = 1;
+    // 0 = content-only (inactive multi-pane); >= kDefaultInputRows when focused.
+    int  input_rows = 0;
     int  bottom_pad_rows = 2;
     bool status_active = false;
     bool focus_accent = false;
@@ -56,8 +62,12 @@ struct TuiChromeSnapshot {
     bool footer_hint_visible = true;
     // True when this pane's rect touches the layout's outer bottom edge.
     // Outer-bottom panes keep a shared footer pad so column bottoms align;
-    // stacked panes above that edge use a compact trailing pad only.
+    // stacked panes above that edge use no trailing pad (1-cell sep gutter).
     bool outer_bottom = true;
+    // True when this pane's rect touches the layout's outer top edge.
+    // Only outer-top panes keep the one-row output float (sidebar rhythm);
+    // panes below a horizontal split start flush.
+    bool outer_top = true;
     std::string status;
     std::string pre_input_status;
     // Unfocused activity badge drawn on the mid-separator when set.
@@ -67,9 +77,14 @@ struct TuiChromeSnapshot {
 class TUI {
 public:
     static constexpr int kSepRows              = 0;   // output box sits flush on input box
+    // Rounded input box on the focused pane: top border (status) + content
+    // + bottom border. Inactive panes use 0 input rows (content-only).
+    static constexpr int kDefaultInputRows     = 3;
     static constexpr int kMaxInputRows         = 7;
     static constexpr int kBottomPadRows        = 2;   // hint row + bottom pad
-    static constexpr int kCompactBottomPadRows = 1;   // trailing pad when footer reclaimed
+    // Stacked (non-outer-bottom) panes: no trailing pad — the 1-cell split
+    // separator is the whole gutter, matching vertical splits.
+    static constexpr int kCompactBottomPadRows = 0;
 
     // Rows reserved below the input block (theme-aware; see tui_bottom_pad_rows).
     [[nodiscard]] int bottom_pad_rows() const;
@@ -97,6 +112,9 @@ public:
 
     void begin_input(std::function<int()> pending_fn = {});
     void grow_input(int needed);
+    // Layout sets focused panes to >= kDefaultInputRows and inactive panes
+    // to 0 so readline chrome is focus-only.
+    void set_input_rows(int rows);
     std::string build_prompt() const;
 
     // Last usable row of the scroll region (where streamed output lands).
@@ -135,6 +153,11 @@ public:
     void set_outer_bottom(bool on_bottom);
     [[nodiscard]] bool outer_bottom() const;
 
+    // Whether this pane sits on the layout's outer top edge (controls the
+    // one-row output float so stacked gutters stay a single separator cell).
+    void set_outer_top(bool on_top);
+    [[nodiscard]] bool outer_top() const;
+
     // Accent split separators when this pane is focused in a multi-pane layout.
     // LayoutTree flips this on the focused leaf and off on all others after
     // every focus or structural change.  In single-pane mode it is unused.
@@ -156,10 +179,11 @@ public:
 
 private:
     Rect rect_{0, 0, 80, 24};          // area of the terminal this TUI owns
-    int  input_rows_ = 1;
+    int  input_rows_ = 0;              // 0 until focused / begin_input
     bool status_active_ = false;
     FooterHintMode footer_hint_mode_ = FooterHintMode::Full;
     bool outer_bottom_ = true;         // touches layout outer bottom edge
+    bool outer_top_ = true;            // touches layout outer top edge
     bool focus_accent_ = false;        // reserved for multi-pane chrome accents
     std::atomic<bool> queue_indicator_shown_{false};
     std::string current_status_;
