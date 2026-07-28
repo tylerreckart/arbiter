@@ -133,6 +133,7 @@ void LayoutTree::apply_chrome_flags() {
     collect_leaves(*root_, leaves);
     const bool multi = leaves.size() > 1 || zoomed_ != nullptr;
     const int outer_bottom = bounds_.y + bounds_.h;
+    const int outer_top = bounds_.y;
 
     // Resolve the focused leaf's tree bounds so a mid-column focus can still
     // host the compact hint on that column's outer-bottom pane.
@@ -152,7 +153,7 @@ void LayoutTree::apply_chrome_flags() {
     find_focused(*root_);
 
     // Walk leaves with their node bounds so stacked panes above the outer
-    // bottom drop the footer pad (uniform horizontal gutters) while every
+    // bottom drop the footer pad (1-cell sep gutters) while every
     // outer-bottom pane keeps a shared pad for column alignment.
     std::function<void(const Node&)> apply = [&](const Node& n) {
         if (n.is_leaf()) {
@@ -163,7 +164,11 @@ void LayoutTree::apply_chrome_flags() {
             const bool on_bottom = zoomed_
                 ? (p == zoomed_)
                 : ((n.bounds.y + n.bounds.h) == outer_bottom);
+            const bool on_top = zoomed_
+                ? (p == zoomed_)
+                : (n.bounds.y == outer_top);
             p->tui.set_outer_bottom(on_bottom);
+            p->tui.set_outer_top(on_top);
 
             // Zoomed: only the zoomed pane is visible → Full hint.
             // Multi: Compact chord hint on the focused pane when it sits on
@@ -186,6 +191,17 @@ void LayoutTree::apply_chrome_flags() {
             }
             p->tui.set_footer_hint_mode(mode);
             p->tui.set_focus_accent(multi && p == focused_);
+            // Readline is focus-only: inactive panes are content-only so
+            // stacked gutters stay a single separator cell without an idle
+            // input box between every pair. Preserve a grown multiline
+            // height on the focused pane; ensure at least the default box.
+            if (p == focused_) {
+                if (p->tui.input_rows() < TUI::kDefaultInputRows) {
+                    p->tui.set_input_rows(TUI::kDefaultInputRows);
+                }
+            } else {
+                p->tui.set_input_rows(0);
+            }
             return;
         }
         for (const auto& child : n.children) apply(*child);

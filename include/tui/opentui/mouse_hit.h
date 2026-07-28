@@ -105,7 +105,7 @@ inline HitTarget hit_test(LayoutTree& layout,
     // Match pane_frame.cpp geometry (0-based OpenTUI cells).
     const TuiChromeSnapshot chrome = pane->tui.chrome_snapshot();
     const Rect& r = chrome.rect;
-    const int bottom_pad = std::max(1, chrome.bottom_pad_rows);
+    const int bottom_pad = std::max(0, chrome.bottom_pad_rows);
     const int input_top = r.y + r.h - bottom_pad - chrome.input_rows;
     const int input_bottom = r.y + r.h - bottom_pad - 1;
     const int scroll_top = r.y;
