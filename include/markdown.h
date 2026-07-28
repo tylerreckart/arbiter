@@ -1,11 +1,14 @@
 #pragma once
 // arbiter/include/markdown.h — Markdown-to-ANSI terminal renderer
 
+#include "latex_math.h"
 #include "styled_text.h"
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace arbiter {
@@ -14,6 +17,8 @@ namespace arbiter {
 // Feed chunks as they arrive; prose and inline markdown emit as lines complete.
 // Fenced blocks (```diff and other languages) buffer until the closing fence
 // so long partial blocks do not flood scrollback mid-stream.
+// Display math (\[…\] / $$…$$) buffers until the closer, then emits Unicode
+// approximations via latex_math_to_plain. Inline \(…\) is converted in-line.
 class MarkdownRenderer {
 public:
     using DiffSink = std::function<void(const std::string& patch)>;
@@ -37,8 +42,11 @@ public:
     void reset();
 
 private:
+    enum class MathDelim : std::uint8_t { None, Bracket, Dollar };
+
     static bool is_diff_fence_lang(std::string_view lang);
     std::vector<StyledLine> render_buffered_code_block_styled(const std::string& close_fence);
+    std::vector<StyledLine> flush_math_block_styled();
     std::optional<StyledLine> process_line_styled(const std::string& line);
     void finish_code_close(const std::string& close_fence, std::vector<StyledLine>& out);
 
@@ -46,8 +54,10 @@ private:
     bool        in_code_block_ = false;
     bool        in_diff_block_ = false;
     bool        in_indent_code_ = false;  // 4-space / tab indented code → CodeSegment
+    MathDelim   math_delim_    = MathDelim::None;
     std::string diff_buf_;
     std::vector<std::string> code_buf_;
+    std::vector<std::string> math_buf_;
     std::string code_open_fence_;
     DiffSink    diff_sink_;
     CodeOpenFn  code_open_;
