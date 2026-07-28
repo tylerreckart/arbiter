@@ -241,13 +241,16 @@ TEST_CASE("should_auto_compact: threshold") {
     cfg.keep_messages = 16;
     cfg.enabled = true;
 
-    // 200k window sonnet: 150k tokens = 75%
-    CHECK(should_auto_compact(cfg, 150'000, "claude-sonnet-4-6",
+    // Bare claude-sonnet-4-6 aliases OpenRouter 4.6 (1M window): 750k = 75%.
+    CHECK(should_auto_compact(cfg, 750'000, "claude-sonnet-4-6",
                               /*history_len=*/40, /*chars=*/1000));
     CHECK_FALSE(should_auto_compact(cfg, 100'000, "claude-sonnet-4-6",
                                      40, 1000));
-    CHECK_FALSE(should_auto_compact(cfg, 150'000, "claude-sonnet-4-6",
+    CHECK_FALSE(should_auto_compact(cfg, 750'000, "claude-sonnet-4-6",
                                      /*history_len=*/10, 1000));
+    // Haiku stays on a 200k window: 150k = 75%.
+    CHECK(should_auto_compact(cfg, 150'000, "claude-haiku-4-5",
+                              40, 1000));
 }
 
 TEST_CASE("should_auto_compact: char budget fallback when window unknown") {
@@ -367,7 +370,11 @@ TEST_CASE("is_tool_results_message detects prefix") {
 }
 
 TEST_CASE("context_window helpers match prior sidebar behavior") {
-    CHECK(context_window_for_model("claude-sonnet-4-6") == 200'000);
-    CHECK(context_pct_value(40'000, "claude-sonnet-4-6") == 20);
+    // Bare hyphenated aliases share the OpenRouter dotted-slug window.
+    CHECK(context_window_for_model("claude-sonnet-4-6") == 1'000'000);
+    CHECK(context_window_for_model("anthropic/claude-sonnet-4.6") == 1'000'000);
+    CHECK(context_window_for_model("claude-haiku-4-5") == 200'000);
+    CHECK(context_pct_value(40'000, "claude-sonnet-4-6") == 4);
+    CHECK(context_pct_value(40'000, "claude-haiku-4-5") == 20);
     CHECK(context_pct_value(10'000, "ollama/llama3") == -1);
 }

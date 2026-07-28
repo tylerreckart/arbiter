@@ -17,7 +17,7 @@ Either a bare constitution or wrapped under `agent_def`:
   "id": "researcher",
   "name": "Researcher",
   "role": "researcher",
-  "model": "claude-sonnet-4-6",
+  "model": "anthropic/claude-sonnet-5",
   "goal": "answer one factual question in one short paragraph",
   "brevity": "bullets",
   "max_tokens": 256,
@@ -70,7 +70,7 @@ Controls advisor-driven enrichment on this agent's `/mem` operations. Every fiel
 curl -X POST \
   -H "Authorization: Bearer atr_…" \
   -H "Content-Type: application/json" \
-  -d '{"id":"researcher","name":"Researcher","role":"researcher","model":"claude-sonnet-4-6","goal":"answer factual questions"}' \
+  -d '{"id":"researcher","name":"Researcher","role":"researcher","model":"google/gemini-3.6-flash","goal":"answer factual questions"}' \
   http://arbiter.example.com/v1/agents
 ```
 
@@ -85,7 +85,7 @@ The stored agent with `created_at` / `updated_at`. The full blob is persisted; t
   "id": "researcher",
   "name": "Researcher",
   "role": "researcher",
-  "model": "claude-sonnet-4-6",
+  "model": "google/gemini-3.6-flash",
   "goal": "answer factual questions",
   "brevity": "full",
   "max_tokens": 1024,

@@ -131,7 +131,14 @@ TEST_CASE("strip_model_prefix normalizes OpenRouter and Ollama model ids") {
     CHECK(arbiter::strip_model_prefix("openai/gpt-5.2") == "openai/gpt-5.2");
     CHECK(arbiter::strip_model_prefix("gemini/gemini-3.1-flash-lite") ==
           "google/gemini-3.1-flash-lite");
-    CHECK(arbiter::strip_model_prefix("claude-sonnet-4-6") == "anthropic/claude-sonnet-4-6");
+    CHECK(arbiter::strip_model_prefix("claude-sonnet-4-6") ==
+          "anthropic/claude-sonnet-4.6");
+    CHECK(arbiter::strip_model_prefix("claude-opus-4-7-fast") ==
+          "anthropic/claude-opus-4.7-fast");
+    CHECK(arbiter::strip_model_prefix("claude-haiku-4-5-20251001") ==
+          "anthropic/claude-haiku-4.5-20251001");
+    CHECK(arbiter::strip_model_prefix("anthropic/claude-sonnet-5") ==
+          "anthropic/claude-sonnet-5");
 }
 
 // ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ struct Constitution {
     Brevity brevity = Brevity::Full;
     int     max_tokens = 1024;      // response cap
     double  temperature = 0.3;      // low = deterministic
-    std::string model = "claude-sonnet-4-latest";
+    std::string model = "anthropic/claude-sonnet-5";
 
     // Agent mode — selects the base system prompt.
     // ""/"standard": compressed index voice (default for all agents)
@@ -31,7 +31,7 @@ struct Constitution {
     // Optional advisor model (beta: advisor-tool-2026-03-01).
     // When set, the executor model can consult this higher-intelligence model
     // mid-generation for strategic planning. Must be >= capability of executor.
-    // Example: model="claude-haiku-4-5-20251001", advisor_model="claude-opus-4-6"
+    // Example: model="google/gemini-3.6-flash", advisor_model="anthropic/claude-opus-5"
     //
     // Legacy field — kept for back-compat with existing agent JSON.  New
     // configurations should populate `advisor` (below); the parser mirrors
