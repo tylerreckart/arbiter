@@ -48,6 +48,7 @@
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
 #include "tui/confirm_keys.h"
+#include "tui/prompt_bridge.h"
 
 #include <iostream>
 #include <string>
@@ -63,6 +64,7 @@
 #include <chrono>
 #include <functional>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -431,22 +433,59 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // Recursive because dispatch_chord can call back into the tree.
     std::recursive_mutex layout_mu;
 
+    // Forward declaration — layout_ptr lets lambdas registered before layout
+    // construction reach it safely (we set it once and never clear).
+    LayoutTree* layout_ptr = nullptr;
+
     struct ConfirmState {
         std::mutex               mu;
         arbiter::ConfirmRequest  request;
-        std::promise<bool>*      pending = nullptr;
+        // Heap-owned so Esc/overwrite/teardown can complete waiters without
+        // dangling a stack promise (hang → join deadlock under layout_mu).
+        std::shared_ptr<std::promise<bool>> pending;
     } confirm_state;
 
     // Interactive `/diff` / `/diff review`: pane thread posts a card, main
     // thread reads a/r/Esc (same interrupt bridge as ConfirmState).
     struct DiffReviewState {
         std::mutex               mu;
-        std::promise<char>*      pending = nullptr;  // 'a' | 'r' | 0 cancel
+        std::shared_ptr<std::promise<char>> pending;  // 'a' | 'r' | 0 cancel
         int                      patch_id = 0;
         std::string              path;
         std::string              summary;
         std::vector<std::string> preview_lines;
     } diff_review_state;
+
+    // Main thread publishes the editor currently inside read_line so exec
+    // threads can wake it without racing layout.focused() under layout_mu
+    // (close/join may already hold that lock).
+    std::atomic<arbiter::opentui::PaneInputEditor*> active_readline{nullptr};
+    std::atomic<bool> deferred_main_interrupt{false};
+
+    auto wake_main_input = [&]() {
+        deferred_main_interrupt.store(true, std::memory_order_release);
+        if (auto* ed = active_readline.load(std::memory_order_acquire)) {
+            ed->interrupt();
+            return;
+        }
+        if (!layout_ptr) return;
+        // try_lock: never block if main already holds layout_mu for join.
+        std::unique_lock<std::recursive_mutex> lk(layout_mu, std::try_to_lock);
+        if (lk) layout_ptr->focused().editor.interrupt();
+    };
+
+    auto fail_pending_prompts = [&]() {
+        {
+            auto p = arbiter::take_prompt_promise(confirm_state.mu,
+                                                 confirm_state.pending);
+            arbiter::complete_prompt_promise(p, false);
+        }
+        {
+            auto p = arbiter::take_prompt_promise(diff_review_state.mu,
+                                                 diff_review_state.pending);
+            arbiter::complete_prompt_promise(p, char{0});
+        }
+    };
 
     std::atomic<bool> quit_requested{false};
 
@@ -481,10 +520,6 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     std::vector<PendingConversationOp>  pending_conv_ops;
 
     SidebarState sidebar;
-
-    // Forward declaration — layout_ptr lets lambdas registered before layout
-    // construction reach it safely (we set it once and never clear).
-    LayoutTree* layout_ptr = nullptr;
 
     // Filled in after switch_conversation exists; make_pane editors call through.
     std::function<bool(const arbiter::opentui::MouseEvent&)> route_mouse;
@@ -753,7 +788,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
         });
         p->editor.set_cancel_handler(
-            [raw, &orch, &pending_after_cancel, &pending_cancel_wait, &pump_notify]() {
+            [raw, &orch, &pending_after_cancel, &pending_cancel_wait,
+             &pump_notify, &fail_pending_prompts]() {
             // Esc during a deferred switch/delete wait abandons the pending
             // op without a second global cancel (token cancel already fired).
             if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
@@ -767,9 +803,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (pump_notify) pump_notify();
                 return;
             }
+            // Unblock any in-flight confirm / diff-review waiter before
+            // cancelling the turn — otherwise fut.get() hangs and pane
+            // close deadlocks under layout_mu.
+            fail_pending_prompts();
             // Scoped cancel: stop this pane's turn only so sibling panes
-            // keep streaming (#46 / #48).
-            if (raw->turn_cancel) orch.cancel_token(raw->turn_cancel);
+            // keep streaming (#46 / #48).  atomic_load: races exec reset.
+            auto token = std::atomic_load(&raw->turn_cancel);
+            if (token) orch.cancel_token(token);
             else orch.cancel();
             raw->multiline_accum.clear();
             raw->output_queue.push_prose(
@@ -910,15 +951,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     });
 
     orch.set_confirm_callback([&](const arbiter::ConfirmRequest& req) -> bool {
-        std::promise<bool> done;
-        auto fut = done.get_future();
+        auto done = std::make_shared<std::promise<bool>>();
+        std::shared_ptr<std::promise<bool>> prev;
         {
             std::lock_guard<std::mutex> lk(confirm_state.mu);
+            prev = std::move(confirm_state.pending);
+            confirm_state.pending = done;
             confirm_state.request = req;
-            confirm_state.pending = &done;
         }
-        if (layout_ptr) layout_ptr->focused().editor.interrupt();
-        return fut.get();
+        arbiter::complete_prompt_promise(prev, false);
+        wake_main_input();
+        return done->get_future().get();
     });
 
     // ── Layout + initial pane ──────────────────────────────────────────────
@@ -1708,18 +1751,23 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                                               const std::string& summary,
                                               std::vector<std::string> preview)
                     -> char {
-                    std::promise<char> done;
-                    auto fut = done.get_future();
+                    auto done = std::make_shared<std::promise<char>>();
+                    std::shared_ptr<std::promise<char>> prev;
                     {
                         std::lock_guard<std::mutex> lk(diff_review_state.mu);
+                        prev = std::move(diff_review_state.pending);
                         diff_review_state.patch_id = id;
                         diff_review_state.path = path;
                         diff_review_state.summary = summary;
                         diff_review_state.preview_lines = std::move(preview);
-                        diff_review_state.pending = &done;
+                        diff_review_state.pending = done;
                     }
+                    arbiter::complete_prompt_promise(prev, char{0});
+                    // Wake this pane's editor — main reads focused input, but
+                    // sticky interrupt + deferred flag cover focus races.
                     pane.editor.interrupt();
-                    return fut.get();
+                    wake_main_input();
+                    return done->get_future().get();
                 };
 
                 auto run_interactive_review = [&](std::optional<int> only_id) {
@@ -2070,7 +2118,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         std::lock_guard<std::mutex> lk(pending_conv_mu);
                         pending_conv_ops.push_back({true, true, "", false, false});
                     }
-                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    if (layout_ptr) wake_main_input();
                     push_status("switching to a new conversation...");
                     return;
                 }
@@ -2086,7 +2134,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         std::lock_guard<std::mutex> lk(pending_conv_mu);
                         pending_conv_ops.push_back({true, false, id, false, false});
                     }
-                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    if (layout_ptr) wake_main_input();
                     push_status("switching...");
                     return;
                 }
@@ -2116,7 +2164,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         std::lock_guard<std::mutex> lk(pending_conv_mu);
                         pending_conv_ops.push_back({false, false, id, true, false});
                     }
-                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    if (layout_ptr) wake_main_input();
                     push_status("deleted (session file kept — /chat purge removes it)");
                     return;
                 }
@@ -2132,7 +2180,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         std::lock_guard<std::mutex> lk(pending_conv_mu);
                         pending_conv_ops.push_back({false, false, id, true, true});
                     }
-                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    if (layout_ptr) wake_main_input();
                     push_status("purged");
                     return;
                 }
@@ -2211,7 +2259,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     theme_picker.open(std::move(themes), active);
                     // Wake the main loop so it takes stdin for ↑↓/Enter/Esc.
                     refresh_focused_input.store(true);
-                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    wake_main_input();
                     if (pump_notify) pump_notify();
                     return;
                 }
@@ -2374,8 +2422,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             orch.set_worker_pane_binder([pane_ptr]() { g_active_pane = pane_ptr; });
             std::string line;
             while (p.cmd_queue.pop(line)) {
-                p.turn_cancel = std::make_shared<arbiter::CancelToken>();
-                arbiter::RequestCancelScope cancel_scope(orch.client(), p.turn_cancel);
+                auto turn_token = std::make_shared<arbiter::CancelToken>();
+                std::atomic_store(&p.turn_cancel, turn_token);
+                arbiter::RequestCancelScope cancel_scope(orch.client(), turn_token);
                 p.cmd_queue.set_busy(true);
                 p.turn_running.store(true);
                 p.last_response.clear();
@@ -2407,11 +2456,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 }
                 p.cmd_queue.set_busy(false);
                 p.tui.clear_queue_indicator();
-                p.turn_cancel.reset();
+                std::atomic_store(&p.turn_cancel, std::shared_ptr<arbiter::CancelToken>{});
                 // Wake the main loop if a deferred switch/delete is waiting
                 // for this turn to unwind (#46).
-                if (pending_cancel_wait.load() && layout_ptr) {
-                    layout_ptr->focused().editor.interrupt();
+                if (pending_cancel_wait.load()) {
+                    wake_main_input();
                 }
 
                 if (p.parent_pane != nullptr &&
@@ -2442,7 +2491,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         std::lock_guard<std::mutex> lk(pending_closes_mu);
                         pending_closes.push_back({&p, p.current_agent});
                     }
-                    if (layout_ptr) layout_ptr->focused().editor.interrupt();
+                    if (layout_ptr) wake_main_input();
                 }
             }
         });
@@ -2582,13 +2631,13 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // confirm lands on whichever pane currently has focus — that's where
     // the editor.interrupt() wakes the main loop.
     auto service_confirm = [&]() -> bool {
-        std::promise<bool>* pending = nullptr;
         arbiter::ConfirmRequest req;
+        std::shared_ptr<std::promise<bool>> pending;
         {
             std::lock_guard<std::mutex> lk(confirm_state.mu);
-            pending = confirm_state.pending;
+            pending = std::move(confirm_state.pending);
+            confirm_state.pending.reset();
             req = confirm_state.request;
-            confirm_state.pending = nullptr;
         }
         if (!pending) return false;
 
@@ -2612,25 +2661,25 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 yes ? StyleId::Success : StyleId::Error)},
             true);
         ui_ctx.present_all();
-        pending->set_value(yes);
+        arbiter::complete_prompt_promise(pending, yes);
         return true;
     };
 
     // Interactive `/diff` review: [a]pply / [r]eject / Esc cancel.
     auto service_diff_review = [&]() -> bool {
-        std::promise<char>* pending = nullptr;
+        std::shared_ptr<std::promise<char>> pending;
         int patch_id = 0;
         std::string path;
         std::string summary;
         std::vector<std::string> preview;
         {
             std::lock_guard<std::mutex> lk(diff_review_state.mu);
-            pending = diff_review_state.pending;
+            pending = std::move(diff_review_state.pending);
+            diff_review_state.pending.reset();
             patch_id = diff_review_state.patch_id;
             path = diff_review_state.path;
             summary = diff_review_state.summary;
             preview = diff_review_state.preview_lines;
-            diff_review_state.pending = nullptr;
         }
         if (!pending) return false;
 
@@ -2681,7 +2730,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             {arbiter::styled_activity_line(label, style)},
             true);
         ui_ctx.present_all();
-        pending->set_value(decision);
+        arbiter::complete_prompt_promise(pending, decision);
         return true;
     };
 
@@ -2734,6 +2783,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             ui_ctx.present_all();
 
             if (yes) {
+                // Unblock confirm/diff waiters before join under layout_mu.
+                fail_pending_prompts();
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
                 clear_mouse_drag();
                 layout.close_pane(pc.pane, [&](Pane& p) {
@@ -2799,6 +2850,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 break;
             case 'c':
                 if (layout.pane_count() > 1) {
+                    // Unblock confirm/diff waiters before join (we hold
+                    // layout_mu — a hung fut.get() would deadlock).
+                    fail_pending_prompts();
                     layout.close_focused([&](Pane& p) {
                         p.cmd_queue.stop();
                         if (p.exec_thread.joinable()) p.exec_thread.join();
@@ -2985,8 +3039,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         {
             std::lock_guard<std::recursive_mutex> lk(layout_mu);
             if (pending.kind == PendingAfterCancel::Kind::Switch && pending.pane) {
-                if (pending.pane->turn_cancel) {
-                    orch.cancel_token(pending.pane->turn_cancel);
+                auto token = std::atomic_load(&pending.pane->turn_cancel);
+                if (token) {
+                    orch.cancel_token(token);
                 } else {
                     orch.cancel();
                 }
@@ -2994,8 +3049,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 bool cancelled_any = false;
                 layout.for_each_pane([&](Pane& p) {
                     if (p.conversation_id != pending.wait_conversation_id) return;
-                    if (p.turn_cancel) {
-                        orch.cancel_token(p.turn_cancel);
+                    auto token = std::atomic_load(&p.turn_cancel);
+                    if (token) {
+                        orch.cancel_token(token);
                         cancelled_any = true;
                     }
                 });
@@ -3346,12 +3402,19 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     // ── Main readline loop ──────────────────────────────────────────────────
     while (!quit_requested) {
+        deferred_main_interrupt.store(false, std::memory_order_release);
         while (service_confirm()) {}
         while (service_diff_review()) {}
         while (service_pending_closes()) {}
         while (service_pending_conv_ops()) {}
         while (service_mouse_switch()) {}
         while (service_pending_after_cancel()) {}
+
+        // A wake arrived while we were draining services (no active
+        // read_line).  Re-enter so confirm/diff posts are not starved.
+        if (deferred_main_interrupt.exchange(false, std::memory_order_acq_rel)) {
+            continue;
+        }
 
         if (theme_picker.active()) {
             if (pump_notify) pump_notify();
@@ -3524,7 +3587,16 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 + "\001" + theme().reset + "\002";
 
         std::string line;
-        if (!focused.editor.read_line(prompt, line)) {
+        active_readline.store(&focused.editor, std::memory_order_release);
+        // Cover the gap between the deferred check above and publishing
+        // active_readline: a wake that only set the flag (try_lock missed)
+        // must still interrupt this read_line.
+        if (deferred_main_interrupt.exchange(false, std::memory_order_acq_rel)) {
+            focused.editor.interrupt();
+        }
+        const bool got_line = focused.editor.read_line(prompt, line);
+        active_readline.store(nullptr, std::memory_order_release);
+        if (!got_line) {
             char chord;
             if (focused.editor.take_chord(chord)) {
                 dispatch_chord(chord);
@@ -3542,6 +3614,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             // one.  Without this, read_line returning false here would
             // be treated as EOF and we'd exit.
             if (refresh_focused_input.exchange(false)) continue;
+            if (deferred_main_interrupt.exchange(false)) continue;
             break;   // real EOF
         }
         if (quit_requested) break;
@@ -3597,6 +3670,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     }
 
     // ── Shutdown ───────────────────────────────────────────────────────────
+    // Fail any confirm/diff waiters before joining so exec threads cannot
+    // stay blocked in fut.get() while we hold layout_mu across join.
+    fail_pending_prompts();
     // Stop every pane's queue, then join its exec thread.  Do all stops
     // BEFORE joins so panes unblock in parallel.  After that the pump is
     // the only producer left and we can shut it down too.

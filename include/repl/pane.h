@@ -30,6 +30,8 @@ struct Pane {
     // Active turn's cancel token (set by the pane exec thread for the
     // duration of handle()).  Esc / conversation-switch cancel this token
     // instead of the process-wide ApiClient so sibling panes keep streaming.
+    // All reads/writes MUST use std::atomic_load / std::atomic_store — Esc's
+    // cancel_handler races the exec thread's assign/reset on this member.
     std::shared_ptr<CancelToken> turn_cancel;
 
     std::unique_ptr<opentui::PaneScrollView> scroll;

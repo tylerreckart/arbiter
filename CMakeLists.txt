@@ -700,6 +700,15 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_confirm_keys COMMAND unit_confirm_keys)
 
+    add_executable(unit_prompt_bridge
+        tests/test_prompt_bridge.cpp
+    )
+    target_include_directories(unit_prompt_bridge PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_prompt_bridge COMMAND unit_prompt_bridge)
+
     add_executable(unit_mouse_decode
         tests/test_mouse_decode.cpp
     )
