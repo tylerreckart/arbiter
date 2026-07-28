@@ -26,6 +26,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   starting a second run. The in-process table remains an L1 cache;
   SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
 
+### Fixed
+- **Sandbox `/exec` workspace quota (#136).** When `workspace_max_bytes` is
+  set, `/exec` now holds the per-tenant quota mutex for the full docker
+  exec (matching `/write`) so parallel `/write` cannot grow the workspace
+  during shell commands, and a post-exec measurement fails the tool when
+  shell redirects push usage over the cap.
+- **Idempotency L1 rehydrate TTL.** `IdempotencyCache::get()` passes the
+  same wall-clock snapshot to SQLite on L1 miss so a key cannot appear
+  live in-process while the durable row is already past TTL at the
+  boundary.
+
 ### Changed
 - **Starter agent constitutions.** Seed agents under `agents/` now use
   current OpenRouter model slugs fitted to each role (Sonnet 5 / Opus 5,

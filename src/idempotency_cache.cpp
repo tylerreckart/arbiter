@@ -63,7 +63,8 @@ IdempotencyCache::get(int64_t tenant_id, const std::string& key) {
 
     if (!store) return std::nullopt;
 
-    auto durable = store->get_idempotency_key(tenant_id, key, ttl_seconds_);
+    auto durable = store->get_idempotency_key(
+        tenant_id, key, ttl_seconds_, wall_now);
     if (!durable) return std::nullopt;
 
     std::lock_guard<std::mutex> lk(mu_);
