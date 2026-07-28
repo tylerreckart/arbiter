@@ -29,6 +29,31 @@ TEST_CASE("outer-bottom panes reserve footer pad; stacked panes stay compact") {
     CHECK(tui_outer_bottom_pad_rows(tui_design()) == TUI::kBottomPadRows);
 }
 
+TEST_CASE("scroll metrics follow outer_top float vs flush mid-stack") {
+    TUI top;
+    top.set_rect(Rect{0, 0, 80, 24});
+    top.set_outer_top(true);
+    top.set_input_rows(TUI::kDefaultInputRows);
+    // 1-indexed output-box top is one row below the pane top.
+    CHECK(top.scroll_top_row() == 2);
+    const int top_region = top.scroll_region_rows();
+
+    TUI mid;
+    mid.set_rect(Rect{0, 12, 80, 12});
+    mid.set_outer_top(false);
+    mid.set_outer_bottom(false);
+    mid.set_input_rows(0);
+    // Flush: 1-indexed box top equals pane top (rect.y + 1).
+    CHECK(mid.scroll_top_row() == 13);
+    // Region spans the full pane height minus trailing pad only.
+    CHECK(mid.scroll_region_rows()
+          == mid.chrome_snapshot().rect.h - mid.bottom_pad_rows());
+    // Mid-stack region is taller by the float row an outer-top pane reserves
+    // for the same content band height math (box height == region).
+    CHECK(mid.scroll_region_rows() == 12);
+    CHECK(top_region == 24 - top.bottom_pad_rows() - TUI::kDefaultInputRows - 1);
+}
+
 TEST_CASE("inactive panes are content-only; focused panes reserve readline") {
     TUI fresh;
     fresh.set_rect(Rect{0, 0, 80, 24});

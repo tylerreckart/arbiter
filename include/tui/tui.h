@@ -6,8 +6,12 @@
 // reads each frame.
 //
 // Row layout WITHIN the pane (offsets from rect_.y, top → bottom):
-//   scroll region     rounded output box (floating one row below the pane
-//                     top, matching sidebar inset); streamed model output
+//   top inset         outer-top panes float the output box one row down
+//                     (matches sidebar inset); panes below a split start
+//                     flush so stacked gutters stay one cell.
+//   scroll region     rounded output box (scroll_top_row /
+//                     scroll_region_rows already include the top inset);
+//                     streamed model output
 //   input area        focused pane only — rounded box flush beneath the
 //                     output box; the top border row doubles as the status
 //                     line. Inactive panes omit readline so stacked gutters
@@ -16,9 +20,6 @@
 //                     column bottoms stay aligned; stacked panes above that
 //                     edge use no trailing pad so the gutter is a single
 //                     separator cell (same rhythm as vertical splits).
-//   top inset         outer-top panes float the output box one row down
-//                     (matches sidebar inset); panes below a split start
-//                     flush so stacked gutters stay one cell.
 //
 // All `*_row()` accessors return absolute 1-indexed terminal rows — they fold
 // in rect_.y for scroll/input placement in OpenTUI draw calls.
@@ -120,10 +121,11 @@ public:
     // Last usable row of the scroll region (where streamed output lands).
     int last_scroll_row() const;
 
-    // First row of the scroll region (top of pane).
+    // First row of the output box (1-indexed). Outer-top panes float one
+    // row down; mid-stack panes start flush with the pane top.
     int scroll_top_row() const;
 
-    // Number of visible rows in the scroll region.
+    // Visible rows in the output box (excludes the outer-top float).
     int scroll_region_rows() const;
 
     void set_status(const std::string& msg);

@@ -77,11 +77,11 @@ ParentOfNode find_parent_of_node(LayoutTree::Node& node,
 
 // Approximate PaneScrollView::bind content height so focus/unfocus can keep
 // a scrolled viewport stable when the readline band appears or disappears.
+// scroll_region_rows already folds in the outer-top float.
 int approx_scroll_content_h(const TUI& tui) {
-    const int margin = tui.outer_top() ? 1 : 0;
     constexpr int kBoxBorder = 1;
     const int pad_y = std::max(0, tui_design().layout.scroll_pad_y);
-    return std::max(1, tui.scroll_region_rows() - margin - (kBoxBorder * 2)
+    return std::max(1, tui.scroll_region_rows() - (kBoxBorder * 2)
                             - pad_y * 2);
 }
 
