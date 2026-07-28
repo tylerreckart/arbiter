@@ -27,6 +27,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
 
 ### Fixed
+- **Stacked pane gutters.** Inactive panes are content-only (no readline);
+  only the focused pane paints an input box. Stacked gutters are a single
+  separator cell (matching vertical splits): no trailing pad on mid-stack
+  panes, and the one-row output float only on outer-top panes.
+  `scroll_top_row` / `scroll_region_rows` follow that same `outer_top` rule
+  so mid-stack viewports match the drawn output box. Focus changes that
+  show/hide the readline band adjust `scroll_offset` so a scrolled
+  viewport does not jump.
+- **Empty sub-pane pollution on restore.** Layout restore replays each
+  `(conversation_id, agent)` transcript at most once (pre-order first leaf),
+  matching live `^W` splits that inherit a conversation with empty scrollback.
 - **Sandbox `/exec` workspace quota (#136).** When `workspace_max_bytes` is
   set, `/exec` now holds the per-tenant quota mutex for the full docker
   exec (matching `/write`) so parallel `/write` cannot grow the workspace

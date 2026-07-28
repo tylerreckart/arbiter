@@ -314,7 +314,9 @@ TEST_CASE("click toggles expandable segment under the pointer") {
     const int pad = tui_pane_edge_pad(tui.cols(), d);
     const int inset = std::max(1, pad);
     const int x = tui.left_col() - 1 + pad + 1 + inset;
-    const int y = tui.scroll_top_row() - 1 + 1 + 1
+    // scroll_top_row already includes the outer-top float; +1 is the box
+    // border, then scroll_pad_y and the leading block_gap blank.
+    const int y = tui.scroll_top_row() - 1 + 1
         + std::max(0, d.layout.scroll_pad_y)
         + std::max(1, d.layout.block_gap);
 
