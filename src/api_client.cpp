@@ -107,9 +107,38 @@ static std::string strip_known_prefix(const std::string& model, const char* pref
     return starts_with(model, prefix) ? model.substr(std::strlen(prefix)) : model;
 }
 
+// OpenRouter Anthropic slugs use dotted version segments
+// (`anthropic/claude-sonnet-4.6`), while arbiter's short ids historically
+// used hyphens (`claude-sonnet-4-6`).  Rewrite the MAJOR-MINOR pair so bare
+// Claude ids resolve to a live OpenRouter model.
+static std::string anthropic_openrouter_slug(std::string m) {
+    static const char* kFamilies[] = {
+        "claude-opus-", "claude-sonnet-", "claude-haiku-",
+    };
+    for (const char* fam : kFamilies) {
+        const size_t flen = std::strlen(fam);
+        if (!starts_with(m, fam)) continue;
+        size_t i = flen;
+        const size_t major_start = i;
+        while (i < m.size() && m[i] >= '0' && m[i] <= '9') ++i;
+        if (i == major_start || i >= m.size() || m[i] != '-') break;
+        const size_t hyphen = i;
+        ++i;
+        const size_t minor_start = i;
+        while (i < m.size() && m[i] >= '0' && m[i] <= '9') ++i;
+        if (i == minor_start) break;
+        // claude-sonnet-4-6           → claude-sonnet-4.6
+        // claude-opus-4-7-fast        → claude-opus-4.7-fast
+        // claude-haiku-4-5-20251001   → claude-haiku-4.5-20251001
+        m[hyphen] = '.';
+        break;
+    }
+    return "anthropic/" + m;
+}
+
 static std::string openrouter_model_id(const std::string& model) {
     std::string m = strip_known_prefix(model, "openrouter/");
-    if (starts_with(m, "claude-")) return "anthropic/" + m;
+    if (starts_with(m, "claude-")) return anthropic_openrouter_slug(std::move(m));
     if (starts_with(m, "gemini/")) return "google/" + m.substr(std::strlen("gemini/"));
     return m;
 }
