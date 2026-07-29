@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-29
+
+Minor release: interactive `/diff` apply/reject/undo review, durable API
+idempotency across restarts, LaTeX→Unicode math in the TUI, refreshed
+starter constitutions, and pane / sandbox / interrupt hardening.
+
 ### Added
 - **Interactive `/diff` review (TUI).** `/diff` and `/diff review [N]` prompt
   `[a]pply` / `[r]eject` / Esc on pending patches (same interrupt bridge as
@@ -25,6 +31,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   after an API server restart joins the original `request_id` instead of
   starting a second run. The in-process table remains an L1 cache;
   SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
+- **LaTeX math → Unicode (TUI).** Markdown display math (`\[…\]` / `$$…$$`)
+  and inline `\(...\)` render as terminal-friendly Unicode approximations
+  (fractions, super/subscripts, `\times` / `\approx` / `\text{}`, Greek)
+  instead of raw TeX. Same-line display delimiters with trailing prose
+  no longer swallow the rest of the line.
 
 ### Fixed
 - **Stacked pane gutters.** Inactive panes are content-only (no readline);
@@ -38,6 +49,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Empty sub-pane pollution on restore.** Layout restore replays each
   `(conversation_id, agent)` transcript at most once (pre-order first leaf),
   matching live `^W` splits that inherit a conversation with empty scrollback.
+- **Esc/interrupt during in-progress confirm or turn (crash/hang).** Esc
+  no longer races `Pane::turn_cancel` (`shared_ptr` assign vs cancel),
+  drops confirm/diff wakeups by clearing `interrupt_flag_` at `read_line`
+  entry, or leaves stack `promise` waiters hung so pane close deadlocks
+  under `layout_mu`. Confirm/diff posts use heap promises; Esc/cancel/
+  teardown always completes them; exec threads wake input via
+  `active_readline` / try-lock instead of unlocked `layout.focused()`.
 - **Sandbox `/exec` workspace quota (#136).** When `workspace_max_bytes` is
   set, `/exec` now holds the per-tenant quota mutex for the full docker
   exec (matching `/write`) so parallel `/write` cannot grow the workspace
@@ -63,6 +81,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   and auto-compaction match the live 1M-class windows.
 - **Models catalogue / setup wizard.** `/v1/models` and first-run picks
   list current OpenRouter ids used by the starters.
+
 ## [0.8.9] — 2026-07-26
 
 Patch release: pane layout persistence across TUI relaunch, mid-turn
@@ -90,13 +109,6 @@ race fixes.
   criteria checked.
 
 ### Fixed
-- **Esc/interrupt during in-progress confirm or turn (crash/hang).** Esc
-  no longer races `Pane::turn_cancel` (`shared_ptr` assign vs cancel),
-  drops confirm/diff wakeups by clearing `interrupt_flag_` at `read_line`
-  entry, or leaves stack `promise` waiters hung so pane close deadlocks
-  under `layout_mu`. Confirm/diff posts use heap promises; Esc/cancel/
-  teardown always completes them; exec threads wake input via
-  `active_readline` / try-lock instead of unlocked `layout.focused()`.
 - **Capability gate for /todo /schedule /lesson (#91).** Dispatcher
   `bundle_of` now maps these writs into allowlist bundles so constrained
   agents can no longer bypass `capabilities`. Starter agents list `/todo`
