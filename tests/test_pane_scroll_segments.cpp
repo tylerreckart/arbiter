@@ -3,6 +3,7 @@
 
 #include "commands.h"
 #include "styled_text.h"
+#include "tui/opentui/diff_panel.h"
 #include "tui/opentui/pane_scroll_view.h"
 #include "tui/tui.h"
 #include "tui/tui_design.h"
@@ -353,4 +354,42 @@ TEST_CASE("degenerate zero-size pane draw is a no-op") {
     offscreen.set_rect(Rect{-10000, -10000, 0, 0});
     CHECK(offscreen.cols() == 0);
     view.draw(/*frame=*/1, offscreen, 0, 0);
+}
+
+TEST_CASE("DiffSegment keeps parsed rows across bind/set_wrap_cols") {
+    // bind() calls set_wrap_cols every draw. Invalidating DiffPanel on every
+    // wrap change re-entered set_patch every frame and raced scroll
+    // mutations into malloc abort. Cache must survive wrap-only binds.
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    static constexpr std::string_view kPatch =
+        "--- a/x\n"
+        "+++ b/x\n"
+        "@@ -1,2 +1,2 @@\n"
+        " context\n"
+        "-old\n"
+        "+new\n";
+    view.append_diff(kPatch);
+    const int rows = view.total_visual_rows();
+    CHECK(rows > 0);
+
+    bind_view(view, tui, 80, 40);
+    CHECK(view.total_visual_rows() == rows);
+    bind_view(view, tui, 60, 40);
+    CHECK(view.total_visual_rows() == rows);
+
+    // Repeated set_patch on DiffPanel itself must be stable (clear/rebuild).
+    DiffPanel panel;
+    panel.set_patch(kPatch);
+    const int panel_rows = panel.visual_rows();
+    CHECK(panel_rows > 0);
+    panel.set_patch(kPatch);
+    CHECK(panel.visual_rows() == panel_rows);
+    panel.set_patch("");
+    CHECK(panel.visual_rows() == 0);
+    panel.set_patch(kPatch);
+    CHECK(panel.visual_rows() == panel_rows);
 }
