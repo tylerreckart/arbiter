@@ -9,8 +9,49 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.9.1] — 2026-07-30
 
-Minor release: first-class `/diff` apply / reject / undo with interactive
-review, plus a durable API idempotency map across restarts.
+Patch release: mouse text selection in scrollback, unified interactive
+prompt queue for confirms and diff reviews, plus TUI pane-close /
+DiffPanel and `/write` / confirm sequencing fixes.
+
+### Added
+- **Mouse text selection in scrollback.** Drag across the output area to
+  highlight text; release copies via OSC 52 (status shows character count).
+  A click without a drag still expands/collapses thinking, tools, and
+  truncated code. Esc clears the selection before it cancels a turn. See
+  [`docs/tui/panes.md`](docs/tui/panes.md).
+- **Unified interactive prompt queue (TUI).** Confirms and diff reviews share
+  a FIFO queue (`InteractivePromptQueue`) so a second prompt never silently
+  declines an earlier waiter. Streamed ```diff fences auto-enqueue review
+  cards; keys are `[a]`pply / `[r]`eject / `[A]`llow all (session accept-edits)
+  / Esc. File-add diffs render full-width without a `/dev/null` half.
+  See [`docs/tui/output-ux.md`](docs/tui/output-ux.md).
+
+### Fixed
+- **TUI fatal SIGSEGV/SIGHUP on pane close and SIGABRT in DiffPanel.** Pane
+  close/shutdown no longer joins exec threads while holding `layout_mu`
+  (deadlock with `/pane` spawn, `/find`, or `present_all` → hung
+  `pthread_join`, then SIGHUP/SIGSEGV when the terminal drops). Close also
+  cancels the pane's in-flight turn (as docs promise) so join is not stuck
+  on a live network call, clears child `parent_pane` links before destroy,
+  and refuses to parent new `/pane` spawns onto a mid-close pane. Confirm /
+  diff-review / pending-close prompts and PgUp/expand handlers mutate
+  scrollback under `layout_mu` so the output pump cannot UAF `DiffSegment`
+  mid-draw. Diff panel wrap invalidation no longer re-parses the patch
+  every frame.
+- **TUI `/write` persists to cwd.** Interactive TUI and `--send` clear the
+  API capture-only write interceptor so `/write` confirms and writes the
+  process cwd (verified). Diff apply also tolerates stale hunk offsets when
+  context matches uniquely, collapses `a/./path` segments, and treats
+  unmarked hunk lines as context.
+- **Permission / confirm sequencing.** Concurrent destructive `/exec`
+  confirms (and confirm + diff review) no longer overwrite each other’s
+  promises with a fake decline — approved commands report success.
+
+## [0.9.0] — 2026-07-29
+
+Minor release: interactive `/diff` apply/reject/undo review, durable API
+idempotency across restarts, LaTeX→Unicode math in the TUI, refreshed
+starter constitutions, and pane / sandbox / interrupt hardening.
 
 ### Added
 - **Interactive `/diff` review (TUI).** `/diff` and `/diff review [N]` prompt
@@ -30,15 +71,56 @@ review, plus a durable API idempotency map across restarts.
   after an API server restart joins the original `request_id` instead of
   starting a second run. The in-process table remains an L1 cache;
   SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
+- **LaTeX math → Unicode (TUI).** Markdown display math (`\[…\]` / `$$…$$`)
+  and inline `\(...\)` render as terminal-friendly Unicode approximations
+  (fractions, super/subscripts, `\times` / `\approx` / `\text{}`, Greek)
+  instead of raw TeX. Same-line display delimiters with trailing prose
+  no longer swallow the rest of the line.
 
 ### Fixed
-- **Pane cap on keyboard splits.** Ctrl-W chord splits enforce
-  `kMaxLayoutSnapshotLeaves` (agent spawn already did), so layouts cannot
-  grow past eight leaves and then silently fail `layout.json` saves.
-- **Layout snapshot persistence.** Failed snapshot writes are logged;
-  out-of-range `focused_leaf` values are rejected on parse.
-- **Workspace quota measurement saturation.** `measure_workspace_bytes`
-  saturates instead of wrapping int64 so quota checks stay honest.
+- **Stacked pane gutters.** Inactive panes are content-only (no readline);
+  only the focused pane paints an input box. Stacked gutters are a single
+  separator cell (matching vertical splits): no trailing pad on mid-stack
+  panes, and the one-row output float only on outer-top panes.
+  `scroll_top_row` / `scroll_region_rows` follow that same `outer_top` rule
+  so mid-stack viewports match the drawn output box. Focus changes that
+  show/hide the readline band adjust `scroll_offset` so a scrolled
+  viewport does not jump.
+- **Empty sub-pane pollution on restore.** Layout restore replays each
+  `(conversation_id, agent)` transcript at most once (pre-order first leaf),
+  matching live `^W` splits that inherit a conversation with empty scrollback.
+- **Esc/interrupt during in-progress confirm or turn (crash/hang).** Esc
+  no longer races `Pane::turn_cancel` (`shared_ptr` assign vs cancel),
+  drops confirm/diff wakeups by clearing `interrupt_flag_` at `read_line`
+  entry, or leaves stack `promise` waiters hung so pane close deadlocks
+  under `layout_mu`. Confirm/diff posts use heap promises; Esc/cancel/
+  teardown always completes them; exec threads wake input via
+  `active_readline` / try-lock instead of unlocked `layout.focused()`.
+- **Sandbox `/exec` workspace quota (#136).** When `workspace_max_bytes` is
+  set, `/exec` now holds the per-tenant quota mutex for the full docker
+  exec (matching `/write`) so parallel `/write` cannot grow the workspace
+  during shell commands, and a post-exec measurement fails the tool when
+  shell redirects push usage over the cap.
+- **Idempotency L1 rehydrate TTL.** `IdempotencyCache::get()` passes the
+  same wall-clock snapshot to SQLite on L1 miss so a key cannot appear
+  live in-process while the durable row is already past TTL at the
+  boundary.
+
+### Changed
+- **Starter agent constitutions.** Seed agents under `agents/` now use
+  current OpenRouter model slugs fitted to each role (Sonnet 5 / Opus 5,
+  GPT-5.5, GPT-5.6 Sol, Gemini 3.6 Flash, Grok 4.5), expanded capability
+  allowlists (`/read` `/list` `/search` `/fetch` `/browse` `/lesson`
+  `/schedule` `/pane` `/advise` `/mcp` where appropriate), and tighter
+  tool-use rules. Re-seed with `arbiter --init --force` to pick them up.
+  Advisor-enabled starters list `/advise` so the capability gate matches
+  the ADVISOR prompt block.
+- **OpenRouter Claude id rewrite.** Bare `claude-sonnet-4-6`-style ids
+  now map to dotted OpenRouter slugs (`anthropic/claude-sonnet-4.6`).
+  Context-window estimates use the same normalization so sidebar fill
+  and auto-compaction match the live 1M-class windows.
+- **Models catalogue / setup wizard.** `/v1/models` and first-run picks
+  list current OpenRouter ids used by the starters.
 
 ## [0.8.9] — 2026-07-26
 

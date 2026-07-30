@@ -110,6 +110,13 @@ bool parse_patch(std::string_view patch,
                                            : HunkLine::Tag::context;
                 hl.content = (raw.size() > 1) ? std::string(raw.substr(1)) : std::string{};
                 current.lines.push_back(std::move(hl));
+            } else if (marker != '\\') {
+                // Match apply.cpp: unmarked hunk body is context (LLM often
+                // omits the leading space).
+                HunkLine hl;
+                hl.tag = HunkLine::Tag::context;
+                hl.content = std::string(raw);
+                current.lines.push_back(std::move(hl));
             }
         }
 
@@ -124,6 +131,11 @@ std::string trim_filename(std::string_view path) {
     if (path.size() >= 2 && path.substr(0, 2) == "a/") path.remove_prefix(2);
     if (path.size() >= 2 && path.substr(0, 2) == "b/") path.remove_prefix(2);
     return std::string(path);
+}
+
+bool path_is_dev_null(std::string_view path) {
+    const std::string t = trim_filename(path);
+    return t.empty() || t == "/dev/null" || t == "dev/null";
 }
 
 enum class BgLine : std::uint8_t { context, add, remove, empty };
@@ -175,16 +187,30 @@ std::string truncate_cells(std::string_view text, int max_cells) {
 
 } // namespace
 
+bool DiffPanel::is_dev_null(std::string_view path) {
+    return path_is_dev_null(path);
+}
+
 void DiffPanel::set_patch(std::string_view patch) {
     header_old_.clear();
     header_new_.clear();
     lines_.clear();
     rows_ = 0;
+    split_ = true;
+    single_side_is_new_ = true;
 
     std::vector<Hunk> hunks;
     if (!parse_patch(patch, header_old_, header_new_, hunks)) return;
 
-    split_ = true;
+    const bool is_add =
+        path_is_dev_null(header_old_) && !path_is_dev_null(header_new_);
+    const bool is_delete =
+        path_is_dev_null(header_new_) && !path_is_dev_null(header_old_);
+    if (is_add || is_delete) {
+        split_ = false;
+        single_side_is_new_ = is_add;
+    }
+
     for (const auto& hunk : hunks) {
         std::uint32_t old_line = hunk.old_start;
         std::uint32_t new_line = hunk.new_start;
@@ -192,10 +218,20 @@ void DiffPanel::set_patch(std::string_view patch) {
         while (i < hunk.lines.size()) {
             const auto& hl = hunk.lines[i];
             if (hl.tag == HunkLine::Tag::context) {
-                Row row;
-                row.left = {Kind::context, hl.content, old_line, true, ' '};
-                row.right = {Kind::context, hl.content, new_line, true, ' '};
-                lines_.push_back(std::move(row));
+                if (!split_) {
+                    Row row;
+                    SideLine side{Kind::context, hl.content,
+                                  single_side_is_new_ ? new_line : old_line,
+                                  true, ' '};
+                    if (single_side_is_new_) row.right = std::move(side);
+                    else row.left = std::move(side);
+                    lines_.push_back(std::move(row));
+                } else {
+                    Row row;
+                    row.left = {Kind::context, hl.content, old_line, true, ' '};
+                    row.right = {Kind::context, hl.content, new_line, true, ' '};
+                    lines_.push_back(std::move(row));
+                }
                 ++old_line;
                 ++new_line;
                 ++i;
@@ -204,14 +240,28 @@ void DiffPanel::set_patch(std::string_view patch) {
 
             std::vector<SideLine> removes;
             std::vector<SideLine> adds;
-            while (i < hunk.lines.size() && hunk.lines[i].tag != HunkLine::Tag::context) {
+            while (i < hunk.lines.size() &&
+                   hunk.lines[i].tag != HunkLine::Tag::context) {
                 const auto& cur = hunk.lines[i];
                 if (cur.tag == HunkLine::Tag::remove) {
-                    removes.push_back({Kind::remove, cur.content, old_line++, true, '-'});
+                    removes.push_back(
+                        {Kind::remove, cur.content, old_line++, true, '-'});
                 } else if (cur.tag == HunkLine::Tag::add) {
-                    adds.push_back({Kind::add, cur.content, new_line++, true, '+'});
+                    adds.push_back(
+                        {Kind::add, cur.content, new_line++, true, '+'});
                 }
                 ++i;
+            }
+
+            if (!split_) {
+                const auto& sole = single_side_is_new_ ? adds : removes;
+                for (const auto& side : sole) {
+                    Row row;
+                    if (single_side_is_new_) row.right = side;
+                    else row.left = side;
+                    lines_.push_back(std::move(row));
+                }
+                continue;
             }
 
             const std::size_t max_len = std::max(removes.size(), adds.size());
@@ -228,6 +278,48 @@ void DiffPanel::set_patch(std::string_view patch) {
         }
     }
     rows_ = lines_.size() + 1;
+}
+
+void DiffPanel::collect_visual_lines(std::vector<std::string>& out) const {
+    // Mirror draw()'s row layout: header, then one body row per parsed line.
+    const std::string old_title = trim_filename(header_old_);
+    const std::string new_title = trim_filename(header_new_);
+    if (!split_) {
+        const std::string& title = single_side_is_new_ ? new_title : old_title;
+        out.push_back(path_is_dev_null(title) ? std::string{} : title);
+    } else {
+        const std::string left =
+            path_is_dev_null(old_title) ? std::string{} : old_title;
+        const std::string right =
+            path_is_dev_null(new_title) ? std::string{} : new_title;
+        if (left.empty()) out.push_back(right);
+        else if (right.empty()) out.push_back(left);
+        else out.push_back(left + " | " + right);
+    }
+
+    auto format_side = [](const SideLine& side) -> std::string {
+        if (!side.show_line_number && side.content.empty()) return {};
+        std::string line;
+        if (side.sign == '-' || side.sign == '+') {
+            line.push_back(side.sign);
+            line.push_back(' ');
+        }
+        line += side.content;
+        return line;
+    };
+
+    for (const Row& r : lines_) {
+        if (!split_) {
+            const SideLine& side = single_side_is_new_ ? r.right : r.left;
+            out.push_back(format_side(side));
+            continue;
+        }
+        const std::string left = format_side(r.left);
+        const std::string right = format_side(r.right);
+        if (left.empty()) out.push_back(right);
+        else if (right.empty()) out.push_back(left);
+        else out.push_back(left + " | " + right);
+    }
 }
 
 int DiffPanel::gutter_width() const {
@@ -258,9 +350,9 @@ void DiffPanel::draw(OpenTuiHandle frame,
 
     const int draw_rows = std::min(h, total_rows - first_row);
     const int gutter = gutter_width();
-    const int left_w = w / 2;
-    const int right_x = x + left_w;
-    const int right_w = w - left_w;
+    const int left_w = split_ ? (w / 2) : w;
+    const int right_x = split_ ? (x + left_w) : x;
+    const int right_w = split_ ? (w - left_w) : w;
 
     const TuiRgba& panel_bg = d.content.code_bg;
     const TuiRgba& header_bg = d.content.code_header_bg;
@@ -270,6 +362,47 @@ void DiffPanel::draw(OpenTuiHandle frame,
               static_cast<std::uint32_t>(w),
               static_cast<std::uint32_t>(draw_rows),
               panel_bg);
+
+    auto draw_side = [&](int sx, int sw, const SideLine& side, const TuiRgba& bg,
+                         int py) {
+        if (sw <= 0) return;
+        fill_rect(frame,
+                  static_cast<std::uint32_t>(sx),
+                  static_cast<std::uint32_t>(py),
+                  static_cast<std::uint32_t>(sw),
+                  1,
+                  bg);
+        if (!side.show_line_number) return;
+        const int content_w = std::max(1, sw - gutter - 1);
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%*u ", gutter - 2, side.line_num);
+        const TuiRgba sign_fg = (side.sign == '-')
+            ? d.accent.error
+            : (side.sign == '+') ? d.accent.success : d.text.muted;
+        draw_text(frame,
+                  static_cast<std::uint32_t>(sx + 1),
+                  static_cast<std::uint32_t>(py),
+                  buf,
+                  d.text.muted,
+                  bg);
+        if (side.sign == '-' || side.sign == '+') {
+            char sign[2] = {side.sign, '\0'};
+            draw_text(frame,
+                      static_cast<std::uint32_t>(
+                          sx + 1 + static_cast<int>(std::strlen(buf)) - 1),
+                      static_cast<std::uint32_t>(py),
+                      sign,
+                      sign_fg,
+                      bg,
+                      1);
+        }
+        draw_text(frame,
+                  static_cast<std::uint32_t>(sx + 1 + gutter),
+                  static_cast<std::uint32_t>(py),
+                  truncate_cells(side.content, content_w),
+                  d.text.primary,
+                  bg);
+    };
 
     for (int row = 0; row < draw_rows; ++row) {
         const int global = first_row + row;
@@ -284,18 +417,36 @@ void DiffPanel::draw(OpenTuiHandle frame,
 
             const std::string old_title = trim_filename(header_old_);
             const std::string new_title = trim_filename(header_new_);
-            draw_text(frame,
-                      static_cast<std::uint32_t>(x + 1),
-                      static_cast<std::uint32_t>(py),
-                      truncate_cells(old_title, left_w - 2),
-                      d.content.diff_file,
-                      header_bg);
-            draw_text(frame,
-                      static_cast<std::uint32_t>(right_x + 1),
-                      static_cast<std::uint32_t>(py),
-                      truncate_cells(new_title, right_w - 2),
-                      d.content.diff_file,
-                      header_bg);
+            if (!split_) {
+                // File add/delete: one title, never show /dev/null.
+                const std::string& title =
+                    single_side_is_new_ ? new_title : old_title;
+                const std::string shown =
+                    path_is_dev_null(title) ? std::string{} : title;
+                draw_text(frame,
+                          static_cast<std::uint32_t>(x + 1),
+                          static_cast<std::uint32_t>(py),
+                          truncate_cells(shown, w - 2),
+                          d.content.diff_file,
+                          header_bg);
+            } else {
+                const std::string left_title =
+                    path_is_dev_null(old_title) ? std::string{} : old_title;
+                const std::string right_title =
+                    path_is_dev_null(new_title) ? std::string{} : new_title;
+                draw_text(frame,
+                          static_cast<std::uint32_t>(x + 1),
+                          static_cast<std::uint32_t>(py),
+                          truncate_cells(left_title, left_w - 2),
+                          d.content.diff_file,
+                          header_bg);
+                draw_text(frame,
+                          static_cast<std::uint32_t>(right_x + 1),
+                          static_cast<std::uint32_t>(py),
+                          truncate_cells(right_title, right_w - 2),
+                          d.content.diff_file,
+                          header_bg);
+            }
             continue;
         }
 
@@ -311,85 +462,18 @@ void DiffPanel::draw(OpenTuiHandle frame,
             default: return BgLine::context;
             }
         };
+
+        if (!split_) {
+            const SideLine& side = single_side_is_new_ ? r.right : r.left;
+            const TuiRgba bg = bg_for_line(to_bg(side.kind), d);
+            draw_side(x, w, side, bg, py);
+            continue;
+        }
+
         const TuiRgba left_bg = bg_for_line(to_bg(r.left.kind), d);
         const TuiRgba right_bg = bg_for_line(to_bg(r.right.kind), d);
-        fill_rect(frame,
-                  static_cast<std::uint32_t>(x),
-                  static_cast<std::uint32_t>(py),
-                  static_cast<std::uint32_t>(left_w),
-                  1,
-                  left_bg);
-        fill_rect(frame,
-                  static_cast<std::uint32_t>(right_x),
-                  static_cast<std::uint32_t>(py),
-                  static_cast<std::uint32_t>(right_w),
-                  1,
-                  right_bg);
-
-        const int content_w = std::max(1, left_w - gutter - 1);
-        if (r.left.show_line_number) {
-            char buf[24];
-            std::snprintf(buf, sizeof(buf), "%*u ",
-                          gutter - 2,
-                          r.left.line_num);
-            const TuiRgba sign_fg = (r.left.sign == '-')
-                ? d.accent.error
-                : (r.left.sign == '+') ? d.accent.success : d.text.muted;
-            draw_text(frame,
-                      static_cast<std::uint32_t>(x + 1),
-                      static_cast<std::uint32_t>(py),
-                      buf,
-                      d.text.muted,
-                      left_bg);
-            if (r.left.sign == '-' || r.left.sign == '+') {
-                char sign[2] = {r.left.sign, '\0'};
-                draw_text(frame,
-                          static_cast<std::uint32_t>(x + 1 + static_cast<int>(std::strlen(buf)) - 1),
-                          static_cast<std::uint32_t>(py),
-                          sign,
-                          sign_fg,
-                          left_bg,
-                          1);
-            }
-            draw_text(frame,
-                      static_cast<std::uint32_t>(x + 1 + static_cast<std::uint32_t>(gutter)),
-                      static_cast<std::uint32_t>(py),
-                      truncate_cells(r.left.content, content_w),
-                      d.text.primary,
-                      left_bg);
-        }
-
-        if (r.right.show_line_number) {
-            char buf[24];
-            std::snprintf(buf, sizeof(buf), "%*u ",
-                          gutter - 2,
-                          r.right.line_num);
-            const TuiRgba sign_fg = (r.right.sign == '-')
-                ? d.accent.error
-                : (r.right.sign == '+') ? d.accent.success : d.text.muted;
-            draw_text(frame,
-                      static_cast<std::uint32_t>(right_x),
-                      static_cast<std::uint32_t>(py),
-                      buf,
-                      d.text.muted,
-                      right_bg);
-            if (r.right.sign == '-' || r.right.sign == '+') {
-                char sign[2] = {r.right.sign, '\0'};
-                draw_text(frame,
-                          static_cast<std::uint32_t>(right_x + static_cast<int>(std::strlen(buf)) - 1),
-                          static_cast<std::uint32_t>(py),
-                          sign,
-                          sign_fg,
-                          right_bg,
-                          1);
-            }
-            draw_text(frame,
-                      static_cast<std::uint32_t>(right_x + static_cast<std::uint32_t>(gutter)),
-                      static_cast<std::uint32_t>(py),
-                      truncate_cells(r.right.content, content_w),
-                      d.text.primary,
-                      right_bg);
-        }
+        draw_side(x, left_w, r.left, left_bg, py);
+        draw_side(right_x, right_w, r.right, right_bg, py);
     }
 }
 

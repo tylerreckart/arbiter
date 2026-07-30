@@ -3,6 +3,7 @@
 
 #include "commands.h"
 #include "styled_text.h"
+#include "tui/opentui/diff_panel.h"
 #include "tui/opentui/pane_scroll_view.h"
 #include "tui/tui.h"
 #include "tui/tui_design.h"
@@ -297,6 +298,154 @@ TEST_CASE("first user echo has a lead-in blank under the header") {
     CHECK(view.total_visual_rows() == 4);
 }
 
+TEST_CASE("mouse selection extracts plain text from prose scrollback") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    StyledLine line;
+    styled_append(line, StyleId::Default, "hello world");
+    view.append_prose({line}, /*new_block=*/true);
+
+    // Lead-in blank + body: select "world" on the body row.
+    CHECK(view.total_visual_rows() == 2);
+    view.set_selection({/*row=*/1, /*col=*/6}, {/*row=*/1, /*col=*/11});
+    CHECK(view.has_selection());
+    CHECK(view.selection_text() == "world");
+
+    view.clear_selection();
+    CHECK_FALSE(view.has_selection());
+    CHECK(view.selection_text().empty());
+}
+
+TEST_CASE("mouse selection spans multiple visual rows") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    StyledLine a;
+    styled_append(a, StyleId::Default, "alpha");
+    StyledLine b;
+    styled_append(b, StyleId::Default, "beta");
+    view.append_prose({a, b}, /*new_block=*/true);
+
+    // Rows: blank, alpha, beta
+    CHECK(view.total_visual_rows() == 3);
+    view.set_selection({/*row=*/1, /*col=*/2}, {/*row=*/2, /*col=*/3});
+    CHECK(view.selection_text() == "pha\nbet");
+}
+
+TEST_CASE("mouse selection includes wide grapheme overlapping start col") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    // Prefer a CJK ideograph (existing tests use U+4E2D). Skip the mid-cluster
+    // assertion when the active locale reports width 1 — mid-cell starts cannot
+    // occur for narrow glyphs, but the cluster must still copy intact.
+    const std::string wide = "\xe4\xb8\xad";  // 中
+    const int ww = static_cast<int>(display_width(wide));
+    REQUIRE(ww >= 1);
+
+    StyledLine line;
+    styled_append(line, StyleId::Default, std::string("a") + wide + "b");
+    view.append_prose({line}, /*new_block=*/true);
+
+    CHECK(view.total_visual_rows() == 2);
+    if (ww >= 2) {
+        // cols: a=0, wide=1..ww, b=1+ww. Start in the middle of `wide`.
+        view.set_selection({/*row=*/1, /*col=*/2}, {/*row=*/1, /*col=*/1 + ww});
+        CHECK(view.selection_text() == wide);
+    } else {
+        view.set_selection({/*row=*/1, /*col=*/1}, {/*row=*/1, /*col=*/1 + ww});
+        CHECK(view.selection_text() == wide);
+    }
+}
+
+TEST_CASE("mouse selection copies DiffPanel rows not raw patch") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    static constexpr std::string_view kPatch =
+        "--- a/x\n"
+        "+++ b/x\n"
+        "@@ -1,2 +1,2 @@\n"
+        " context\n"
+        "-old\n"
+        "+new\n";
+
+    // DiffPanel collect is the source of truth for copy text (also used by
+    // NativeDiffSegment when the native DiffView path is active).
+    {
+        DiffPanel panel;
+        panel.set_patch(kPatch);
+        std::vector<std::string> lines;
+        panel.collect_visual_lines(lines);
+        REQUIRE_FALSE(lines.empty());
+        CHECK(lines.front().find("--- a/") == std::string::npos);
+        CHECK(lines.front().find('x') != std::string::npos);
+        std::string joined;
+        for (const auto& row : lines) {
+            if (!joined.empty()) joined.push_back('\n');
+            joined += row;
+        }
+        CHECK(joined.find("@@ ") == std::string::npos);
+        CHECK(joined.find("old") != std::string::npos);
+        CHECK(joined.find("new") != std::string::npos);
+    }
+
+    view.append_diff(kPatch);
+    const int rows = view.total_visual_rows();
+    REQUIRE(rows >= 2);
+
+    // Lead-in block_gap blank(s) sit above the diff — select the whole view
+    // and assert copy is panel-shaped, not raw unified-diff text.
+    view.set_selection({/*row=*/0, /*col=*/0}, {/*row=*/rows - 1, /*col=*/80});
+    const std::string all = view.selection_text();
+    CHECK(all.find("--- a/") == std::string::npos);
+    CHECK(all.find("@@ ") == std::string::npos);
+    CHECK(all.find("old") != std::string::npos);
+    CHECK(all.find("new") != std::string::npos);
+    CHECK(all.find('x') != std::string::npos);
+}
+
+TEST_CASE("hit_cell_at maps terminal clicks into scroll content") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    StyledLine line;
+    styled_append(line, StyleId::Default, "hit me");
+    view.append_prose({line}, /*new_block=*/true);
+
+    const TuiDesign& d = tui_design();
+    const int pad = tui_pane_edge_pad(tui.cols(), d);
+    const int inset = std::max(1, pad);
+    const int x = tui.left_col() - 1 + pad + 1 + inset;
+    // Body row sits after the lead-in blank.
+    const int y = tui.scroll_top_row() - 1 + 1
+        + std::max(0, d.layout.scroll_pad_y)
+        + 1;  // skip lead-in blank
+
+    auto cell = view.hit_cell_at(tui, x, y, /*scroll_offset=*/0);
+    REQUIRE(cell.has_value());
+    CHECK(cell->row == 1);
+    CHECK(cell->col == 0);
+
+    CHECK_FALSE(view.hit_cell_at(tui, 0, 0, 0).has_value());
+}
+
 TEST_CASE("click toggles expandable segment under the pointer") {
     load_tui_design("");
     TUI tui;
@@ -314,7 +463,9 @@ TEST_CASE("click toggles expandable segment under the pointer") {
     const int pad = tui_pane_edge_pad(tui.cols(), d);
     const int inset = std::max(1, pad);
     const int x = tui.left_col() - 1 + pad + 1 + inset;
-    const int y = tui.scroll_top_row() - 1 + 1 + 1
+    // scroll_top_row already includes the outer-top float; +1 is the box
+    // border, then scroll_pad_y and the leading block_gap blank.
+    const int y = tui.scroll_top_row() - 1 + 1
         + std::max(0, d.layout.scroll_pad_y)
         + std::max(1, d.layout.block_gap);
 
@@ -351,4 +502,42 @@ TEST_CASE("degenerate zero-size pane draw is a no-op") {
     offscreen.set_rect(Rect{-10000, -10000, 0, 0});
     CHECK(offscreen.cols() == 0);
     view.draw(/*frame=*/1, offscreen, 0, 0);
+}
+
+TEST_CASE("DiffSegment keeps parsed rows across bind/set_wrap_cols") {
+    // bind() calls set_wrap_cols every draw. Invalidating DiffPanel on every
+    // wrap change re-entered set_patch every frame and raced scroll
+    // mutations into malloc abort. Cache must survive wrap-only binds.
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    static constexpr std::string_view kPatch =
+        "--- a/x\n"
+        "+++ b/x\n"
+        "@@ -1,2 +1,2 @@\n"
+        " context\n"
+        "-old\n"
+        "+new\n";
+    view.append_diff(kPatch);
+    const int rows = view.total_visual_rows();
+    CHECK(rows > 0);
+
+    bind_view(view, tui, 80, 40);
+    CHECK(view.total_visual_rows() == rows);
+    bind_view(view, tui, 60, 40);
+    CHECK(view.total_visual_rows() == rows);
+
+    // Repeated set_patch on DiffPanel itself must be stable (clear/rebuild).
+    DiffPanel panel;
+    panel.set_patch(kPatch);
+    const int panel_rows = panel.visual_rows();
+    CHECK(panel_rows > 0);
+    panel.set_patch(kPatch);
+    CHECK(panel.visual_rows() == panel_rows);
+    panel.set_patch("");
+    CHECK(panel.visual_rows() == 0);
+    panel.set_patch(kPatch);
+    CHECK(panel.visual_rows() == panel_rows);
 }

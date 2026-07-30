@@ -56,9 +56,8 @@ int TUI::input_rows() const {
 
 int TUI::bottom_pad_rows() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    // Stacked panes above the outer bottom never reserve a footer row —
-    // one trailing pad keeps horizontal gutters uniform (pad + sep +
-    // top-float) regardless of focus.
+    // Stacked panes above the outer bottom use no trailing pad — the
+    // 1-cell split separator is the whole gutter (same as vertical splits).
     if (!outer_bottom_) return kCompactBottomPadRows;
     const bool visible = footer_hint_mode_ != FooterHintMode::Hidden;
     // Outer-bottom panes keep the full pad whenever the footer is enabled
@@ -73,13 +72,15 @@ int TUI::last_scroll_row() const {
 
 int TUI::scroll_top_row() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    return rect_.y + 1;
+    // 1-indexed top of the output box. Outer-top panes float one blank row
+    // (sidebar rhythm); panes below a horizontal split start flush.
+    return rect_.y + 1 + (outer_top_ ? 1 : 0);
 }
 
 int TUI::scroll_region_rows() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     const int last = rect_.y + rect_.h - bottom_pad_rows() - input_rows_ - kSepRows;
-    const int top  = rect_.y + 1;
+    const int top  = rect_.y + 1 + (outer_top_ ? 1 : 0);
     return last - top + 1;
 }
 
@@ -87,7 +88,7 @@ void TUI::shutdown() {}
 
 void TUI::begin_input(std::function<int()> pending_fn) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
-    input_rows_ = 3;
+    input_rows_ = kDefaultInputRows;
 
     if (pending_fn) {
         const int queued = pending_fn();
@@ -106,10 +107,16 @@ void TUI::begin_input(std::function<int()> pending_fn) {
 }
 
 void TUI::grow_input(int needed) {
-    needed = std::max(3, std::min(needed, kMaxInputRows));
+    needed = std::max(kDefaultInputRows, std::min(needed, kMaxInputRows));
     if (needed == input_rows_) return;
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     input_rows_ = needed;
+}
+
+void TUI::set_input_rows(int rows) {
+    rows = std::max(0, std::min(rows, kMaxInputRows));
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    input_rows_ = rows;
 }
 
 std::string TUI::build_prompt() const {
@@ -171,6 +178,7 @@ TuiChromeSnapshot TUI::chrome_snapshot() const {
     s.rect = rect_;
     s.input_rows = input_rows_;
     s.outer_bottom = outer_bottom_;
+    s.outer_top = outer_top_;
     // Mirror bottom_pad_rows() without re-entering the mutex.
     if (!outer_bottom_) {
         s.bottom_pad_rows = kCompactBottomPadRows;
@@ -202,6 +210,16 @@ void TUI::set_outer_bottom(bool on_bottom) {
 bool TUI::outer_bottom() const {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     return outer_bottom_;
+}
+
+void TUI::set_outer_top(bool on_top) {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    outer_top_ = on_top;
+}
+
+bool TUI::outer_top() const {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    return outer_top_;
 }
 
 void TUI::set_focus_accent(bool active) {

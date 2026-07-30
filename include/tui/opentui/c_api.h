@@ -129,6 +129,19 @@ void textBufferViewSetViewport(OpenTuiHandle view,
                                uint32_t height);
 void textBufferViewSetFirstLineOffset(OpenTuiHandle view, uint32_t offset);
 uint32_t textBufferViewGetVirtualLineCount(OpenTuiHandle view);
+// Local selection helpers — used to read OpenTUI's own wrapped visual rows
+// for mouse copy so soft-wrap approximations cannot disagree with the view.
+bool textBufferViewSetLocalSelection(OpenTuiHandle view,
+                                     int32_t anchor_x,
+                                     int32_t anchor_y,
+                                     int32_t focus_x,
+                                     int32_t focus_y,
+                                     const uint16_t* bg_color,
+                                     const uint16_t* fg_color);
+void textBufferViewResetLocalSelection(OpenTuiHandle view);
+uint32_t textBufferViewGetSelectedText(OpenTuiHandle view,
+                                       uint8_t* out,
+                                       uint32_t max_len);
 
 OpenTuiHandle createEditBuffer(uint8_t width_method, OpenTuiHandle event_sink);
 void destroyEditBuffer(OpenTuiHandle edit);

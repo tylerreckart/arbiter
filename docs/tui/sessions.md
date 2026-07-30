@@ -22,7 +22,7 @@ On first launch after upgrading, legacy per-cwd session files under `~/.arbiter/
 
 | Event             | What happens                                                       |
 |-------------------|--------------------------------------------------------------------|
-| `arbiter` startup | The last layout snapshot is restored when valid (split tree + per-pane conversation ids); each open conversation's agent history is loaded and a transcript tail is replayed into its pane. Missing snapshot → single pane on the active conversation. |
+| `arbiter` startup | The last layout snapshot is restored when valid (split tree + per-pane conversation ids); each open conversation's agent history is loaded. A transcript tail is replayed once per `(conversation_id, agent)` binding (pre-order first leaf wins) so empty sibling windows that share a conversation stay empty, matching live `^W` splits. Missing snapshot → single pane on the active conversation. |
 | After each completed turn | Background autosave (`save_async`) writes that pane's conversation. Distinct conversation ids (multi-pane) each keep a pending slot. |
 | Mid-turn checkpoints | After each successful model iteration and after each tool-result envelope is committed to history, `save_async` runs so completed tool work survives quit/cancel/SIGKILL. |
 | Periodic tick | Dirty conversations are flushed every 30s by default (`ARBITER_AUTOSAVE_INTERVAL_SEC`; `0` disables the timer). |

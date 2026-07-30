@@ -426,8 +426,8 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     const std::uint32_t content_x = px
         + static_cast<std::uint32_t>(outer_pad + chrome_inset);
 
-    if (!focused) {
-        draw_plain_text(frame, content_x, py, d.component.inactive_prompt, d.text.subtle);
+    if (!focused || tui.input_rows() < 2) {
+        // Inactive / content-only panes omit readline entirely.
         return;
     }
 
@@ -928,7 +928,11 @@ void PaneInputEditor::handle_csi(char final, const std::string& params) {
 }
 
 bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
-    interrupt_flag_ = false;
+    // Do NOT clear interrupt_flag_ on entry.  Confirm / diff-review / /chat
+    // wakes may set it between main-loop iterations; clearing here drops the
+    // wakeup and leaves the exec thread blocked forever on fut.get() (then
+    // pane close/join deadlocks).  Cleared only when we actually return due
+    // to interrupt/EOF below.
     {
         std::lock_guard<std::mutex> lk(mu_);
         buffer_.clear();
@@ -947,6 +951,7 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
     while (true) {
         int b = read_key_event();
         if (b < 0) {
+            interrupt_flag_ = false;
             out.clear();
             return false;
         }

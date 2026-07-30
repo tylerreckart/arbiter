@@ -15,6 +15,9 @@ class DiffPanel {
 public:
     void set_patch(std::string_view patch);
     [[nodiscard]] int visual_rows() const { return static_cast<int>(rows_); }
+    // One plain-text string per visual row (header + body), matching the panel
+    // layout used by draw() — for mouse selection copy.
+    void collect_visual_lines(std::vector<std::string>& out) const;
     void draw(OpenTuiHandle frame,
               int x,
               int y,
@@ -43,8 +46,11 @@ private:
     std::vector<Row> lines_;
     std::size_t rows_ = 0;
     bool split_ = true;
+    // When !split_: add → show only right (new file); delete → only left.
+    bool single_side_is_new_ = true;
 
     [[nodiscard]] int gutter_width() const;
+    [[nodiscard]] static bool is_dev_null(std::string_view path);
 };
 
 } // namespace arbiter::opentui

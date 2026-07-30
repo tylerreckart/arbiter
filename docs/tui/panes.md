@@ -15,7 +15,7 @@ Launching `arbiter` opens one pane covering the whole terminal, bound to the las
 
 Splits divide the focused pane's rect equally (or by drag-adjusted weights). The new pane inherits the focused pane's conversation (same buffer in a new window); switch with `/chat switch` or the history sidebar. New panes use the `index` master agent by default; change with `/use <agent>`.
 
-In multi-pane layouts the compact chord hint (`^W w focus · ^W z zoom · ^W c close`) paints on the focused column's outer-bottom pane (including when focus is mid-stack). Every pane on the layout's outer bottom keeps the same footer pad so column bottoms stay aligned; panes stacked above that edge use a single trailing pad so horizontal gutters stay uniform. With `layout.chrome_compact_rows` (the default), pad is reclaimed only when `show_footer` is off — set `"chrome_compact_rows": false` in `tui.json` / a theme file to keep blank placeholders when the footer is disabled.
+In multi-pane layouts the compact chord hint (`^W w focus · ^W z zoom · ^W c close`) paints on the focused column's outer-bottom pane (including when focus is mid-stack). Every pane on the layout's outer bottom keeps the same footer pad so column bottoms stay aligned; panes stacked above that edge use no trailing pad so the gutter is a single separator cell — the same rhythm as vertical splits. Outer-top panes keep a one-row output float (matching the sidebar inset); panes below a horizontal split start flush. With `layout.chrome_compact_rows` (the default), pad is reclaimed only when `show_footer` is off — set `"chrome_compact_rows": false` in `tui.json` / a theme file to keep blank placeholders when the footer is disabled.
 
 Splitting twice in the same orientation does **not** wrap a new node — the new sibling is appended to the existing split, so N panes share `1/N` each. Splitting in the other orientation wraps the focused leaf in a fresh 2-child node.
 
@@ -25,7 +25,7 @@ Splitting twice in the same orientation does **not** wrap a new node — the new
 |----------------------|-------------------------------------------------------|
 | `^W w` / `^W ^W`     | Cycle focus to the next pane (pre-order traversal).   |
 
-Exactly one pane is focused at any moment. The focused pane's bottom border draws with an accent colour; non-focused panes show a plain header separator and a dim placeholder prompt on their input row (so they read as "input surface, currently idle" rather than half-drawn).
+Exactly one pane is focused at any moment. The focused pane's bottom border draws with an accent colour and owns the readline; inactive panes are content-only (no input box). Stacked gutters are a single separator cell — the same spacing as vertical splits.
 
 Unfocused panes show a small activity badge on the mid-separator when a turn is running (`●`) or when a turn completes while you were elsewhere (`✓` / `✗`). The badge clears when you focus that pane.
 
@@ -45,7 +45,7 @@ Zoom is a rendering override — the layout tree is unchanged. Cycling focus whi
 |--------|--------------------------------------------------------------------------------|
 | `^W c` | Close the focused pane. Last remaining pane cannot be closed.                  |
 
-Close is graceful: the pane's command queue is stopped (so its exec thread's `pop()` returns), the exec thread is joined (which can block until the in-flight agent turn finishes — `Esc` first if you don't want to wait), and only then is the Pane destroyed. Pending output for that pane is dropped.
+Close is graceful: the pane's command queue is stopped, its in-flight turn is cancelled, the exec thread is joined **outside** `layout_mu` (so an in-flight `/pane` spawn or `present_all` on that thread cannot deadlock the close), child `parent_pane` links are cleared, and only then is the Pane destroyed. Join can still briefly wait for the cancelled turn to unwind. Pending output for that pane is dropped.
 
 When closing collapses a split node to a single child, the child takes the parent's slot in the tree (no orphan single-child split nodes). Focus moves to the nearest leaf.
 
@@ -93,14 +93,15 @@ When `layout.mouse` is enabled in `~/.arbiter/tui.json` (the default), the TUI e
 | Left-click a pane | Focus that pane (also exits history-sidebar focus) |
 | Left-click the input row | Focus the pane and place the caret |
 | Left-click an expandable block | Expand or collapse thinking / tool / truncated code |
+| Drag across scrollback | Select text; release copies via OSC 52 (Esc clears) |
 | Wheel over scrollback | Scroll that pane (does not steal keyboard focus) |
 | Left-click a conversation in the history sidebar | Select and switch to it |
 | Drag a split gutter | Resize the two adjacent panes asymmetrically |
 | Right sidebar | Display-only — clicks and wheel over it are ignored |
 
-Set `"layout": { "mouse": false }` to keep keyboard-only input (useful inside tmux without `set -g mouse on`, or when the host terminal fights with mouse capture).
+Set `"layout": { "mouse": false }` to keep keyboard-only input (useful inside tmux without `set -g mouse on`, or when the host terminal fights with mouse capture). Text selection copy uses OSC 52; under tmux enable `set -g set-clipboard on` (or an equivalent clipboard passthrough).
 
 ## Limits
 
 - No keyboard shortcut yet to resize a split asymmetrically (mouse drag works; see above). Chord-based weights are tracked as #44.
-- Layout is persisted to `~/.arbiter/conversations/layout.json` (tree shape, split weights, per-pane conversation id + agent). Relaunch restores the arrangement and replays each pane's transcript tail; painted scrollback and zoom are not saved. See [Sessions](sessions.md).
+- Layout is persisted to `~/.arbiter/conversations/layout.json` (tree shape, split weights, per-pane conversation id + agent). Relaunch restores the arrangement and replays each distinct `(conversation_id, agent)` transcript tail (shared-conversation siblings keep empty scrollback, matching live splits); painted scrollback and zoom are not saved. See [Sessions](sessions.md).

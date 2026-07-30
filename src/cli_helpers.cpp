@@ -176,9 +176,11 @@ struct ModelOption {
 };
 
 constexpr ModelOption kModelOptions[] = {
-    { "openrouter", "~openai/gpt-latest",          "OpenAI latest — via OpenRouter (recommended)" },
-    { "openrouter", "openai/gpt-5.2",              "GPT-5.2 — via OpenRouter" },
-    { "openrouter", "google/gemini-3.1-flash-lite","Gemini Flash Lite — via OpenRouter" },
+    { "openrouter", "~openai/gpt-latest",            "OpenAI latest — via OpenRouter (recommended)" },
+    { "openrouter", "anthropic/claude-sonnet-5",     "Claude Sonnet 5 — via OpenRouter" },
+    { "openrouter", "openai/gpt-5.5",                "GPT-5.5 — via OpenRouter" },
+    { "openrouter", "google/gemini-3.6-flash",       "Gemini 3.6 Flash — via OpenRouter" },
+    { "openrouter", "google/gemini-3.1-flash-lite",  "Gemini Flash Lite — via OpenRouter" },
 };
 
 constexpr std::uint32_t kAttrBold = 1u << 0;
