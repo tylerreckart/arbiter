@@ -49,6 +49,7 @@
 #include "tui/opentui/mouse_hit.h"
 #include "tui/clipboard.h"
 #include "tui/confirm_keys.h"
+#include "tui/interactive_prompt.h"
 #include "tui/prompt_bridge.h"
 
 #include <iostream>
@@ -70,6 +71,7 @@
 #include <set>
 #include <sstream>
 #include <unordered_set>
+#include <vector>
 #include <ctime>
 #include <cstdio>
 #include <unistd.h>
@@ -438,24 +440,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // construction reach it safely (we set it once and never clear).
     LayoutTree* layout_ptr = nullptr;
 
-    struct ConfirmState {
-        std::mutex               mu;
-        arbiter::ConfirmRequest  request;
-        // Heap-owned so Esc/overwrite/teardown can complete waiters without
-        // dangling a stack promise (hang → join deadlock under layout_mu).
-        std::shared_ptr<std::promise<bool>> pending;
-    } confirm_state;
-
-    // Interactive `/diff` / `/diff review`: pane thread posts a card, main
-    // thread reads a/r/Esc (same interrupt bridge as ConfirmState).
-    struct DiffReviewState {
-        std::mutex               mu;
-        std::shared_ptr<std::promise<char>> pending;  // 'a' | 'r' | 0 cancel
-        int                      patch_id = 0;
-        std::string              path;
-        std::string              summary;
-        std::vector<std::string> preview_lines;
-    } diff_review_state;
+    // FIFO interactive prompt queue (confirm + auto/manual diff review).
+    // Concurrent producers enqueue without failing prior waiters.
+    arbiter::InteractivePromptQueue interactive_prompts;
 
     // Main thread publishes the editor currently inside read_line so exec
     // threads can wake it without racing layout.focused() under layout_mu
@@ -470,22 +457,93 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             return;
         }
         if (!layout_ptr) return;
-        // try_lock: never block if main already holds layout_mu for join.
+        // try_lock: never block if main already holds layout_mu (e.g. chord
+        // dispatch / present). Join no longer holds the lock, but other
+        // paths still do.
         std::unique_lock<std::recursive_mutex> lk(layout_mu, std::try_to_lock);
         if (lk) layout_ptr->focused().editor.interrupt();
     };
 
     auto fail_pending_prompts = [&]() {
-        {
-            auto p = arbiter::take_prompt_promise(confirm_state.mu,
-                                                 confirm_state.pending);
-            arbiter::complete_prompt_promise(p, false);
+        interactive_prompts.fail_all(arbiter::InteractiveDecision::Cancel);
+    };
+
+    interactive_prompts.set_notify(wake_main_input);
+
+    // Apply a pending/failed proposal by id.  Returns a status line for the pane.
+    auto apply_diff_proposal = [](Pane& pane, int id) -> std::string {
+        auto& store = pane.diff_proposals;
+        auto prop = store.get(id);
+        if (!prop) return "ERR: no patch #" + std::to_string(id);
+        if (prop->status == arbiter::DiffProposalStatus::Applied) {
+            return "ERR: patch #" + std::to_string(id) +
+                   " already applied — /diff undo " + std::to_string(id) +
+                   " to revert";
         }
-        {
-            auto p = arbiter::take_prompt_promise(diff_review_state.mu,
-                                                 diff_review_state.pending);
-            arbiter::complete_prompt_promise(p, char{0});
+        if (prop->status == arbiter::DiffProposalStatus::Rejected) {
+            return "ERR: patch #" + std::to_string(id) + " was rejected";
         }
+        auto applied = arbiter::apply_unified_diff(prop->patch);
+        if (!applied.ok) {
+            store.mark_failed(id, applied.error);
+            return "ERR: apply #" + std::to_string(id) +
+                   " failed: " + applied.error;
+        }
+        arbiter::DiffUndoSnapshot snap;
+        snap.resolved_path = applied.resolved_path;
+        snap.had_file = applied.had_file;
+        snap.pre_image = applied.pre_image;
+        snap.post_image = applied.post_image;
+        store.mark_applied(id, std::move(snap));
+        std::string msg = "applied patch #" + std::to_string(id) +
+            ": " + applied.path;
+        if (!applied.had_file) msg += " (created)";
+        msg += "\n  /diff undo " + std::to_string(id) +
+            " to restore the previous contents";
+        return msg;
+    };
+
+    auto patch_preview_lines = [](const std::string& patch)
+        -> std::vector<std::string> {
+        std::vector<std::string> out;
+        std::istringstream ps(patch);
+        std::string line;
+        while (std::getline(ps, line) && out.size() < 6) {
+            if (line.rfind("---", 0) == 0 ||
+                line.rfind("+++", 0) == 0 ||
+                line.rfind("@@", 0) == 0 ||
+                line.rfind("diff ", 0) == 0 ||
+                line.rfind("index ", 0) == 0) {
+                continue;
+            }
+            if (line.size() > 72) line = line.substr(0, 69) + "...";
+            out.push_back(std::move(line));
+        }
+        return out;
+    };
+
+    auto handle_diff_decision = [&](Pane& pane, int patch_id,
+                                    arbiter::InteractiveDecision d) {
+        auto push = [&](const std::string& msg) {
+            pane.output_queue.push_prose(
+                {arbiter::styled_activity_line(msg, arbiter::StyleId::System)});
+            pane.output_queue.end_message();
+        };
+        if (d == arbiter::InteractiveDecision::Allow ||
+            d == arbiter::InteractiveDecision::AllowAll) {
+            push(apply_diff_proposal(pane, patch_id));
+            return;
+        }
+        if (d == arbiter::InteractiveDecision::Deny) {
+            if (pane.diff_proposals.mark_rejected(patch_id)) {
+                auto prop = pane.diff_proposals.get(patch_id);
+                push("rejected patch #" + std::to_string(patch_id) +
+                     (prop ? (": " + prop->path) : std::string{}));
+            } else {
+                push("ERR: could not reject patch #" + std::to_string(patch_id));
+            }
+        }
+        // Cancel: leave pending.
     };
 
     std::atomic<bool> quit_requested{false};
@@ -630,6 +688,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     ApiServerOptions api_opts =
         make_cli_api_options(dir, get_api_keys(), exec_allowed_flag);
     wire_orchestrator_tools(orch, api_opts, tenants, primary.id, conversation_id);
+    // API wiring installs a capture-only /write interceptor (no host cwd).
+    // The interactive TUI must persist to the process cwd after confirm.
+    orch.set_write_interceptor(nullptr);
 
     NotificationBus notifications;
     Scheduler scheduler(&api_opts, &tenants, &notifications);
@@ -781,7 +842,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             });
 
         Pane* raw = p.get();
-        p->editor.set_scroll_handler([raw, &pump_notify, &orch](int direction, int step) {
+        p->editor.set_scroll_handler([raw, &pump_notify, &orch, &layout_mu](int direction, int step) {
+            // Must serialize against the output pump's drain/draw under
+            // layout_mu — replay_load_previous_chunk mutates segments_.
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
             const int max_off = pane_history_max_scroll(*raw);
             if (direction < 0) {
                 raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
@@ -802,7 +866,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             if (pump_notify) pump_notify();
         });
-        p->editor.set_code_expand_handler([raw, &pump_notify]() {
+        p->editor.set_code_expand_handler([raw, &pump_notify, &layout_mu]() {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
             if (pane_history_toggle_code_block(*raw, raw->scroll_offset) && pump_notify) {
                 pump_notify();
             }
@@ -832,7 +897,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             // Unblock any in-flight confirm / diff-review waiter before
             // cancelling the turn — otherwise fut.get() hangs and pane
-            // close deadlocks under layout_mu.
+            // close blocks forever in join.
             fail_pending_prompts();
             // Scoped cancel: stop this pane's turn only so sibling panes
             // keep streaming (#46 / #48).  atomic_load: races exec reset.
@@ -978,18 +1043,37 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     });
 
     orch.set_confirm_callback([&](const arbiter::ConfirmRequest& req) -> bool {
-        auto done = std::make_shared<std::promise<bool>>();
-        std::shared_ptr<std::promise<bool>> prev;
-        {
-            std::lock_guard<std::mutex> lk(confirm_state.mu);
-            prev = std::move(confirm_state.pending);
-            confirm_state.pending = done;
-            confirm_state.request = req;
-        }
-        arbiter::complete_prompt_promise(prev, false);
-        wake_main_input();
-        return done->get_future().get();
+        return interactive_prompts.request_confirm(req);
     });
+
+    // Auto-enqueue interactive diff review when ```diff fences register.
+    arbiter::pane_history_set_diff_auto_review(
+        [&](Pane& pane, const arbiter::DiffProposal& prop) {
+            Pane* pane_ptr = &pane;
+            const int id = prop.id;
+            arbiter::InteractiveRequest req;
+            req.kind = arbiter::InteractiveKind::DiffReview;
+            req.action = "diff";
+            req.target = prop.path;
+            req.patch_id = id;
+            req.path = prop.path;
+            req.summary =
+                "Apply under process cwd. Missing files are created.";
+            req.preview_lines = patch_preview_lines(prop.patch);
+            req.pane = pane_ptr;
+            req.auto_review = true;
+            req.on_complete = [pane_ptr, id, &handle_diff_decision,
+                               &layout_ptr](arbiter::InteractiveDecision d) {
+                if (!layout_ptr || !pane_ptr) return;
+                bool alive = false;
+                layout_ptr->for_each_pane([&](Pane& p) {
+                    if (&p == pane_ptr) alive = true;
+                });
+                if (!alive) return;
+                handle_diff_decision(*pane_ptr, id, d);
+            };
+            interactive_prompts.enqueue_auto(std::move(req));
+        });
 
     // ── Layout + initial pane ──────────────────────────────────────────────
     LayoutTree layout(make_pane(), layout_bounds());
@@ -1191,10 +1275,16 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     auto present_unlocked = [&]() {
         pane_history_present(ui_ctx, pane_hooks);
     };
-    ui_ctx.present_all = [&]() {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+    // Caller already holds layout_mu. Mirrors present_all's sync step without
+    // re-locking (confirm/diff/close paths paint under the same guard that
+    // mutates scrollback).
+    auto present_holding_lock = [&]() {
         if (sync_layout_to_terminal()) refresh_focused_input.store(true);
         present_unlocked();
+    };
+    ui_ctx.present_all = [&]() {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        present_holding_lock();
     };
 
     present_unlocked();
@@ -1722,88 +1812,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     return std::nullopt;
                 };
 
-                auto patch_preview = [](const std::string& patch)
-                    -> std::vector<std::string> {
-                    std::vector<std::string> out;
-                    std::istringstream ps(patch);
-                    std::string line;
-                    while (std::getline(ps, line) && out.size() < 6) {
-                        if (line.rfind("---", 0) == 0 ||
-                            line.rfind("+++", 0) == 0 ||
-                            line.rfind("@@", 0) == 0 ||
-                            line.rfind("diff ", 0) == 0 ||
-                            line.rfind("index ", 0) == 0) {
-                            continue;
-                        }
-                        if (line.size() > 72) line = line.substr(0, 69) + "...";
-                        out.push_back(std::move(line));
-                    }
-                    return out;
-                };
-
                 auto apply_proposal = [&](int id) -> bool {
-                    auto prop = store.get(id);
-                    if (!prop) {
-                        push_status("ERR: no patch #" + std::to_string(id));
-                        return false;
-                    }
-                    if (prop->status == arbiter::DiffProposalStatus::Applied) {
-                        push_status("ERR: patch #" + std::to_string(id) +
-                                    " already applied — /diff undo " +
-                                    std::to_string(id) + " to revert");
-                        return false;
-                    }
-                    if (prop->status == arbiter::DiffProposalStatus::Rejected) {
-                        push_status("ERR: patch #" + std::to_string(id) +
-                                    " was rejected");
-                        return false;
-                    }
-                    // Apply is the user's grant: write immediately (create
-                    // missing files). No /write confirm gate.
-                    auto applied = arbiter::apply_unified_diff(prop->patch);
-                    if (!applied.ok) {
-                        store.mark_failed(id, applied.error);
-                        push_status("ERR: apply #" + std::to_string(id) +
-                                    " failed: " + applied.error);
-                        return false;
-                    }
-                    arbiter::DiffUndoSnapshot snap;
-                    snap.resolved_path = applied.resolved_path;
-                    snap.had_file = applied.had_file;
-                    snap.pre_image = applied.pre_image;
-                    snap.post_image = applied.post_image;
-                    store.mark_applied(id, std::move(snap));
-                    std::string msg = "applied patch #" + std::to_string(id) +
-                        ": " + applied.path;
-                    if (!applied.had_file) msg += " (created)";
-                    msg += "\n  /diff undo " + std::to_string(id) +
-                        " to restore the previous contents";
+                    const std::string msg = apply_diff_proposal(pane, id);
                     push_status(msg);
-                    return true;
-                };
-
-                auto request_review_key = [&](int id,
-                                              const std::string& path,
-                                              const std::string& summary,
-                                              std::vector<std::string> preview)
-                    -> char {
-                    auto done = std::make_shared<std::promise<char>>();
-                    std::shared_ptr<std::promise<char>> prev;
-                    {
-                        std::lock_guard<std::mutex> lk(diff_review_state.mu);
-                        prev = std::move(diff_review_state.pending);
-                        diff_review_state.patch_id = id;
-                        diff_review_state.path = path;
-                        diff_review_state.summary = summary;
-                        diff_review_state.preview_lines = std::move(preview);
-                        diff_review_state.pending = done;
-                    }
-                    arbiter::complete_prompt_promise(prev, char{0});
-                    // Wake this pane's editor — main reads focused input, but
-                    // sticky interrupt + deferred flag cover focus races.
-                    pane.editor.interrupt();
-                    wake_main_input();
-                    return done->get_future().get();
+                    return msg.rfind("ERR:", 0) != 0;
                 };
 
                 auto run_interactive_review = [&](std::optional<int> only_id) {
@@ -1835,7 +1847,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     if (ids.empty()) {
                         push_status("No pending patches to review.\n"
                                     "  /diff list — all proposals; "
-                                    "agent ```diff fences register as Patch #N");
+                                    "agent ```diff fences auto-prompt review");
                         return;
                     }
                     for (int id : ids) {
@@ -1846,16 +1858,29 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                             continue;
                         }
                         std::string summary =
-                            "Apply under process cwd. Missing files are created; "
-                            "no write confirm.";
+                            "Apply under process cwd. Missing files are created.";
                         if (!prop->error.empty()) {
                             summary = "Previously failed: " + prop->error;
                         }
-                        const char key = request_review_key(
-                            id, prop->path, summary, patch_preview(prop->patch));
-                        if (key == 'a' || key == 'A') {
-                            apply_proposal(id);
-                        } else if (key == 'r' || key == 'R') {
+                        const auto decision =
+                            interactive_prompts.request_diff_review(
+                                id, prop->path, summary,
+                                patch_preview_lines(prop->patch), &pane);
+                        if (decision == arbiter::InteractiveDecision::Allow ||
+                            decision == arbiter::InteractiveDecision::AllowAll) {
+                            // AllowAll may already have applied this id on the
+                            // main thread — skip if no longer pending.
+                            auto cur = store.get(id);
+                            if (cur &&
+                                (cur->status ==
+                                     arbiter::DiffProposalStatus::Pending ||
+                                 cur->status ==
+                                     arbiter::DiffProposalStatus::Failed)) {
+                                apply_proposal(id);
+                            }
+                            // AllowAll sets accept_edits; later ids short-circuit.
+                        } else if (decision ==
+                                   arbiter::InteractiveDecision::Deny) {
                             if (store.mark_rejected(id)) {
                                 push_status("rejected patch #" +
                                             std::to_string(id) + ": " +
@@ -2502,25 +2527,27 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (p.parent_pane != nullptr &&
                     !p.spawn_flowed.exchange(true)) {
 
-                    bool parent_alive = false;
                     Pane* parent = p.parent_pane;
                     {
+                        // Hold layout_mu across the alive check *and* the
+                        // push: close can destroy `parent` the instant we
+                        // unlock, and cmd_queue lives on the Pane.
                         std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                        bool parent_alive = false;
                         layout.for_each_pane([&](Pane& other) {
                             if (&other == parent) parent_alive = true;
                         });
-                    }
-
-                    if (parent_alive) {
-                        std::string task_preview = p.spawn_message.size() > 80
-                            ? p.spawn_message.substr(0, 77) + "..."
-                            : p.spawn_message;
-                        std::string frame = "[PANE RESULT from '"
-                            + p.current_agent + "' (task: "
-                            + task_preview + ")]\n"
-                            + p.last_response
-                            + "\n[END PANE RESULT]";
-                        parent->cmd_queue.push(frame);
+                        if (parent_alive) {
+                            std::string task_preview = p.spawn_message.size() > 80
+                                ? p.spawn_message.substr(0, 77) + "..."
+                                : p.spawn_message;
+                            std::string frame = "[PANE RESULT from '"
+                                + p.current_agent + "' (task: "
+                                + task_preview + ")]\n"
+                                + p.last_response
+                                + "\n[END PANE RESULT]";
+                            parent->cmd_queue.push(frame);
+                        }
                     }
 
                     {
@@ -2548,6 +2575,18 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         }
 
         Pane* spawner_pane = g_active_pane;
+        // Mid-close: main has moved this pane's exec_thread out for join, so
+        // the Pane is still in the tree but must not become a parent — that
+        // would leave children with a dangling parent_pane after destroy.
+        if (spawner_pane && !spawner_pane->exec_thread.joinable()) {
+            spawner_pane = nullptr;
+        } else if (spawner_pane) {
+            bool spawner_alive = false;
+            layout.for_each_pane([&](Pane& p) {
+                if (&p == spawner_pane) spawner_alive = true;
+            });
+            if (!spawner_alive) spawner_pane = nullptr;
+        }
         std::string captured_agent = req_agent;
         Pane* new_pane_ptr = layout.split_focused(
             LayoutTree::Orient::Vertical,
@@ -2577,7 +2616,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             pane_history_set_cols(p, p.tui.cols());
         });
         persist_layout();
-        ui_ctx.present_all();
+        present_holding_lock();
 
         refresh_focused_input.store(true);
         layout.focused().editor.interrupt();
@@ -2663,111 +2702,235 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         present_all();
     });
 
-    // Service a pending confirm (destructive-action dialog from orch).  The
-    // confirm lands on whichever pane currently has focus — that's where
-    // the editor.interrupt() wakes the main loop.
-    auto service_confirm = [&]() -> bool {
-        arbiter::ConfirmRequest req;
-        std::shared_ptr<std::promise<bool>> pending;
+    // Service the next interactive prompt (permission confirm or diff review).
+    auto service_interactive = [&]() -> bool {
+        auto entry_opt = interactive_prompts.take_front();
+        if (!entry_opt) return false;
+        auto& entry = *entry_opt;
+        auto& req = entry.request;
+
+        Pane* target = nullptr;
+        Pane* pane_ptr = nullptr;
         {
-            std::lock_guard<std::mutex> lk(confirm_state.mu);
-            pending = std::move(confirm_state.pending);
-            confirm_state.pending.reset();
-            req = confirm_state.request;
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            if (req.pane) {
+                target = static_cast<Pane*>(req.pane);
+                // Verify the pane is still in the layout.
+                bool alive = false;
+                layout.for_each_pane([&](Pane& p) {
+                    if (&p == target) alive = true;
+                });
+                if (!alive) target = nullptr;
+            }
+            pane_ptr = target ? target : &layout.focused();
         }
-        if (!pending) return false;
+        // Main-thread only: pane lifetime is stable across the blocking
+        // key read below (close/chord also run on this thread).
+        Pane& pane = *pane_ptr;
 
-        Pane& pane = layout.focused();
-        // Multi-line permission card: action, target, content preview.
-        std::vector<std::string> preview = req.preview_lines;
-        if (!req.summary.empty()) {
-            preview.insert(preview.begin(), req.summary);
+        // Skip DiffReview cards whose proposal was already resolved (e.g.
+        // auto-review + /diff review both queued the same id).
+        if (req.kind == arbiter::InteractiveKind::DiffReview) {
+            // Never use the focused pane's store for another pane's patch id.
+            if (!target) {
+                if (req.on_complete)
+                    req.on_complete(arbiter::InteractiveDecision::Cancel);
+                if (entry.promise) {
+                    arbiter::complete_prompt_promise(
+                        entry.promise, arbiter::InteractiveDecision::Cancel);
+                }
+                return true;
+            }
+            auto prop = pane.diff_proposals.get(req.patch_id);
+            if (!prop) {
+                if (req.on_complete)
+                    req.on_complete(arbiter::InteractiveDecision::Cancel);
+                if (entry.promise) {
+                    arbiter::complete_prompt_promise(
+                        entry.promise, arbiter::InteractiveDecision::Cancel);
+                }
+                return true;
+            }
+            if (prop->status == arbiter::DiffProposalStatus::Applied) {
+                // Already applied — treat waiters as success, not cancel.
+                if (entry.promise) {
+                    arbiter::complete_prompt_promise(
+                        entry.promise, arbiter::InteractiveDecision::Allow);
+                }
+                return true;
+            }
+            if (prop->status != arbiter::DiffProposalStatus::Pending &&
+                prop->status != arbiter::DiffProposalStatus::Failed) {
+                if (entry.promise) {
+                    arbiter::complete_prompt_promise(
+                        entry.promise, arbiter::InteractiveDecision::Cancel);
+                }
+                return true;
+            }
         }
-        auto card = arbiter::styled_permission_card(req.action, req.target, preview);
-        // new_block supplies block_gap — do not also prepend an empty StyledLine.
-        pane_history_push_prose(pane, card, true);
-        ui_ctx.present_all();
 
-        const int key = read_confirm_key();
-        bool yes = (key == 'y' || key == 'Y');
-        pane_history_push_prose(
-            pane,
-            {arbiter::styled_activity_line(
-                yes ? "[user accepted input]" : "[user denied input]",
-                yes ? StyleId::Success : StyleId::Error)},
-            true);
-        ui_ctx.present_all();
-        arbiter::complete_prompt_promise(pending, yes);
+        arbiter::InteractiveDecision decision =
+            arbiter::InteractiveDecision::Cancel;
+
+        if (req.kind == arbiter::InteractiveKind::Confirm) {
+            std::vector<std::string> preview = req.preview_lines;
+            if (!req.summary.empty()) {
+                preview.insert(preview.begin(), req.summary);
+            }
+            auto card = arbiter::styled_permission_card(
+                req.action, req.target, preview);
+            // Scroll mutations must hold layout_mu — the output pump draws
+            // PaneScrollView under the same lock (UAF → DiffPanel::set_patch abort).
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                pane_history_push_prose(pane, card, true);
+                present_holding_lock();
+            }
+
+            const int key = read_confirm_key();
+            if (key == 'y' || key == 'Y') {
+                decision = arbiter::InteractiveDecision::Allow;
+            } else if (key == 'A') {
+                // Allow this confirm; also accept remaining file edits.
+                decision = arbiter::InteractiveDecision::AllowAll;
+            } else {
+                decision = arbiter::InteractiveDecision::Deny;
+            }
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                pane_history_push_prose(
+                    pane,
+                    {arbiter::styled_activity_line(
+                        decision_is_affirmative(decision)
+                            ? "[user accepted input]"
+                            : "[user denied input]",
+                        decision_is_affirmative(decision)
+                            ? StyleId::Success
+                            : StyleId::Error)},
+                    true);
+                present_holding_lock();
+            }
+        } else if (entry.enqueued_under_accept_edits) {
+            // Session accept-edits was already on when this entry was queued.
+            decision = arbiter::InteractiveDecision::Allow;
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                pane_history_push_prose(
+                    pane,
+                    {arbiter::styled_activity_line(
+                        "[diff auto-applied — accept edits on]",
+                        StyleId::Success)},
+                    true);
+                present_holding_lock();
+            }
+        } else {
+            // DiffReview card
+            auto card = arbiter::styled_diff_review_card(
+                req.patch_id, req.path, req.summary, req.preview_lines);
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                pane_history_push_prose(pane, card, true);
+                present_holding_lock();
+            }
+
+            while (true) {
+                char csi = 0;
+                std::string csi_params;
+                const int key = arbiter::read_history_sidebar_key(csi, csi_params);
+                if (key < 0) {
+                    decision = arbiter::InteractiveDecision::Cancel;
+                    break;
+                }
+                if (key == 0x1B && (csi == 'M' || csi == 'm')
+                    && !csi_params.empty() && csi_params[0] == '<') {
+                    continue;
+                }
+                if (key == 'a') {
+                    decision = arbiter::InteractiveDecision::Allow;
+                    break;
+                }
+                if (key == 'A') {
+                    decision = arbiter::InteractiveDecision::AllowAll;
+                    break;
+                }
+                if (key == 'r' || key == 'R') {
+                    decision = arbiter::InteractiveDecision::Deny;
+                    break;
+                }
+                if (key == 0x1B && csi == 0) {
+                    decision = arbiter::InteractiveDecision::Cancel;
+                    break;
+                }
+            }
+
+            const char* label =
+                (decision == arbiter::InteractiveDecision::Allow)
+                    ? "[diff apply]"
+                : (decision == arbiter::InteractiveDecision::AllowAll)
+                    ? "[diff allow all]"
+                : (decision == arbiter::InteractiveDecision::Deny)
+                    ? "[diff reject]"
+                    : "[diff review cancelled]";
+            const StyleId style =
+                (decision == arbiter::InteractiveDecision::Allow ||
+                 decision == arbiter::InteractiveDecision::AllowAll)
+                    ? StyleId::Success
+                : (decision == arbiter::InteractiveDecision::Deny)
+                    ? StyleId::Warning
+                    : StyleId::Dim;
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                pane_history_push_prose(
+                    pane,
+                    {arbiter::styled_activity_line(label, style)},
+                    true);
+                present_holding_lock();
+            }
+        }
+
+        if (decision == arbiter::InteractiveDecision::AllowAll) {
+            if (req.kind == arbiter::InteractiveKind::DiffReview) {
+                // Apply the current patch first, then remaining queued diffs,
+                // so multi-file / same-file FIFO order is preserved.
+                if (req.on_complete && (req.auto_review || !entry.promise)) {
+                    req.on_complete(decision);
+                } else if (target) {
+                    // Blocking /diff review: apply on main before remaining.
+                    handle_diff_decision(*target, req.patch_id, decision);
+                }
+                interactive_prompts.allow_remaining_diff_reviews();
+                if (entry.promise) {
+                    arbiter::complete_prompt_promise(entry.promise, decision);
+                }
+                return true;
+            }
+            // Confirm `A`: allow this exec and auto-accept future file
+            // diffs — do not silently apply already-queued patches.
+            interactive_prompts.set_accept_edits(true);
+        }
+
+        // Auto-review (and any request with on_complete) applies here.
+        // Blocking /diff review waiters apply in their own handler after
+        // the promise resolves — skip on_complete for those to avoid
+        // double-apply.  auto_review entries always use on_complete.
+        if (req.on_complete && (req.auto_review || !entry.promise)) {
+            req.on_complete(decision);
+        }
+        if (entry.promise) {
+            arbiter::complete_prompt_promise(entry.promise, decision);
+        }
         return true;
     };
 
-    // Interactive `/diff` review: [a]pply / [r]eject / Esc cancel.
-    auto service_diff_review = [&]() -> bool {
-        std::shared_ptr<std::promise<char>> pending;
-        int patch_id = 0;
-        std::string path;
-        std::string summary;
-        std::vector<std::string> preview;
-        {
-            std::lock_guard<std::mutex> lk(diff_review_state.mu);
-            pending = std::move(diff_review_state.pending);
-            diff_review_state.pending.reset();
-            patch_id = diff_review_state.patch_id;
-            path = diff_review_state.path;
-            summary = diff_review_state.summary;
-            preview = diff_review_state.preview_lines;
-        }
-        if (!pending) return false;
-
-        Pane& pane = layout.focused();
-        auto card = arbiter::styled_diff_review_card(
-            patch_id, path, summary, preview);
-        pane_history_push_prose(pane, card, true);
-        ui_ctx.present_all();
-
-        char decision = 0;
-        while (true) {
-            char csi = 0;
-            std::string csi_params;
-            const int key = arbiter::read_history_sidebar_key(csi, csi_params);
-            if (key < 0) {
-                decision = 0;
-                break;
-            }
-            // Swallow SGR mouse reports (same as read_confirm_key).
-            if (key == 0x1B && (csi == 'M' || csi == 'm')
-                && !csi_params.empty() && csi_params[0] == '<') {
-                continue;
-            }
-            if (key == 'a' || key == 'A' || key == 'r' || key == 'R') {
-                decision = static_cast<char>(key);
-                break;
-            }
-            // Bare Esc cancels.  Arrow / function CSI also returns 0x1B but
-            // with a non-zero final — ignore those so navigation keys do not
-            // abort review.
-            if (key == 0x1B && csi == 0) {
-                decision = 0;
-                break;
-            }
-            // Ignore other keys (keep prompting via the card already shown).
-        }
-
-        const char* label =
-            (decision == 'a' || decision == 'A') ? "[diff apply]"
-            : (decision == 'r' || decision == 'R') ? "[diff reject]"
-            : "[diff review cancelled]";
-        const StyleId style =
-            (decision == 'a' || decision == 'A') ? StyleId::Success
-            : (decision == 'r' || decision == 'R') ? StyleId::Warning
-            : StyleId::Dim;
-        pane_history_push_prose(
-            pane,
-            {arbiter::styled_activity_line(label, style)},
-            true);
-        ui_ctx.present_all();
-        arbiter::complete_prompt_promise(pending, decision);
-        return true;
+    // Drop spawn parent links before destroying a pane. Join runs outside
+    // layout_mu, so the closing pane can still finish an in-flight /pane
+    // spawn that sets child.parent_pane = victim; clearing here prevents
+    // dangling parent pointers after close_pane.
+    auto clear_spawn_parent_refs = [&](Pane* parent) {
+        if (!parent) return;
+        layout.for_each_pane([&](Pane& p) {
+            if (p.parent_pane == parent) p.parent_pane = nullptr;
+        });
     };
 
     // Service any pending-close requests queued by pane exec threads that
@@ -2797,43 +2960,74 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             if (!still_alive) continue;
 
             // Render the confirm prompt in the focused pane's scrollback.
-            Pane& shown = layout.focused();
-            StyledLine prompt_line;
-            styled_append(prompt_line, StyleId::Warning,
-                          "pane '" + pc.agent_id + "' finished — close it? [y/N]");
-            pane_history_push_prose(shown, {prompt_line}, true);
-            ui_ctx.present_all();
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                StyledLine prompt_line;
+                styled_append(prompt_line, StyleId::Warning,
+                              "pane '" + pc.agent_id + "' finished — close it? [y/N]");
+                pane_history_push_prose(layout.focused(), {prompt_line}, true);
+                present_holding_lock();
+            }
 
             const int key = read_confirm_key();
             bool yes = (key == 'y' || key == 'Y');
 
-            StyledLine answer;
-            if (yes) {
-                styled_append(answer, StyleId::Success,
-                              "[closing '" + pc.agent_id + "']");
-            } else {
-                styled_append(answer, StyleId::Error,
-                              "[keeping '" + pc.agent_id + "' open]");
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                StyledLine answer;
+                if (yes) {
+                    styled_append(answer, StyleId::Success,
+                                  "[closing '" + pc.agent_id + "']");
+                } else {
+                    styled_append(answer, StyleId::Error,
+                                  "[keeping '" + pc.agent_id + "' open]");
+                }
+                pane_history_push_prose(layout.focused(), {answer}, true);
+                present_holding_lock();
             }
-            pane_history_push_prose(shown, {answer}, true);
-            ui_ctx.present_all();
 
             if (yes) {
-                // Unblock confirm/diff waiters before join under layout_mu.
+                // Unblock confirm/diff waiters before join. Never join while
+                // holding layout_mu — exec threads take that lock for /pane
+                // spawn, /find, present_all, etc. (hang → SIGHUP/SIGSEGV in
+                // pthread_join when the terminal is closed mid-wait).
                 fail_pending_prompts();
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                clear_mouse_drag();
-                layout.close_pane(pc.pane, [&](Pane& p) {
-                    p.cmd_queue.stop();
-                    if (p.exec_thread.joinable()) p.exec_thread.join();
-                });
-                g_getc_state.pane = &layout.focused();
-                ui_ctx.focused_pane = &layout.focused();
-                layout.for_each_pane([&](Pane& p) {
-                    pane_history_set_cols(p, p.tui.cols());
-                });
-                persist_layout();
-                present_unlocked();
+                std::thread to_join;
+                {
+                    std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                    bool alive = false;
+                    layout.for_each_pane([&](Pane& p) {
+                        if (&p == pc.pane) alive = true;
+                    });
+                    if (!alive) continue;
+                    clear_mouse_drag();
+                    pc.pane->cmd_queue.stop();
+                    // Docs: close cancels the in-flight turn so join returns
+                    // promptly instead of waiting out a network call.
+                    if (auto tok = std::atomic_load(&pc.pane->turn_cancel)) {
+                        orch.cancel_token(tok);
+                    }
+                    to_join = std::move(pc.pane->exec_thread);
+                }
+                if (to_join.joinable()) to_join.join();
+                {
+                    std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                    bool alive = false;
+                    layout.for_each_pane([&](Pane& p) {
+                        if (&p == pc.pane) alive = true;
+                    });
+                    if (!alive) continue;
+                    clear_mouse_drag();
+                    clear_spawn_parent_refs(pc.pane);
+                    layout.close_pane(pc.pane, [](Pane&) {});
+                    g_getc_state.pane = &layout.focused();
+                    ui_ctx.focused_pane = &layout.focused();
+                    layout.for_each_pane([&](Pane& p) {
+                        pane_history_set_cols(p, p.tui.cols());
+                    });
+                    persist_layout();
+                    present_holding_lock();
+                }
             }
         }
         return true;
@@ -2841,12 +3035,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     // Chord dispatcher — runs after the focused editor returned with a
     // pending chord.  Takes layout_mu so the pump thread's iteration can't
-    // observe a partially-mutated tree.  On close, we stop the victim pane's
+    // observe a partially-mutated tree.  On close, stop the victim pane's
     // cmd_queue and join its exec thread BEFORE the Pane is destroyed;
-    // join() can block for however long the in-flight handle() takes (the
-    // agent turn finishes or orch.cancel() aborts it).
+    // join() is done *outside* layout_mu (see service_pending_closes).
     auto dispatch_chord = [&](char cmd) {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        std::unique_lock<std::recursive_mutex> lk(layout_mu);
         clear_mouse_drag();
         switch (cmd) {
             case 'w':
@@ -2886,13 +3079,27 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 break;
             case 'c':
                 if (layout.pane_count() > 1) {
-                    // Unblock confirm/diff waiters before join (we hold
-                    // layout_mu — a hung fut.get() would deadlock).
+                    // Unblock confirm/diff waiters before join.
                     fail_pending_prompts();
-                    layout.close_focused([&](Pane& p) {
-                        p.cmd_queue.stop();
-                        if (p.exec_thread.joinable()) p.exec_thread.join();
+                    Pane* victim = &layout.focused();
+                    victim->cmd_queue.stop();
+                    // Match docs/tui keybindings: close cancels the in-flight
+                    // turn so join is not stuck on a live network call.
+                    if (auto tok = std::atomic_load(&victim->turn_cancel)) {
+                        orch.cancel_token(tok);
+                    }
+                    std::thread to_join = std::move(victim->exec_thread);
+                    lk.unlock();
+                    if (to_join.joinable()) to_join.join();
+                    lk.lock();
+                    bool still_alive = false;
+                    layout.for_each_pane([&](Pane& p) {
+                        if (&p == victim) still_alive = true;
                     });
+                    if (still_alive) {
+                        clear_spawn_parent_refs(victim);
+                        layout.close_pane(victim, [](Pane&) {});
+                    }
                 }
                 break;
             case 'z':
@@ -3521,8 +3728,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // ── Main readline loop ──────────────────────────────────────────────────
     while (!quit_requested) {
         deferred_main_interrupt.store(false, std::memory_order_release);
-        while (service_confirm()) {}
-        while (service_diff_review()) {}
+        while (service_interactive()) {}
         while (service_pending_closes()) {}
         while (service_pending_conv_ops()) {}
         while (service_mouse_switch()) {}
@@ -3720,8 +3926,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 dispatch_chord(chord);
                 continue;
             }
-            if (service_confirm()) continue;
-            if (service_diff_review()) continue;
+            if (service_interactive()) continue;
             if (service_pending_closes()) continue;
             if (service_pending_conv_ops()) continue;
             if (service_mouse_switch()) continue;
@@ -3789,17 +3994,27 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     // ── Shutdown ───────────────────────────────────────────────────────────
     // Fail any confirm/diff waiters before joining so exec threads cannot
-    // stay blocked in fut.get() while we hold layout_mu across join.
+    // stay blocked in fut.get() while we wait on join.
     fail_pending_prompts();
-    // Stop every pane's queue, then join its exec thread.  Do all stops
-    // BEFORE joins so panes unblock in parallel.  After that the pump is
-    // the only producer left and we can shut it down too.
+    // Stop every pane's queue under layout_mu, move threads out, then join
+    // *outside* the lock so an exec thread blocked on layout_mu (spawn /
+    // present / find) can finish.  After that the pump is the only producer
+    // left and we can shut it down too.
+    std::vector<std::thread> exec_joins;
     {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
-        layout.for_each_pane([&](Pane& p) { p.cmd_queue.stop(); });
         layout.for_each_pane([&](Pane& p) {
-            if (p.exec_thread.joinable()) p.exec_thread.join();
+            p.cmd_queue.stop();
+            if (auto tok = std::atomic_load(&p.turn_cancel)) {
+                orch.cancel_token(tok);
+            }
+            if (p.exec_thread.joinable()) {
+                exec_joins.push_back(std::move(p.exec_thread));
+            }
         });
+    }
+    for (auto& t : exec_joins) {
+        if (t.joinable()) t.join();
     }
 
     pump_stop = true;

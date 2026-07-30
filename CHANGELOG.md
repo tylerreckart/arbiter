@@ -7,17 +7,29 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-29
+
+Minor release: interactive `/diff` apply/reject/undo review, durable API
+idempotency across restarts, LaTeX→Unicode math in the TUI, refreshed
+starter constitutions, and pane / sandbox / interrupt hardening.
+
 ### Added
 - **Mouse text selection in scrollback.** Drag across the output area to
   highlight text; release copies via OSC 52 (status shows character count).
   A click without a drag still expands/collapses thinking, tools, and
   truncated code. Esc clears the selection before it cancels a turn. See
   [`docs/tui/panes.md`](docs/tui/panes.md).
+- **Unified interactive prompt queue (TUI).** Confirms and diff reviews share
+  a FIFO queue (`InteractivePromptQueue`) so a second prompt never silently
+  declines an earlier waiter. Streamed ```diff fences auto-enqueue review
+  cards; keys are `[a]`pply / `[r]`eject / `[A]`llow all (session accept-edits)
+  / Esc. File-add diffs render full-width without a `/dev/null` half.
+  See [`docs/tui/output-ux.md`](docs/tui/output-ux.md).
 - **Interactive `/diff` review (TUI).** `/diff` and `/diff review [N]` prompt
-  `[a]pply` / `[r]eject` / Esc on pending patches (same interrupt bridge as
-  tool confirms). `/diff apply` remains a direct write. Missing target files
-  are created from the patch’s new-side lines; apply is the permission grant
-  (no `/write` confirm). See [`docs/tui/commands.md`](docs/tui/commands.md).
+  on pending patches (same queue as tool confirms). `/diff apply` remains a
+  direct write. Missing target files are created from the patch’s new-side
+  lines; apply is the permission grant (no `/write` confirm). See
+  [`docs/tui/commands.md`](docs/tui/commands.md).
 - **`/diff` apply / reject / undo (TUI).** Streamed ` ```diff ` fences
   register as pane-local `Patch #N` proposals with an action line above
   the rendered panel. `/diff apply [N]` writes the unified patch under
@@ -30,8 +42,32 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   after an API server restart joins the original `request_id` instead of
   starting a second run. The in-process table remains an L1 cache;
   SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
+- **LaTeX math → Unicode (TUI).** Markdown display math (`\[…\]` / `$$…$$`)
+  and inline `\(...\)` render as terminal-friendly Unicode approximations
+  (fractions, super/subscripts, `\times` / `\approx` / `\text{}`, Greek)
+  instead of raw TeX. Same-line display delimiters with trailing prose
+  no longer swallow the rest of the line.
 
 ### Fixed
+- **TUI fatal SIGSEGV/SIGHUP on pane close and SIGABRT in DiffPanel.** Pane
+  close/shutdown no longer joins exec threads while holding `layout_mu`
+  (deadlock with `/pane` spawn, `/find`, or `present_all` → hung
+  `pthread_join`, then SIGHUP/SIGSEGV when the terminal drops). Close also
+  cancels the pane's in-flight turn (as docs promise) so join is not stuck
+  on a live network call, clears child `parent_pane` links before destroy,
+  and refuses to parent new `/pane` spawns onto a mid-close pane. Confirm /
+  diff-review / pending-close prompts and PgUp/expand handlers mutate
+  scrollback under `layout_mu` so the output pump cannot UAF `DiffSegment`
+  mid-draw. Diff panel wrap invalidation no longer re-parses the patch
+  every frame.
+- **TUI `/write` persists to cwd.** Interactive TUI and `--send` clear the
+  API capture-only write interceptor so `/write` confirms and writes the
+  process cwd (verified). Diff apply also tolerates stale hunk offsets when
+  context matches uniquely, collapses `a/./path` segments, and treats
+  unmarked hunk lines as context.
+- **Permission / confirm sequencing.** Concurrent destructive `/exec`
+  confirms (and confirm + diff review) no longer overwrite each other’s
+  promises with a fake decline — approved commands report success.
 - **Stacked pane gutters.** Inactive panes are content-only (no readline);
   only the focused pane paints an input box. Stacked gutters are a single
   separator cell (matching vertical splits): no trailing pad on mid-stack
@@ -43,6 +79,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Empty sub-pane pollution on restore.** Layout restore replays each
   `(conversation_id, agent)` transcript at most once (pre-order first leaf),
   matching live `^W` splits that inherit a conversation with empty scrollback.
+- **Esc/interrupt during in-progress confirm or turn (crash/hang).** Esc
+  no longer races `Pane::turn_cancel` (`shared_ptr` assign vs cancel),
+  drops confirm/diff wakeups by clearing `interrupt_flag_` at `read_line`
+  entry, or leaves stack `promise` waiters hung so pane close deadlocks
+  under `layout_mu`. Confirm/diff posts use heap promises; Esc/cancel/
+  teardown always completes them; exec threads wake input via
+  `active_readline` / try-lock instead of unlocked `layout.focused()`.
 - **Sandbox `/exec` workspace quota (#136).** When `workspace_max_bytes` is
   set, `/exec` now holds the per-tenant quota mutex for the full docker
   exec (matching `/write`) so parallel `/write` cannot grow the workspace
@@ -68,6 +111,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   and auto-compaction match the live 1M-class windows.
 - **Models catalogue / setup wizard.** `/v1/models` and first-run picks
   list current OpenRouter ids used by the starters.
+
 ## [0.8.9] — 2026-07-26
 
 Patch release: pane layout persistence across TUI relaunch, mid-turn
@@ -95,13 +139,6 @@ race fixes.
   criteria checked.
 
 ### Fixed
-- **Esc/interrupt during in-progress confirm or turn (crash/hang).** Esc
-  no longer races `Pane::turn_cancel` (`shared_ptr` assign vs cancel),
-  drops confirm/diff wakeups by clearing `interrupt_flag_` at `read_line`
-  entry, or leaves stack `promise` waiters hung so pane close deadlocks
-  under `layout_mu`. Confirm/diff posts use heap promises; Esc/cancel/
-  teardown always completes them; exec threads wake input via
-  `active_readline` / try-lock instead of unlocked `layout.focused()`.
 - **Capability gate for /todo /schedule /lesson (#91).** Dispatcher
   `bundle_of` now maps these writs into allowlist bundles so constrained
   agents can no longer bypass `capabilities`. Starter agents list `/todo`

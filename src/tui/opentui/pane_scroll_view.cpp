@@ -758,7 +758,8 @@ int PaneScrollView::DiffSegment::visual_rows(int /*content_w*/) const {
 }
 
 void PaneScrollView::DiffSegment::set_wrap_cols(int /*cols*/) {
-    cached_ = false;
+    // DiffPanel ignores wrap width; keep the parsed panel cached across
+    // bind()/resize so draw does not re-enter set_patch every frame.
 }
 
 void PaneScrollView::DiffSegment::collect_lines(std::vector<std::string>& out) const {
@@ -783,6 +784,7 @@ void PaneScrollView::DiffSegment::draw(OpenTuiHandle frame,
     if (patch_.empty() || w <= 0 || h <= 0) return;
     if (!cached_) {
         panel_.set_patch(patch_);
+        cached_rows_ = panel_.visual_rows();
         cached_ = true;
     }
     panel_.draw(frame, x, y, w, h, skip_rows);
