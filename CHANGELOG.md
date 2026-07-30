@@ -8,6 +8,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Mouse text selection in scrollback.** Drag across the output area to
+  highlight text; release copies via OSC 52 (status shows character count).
+  A click without a drag still expands/collapses thinking, tools, and
+  truncated code. Esc clears the selection before it cancels a turn. See
+  [`docs/tui/panes.md`](docs/tui/panes.md).
 - **Interactive `/diff` review (TUI).** `/diff` and `/diff review [N]` prompt
   `[a]pply` / `[r]eject` / Esc on pending patches (same interrupt bridge as
   tool confirms). `/diff apply` remains a direct write. Missing target files

@@ -14,6 +14,7 @@
 #include "tui/tui.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,39 @@
 namespace arbiter::opentui {
 
 class Engine;
+
+// Cell position in scrollback content space (not terminal absolute).
+// `row` is a global visual row (0 = top of scrollback); `col` is a 0-based
+// display column within the content width.
+struct ScrollCellPos {
+    int row = 0;
+    int col = 0;
+
+    bool operator==(const ScrollCellPos& o) const {
+        return row == o.row && col == o.col;
+    }
+    bool operator!=(const ScrollCellPos& o) const { return !(*this == o); }
+    bool operator<(const ScrollCellPos& o) const {
+        return row < o.row || (row == o.row && col < o.col);
+    }
+};
+
+struct TextSelection {
+    bool active = false;
+    ScrollCellPos anchor{};
+    ScrollCellPos focus{};
+
+    [[nodiscard]] ScrollCellPos start() const {
+        return focus < anchor ? focus : anchor;
+    }
+    [[nodiscard]] ScrollCellPos end() const {
+        return focus < anchor ? anchor : focus;
+    }
+    // True when inactive or the range covers no cells.
+    [[nodiscard]] bool empty() const {
+        return !active || anchor == focus;
+    }
+};
 
 class PaneScrollView {
 public:
@@ -65,6 +99,20 @@ public:
                                     int term_y,
                                     int scroll_offset);
 
+    // Map a terminal click into scrollback cell space. Empty when outside the
+    // content band. Recomputes bind geometry from `tui`.
+    [[nodiscard]] std::optional<ScrollCellPos> hit_cell_at(
+        const TUI& tui, int term_x, int term_y, int scroll_offset);
+
+    void set_selection(ScrollCellPos anchor, ScrollCellPos focus);
+    void clear_selection();
+    [[nodiscard]] bool has_selection() const;
+    [[nodiscard]] const TextSelection& selection() const { return selection_; }
+    // Plain text for the active selection (newlines between visual rows).
+    // Empty when the selection is inactive or zero-width. Uses the current
+    // wrap width; call after bind / set_wrap_cols so columns match the view.
+    [[nodiscard]] std::string selection_text() const;
+
     [[nodiscard]] bool has_gap() const;
     [[nodiscard]] int gap_remaining() const;
     // Creates/updates/removes the front-of-scrollback gap marker.
@@ -103,6 +151,10 @@ private:
         [[nodiscard]] virtual bool find_skip_line(std::size_t /*index*/) const {
             return false;
         }
+        // One plain-text string per visual row (same count as visual_rows).
+        // Used by mouse selection copy. Default pads/trims collect_lines.
+        virtual void collect_visual_lines(std::vector<std::string>& out,
+                                          int content_w) const;
         virtual void draw(OpenTuiHandle frame,
                           int x,
                           int y,
@@ -132,6 +184,8 @@ private:
         void set_wrap_cols(int cols) override;
         void collect_lines(std::vector<std::string>& out) const override;
         [[nodiscard]] bool find_skip_line(std::size_t index) const override;
+        void collect_visual_lines(std::vector<std::string>& out,
+                                  int content_w) const override;
 
         void emit_line(const StyledLine& line);
         void emit_echo_run(const StyledLine* begin, const StyledLine* end);
@@ -163,6 +217,8 @@ private:
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
         void collect_lines(std::vector<std::string>& out) const override;
+        void collect_visual_lines(std::vector<std::string>& out,
+                                  int content_w) const override;
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,
@@ -224,6 +280,8 @@ private:
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
         void collect_lines(std::vector<std::string>& out) const override;
+        void collect_visual_lines(std::vector<std::string>& out,
+                                  int content_w) const override;
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,
@@ -376,7 +434,11 @@ private:
     // Tool→Tool stays tight unless `force` (turn boundary via new_block).
     void ensure_block_gap(SegmentKind next, int gap_rows, bool force = false);
 
+    [[nodiscard]] std::vector<std::string> build_visual_lines() const;
+    void paint_selection(OpenTuiHandle frame, int first_visible) const;
+
     std::vector<std::unique_ptr<Segment>> segments_;
+    TextSelection selection_{};
     int buf_x_{0};
     int buf_y_{0};
     int viewport_w_{0};

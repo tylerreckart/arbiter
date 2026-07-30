@@ -297,6 +297,75 @@ TEST_CASE("first user echo has a lead-in blank under the header") {
     CHECK(view.total_visual_rows() == 4);
 }
 
+TEST_CASE("mouse selection extracts plain text from prose scrollback") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    StyledLine line;
+    styled_append(line, StyleId::Default, "hello world");
+    view.append_prose({line}, /*new_block=*/true);
+
+    // Lead-in blank + body: select "world" on the body row.
+    CHECK(view.total_visual_rows() == 2);
+    view.set_selection({/*row=*/1, /*col=*/6}, {/*row=*/1, /*col=*/11});
+    CHECK(view.has_selection());
+    CHECK(view.selection_text() == "world");
+
+    view.clear_selection();
+    CHECK_FALSE(view.has_selection());
+    CHECK(view.selection_text().empty());
+}
+
+TEST_CASE("mouse selection spans multiple visual rows") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    StyledLine a;
+    styled_append(a, StyleId::Default, "alpha");
+    StyledLine b;
+    styled_append(b, StyleId::Default, "beta");
+    view.append_prose({a, b}, /*new_block=*/true);
+
+    // Rows: blank, alpha, beta
+    CHECK(view.total_visual_rows() == 3);
+    view.set_selection({/*row=*/1, /*col=*/2}, {/*row=*/2, /*col=*/3});
+    CHECK(view.selection_text() == "pha\nbet");
+}
+
+TEST_CASE("hit_cell_at maps terminal clicks into scroll content") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    StyledLine line;
+    styled_append(line, StyleId::Default, "hit me");
+    view.append_prose({line}, /*new_block=*/true);
+
+    const TuiDesign& d = tui_design();
+    const int pad = tui_pane_edge_pad(tui.cols(), d);
+    const int inset = std::max(1, pad);
+    const int x = tui.left_col() - 1 + pad + 1 + inset;
+    // Body row sits after the lead-in blank.
+    const int y = tui.scroll_top_row() - 1 + 1
+        + std::max(0, d.layout.scroll_pad_y)
+        + 1;  // skip lead-in blank
+
+    auto cell = view.hit_cell_at(tui, x, y, /*scroll_offset=*/0);
+    REQUIRE(cell.has_value());
+    CHECK(cell->row == 1);
+    CHECK(cell->col == 0);
+
+    CHECK_FALSE(view.hit_cell_at(tui, 0, 0, 0).has_value());
+}
+
 TEST_CASE("click toggles expandable segment under the pointer") {
     load_tui_design("");
     TUI tui;
