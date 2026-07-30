@@ -447,6 +447,8 @@ void cmd_oneshot(const std::string& agent_id, const std::string& msg) {
                                                      /*exec_allowed=*/false);
     wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
                             /*conversation_id=*/0);
+    // Host one-shot CLI writes the process cwd (API capture interceptor off).
+    orch.set_write_interceptor(nullptr);
 
     auto resp = orch.send(agent_id, msg);
     if (resp.ok) {

@@ -3,10 +3,10 @@
 //
 // First-class apply/undo for unified ```diff fences streamed into the TUI.
 // Parses one-file unified diffs, validates paths stay under a workspace
-// root (process cwd by default), applies with exact hunk-header matching
-// (no whole-file context scan), and returns an undo snapshot so
-// `/diff undo` can restore the pre-image when the file has not changed
-// since apply.
+// root (process cwd by default), applies with hunk-header matching and a
+// unique-context fallback when the header offset is stale, and returns an
+// undo snapshot so `/diff undo` can restore the pre-image when the file
+// has not changed since apply.
 
 #include <cstdint>
 #include <optional>
@@ -63,12 +63,14 @@ struct DiffUndoSnapshot {
 
 // Apply `patch` under `workspace_root` (must be an existing directory).
 // Empty workspace_root ⇒ current_path().  Refuses absolute/escaping
-// paths, stale context (when the target already exists), and unsupported
-// patch shapes.  If the target file does not exist, it is created from
-// the patch's new-side lines when the patch is a single hunk or an
-// explicit new-file (`--- /dev/null`); multi-hunk edit patches are
-// refused because omitted lines between hunks cannot be reconstructed.
-// Callers treat apply as the permission grant — no separate write confirm.
+// paths, ambiguous/stale context (when the target already exists), and
+// unsupported patch shapes.  When the hunk header offset misses, applies
+// only if the old-side context matches exactly once elsewhere in the file.
+// If the target file does not exist, it is created from the patch's
+// new-side lines when the patch is a single hunk or an explicit new-file
+// (`--- /dev/null`); multi-hunk edit patches are refused because omitted
+// lines between hunks cannot be reconstructed.  Callers treat apply as
+// the permission grant — no separate write confirm.
 DiffApplyResult apply_unified_diff(std::string_view patch,
                                    std::string_view workspace_root = {});
 

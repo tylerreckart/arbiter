@@ -712,6 +712,15 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_prompt_bridge COMMAND unit_prompt_bridge)
 
+    add_executable(unit_interactive_prompt
+        tests/test_interactive_prompt.cpp
+    )
+    target_include_directories(unit_interactive_prompt PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_interactive_prompt COMMAND unit_interactive_prompt)
+
     add_executable(unit_mouse_decode
         tests/test_mouse_decode.cpp
     )

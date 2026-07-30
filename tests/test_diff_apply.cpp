@@ -74,6 +74,25 @@ TEST_CASE("parse_unified_diff: rejects absolute / traversal / multi-file") {
     CHECK_FALSE(parse_unified_diff(
         "--- /etc/passwd\n+++ /etc/passwd\n@@ -1 +1 @@\n-x\n+y\n")
                     .error.empty());
+    // a// and a/.// must not collapse into a relative cwd write.
+    CHECK_FALSE(parse_unified_diff(
+        "--- a//etc/passwd\n+++ b//etc/passwd\n@@ -1 +1 @@\n-x\n+y\n")
+                    .error.empty());
+    CHECK_FALSE(parse_unified_diff(
+        "--- a/.//etc/passwd\n+++ b/.//etc/passwd\n@@ -1 +1 @@\n-x\n+y\n")
+                    .error.empty());
+}
+
+TEST_CASE("parse_unified_diff: collapses ./ path segments") {
+    auto p = parse_unified_diff(
+        "--- a/./src/foo.cpp\n"
+        "+++ b/./src/foo.cpp\n"
+        "@@ -1 +1 @@\n"
+        "-x\n"
+        "+y\n");
+    CHECK(p.error.empty());
+    CHECK(p.old_path == "src/foo.cpp");
+    CHECK(p.new_path == "src/foo.cpp");
 }
 
 TEST_CASE("apply_unified_diff: edit + undo") {
@@ -215,24 +234,76 @@ TEST_CASE("undo refuses when file changed after apply") {
     CHECK(u.error.find("changed since apply") != std::string::npos);
 }
 
-TEST_CASE("apply_unified_diff: exact offset only — no context scan") {
+TEST_CASE("apply_unified_diff: unique context fallback when offset is stale") {
     TempDir dir;
-    // Same context appears twice; hunk targets the second occurrence.
-    write_text(dir.path / "foo.txt", "x\na\nb\nc\na\nb\nc\n");
-    const char* wrong_offset =
+    write_text(dir.path / "foo.txt", "x\na\nb\nc\n");
+    // Header claims line 9, but unique context is at lines 2-4.
+    const char* stale_header =
         "--- a/foo.txt\n"
         "+++ b/foo.txt\n"
-        "@@ -2,3 +2,3 @@\n"   // first "a b c" block
+        "@@ -9,3 +9,3 @@\n"
         " a\n"
         "-b\n"
         "+B\n"
         " c\n";
-    auto ok_first = apply_unified_diff(wrong_offset, dir.path.string());
+    auto r = apply_unified_diff(stale_header, dir.path.string());
+    REQUIRE(r.ok);
+    CHECK(read_text(dir.path / "foo.txt") == "x\na\nB\nc\n");
+}
+
+TEST_CASE("apply_unified_diff: ambiguous duplicate context refuses apply") {
+    TempDir dir;
+    write_text(dir.path / "foo.txt", "a\nb\nc\nx\na\nb\nc\n");
+    // Wrong header + context that matches twice → refuse (not silent pick).
+    const char* ambiguous =
+        "--- a/foo.txt\n"
+        "+++ b/foo.txt\n"
+        "@@ -99,3 +99,3 @@\n"
+        " a\n"
+        "-b\n"
+        "+B\n"
+        " c\n";
+    auto r = apply_unified_diff(ambiguous, dir.path.string());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("ambiguous") != std::string::npos);
+    CHECK(read_text(dir.path / "foo.txt") == "a\nb\nc\nx\na\nb\nc\n");
+}
+
+TEST_CASE("apply_unified_diff: exact header still preferred when it matches") {
+    TempDir dir;
+    write_text(dir.path / "foo.txt", "x\na\nb\nc\na\nb\nc\n");
+    const char* first_block =
+        "--- a/foo.txt\n"
+        "+++ b/foo.txt\n"
+        "@@ -2,3 +2,3 @@\n"
+        " a\n"
+        "-b\n"
+        "+B\n"
+        " c\n";
+    auto ok_first = apply_unified_diff(first_block, dir.path.string());
     REQUIRE(ok_first.ok);
     CHECK(read_text(dir.path / "foo.txt") == "x\na\nB\nc\na\nb\nc\n");
+}
 
-    // Reset and aim the header at a non-matching offset while identical
-    // context exists elsewhere — must fail, not silently patch the other copy.
+TEST_CASE("apply_unified_diff: accepts a/./path and unmarked context lines") {
+    TempDir dir;
+    fs::create_directories(dir.path / "sub");
+    write_text(dir.path / "sub" / "foo.txt", "a\nb\nc\n");
+    const char* patch =
+        "--- a/./sub/foo.txt\n"
+        "+++ b/./sub/foo.txt\n"
+        "@@ -1,3 +1,3 @@\n"
+        "a\n"   // missing leading space (LLM footgun)
+        "-b\n"
+        "+B\n"
+        "c\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    REQUIRE(r.ok);
+    CHECK(read_text(dir.path / "sub" / "foo.txt") == "a\nB\nc\n");
+}
+
+TEST_CASE("apply_unified_diff: truly stale context still fails") {
+    TempDir dir;
     write_text(dir.path / "bar.txt", "a\nb\nc\nx\na\nb\nc\n");
     const char* bad_offset =
         "--- a/bar.txt\n"
