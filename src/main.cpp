@@ -2488,25 +2488,27 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (p.parent_pane != nullptr &&
                     !p.spawn_flowed.exchange(true)) {
 
-                    bool parent_alive = false;
                     Pane* parent = p.parent_pane;
                     {
+                        // Hold layout_mu across the alive check *and* the
+                        // push: close can destroy `parent` the instant we
+                        // unlock, and cmd_queue lives on the Pane.
                         std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                        bool parent_alive = false;
                         layout.for_each_pane([&](Pane& other) {
                             if (&other == parent) parent_alive = true;
                         });
-                    }
-
-                    if (parent_alive) {
-                        std::string task_preview = p.spawn_message.size() > 80
-                            ? p.spawn_message.substr(0, 77) + "..."
-                            : p.spawn_message;
-                        std::string frame = "[PANE RESULT from '"
-                            + p.current_agent + "' (task: "
-                            + task_preview + ")]\n"
-                            + p.last_response
-                            + "\n[END PANE RESULT]";
-                        parent->cmd_queue.push(frame);
+                        if (parent_alive) {
+                            std::string task_preview = p.spawn_message.size() > 80
+                                ? p.spawn_message.substr(0, 77) + "..."
+                                : p.spawn_message;
+                            std::string frame = "[PANE RESULT from '"
+                                + p.current_agent + "' (task: "
+                                + task_preview + ")]\n"
+                                + p.last_response
+                                + "\n[END PANE RESULT]";
+                            parent->cmd_queue.push(frame);
+                        }
                     }
 
                     {
@@ -2534,6 +2536,18 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         }
 
         Pane* spawner_pane = g_active_pane;
+        // Mid-close: main has moved this pane's exec_thread out for join, so
+        // the Pane is still in the tree but must not become a parent — that
+        // would leave children with a dangling parent_pane after destroy.
+        if (spawner_pane && !spawner_pane->exec_thread.joinable()) {
+            spawner_pane = nullptr;
+        } else if (spawner_pane) {
+            bool spawner_alive = false;
+            layout.for_each_pane([&](Pane& p) {
+                if (&p == spawner_pane) spawner_alive = true;
+            });
+            if (!spawner_alive) spawner_pane = nullptr;
+        }
         std::string captured_agent = req_agent;
         Pane* new_pane_ptr = layout.split_focused(
             LayoutTree::Orient::Vertical,
@@ -2768,6 +2782,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         return true;
     };
 
+    // Drop spawn parent links before destroying a pane. Join runs outside
+    // layout_mu, so the closing pane can still finish an in-flight /pane
+    // spawn that sets child.parent_pane = victim; clearing here prevents
+    // dangling parent pointers after close_pane.
+    auto clear_spawn_parent_refs = [&](Pane* parent) {
+        if (!parent) return;
+        layout.for_each_pane([&](Pane& p) {
+            if (p.parent_pane == parent) p.parent_pane = nullptr;
+        });
+    };
+
     // Service any pending-close requests queued by pane exec threads that
     // finished their delegated task.  Runs on the main thread; prompts the
     // user on the focused pane ("close X? [y/N]") and — on yes — stops the
@@ -2853,6 +2878,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     });
                     if (!alive) continue;
                     clear_mouse_drag();
+                    clear_spawn_parent_refs(pc.pane);
                     layout.close_pane(pc.pane, [](Pane&) {});
                     g_getc_state.pane = &layout.focused();
                     ui_ctx.focused_pane = &layout.focused();
@@ -2931,6 +2957,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                         if (&p == victim) still_alive = true;
                     });
                     if (still_alive) {
+                        clear_spawn_parent_refs(victim);
                         layout.close_pane(victim, [](Pane&) {});
                     }
                 }
