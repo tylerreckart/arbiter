@@ -27,6 +27,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
 
 ### Fixed
+- **TUI fatal SIGSEGV/SIGHUP on pane close and SIGABRT in DiffPanel.** Pane
+  close/shutdown no longer joins exec threads while holding `layout_mu`
+  (deadlock with `/pane` spawn, `/find`, or `present_all` → hung
+  `pthread_join`, then SIGHUP/SIGSEGV when the terminal drops). Close also
+  cancels the pane's in-flight turn (as docs promise) so join is not stuck
+  on a live network call. Confirm / diff-review / pending-close prompts and
+  PgUp/expand handlers mutate scrollback under `layout_mu` so the output
+  pump cannot UAF `DiffSegment` mid-draw. Diff panel wrap invalidation no
+  longer re-parses the patch every frame.
 - **Stacked pane gutters.** Inactive panes are content-only (no readline);
   only the focused pane paints an input box. Stacked gutters are a single
   separator cell (matching vertical splits): no trailing pad on mid-stack

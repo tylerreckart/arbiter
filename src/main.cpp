@@ -69,6 +69,7 @@
 #include <set>
 #include <sstream>
 #include <unordered_set>
+#include <vector>
 #include <ctime>
 #include <cstdio>
 #include <unistd.h>
@@ -469,7 +470,9 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             return;
         }
         if (!layout_ptr) return;
-        // try_lock: never block if main already holds layout_mu for join.
+        // try_lock: never block if main already holds layout_mu (e.g. chord
+        // dispatch / present). Join no longer holds the lock, but other
+        // paths still do.
         std::unique_lock<std::recursive_mutex> lk(layout_mu, std::try_to_lock);
         if (lk) layout_ptr->focused().editor.interrupt();
     };
@@ -761,7 +764,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             });
 
         Pane* raw = p.get();
-        p->editor.set_scroll_handler([raw, &pump_notify, &orch](int direction, int step) {
+        p->editor.set_scroll_handler([raw, &pump_notify, &orch, &layout_mu](int direction, int step) {
+            // Must serialize against the output pump's drain/draw under
+            // layout_mu — replay_load_previous_chunk mutates segments_.
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
             const int max_off = pane_history_max_scroll(*raw);
             if (direction < 0) {
                 raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
@@ -782,7 +788,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             if (pump_notify) pump_notify();
         });
-        p->editor.set_code_expand_handler([raw, &pump_notify]() {
+        p->editor.set_code_expand_handler([raw, &pump_notify, &layout_mu]() {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
             if (pane_history_toggle_code_block(*raw, raw->scroll_offset) && pump_notify) {
                 pump_notify();
             }
@@ -805,7 +812,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             // Unblock any in-flight confirm / diff-review waiter before
             // cancelling the turn — otherwise fut.get() hangs and pane
-            // close deadlocks under layout_mu.
+            // close blocks forever in join.
             fail_pending_prompts();
             // Scoped cancel: stop this pane's turn only so sibling panes
             // keep streaming (#46 / #48).  atomic_load: races exec reset.
@@ -1164,10 +1171,16 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     auto present_unlocked = [&]() {
         pane_history_present(ui_ctx, pane_hooks);
     };
-    ui_ctx.present_all = [&]() {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+    // Caller already holds layout_mu. Mirrors present_all's sync step without
+    // re-locking (confirm/diff/close paths paint under the same guard that
+    // mutates scrollback).
+    auto present_holding_lock = [&]() {
         if (sync_layout_to_terminal()) refresh_focused_input.store(true);
         present_unlocked();
+    };
+    ui_ctx.present_all = [&]() {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        present_holding_lock();
     };
 
     present_unlocked();
@@ -2550,7 +2563,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             pane_history_set_cols(p, p.tui.cols());
         });
         persist_layout();
-        ui_ctx.present_all();
+        present_holding_lock();
 
         refresh_focused_input.store(true);
         layout.focused().editor.interrupt();
@@ -2650,26 +2663,33 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         }
         if (!pending) return false;
 
-        Pane& pane = layout.focused();
         // Multi-line permission card: action, target, content preview.
         std::vector<std::string> preview = req.preview_lines;
         if (!req.summary.empty()) {
             preview.insert(preview.begin(), req.summary);
         }
         auto card = arbiter::styled_permission_card(req.action, req.target, preview);
-        // new_block supplies block_gap — do not also prepend an empty StyledLine.
-        pane_history_push_prose(pane, card, true);
-        ui_ctx.present_all();
+        // Scroll mutations must hold layout_mu — the output pump draws
+        // PaneScrollView under the same lock (UAF → DiffPanel::set_patch abort).
+        {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            // new_block supplies block_gap — do not also prepend an empty StyledLine.
+            pane_history_push_prose(layout.focused(), card, true);
+            present_holding_lock();
+        }
 
         const int key = read_confirm_key();
         bool yes = (key == 'y' || key == 'Y');
-        pane_history_push_prose(
-            pane,
-            {arbiter::styled_activity_line(
-                yes ? "[user accepted input]" : "[user denied input]",
-                yes ? StyleId::Success : StyleId::Error)},
-            true);
-        ui_ctx.present_all();
+        {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            pane_history_push_prose(
+                layout.focused(),
+                {arbiter::styled_activity_line(
+                    yes ? "[user accepted input]" : "[user denied input]",
+                    yes ? StyleId::Success : StyleId::Error)},
+                true);
+            present_holding_lock();
+        }
         arbiter::complete_prompt_promise(pending, yes);
         return true;
     };
@@ -2692,11 +2712,13 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         }
         if (!pending) return false;
 
-        Pane& pane = layout.focused();
         auto card = arbiter::styled_diff_review_card(
             patch_id, path, summary, preview);
-        pane_history_push_prose(pane, card, true);
-        ui_ctx.present_all();
+        {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            pane_history_push_prose(layout.focused(), card, true);
+            present_holding_lock();
+        }
 
         char decision = 0;
         while (true) {
@@ -2734,11 +2756,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             (decision == 'a' || decision == 'A') ? StyleId::Success
             : (decision == 'r' || decision == 'R') ? StyleId::Warning
             : StyleId::Dim;
-        pane_history_push_prose(
-            pane,
-            {arbiter::styled_activity_line(label, style)},
-            true);
-        ui_ctx.present_all();
+        {
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            pane_history_push_prose(
+                layout.focused(),
+                {arbiter::styled_activity_line(label, style)},
+                true);
+            present_holding_lock();
+        }
         arbiter::complete_prompt_promise(pending, decision);
         return true;
     };
@@ -2770,43 +2795,73 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             if (!still_alive) continue;
 
             // Render the confirm prompt in the focused pane's scrollback.
-            Pane& shown = layout.focused();
-            StyledLine prompt_line;
-            styled_append(prompt_line, StyleId::Warning,
-                          "pane '" + pc.agent_id + "' finished — close it? [y/N]");
-            pane_history_push_prose(shown, {prompt_line}, true);
-            ui_ctx.present_all();
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                StyledLine prompt_line;
+                styled_append(prompt_line, StyleId::Warning,
+                              "pane '" + pc.agent_id + "' finished — close it? [y/N]");
+                pane_history_push_prose(layout.focused(), {prompt_line}, true);
+                present_holding_lock();
+            }
 
             const int key = read_confirm_key();
             bool yes = (key == 'y' || key == 'Y');
 
-            StyledLine answer;
-            if (yes) {
-                styled_append(answer, StyleId::Success,
-                              "[closing '" + pc.agent_id + "']");
-            } else {
-                styled_append(answer, StyleId::Error,
-                              "[keeping '" + pc.agent_id + "' open]");
+            {
+                std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                StyledLine answer;
+                if (yes) {
+                    styled_append(answer, StyleId::Success,
+                                  "[closing '" + pc.agent_id + "']");
+                } else {
+                    styled_append(answer, StyleId::Error,
+                                  "[keeping '" + pc.agent_id + "' open]");
+                }
+                pane_history_push_prose(layout.focused(), {answer}, true);
+                present_holding_lock();
             }
-            pane_history_push_prose(shown, {answer}, true);
-            ui_ctx.present_all();
 
             if (yes) {
-                // Unblock confirm/diff waiters before join under layout_mu.
+                // Unblock confirm/diff waiters before join. Never join while
+                // holding layout_mu — exec threads take that lock for /pane
+                // spawn, /find, present_all, etc. (hang → SIGHUP/SIGSEGV in
+                // pthread_join when the terminal is closed mid-wait).
                 fail_pending_prompts();
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                clear_mouse_drag();
-                layout.close_pane(pc.pane, [&](Pane& p) {
-                    p.cmd_queue.stop();
-                    if (p.exec_thread.joinable()) p.exec_thread.join();
-                });
-                g_getc_state.pane = &layout.focused();
-                ui_ctx.focused_pane = &layout.focused();
-                layout.for_each_pane([&](Pane& p) {
-                    pane_history_set_cols(p, p.tui.cols());
-                });
-                persist_layout();
-                present_unlocked();
+                std::thread to_join;
+                {
+                    std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                    bool alive = false;
+                    layout.for_each_pane([&](Pane& p) {
+                        if (&p == pc.pane) alive = true;
+                    });
+                    if (!alive) continue;
+                    clear_mouse_drag();
+                    pc.pane->cmd_queue.stop();
+                    // Docs: close cancels the in-flight turn so join returns
+                    // promptly instead of waiting out a network call.
+                    if (auto tok = std::atomic_load(&pc.pane->turn_cancel)) {
+                        orch.cancel_token(tok);
+                    }
+                    to_join = std::move(pc.pane->exec_thread);
+                }
+                if (to_join.joinable()) to_join.join();
+                {
+                    std::lock_guard<std::recursive_mutex> lk(layout_mu);
+                    bool alive = false;
+                    layout.for_each_pane([&](Pane& p) {
+                        if (&p == pc.pane) alive = true;
+                    });
+                    if (!alive) continue;
+                    clear_mouse_drag();
+                    layout.close_pane(pc.pane, [](Pane&) {});
+                    g_getc_state.pane = &layout.focused();
+                    ui_ctx.focused_pane = &layout.focused();
+                    layout.for_each_pane([&](Pane& p) {
+                        pane_history_set_cols(p, p.tui.cols());
+                    });
+                    persist_layout();
+                    present_holding_lock();
+                }
             }
         }
         return true;
@@ -2814,12 +2869,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     // Chord dispatcher — runs after the focused editor returned with a
     // pending chord.  Takes layout_mu so the pump thread's iteration can't
-    // observe a partially-mutated tree.  On close, we stop the victim pane's
+    // observe a partially-mutated tree.  On close, stop the victim pane's
     // cmd_queue and join its exec thread BEFORE the Pane is destroyed;
-    // join() can block for however long the in-flight handle() takes (the
-    // agent turn finishes or orch.cancel() aborts it).
+    // join() is done *outside* layout_mu (see service_pending_closes).
     auto dispatch_chord = [&](char cmd) {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        std::unique_lock<std::recursive_mutex> lk(layout_mu);
         clear_mouse_drag();
         switch (cmd) {
             case 'w':
@@ -2859,13 +2913,26 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 break;
             case 'c':
                 if (layout.pane_count() > 1) {
-                    // Unblock confirm/diff waiters before join (we hold
-                    // layout_mu — a hung fut.get() would deadlock).
+                    // Unblock confirm/diff waiters before join.
                     fail_pending_prompts();
-                    layout.close_focused([&](Pane& p) {
-                        p.cmd_queue.stop();
-                        if (p.exec_thread.joinable()) p.exec_thread.join();
+                    Pane* victim = &layout.focused();
+                    victim->cmd_queue.stop();
+                    // Match docs/tui keybindings: close cancels the in-flight
+                    // turn so join is not stuck on a live network call.
+                    if (auto tok = std::atomic_load(&victim->turn_cancel)) {
+                        orch.cancel_token(tok);
+                    }
+                    std::thread to_join = std::move(victim->exec_thread);
+                    lk.unlock();
+                    if (to_join.joinable()) to_join.join();
+                    lk.lock();
+                    bool still_alive = false;
+                    layout.for_each_pane([&](Pane& p) {
+                        if (&p == victim) still_alive = true;
                     });
+                    if (still_alive) {
+                        layout.close_pane(victim, [](Pane&) {});
+                    }
                 }
                 break;
             case 'z':
@@ -3680,17 +3747,27 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     // ── Shutdown ───────────────────────────────────────────────────────────
     // Fail any confirm/diff waiters before joining so exec threads cannot
-    // stay blocked in fut.get() while we hold layout_mu across join.
+    // stay blocked in fut.get() while we wait on join.
     fail_pending_prompts();
-    // Stop every pane's queue, then join its exec thread.  Do all stops
-    // BEFORE joins so panes unblock in parallel.  After that the pump is
-    // the only producer left and we can shut it down too.
+    // Stop every pane's queue under layout_mu, move threads out, then join
+    // *outside* the lock so an exec thread blocked on layout_mu (spawn /
+    // present / find) can finish.  After that the pump is the only producer
+    // left and we can shut it down too.
+    std::vector<std::thread> exec_joins;
     {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
-        layout.for_each_pane([&](Pane& p) { p.cmd_queue.stop(); });
         layout.for_each_pane([&](Pane& p) {
-            if (p.exec_thread.joinable()) p.exec_thread.join();
+            p.cmd_queue.stop();
+            if (auto tok = std::atomic_load(&p.turn_cancel)) {
+                orch.cancel_token(tok);
+            }
+            if (p.exec_thread.joinable()) {
+                exec_joins.push_back(std::move(p.exec_thread));
+            }
         });
+    }
+    for (auto& t : exec_joins) {
+        if (t.joinable()) t.join();
     }
 
     pump_stop = true;
