@@ -624,11 +624,17 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     } pending_after_cancel;
     std::atomic<bool> pending_cancel_wait{false};
 
-    auto clear_mouse_drag = [&]() {
-        mouse_drag = {};
+    auto clear_mouse_select = [&]() { mouse_select = {}; };
+    // Drop the gesture *and* any in-progress highlight so a cancelled drag
+    // (or layout teardown) cannot leave a stuck selection with no release/copy.
+    auto clear_mouse_select_and_highlight = [&]() {
+        if (mouse_select.pane) pane_history_clear_selection(*mouse_select.pane);
         mouse_select = {};
     };
-    auto clear_mouse_select = [&]() { mouse_select = {}; };
+    auto clear_mouse_drag = [&]() {
+        mouse_drag = {};
+        clear_mouse_select_and_highlight();
+    };
     auto clear_all_selections = [&]() {
         if (!layout_ptr) return;
         layout_ptr->for_each_pane([&](Pane& p) {
@@ -3597,7 +3603,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             }
             if (ev.type == MouseType::Move) return false;
             // Other events cancel an in-progress select gesture.
-            clear_mouse_select();
+            clear_mouse_select_and_highlight();
         }
 
         const int cols = arbiter::term_cols();

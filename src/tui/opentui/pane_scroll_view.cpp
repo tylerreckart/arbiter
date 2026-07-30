@@ -43,6 +43,8 @@ std::size_t utf8_next(std::string_view text, std::size_t i) {
 }
 
 // Slice `text` to the half-open display-column range [start_col, end_col).
+// Wide grapheme clusters that overlap the range are included whole (terminals
+// cannot split a cluster across a selection boundary).
 std::string slice_by_cols(std::string_view text, int start_col, int end_col) {
     if (end_col <= start_col || start_col < 0) return {};
     std::string out;
@@ -54,80 +56,17 @@ std::string slice_by_cols(std::string_view text, int start_col, int end_col) {
         const std::string_view cluster = text.substr(i, n);
         const int cw = static_cast<int>(arbiter::display_width(cluster));
         if (col + cw > start_col && col < end_col) {
-            if (col >= start_col && col + cw <= end_col) {
-                out.append(cluster);
-            } else if (col >= start_col) {
-                // Cluster would overrun end — stop rather than split.
+            out.append(cluster);
+            if (col + cw > end_col) {
+                // Cluster starts in-range but would overrun end — stop after
+                // including it rather than splitting.
                 break;
             }
-            // else: cluster starts before start_col; skip it.
         }
         col += cw;
         i += n;
         if (col >= end_col) break;
     }
-    return out;
-}
-
-// Soft-wrap plain text to `cols` on word boundaries (approximates OpenTUI
-// kWrapWord for selection copy). Over-long tokens break on cell boundaries.
-std::vector<std::string> soft_wrap_word(std::string_view text, int cols) {
-    if (cols < 1) cols = 1;
-    if (text.empty()) return {std::string{}};
-    if (static_cast<int>(arbiter::display_width(text)) <= cols) {
-        return {std::string(text)};
-    }
-
-    std::vector<std::string> out;
-    std::string row;
-    std::size_t i = 0;
-    while (i < text.size()) {
-        const bool is_space = text[i] == ' ';
-        std::size_t j = i + 1;
-        if (is_space) {
-            while (j < text.size() && text[j] == ' ') ++j;
-        } else {
-            while (j < text.size() && text[j] != ' ') ++j;
-        }
-        const std::string_view tok = text.substr(i, j - i);
-        const int tok_w = static_cast<int>(arbiter::display_width(tok));
-        const int row_w = static_cast<int>(arbiter::display_width(row));
-
-        if (!row.empty() && row_w + tok_w > cols) {
-            if (is_space) {
-                out.push_back(std::move(row));
-                row.clear();
-                i = j;
-                continue;
-            }
-            out.push_back(std::move(row));
-            row.clear();
-        }
-
-        if (tok_w > cols) {
-            std::string remain(tok);
-            while (!remain.empty()) {
-                const int room = cols - static_cast<int>(arbiter::display_width(row));
-                if (room < 1) {
-                    out.push_back(std::move(row));
-                    row.clear();
-                    continue;
-                }
-                std::string chunk = arbiter::trim_to_display_cols(remain, room);
-                if (chunk.empty()) chunk.assign(remain, 0, 1);
-                row += chunk;
-                remain.erase(0, chunk.size());
-                if (static_cast<int>(arbiter::display_width(row)) >= cols) {
-                    out.push_back(std::move(row));
-                    row.clear();
-                }
-            }
-        } else {
-            row.append(tok.data(), tok.size());
-        }
-        i = j;
-    }
-    if (!row.empty() || out.empty()) out.push_back(std::move(row));
     return out;
 }
 
@@ -141,6 +80,49 @@ void fit_segment_visual_lines(std::vector<std::string>& out,
     } else if (out.size() > want) {
         out.resize(want);
     }
+}
+
+// Pull one plain-text string per OpenTUI visual row from a TextBufferView.
+// Uses the view's own wrap so selection copy matches what is painted.
+void collect_opentui_visual_lines(OpenTuiHandle view,
+                                  int content_w,
+                                  int rows,
+                                  std::vector<std::string>& out) {
+    if (view == 0 || rows <= 0) return;
+    const int cols = std::max(1, content_w);
+    // Cover the full scrollback so local-selection Y is absolute (draw() may
+    // have left a clipped viewport that offsets coords).
+    textBufferViewSetWrapWidth(view, static_cast<std::uint32_t>(cols));
+    textBufferViewSetViewport(view,
+                              0,
+                              0,
+                              static_cast<std::uint32_t>(cols),
+                              static_cast<std::uint32_t>(rows));
+    textBufferViewSetFirstLineOffset(view, 0);
+
+    std::vector<std::uint8_t> buf(std::max(256, cols * 4 + 64));
+    for (int y = 0; y < rows; ++y) {
+        // Select the full visual row. focusX past the wrap width clamps to the
+        // row's end so start..end covers the wrapped slice.
+        textBufferViewSetLocalSelection(
+            view,
+            /*anchor_x=*/0,
+            /*anchor_y=*/y,
+            /*focus_x=*/cols,
+            /*focus_y=*/y,
+            /*bg=*/nullptr,
+            /*fg=*/nullptr);
+        std::uint32_t n = textBufferViewGetSelectedText(
+            view, buf.data(), static_cast<std::uint32_t>(buf.size()));
+        while (n == buf.size() && buf.size() < (1u << 20)) {
+            buf.resize(buf.size() * 2);
+            n = textBufferViewGetSelectedText(
+                view, buf.data(), static_cast<std::uint32_t>(buf.size()));
+        }
+        out.emplace_back(reinterpret_cast<const char*>(buf.data()),
+                         static_cast<std::size_t>(n));
+    }
+    textBufferViewResetLocalSelection(view);
 }
 
 std::vector<StyledLine> prepare_prose_lines(std::vector<StyledLine> lines,
@@ -366,28 +348,9 @@ bool PaneScrollView::ProseSegment::find_skip_line(std::size_t index) const {
 void PaneScrollView::ProseSegment::collect_visual_lines(
     std::vector<std::string>& out, int content_w) const {
     const int cols = std::max(1, content_w);
-    const std::size_t begin = out.size();
-    for (const StyledLine& line : source_) {
-        if (arbiter::is_styled_user_echo_line(line)) {
-            for (const StyledLine& row :
-                 arbiter::wrap_pad_styled_user_echo_line(line, cols)) {
-                out.push_back(row.text);
-            }
-            continue;
-        }
-        if (arbiter::is_styled_rule_line(line)) {
-            out.push_back(line.text);
-            continue;
-        }
-        if (line.text.empty()) {
-            out.emplace_back();
-            continue;
-        }
-        for (auto& part : soft_wrap_word(line.text, cols)) {
-            out.push_back(std::move(part));
-        }
-    }
-    fit_segment_visual_lines(out, begin, visual_rows(cols));
+    const int rows = visual_rows(cols);
+    if (rows <= 0) return;
+    collect_opentui_visual_lines(view_, cols, rows, out);
 }
 
 void PaneScrollView::ProseSegment::draw(OpenTuiHandle frame,
@@ -483,19 +446,9 @@ void PaneScrollView::TextSegment::collect_lines(std::vector<std::string>& out) c
 void PaneScrollView::TextSegment::collect_visual_lines(
     std::vector<std::string>& out, int content_w) const {
     const int cols = std::max(1, content_w);
-    const std::size_t begin = out.size();
-    std::vector<std::string> logical;
-    collect_lines(logical);
-    for (const std::string& line : logical) {
-        if (line.empty()) {
-            out.emplace_back();
-            continue;
-        }
-        for (auto& part : soft_wrap_word(line, cols)) {
-            out.push_back(std::move(part));
-        }
-    }
-    fit_segment_visual_lines(out, begin, visual_rows(cols));
+    const int rows = visual_rows(cols);
+    if (rows <= 0) return;
+    collect_opentui_visual_lines(view_, cols, rows, out);
 }
 
 void PaneScrollView::TextSegment::draw(OpenTuiHandle frame,
@@ -773,6 +726,17 @@ void PaneScrollView::DiffSegment::collect_lines(std::vector<std::string>& out) c
         out.push_back(patch_.substr(start, nl - start));
         start = nl + 1;
     }
+}
+
+void PaneScrollView::DiffSegment::collect_visual_lines(
+    std::vector<std::string>& out, int content_w) const {
+    (void)content_w;
+    if (!cached_) {
+        panel_.set_patch(patch_);
+        cached_rows_ = panel_.visual_rows();
+        cached_ = true;
+    }
+    panel_.collect_visual_lines(out);
 }
 
 void PaneScrollView::DiffSegment::draw(OpenTuiHandle frame,

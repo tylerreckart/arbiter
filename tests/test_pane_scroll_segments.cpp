@@ -339,6 +339,57 @@ TEST_CASE("mouse selection spans multiple visual rows") {
     CHECK(view.selection_text() == "pha\nbet");
 }
 
+TEST_CASE("mouse selection includes wide grapheme overlapping start col") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    // Fullwidth digit １ is two display columns. Selecting from col 1 (mid
+    // cluster) must still include the character rather than dropping it.
+    StyledLine line;
+    styled_append(line, StyleId::Default, "a\xef\xbc\x91b");  // a + １ + b
+    view.append_prose({line}, /*new_block=*/true);
+
+    CHECK(view.total_visual_rows() == 2);
+    view.set_selection({/*row=*/1, /*col=*/1}, {/*row=*/1, /*col=*/3});
+    CHECK(view.selection_text() == "\xef\xbc\x91");
+}
+
+TEST_CASE("mouse selection copies DiffPanel rows not raw patch") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    tui.begin_input();
+
+    static constexpr std::string_view kPatch =
+        "--- a/x\n"
+        "+++ b/x\n"
+        "@@ -1,2 +1,2 @@\n"
+        " context\n"
+        "-old\n"
+        "+new\n";
+    view.append_diff(kPatch);
+    const int rows = view.total_visual_rows();
+    REQUIRE(rows >= 2);
+
+    // Select the header row (row 0) — must be a filename title, not "--- a/x".
+    view.set_selection({/*row=*/0, /*col=*/0}, {/*row=*/0, /*col=*/80});
+    const std::string header = view.selection_text();
+    CHECK(header.find("--- a/") == std::string::npos);
+    CHECK(header.find("x") != std::string::npos);
+
+    // Select the whole panel; body rows should carry signs/content from the
+    // panel, not raw unified-diff hunk headers.
+    view.set_selection({/*row=*/0, /*col=*/0}, {/*row=*/rows - 1, /*col=*/80});
+    const std::string all = view.selection_text();
+    CHECK(all.find("@@ ") == std::string::npos);
+    CHECK(all.find("old") != std::string::npos);
+    CHECK(all.find("new") != std::string::npos);
+}
+
 TEST_CASE("hit_cell_at maps terminal clicks into scroll content") {
     load_tui_design("");
     TUI tui;
