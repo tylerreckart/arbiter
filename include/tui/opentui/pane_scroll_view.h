@@ -387,6 +387,9 @@ private:
         explicit NativeDiffSegment(std::string patch);
         [[nodiscard]] int visual_rows(int content_w) const override;
         void set_wrap_cols(int cols) override;
+        void collect_lines(std::vector<std::string>& out) const override;
+        void collect_visual_lines(std::vector<std::string>& out,
+                                  int content_w) const override;
         void draw(OpenTuiHandle frame,
                   int x,
                   int y,

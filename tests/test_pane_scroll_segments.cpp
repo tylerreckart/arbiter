@@ -346,15 +346,20 @@ TEST_CASE("mouse selection includes wide grapheme overlapping start col") {
     bind_view(view, tui, 80, 40);
     tui.begin_input();
 
-    // Fullwidth digit １ is two display columns. Selecting from col 1 (mid
+    // Fullwidth digit １ is two display columns. Selecting from col 2 (mid
     // cluster) must still include the character rather than dropping it.
+    // Use \u escapes — \xNN consumes all following hex digits, so \x91b is
+    // out of range (clang) / truncates (gcc).
+    const std::string body = std::string("a") + "\uFF11" + "b";  // a + １ + b
+    REQUIRE(display_width("\uFF11") == 2);
+
     StyledLine line;
-    styled_append(line, StyleId::Default, "a\xef\xbc\x91b");  // a + １ + b
+    styled_append(line, StyleId::Default, body);
     view.append_prose({line}, /*new_block=*/true);
 
     CHECK(view.total_visual_rows() == 2);
-    view.set_selection({/*row=*/1, /*col=*/1}, {/*row=*/1, /*col=*/3});
-    CHECK(view.selection_text() == "\xef\xbc\x91");
+    view.set_selection({/*row=*/1, /*col=*/2}, {/*row=*/1, /*col=*/3});
+    CHECK(view.selection_text() == "\uFF11");
 }
 
 TEST_CASE("mouse selection copies DiffPanel rows not raw patch") {
@@ -379,7 +384,7 @@ TEST_CASE("mouse selection copies DiffPanel rows not raw patch") {
     view.set_selection({/*row=*/0, /*col=*/0}, {/*row=*/0, /*col=*/80});
     const std::string header = view.selection_text();
     CHECK(header.find("--- a/") == std::string::npos);
-    CHECK(header.find("x") != std::string::npos);
+    CHECK(header.find('x') != std::string::npos);
 
     // Select the whole panel; body rows should carry signs/content from the
     // panel, not raw unified-diff hunk headers.
