@@ -311,6 +311,7 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/ansi_scroll_append.cpp
     src/tui/opentui/span_scroll_append.cpp
     src/tui/opentui/pane_input_editor.cpp
+    src/tui/clipboard.cpp
     src/tui/palette.cpp
     src/tui/sidebar.cpp
     src/tui/sidebar_format.cpp

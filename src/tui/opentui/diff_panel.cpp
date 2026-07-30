@@ -280,6 +280,48 @@ void DiffPanel::set_patch(std::string_view patch) {
     rows_ = lines_.size() + 1;
 }
 
+void DiffPanel::collect_visual_lines(std::vector<std::string>& out) const {
+    // Mirror draw()'s row layout: header, then one body row per parsed line.
+    const std::string old_title = trim_filename(header_old_);
+    const std::string new_title = trim_filename(header_new_);
+    if (!split_) {
+        const std::string& title = single_side_is_new_ ? new_title : old_title;
+        out.push_back(path_is_dev_null(title) ? std::string{} : title);
+    } else {
+        const std::string left =
+            path_is_dev_null(old_title) ? std::string{} : old_title;
+        const std::string right =
+            path_is_dev_null(new_title) ? std::string{} : new_title;
+        if (left.empty()) out.push_back(right);
+        else if (right.empty()) out.push_back(left);
+        else out.push_back(left + " | " + right);
+    }
+
+    auto format_side = [](const SideLine& side) -> std::string {
+        if (!side.show_line_number && side.content.empty()) return {};
+        std::string line;
+        if (side.sign == '-' || side.sign == '+') {
+            line.push_back(side.sign);
+            line.push_back(' ');
+        }
+        line += side.content;
+        return line;
+    };
+
+    for (const Row& r : lines_) {
+        if (!split_) {
+            const SideLine& side = single_side_is_new_ ? r.right : r.left;
+            out.push_back(format_side(side));
+            continue;
+        }
+        const std::string left = format_side(r.left);
+        const std::string right = format_side(r.right);
+        if (left.empty()) out.push_back(right);
+        else if (right.empty()) out.push_back(left);
+        else out.push_back(left + " | " + right);
+    }
+}
+
 int DiffPanel::gutter_width() const {
     std::uint32_t max_num = 0;
     for (const auto& row : lines_) {

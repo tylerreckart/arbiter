@@ -164,6 +164,32 @@ bool pane_history_toggle_expandable_at(Pane& pane, int term_x, int term_y) {
         pane.tui, term_x, term_y, pane.scroll_offset);
 }
 
+std::optional<opentui::ScrollCellPos>
+pane_history_hit_cell_at(Pane& pane, int term_x, int term_y) {
+    if (!pane.scroll) return std::nullopt;
+    return pane.scroll->hit_cell_at(
+        pane.tui, term_x, term_y, pane.scroll_offset);
+}
+
+void pane_history_set_selection(Pane& pane,
+                                opentui::ScrollCellPos anchor,
+                                opentui::ScrollCellPos focus) {
+    if (pane.scroll) pane.scroll->set_selection(anchor, focus);
+}
+
+void pane_history_clear_selection(Pane& pane) {
+    if (pane.scroll) pane.scroll->clear_selection();
+}
+
+bool pane_history_has_selection(const Pane& pane) {
+    return pane.scroll && pane.scroll->has_selection();
+}
+
+std::string pane_history_selection_text(const Pane& pane) {
+    if (!pane.scroll) return {};
+    return pane.scroll->selection_text();
+}
+
 int pane_history_total_rows(const Pane& pane) {
     if (pane.scroll) return pane.scroll->total_visual_rows();
     return 0;
