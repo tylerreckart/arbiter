@@ -83,10 +83,22 @@ void append_math_styled(StyledLine& out, std::string_view latex) {
     }
 }
 
+// True when text[j..j+1] is `\` + delim and not escaped by an extra `\`.
+static bool is_unescaped_backslash_delim(std::string_view text, size_t j, char delim) {
+    if (j + 1 >= text.size() || text[j] != '\\' || text[j + 1] != delim) return false;
+    size_t backslashes = 0;
+    size_t k = j;
+    while (k > 0 && text[k - 1] == '\\') {
+        ++backslashes;
+        --k;
+    }
+    return (backslashes % 2) == 0;
+}
+
 // Find closing \) for inline math starting after "\(".
 size_t find_inline_math_close(const std::string& text, size_t open_after) {
     for (size_t j = open_after; j + 1 < text.size(); ++j) {
-        if (text[j] == '\\' && text[j + 1] == ')') return j;
+        if (is_unescaped_backslash_delim(text, j, ')')) return j;
     }
     return std::string::npos;
 }
@@ -263,7 +275,7 @@ StyledLine make_display_math_line(std::string_view latex) {
 // First unescaped \] after `from`, or npos.
 size_t find_bracket_math_close(std::string_view text, size_t from) {
     for (size_t j = from; j + 1 < text.size(); ++j) {
-        if (text[j] == '\\' && text[j + 1] == ']') return j;
+        if (is_unescaped_backslash_delim(text, j, ']')) return j;
     }
     return std::string_view::npos;
 }

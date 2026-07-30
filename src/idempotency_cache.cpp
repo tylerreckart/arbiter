@@ -95,7 +95,7 @@ bool IdempotencyCache::put(int64_t tenant_id, const std::string& key,
         std::optional<TenantStore::IdempotencyMapping> durable;
         if (!ok) {
             durable = store->get_idempotency_key(
-                tenant_id, key, ttl_seconds_);
+                tenant_id, key, ttl_seconds_, wall_now);
         }
         bool do_store_prune = false;
         {
