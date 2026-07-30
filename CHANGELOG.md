@@ -7,6 +7,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-07-30
+
+Minor release: first-class `/diff` apply / reject / undo with interactive
+review, plus a durable API idempotency map across restarts.
+
 ### Added
 - **Interactive `/diff` review (TUI).** `/diff` and `/diff review [N]` prompt
   `[a]pply` / `[r]eject` / Esc on pending patches (same interrupt bridge as
@@ -25,6 +30,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   after an API server restart joins the original `request_id` instead of
   starting a second run. The in-process table remains an L1 cache;
   SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
+
+### Fixed
+- **Pane cap on keyboard splits.** Ctrl-W chord splits enforce
+  `kMaxLayoutSnapshotLeaves` (agent spawn already did), so layouts cannot
+  grow past eight leaves and then silently fail `layout.json` saves.
+- **Layout snapshot persistence.** Failed snapshot writes are logged;
+  out-of-range `focused_leaf` values are rejected on parse.
+- **Workspace quota measurement saturation.** `measure_workspace_bytes`
+  saturates instead of wrapping int64 so quota checks stay honest.
 
 ## [0.8.9] — 2026-07-26
 
