@@ -7,11 +7,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-## [0.9.0] — 2026-07-29
+## [0.9.1] — 2026-07-30
 
-Minor release: interactive `/diff` apply/reject/undo review, durable API
-idempotency across restarts, LaTeX→Unicode math in the TUI, refreshed
-starter constitutions, and pane / sandbox / interrupt hardening.
+Patch release: mouse text selection in scrollback, unified interactive
+prompt queue for confirms and diff reviews, plus TUI pane-close /
+DiffPanel and `/write` / confirm sequencing fixes.
 
 ### Added
 - **Mouse text selection in scrollback.** Drag across the output area to
@@ -25,28 +25,6 @@ starter constitutions, and pane / sandbox / interrupt hardening.
   cards; keys are `[a]`pply / `[r]`eject / `[A]`llow all (session accept-edits)
   / Esc. File-add diffs render full-width without a `/dev/null` half.
   See [`docs/tui/output-ux.md`](docs/tui/output-ux.md).
-- **Interactive `/diff` review (TUI).** `/diff` and `/diff review [N]` prompt
-  on pending patches (same queue as tool confirms). `/diff apply` remains a
-  direct write. Missing target files are created from the patch’s new-side
-  lines; apply is the permission grant (no `/write` confirm). See
-  [`docs/tui/commands.md`](docs/tui/commands.md).
-- **`/diff` apply / reject / undo (TUI).** Streamed ` ```diff ` fences
-  register as pane-local `Patch #N` proposals with an action line above
-  the rendered panel. `/diff apply [N]` writes the unified patch under
-  the process cwd (exact hunk match; refuses absolute/escaping paths and
-  stale context); `/diff undo [N]` restores the pre-image when the file
-  is unchanged since apply; `/diff reject [N]` keeps the render and
-  marks the proposal rejected. See [`docs/tui/commands.md`](docs/tui/commands.md).
-- **Durable idempotency map.** `Idempotency-Key` mappings now persist in
-  `tenants.db` (`idempotency_keys`) with the same 24h TTL. A client retry
-  after an API server restart joins the original `request_id` instead of
-  starting a second run. The in-process table remains an L1 cache;
-  SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
-- **LaTeX math → Unicode (TUI).** Markdown display math (`\[…\]` / `$$…$$`)
-  and inline `\(...\)` render as terminal-friendly Unicode approximations
-  (fractions, super/subscripts, `\times` / `\approx` / `\text{}`, Greek)
-  instead of raw TeX. Same-line display delimiters with trailing prose
-  no longer swallow the rest of the line.
 
 ### Fixed
 - **TUI fatal SIGSEGV/SIGHUP on pane close and SIGABRT in DiffPanel.** Pane
@@ -68,6 +46,38 @@ starter constitutions, and pane / sandbox / interrupt hardening.
 - **Permission / confirm sequencing.** Concurrent destructive `/exec`
   confirms (and confirm + diff review) no longer overwrite each other’s
   promises with a fake decline — approved commands report success.
+
+## [0.9.0] — 2026-07-29
+
+Minor release: interactive `/diff` apply/reject/undo review, durable API
+idempotency across restarts, LaTeX→Unicode math in the TUI, refreshed
+starter constitutions, and pane / sandbox / interrupt hardening.
+
+### Added
+- **Interactive `/diff` review (TUI).** `/diff` and `/diff review [N]` prompt
+  `[a]pply` / `[r]eject` / Esc on pending patches (same interrupt bridge as
+  tool confirms). `/diff apply` remains a direct write. Missing target files
+  are created from the patch’s new-side lines; apply is the permission grant
+  (no `/write` confirm). See [`docs/tui/commands.md`](docs/tui/commands.md).
+- **`/diff` apply / reject / undo (TUI).** Streamed ` ```diff ` fences
+  register as pane-local `Patch #N` proposals with an action line above
+  the rendered panel. `/diff apply [N]` writes the unified patch under
+  the process cwd (exact hunk match; refuses absolute/escaping paths and
+  stale context); `/diff undo [N]` restores the pre-image when the file
+  is unchanged since apply; `/diff reject [N]` keeps the render and
+  marks the proposal rejected. See [`docs/tui/commands.md`](docs/tui/commands.md).
+- **Durable idempotency map.** `Idempotency-Key` mappings now persist in
+  `tenants.db` (`idempotency_keys`) with the same 24h TTL. A client retry
+  after an API server restart joins the original `request_id` instead of
+  starting a second run. The in-process table remains an L1 cache;
+  SQLite is authoritative. See [`docs/api/orchestrate.md#idempotency`](docs/api/orchestrate.md#idempotency).
+- **LaTeX math → Unicode (TUI).** Markdown display math (`\[…\]` / `$$…$$`)
+  and inline `\(...\)` render as terminal-friendly Unicode approximations
+  (fractions, super/subscripts, `\times` / `\approx` / `\text{}`, Greek)
+  instead of raw TeX. Same-line display delimiters with trailing prose
+  no longer swallow the rest of the line.
+
+### Fixed
 - **Stacked pane gutters.** Inactive panes are content-only (no readline);
   only the focused pane paints an input box. Stacked gutters are a single
   separator cell (matching vertical splits): no trailing pad on mid-stack
