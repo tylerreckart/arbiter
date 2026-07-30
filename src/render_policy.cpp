@@ -224,7 +224,8 @@ std::vector<StyledLine> styled_diff_review_card(
     }
 
     StyledLine prompt;
-    styled_append(prompt, StyleId::Warning, "  [a]pply  [r]eject  Esc cancel");
+    styled_append(prompt, StyleId::Warning,
+                  "  [a]pply  [r]eject  [A]llow all  Esc cancel");
     lines.push_back(std::move(prompt));
     return lines;
 }

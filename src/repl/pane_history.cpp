@@ -11,8 +11,17 @@
 
 #include <algorithm>
 #include <functional>
+#include <optional>
 
 namespace arbiter {
+
+namespace {
+DiffAutoReviewFn g_diff_auto_review;
+}  // namespace
+
+void pane_history_set_diff_auto_review(DiffAutoReviewFn fn) {
+    g_diff_auto_review = std::move(fn);
+}
 
 void pane_history_drain_queue(Pane& pane) {
     auto items = pane.output_queue.drain_items();
@@ -85,24 +94,33 @@ void pane_history_push(Pane& pane, std::string_view text, bool new_block) {
 }
 
 void pane_history_push_diff(Pane& pane, std::string_view patch) {
-    if (pane.scroll) {
-        pane_history_append_diff_proposal(*pane.scroll, pane.diff_proposals, patch);
+    if (!pane.scroll) return;
+    auto prop = pane_history_append_diff_proposal(
+        *pane.scroll, pane.diff_proposals, patch);
+    if (prop && prop->status == DiffProposalStatus::Pending &&
+        g_diff_auto_review) {
+        g_diff_auto_review(pane, *prop);
     }
 }
 
-void pane_history_append_diff_proposal(opentui::PaneScrollView& view,
-                                       DiffProposalStore& store,
-                                       std::string_view patch) {
+std::optional<DiffProposal> pane_history_append_diff_proposal(
+    opentui::PaneScrollView& view,
+    DiffProposalStore& store,
+    std::string_view patch) {
     // Register before rendering so the action line id matches the panel.
-    if (auto prop = store.add_patch(patch)) {
+    std::optional<DiffProposal> prop = store.add_patch(patch);
+    if (prop) {
         std::string line = "Patch #" + std::to_string(prop->id) + " " +
-            diff_proposal_status_label(prop->status) + ": " + prop->path +
-            "  |  /diff  or  /diff apply " + std::to_string(prop->id) +
-            "  /diff reject " + std::to_string(prop->id);
+            diff_proposal_status_label(prop->status) + ": " + prop->path;
+        if (prop->status == DiffProposalStatus::Pending) {
+            line += "  |  [a]pply  [r]eject  [A]llow all  —  /diff apply "
+                    + std::to_string(prop->id);
+        }
         view.append_prose(
             {styled_plain_line(std::move(line), StyleId::System)}, true);
     }
     view.append_diff(patch);
+    return prop;
 }
 
 void pane_history_push_prose(Pane& pane,
