@@ -4,10 +4,13 @@
 #include "repl/diff_proposals.h"
 #include "styled_text.h"
 #include "tui/opentui/c_api.h"
+#include "tui/opentui/pane_scroll_view.h"
 #include "tui/tui.h"
 
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -49,10 +52,19 @@ void pane_history_push_diff(Pane& pane, std::string_view patch);
 
 // Register `patch` in `store` (action line + DiffSegment) onto an arbitrary
 // scroll view.  Used by live drain and transcript replay so relaunched /
-// switched conversations keep `/diff apply` targets.
-void pane_history_append_diff_proposal(opentui::PaneScrollView& view,
-                                       DiffProposalStore& store,
-                                       std::string_view patch);
+// switched conversations keep `/diff apply` targets.  Returns the registered
+// proposal when one was created.
+std::optional<DiffProposal> pane_history_append_diff_proposal(
+    opentui::PaneScrollView& view,
+    DiffProposalStore& store,
+    std::string_view patch);
+
+// Live TUI: when set, called after a Pending proposal is registered via
+// pane_history_push_diff (not transcript replay).  Used to auto-enqueue
+// interactive review.
+using DiffAutoReviewFn =
+    std::function<void(Pane& pane, const DiffProposal& proposal)>;
+void pane_history_set_diff_auto_review(DiffAutoReviewFn fn);
 
 void pane_history_push_prose(Pane& pane,
                              const std::vector<StyledLine>& lines,
@@ -70,6 +82,17 @@ void pane_history_upsert_tool(Pane& pane,
 bool pane_history_toggle_code_block(Pane& pane, int scroll_offset);
 // Left-click expand/collapse for thinking / tool / truncated code blocks.
 bool pane_history_toggle_expandable_at(Pane& pane, int term_x, int term_y);
+
+// Mouse text selection in the output scroll region.
+[[nodiscard]] std::optional<opentui::ScrollCellPos>
+pane_history_hit_cell_at(Pane& pane, int term_x, int term_y);
+void pane_history_set_selection(Pane& pane,
+                                opentui::ScrollCellPos anchor,
+                                opentui::ScrollCellPos focus);
+void pane_history_clear_selection(Pane& pane);
+[[nodiscard]] bool pane_history_has_selection(const Pane& pane);
+[[nodiscard]] std::string pane_history_selection_text(const Pane& pane);
+
 [[nodiscard]] int pane_history_total_rows(const Pane& pane);
 [[nodiscard]] int pane_history_max_scroll(const Pane& pane);
 

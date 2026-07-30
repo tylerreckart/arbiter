@@ -1,13 +1,26 @@
-# Arbiter
-
-![Release Version Shield](https://img.shields.io/github/v/release/tylerreckart/arbiter)
-![License Shield](https://img.shields.io/github/license/tylerreckart/arbiter)
+<!-- LOGO -->
+<h1>
+<p align="center">
+  <img src="https://github.com/tylerreckart/arbiter/blob/main/assets/arbiter_icon.png" alt="Logo" width="128">
+  <br>Arbiter
+</h1>
+  <p align="center">
+    A local agent runtime in a single native binary.
+    <br> Local-first; network optional.
+    <br>
+    <a href="#about">About</a>
+    ·
+    <a href="https://arbiter.run/">Download</a>
+    ·
+    <a href="https://arbiter.run/docs">Documentation</a>
+    ·
+    <a href="CONTRIBUTING.md">Contributing</a>
+  </p>
+</p>
 
 ![Arbiter session sidebar and inline diff rendering](assets/vesper.jpg)
 
-**A local agent runtime in a single native binary.** Run multi-agent workflows on your machine — interactive TUI, one-shot CLI, or HTTP+SSE — with hard tool allowlists and a shared streaming event bus. Local-first; network is optional.
-
-Not a library. Not a hosted platform. A process you run.
+Run multi-agent workflows on your machine — interactive TUI, one-shot CLI, or HTTP+SSE — with hard tool allowlists and a shared streaming event bus.
 
 ## Quick start
 
@@ -36,39 +49,10 @@ One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollam
 
 ## Why run it
 
-**Own the harness.** Orchestrate specialists, durable memory, and tool use without duct-taping a chat CLI to FastAPI and SQLite. The runtime stays thin; agent behavior lives in constitutions (JSON: model, role, rules, tool allowlist).
-
-**Hard limits, not prompt suggestions.** Every agent's tool surface is an allowlist checked at dispatch. Optional advisor gate: a second model signs off before consequential turns reach you.
-
-**One event model everywhere.** The orchestration loop streams the same SSE-shaped events the TUI already consumes — text, tool calls, files, sub-agent responses, done. API clients get that stream over the wire; durable request logs make reconnect and replay possible.
-
-**Route work in, don't write a dispatcher.** Webhooks, queues, firmware, and sensors can `POST /v1/events`; declare a glob per agent and Arbiter routes matching events there.
-
-## Design in one line
-
-Process-local multi-agent orchestration with a prose-embedded command DSL, shared storage, and a streaming event bus exposed as TUI / CLI / HTTP.
-
-Deeper tradeoffs — why commands are inline rather than JSON tool-calling, why ops (TLS, WAF, rate limits) stay at the reverse proxy, how memory and tenants work — are in [`docs/philosophy`](docs/philosophy.md).
-
-## Themeable
-
-38 presets ship in the box (Nord, Dracula, Catppuccin, Gruvbox, Tokyo Night, Solarized, and more);
-export one as a starting point and edit hex values to make your own:
-
-```bash
-arbiter --export-theme high-contrast > ~/.arbiter/themes/mine.json
-```
-
-```
-/theme list           # built-in presets + your custom themes
-/theme mine           # switch instantly, no restart
-/theme save mine      # write the current look back to disk
-```
-
-Backgrounds, text, borders, markdown and diff syntax colors, even the
-12-color agent palette are all keyed in one schema — down to the padding
-and column breakpoints. Full reference in
-[`docs/tui/themes.md`](docs/tui/themes.md).
+- **Own the harness.** Orchestrate specialists, durable memory, and tool use without duct-taping a chat CLI to FastAPI and SQLite. The runtime stays thin; agent behavior lives in constitutions (JSON: model, role, rules, tool allowlist).
+- **Hard limits, not prompt suggestions.** Every agent's tool surface is an allowlist checked at dispatch. Optional advisor gate: a second model signs off before consequential turns reach you.
+- **One event model everywhere.** The orchestration loop streams the same SSE-shaped events the TUI already consumes — text, tool calls, files, sub-agent responses, done. API clients get that stream over the wire; durable request logs make reconnect and replay possible.
+- **Route work in, don't write a dispatcher.** Webhooks, queues, firmware, and sensors can `POST /v1/events`; declare a glob per agent and Arbiter routes matching events there.
 
 ## Documentation
 

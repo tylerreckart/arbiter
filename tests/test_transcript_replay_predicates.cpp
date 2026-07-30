@@ -3,6 +3,9 @@
 
 #include "repl/transcript_replay.h"
 
+#include <string>
+#include <unordered_set>
+
 using namespace arbiter;
 
 TEST_CASE("replay_tail_begin keeps everything when history fits in the tail window") {
@@ -78,4 +81,14 @@ TEST_CASE("replay_user_echo_text strips master AGENTS/QUERY preamble") {
     // QUERY marker without an AGENTS roster is not stripped.
     m.content = "see\n\nQUERY: docs";
     CHECK(replay_user_echo_text(m) == "see\n\nQUERY: docs");
+}
+
+TEST_CASE("claim_pane_transcript_replay dedupes shared conversation siblings") {
+    std::unordered_set<std::string> claimed;
+    CHECK(claim_pane_transcript_replay(claimed, "conv-a", "index"));
+    CHECK_FALSE(claim_pane_transcript_replay(claimed, "conv-a", "index"));
+    CHECK_FALSE(claim_pane_transcript_replay(claimed, "conv-a", ""));
+    // Different agent on the same conversation is a distinct binding (/pane).
+    CHECK(claim_pane_transcript_replay(claimed, "conv-a", "backend"));
+    CHECK(claim_pane_transcript_replay(claimed, "conv-b", "index"));
 }

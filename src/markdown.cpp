@@ -1,6 +1,7 @@
 // arbiter/src/markdown.cpp — Markdown renderer (styled spans + ANSI shim)
 
 #include "markdown.h"
+#include "latex_math.h"
 #include "render_policy.h"
 #include "styled_text.h"
 #include "theme.h"
@@ -75,6 +76,21 @@ bool is_delegation_status_line(const std::string& line, std::string_view& detail
     return true;
 }
 
+void append_math_styled(StyledLine& out, std::string_view latex) {
+    const std::string plain = latex_math_to_plain(latex);
+    if (!plain.empty()) {
+        styled_append(out, StyleId::Italic, plain);
+    }
+}
+
+// Find closing \) for inline math starting after "\(".
+size_t find_inline_math_close(const std::string& text, size_t open_after) {
+    for (size_t j = open_after; j + 1 < text.size(); ++j) {
+        if (text[j] == '\\' && text[j + 1] == ')') return j;
+    }
+    return std::string::npos;
+}
+
 void render_inline_styled(StyledLine& out, const std::string& text) {
     auto flush_plain = [&](size_t from, size_t to) {
         if (to > from) out.text.append(text, from, to - from);
@@ -87,7 +103,20 @@ void render_inline_styled(StyledLine& out, const std::string& text) {
     while (i < n) {
         bool matched = false;
 
-        if (i + 2 < n && text[i] == '*' && text[i + 1] == '*' && text[i + 2] != '*') {
+        // Inline math: \( ... \)
+        if (!matched && i + 1 < n && text[i] == '\\' && text[i + 1] == '(') {
+            const size_t close = find_inline_math_close(text, i + 2);
+            if (close != std::string::npos) {
+                flush_plain(plain_start, i);
+                append_math_styled(out, std::string_view(text.data() + i + 2, close - (i + 2)));
+                i = close + 2;
+                plain_start = i;
+                matched = true;
+            }
+        }
+
+        if (!matched && i + 2 < n && text[i] == '*' && text[i + 1] == '*' &&
+            text[i + 2] != '*') {
             size_t end = text.find("**", i + 2);
             if (end != std::string::npos && end > i + 2) {
                 flush_plain(plain_start, i);
@@ -215,6 +244,62 @@ bool is_endwrite_line(const std::string& s) {
     return end == 9 && s.compare(0, 9, "/endwrite") == 0;
 }
 
+std::string_view trim_view(std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
+        s.remove_suffix(1);
+    return s;
+}
+
+StyledLine make_display_math_line(std::string_view latex) {
+    StyledLine line;
+    const std::string plain = latex_math_to_plain(latex);
+    if (plain.empty()) return line;
+    styled_append(line, StyleId::Default, "  ");
+    styled_append(line, StyleId::Italic, plain);
+    return line;
+}
+
+// First unescaped \] after `from`, or npos.
+size_t find_bracket_math_close(std::string_view text, size_t from) {
+    for (size_t j = from; j + 1 < text.size(); ++j) {
+        if (text[j] == '\\' && text[j + 1] == ']') return j;
+    }
+    return std::string_view::npos;
+}
+
+// Complete same-line display math into `out`, appending any trailing prose.
+// Returns true when the line opened and closed display math on one line.
+bool try_same_line_display_math(const std::string& line, StyledLine& out) {
+    const std::string_view trimmed = trim_view(line);
+
+    if (trimmed.size() >= 2 && trimmed.substr(0, 2) == "\\[") {
+        const size_t close = find_bracket_math_close(trimmed, 2);
+        if (close == std::string_view::npos) return false;
+        out = make_display_math_line(trimmed.substr(2, close - 2));
+        const std::string_view rest = trim_view(trimmed.substr(close + 2));
+        if (!rest.empty()) {
+            if (!out.text.empty()) styled_append(out, StyleId::Default, " ");
+            render_inline_styled(out, std::string(rest));
+        }
+        return true;
+    }
+
+    if (trimmed.size() >= 2 && trimmed.substr(0, 2) == "$$") {
+        const size_t close = trimmed.find("$$", 2);
+        if (close == std::string_view::npos) return false;
+        out = make_display_math_line(trimmed.substr(2, close - 2));
+        const std::string_view rest = trim_view(trimmed.substr(close + 2));
+        if (!rest.empty()) {
+            if (!out.text.empty()) styled_append(out, StyleId::Default, " ");
+            render_inline_styled(out, std::string(rest));
+        }
+        return true;
+    }
+
+    return false;
+}
+
 } // namespace
 
 bool MarkdownRenderer::is_diff_fence_lang(std::string_view lang) {
@@ -246,6 +331,20 @@ void MarkdownRenderer::finish_code_close(const std::string& close_fence,
     code_buf_.clear();
     code_open_fence_.clear();
     in_code_block_ = false;
+}
+
+std::vector<StyledLine> MarkdownRenderer::flush_math_block_styled() {
+    std::vector<StyledLine> out;
+    // Prefer one equation per source line so multi-line display math keeps rhythm.
+    for (const auto& raw : math_buf_) {
+        const std::string_view trimmed = trim_view(raw);
+        if (trimmed.empty()) continue;
+        StyledLine line = make_display_math_line(trimmed);
+        if (!line.text.empty()) out.push_back(std::move(line));
+    }
+    math_buf_.clear();
+    math_delim_ = MathDelim::None;
+    return out;
 }
 
 std::vector<StyledLine> MarkdownRenderer::render_buffered_code_block_styled(
@@ -288,6 +387,20 @@ std::optional<StyledLine> MarkdownRenderer::process_line_styled(const std::strin
         if (code_close_) code_close_("```");
         in_indent_code_ = false;
         // Fall through to render the terminating line as normal prose.
+    }
+
+    // Display math body while a \[ / $$ block is open.
+    if (math_delim_ != MathDelim::None) {
+        const std::string_view trimmed = trim_view(line);
+        const bool closing =
+            (math_delim_ == MathDelim::Bracket && trimmed == "\\]") ||
+            (math_delim_ == MathDelim::Dollar && trimmed == "$$");
+        if (closing) {
+            // Closer is handled in feed_styled via flush_math_block_styled.
+            return std::nullopt;
+        }
+        math_buf_.push_back(line);
+        return std::nullopt;
     }
 
     const size_t lead = fence_ltrim(line);
@@ -333,6 +446,41 @@ std::optional<StyledLine> MarkdownRenderer::process_line_styled(const std::strin
     }
 
     if (line.empty()) return StyledLine{};
+
+    // Same-line display math before block openers.
+    {
+        StyledLine math_line;
+        if (try_same_line_display_math(line, math_line)) {
+            return math_line;
+        }
+    }
+
+    {
+        const std::string_view trimmed = trim_view(line);
+        if (trimmed == "\\[") {
+            math_delim_ = MathDelim::Bracket;
+            math_buf_.clear();
+            return std::nullopt;
+        }
+        if (trimmed == "$$") {
+            math_delim_ = MathDelim::Dollar;
+            math_buf_.clear();
+            return std::nullopt;
+        }
+        // Opener with trailing content on the same line: \[ M = ...
+        if (trimmed.size() > 2 && trimmed.substr(0, 2) == "\\[") {
+            math_delim_ = MathDelim::Bracket;
+            math_buf_.clear();
+            math_buf_.emplace_back(trimmed.substr(2));
+            return std::nullopt;
+        }
+        if (trimmed.size() > 2 && trimmed.substr(0, 2) == "$$") {
+            math_delim_ = MathDelim::Dollar;
+            math_buf_.clear();
+            math_buf_.emplace_back(trimmed.substr(2));
+            return std::nullopt;
+        }
+    }
 
     {
         std::string_view detail;
@@ -476,12 +624,25 @@ std::vector<StyledLine> MarkdownRenderer::feed_styled(const std::string& chunk) 
             }
             seen_content_ = true;
             const bool was_in_diff = in_diff_block_;
+            const bool was_in_math = math_delim_ != MathDelim::None;
 
-            if (in_code_block_ && !in_diff_block_ && is_closing_fence_line(line_buf_)) {
+            if (was_in_math) {
+                const std::string_view trimmed = trim_view(line_buf_);
+                const bool closing =
+                    (math_delim_ == MathDelim::Bracket && trimmed == "\\]") ||
+                    (math_delim_ == MathDelim::Dollar && trimmed == "$$");
+                if (closing) {
+                    auto math_lines = flush_math_block_styled();
+                    for (auto& ln : math_lines) result.push_back(std::move(ln));
+                } else {
+                    (void)process_line_styled(line_buf_);
+                }
+            } else if (in_code_block_ && !in_diff_block_ && is_closing_fence_line(line_buf_)) {
                 finish_code_close(line_buf_, result);
             } else if (auto line_out = process_line_styled(line_buf_)) {
                 result.push_back(std::move(*line_out));
-            } else if (!was_in_diff && !in_code_block_ && line_buf_.empty()) {
+            } else if (!was_in_diff && !in_code_block_ &&
+                       math_delim_ == MathDelim::None && line_buf_.empty()) {
                 result.push_back(StyledLine{});
             }
             line_buf_.clear();
@@ -514,10 +675,31 @@ std::vector<StyledLine> MarkdownRenderer::flush_styled() {
             line_buf_.clear();
             return result;
         }
+        if (math_delim_ != MathDelim::None) {
+            const std::string_view trimmed = trim_view(line_buf_);
+            const bool closing =
+                (math_delim_ == MathDelim::Bracket && trimmed == "\\]") ||
+                (math_delim_ == MathDelim::Dollar && trimmed == "$$");
+            if (closing) {
+                auto math_lines = flush_math_block_styled();
+                for (auto& ln : math_lines) result.push_back(std::move(ln));
+            } else {
+                (void)process_line_styled(line_buf_);
+                auto math_lines = flush_math_block_styled();
+                for (auto& ln : math_lines) result.push_back(std::move(ln));
+            }
+            line_buf_.clear();
+            return result;
+        }
         if (auto line_out = process_line_styled(line_buf_)) {
             result.push_back(std::move(*line_out));
         }
         line_buf_.clear();
+        return result;
+    }
+    if (math_delim_ != MathDelim::None) {
+        auto math_lines = flush_math_block_styled();
+        for (auto& ln : math_lines) result.push_back(std::move(ln));
         return result;
     }
     if (in_diff_block_ && diff_sink_ && !diff_buf_.empty()) {
@@ -553,8 +735,10 @@ void MarkdownRenderer::reset() {
     in_code_block_ = false;
     in_diff_block_ = false;
     in_indent_code_ = false;
+    math_delim_ = MathDelim::None;
     diff_buf_.clear();
     code_buf_.clear();
+    math_buf_.clear();
     code_open_fence_.clear();
     code_open_ = nullptr;
     code_line_ = nullptr;

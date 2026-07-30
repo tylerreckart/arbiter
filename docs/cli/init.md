@@ -12,15 +12,15 @@ arbiter --init --force     # overwrite every starter back to the embedded defaul
 ```
 ~/.arbiter/
 ├── agents/
-│   ├── reviewer.json       code review — terse, defect-focused
-│   ├── research.json       research analyst — haiku + opus advisor combo
-│   ├── writer.json         essays, READMEs, docs, creative writing
-│   ├── devops.json         infrastructure engineer — shell, git, CI/CD
-│   ├── planner.json        task decomposition into phased execution plans
-│   ├── backend.json        APIs, data modeling, distributed systems
-│   ├── frontend.json       components, state, accessibility, performance
-│   ├── marketer.json       strategy, positioning, campaign concepts
-│   └── social.json         platform-native content, growth, engagement
+│   ├── reviewer.json       code review — Claude Opus 5, defect-first
+│   ├── research.json       research — Gemini 3.6 Flash + Opus advisor
+│   ├── writer.json         essays, READMEs, docs — Claude Sonnet 5
+│   ├── devops.json         infra/CI — GPT-5.6 Sol + Opus advisor
+│   ├── planner.json        task decomposition — GPT-5.5 + Opus advisor
+│   ├── backend.json        APIs/data — Claude Sonnet 5 + Opus advisor
+│   ├── frontend.json       UI/a11y — Claude Sonnet 5 + Opus advisor
+│   ├── marketer.json       strategy/campaigns — GPT-5.5
+│   └── social.json         platform-native content — Grok 4.5
 ```
 
 The master orchestrator (`index`) is not written to disk — it ships as a compiled-in constitution and is loaded automatically. Only sub-agent definitions live in `~/.arbiter/agents/`.

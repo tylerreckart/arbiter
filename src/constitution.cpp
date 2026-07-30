@@ -37,6 +37,8 @@ static std::set<std::string> resolve_bundles(
             out.insert("mcp");
         else if (cap == "/a2a")
             out.insert("a2a");
+        else if (cap == "/advise")
+            out.insert("advise");
         else if (cap == "/todo")
             out.insert("todos");
         else if (cap == "/schedule")
@@ -238,9 +240,10 @@ static std::string compose_command_rules(const std::set<std::string>& b) {
 
     if (b.count("write"))
         s +=
-            "- /write — ALWAYS use to produce files (code, docs, reports).  NEVER say\n"
-            "  'here is the content' without issuing /write — terminal output is not\n"
-            "  saveable by the user.  Use --persist when the user may revisit later.\n";
+            "- File delivery — never leave content only in chat.  For edits to existing\n"
+            "  code, emit a fenced ```diff (user reviews/applies).  For full new files or\n"
+            "  wholesale rewrites, use /write <path> … /endwrite (confirmed, written to cwd).\n"
+            "  Use /write --persist when the user may revisit later via artifacts.\n";
 
     if (b.count("web"))
         s +=
@@ -387,29 +390,30 @@ static const char* prompt_inter_agent_format() {
 static const char* prompt_code_change_format() {
     return
         "\nCODE CHANGE FORMAT:\n"
-        "The TUI renders fenced ```diff blocks as side-by-side patches. "
-        "Use them for every code change — additions, deletions, and edits — "
-        "whether or not you also emit /write.\n"
+        "The TUI renders fenced ```diff blocks as reviewable patches and applies them "
+        "under the process cwd after the user approves. Prefer ```diff for edits to "
+        "existing files; use /write for brand-new full files or wholesale rewrites.\n"
         "- One fenced block per file, language tag `diff` (not `patch`, not unlabeled).\n"
-        "- Unified diff syntax:\n"
+        "- Unified diff syntax (context lines MUST start with a leading space):\n"
         "    --- a/path/to/file\n"
         "    +++ b/path/to/file\n"
         "    @@ -old_start,old_count +new_start,new_count @@\n"
         "     context line (leading space)\n"
         "    -removed line\n"
         "    +added line\n"
+        "- New files: use --- /dev/null and +++ b/path (or /write the full file).\n"
+        "- Re-read the file before diffing so hunk offsets/context match disk.\n"
         "- Include ---/+++ headers and at least one @@ hunk. When both removals "
-        "  and additions exist, include context, at least one - line, and one + line.\n"
+        "  and additions exist, include unique context, at least one - line, and one + line.\n"
         "- Do NOT show edits as plain ```lang blocks or prose when a diff against "
-        "  existing code applies — the diff fence is required so the TUI renders "
-        "  before/after.\n"
+        "  existing code applies — the diff fence is required so the TUI can apply.\n"
         "- Slash commands (/write, /exec, /agent) stay outside fences on their own lines.\n"
-        "- Plain code fences are fine for brand-new files, examples, or snippets that "
-        "  are not diffs against existing code.\n";
+        "- Do not emit both /write and ```diff for the same change (apply will go stale).\n";
 }
 
-// /help inventory line.  Topic list reflects actually-loaded bundles plus
-// "advise" (which is gated on advisor_model, not on bundles).
+// /help inventory line.  Topic list reflects actually-loaded bundles.
+// "advise" is included when the advise bundle is granted via capabilities
+// (or always for the empty-capabilities master default — see below).
 static std::string compose_help_inventory(const std::set<std::string>& b) {
     std::string topics;
     auto add = [&](const char* t) {
@@ -426,7 +430,9 @@ static std::string compose_help_inventory(const std::set<std::string>& b) {
     if (b.count("schedule"))   add("schedule");
     if (b.count("lessons"))    add("lessons");
     if (b.count("mcp"))        add("mcp");
-    add("advise");   // help corpus carries this regardless of /advise wiring
+    // Help text for /advise is always useful when an advisor may be wired;
+    // the dispatcher still hard-gates on the advise capability bundle.
+    add("advise");
 
     return std::string(
         "  /help [<topic>]                            — detailed reference for a slash command\n"
@@ -513,9 +519,8 @@ static std::string writer_prompt() {
         "Results arrive in the next message as [TOOL RESULTS].\n"
         "\n"
         "COMMAND RULES:\n"
-        "- ALWAYS use /write to produce output files. Never just display content — write it.\n"
-        "  The user cannot save terminal output. /write is the only way to deliver work.\n"
-        "  /write <path> followed by full content, closed by /endwrite on its own line.\n"
+        "- Deliver files to disk — never leave content only in chat.\n"
+        "  Edits: fenced ```diff (user reviews). New/full files: /write … /endwrite.\n"
         "- To inspect a codebase before writing docs: use /exec to read files and structure.\n"
         "- To gather facts before writing: use /agent research <query> or /fetch <url>.\n"
         "- To preserve an outline or draft across sessions: use /mem write.\n";
@@ -795,7 +800,7 @@ Constitution master_constitution() {
     c.role = "orchestrator";
     c.brevity = Brevity::Full;
     c.temperature = 0.3;
-    c.model = "claude-sonnet-4-6";
+    c.model = "anthropic/claude-sonnet-5";
     c.max_tokens = 2048;
     c.goal = "Route tasks to the right agents. Compose multi-agent pipelines when needed. "
              "Synthesize results. Produce real output — files, code, reports — not descriptions of output.";
@@ -1002,7 +1007,7 @@ Constitution Constitution::from_json(const std::string& json_str) {
     c.brevity       = brevity_from_string(root->get_string("brevity", "full"));
     c.max_tokens    = root->get_int("max_tokens", 1024);
     c.temperature   = root->get_number("temperature", 0.3);
-    c.model         = root->get_string("model", "claude-sonnet-4-6");
+    c.model         = root->get_string("model", "anthropic/claude-sonnet-5");
     c.advisor_model = root->get_string("advisor_model");  // "" if absent
     c.mode          = root->get_string("mode");           // "" if absent
     c.goal          = root->get_string("goal");

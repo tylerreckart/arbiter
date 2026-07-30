@@ -205,6 +205,7 @@ set(ARBITER_SOURCES
     src/a2a/client.cpp
     src/a2a/manager.cpp
     src/markdown.cpp
+    src/latex_math.cpp
     src/code_highlighter.cpp
 )
 
@@ -310,6 +311,7 @@ target_sources(arbiter PRIVATE
     src/tui/opentui/ansi_scroll_append.cpp
     src/tui/opentui/span_scroll_append.cpp
     src/tui/opentui/pane_input_editor.cpp
+    src/tui/clipboard.cpp
     src/tui/palette.cpp
     src/tui/sidebar.cpp
     src/tui/sidebar_format.cpp
@@ -545,6 +547,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_markdown_diff
         tests/test_markdown_diff.cpp
         src/markdown.cpp
+        src/latex_math.cpp
         src/styled_text.cpp
         src/render_policy.cpp
         src/theme.cpp
@@ -642,6 +645,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/ansi_util.cpp
         src/code_highlighter.cpp
         src/markdown.cpp
+        src/latex_math.cpp
         src/styled_text.cpp
         src/render_policy.cpp
         src/theme.cpp
@@ -700,6 +704,24 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_confirm_keys COMMAND unit_confirm_keys)
 
+    add_executable(unit_prompt_bridge
+        tests/test_prompt_bridge.cpp
+    )
+    target_include_directories(unit_prompt_bridge PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_prompt_bridge COMMAND unit_prompt_bridge)
+
+    add_executable(unit_interactive_prompt
+        tests/test_interactive_prompt.cpp
+    )
+    target_include_directories(unit_interactive_prompt PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_interactive_prompt COMMAND unit_interactive_prompt)
+
     add_executable(unit_mouse_decode
         tests/test_mouse_decode.cpp
     )
@@ -737,6 +759,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/ansi_util.cpp
         src/code_highlighter.cpp
         src/markdown.cpp
+        src/latex_math.cpp
         src/styled_text.cpp
         src/render_policy.cpp
         src/theme.cpp
@@ -957,6 +980,7 @@ if(INDEX_BUILD_TESTS)
         src/tui/ansi_util.cpp
         src/code_highlighter.cpp
         src/markdown.cpp
+        src/latex_math.cpp
         src/styled_text.cpp
         src/render_policy.cpp
         src/theme.cpp

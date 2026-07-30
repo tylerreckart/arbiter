@@ -3,6 +3,9 @@
 #include "api_client.h"
 
 #include <cstddef>
+#include <string>
+#include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace arbiter {
@@ -18,6 +21,31 @@ inline constexpr std::size_t kReplayChunkMessages = 50;
 // Start index of the tail window replayed on a switch, given a history of
 // `total` messages — 0 if the whole history fits within kReplayTailMessages.
 [[nodiscard]] std::size_t replay_tail_begin(std::size_t total);
+
+// Layout restore key for transcript replay. Live ^W splits inherit the parent
+// conversation but keep an empty scrollback; relaunch must replay each
+// (conversation_id, agent) binding at most once (pre-order first leaf wins)
+// so empty sibling windows are not polluted with the parent transcript.
+[[nodiscard]] inline std::string pane_transcript_replay_key(
+    std::string_view conversation_id, std::string_view agent) {
+    const std::string_view a = agent.empty() ? "index" : agent;
+    std::string key;
+    key.reserve(conversation_id.size() + a.size() + 1);
+    key.append(conversation_id);
+    key.push_back('\n');
+    key.append(a);
+    return key;
+}
+
+// Inserts the binding into `claimed`. Returns true on first claim (caller
+// should replay), false if a sibling pane already owns this transcript.
+[[nodiscard]] inline bool claim_pane_transcript_replay(
+    std::unordered_set<std::string>& claimed,
+    std::string_view conversation_id,
+    std::string_view agent) {
+    return claimed.insert(pane_transcript_replay_key(conversation_id, agent))
+        .second;
+}
 
 // True for "user"-role messages that are mechanical re-entry plumbing
 // ([TOOL RESULTS]/[PANE RESULT] frames the dispatch loop feeds back to the
