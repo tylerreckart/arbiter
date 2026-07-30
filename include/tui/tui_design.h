@@ -68,7 +68,8 @@ struct TuiDesign {
         // aligned; stacked panes above the outer bottom always use a
         // single trailing pad for uniform horizontal gutters.
         bool chrome_compact_rows = true;
-        // SGR mouse tracking: click-to-focus, wheel scroll, drag-resize.
+        // SGR mouse tracking: click-to-focus, wheel scroll, drag-resize,
+        // and drag-to-select text in scrollback (OSC 52 copy on release).
         // Set false in tui.json to keep keyboard-only input.
         bool mouse = true;
     } layout;

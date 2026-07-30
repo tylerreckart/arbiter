@@ -14,6 +14,11 @@ idempotency across restarts, LaTeX→Unicode math in the TUI, refreshed
 starter constitutions, and pane / sandbox / interrupt hardening.
 
 ### Added
+- **Mouse text selection in scrollback.** Drag across the output area to
+  highlight text; release copies via OSC 52 (status shows character count).
+  A click without a drag still expands/collapses thinking, tools, and
+  truncated code. Esc clears the selection before it cancels a turn. See
+  [`docs/tui/panes.md`](docs/tui/panes.md).
 - **Unified interactive prompt queue (TUI).** Confirms and diff reviews share
   a FIFO queue (`InteractivePromptQueue`) so a second prompt never silently
   declines an earlier waiter. Streamed ```diff fences auto-enqueue review

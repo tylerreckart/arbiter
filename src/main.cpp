@@ -47,6 +47,7 @@
 #include "tui/opentui/theme_picker_frame.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
+#include "tui/clipboard.h"
 #include "tui/confirm_keys.h"
 #include "tui/interactive_prompt.h"
 #include "tui/prompt_bridge.h"
@@ -589,6 +590,15 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         LayoutTree::SeparatorRef sep{};
     } mouse_drag;
 
+    // Active output-area text selection (left button held in PaneScroll).
+    // Expand/collapse fires on Up only when the pointer never moved a cell.
+    struct MouseSelectState {
+        bool active = false;
+        bool dragged = false;
+        Pane* pane = nullptr;
+        arbiter::opentui::ScrollCellPos anchor{};
+    } mouse_select;
+
     // History-row activation is queued out of route_mouse so we never nest
     // switch_conversation's stdin confirm inside the mouse handler / while
     // holding layout_mu across a blocking read.
@@ -614,7 +624,23 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     } pending_after_cancel;
     std::atomic<bool> pending_cancel_wait{false};
 
-    auto clear_mouse_drag = [&]() { mouse_drag = {}; };
+    auto clear_mouse_select = [&]() { mouse_select = {}; };
+    // Drop the gesture *and* any in-progress highlight so a cancelled drag
+    // (or layout teardown) cannot leave a stuck selection with no release/copy.
+    auto clear_mouse_select_and_highlight = [&]() {
+        if (mouse_select.pane) pane_history_clear_selection(*mouse_select.pane);
+        mouse_select = {};
+    };
+    auto clear_mouse_drag = [&]() {
+        mouse_drag = {};
+        clear_mouse_select_and_highlight();
+    };
+    auto clear_all_selections = [&]() {
+        if (!layout_ptr) return;
+        layout_ptr->for_each_pane([&](Pane& p) {
+            pane_history_clear_selection(p);
+        });
+    };
 
     auto layout_bounds = [&sidebar, &layout_ptr, &history_sidebar]() -> Rect {
         const int cols = arbiter::term_cols();
@@ -855,6 +881,13 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         p->editor.set_cancel_handler(
             [raw, &orch, &pending_after_cancel, &pending_cancel_wait,
              &pump_notify, &fail_pending_prompts]() {
+            // Esc clears an active scrollback selection first; a second Esc
+            // (or Esc with no selection) cancels the in-flight turn.
+            if (pane_history_has_selection(*raw)) {
+                pane_history_clear_selection(*raw);
+                if (pump_notify) pump_notify();
+                return;
+            }
             // Esc during a deferred switch/delete wait abandons the pending
             // op without a second global cancel (token cancel already fired).
             if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
@@ -3519,6 +3552,60 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             persist_layout();
         }
 
+        // Output text selection drag — continue even if the pointer leaves
+        // the scroll band so the range can still grow / finish.
+        if (mouse_select.active && mouse_select.pane) {
+            if (ev.type == MouseType::Drag && ev.button == MouseButton::Left) {
+                if (auto cell = pane_history_hit_cell_at(
+                        *mouse_select.pane, ev.x, ev.y)) {
+                    if (*cell != mouse_select.anchor) mouse_select.dragged = true;
+                    pane_history_set_selection(
+                        *mouse_select.pane, mouse_select.anchor, *cell);
+                } else {
+                    // Outside content: clamp focus to the nearest edge of the
+                    // selection pane's last hit by keeping the prior focus.
+                    mouse_select.dragged = true;
+                }
+                if (pump_notify) pump_notify();
+                return false;
+            }
+            if (ev.type == MouseType::Up) {
+                Pane* pane = mouse_select.pane;
+                const bool dragged = mouse_select.dragged;
+                const auto anchor = mouse_select.anchor;
+                clear_mouse_select();
+                if (dragged) {
+                    if (auto cell = pane_history_hit_cell_at(*pane, ev.x, ev.y)) {
+                        pane_history_set_selection(*pane, anchor, *cell);
+                    }
+                    const std::string text = pane_history_selection_text(*pane);
+                    if (!text.empty()) {
+                        if (arbiter::clipboard_write_osc52(text)) {
+                            char buf[64];
+                            std::snprintf(buf, sizeof(buf),
+                                          "copied %zu character%s",
+                                          text.size(),
+                                          text.size() == 1 ? "" : "s");
+                            pane->tui.set_status(buf);
+                        }
+                    }
+                    if (pump_notify) pump_notify();
+                    return false;
+                }
+                // Click (no drag): clear any prior selection and toggle
+                // expand/collapse on the expandable under the pointer.
+                pane_history_clear_selection(*pane);
+                const bool toggled =
+                    pane_history_toggle_expandable_at(*pane, ev.x, ev.y);
+                if (toggled && pump_notify) pump_notify();
+                else if (pump_notify) pump_notify();
+                return false;
+            }
+            if (ev.type == MouseType::Move) return false;
+            // Other events cancel an in-progress select gesture.
+            clear_mouse_select_and_highlight();
+        }
+
         const int cols = arbiter::term_cols();
         const int rows = arbiter::term_rows();
         const Rect hb = HistorySidebarState::rect_for_terminal(
@@ -3554,11 +3641,16 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
         if (ev.type == MouseType::Down && ev.button == MouseButton::Left) {
             if (hit.kind == HitKind::SplitSeparator) {
+                clear_mouse_select();
+                clear_all_selections();
                 mouse_drag.active = true;
                 mouse_drag.sep = hit.sep;
+                if (pump_notify) pump_notify();
                 return false;
             }
             if (hit.kind == HitKind::HistorySidebar) {
+                clear_mouse_select();
+                clear_all_selections();
                 if (!history_sidebar.focused()) {
                     history_sidebar.enter_focus(conversation_store,
                                                 conversation_store.active_id());
@@ -3587,15 +3679,34 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 const bool was_history = history_sidebar.focused();
                 if (was_history) history_sidebar.exit_focus();
                 layout.focus_pane(hit.pane);
-                if (hit.kind == HitKind::PaneInput) {
-                    hit.pane->editor.set_cursor_from_click(ev.x, ev.y);
+                if (hit.kind == HitKind::PaneInput
+                    || hit.kind == HitKind::PaneChrome) {
+                    clear_mouse_select();
+                    clear_all_selections();
+                    if (hit.kind == HitKind::PaneInput) {
+                        hit.pane->editor.set_cursor_from_click(ev.x, ev.y);
+                    }
+                    if (focus_changed || was_history) {
+                        refresh_focused_input.store(true);
+                        if (pump_notify) pump_notify();
+                        return focus_changed || was_history;
+                    }
+                    if (pump_notify) pump_notify();
+                    return false;
                 }
-                bool toggled = false;
-                if (hit.kind == HitKind::PaneScroll) {
-                    toggled = pane_history_toggle_expandable_at(
-                        *hit.pane, ev.x, ev.y);
+                // PaneScroll: start a selection gesture. Expand/collapse is
+                // deferred to Up so a drag can select without toggling.
+                clear_all_selections();
+                if (auto cell = pane_history_hit_cell_at(*hit.pane, ev.x, ev.y)) {
+                    mouse_select.active = true;
+                    mouse_select.dragged = false;
+                    mouse_select.pane = hit.pane;
+                    mouse_select.anchor = *cell;
+                    pane_history_set_selection(*hit.pane, *cell, *cell);
+                } else {
+                    clear_mouse_select();
                 }
-                if (focus_changed || was_history || toggled) {
+                if (focus_changed || was_history) {
                     refresh_focused_input.store(true);
                     if (pump_notify) pump_notify();
                     return focus_changed || was_history;
@@ -3603,6 +3714,10 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 if (pump_notify) pump_notify();
                 return false;
             }
+            // Outside / unknown: drop any selection.
+            clear_mouse_select();
+            clear_all_selections();
+            if (pump_notify) pump_notify();
         }
 
         return false;
