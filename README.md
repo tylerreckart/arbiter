@@ -36,10 +36,10 @@ One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollam
 
 ## Why run it
 
-**Own the harness.** Orchestrate specialists, durable memory, and tool use without duct-taping a chat CLI to FastAPI and SQLite. The runtime stays thin; agent behavior lives in constitutions (JSON: model, role, rules, tool allowlist).
-**Hard limits, not prompt suggestions.** Every agent's tool surface is an allowlist checked at dispatch. Optional advisor gate: a second model signs off before consequential turns reach you.
-**One event model everywhere.** The orchestration loop streams the same SSE-shaped events the TUI already consumes — text, tool calls, files, sub-agent responses, done. API clients get that stream over the wire; durable request logs make reconnect and replay possible.
-**Route work in, don't write a dispatcher.** Webhooks, queues, firmware, and sensors can `POST /v1/events`; declare a glob per agent and Arbiter routes matching events there.
+- **Own the harness.** Orchestrate specialists, durable memory, and tool use without duct-taping a chat CLI to FastAPI and SQLite. The runtime stays thin; agent behavior lives in constitutions (JSON: model, role, rules, tool allowlist).
+- **Hard limits, not prompt suggestions.** Every agent's tool surface is an allowlist checked at dispatch. Optional advisor gate: a second model signs off before consequential turns reach you.
+- **One event model everywhere.** The orchestration loop streams the same SSE-shaped events the TUI already consumes — text, tool calls, files, sub-agent responses, done. API clients get that stream over the wire; durable request logs make reconnect and replay possible.
+- **Route work in, don't write a dispatcher.** Webhooks, queues, firmware, and sensors can `POST /v1/events`; declare a glob per agent and Arbiter routes matching events there.
 
 ## Documentation
 
