@@ -29,11 +29,34 @@ std::string strip_path_prefix(std::string_view raw) {
         raw.remove_suffix(1);
     }
     if (raw == "/dev/null") return {};
+    // Keep other absolute paths intact so path_has_traversal rejects them
+    // (do not collapse "/etc/passwd" into a relative "etc/passwd").
+    if (!raw.empty() && raw.front() == '/') return std::string(raw);
     if (raw.size() >= 2 && raw[1] == '/' &&
         (raw[0] == 'a' || raw[0] == 'b')) {
         raw.remove_prefix(2);
     }
-    return std::string(raw);
+    // Drop leading "./" so a/.//etc/passwd still looks absolute below.
+    while (raw.size() >= 2 && raw[0] == '.' && raw[1] == '/')
+        raw.remove_prefix(2);
+    // a//etc/passwd → "/etc/passwd" after a/ strip — keep absolute.
+    if (!raw.empty() && raw.front() == '/') return std::string(raw);
+    // Collapse "." segments and empty mid-path parts (LLM/git noise).
+    // Still reject ".." via path_has_traversal.
+    std::string out;
+    std::size_t i = 0;
+    while (i < raw.size()) {
+        const auto slash = raw.find('/', i);
+        const auto part = (slash == std::string_view::npos)
+            ? raw.substr(i) : raw.substr(i, slash - i);
+        if (!part.empty() && part != ".") {
+            if (!out.empty()) out.push_back('/');
+            out.append(part);
+        }
+        if (slash == std::string_view::npos) break;
+        i = slash + 1;
+    }
+    return out;
 }
 
 bool path_has_traversal(std::string_view p) {
@@ -48,7 +71,8 @@ bool path_has_traversal(std::string_view p) {
         const auto slash = p.find('/', i);
         const auto part = (slash == std::string_view::npos)
             ? p.substr(i) : p.substr(i, slash - i);
-        if (part == ".." || part == ".") return true;
+        // "." is normalized away in strip_path_prefix; reject ".." only.
+        if (part == "..") return true;
         if (slash == std::string_view::npos) break;
         i = slash + 1;
     }
@@ -193,8 +217,6 @@ std::optional<std::size_t> find_hunk(const std::vector<std::string>& file_lines,
         if (hl.tag != DiffHunkLine::Tag::Add) expected.push_back(hl.text);
     }
 
-    // Exact offset only — no whole-file scan.  Duplicate context elsewhere
-    // must not silently patch the wrong line.
     if (expected.empty()) {
         // Pure insertion.  Unified-diff / GNU patch rule: with old_count==0,
         // old_start is the line *after which* to insert, so the 0-based
@@ -212,10 +234,26 @@ std::optional<std::size_t> find_hunk(const std::vector<std::string>& file_lines,
         return at;
     }
 
-    if (hunk.old_start <= 0) return std::nullopt;
-    const std::size_t at = static_cast<std::size_t>(hunk.old_start - 1);
-    if (!match_hunk_at(file_lines, at, hunk, expected)) return std::nullopt;
-    return at;
+    // Prefer the hunk header offset when it matches.
+    if (hunk.old_start > 0) {
+        const std::size_t at = static_cast<std::size_t>(hunk.old_start - 1);
+        if (match_hunk_at(file_lines, at, hunk, expected)) return at;
+    }
+
+    // LLM hunk headers are often off-by-N.  Fall back to a unique context
+    // scan: apply only when exactly one match exists so duplicate blocks
+    // never silently patch the wrong site.
+    std::optional<std::size_t> unique;
+    const std::size_t limit =
+        (expected.size() > file_lines.size())
+            ? 0
+            : (file_lines.size() - expected.size() + 1);
+    for (std::size_t at = 0; at < limit; ++at) {
+        if (!match_hunk_at(file_lines, at, hunk, expected)) continue;
+        if (unique) return std::nullopt;  // ambiguous
+        unique = at;
+    }
+    return unique;
 }
 
 } // namespace
@@ -332,6 +370,13 @@ ParsedUnifiedDiff parse_unified_diff(std::string_view patch) {
                                              : DiffHunkLine::Tag::Context;
                     hl.text = (raw.size() > 1) ? std::string(raw.substr(1))
                                                : std::string{};
+                    current.lines.push_back(std::move(hl));
+                } else {
+                    // Models often omit the leading space on context lines.
+                    // Treat unmarked hunk body as context so apply can match.
+                    DiffHunkLine hl;
+                    hl.tag = DiffHunkLine::Tag::Context;
+                    hl.text = std::string(raw);
                     current.lines.push_back(std::move(hl));
                 }
             }
@@ -566,7 +611,31 @@ DiffApplyResult apply_unified_diff(std::string_view patch,
     for (const auto& hunk : hunks) {
         auto at = find_hunk(lines, hunk);
         if (!at) {
-            result.error = "stale patch: hunk context does not match " + rel;
+            // Distinguish "not found" from "ambiguous duplicate context".
+            std::vector<std::string> expected;
+            for (const auto& hl : hunk.lines) {
+                if (hl.tag != DiffHunkLine::Tag::Add)
+                    expected.push_back(hl.text);
+            }
+            int matches = 0;
+            if (!expected.empty() && expected.size() <= lines.size()) {
+                const std::size_t limit =
+                    lines.size() - expected.size() + 1;
+                for (std::size_t i = 0; i < limit; ++i) {
+                    std::vector<std::string> tmp;
+                    if (match_hunk_at(lines, i, hunk, tmp)) ++matches;
+                }
+            }
+            if (matches > 1) {
+                result.error =
+                    "ambiguous patch: hunk context matches " +
+                    std::to_string(matches) + " sites in " + rel +
+                    " (regenerate with more unique context)";
+            } else {
+                result.error =
+                    "stale patch: hunk context does not match " + rel +
+                    " (re-read the file and emit a fresh ```diff)";
+            }
             return result;
         }
         std::vector<std::string> old_expected;

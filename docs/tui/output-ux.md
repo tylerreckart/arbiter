@@ -63,17 +63,22 @@ row is in view, or left-click the block in the scroll region.
 ## Permission cards
 
 Host `/exec` (when enabled) prompts with a multi-line permission card before
-running the shell command. Plain `/write` in the TUI uses the shared write
-interceptor (capture / optional sandbox workspace / `--persist` artifacts) and
-does **not** prompt — confirm only fires for host disk writes when no interceptor
-is installed.
+running the shell command. Plain `/write` in the TUI confirms, then writes the
+process cwd (verified). The API server’s capture-only `/write` interceptor is
+cleared for the interactive TUI and `--send` CLI so host sessions persist files.
 
 ```
 permission exec  git status
   allow? [y/N]
 ```
 
-Keys remain `y` / `n`. Declines still return `ERR: user declined` to the agent.
+Keys remain `y` / `n` (and `A` to allow the command and turn on accept-edits
+for subsequent file diffs). Declines still return `ERR: user declined` to the
+agent.
+
+Confirms and diff reviews share one FIFO interactive prompt queue: a second
+prompt never silently fails an earlier waiter. Streamed ```diff patches
+auto-enqueue a review card (`[a]` / `[r]` / `[A]` allow all / Esc).
 
 ## Reasoning
 

@@ -43,8 +43,11 @@ private:
     std::vector<Row> lines_;
     std::size_t rows_ = 0;
     bool split_ = true;
+    // When !split_: add → show only right (new file); delete → only left.
+    bool single_side_is_new_ = true;
 
     [[nodiscard]] int gutter_width() const;
+    [[nodiscard]] static bool is_dev_null(std::string_view path);
 };
 
 } // namespace arbiter::opentui
