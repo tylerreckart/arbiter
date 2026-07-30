@@ -1238,6 +1238,33 @@ void PaneScrollView::NativeDiffSegment::set_wrap_cols(int cols) {
     diff_.set_wrap_width(static_cast<std::uint32_t>(std::max(1, cols)));
 }
 
+void PaneScrollView::NativeDiffSegment::collect_lines(
+    std::vector<std::string>& out) const {
+    // Searchable source lines — same raw patch split DiffSegment uses.
+    size_t start = 0;
+    while (start <= patch_.size()) {
+        const size_t nl = patch_.find('\n', start);
+        if (nl == std::string::npos) {
+            out.push_back(patch_.substr(start));
+            break;
+        }
+        out.push_back(patch_.substr(start, nl - start));
+        start = nl + 1;
+    }
+}
+
+void PaneScrollView::NativeDiffSegment::collect_visual_lines(
+    std::vector<std::string>& out, int content_w) const {
+    // DiffView has no plain-text row export in our C ABI. Reuse DiffPanel's
+    // header/body layout so mouse copy matches the rendered panel content
+    // instead of empty fit-padded rows from the default Segment path.
+    const std::size_t begin = out.size();
+    DiffPanel panel;
+    panel.set_patch(patch_);
+    panel.collect_visual_lines(out);
+    fit_segment_visual_lines(out, begin, visual_rows(content_w));
+}
+
 void PaneScrollView::NativeDiffSegment::draw(OpenTuiHandle frame,
                                       int x,
                                       int y,
