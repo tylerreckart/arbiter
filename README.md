@@ -1,13 +1,26 @@
-# Arbiter
-
-![Release Version Shield](https://img.shields.io/github/v/release/tylerreckart/arbiter)
-![License Shield](https://img.shields.io/github/license/tylerreckart/arbiter)
+<!-- LOGO -->
+<h1>
+<p align="center">
+  <img src="https://github.com/tylerreckart/arbiter/blob/main/assets/arbiter_icon.png" alt="Logo" width="128">
+  <br>Arbiter
+</h1>
+  <p align="center">
+    A local agent runtime in a single native binary.
+    <br> Local-first; network optional.
+    <br>
+    <a href="#about">About</a>
+    ·
+    <a href="https://arbiter.run/">Download</a>
+    ·
+    <a href="https://arbiter.run/docs">Documentation</a>
+    ·
+    <a href="CONTRIBUTING.md">Contributing</a>
+  </p>
+</p>
 
 ![Arbiter session sidebar and inline diff rendering](assets/vesper.jpg)
 
-**A local agent runtime in a single native binary.** Run multi-agent workflows on your machine — interactive TUI, one-shot CLI, or HTTP+SSE — with hard tool allowlists and a shared streaming event bus. Local-first; network is optional.
-
-Not a library. Not a hosted platform. A process you run.
+Run multi-agent workflows on your machine — interactive TUI, one-shot CLI, or HTTP+SSE — with hard tool allowlists and a shared streaming event bus.
 
 ## Quick start
 
