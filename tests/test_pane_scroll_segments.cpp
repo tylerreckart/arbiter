@@ -346,20 +346,26 @@ TEST_CASE("mouse selection includes wide grapheme overlapping start col") {
     bind_view(view, tui, 80, 40);
     tui.begin_input();
 
-    // Fullwidth digit １ is two display columns. Selecting from col 2 (mid
-    // cluster) must still include the character rather than dropping it.
-    // Use \u escapes — \xNN consumes all following hex digits, so \x91b is
-    // out of range (clang) / truncates (gcc).
-    const std::string body = std::string("a") + "\uFF11" + "b";  // a + １ + b
-    REQUIRE(display_width("\uFF11") == 2);
+    // Prefer a CJK ideograph (existing tests use U+4E2D). Skip the mid-cluster
+    // assertion when the active locale reports width 1 — mid-cell starts cannot
+    // occur for narrow glyphs, but the cluster must still copy intact.
+    const std::string wide = "\xe4\xb8\xad";  // 中
+    const int ww = static_cast<int>(display_width(wide));
+    REQUIRE(ww >= 1);
 
     StyledLine line;
-    styled_append(line, StyleId::Default, body);
+    styled_append(line, StyleId::Default, std::string("a") + wide + "b");
     view.append_prose({line}, /*new_block=*/true);
 
     CHECK(view.total_visual_rows() == 2);
-    view.set_selection({/*row=*/1, /*col=*/2}, {/*row=*/1, /*col=*/3});
-    CHECK(view.selection_text() == "\uFF11");
+    if (ww >= 2) {
+        // cols: a=0, wide=1..ww, b=1+ww. Start in the middle of `wide`.
+        view.set_selection({/*row=*/1, /*col=*/2}, {/*row=*/1, /*col=*/1 + ww});
+        CHECK(view.selection_text() == wide);
+    } else {
+        view.set_selection({/*row=*/1, /*col=*/1}, {/*row=*/1, /*col=*/1 + ww});
+        CHECK(view.selection_text() == wide);
+    }
 }
 
 TEST_CASE("mouse selection copies DiffPanel rows not raw patch") {
@@ -376,23 +382,40 @@ TEST_CASE("mouse selection copies DiffPanel rows not raw patch") {
         " context\n"
         "-old\n"
         "+new\n";
+
+    // DiffPanel collect is the source of truth for copy text (also used by
+    // NativeDiffSegment when the native DiffView path is active).
+    {
+        DiffPanel panel;
+        panel.set_patch(kPatch);
+        std::vector<std::string> lines;
+        panel.collect_visual_lines(lines);
+        REQUIRE_FALSE(lines.empty());
+        CHECK(lines.front().find("--- a/") == std::string::npos);
+        CHECK(lines.front().find('x') != std::string::npos);
+        std::string joined;
+        for (const auto& row : lines) {
+            if (!joined.empty()) joined.push_back('\n');
+            joined += row;
+        }
+        CHECK(joined.find("@@ ") == std::string::npos);
+        CHECK(joined.find("old") != std::string::npos);
+        CHECK(joined.find("new") != std::string::npos);
+    }
+
     view.append_diff(kPatch);
     const int rows = view.total_visual_rows();
     REQUIRE(rows >= 2);
 
-    // Select the header row (row 0) — must be a filename title, not "--- a/x".
-    view.set_selection({/*row=*/0, /*col=*/0}, {/*row=*/0, /*col=*/80});
-    const std::string header = view.selection_text();
-    CHECK(header.find("--- a/") == std::string::npos);
-    CHECK(header.find('x') != std::string::npos);
-
-    // Select the whole panel; body rows should carry signs/content from the
-    // panel, not raw unified-diff hunk headers.
+    // Lead-in block_gap blank(s) sit above the diff — select the whole view
+    // and assert copy is panel-shaped, not raw unified-diff text.
     view.set_selection({/*row=*/0, /*col=*/0}, {/*row=*/rows - 1, /*col=*/80});
     const std::string all = view.selection_text();
+    CHECK(all.find("--- a/") == std::string::npos);
     CHECK(all.find("@@ ") == std::string::npos);
     CHECK(all.find("old") != std::string::npos);
     CHECK(all.find("new") != std::string::npos);
+    CHECK(all.find('x') != std::string::npos);
 }
 
 TEST_CASE("hit_cell_at maps terminal clicks into scroll content") {
