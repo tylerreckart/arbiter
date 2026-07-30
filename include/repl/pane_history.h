@@ -49,10 +49,19 @@ void pane_history_push_diff(Pane& pane, std::string_view patch);
 
 // Register `patch` in `store` (action line + DiffSegment) onto an arbitrary
 // scroll view.  Used by live drain and transcript replay so relaunched /
-// switched conversations keep `/diff apply` targets.
-void pane_history_append_diff_proposal(opentui::PaneScrollView& view,
-                                       DiffProposalStore& store,
-                                       std::string_view patch);
+// switched conversations keep `/diff apply` targets.  Returns the registered
+// proposal when one was created.
+std::optional<DiffProposal> pane_history_append_diff_proposal(
+    opentui::PaneScrollView& view,
+    DiffProposalStore& store,
+    std::string_view patch);
+
+// Live TUI: when set, called after a Pending proposal is registered via
+// pane_history_push_diff (not transcript replay).  Used to auto-enqueue
+// interactive review.
+using DiffAutoReviewFn =
+    std::function<void(Pane& pane, const DiffProposal& proposal)>;
+void pane_history_set_diff_auto_review(DiffAutoReviewFn fn);
 
 void pane_history_push_prose(Pane& pane,
                              const std::vector<StyledLine>& lines,

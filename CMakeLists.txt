@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.8.9 LANGUAGES CXX)
+project(arbiter VERSION 0.9.0 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -711,6 +711,15 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_prompt_bridge COMMAND unit_prompt_bridge)
+
+    add_executable(unit_interactive_prompt
+        tests/test_interactive_prompt.cpp
+    )
+    target_include_directories(unit_interactive_prompt PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_interactive_prompt COMMAND unit_interactive_prompt)
 
     add_executable(unit_mouse_decode
         tests/test_mouse_decode.cpp

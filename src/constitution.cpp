@@ -240,9 +240,10 @@ static std::string compose_command_rules(const std::set<std::string>& b) {
 
     if (b.count("write"))
         s +=
-            "- /write — ALWAYS use to produce files (code, docs, reports).  NEVER say\n"
-            "  'here is the content' without issuing /write — terminal output is not\n"
-            "  saveable by the user.  Use --persist when the user may revisit later.\n";
+            "- File delivery — never leave content only in chat.  For edits to existing\n"
+            "  code, emit a fenced ```diff (user reviews/applies).  For full new files or\n"
+            "  wholesale rewrites, use /write <path> … /endwrite (confirmed, written to cwd).\n"
+            "  Use /write --persist when the user may revisit later via artifacts.\n";
 
     if (b.count("web"))
         s +=
@@ -389,25 +390,25 @@ static const char* prompt_inter_agent_format() {
 static const char* prompt_code_change_format() {
     return
         "\nCODE CHANGE FORMAT:\n"
-        "The TUI renders fenced ```diff blocks as side-by-side patches. "
-        "Use them for every code change — additions, deletions, and edits — "
-        "whether or not you also emit /write.\n"
+        "The TUI renders fenced ```diff blocks as reviewable patches and applies them "
+        "under the process cwd after the user approves. Prefer ```diff for edits to "
+        "existing files; use /write for brand-new full files or wholesale rewrites.\n"
         "- One fenced block per file, language tag `diff` (not `patch`, not unlabeled).\n"
-        "- Unified diff syntax:\n"
+        "- Unified diff syntax (context lines MUST start with a leading space):\n"
         "    --- a/path/to/file\n"
         "    +++ b/path/to/file\n"
         "    @@ -old_start,old_count +new_start,new_count @@\n"
         "     context line (leading space)\n"
         "    -removed line\n"
         "    +added line\n"
+        "- New files: use --- /dev/null and +++ b/path (or /write the full file).\n"
+        "- Re-read the file before diffing so hunk offsets/context match disk.\n"
         "- Include ---/+++ headers and at least one @@ hunk. When both removals "
-        "  and additions exist, include context, at least one - line, and one + line.\n"
+        "  and additions exist, include unique context, at least one - line, and one + line.\n"
         "- Do NOT show edits as plain ```lang blocks or prose when a diff against "
-        "  existing code applies — the diff fence is required so the TUI renders "
-        "  before/after.\n"
+        "  existing code applies — the diff fence is required so the TUI can apply.\n"
         "- Slash commands (/write, /exec, /agent) stay outside fences on their own lines.\n"
-        "- Plain code fences are fine for brand-new files, examples, or snippets that "
-        "  are not diffs against existing code.\n";
+        "- Do not emit both /write and ```diff for the same change (apply will go stale).\n";
 }
 
 // /help inventory line.  Topic list reflects actually-loaded bundles.
@@ -518,9 +519,8 @@ static std::string writer_prompt() {
         "Results arrive in the next message as [TOOL RESULTS].\n"
         "\n"
         "COMMAND RULES:\n"
-        "- ALWAYS use /write to produce output files. Never just display content — write it.\n"
-        "  The user cannot save terminal output. /write is the only way to deliver work.\n"
-        "  /write <path> followed by full content, closed by /endwrite on its own line.\n"
+        "- Deliver files to disk — never leave content only in chat.\n"
+        "  Edits: fenced ```diff (user reviews). New/full files: /write … /endwrite.\n"
         "- To inspect a codebase before writing docs: use /exec to read files and structure.\n"
         "- To gather facts before writing: use /agent research <query> or /fetch <url>.\n"
         "- To preserve an outline or draft across sessions: use /mem write.\n";
