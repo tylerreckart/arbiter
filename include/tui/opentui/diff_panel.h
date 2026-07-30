@@ -15,6 +15,9 @@ class DiffPanel {
 public:
     void set_patch(std::string_view patch);
     [[nodiscard]] int visual_rows() const { return static_cast<int>(rows_); }
+    // One plain-text string per visual row (header + body), matching the panel
+    // layout used by draw() — for mouse selection copy.
+    void collect_visual_lines(std::vector<std::string>& out) const;
     void draw(OpenTuiHandle frame,
               int x,
               int y,
