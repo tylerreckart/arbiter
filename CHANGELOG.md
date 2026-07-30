@@ -14,11 +14,17 @@ idempotency across restarts, LaTeX→Unicode math in the TUI, refreshed
 starter constitutions, and pane / sandbox / interrupt hardening.
 
 ### Added
+- **Unified interactive prompt queue (TUI).** Confirms and diff reviews share
+  a FIFO queue (`InteractivePromptQueue`) so a second prompt never silently
+  declines an earlier waiter. Streamed ```diff fences auto-enqueue review
+  cards; keys are `[a]`pply / `[r]`eject / `[A]`llow all (session accept-edits)
+  / Esc. File-add diffs render full-width without a `/dev/null` half.
+  See [`docs/tui/output-ux.md`](docs/tui/output-ux.md).
 - **Interactive `/diff` review (TUI).** `/diff` and `/diff review [N]` prompt
-  `[a]pply` / `[r]eject` / Esc on pending patches (same interrupt bridge as
-  tool confirms). `/diff apply` remains a direct write. Missing target files
-  are created from the patch’s new-side lines; apply is the permission grant
-  (no `/write` confirm). See [`docs/tui/commands.md`](docs/tui/commands.md).
+  on pending patches (same queue as tool confirms). `/diff apply` remains a
+  direct write. Missing target files are created from the patch’s new-side
+  lines; apply is the permission grant (no `/write` confirm). See
+  [`docs/tui/commands.md`](docs/tui/commands.md).
 - **`/diff` apply / reject / undo (TUI).** Streamed ` ```diff ` fences
   register as pane-local `Patch #N` proposals with an action line above
   the rendered panel. `/diff apply [N]` writes the unified patch under
@@ -38,6 +44,14 @@ starter constitutions, and pane / sandbox / interrupt hardening.
   no longer swallow the rest of the line.
 
 ### Fixed
+- **TUI `/write` persists to cwd.** Interactive TUI and `--send` clear the
+  API capture-only write interceptor so `/write` confirms and writes the
+  process cwd (verified). Diff apply also tolerates stale hunk offsets when
+  context matches uniquely, collapses `a/./path` segments, and treats
+  unmarked hunk lines as context.
+- **Permission / confirm sequencing.** Concurrent destructive `/exec`
+  confirms (and confirm + diff review) no longer overwrite each other’s
+  promises with a fake decline — approved commands report success.
 - **Stacked pane gutters.** Inactive panes are content-only (no readline);
   only the focused pane paints an input box. Stacked gutters are a single
   separator cell (matching vertical splits): no trailing pad on mid-stack
