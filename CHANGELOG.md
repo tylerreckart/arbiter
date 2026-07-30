@@ -44,6 +44,17 @@ starter constitutions, and pane / sandbox / interrupt hardening.
   no longer swallow the rest of the line.
 
 ### Fixed
+- **TUI fatal SIGSEGV/SIGHUP on pane close and SIGABRT in DiffPanel.** Pane
+  close/shutdown no longer joins exec threads while holding `layout_mu`
+  (deadlock with `/pane` spawn, `/find`, or `present_all` → hung
+  `pthread_join`, then SIGHUP/SIGSEGV when the terminal drops). Close also
+  cancels the pane's in-flight turn (as docs promise) so join is not stuck
+  on a live network call, clears child `parent_pane` links before destroy,
+  and refuses to parent new `/pane` spawns onto a mid-close pane. Confirm /
+  diff-review / pending-close prompts and PgUp/expand handlers mutate
+  scrollback under `layout_mu` so the output pump cannot UAF `DiffSegment`
+  mid-draw. Diff panel wrap invalidation no longer re-parses the patch
+  every frame.
 - **TUI `/write` persists to cwd.** Interactive TUI and `--send` clear the
   API capture-only write interceptor so `/write` confirms and writes the
   process cwd (verified). Diff apply also tolerates stale hunk offsets when

@@ -45,7 +45,7 @@ Zoom is a rendering override — the layout tree is unchanged. Cycling focus whi
 |--------|--------------------------------------------------------------------------------|
 | `^W c` | Close the focused pane. Last remaining pane cannot be closed.                  |
 
-Close is graceful: the pane's command queue is stopped (so its exec thread's `pop()` returns), the exec thread is joined (which can block until the in-flight agent turn finishes — `Esc` first if you don't want to wait), and only then is the Pane destroyed. Pending output for that pane is dropped.
+Close is graceful: the pane's command queue is stopped, its in-flight turn is cancelled, the exec thread is joined **outside** `layout_mu` (so an in-flight `/pane` spawn or `present_all` on that thread cannot deadlock the close), child `parent_pane` links are cleared, and only then is the Pane destroyed. Join can still briefly wait for the cancelled turn to unwind. Pending output for that pane is dropped.
 
 When closing collapses a split node to a single child, the child takes the parent's slot in the tree (no orphan single-child split nodes). Focus moves to the nearest leaf.
 
