@@ -73,3 +73,12 @@ TEST_CASE("try_reserve_file_bytes: rejects overflow-prone addition") {
     CHECK_FALSE(try_reserve_file_bytes(captured, 20, SIZE_MAX));
     CHECK(captured.load() == SIZE_MAX - 10);
 }
+
+TEST_CASE("release_file_bytes restores cap budget after failed write") {
+    std::atomic<size_t> captured{0};
+    CHECK(try_reserve_file_bytes(captured, 400, 1000));
+    release_file_bytes(captured, 400);
+    CHECK(captured.load() == 0);
+    CHECK(try_reserve_file_bytes(captured, 1000, 1000));
+    CHECK(captured.load() == 1000);
+}
