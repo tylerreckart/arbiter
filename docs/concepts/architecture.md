@@ -10,10 +10,10 @@ This overview intentionally omits implementation details and focuses on the conc
 flowchart LR
     USER["User or application"]
 
-    subgraph ARBITER["Arbiter — one native binary"]
+    subgraph ARBITER["Arbiter"]
         direction LR
 
-        subgraph FACES["Three faces"]
+        subgraph FACES["Interfaces"]
             direction TB
 
             TUI["Interactive TUI"]
@@ -39,14 +39,14 @@ flowchart LR
 
                 AGENT["Agent"]
 
-                WRIT["Writ command surface<br/>prose-embedded runtime actions"]
+                WRIT["Writ<br/>prose-embedded runtime actions"]
             end
 
             ADVISOR{"Optional advisor<br/>consult or gate"}
 
             EVENTS(("Streaming<br/>events"))
 
-            EVENT_BUS["Shared streaming event bus<br/>same event model everywhere"]
+            EVENT_BUS["Event bus<br/>same event model everywhere"]
 
             REQUESTS --> ORCHESTRATION
             ORCHESTRATION --> AGENT
@@ -85,7 +85,7 @@ flowchart LR
 
         MODELS["Model providers"]
 
-        subgraph CAPABILITIES["Allowed capabilities"]
+        subgraph CAPABILITIES["Integrations"]
             direction TB
 
             TOOLS["Tools"]

@@ -20,7 +20,7 @@ const apiGroupLabels = {
 const conceptGroups = [
   {
     title: 'Runtime',
-    slugs: ['writ', 'advisor', 'sse-events', 'fleet-streaming', 'durable-execution'],
+    slugs: ['architecture', 'writ', 'advisor', 'sse-events', 'fleet-streaming', 'durable-execution'],
   },
   {
     title: 'Memory & work',
