@@ -25,4 +25,9 @@ inline bool try_reserve_file_bytes(std::atomic<size_t>& captured,
     }
 }
 
+// Undo a prior try_reserve_file_bytes when the write did not complete.
+inline void release_file_bytes(std::atomic<size_t>& captured, size_t size) {
+    captured.fetch_sub(size, std::memory_order_relaxed);
+}
+
 } // namespace arbiter

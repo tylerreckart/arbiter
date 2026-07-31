@@ -593,3 +593,11 @@ TEST_CASE("multi-line display math opener with body still buffers until closer")
     CHECK(out.find("E = mc\u00b2") != std::string::npos);
     CHECK(out.find("after") != std::string::npos);
 }
+
+TEST_CASE("inline math does not close on escaped backslash-paren") {
+    MarkdownRenderer md;
+    std::string out = md.feed("see \\(a \\\\) b\\) ok\n");
+    out += md.flush();
+    CHECK(out.find("a \\) b") != std::string::npos);
+    CHECK(out.find("ok") != std::string::npos);
+}

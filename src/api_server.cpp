@@ -7461,6 +7461,7 @@ void wire_orch_tools_impl(Orchestrator& orch,
                         note += "; saved to /workspace/" + path +
                                 " in sandbox)";
                     } else {
+                        release_file_bytes(*bytes, size);
                         note += "; sandbox write failed: " + werr + ")";
                     }
                 } else {
