@@ -298,6 +298,27 @@ TEST_CASE("first user echo has a lead-in blank under the header") {
     CHECK(view.total_visual_rows() == 4);
 }
 
+TEST_CASE("find_rows maps wrapped prose matches to visual row") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 20, 40);
+
+    const std::string prefix(40, 'a');
+    const std::string suffix(40, 'b');
+    const std::string body = prefix + "needle" + suffix;
+
+    StyledLine line;
+    styled_append(line, StyleId::Default, body);
+    view.append_prose({line}, /*new_block=*/true);
+
+    const auto hits = view.find_rows("needle");
+    REQUIRE(hits.size() == 1);
+    // Lead-in blank + wrapped body: needle sits past the first visual slice.
+    CHECK(hits[0] >= 2);
+    CHECK(hits[0] < view.total_visual_rows());
+}
+
 TEST_CASE("mouse selection extracts plain text from prose scrollback") {
     load_tui_design("");
     TUI tui;

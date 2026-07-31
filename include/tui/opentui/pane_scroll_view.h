@@ -122,12 +122,11 @@ public:
     [[nodiscard]] int total_visual_rows() const;
     [[nodiscard]] int max_scroll_offset() const;
 
-    // Visual rows (0 = top of scrollback) whose source line contains `term`,
-    // case-insensitively, in top-to-bottom order.  Rows are approximate for
-    // wrapped lines (the match reports the source line's position, clamped
-    // into the owning segment) — good enough to jump the viewport to the
-    // match.  Collapsed code-block bodies still match; their hits clamp to
-    // the block's visible rows.
+    // Visual rows (0 = top of scrollback) whose plain text contains `term`,
+    // case-insensitively, in top-to-bottom order.  Wrapped prose/ANSI text
+    // segments report the visual row that actually contains the match.
+    // Collapsed code-block bodies still match; their hits clamp to the block's
+    // visible rows.
     [[nodiscard]] std::vector<int> find_rows(const std::string& term) const;
 
     void draw(OpenTuiHandle frame,
