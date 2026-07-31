@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://github.com/tylerreckart/arbiter/blob/main/assets/arbiter_icon.png" alt="Logo" width="128">
-  <br><h1>Arbiter</h1>
+  <br><h1 align="center">Arbiter</h1>
   <p align="center">
     A local agent runtime in a single native binary.
     <br> Local-first; network optional.
