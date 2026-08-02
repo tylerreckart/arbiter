@@ -24,7 +24,6 @@ export function markdownToHtml(markdown, doc, options = {}) {
 
     const fence = line.match(/^```(\w+)?\s*$/)
     if (fence) {
-      const language = fence[1] ? ` class="language-${escapeHtml(fence[1])}"` : ''
       const code = []
       index += 1
       while (index < lines.length && !/^```/.test(lines[index])) {
@@ -32,7 +31,13 @@ export function markdownToHtml(markdown, doc, options = {}) {
         index += 1
       }
       if (index < lines.length) index += 1
-      html.push(`<pre><code${language}>${escapeHtml(code.join('\n'))}</code></pre>`)
+      const body = escapeHtml(code.join('\n'))
+      if (fence[1] === 'mermaid') {
+        html.push(`<pre class="mermaid">${body}</pre>`)
+      } else {
+        const language = fence[1] ? ` class="language-${escapeHtml(fence[1])}"` : ''
+        html.push(`<pre><code${language}>${body}</code></pre>`)
+      }
       continue
     }
 
@@ -132,13 +137,19 @@ export function extractDescription(markdown, fallback) {
   }
 
   for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed.startsWith('```')) {
-      flush()
-      inFence = !inFence
+    if (inFence) {
+      if (/^```/.test(line)) {
+        flush()
+        inFence = false
+      }
       continue
     }
-    if (inFence) continue
+    if (/^```(\w+)?\s*$/.test(line)) {
+      flush()
+      inFence = true
+      continue
+    }
+    const trimmed = line.trim()
     if (
       !trimmed ||
       trimmed.startsWith('#') ||
@@ -170,7 +181,7 @@ export function extractDescription(markdown, fallback) {
 
 export function extractToc(markdown) {
   const toc = []
-  for (const line of markdown.replace(/\r\n/g, '\n').split('\n')) {
+  for (const line of linesOutsideFences(markdown)) {
     const match = line.match(/^(#{2,3})\s+(.+)$/)
     if (!match) continue
     const text = stripHashes(match[2]).replace(/`/g, '')
@@ -181,6 +192,22 @@ export function extractToc(markdown) {
     })
   }
   return toc
+}
+
+function* linesOutsideFences(markdown) {
+  let inFence = false
+  for (const line of markdown.replace(/\r\n/g, '\n').split('\n')) {
+    // Match markdownToHtml: open only on ^```(\w+)?\s*$, close only on ``` at column 0.
+    if (inFence) {
+      if (/^```/.test(line)) inFence = false
+      continue
+    }
+    if (/^```(\w+)?\s*$/.test(line)) {
+      inFence = true
+      continue
+    }
+    yield line
+  }
 }
 
 function renderList(lines, startIndex, type, ctx) {
