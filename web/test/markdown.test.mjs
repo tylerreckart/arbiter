@@ -44,3 +44,43 @@ test('extractToc ignores headings inside fences', () => {
     ['Real heading', 'Nested real'],
   )
 })
+
+test('extractToc matches markdownToHtml for indented fence-like lines', () => {
+  const markdown = [
+    '## Outside',
+    '',
+    '  ```not-a-fence',
+    '## Still a heading',
+    '  ```',
+    '',
+    '## Also outside',
+  ].join('\n')
+
+  const toc = extractToc(markdown).map((entry) => entry.text)
+  const htmlHeadings = [...markdownToHtml(markdown, doc).matchAll(/<h[23][^>]*>([^<]+)/g)].map(
+    (match) => match[1],
+  )
+
+  assert.deepEqual(toc, ['Outside', 'Still a heading', 'Also outside'])
+  assert.deepEqual(toc, htmlHeadings)
+})
+
+test('extractToc matches markdownToHtml when fence closer is indented', () => {
+  const markdown = [
+    '## Before',
+    '```bash',
+    'echo hi',
+    '  ```',
+    '## Inside code in HTML',
+    '```',
+    '## After',
+  ].join('\n')
+
+  const toc = extractToc(markdown).map((entry) => entry.text)
+  const htmlHeadings = [...markdownToHtml(markdown, doc).matchAll(/<h[23][^>]*>([^<]+)/g)].map(
+    (match) => match[1],
+  )
+
+  assert.deepEqual(toc, ['Before', 'After'])
+  assert.deepEqual(toc, htmlHeadings)
+})
