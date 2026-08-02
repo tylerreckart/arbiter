@@ -7,11 +7,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-## [0.9.1] — 2026-07-30
+## [0.9.1] — 2026-08-02
 
 Patch release: mouse text selection in scrollback, unified interactive
 prompt queue for confirms and diff reviews, plus TUI pane-close /
-DiffPanel and `/write` / confirm sequencing fixes.
+DiffPanel, `/find`, `/write`, and confirm sequencing fixes.
 
 ### Added
 - **Mouse text selection in scrollback.** Drag across the output area to
@@ -46,6 +46,16 @@ DiffPanel and `/write` / confirm sequencing fixes.
 - **Permission / confirm sequencing.** Concurrent destructive `/exec`
   confirms (and confirm + diff review) no longer overwrite each other’s
   promises with a fake decline — approved commands report success.
+- **Wrapped `/find` jump targets.** Soft-wrapped prose and legacy ANSI
+  text now map matches to the visual row that contains the hit, so
+  `/find` scrolls to the right line (#150).
+- **Sandbox `/write` failure reporting.** When the orchestrator tools
+  interceptor cannot persist into the sandbox workspace, it releases the
+  per-response file cap and returns `ERR` instead of a misleading OK note.
+- **File-cap rollback, idempotency TTL, math closers.** Failed sandbox
+  writes roll back `file_max_bytes` reservations; durable idempotency
+  conflict re-reads use a consistent `wall_now`; escaped `\\)` / `\\]`
+  no longer close inline/display math.
 
 ## [0.9.0] — 2026-07-29
 
