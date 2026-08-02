@@ -423,13 +423,13 @@ body.docs .site-footer {
 }
 
 .doc-content pre.mermaid {
-  background: var(--code-bg);
-  border: 1px solid var(--line);
+  background: transparent;
+  border: 0;
   color: var(--ink);
   font-family: var(--font-body);
-  margin: 22px 0;
+  margin: 28px 0;
   overflow-x: auto;
-  padding: 18px 16px;
+  padding: 4px 0;
   text-align: center;
 }
 
@@ -440,8 +440,66 @@ body.docs .site-footer {
   max-width: 100%;
 }
 
+.doc-content pre.mermaid .node rect,
+.doc-content pre.mermaid .node polygon {
+  filter: none;
+  stroke-width: 1.25px;
+}
+
+.doc-content pre.mermaid .node rect {
+  rx: 8px;
+  ry: 8px;
+}
+
+.doc-content pre.mermaid .nodeLabel,
+.doc-content pre.mermaid .nodeLabel span,
+.doc-content pre.mermaid .label foreignObject div,
+.doc-content pre.mermaid .label foreignObject span {
+  color: var(--ink) !important;
+  font-family: var(--font-body) !important;
+  font-size: 0.92rem !important;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.doc-content pre.mermaid .edgePath .path,
+.doc-content pre.mermaid .flowchart-link {
+  stroke: rgba(243, 239, 232, 0.42) !important;
+  stroke-width: 1.6px !important;
+}
+
+.doc-content pre.mermaid .arrowheadPath,
+.doc-content pre.mermaid marker path {
+  fill: rgba(243, 239, 232, 0.55) !important;
+  stroke: none !important;
+}
+
+.doc-content pre.mermaid .edgeLabel rect,
+.doc-content pre.mermaid .labelBkg {
+  fill: var(--bg) !important;
+  opacity: 1;
+  rx: 4px;
+  ry: 4px;
+  stroke: none !important;
+}
+
+.doc-content pre.mermaid .edgeLabel,
+.doc-content pre.mermaid .edgeLabel span,
+.doc-content pre.mermaid .edgeLabel foreignObject div,
+.doc-content pre.mermaid .edgeLabel foreignObject span {
+  background: transparent !important;
+  color: var(--muted) !important;
+  font-family: var(--font-body) !important;
+  font-size: 0.78rem !important;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
 .doc-content pre.mermaid.mermaid-failed {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
   font-family: var(--font-mono);
+  padding: 16px 18px;
   text-align: left;
   white-space: pre-wrap;
 }
