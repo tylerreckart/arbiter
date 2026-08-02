@@ -7462,7 +7462,8 @@ void wire_orch_tools_impl(Orchestrator& orch,
                                 " in sandbox)";
                     } else {
                         release_file_bytes(*bytes, size);
-                        note += "; sandbox write failed: " + werr + ")";
+                        return "ERR: sandbox write failed for '" + path +
+                               "': " + werr;
                     }
                 } else {
                     note += ")";

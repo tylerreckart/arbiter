@@ -1978,23 +1978,67 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
     // skipped via Segment::find_skip_line (keeps row indices aligned).
     static constexpr std::string_view kLegacyEchoPrefix = "> /find";
 
+    auto skip_wrapped_find_echo = [](std::string_view line_sv) -> bool {
+        while (!line_sv.empty() && line_sv.front() == ' ') {
+            line_sv.remove_prefix(1);
+        }
+        while (!line_sv.empty() && line_sv.back() == ' ') {
+            line_sv.remove_suffix(1);
+        }
+        static constexpr char kFind[] = "/find";
+        static constexpr size_t kFindLen = sizeof(kFind) - 1;
+        if (line_sv.size() < kFindLen) return false;
+        for (size_t i = 0; i < kFindLen; ++i) {
+            char c = line_sv[i];
+            if (c >= 'A' && c <= 'Z') {
+                c = static_cast<char>(c - 'A' + 'a');
+            }
+            if (c != kFind[i]) return false;
+        }
+        return line_sv.size() == kFindLen || line_sv[kFindLen] == ' ';
+    };
+
     int base = 0;
     std::vector<std::string> lines;
     for (const auto& seg : segments_) {
         const int rows = seg->visual_rows(wrap_cols_);
         lines.clear();
-        seg->collect_lines(lines);
-        for (size_t k = 0; k < lines.size(); ++k) {
-            if (seg->find_skip_line(k)) continue;
-            std::string_view line_sv = lines[k];
-            if (line_sv.size() >= kLegacyEchoPrefix.size()
-                && line_sv.substr(0, kLegacyEchoPrefix.size()) == kLegacyEchoPrefix) {
-                continue;
+        const bool wrapped_find = seg->is_prose() || seg->is_text();
+        if (wrapped_find) {
+            seg->collect_visual_lines(lines, wrap_cols_);
+            for (size_t k = 0; k < lines.size(); ++k) {
+                std::string_view line_sv = lines[k];
+                if (skip_wrapped_find_echo(line_sv)) continue;
+                if (line_sv.size() >= kLegacyEchoPrefix.size()
+                    && line_sv.substr(0, kLegacyEchoPrefix.size())
+                           == kLegacyEchoPrefix) {
+                    continue;
+                }
+                std::string hay = lines[k];
+                for (char& c : hay) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                if (hay.find(needle) == std::string::npos) continue;
+                out.push_back(base + static_cast<int>(k));
             }
-            std::string hay = std::move(lines[k]);
-            for (char& c : hay) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (hay.find(needle) == std::string::npos) continue;
-            out.push_back(base + std::min(static_cast<int>(k), std::max(0, rows - 1)));
+        } else {
+            seg->collect_lines(lines);
+            for (size_t k = 0; k < lines.size(); ++k) {
+                if (seg->find_skip_line(k)) continue;
+                std::string_view line_sv = lines[k];
+                if (line_sv.size() >= kLegacyEchoPrefix.size()
+                    && line_sv.substr(0, kLegacyEchoPrefix.size())
+                           == kLegacyEchoPrefix) {
+                    continue;
+                }
+                std::string hay = std::move(lines[k]);
+                for (char& c : hay) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                if (hay.find(needle) == std::string::npos) continue;
+                out.push_back(base + std::min(static_cast<int>(k),
+                                              std::max(0, rows - 1)));
+            }
         }
         base += rows;
     }
