@@ -6,6 +6,7 @@ Start here if you want the model before the reference material.
 
 | Concept | What it covers |
 |---------|----------------|
+| [High-level architecture](architecture.md) | Conceptual overview of Arbiter's major architectural components |
 | [Writ](writ.md) | The slash-command DSL agents emit inline |
 | [Advisor](advisor.md) | Structural supervision gates (`CONTINUE` / `REDIRECT` / `HALT`) |
 | [SSE events](sse-events.md) | The stream contract shared by TUI and HTTP |
