@@ -35,6 +35,15 @@ An entry is **not** a parsed scratchpad. An agent's `/mem write` does not create
 
 ## Graph structure
 
+Entries are nodes; relations are directed labeled edges between them:
+
+```mermaid
+flowchart LR
+  ref["reference: pricing page"] -->|supports| learn["learning: Honeycomb wins"]
+  proj["project: Q3 rollout"] -->|refines| learn
+  learn -->|supports| proj
+```
+
 ### Entries (nodes)
 
 A memory entry is one row in `memory_entries`. The schema reference is in [data-model](data-model.md#memoryentry); the conceptual fields:
