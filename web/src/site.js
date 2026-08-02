@@ -61,6 +61,17 @@ if (!prefersReducedMotion && 'IntersectionObserver' in window) {
 
 initDocsSearch()
 initTocSpy()
+initMermaid()
+
+function initMermaid() {
+  if (!document.querySelector('.doc-content pre.mermaid')) return
+  if (document.documentElement.dataset.mermaidInit === '1') return
+  document.documentElement.dataset.mermaidInit = '1'
+  const script = document.createElement('script')
+  script.type = 'module'
+  script.src = '/mermaid-init.js'
+  document.head.appendChild(script)
+}
 
 function initDocsSearch() {
   const input = document.querySelector('[data-docs-search]')
