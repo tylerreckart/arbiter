@@ -35,6 +35,23 @@ npm run serve
 | `views/` | Pug templates (`layout`, pages, includes) |
 | `src/styles/` | Visual system (`tokens`, `base`, `chrome`, `marketing`, `docs`, `footer`, `responsive`) |
 | `src/site.js` | Install copy button + reveal motion |
+| `src/mermaid-init.js` | Client-side Mermaid diagram init (bundled to `dist/`) |
+
+### Mermaid diagrams
+
+Docs pages can include Mermaid diagrams with a `mermaid` fenced code block:
+
+````markdown
+```mermaid
+flowchart LR
+  A --> B
+```
+````
+
+Diagrams render client-side on docs pages that contain at least one fence; the
+bundled Mermaid module is injected only when needed so marketing pages stay
+light. `npm run serve` works offline — the bundle is vendored into `dist/`, not
+loaded from a CDN.
 
 `install.sh` is copied to `dist/install.sh` during the build so the homepage can
 advertise:

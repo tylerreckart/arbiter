@@ -6,13 +6,16 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node scripts/dev.mjs",
-    "serve": "python3 -m http.server 4173 --directory dist"
+    "serve": "python3 -m http.server 4173 --directory dist",
+    "test": "node --test test/**/*.test.mjs"
   },
   "dependencies": {
+    "mermaid": "^11.9.0",
     "pug": "^3.0.4"
   },
   "devDependencies": {
     "browser-sync": "^3.0.4",
-    "chokidar": "^5.0.0"
+    "chokidar": "^5.0.0",
+    "esbuild": "^0.25.8"
   }
 }

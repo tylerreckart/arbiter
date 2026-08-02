@@ -422,6 +422,30 @@ body.docs .site-footer {
   padding: 16px 18px;
 }
 
+.doc-content pre.mermaid {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-family: var(--font-body);
+  margin: 22px 0;
+  overflow-x: auto;
+  padding: 18px 16px;
+  text-align: center;
+}
+
+.doc-content pre.mermaid svg {
+  display: block;
+  height: auto;
+  margin: 0 auto;
+  max-width: 100%;
+}
+
+.doc-content pre.mermaid.mermaid-failed {
+  font-family: var(--font-mono);
+  text-align: left;
+  white-space: pre-wrap;
+}
+
 .doc-content code {
   background: var(--code-bg);
   color: var(--ink);

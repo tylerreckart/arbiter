@@ -25,6 +25,7 @@ import {
 } from '../lib/config.mjs'
 import { readDocs, sortDocs } from '../lib/docs.mjs'
 import { extractToc, markdownToHtml } from '../lib/markdown.mjs'
+import { bundleMermaid } from '../lib/mermaid-bundle.mjs'
 import {
   buildBreadcrumbs,
   buildDocsIndexCards,
@@ -66,6 +67,7 @@ await fs.mkdir(dist, { recursive: true })
 await writeStyles(path.join(dist, 'styles.css'))
 await fs.copyFile(siteScriptPath, path.join(dist, 'site.js'))
 await fs.copyFile(liquidHeroPath, path.join(dist, 'liquid-hero.js'))
+await bundleMermaid()
 await fs.copyFile(installPath, path.join(dist, 'install.sh'))
 await copyAssets()
 await writeFavicon()

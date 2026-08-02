@@ -24,6 +24,7 @@ export const styleSheets = [
 ]
 export const siteScriptPath = path.join(root, 'src', 'site.js')
 export const liquidHeroPath = path.join(root, 'src', 'liquid-hero.js')
+export const mermaidInitPath = path.join(root, 'src', 'mermaid-init.js')
 export const installPath = path.join(root, 'install.sh')
 export const assetsPath = path.join(repoRoot, 'assets')
 
