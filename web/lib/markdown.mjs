@@ -137,13 +137,19 @@ export function extractDescription(markdown, fallback) {
   }
 
   for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed.startsWith('```')) {
-      flush()
-      inFence = !inFence
+    if (inFence) {
+      if (/^```/.test(line)) {
+        flush()
+        inFence = false
+      }
       continue
     }
-    if (inFence) continue
+    if (/^```(\w+)?\s*$/.test(line)) {
+      flush()
+      inFence = true
+      continue
+    }
+    const trimmed = line.trim()
     if (
       !trimmed ||
       trimmed.startsWith('#') ||
@@ -191,11 +197,16 @@ export function extractToc(markdown) {
 function* linesOutsideFences(markdown) {
   let inFence = false
   for (const line of markdown.replace(/\r\n/g, '\n').split('\n')) {
-    if (line.trim().startsWith('```')) {
-      inFence = !inFence
+    // Match markdownToHtml: open only on ^```(\w+)?\s*$, close only on ``` at column 0.
+    if (inFence) {
+      if (/^```/.test(line)) inFence = false
       continue
     }
-    if (!inFence) yield line
+    if (/^```(\w+)?\s*$/.test(line)) {
+      inFence = true
+      continue
+    }
+    yield line
   }
 }
 
