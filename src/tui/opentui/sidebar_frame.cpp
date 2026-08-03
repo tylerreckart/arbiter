@@ -54,19 +54,23 @@ std::string trim_to_cells(std::string s, int max_cells) {
 
 int draw_section_label(OpenTuiHandle frame,
                        const TuiDesign& d,
-                       int content_x,
-                       int content_w,
+                       int block_x,
+                       int block_w,
                        int y,
                        std::string_view title,
                        const TuiRgba& bg) {
-    draw_text(frame,
-              static_cast<std::uint32_t>(content_x),
-              static_cast<std::uint32_t>(y),
-              trim_to_cells(capitalize_label(title), std::max(0, content_w)),
-              d.accent.primary,
-              bg,
-              kAttrBold);
-    return y + 1;
+    // Full box width with ├/┤ so the rule meets the vertical borders
+    // (same treatment as Conversations Folders / Chats). Leave one blank
+    // row beneath for breathing room before section content.
+    draw_box_divider_row(frame,
+                         block_x,
+                         y,
+                         block_w,
+                         d.text.muted,
+                         bg,
+                         capitalize_label(title),
+                         &d.accent.primary);
+    return y + 2;
 }
 
 int draw_kv_line(OpenTuiHandle frame,
@@ -285,10 +289,10 @@ void draw_sidebar(OpenTuiHandle frame,
                      &d.accent.primary);
 
     // Leave one blank row directly beneath the title-bearing top border.
+    // Context metrics sit under Session (no separate section divider).
     int y = panel_top_y + 2;
     const int scroll_bottom = sep_y;
 
-    y = draw_section_label(frame, d, content_x, content_w, y, "Context", bg);
     if (snap.context_pct_current >= 0) {
         std::string used = std::to_string(snap.context_pct_current) + "%";
         if (snap.last_context_tokens > 0 && snap.context_window > 0) {
@@ -320,7 +324,7 @@ void draw_sidebar(OpenTuiHandle frame,
     ++y;
 
     if (y <= scroll_bottom) {
-        y = draw_section_label(frame, d, content_x, content_w, y, "Agent", bg);
+        y = draw_section_label(frame, d, block_x, block_w, y, "Agent", bg);
         const std::string agent = snap.focus_agent.empty() ? "(none)" : snap.focus_agent;
         y = draw_kv_line(frame, sc, content_x, content_w, y, "id",
                          agent, sc.body, bg);
@@ -342,7 +346,7 @@ void draw_sidebar(OpenTuiHandle frame,
     }
 
     if (y <= scroll_bottom && !snap.todos.empty()) {
-        y = draw_section_label(frame, d, content_x, content_w, y, "Todos", bg);
+        y = draw_section_label(frame, d, block_x, block_w, y, "Todos", bg);
         const int budget = std::max(1, std::min(4, scroll_bottom - y + 1));
         y = draw_todo_list(frame, d, sc, content_x, content_w, y, budget, snap.todos, bg);
         ++y;
@@ -350,7 +354,7 @@ void draw_sidebar(OpenTuiHandle frame,
 
     if (y <= scroll_bottom &&
         (!snap.schedules.empty() || !snap.loops.empty())) {
-        y = draw_section_label(frame, d, content_x, content_w, y, "Scheduled", bg);
+        y = draw_section_label(frame, d, block_x, block_w, y, "Scheduled", bg);
         int budget = std::max(1, scroll_bottom - y + 1);
         if (!snap.schedules.empty()) {
             const int sched_rows = std::min(budget, static_cast<int>(snap.schedules.size()));
@@ -365,7 +369,7 @@ void draw_sidebar(OpenTuiHandle frame,
     }
 
     if (y <= scroll_bottom) {
-        y = draw_section_label(frame, d, content_x, content_w, y, "Tools", bg);
+        y = draw_section_label(frame, d, block_x, block_w, y, "Tools", bg);
         if (snap.active_tool_calls > 0 && y <= scroll_bottom) {
             std::string live = std::to_string(snap.active_tool_calls) + " running\u2026";
             y = draw_kv_line(frame, sc, content_x, content_w, y, "live", live,
@@ -378,7 +382,7 @@ void draw_sidebar(OpenTuiHandle frame,
     }
 
     if (y <= scroll_bottom && !snap.mcp.empty()) {
-        y = draw_section_label(frame, d, content_x, content_w, y, "MCP", bg);
+        y = draw_section_label(frame, d, block_x, block_w, y, "MCP", bg);
         const int mcp_budget = std::max(1, scroll_bottom - y + 1);
         draw_tool_list(frame, d, sc, content_x, content_w, y, mcp_budget,
                        snap.mcp, "(none yet)", bg);

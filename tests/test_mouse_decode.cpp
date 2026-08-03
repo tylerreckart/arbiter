@@ -77,6 +77,9 @@ TEST_CASE("malformed parameter strings are rejected") {
 }
 
 TEST_CASE("rect_contains and history_sidebar_row_at match frame geometry") {
+    using arbiter::HistorySidebarRow;
+    using arbiter::HistorySidebarRowKind;
+
     Rect r{0, 0, 26, 40};
     CHECK(rect_contains(r, 0, 0));
     CHECK(rect_contains(r, 25, 39));
@@ -84,22 +87,36 @@ TEST_CASE("rect_contains and history_sidebar_row_at match frame geometry") {
     CHECK_FALSE(rect_contains(r, 0, 40));
 
     // Box starts at y+1, with a blank row beneath its title, so list_top is
-    // y+3 = 3; row height 2; 3 visible slots; 2 real rows
-    // ("+ New" + one conversation) so the third slot is empty.
-    CHECK(history_sidebar_row_at(r, 3, 0, 3, 2, false) == 0);
-    CHECK(history_sidebar_row_at(r, 4, 0, 3, 2, false) == 0);
-    CHECK(history_sidebar_row_at(r, 5, 0, 3, 2, false) == 1);
-    CHECK(history_sidebar_row_at(r, 7, 0, 3, 2, false) == -1);  // empty slot past list
-    CHECK(history_sidebar_row_at(r, 5, 2, 3, 5, false) == 3);   // scrolled into real rows
-    CHECK(history_sidebar_row_at(r, 2, 0, 3, 2, false) == -1);  // title/padding
-    CHECK(history_sidebar_row_at(r, 9, 0, 3, 2, false) == -1);  // below visible band
-    CHECK(history_sidebar_row_at(r, 3, 0, 0, 2, false) == -1);  // no visible rows
+    // y+3 = 3. New is height 1; Conversation is height 2.
+    std::vector<HistorySidebarRow> two = {
+        {.kind = HistorySidebarRowKind::New, .title = "+ New conversation"},
+        {.kind = HistorySidebarRowKind::Conversation, .title = "chat"},
+    };
+    // list_height_lines=3 paints New (y=3) + Conversation title/meta (y=4..5).
+    CHECK(history_sidebar_row_at(r, 3, 0, 3, two) == 0);
+    CHECK(history_sidebar_row_at(r, 4, 0, 3, two) == 1);
+    CHECK(history_sidebar_row_at(r, 5, 0, 3, two) == 1);
+    CHECK(history_sidebar_row_at(r, 6, 0, 3, two) == -1);  // past painted band
+    CHECK(history_sidebar_row_at(r, 2, 0, 3, two) == -1);  // title/padding
+    CHECK(history_sidebar_row_at(r, 9, 0, 3, two) == -1);  // below visible band
+    CHECK(history_sidebar_row_at(r, 3, 0, 0, two) == -1);  // no visible lines
 
-    // Filter line shifts list_top to y+4 = 4. Clicking the filter row (y=3)
-    // must not activate "+ New"; first conversation row starts at y=4.
-    CHECK(history_sidebar_row_at(r, 3, 0, 3, 2, true) == -1);  // filter line
-    CHECK(history_sidebar_row_at(r, 4, 0, 3, 2, true) == 0);   // "+ New"
-    CHECK(history_sidebar_row_at(r, 6, 0, 3, 2, true) == 1);   // first entry
+    std::vector<HistorySidebarRow> five(5, HistorySidebarRow{
+        .kind = HistorySidebarRowKind::Conversation, .title = "c"});
+    // All height-2: scroll 2 → row 2 at y=3..4, row 3 at y=5..6 within budget 6.
+    CHECK(history_sidebar_row_at(r, 5, 2, 6, five) == 3);
+
+    // Section headers: blank gap above, then divider + blank (height 2).
+    std::vector<HistorySidebarRow> sectioned = {
+        {.kind = HistorySidebarRowKind::New, .title = "+ New"},
+        {.kind = HistorySidebarRowKind::Section, .title = "Folders"},
+        {.kind = HistorySidebarRowKind::Folder, .title = "Test"},
+    };
+    CHECK(history_sidebar_row_at(r, 3, 0, 8, sectioned) == 0);  // New
+    CHECK(history_sidebar_row_at(r, 4, 0, 8, sectioned) == -1); // gap
+    CHECK(history_sidebar_row_at(r, 5, 0, 8, sectioned) == 1);  // Folders divider
+    CHECK(history_sidebar_row_at(r, 6, 0, 8, sectioned) == 1);  // blank under header
+    CHECK(history_sidebar_row_at(r, 7, 0, 8, sectioned) == 2);  // folder
 }
 
 TEST_CASE("allocate_weighted_sizes sums exactly to available") {

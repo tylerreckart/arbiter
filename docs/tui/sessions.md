@@ -8,10 +8,23 @@ The TUI stores **multiple conversations globally** (not per working directory). 
 
 TUI threads live in **`~/.arbiter/tenants.db`** — the same SQLite database the HTTP API uses for conversations, memory, todos, and schedules. Sidebar rows are `origin = 'tui'` conversation rows; the multi-agent session document (index + agents + compaction) is stored as `session_json` on that row. Active conversation id and the multi-pane layout also live in `tui_prefs` in the same DB (with a file mirror of `layout.json` for convenience).
 
+### Folders
+
+Conversations can be filed into **folders** (`conversation_folders` in `tenants.db`). The history sidebar shows a sectioned tree:
+
+1. `+ New conversation`
+2. **Folders** — each folder as a `[+]` / `[-]` header; expanded folders list their conversations nested underneath with a `│` guide
+3. **Chats** — unfiled conversations (most-recently-updated)
+
+Category headers are not selectable (↑/↓ skips them). Collapse state persists in `tui_prefs.folder_collapse_json` (JSON array of folder ids). Enter on a folder header toggles collapse; Enter on a conversation switches. `n` / `+ New` creates in the focused folder when the selection is a folder header or a child of a folder; otherwise unfiled.
+
+Per-row menu (`m`): conversations get Open / Rename / Move to… / Delete; folders get Rename / New chat here / Delete folder (children are unfiled); `+ New` gets New folder. Press `f` anywhere in the sidebar to name a new folder. On narrow terminals use `/chat folder list|new|rename|delete|move` instead of the sidebar.
+
 ```
 ~/.arbiter/tenants.db
-  conversations     # shared table; TUI rows have origin='tui' + session_json
-  tui_prefs         # active_conversation_id, layout_json, migration flag
+  conversations          # shared table; TUI rows have origin='tui' + session_json + folder_id
+  conversation_folders   # named folders (position, name) per tenant
+  tui_prefs              # active_conversation_id, layout_json, folder_collapse_json, …
 ~/.arbiter/conversations/   # legacy archive (imported once) + layout.json mirror
   manifest.json / <uuid>.json / active   # read once on upgrade, then ignored
   layout.json                            # file mirror of tui_prefs.layout_json

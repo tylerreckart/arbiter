@@ -98,7 +98,7 @@ These commands use the same dispatch path as agent tool calls during `/v1/orches
 |--------------------------------|---------------------------------------------------------------------|
 | `/theme` | Browse themes with ↑↓ live preview; Enter selects, Esc cancels. `/theme list`, `/theme <name>`, `/theme save <name>`, `/theme file <path>` also supported. See [themes.md](themes.md). |
 | `/verbose [on\|off]`           | Toggle raw `/cmd` line streaming. Off (default): tool-call lines are swallowed and replaced by the spinner on the mid-separator. On: every `/fetch`, `/exec`, `/agent`, `/mem` line lands in the scroll region as the agent emits it. |
-| `/chat list\|new\|switch\|title\|search\|delete\|purge` | Manage global conversations from the REPL (sidebar is the visual twin). |
+| `/chat list\|new\|switch\|title\|search\|delete\|purge\|folder …` | Manage global conversations from the REPL (sidebar is the visual twin). `/chat folder list\|new\|rename\|delete\|move` for folders on narrow terminals. |
 | `/find <text>` \| `next` \| `prev` | Search the focused pane's scrollback.                            |
 | `/help`                        | Print this command reference.                                       |
 | `/help <topic>`                | Detailed reference for one slash command (same text agents see).    |

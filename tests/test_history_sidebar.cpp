@@ -100,6 +100,133 @@ TEST_CASE("rename: r enters edit mode pre-filled with the title, Enter commits")
     fs::remove_all(dir);
 }
 
+TEST_CASE("rename: kitty CSI-u Enter commits (not Esc-cancel)") {
+    // OpenTUI's kitty handshake encodes Enter/Esc/Backspace as CSI-u.
+    // Before decode, Enter arrived as Esc+'u' and aborted rename.
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    store.set_title(store.active_id(), "before");
+
+    HistorySidebarState sidebar;
+    sidebar.enter_focus(store, store.active_id());
+    REQUIRE(sidebar.handle_key('r', 0, "") == HistorySidebarKey::RenameStart);
+
+    while (!sidebar.snapshot().rename_buffer.empty()) {
+        // Kitty Backspace: CSI 127 u
+        CHECK(sidebar.handle_key(0x1B, 'u', "127") == HistorySidebarKey::None);
+    }
+    for (char c : std::string("after")) sidebar.handle_key(c, 0, "");
+
+    CHECK(sidebar.handle_key(0x1B, 'u', "13") == HistorySidebarKey::RenameCommit);
+    CHECK(sidebar.take_rename_buffer() == "after");
+    CHECK_FALSE(sidebar.snapshot().renaming);
+
+    // Esc via CSI-u cancels rename but stays focused.
+    sidebar.handle_key('r', 0, "");
+    sidebar.handle_key('x', 0, "");
+    CHECK(sidebar.handle_key(0x1B, 'u', "27") == HistorySidebarKey::None);
+    CHECK(sidebar.take_rename_buffer().empty());
+    CHECK_FALSE(sidebar.snapshot().renaming);
+    CHECK(sidebar.focused());
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("rename: kitty CSI-u printable with text field inserts") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    store.set_title(store.active_id(), "x");
+
+    HistorySidebarState sidebar;
+    sidebar.enter_focus(store, store.active_id());
+    REQUIRE(sidebar.handle_key('r') == HistorySidebarKey::RenameStart);
+    while (!sidebar.snapshot().rename_buffer.empty()) {
+        sidebar.handle_key(0x1B, 'u', "127;1:1;127");
+    }
+
+    CHECK(sidebar.handle_key(0x1B, 'u', "97;1:1;97") == HistorySidebarKey::None);
+    CHECK(sidebar.handle_key(0x1B, 'u', "98;1;98") == HistorySidebarKey::None);
+    CHECK(sidebar.snapshot().rename_buffer == "ab");
+    // Spurious cursor-position CSI must not abort rename.
+    CHECK(sidebar.handle_key(0x1B, 'R', "1;1") == HistorySidebarKey::None);
+    CHECK(sidebar.snapshot().renaming);
+    CHECK(sidebar.snapshot().rename_buffer == "ab");
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("rename: empty title is rejected; caption distinguishes folder") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string fid = store.create_folder("Labs");
+
+    HistorySidebarState sidebar;
+    sidebar.enter_focus(store, store.active_id());
+    // Row 0 = + New, row 1 = first folder.
+    sidebar.select_at_index(1, 20);
+    REQUIRE(sidebar.is_folder_selected());
+    CHECK(sidebar.selected_folder_id() == fid);
+
+    CHECK(sidebar.handle_key('r') == HistorySidebarKey::RenameStart);
+    auto snap = sidebar.snapshot();
+    CHECK(snap.renaming);
+    CHECK(snap.rename_is_folder);
+    CHECK(snap.rename_buffer == "Labs");
+
+    // Wipe the name; Enter must stay in rename mode.
+    while (!sidebar.snapshot().rename_buffer.empty()) {
+        CHECK(sidebar.handle_key(127) == HistorySidebarKey::None);
+    }
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::None);
+    CHECK(sidebar.snapshot().renaming);
+
+    sidebar.handle_key('X');
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::RenameCommit);
+    CHECK(sidebar.take_rename_buffer() == "X");
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("rename: conversation commit keeps stashed target id") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string id = store.active_id();
+    store.set_title(id, "original");
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, id);
+    REQUIRE(sidebar.handle_key('r') == HistorySidebarKey::RenameStart);
+    CHECK(sidebar.rename_target_id() == id);
+    CHECK_FALSE(sidebar.rename_target_is_folder());
+    CHECK_FALSE(sidebar.is_creating_folder());
+
+    while (!sidebar.snapshot().rename_buffer.empty()) {
+        sidebar.handle_key(127);
+    }
+    for (char c : std::string("renamed")) sidebar.handle_key(c);
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::RenameCommit);
+
+    // Target must still be readable before take_rename_buffer clears it.
+    CHECK(sidebar.rename_target_id() == id);
+    CHECK_FALSE(sidebar.rename_target_is_folder());
+    CHECK(sidebar.take_rename_buffer() == "renamed");
+    CHECK(sidebar.rename_target_id().empty());
+
+    store.set_title_locked(id, "renamed");
+    sidebar.refresh_entries(store);
+    bool found = false;
+    for (const auto& e : sidebar.snapshot().entries) {
+        if (e.id == id) {
+            CHECK(e.title == "renamed");
+            found = true;
+        }
+    }
+    CHECK(found);
+
+    fs::remove_all(dir);
+}
+
 TEST_CASE("rename: Esc cancels without surfacing a commit") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);
@@ -109,9 +236,12 @@ TEST_CASE("rename: Esc cancels without surfacing a commit") {
 
     sidebar.handle_key('r', 0, "");
     sidebar.handle_key('x', 0, "");
-    CHECK(sidebar.handle_key(0x1B, 0, "") == HistorySidebarKey::Escape);
+    // Esc cancels rename but keeps sidebar focus (second Esc exits).
+    CHECK(sidebar.handle_key(0x1B, 0, "") == HistorySidebarKey::None);
     CHECK_FALSE(sidebar.snapshot().renaming);
+    CHECK(sidebar.focused());
     CHECK(sidebar.take_rename_buffer().empty());
+    CHECK(sidebar.handle_key(0x1B, 0, "") == HistorySidebarKey::Escape);
 
     fs::remove_all(dir);
 }
@@ -135,14 +265,18 @@ TEST_CASE("delete: d then y confirms, d then anything else cancels") {
     fs::remove_all(dir);
 }
 
-TEST_CASE("rename/delete are no-ops on the '+ New conversation' row") {
+TEST_CASE("rename/delete are no-ops on the '+ New conversation' row; m opens New folder") {
     HistorySidebarState sidebar; // pinned_new_ defaults true, no store needed
     CHECK(sidebar.handle_key('r', 0, "") == HistorySidebarKey::None);
     CHECK_FALSE(sidebar.snapshot().renaming);
     CHECK(sidebar.handle_key('d', 0, "") == HistorySidebarKey::None);
     CHECK_FALSE(sidebar.snapshot().confirming_delete);
-    CHECK(sidebar.handle_key('m', 0, "") == HistorySidebarKey::None);
-    CHECK_FALSE(sidebar.snapshot().menu_open);
+    CHECK(sidebar.handle_key('m', 0, "") == HistorySidebarKey::MenuOpen);
+    CHECK(sidebar.snapshot().menu_open);
+    CHECK(sidebar.snapshot().menu_is_new);
+    CHECK(sidebar.handle_key('f', 0, "") == HistorySidebarKey::RenameStart);
+    CHECK(sidebar.snapshot().creating_folder);
+    CHECK(sidebar.is_creating_folder());
 }
 
 TEST_CASE("menu: m opens Open/Rename/Delete; Enter commits; Esc cancels") {
@@ -185,119 +319,299 @@ TEST_CASE("menu: m opens Open/Rename/Delete; Enter commits; Esc cancels") {
     fs::remove_all(dir);
 }
 
-TEST_CASE("'/' filters entries; Enter commits; Esc clears") {
+TEST_CASE("'f' starts new-folder name entry; Enter commits") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);
 
-    const std::string alpha = store.active_id();
-    const std::string beta = store.create(dir);
-    const std::string gamma = store.create(dir);
-    store.set_title(alpha, "alpha task");
-    store.set_title(beta, "beta task");
-    store.set_title(gamma, "gamma other");
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, store.active_id());
+
+    CHECK(sidebar.handle_key('f') == HistorySidebarKey::RenameStart);
+    auto snap = sidebar.snapshot();
+    CHECK(snap.renaming);
+    CHECK(snap.creating_folder);
+    CHECK(snap.rename_buffer.empty());
+    CHECK_FALSE(snap.rename_is_folder);
+
+    for (char c : std::string("Labs")) sidebar.handle_key(c);
+    CHECK(sidebar.snapshot().rename_buffer == "Labs");
+    CHECK(sidebar.is_creating_folder());
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::RenameCommit);
+    CHECK(sidebar.is_creating_folder());
+    CHECK(sidebar.take_rename_buffer() == "Labs");
+    CHECK_FALSE(sidebar.is_creating_folder());
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("new folder: empty name rejected; Esc cancels") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
 
     HistorySidebarState sidebar;
     sidebar.set_enabled(true, dir);
-    sidebar.enter_focus(store, gamma);
+    sidebar.enter_focus(store, store.active_id());
 
-    CHECK(sidebar.handle_key('/') == HistorySidebarKey::None);
-    CHECK(sidebar.snapshot().filtering);
-
-    sidebar.handle_key('t');
-    sidebar.handle_key('a');
-    sidebar.handle_key('s');
-    sidebar.handle_key('k');
-    auto snap = sidebar.snapshot();
-    CHECK(snap.filter == "task");
-    REQUIRE(snap.entries.size() == 2);
-    // gamma was pinned but "task" filters it out — pin moves to the first
-    // visible entry.
-    const std::string selected = sidebar.selected_conversation_id();
-    CHECK((selected == alpha || selected == beta));
-    CHECK(selected != gamma);
-
-    // Enter commits: filter stays applied, edit mode ends.
+    sidebar.handle_key('f');
     CHECK(sidebar.handle_key('\r') == HistorySidebarKey::None);
-    snap = sidebar.snapshot();
-    CHECK_FALSE(snap.filtering);
-    CHECK(snap.filter == "task");
-    CHECK(snap.entries.size() == 2);
+    CHECK(sidebar.snapshot().creating_folder);
 
-    // First Esc clears the applied filter instead of closing the sidebar;
-    // the second Esc surfaces Escape as usual.
+    sidebar.handle_key('x');
     CHECK(sidebar.handle_key(0x1B) == HistorySidebarKey::None);
-    snap = sidebar.snapshot();
-    CHECK(snap.filter.empty());
-    CHECK(snap.entries.size() == 3);
+    CHECK_FALSE(sidebar.snapshot().renaming);
+    CHECK_FALSE(sidebar.is_creating_folder());
+    CHECK(sidebar.focused());
     CHECK(sidebar.handle_key(0x1B) == HistorySidebarKey::Escape);
 
     fs::remove_all(dir);
 }
 
-TEST_CASE("filter edit: backspace re-widens; Esc while typing cancels") {
+TEST_CASE("folder tree: headers, collapse, and new-in-folder") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);
 
-    const std::string alpha = store.active_id();
-    const std::string beta = store.create(dir);
-    store.set_title(alpha, "deploy pipeline");
-    store.set_title(beta, "deploy docs");
+    const std::string unfiled = store.active_id();
+    store.set_title(unfiled, "loose");
+    const std::string fid = store.create_folder("Work");
+    REQUIRE_FALSE(fid.empty());
+    const std::string child = store.create(dir, fid);
+    store.set_title(child, "nested");
 
     HistorySidebarState sidebar;
     sidebar.set_enabled(true, dir);
-    sidebar.enter_focus(store, alpha);
+    sidebar.enter_focus(store, child);
 
-    sidebar.handle_key('/');
-    for (char c : std::string("deploy p")) sidebar.handle_key(c);
-    CHECK(sidebar.snapshot().entries.size() == 1);
-
-    sidebar.handle_key(127);   // backspace: "deploy " matches both again
-    sidebar.handle_key(127);
-    CHECK(sidebar.snapshot().entries.size() == 2);
-
-    // Esc while editing cancels filtering entirely.
-    CHECK(sidebar.handle_key(0x1B) == HistorySidebarKey::None);
     auto snap = sidebar.snapshot();
-    CHECK_FALSE(snap.filtering);
-    CHECK(snap.filter.empty());
-    CHECK(snap.entries.size() == 2);
+    // + New, Folders, Work, nested, Chats, loose.
+    REQUIRE(snap.rows.size() == 6);
+    CHECK(snap.rows[0].kind == HistorySidebarRowKind::New);
+    CHECK(snap.rows[1].kind == HistorySidebarRowKind::Section);
+    CHECK(snap.rows[1].title == "Folders");
+    CHECK(snap.rows[2].kind == HistorySidebarRowKind::Folder);
+    CHECK(snap.rows[2].id == fid);
+    CHECK(snap.rows[2].expanded);
+    CHECK(snap.rows[3].kind == HistorySidebarRowKind::Conversation);
+    CHECK(snap.rows[3].id == child);
+    CHECK(snap.rows[3].indent == 1);
+    CHECK(snap.rows[4].kind == HistorySidebarRowKind::Section);
+    CHECK(snap.rows[4].title == "Chats");
+    CHECK(snap.rows[5].kind == HistorySidebarRowKind::Conversation);
+    CHECK(snap.rows[5].id == unfiled);
+    CHECK(snap.rows[5].indent == 0);
+
+    // Pin the folder header (skip the Folders section) and collapse it.
+    sidebar.select_at_index(2, 10);
+    CHECK(sidebar.is_folder_selected());
+    CHECK(sidebar.selected_folder_id() == fid);
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::ToggleFolder);
+    store.set_folder_collapse_json(sidebar.collapse_json());
+
+    snap = sidebar.snapshot();
+    // Collapsed: + New, Folders, Work [+], Chats, loose — nested hidden.
+    REQUIRE(snap.rows.size() == 5);
+    CHECK(snap.rows[2].kind == HistorySidebarRowKind::Folder);
+    CHECK_FALSE(snap.rows[2].expanded);
+    CHECK(snap.rows[4].id == unfiled);
+
+    // New while folder is selected files into that folder.
+    CHECK(sidebar.new_target_folder_id() == fid);
+    CHECK(sidebar.handle_key('n') == HistorySidebarKey::New);
+
+    // Expand again and select the child — new still targets Work.
+    sidebar.handle_key('\r');  // toggle expand
+    sidebar.select_at_index(3, 10);
+    REQUIRE(sidebar.selected_conversation_id() == child);
+    CHECK(sidebar.new_target_folder_id() == fid);
+
+    // Unfiled selection → empty folder target.
+    sidebar.select_at_index(5, 10);
+    REQUIRE(sidebar.selected_conversation_id() == unfiled);
+    CHECK(sidebar.new_target_folder_id().empty());
+
+    // Section rows are skipped when moving selection.
+    sidebar.select_at_index(0, 10);  // + New
+    sidebar.move_selection(1, 10);   // should land on Work, not "Folders"
+    CHECK(sidebar.is_folder_selected());
+    CHECK(sidebar.selected_folder_id() == fid);
 
     fs::remove_all(dir);
 }
 
-TEST_CASE("arrows navigate the filtered list while typing") {
+TEST_CASE("refresh_entries does not clobber an in-memory collapse toggle") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);
-
-    const std::string alpha = store.active_id();
-    const std::string beta = store.create(dir);
-    (void)store.create(dir);   // unrelated third entry
-    store.set_title(alpha, "fix login bug");
-    store.set_title(beta, "fix logout bug");
+    const std::string fid = store.create_folder("Work");
+    const std::string child = store.create(dir, fid);
 
     HistorySidebarState sidebar;
     sidebar.set_enabled(true, dir);
-    sidebar.enter_focus(store, alpha);
+    sidebar.enter_focus(store, child);
+    sidebar.select_folder(fid, 10);
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::ToggleFolder);
+    // Simulate a paint-time refresh before main persists collapse_json.
+    sidebar.refresh_entries(store);
+    CHECK_FALSE(sidebar.snapshot().rows[2].expanded);
+    // Persistence still sees the toggled state.
+    CHECK(sidebar.collapse_json().find(fid) != std::string::npos);
 
-    sidebar.handle_key('/');
-    for (char c : std::string("fix")) sidebar.handle_key(c);
-    REQUIRE(sidebar.snapshot().entries.size() == 2);
+    fs::remove_all(dir);
+}
 
-    // Arrow keys surface Up/Down while filtering.
-    CHECK(sidebar.handle_key(0x1B, 'B') == HistorySidebarKey::Down);
-    CHECK(sidebar.handle_key(0x1B, 'A') == HistorySidebarKey::Up);
+TEST_CASE("conversation menu Move to… opens picker and commits") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
 
-    // enter_focus pinned the active conversation (alpha), which sorts last
-    // of the two matches — walk up to the other match, then back down.
-    REQUIRE(sidebar.selected_conversation_id() == alpha);
-    sidebar.move_selection(-1, 10);
-    CHECK(sidebar.selected_conversation_id() == beta);
-    sidebar.move_selection(1, 10);
-    CHECK(sidebar.selected_conversation_id() == alpha);
-    // A further Down clamps at the last filtered row: the third (unfiltered)
-    // conversation is never reachable while the filter is applied.
-    sidebar.move_selection(1, 10);
-    CHECK(sidebar.selected_conversation_id() == alpha);
+    const std::string cid = store.active_id();
+    const std::string fid = store.create_folder("Archive");
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, cid);
+
+    CHECK(sidebar.handle_key('m') == HistorySidebarKey::MenuOpen);
+    // Open / Rename / Move to… / Delete — jump to Move via 'v'.
+    CHECK(sidebar.handle_key('v') == HistorySidebarKey::MoveStart);
+    CHECK(sidebar.snapshot().moving);
+    REQUIRE(sidebar.snapshot().move_labels.size() >= 2);
+
+    // Select Archive (first label) and commit.
+    sidebar.handle_key('k');  // may already be on Archive; ensure wrap/nav works
+    // Find Archive index by committing from index 0 after resetting via Esc+reopen.
+    sidebar.handle_key(0x1B);  // cancel move
+    CHECK_FALSE(sidebar.snapshot().moving);
+
+    sidebar.handle_key('m');
+    sidebar.handle_key('v');
+    // move_index defaults to current folder (unfiled = last).
+    // Move up to Archive if needed.
+    while (sidebar.snapshot().move_index
+           != static_cast<int>(sidebar.snapshot().move_labels.size()) - 2
+           && sidebar.snapshot().moving) {
+        sidebar.handle_key('k');
+    }
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::MoveCommit);
+    const std::string target = sidebar.take_move_folder_id();
+    CHECK(target == fid);
+    CHECK(store.move_to_folder(cid, target));
+
+    auto entries = store.list();
+    auto it = std::find_if(entries.begin(), entries.end(),
+                           [&](const ConversationEntry& e) { return e.id == cid; });
+    REQUIRE(it != entries.end());
+    CHECK(it->folder_id == fid);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("deleting a folder clears the pin so new-chat has no stale folder id") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string fid = store.create_folder("Doomed");
+    const std::string cid = store.create(dir, fid);
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, cid);
+    sidebar.select_folder(fid, 20);
+    REQUIRE(sidebar.is_folder_selected());
+    REQUIRE(sidebar.selected_folder_id() == fid);
+    REQUIRE(sidebar.new_target_folder_id() == fid);
+
+    REQUIRE(store.delete_folder(fid));
+    sidebar.refresh_entries(store);
+
+    CHECK_FALSE(sidebar.is_folder_selected());
+    CHECK(sidebar.new_target_folder_id().empty());
+    // Creating into the stale id must not throw — files as unfiled.
+    CHECK_NOTHROW(store.create(dir, fid));
+    CHECK(store.list().front().folder_id.empty());
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("refresh_entries realigns scroll when the pin jumps upward") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    for (int i = 0; i < 10; ++i) store.create(dir);
+    const std::string fid = store.create_folder("Far");
+    const std::string child = store.create(dir, fid);
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, child);
+    // Scroll deep into the list with a tight line budget, then pin the folder.
+    sidebar.select_folder(fid, 3);
+    REQUIRE(sidebar.scroll_offset() > 0);
+
+    REQUIRE(store.delete_folder(fid));
+    sidebar.refresh_entries(store);
+
+    // Pin falls back to "+ New"; scroll must follow so selection is on-screen.
+    CHECK_FALSE(sidebar.is_folder_selected());
+    CHECK(sidebar.scroll_offset() == 0);
+    CHECK(sidebar.snapshot().selected == 0);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("collapsing a folder re-pins a hidden chat to that folder") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string fid = store.create_folder("Work");
+    const std::string cid = store.create(dir, fid);
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, cid);
+    REQUIRE(sidebar.selected_conversation_id() == cid);
+
+    // Collapse the folder and persist that state.
+    sidebar.select_folder(fid, 20);
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::ToggleFolder);
+    store.set_folder_collapse_json(sidebar.collapse_json());
+
+    // Re-enter focused on the chat that is now hidden under the collapse.
+    sidebar.exit_focus();
+    sidebar.enter_focus(store, cid);
+
+    CHECK(sidebar.is_folder_selected());
+    CHECK(sidebar.selected_folder_id() == fid);
+    CHECK(sidebar.selected_conversation_id().empty());
+    CHECK(sidebar.snapshot().selected > 0);  // not the "+ New" row
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("clamp_scroll keeps the selected row within the line budget") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    // Enough conversations that a tiny line budget cannot show them all.
+    for (int i = 0; i < 8; ++i) store.create(dir);
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, store.active_id());
+
+    // Jump toward the bottom with a 3-line viewport (≈ one conversation).
+    sidebar.page_selection(+1, 3);
+    sidebar.page_selection(+1, 3);
+    const auto snap = sidebar.snapshot();
+    REQUIRE(snap.selected >= snap.scroll_offset);
+    // Selected index must be reachable within `visible_lines` of scroll_offset.
+    int lines = 0;
+    bool fitted = false;
+    for (int i = snap.scroll_offset; i < static_cast<int>(snap.rows.size()); ++i) {
+        const auto& r = snap.rows[static_cast<size_t>(i)];
+        lines += history_sidebar_gap_before(r.kind, i)
+            + history_sidebar_row_height(r.kind);
+        if (i == snap.selected) {
+            fitted = lines <= 3;
+            break;
+        }
+        if (lines > 3) break;
+    }
+    CHECK(fitted);
 
     fs::remove_all(dir);
 }

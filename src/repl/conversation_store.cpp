@@ -163,6 +163,18 @@ ConversationEntry ConversationStore::entry_from_row(const Conversation& c) const
     e.deleted_at = c.deleted_at;
     e.total_tokens = c.total_tokens;
     e.titled = c.titled;
+    if (c.folder_id > 0) e.folder_id = format_id(c.folder_id);
+    return e;
+}
+
+ConversationFolderEntry
+ConversationStore::folder_from_row(const ConversationFolder& f) const {
+    ConversationFolderEntry e;
+    e.id = format_id(f.id);
+    e.name = f.name;
+    e.position = f.position;
+    e.created_at = f.created_at;
+    e.updated_at = f.updated_at;
     return e;
 }
 
@@ -803,18 +815,27 @@ std::string ConversationStore::session_json(const std::string& id) const {
     return tenants_.get_conversation_session_json(tenant_id_, cid);
 }
 
-std::string ConversationStore::create_unlocked(const std::string& cwd) {
+std::string ConversationStore::create_unlocked(const std::string& cwd,
+                                               const std::string& folder_id) {
+    int64_t fid = parse_id(folder_id);
+    // Stale folder ids (e.g. after delete) must not abort the TUI — file
+    // the new conversation as unfiled instead.
+    if (fid > 0 && !tenants_.get_conversation_folder(tenant_id_, fid)) {
+        fid = 0;
+    }
     auto created = tenants_.create_tui_conversation(
-        tenant_id_, "Untitled", cwd, empty_session_json());
+        tenant_id_, "Untitled", cwd, empty_session_json(),
+        /*legacy_id=*/"", fid);
     ConversationEntry e = entry_from_row(created);
     entries_.insert(entries_.begin(), e);
     set_active_unlocked(e.id);
     return e.id;
 }
 
-std::string ConversationStore::create(const std::string& cwd) {
+std::string ConversationStore::create(const std::string& cwd,
+                                      const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
-    return create_unlocked(cwd);
+    return create_unlocked(cwd, folder_id);
 }
 
 bool ConversationStore::session_is_empty_unlocked(const std::string& id) const {
@@ -823,25 +844,62 @@ bool ConversationStore::session_is_empty_unlocked(const std::string& id) const {
         tenants_.get_conversation_session_json(tenant_id_, parse_id(id)));
 }
 
-std::string ConversationStore::create_or_reuse(const std::string& cwd) {
+std::string ConversationStore::create_or_reuse(const std::string& cwd,
+                                               const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
     if (session_is_empty_unlocked(active_id_)) {
+        // Match create(): empty folder_id means unfiled, even when reusing.
+        const int64_t fid = folder_id.empty() ? 0 : parse_id(folder_id);
+        if (folder_id.empty() || fid > 0) {
+            if (tenants_.set_conversation_folder(
+                    tenant_id_, parse_id(active_id_), fid)) {
+                for (auto& e : entries_) {
+                    if (e.id == active_id_) {
+                        e.folder_id = folder_id.empty() ? std::string{}
+                                                        : format_id(fid);
+                    }
+                }
+            }
+        }
         return active_id_;
     }
-    return create_unlocked(cwd);
+    return create_unlocked(cwd, folder_id);
 }
 
-std::string ConversationStore::create_or_reuse_for(const std::string& cwd,
-                                                    const std::string& prefer_id) {
+std::string ConversationStore::create_or_reuse_for(
+    const std::string& cwd, const std::string& prefer_id,
+    const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
+    auto apply_folder = [&](const std::string& id) {
+        if (id.empty()) return;
+        // Empty folder_id clears membership (unfiled); non-empty must parse.
+        const int64_t fid = folder_id.empty() ? 0 : parse_id(folder_id);
+        if (!folder_id.empty() && fid <= 0) return;
+        if (!tenants_.set_conversation_folder(tenant_id_, parse_id(id), fid))
+            return;
+        for (auto& e : entries_) {
+            if (e.id == id) {
+                e.folder_id = folder_id.empty() ? std::string{}
+                                                : format_id(fid);
+            }
+        }
+    };
+
     if (!prefer_id.empty() && session_is_empty_unlocked(prefer_id)) {
         set_active_unlocked(prefer_id);
+        apply_folder(prefer_id);
         return prefer_id;
     }
-    if (prefer_id.empty() && session_is_empty_unlocked(active_id_)) {
+    // Only when the caller has no prefer_id (no focused conversation) —
+    // never when prefer_id already has turns, or a multi-pane "new chat"
+    // can steal another pane's empty active conversation.
+    if (prefer_id.empty()
+        && !active_id_.empty()
+        && session_is_empty_unlocked(active_id_)) {
+        apply_folder(active_id_);
         return active_id_;
     }
-    return create_unlocked(cwd);
+    return create_unlocked(cwd, folder_id);
 }
 
 bool ConversationStore::load(const std::string& id, Orchestrator& orch) {
@@ -987,6 +1045,61 @@ void ConversationStore::soft_delete(const std::string& id) {
 void ConversationStore::purge(const std::string& id) {
     std::lock_guard<std::mutex> lk(mu_);
     remove_and_reassign_active_unlocked(id, /*hard_delete=*/true);
+}
+
+std::vector<ConversationFolderEntry> ConversationStore::list_folders() const {
+    std::vector<ConversationFolderEntry> out;
+    for (const auto& f : tenants_.list_conversation_folders(tenant_id_)) {
+        out.push_back(folder_from_row(f));
+    }
+    return out;
+}
+
+std::string ConversationStore::create_folder(const std::string& name) {
+    auto f = tenants_.create_conversation_folder(tenant_id_, name);
+    return format_id(f.id);
+}
+
+bool ConversationStore::rename_folder(const std::string& id,
+                                      const std::string& name) {
+    return tenants_.update_conversation_folder(
+        tenant_id_, parse_id(id), name, /*new_position=*/-1);
+}
+
+bool ConversationStore::delete_folder(const std::string& id) {
+    const int64_t fid = parse_id(id);
+    if (fid <= 0) return false;
+    if (!tenants_.delete_conversation_folder(tenant_id_, fid)) return false;
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto& e : entries_) {
+        if (e.folder_id == id) e.folder_id.clear();
+    }
+    return true;
+}
+
+bool ConversationStore::move_to_folder(const std::string& conversation_id,
+                                       const std::string& folder_id) {
+    const int64_t cid = parse_id(conversation_id);
+    if (cid <= 0) return false;
+    const int64_t fid = folder_id.empty() ? 0 : parse_id(folder_id);
+    if (!folder_id.empty() && fid <= 0) return false;
+    if (!tenants_.set_conversation_folder(tenant_id_, cid, fid)) return false;
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto& e : entries_) {
+        if (e.id == conversation_id) {
+            e.folder_id = folder_id.empty() ? std::string{} : format_id(fid);
+            break;
+        }
+    }
+    return true;
+}
+
+std::string ConversationStore::folder_collapse_json() const {
+    return tenants_.get_tui_folder_collapse_json(tenant_id_);
+}
+
+void ConversationStore::set_folder_collapse_json(const std::string& json) {
+    tenants_.set_tui_folder_collapse_json(tenant_id_, json);
 }
 
 void ConversationStore::enqueue_title_job(const std::string& id,

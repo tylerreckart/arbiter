@@ -401,6 +401,8 @@ void TenantStore::open(const std::string& path) {
         // Stable key for JSON→SQLite import so a crash mid-migration can
         // resume without duplicating threads.
         add_conv_col("legacy_id", "TEXT NOT NULL DEFAULT ''");
+        // Folder membership (0 / NULL = unfiled). Added after folders table.
+        add_conv_col("folder_id", "INTEGER NOT NULL DEFAULT 0");
     }
     exec_sql(db_, R"SQL(
         CREATE INDEX IF NOT EXISTS conversations_tenant_tui
@@ -411,6 +413,27 @@ void TenantStore::open(const std::string& path) {
         CREATE UNIQUE INDEX IF NOT EXISTS conversations_tenant_legacy
             ON conversations(tenant_id, legacy_id)
             WHERE legacy_id != '';
+    )SQL");
+    // Flat conversation folders (API + TUI). ON DELETE of a folder is
+    // handled in delete_conversation_folder (unfile children first).
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS conversation_folders (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id   INTEGER NOT NULL,
+            name        TEXT    NOT NULL,
+            position    INTEGER NOT NULL DEFAULT 0,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS conversation_folders_tenant_pos
+            ON conversation_folders(tenant_id, position ASC, name ASC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS conversations_tenant_folder
+            ON conversations(tenant_id, folder_id, updated_at DESC);
     )SQL");
     // Interactive TUI chrome: active conversation + multi-pane layout JSON.
     // One row per tenant.  Layout used to live at conversations/layout.json.
@@ -423,6 +446,21 @@ void TenantStore::open(const std::string& path) {
             FOREIGN KEY (tenant_id) REFERENCES tenants(id)
         );
     )SQL");
+    {
+        bool has_collapse = false;
+        Stmt q(db_, "PRAGMA table_info(tui_prefs);");
+        while (q.step() == SQLITE_ROW) {
+            if (q.column_text(1) == "folder_collapse_json") {
+                has_collapse = true;
+                break;
+            }
+        }
+        if (!has_collapse) {
+            exec_sql(db_,
+                     "ALTER TABLE tui_prefs ADD COLUMN "
+                     "folder_collapse_json TEXT NOT NULL DEFAULT '';");
+        }
+    }
     exec_sql(db_, R"SQL(
         CREATE TABLE IF NOT EXISTS messages (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1197,7 +1235,7 @@ namespace {
 constexpr const char* kConvCols =
     "id, tenant_id, title, agent_id, agent_def_json, "
     "created_at, updated_at, message_count, archived, "
-    "cwd, deleted_at, total_tokens, titled, origin";
+    "cwd, deleted_at, total_tokens, titled, origin, folder_id";
 
 Conversation row_to_conversation(Stmt& q) {
     Conversation c;
@@ -1216,6 +1254,7 @@ Conversation row_to_conversation(Stmt& q) {
     c.titled          = q.column_int64(12) != 0;
     c.origin          = q.column_text(13);
     if (c.origin.empty()) c.origin = "api";
+    c.folder_id       = q.column_int64(14);
     return c;
 }
 
@@ -1274,7 +1313,7 @@ Conversation TenantStore::create_conversation(int64_t tenant_id,
 
 std::vector<Conversation>
 TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
-                                 int limit) const {
+                                 int limit, int64_t folder_id_filter) const {
     std::vector<Conversation> out;
     if (!db_) return out;
 
@@ -1284,12 +1323,15 @@ TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
                        " FROM conversations WHERE tenant_id = ?"
                        " AND deleted_at = 0"
                        " AND origin != 'tui'";
+    if (folder_id_filter == 0) sql += " AND folder_id = 0";
+    else if (folder_id_filter > 0) sql += " AND folder_id = ?";
     if (before_updated_at > 0) sql += " AND updated_at < ?";
     sql += " ORDER BY updated_at DESC LIMIT ?;";
 
     Stmt q(db_, sql.c_str());
     int idx = 1;
     q.bind(idx++, tenant_id);
+    if (folder_id_filter > 0) q.bind(idx++, folder_id_filter);
     if (before_updated_at > 0) q.bind(idx++, before_updated_at);
     q.bind(idx, static_cast<int64_t>(cap));
 
@@ -1310,12 +1352,18 @@ TenantStore::get_conversation(int64_t tenant_id, int64_t id) const {
 
 bool TenantStore::update_conversation(int64_t tenant_id, int64_t id,
                                        const std::string& new_title,
-                                       int set_archived) {
+                                       int set_archived,
+                                       int64_t set_folder_id) {
     if (!db_) return false;
 
     auto existing = get_conversation(tenant_id, id);
     if (!existing) return false;
     if (existing->origin == "tui") return false;
+
+    if (set_folder_id > 0 &&
+        !get_conversation_folder(tenant_id, set_folder_id)) {
+        return false;
+    }
 
     // Build dynamic UPDATE so we only touch fields the caller actually
     // wanted to change.  No-op (both args sentinel) returns true if the
@@ -1323,6 +1371,7 @@ bool TenantStore::update_conversation(int64_t tenant_id, int64_t id,
     std::vector<std::string> sets;
     if (!new_title.empty()) sets.push_back("title = ?");
     if (set_archived >= 0)  sets.push_back("archived = ?");
+    if (set_folder_id >= 0) sets.push_back("folder_id = ?");
     if (sets.empty()) {
         return true;
     }
@@ -1339,6 +1388,7 @@ bool TenantStore::update_conversation(int64_t tenant_id, int64_t id,
     int idx = 1;
     if (!new_title.empty()) q.bind(idx++, new_title);
     if (set_archived >= 0)  q.bind(idx++, static_cast<int64_t>(set_archived));
+    if (set_folder_id >= 0) q.bind(idx++, set_folder_id);
     q.bind(idx++, now_epoch());
     q.bind(idx++, tenant_id);
     q.bind(idx, id);
@@ -1564,8 +1614,13 @@ Conversation TenantStore::create_tui_conversation(int64_t tenant_id,
                                                   const std::string& title,
                                                   const std::string& cwd,
                                                   const std::string& session_json,
-                                                  const std::string& legacy_id) {
+                                                  const std::string& legacy_id,
+                                                  int64_t folder_id) {
     if (!db_) throw std::runtime_error("TenantStore not opened");
+
+    if (folder_id > 0 && !get_conversation_folder(tenant_id, folder_id)) {
+        throw std::runtime_error("conversation folder not found for tenant");
+    }
 
     const int64_t now = now_epoch();
     const std::string body =
@@ -1573,8 +1628,8 @@ Conversation TenantStore::create_tui_conversation(int64_t tenant_id,
     Stmt q(db_,
         "INSERT INTO conversations "
         "(tenant_id, title, agent_id, agent_def_json, created_at, updated_at, "
-        " cwd, origin, session_json, legacy_id) "
-        "VALUES (?, ?, 'index', '', ?, ?, ?, 'tui', ?, ?);");
+        " cwd, origin, session_json, legacy_id, folder_id) "
+        "VALUES (?, ?, 'index', '', ?, ?, ?, 'tui', ?, ?, ?);");
     q.bind(1, tenant_id);
     q.bind(2, title.empty() ? std::string("Untitled") : title);
     q.bind(3, now);
@@ -1582,6 +1637,7 @@ Conversation TenantStore::create_tui_conversation(int64_t tenant_id,
     q.bind(5, cwd);
     q.bind(6, body);
     q.bind(7, legacy_id);
+    q.bind(8, folder_id > 0 ? folder_id : 0);
     int rc = q.step();
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert tui conversation");
 
@@ -1594,6 +1650,7 @@ Conversation TenantStore::create_tui_conversation(int64_t tenant_id,
     c.updated_at      = now;
     c.cwd             = cwd;
     c.origin          = "tui";
+    c.folder_id       = folder_id > 0 ? folder_id : 0;
     return c;
 }
 
@@ -1873,6 +1930,209 @@ bool TenantStore::reassign_conversation_scoped_data(int64_t tenant_id,
 
     exec_sql(db_, "COMMIT;");
     return true;
+}
+
+ConversationFolder
+TenantStore::create_conversation_folder(int64_t tenant_id,
+                                        const std::string& name) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    std::string trimmed = name;
+    while (!trimmed.empty() &&
+           (trimmed.back() == ' ' || trimmed.back() == '\t'))
+        trimmed.pop_back();
+    size_t start = 0;
+    while (start < trimmed.size() &&
+           (trimmed[start] == ' ' || trimmed[start] == '\t'))
+        ++start;
+    trimmed = trimmed.substr(start);
+    if (trimmed.empty())
+        throw std::runtime_error("folder name required");
+
+    int position = 0;
+    {
+        Stmt q(db_,
+               "SELECT COALESCE(MAX(position), -1) + 1 "
+               "FROM conversation_folders WHERE tenant_id = ?;");
+        q.bind(1, tenant_id);
+        if (q.step() == SQLITE_ROW) position = static_cast<int>(q.column_int64(0));
+    }
+
+    const int64_t now = now_epoch();
+    Stmt q(db_,
+           "INSERT INTO conversation_folders "
+           "(tenant_id, name, position, created_at, updated_at) "
+           "VALUES (?, ?, ?, ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, trimmed);
+    q.bind(3, static_cast<int64_t>(position));
+    q.bind(4, now);
+    q.bind(5, now);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert conversation folder");
+
+    ConversationFolder f;
+    f.id         = sqlite3_last_insert_rowid(db_);
+    f.tenant_id  = tenant_id;
+    f.name       = trimmed;
+    f.position   = position;
+    f.created_at = now;
+    f.updated_at = now;
+    return f;
+}
+
+std::optional<ConversationFolder>
+TenantStore::get_conversation_folder(int64_t tenant_id, int64_t id) const {
+    if (!db_ || id <= 0) return std::nullopt;
+    Stmt q(db_,
+           "SELECT id, tenant_id, name, position, created_at, updated_at "
+           "FROM conversation_folders WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    ConversationFolder f;
+    f.id         = q.column_int64(0);
+    f.tenant_id  = q.column_int64(1);
+    f.name       = q.column_text(2);
+    f.position   = static_cast<int>(q.column_int64(3));
+    f.created_at = q.column_int64(4);
+    f.updated_at = q.column_int64(5);
+    return f;
+}
+
+std::vector<ConversationFolder>
+TenantStore::list_conversation_folders(int64_t tenant_id) const {
+    std::vector<ConversationFolder> out;
+    if (!db_) return out;
+    Stmt q(db_,
+           "SELECT id, tenant_id, name, position, created_at, updated_at "
+           "FROM conversation_folders WHERE tenant_id = ? "
+           "ORDER BY position ASC, name ASC, id ASC;");
+    q.bind(1, tenant_id);
+    while (q.step() == SQLITE_ROW) {
+        ConversationFolder f;
+        f.id         = q.column_int64(0);
+        f.tenant_id  = q.column_int64(1);
+        f.name       = q.column_text(2);
+        f.position   = static_cast<int>(q.column_int64(3));
+        f.created_at = q.column_int64(4);
+        f.updated_at = q.column_int64(5);
+        out.push_back(std::move(f));
+    }
+    return out;
+}
+
+bool TenantStore::update_conversation_folder(int64_t tenant_id, int64_t id,
+                                             const std::string& new_name,
+                                             int new_position) {
+    if (!db_) return false;
+    if (!get_conversation_folder(tenant_id, id)) return false;
+
+    std::string trimmed = new_name;
+    if (!trimmed.empty()) {
+        while (!trimmed.empty() &&
+               (trimmed.back() == ' ' || trimmed.back() == '\t'))
+            trimmed.pop_back();
+        size_t start = 0;
+        while (start < trimmed.size() &&
+               (trimmed[start] == ' ' || trimmed[start] == '\t'))
+            ++start;
+        trimmed = trimmed.substr(start);
+        if (trimmed.empty()) return false;
+    }
+
+    std::vector<std::string> sets;
+    if (!trimmed.empty()) sets.push_back("name = ?");
+    if (new_position >= 0) sets.push_back("position = ?");
+    if (sets.empty()) return true;
+    sets.push_back("updated_at = ?");
+
+    std::string sql = "UPDATE conversation_folders SET ";
+    for (size_t i = 0; i < sets.size(); ++i) {
+        if (i) sql += ", ";
+        sql += sets[i];
+    }
+    sql += " WHERE tenant_id = ? AND id = ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    if (!trimmed.empty()) q.bind(idx++, trimmed);
+    if (new_position >= 0) q.bind(idx++, static_cast<int64_t>(new_position));
+    q.bind(idx++, now_epoch());
+    q.bind(idx++, tenant_id);
+    q.bind(idx, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::delete_conversation_folder(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
+    if (!get_conversation_folder(tenant_id, id)) return false;
+
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    {
+        Stmt q(db_,
+               "UPDATE conversations SET folder_id = 0, updated_at = ? "
+               "WHERE tenant_id = ? AND folder_id = ?;");
+        q.bind(1, now_epoch());
+        q.bind(2, tenant_id);
+        q.bind(3, id);
+        if (q.step() != SQLITE_DONE) {
+            exec_sql(db_, "ROLLBACK;");
+            return false;
+        }
+    }
+    {
+        Stmt q(db_,
+               "DELETE FROM conversation_folders "
+               "WHERE tenant_id = ? AND id = ?;");
+        q.bind(1, tenant_id);
+        q.bind(2, id);
+        if (q.step() != SQLITE_DONE) {
+            exec_sql(db_, "ROLLBACK;");
+            return false;
+        }
+    }
+    exec_sql(db_, "COMMIT;");
+    return true;
+}
+
+bool TenantStore::set_conversation_folder(int64_t tenant_id,
+                                          int64_t conversation_id,
+                                          int64_t folder_id) {
+    if (!db_) return false;
+    if (!get_conversation(tenant_id, conversation_id)) return false;
+    if (folder_id > 0 && !get_conversation_folder(tenant_id, folder_id))
+        return false;
+
+    Stmt q(db_,
+           "UPDATE conversations SET folder_id = ?, updated_at = ? "
+           "WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, folder_id > 0 ? folder_id : 0);
+    q.bind(2, now_epoch());
+    q.bind(3, tenant_id);
+    q.bind(4, conversation_id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+std::string TenantStore::get_tui_folder_collapse_json(int64_t tenant_id) const {
+    if (!db_) return {};
+    Stmt q(db_,
+           "SELECT folder_collapse_json FROM tui_prefs WHERE tenant_id = ?;");
+    q.bind(1, tenant_id);
+    if (q.step() != SQLITE_ROW) return {};
+    return q.column_text(0);
+}
+
+bool TenantStore::set_tui_folder_collapse_json(int64_t tenant_id,
+                                               const std::string& json) {
+    if (!db_) return false;
+    ensure_tui_prefs_row(db_, tenant_id);
+    Stmt q(db_,
+           "UPDATE tui_prefs SET folder_collapse_json = ? WHERE tenant_id = ?;");
+    q.bind(1, json);
+    q.bind(2, tenant_id);
+    return q.step() == SQLITE_DONE;
 }
 
 bool TenantStore::reload_tenant(int64_t id, Tenant& t) const {

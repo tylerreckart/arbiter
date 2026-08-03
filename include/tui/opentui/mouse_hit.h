@@ -8,6 +8,7 @@
 #include "tui/tui.h"
 
 #include <optional>
+#include <vector>
 
 namespace arbiter::opentui {
 
@@ -36,43 +37,44 @@ inline bool rect_contains(const Rect& r, int x, int y) {
 }
 
 // Map a 0-based y into a history-sidebar list row index, or -1 if outside
-// the painted list band. `visible_rows` is the number of row slots currently
-// drawn; `list_row_count` is 1 ("+ New") + visible entries. When
-// `filter_line_visible` is true the list starts one row lower (after the
-// "/" filter line), matching history_sidebar_frame.cpp. Clicks on empty
-// slots past the last real row return -1 (do not clamp to the last entry).
+// the painted list band. `list_height_lines` is the vertical budget used by
+// history_sidebar_visible_rows / the frame drawer. Row heights follow
+// history_sidebar_row_height (1 for New/Section/Folder, 2 for Conversation).
 inline int history_sidebar_row_at(const Rect& sidebar_rect,
                                   int y,
                                   int scroll_offset,
-                                  int visible_rows,
-                                  int list_row_count,
-                                  bool filter_line_visible = false) {
-    constexpr int kRowHeight = 2;
-    // Blank row above the box, title border, blank row inside, then optional
-    // filter and list. Keep in sync with history_sidebar_frame.cpp.
-    const int top = sidebar_rect.y + 3 + (filter_line_visible ? 1 : 0);
-    if (y < top) return -1;
-    if (visible_rows <= 0 || list_row_count <= 0) return -1;
-    const int rel = y - top;
-    const int row_in_view = rel / kRowHeight;
-    if (row_in_view < 0 || row_in_view >= visible_rows) return -1;
-    if (rel >= visible_rows * kRowHeight) return -1;
-    const int abs_row = scroll_offset + row_in_view;
-    if (abs_row < 0 || abs_row >= list_row_count) return -1;
-    return abs_row;
+                                  int list_height_lines,
+                                  const std::vector<HistorySidebarRow>& rows) {
+    // Blank row above the box, title border, blank row inside, then list.
+    // Keep in sync with history_sidebar_frame.cpp.
+    const int top = sidebar_rect.y + 3;
+    if (y < top || list_height_lines <= 0 || rows.empty()) return -1;
+    const int band_end = top + list_height_lines;  // exclusive
+    if (y >= band_end) return -1;
+
+    int row_y = top;
+    for (int i = scroll_offset; i < static_cast<int>(rows.size()); ++i) {
+        const auto kind = rows[static_cast<size_t>(i)].kind;
+        row_y += history_sidebar_gap_before(kind, i);
+        const int h = history_sidebar_row_height(kind);
+        // Frame skips any row that does not fully fit in the band.
+        if (row_y + h > band_end) break;
+        if (y >= row_y && y < row_y + h) return i;
+        row_y += h;
+    }
+    return -1;
 }
 
 // Classify which interactive region contains (x, y).
 // `history_rect` / `right_rect` may be empty (w==0) when those sidebars are off.
-// `history_visible_rows` / `history_list_row_count` clamp history list hits
-// to painted, real rows only.
+// `history_list_height` / `history_rows` clamp history list hits to painted,
+// real rows only.
 inline HitTarget hit_test(LayoutTree& layout,
                           const Rect& history_rect,
                           const Rect& right_rect,
                           int history_scroll_offset,
-                          int history_visible_rows,
-                          int history_list_row_count,
-                          bool history_filter_line_visible,
+                          int history_list_height,
+                          const std::vector<HistorySidebarRow>& history_rows,
                           int x,
                           int y) {
     HitTarget hit;
@@ -80,8 +82,8 @@ inline HitTarget hit_test(LayoutTree& layout,
     if (history_rect.w > 0 && rect_contains(history_rect, x, y)) {
         hit.kind = HitKind::HistorySidebar;
         hit.history_row = history_sidebar_row_at(
-            history_rect, y, history_scroll_offset, history_visible_rows,
-            history_list_row_count, history_filter_line_visible);
+            history_rect, y, history_scroll_offset, history_list_height,
+            history_rows);
         return hit;
     }
     if (right_rect.w > 0 && rect_contains(right_rect, x, y)) {

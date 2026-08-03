@@ -532,14 +532,14 @@ TEST_CASE("ctrl keys decode when the kitty report carries alternate-key/event-ty
     // history sidebar — proves the chord path also survives colon subfields.
     // The sidebar's row content ("Conversations", "Untitled", ...) is drawn
     // once at startup regardless of focus, so it won't reappear in this
-    // diff window; key on the "/ filter" footer hint instead, which
+    // diff window; key on the "f folder" footer hint instead, which
     // only paints once the sidebar actually gains keyboard focus.
     const std::string before_chord = s.output();
     s.send("\x1b[119:87;5u");
     s.send("b");
     s.read_for(400);
     CHECK(PtySession::strip_ansi(s.output().substr(before_chord.size()))
-              .find("filt") != std::string::npos);
+              .find("fold") != std::string::npos);
     s.send("\x1b");
     s.read_for(200);
 

@@ -98,11 +98,11 @@ TEST_CASE("sidebar rename (r) and soft delete (d + y)") {
     // Enter sidebar; pinned to the active entry (row 1) since only one
     // conversation exists.  Don't wait for "Conversations" in the delta —
     // OpenTUI may not re-emit unchanged header cells on focus.  Key on the
-    // focused footer hint ("/ filter") instead so `r` lands in rename mode
+    // focused footer hint ("f folder") instead so `r` lands in rename mode
     // rather than the line editor on slow CI runners.
     const std::size_t before_focus = s.output().size();
     s.send("\x17" "b");
-    REQUIRE(wait_for_token(s, before_focus, "filt", 10000));
+    REQUIRE(wait_for_token(s, before_focus, "fold", 10000));
 
     s.send("r");
     s.read_for(200);
