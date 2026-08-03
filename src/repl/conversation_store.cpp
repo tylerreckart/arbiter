@@ -883,9 +883,12 @@ std::string ConversationStore::create_or_reuse_for(
         try_apply_folder(prefer_id);
         return prefer_id;
     }
-    // Same empty-active reuse as create_or_reuse() when prefer_id is absent
-    // or already has turns — avoids duplicate blank sidebar entries.
-    if (!active_id_.empty() && session_is_empty_unlocked(active_id_)) {
+    // Only when the caller has no prefer_id (no focused conversation) —
+    // never when prefer_id already has turns, or a multi-pane "new chat"
+    // can steal another pane's empty active conversation.
+    if (prefer_id.empty()
+        && !active_id_.empty()
+        && session_is_empty_unlocked(active_id_)) {
         try_apply_folder(active_id_);
         return active_id_;
     }

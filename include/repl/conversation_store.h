@@ -88,8 +88,10 @@ public:
     std::string create_or_reuse(const std::string& cwd,
                                 const std::string& folder_id = {});
 
-    // Prefer reusing `prefer_id` when that session is empty; otherwise fall
-    // back to the same empty-active reuse as create_or_reuse(), then create.
+    // Prefer reusing `prefer_id` when that session is empty. When prefer_id
+    // is absent, fall back to empty-active reuse (create_or_reuse). When
+    // prefer_id has turns, always create — never steal another empty chat
+    // (multi-pane safe).
     std::string create_or_reuse_for(const std::string& cwd,
                                     const std::string& prefer_id,
                                     const std::string& folder_id = {});

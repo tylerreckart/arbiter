@@ -229,6 +229,9 @@ private:
     PinKind pin_kind_ = PinKind::New;
     std::string pin_id_;
     int  scroll_offset_ = 0;
+    // Last line budget from clamp_scroll / navigation; used by refresh_entries
+    // to keep the pinned row on-screen after the pin jumps.
+    int  last_visible_lines_ = 0;
     std::string active_id_;
     std::vector<ConversationEntry> entries_;
     std::vector<ConversationFolderEntry> folders_;

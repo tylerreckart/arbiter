@@ -195,6 +195,23 @@ TEST_CASE("create_or_reuse_for falls back to empty active when prefer_id is empt
     fs::remove_all(dir);
 }
 
+TEST_CASE("create_or_reuse_for does not steal empty active when prefer has turns") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    const std::string empty_active = store.active_id();
+    const std::string busy = store.create(dir);
+    write_session(store, busy, R"({"index":[{"role":"user","content":"hi"}]})");
+    store.set_active(empty_active);
+
+    const std::string after = store.create_or_reuse_for(dir, busy);
+    CHECK(after != empty_active);
+    CHECK(after != busy);
+    CHECK(store.list().size() == 3);
+
+    fs::remove_all(dir);
+}
+
 TEST_CASE("create with a deleted folder id files as unfiled instead of throwing") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);

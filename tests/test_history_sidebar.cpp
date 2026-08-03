@@ -510,6 +510,31 @@ TEST_CASE("deleting a folder clears the pin so new-chat has no stale folder id")
     fs::remove_all(dir);
 }
 
+TEST_CASE("refresh_entries realigns scroll when the pin jumps upward") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    for (int i = 0; i < 10; ++i) store.create(dir);
+    const std::string fid = store.create_folder("Far");
+    const std::string child = store.create(dir, fid);
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, child);
+    // Scroll deep into the list with a tight line budget, then pin the folder.
+    sidebar.select_folder(fid, 3);
+    REQUIRE(sidebar.scroll_offset() > 0);
+
+    REQUIRE(store.delete_folder(fid));
+    sidebar.refresh_entries(store);
+
+    // Pin falls back to "+ New"; scroll must follow so selection is on-screen.
+    CHECK_FALSE(sidebar.is_folder_selected());
+    CHECK(sidebar.scroll_offset() == 0);
+    CHECK(sidebar.snapshot().selected == 0);
+
+    fs::remove_all(dir);
+}
+
 TEST_CASE("collapsing a folder re-pins a hidden chat to that folder") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);

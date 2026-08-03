@@ -478,12 +478,15 @@ void HistorySidebarState::refresh_entries(const ConversationStore& store) {
     folders_ = store.list_folders();
     load_collapse_locked(store);
     ensure_pin_visible_locked();
-    const int n = static_cast<int>(build_rows_locked().size());
-    scroll_offset_ = std::max(0, std::min(scroll_offset_, std::max(0, n - 1)));
+    // Re-align scroll to the (possibly jumped) pin using the last known
+    // line budget so the highlight does not sit off-screen.
+    clamp_scroll_locked(index_for_pin_locked(), last_visible_lines_);
 }
 
 void HistorySidebarState::clamp_scroll_locked(int idx, int visible_lines) {
-    if (visible_lines <= 0) return;
+    if (visible_lines > 0) last_visible_lines_ = visible_lines;
+    else visible_lines = last_visible_lines_;
+
     const auto rows = build_rows_locked();
     const int n = static_cast<int>(rows.size());
     if (n <= 0) {
@@ -492,6 +495,12 @@ void HistorySidebarState::clamp_scroll_locked(int idx, int visible_lines) {
     }
     idx = std::max(0, std::min(idx, n - 1));
     scroll_offset_ = std::max(0, std::min(scroll_offset_, n - 1));
+
+    if (visible_lines <= 0) {
+        // No budget yet — at least keep the selection at/above the window.
+        if (idx < scroll_offset_) scroll_offset_ = idx;
+        return;
+    }
 
     auto span = [&](int i) {
         const auto& r = rows[static_cast<size_t>(i)];
