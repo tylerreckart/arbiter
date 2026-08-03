@@ -206,7 +206,12 @@ private:
     // Assumes mu_ is already held by the caller.
     int index_for_pin_locked() const;
     void set_pin_from_index_locked(int idx);
-    void clamp_scroll_locked(int idx, int visible_rows);
+    // Keep pin_kind_/pin_id_ on a currently painted row (folder gone,
+    // conversation soft-deleted, or chat hidden under a collapsed folder).
+    void ensure_pin_visible_locked();
+    // `visible_lines` is the terminal line budget from
+    // history_sidebar_visible_rows (not a raw list-row count).
+    void clamp_scroll_locked(int idx, int visible_lines);
     std::string current_title_locked() const;
     std::vector<HistorySidebarRow> build_rows_locked() const;
     void load_collapse_locked(const ConversationStore& store);

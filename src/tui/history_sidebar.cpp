@@ -175,6 +175,42 @@ void HistorySidebarState::toggle_folder_locked(const std::string& folder_id) {
     if (folder_id.empty()) return;
     if (collapsed_.count(folder_id)) collapsed_.erase(folder_id);
     else collapsed_.insert(folder_id);
+    ensure_pin_visible_locked();
+}
+
+void HistorySidebarState::ensure_pin_visible_locked() {
+    if (pin_kind_ == PinKind::New) {
+        pin_id_.clear();
+        return;
+    }
+
+    auto row_matches = [&](const HistorySidebarRow& r) {
+        if (pin_kind_ == PinKind::Folder)
+            return r.kind == HistorySidebarRowKind::Folder && r.id == pin_id_;
+        return r.kind == HistorySidebarRowKind::Conversation && r.id == pin_id_;
+    };
+
+    const auto rows = build_rows_locked();
+    for (const auto& r : rows) {
+        if (row_matches(r)) return;
+    }
+
+    // Conversation still exists but is hidden under a collapsed folder —
+    // pin the folder so highlight / new-chat target stay coherent.
+    if (pin_kind_ == PinKind::Conversation) {
+        for (const auto& e : entries_) {
+            if (e.id != pin_id_) continue;
+            if (!e.folder_id.empty() && collapsed_.count(e.folder_id) > 0) {
+                pin_kind_ = PinKind::Folder;
+                pin_id_ = e.folder_id;
+                return;
+            }
+            break;
+        }
+    }
+
+    pin_kind_ = PinKind::New;
+    pin_id_.clear();
 }
 
 int HistorySidebarState::index_for_pin_locked() const {
@@ -337,6 +373,7 @@ void HistorySidebarState::enter_focus(const ConversationStore& store,
             break;
         }
     }
+    ensure_pin_visible_locked();
     scroll_offset_ = 0;
 }
 
@@ -440,17 +477,45 @@ void HistorySidebarState::refresh_entries(const ConversationStore& store) {
     entries_ = store.list();
     folders_ = store.list_folders();
     load_collapse_locked(store);
+    ensure_pin_visible_locked();
+    const int n = static_cast<int>(build_rows_locked().size());
+    scroll_offset_ = std::max(0, std::min(scroll_offset_, std::max(0, n - 1)));
 }
 
-void HistorySidebarState::clamp_scroll_locked(int idx, int visible_rows) {
-    if (visible_rows <= 0) return;
-    if (idx < scroll_offset_) scroll_offset_ = idx;
-    if (idx >= scroll_offset_ + visible_rows) {
-        scroll_offset_ = idx - visible_rows + 1;
+void HistorySidebarState::clamp_scroll_locked(int idx, int visible_lines) {
+    if (visible_lines <= 0) return;
+    const auto rows = build_rows_locked();
+    const int n = static_cast<int>(rows.size());
+    if (n <= 0) {
+        scroll_offset_ = 0;
+        return;
+    }
+    idx = std::max(0, std::min(idx, n - 1));
+    scroll_offset_ = std::max(0, std::min(scroll_offset_, n - 1));
+
+    auto span = [&](int i) {
+        const auto& r = rows[static_cast<size_t>(i)];
+        return history_sidebar_gap_before(r.kind, i)
+            + history_sidebar_row_height(r.kind);
+    };
+    auto lines_through = [&](int from, int to) {
+        int lines = 0;
+        for (int i = from; i <= to; ++i) lines += span(i);
+        return lines;
+    };
+
+    if (idx < scroll_offset_) {
+        scroll_offset_ = idx;
+        return;
+    }
+    // Scroll forward until the selected row fully fits in the line budget.
+    while (scroll_offset_ < idx
+           && lines_through(scroll_offset_, idx) > visible_lines) {
+        ++scroll_offset_;
     }
 }
 
-void HistorySidebarState::move_selection(int delta, int visible_rows) {
+void HistorySidebarState::move_selection(int delta, int visible_lines) {
     std::lock_guard<std::mutex> lk(mu_);
     const auto rows = build_rows_locked();
     const int n = static_cast<int>(rows.size());
@@ -466,12 +531,28 @@ void HistorySidebarState::move_selection(int delta, int visible_rows) {
         if ((step < 0 && idx == 0) || (step > 0 && idx == n - 1)) break;
     }
     set_pin_from_index_locked(idx);
-    clamp_scroll_locked(index_for_pin_locked(), visible_rows);
+    clamp_scroll_locked(index_for_pin_locked(), visible_lines);
 }
 
-void HistorySidebarState::page_selection(int direction, int visible_rows) {
-    const int page = std::max(1, visible_rows);
-    move_selection(direction < 0 ? -page : page, visible_rows);
+void HistorySidebarState::page_selection(int direction, int visible_lines) {
+    int page = 1;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        const auto rows = build_rows_locked();
+        const int n = static_cast<int>(rows.size());
+        int lines = 0;
+        int fitted = 0;
+        for (int i = scroll_offset_; i < n; ++i) {
+            const auto& r = rows[static_cast<size_t>(i)];
+            const int need = history_sidebar_gap_before(r.kind, i)
+                + history_sidebar_row_height(r.kind);
+            if (fitted > 0 && lines + need > visible_lines) break;
+            lines += need;
+            ++fitted;
+        }
+        page = std::max(1, fitted);
+    }
+    move_selection(direction < 0 ? -page : page, visible_lines);
 }
 
 void HistorySidebarState::select_at_index(int index, int visible_rows) {

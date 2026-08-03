@@ -483,3 +483,90 @@ TEST_CASE("conversation menu Move to… opens picker and commits") {
 
     fs::remove_all(dir);
 }
+
+TEST_CASE("deleting a folder clears the pin so new-chat has no stale folder id") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string fid = store.create_folder("Doomed");
+    const std::string cid = store.create(dir, fid);
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, cid);
+    sidebar.select_folder(fid, 20);
+    REQUIRE(sidebar.is_folder_selected());
+    REQUIRE(sidebar.selected_folder_id() == fid);
+    REQUIRE(sidebar.new_target_folder_id() == fid);
+
+    REQUIRE(store.delete_folder(fid));
+    sidebar.refresh_entries(store);
+
+    CHECK_FALSE(sidebar.is_folder_selected());
+    CHECK(sidebar.new_target_folder_id().empty());
+    // Creating into the stale id must not throw — files as unfiled.
+    CHECK_NOTHROW(store.create(dir, fid));
+    CHECK(store.list().front().folder_id.empty());
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("collapsing a folder re-pins a hidden chat to that folder") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string fid = store.create_folder("Work");
+    const std::string cid = store.create(dir, fid);
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, cid);
+    REQUIRE(sidebar.selected_conversation_id() == cid);
+
+    // Collapse the folder and persist that state.
+    sidebar.select_folder(fid, 20);
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::ToggleFolder);
+    store.set_folder_collapse_json(sidebar.collapse_json());
+
+    // Re-enter focused on the chat that is now hidden under the collapse.
+    sidebar.exit_focus();
+    sidebar.enter_focus(store, cid);
+
+    CHECK(sidebar.is_folder_selected());
+    CHECK(sidebar.selected_folder_id() == fid);
+    CHECK(sidebar.selected_conversation_id().empty());
+    CHECK(sidebar.snapshot().selected > 0);  // not the "+ New" row
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("clamp_scroll keeps the selected row within the line budget") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    // Enough conversations that a tiny line budget cannot show them all.
+    for (int i = 0; i < 8; ++i) store.create(dir);
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, store.active_id());
+
+    // Jump toward the bottom with a 3-line viewport (≈ one conversation).
+    sidebar.page_selection(+1, 3);
+    sidebar.page_selection(+1, 3);
+    const auto snap = sidebar.snapshot();
+    REQUIRE(snap.selected >= snap.scroll_offset);
+    // Selected index must be reachable within `visible_lines` of scroll_offset.
+    int lines = 0;
+    bool fitted = false;
+    for (int i = snap.scroll_offset; i < static_cast<int>(snap.rows.size()); ++i) {
+        const auto& r = snap.rows[static_cast<size_t>(i)];
+        lines += history_sidebar_gap_before(r.kind, i)
+            + history_sidebar_row_height(r.kind);
+        if (i == snap.selected) {
+            fitted = lines <= 3;
+            break;
+        }
+        if (lines > 3) break;
+    }
+    CHECK(fitted);
+
+    fs::remove_all(dir);
+}

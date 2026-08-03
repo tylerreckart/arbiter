@@ -183,6 +183,31 @@ TEST_CASE("create_or_reuse reuses an empty active conversation instead of creati
     fs::remove_all(dir);
 }
 
+TEST_CASE("create_or_reuse_for falls back to empty active when prefer_id is empty") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    const std::string before = store.active_id();
+    const std::string after = store.create_or_reuse_for(dir, /*prefer_id=*/"");
+    CHECK(after == before);
+    CHECK(store.list().size() == 1);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("create with a deleted folder id files as unfiled instead of throwing") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string fid = store.create_folder("Temp");
+    REQUIRE(store.delete_folder(fid));
+    std::string id;
+    CHECK_NOTHROW(id = store.create(dir, fid));
+    CHECK_FALSE(id.empty());
+    CHECK(store.list().front().folder_id.empty());
+
+    fs::remove_all(dir);
+}
+
 TEST_CASE("set_title does not lock; set_title_locked and lock_title do") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);

@@ -88,7 +88,8 @@ public:
     std::string create_or_reuse(const std::string& cwd,
                                 const std::string& folder_id = {});
 
-    // Like create_or_reuse(), but checks emptiness of `prefer_id`.
+    // Prefer reusing `prefer_id` when that session is empty; otherwise fall
+    // back to the same empty-active reuse as create_or_reuse(), then create.
     std::string create_or_reuse_for(const std::string& cwd,
                                     const std::string& prefer_id,
                                     const std::string& folder_id = {});

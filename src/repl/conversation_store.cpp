@@ -817,7 +817,12 @@ std::string ConversationStore::session_json(const std::string& id) const {
 
 std::string ConversationStore::create_unlocked(const std::string& cwd,
                                                const std::string& folder_id) {
-    const int64_t fid = parse_id(folder_id);
+    int64_t fid = parse_id(folder_id);
+    // Stale folder ids (e.g. after delete) must not abort the TUI — file
+    // the new conversation as unfiled instead.
+    if (fid > 0 && !tenants_.get_conversation_folder(tenant_id_, fid)) {
+        fid = 0;
+    }
     auto created = tenants_.create_tui_conversation(
         tenant_id_, "Untitled", cwd, empty_session_json(),
         /*legacy_id=*/"", fid);
@@ -844,11 +849,13 @@ std::string ConversationStore::create_or_reuse(const std::string& cwd,
     std::lock_guard<std::mutex> lk(mu_);
     if (session_is_empty_unlocked(active_id_)) {
         if (!folder_id.empty()) {
-            // Reuse keeps the existing thread; update folder membership.
-            tenants_.set_conversation_folder(
-                tenant_id_, parse_id(active_id_), parse_id(folder_id));
-            for (auto& e : entries_) {
-                if (e.id == active_id_) e.folder_id = folder_id;
+            const int64_t fid = parse_id(folder_id);
+            if (fid > 0
+                && tenants_.set_conversation_folder(
+                    tenant_id_, parse_id(active_id_), fid)) {
+                for (auto& e : entries_) {
+                    if (e.id == active_id_) e.folder_id = format_id(fid);
+                }
             }
         }
         return active_id_;
@@ -860,16 +867,27 @@ std::string ConversationStore::create_or_reuse_for(
     const std::string& cwd, const std::string& prefer_id,
     const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
+    auto try_apply_folder = [&](const std::string& id) {
+        if (folder_id.empty() || id.empty()) return;
+        const int64_t fid = parse_id(folder_id);
+        if (fid <= 0) return;
+        if (!tenants_.set_conversation_folder(tenant_id_, parse_id(id), fid))
+            return;
+        for (auto& e : entries_) {
+            if (e.id == id) e.folder_id = format_id(fid);
+        }
+    };
+
     if (!prefer_id.empty() && session_is_empty_unlocked(prefer_id)) {
         set_active_unlocked(prefer_id);
-        if (!folder_id.empty()) {
-            tenants_.set_conversation_folder(
-                tenant_id_, parse_id(prefer_id), parse_id(folder_id));
-            for (auto& e : entries_) {
-                if (e.id == prefer_id) e.folder_id = folder_id;
-            }
-        }
+        try_apply_folder(prefer_id);
         return prefer_id;
+    }
+    // Same empty-active reuse as create_or_reuse() when prefer_id is absent
+    // or already has turns — avoids duplicate blank sidebar entries.
+    if (!active_id_.empty() && session_is_empty_unlocked(active_id_)) {
+        try_apply_folder(active_id_);
+        return active_id_;
     }
     return create_unlocked(cwd, folder_id);
 }
