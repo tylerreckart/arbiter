@@ -9094,7 +9094,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             if (sandbox_mgr->write_to_workspace(sandbox_tid, path, content, werr)) {
                 note += "; also saved to /workspace/" + path + " in sandbox)";
             } else {
-                note += "; sandbox write failed: " + werr + ")";
+                release_file_bytes(bytes_captured, size);
+                return "ERR: sandbox write failed for '" + path +
+                       "': " + werr;
             }
         } else {
             note += ", not persisted)";
