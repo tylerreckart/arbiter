@@ -56,6 +56,12 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`GET /v1/conversations/:id/messages`](conversations/messages-list.md)
 - [`POST /v1/conversations/:id/messages`](conversations/messages-post.md)
 
+### Conversation folders
+- [`GET /v1/conversation-folders`](conversation-folders/list.md)
+- [`POST /v1/conversation-folders`](conversation-folders/create.md)
+- [`PATCH /v1/conversation-folders/:id`](conversation-folders/patch.md)
+- [`DELETE /v1/conversation-folders/:id`](conversation-folders/delete.md)
+
 ### Memory (file scratchpads)
 - [`GET /v1/memory`](memory/list-scratchpads.md)
 - [`GET /v1/memory/:agent_id`](memory/get-scratchpad.md)

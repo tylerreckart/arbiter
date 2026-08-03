@@ -1811,6 +1811,11 @@ std::shared_ptr<JsonValue> conversation_to_json(const Conversation& c) {
     m["message_count"] = jnum(static_cast<double>(c.message_count));
     m["archived"]      = jbool(c.archived);
     m["origin"]        = jstr(c.origin.empty() ? "api" : c.origin);
+    if (c.folder_id > 0) {
+        m["folder_id"] = jnum(static_cast<double>(c.folder_id));
+    } else {
+        m["folder_id"] = jnull();
+    }
     if (!c.cwd.empty()) m["cwd"] = jstr(c.cwd);
     if (c.total_tokens > 0) {
         m["total_tokens"] = jnum(static_cast<double>(c.total_tokens));
@@ -1900,7 +1905,38 @@ void handle_conversation_list(int fd, const HttpRequest& req,
     const int64_t before = as_int64("before_updated_at");
     const int     limit  = static_cast<int>(as_int64("limit"));
 
-    auto convs = tenants.list_conversations(tenant.id, before, limit);
+    // folder_id query: absent → no filter; "null"/empty/0 → unfiled;
+    // positive → that folder. Unknown / TUI-only folders still 400.
+    int64_t folder_filter = -1;
+    if (qp.count("folder_id")) {
+        const std::string& raw = qp.at("folder_id");
+        if (raw.empty() || raw == "null" || raw == "0") {
+            folder_filter = 0;
+        } else {
+            try { folder_filter = std::stoll(raw); } catch (...) {
+                folder_filter = -2;
+            }
+            if (folder_filter <= 0 && raw != "0" && raw != "null" && !raw.empty())
+                folder_filter = -2;
+            if (folder_filter > 0 &&
+                !tenants.get_conversation_folder(tenant.id, folder_filter)) {
+                auto err = jobj();
+                err->as_object_mut()["error"] =
+                    jstr("folder_id does not exist for this tenant");
+                write_json_response(fd, 400, err);
+                return;
+            }
+            if (folder_filter == -2) {
+                auto err = jobj();
+                err->as_object_mut()["error"] = jstr("invalid folder_id");
+                write_json_response(fd, 400, err);
+                return;
+            }
+        }
+    }
+
+    auto convs = tenants.list_conversations(tenant.id, before, limit,
+                                            folder_filter);
     auto arr = jarr();
     auto& a = arr->as_array_mut();
     for (auto& c : convs) a.push_back(conversation_to_json(c));
@@ -1948,7 +1984,37 @@ void handle_conversation_patch(int fd, int64_t id, const HttpRequest& req,
         set_archived = v->as_bool() ? 1 : 0;
     }
 
-    if (!tenants.update_conversation(tenant.id, id, new_title, set_archived)) {
+    int64_t set_folder_id = -1;
+    if (auto v = body->get("folder_id"); v) {
+        if (v->is_null()) {
+            set_folder_id = 0;
+        } else if (v->is_number()) {
+            set_folder_id = static_cast<int64_t>(v->as_number());
+            if (set_folder_id < 0) {
+                auto err = jobj();
+                err->as_object_mut()["error"] = jstr("folder_id must be ≥ 0");
+                write_json_response(fd, 400, err);
+                return;
+            }
+            if (set_folder_id > 0 &&
+                !tenants.get_conversation_folder(tenant.id, set_folder_id)) {
+                auto err = jobj();
+                err->as_object_mut()["error"] =
+                    jstr("folder_id does not exist for this tenant");
+                write_json_response(fd, 400, err);
+                return;
+            }
+        } else {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("folder_id must be a number or null");
+            write_json_response(fd, 400, err);
+            return;
+        }
+    }
+
+    if (!tenants.update_conversation(tenant.id, id, new_title, set_archived,
+                                     set_folder_id)) {
         auto err = jobj();
         err->as_object_mut()["error"] = jstr("conversation not found");
         write_json_response(fd, 404, err);
@@ -1956,6 +2022,122 @@ void handle_conversation_patch(int fd, int64_t id, const HttpRequest& req,
     }
     auto c = tenants.get_conversation(tenant.id, id);
     write_json_response(fd, 200, conversation_to_json(*c));
+}
+
+std::shared_ptr<JsonValue>
+conversation_folder_to_json(const ConversationFolder& f) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["id"]         = jnum(static_cast<double>(f.id));
+    m["tenant_id"]  = jnum(static_cast<double>(f.tenant_id));
+    m["name"]       = jstr(f.name);
+    m["position"]   = jnum(static_cast<double>(f.position));
+    m["created_at"] = jnum(static_cast<double>(f.created_at));
+    m["updated_at"] = jnum(static_cast<double>(f.updated_at));
+    return o;
+}
+
+void handle_conversation_folder_list(int fd, TenantStore& tenants,
+                                     const Tenant& tenant) {
+    auto rows = tenants.list_conversation_folders(tenant.id);
+    auto arr = jarr();
+    auto& a = arr->as_array_mut();
+    for (auto& f : rows) a.push_back(conversation_folder_to_json(f));
+    auto body = jobj();
+    auto& m = body->as_object_mut();
+    m["folders"] = arr;
+    m["count"]   = jnum(static_cast<double>(rows.size()));
+    write_json_response(fd, 200, body);
+}
+
+void handle_conversation_folder_create(int fd, const HttpRequest& req,
+                                       TenantStore& tenants,
+                                       const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    const std::string name = body->get_string("name", "");
+    if (name.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("required field: name");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    try {
+        auto f = tenants.create_conversation_folder(tenant.id, name);
+        write_json_response(fd, 201, conversation_folder_to_json(f));
+    } catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(e.what());
+        write_json_response(fd, 400, err);
+    }
+}
+
+void handle_conversation_folder_patch(int fd, int64_t id, const HttpRequest& req,
+                                      TenantStore& tenants,
+                                      const Tenant& tenant) {
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    std::string new_name;
+    if (auto v = body->get("name"); v && v->is_string()) new_name = v->as_string();
+    int new_position = -1;
+    if (auto v = body->get("position"); v && v->is_number()) {
+        new_position = static_cast<int>(v->as_number());
+        if (new_position < 0) {
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr("position must be ≥ 0");
+            write_json_response(fd, 400, err);
+            return;
+        }
+    }
+    if (!tenants.update_conversation_folder(tenant.id, id, new_name,
+                                            new_position)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("folder not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto f = tenants.get_conversation_folder(tenant.id, id);
+    write_json_response(fd, 200, conversation_folder_to_json(*f));
+}
+
+void handle_conversation_folder_delete(int fd, int64_t id,
+                                       TenantStore& tenants,
+                                       const Tenant& tenant) {
+    if (!tenants.delete_conversation_folder(tenant.id, id)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("folder not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    auto body = jobj();
+    body->as_object_mut()["deleted"] = jbool(true);
+    write_json_response(fd, 200, body);
 }
 
 void handle_conversation_delete(int fd, int64_t id,
@@ -10326,6 +10508,43 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             // Fall through to the cancel route handled above.
+        }
+    }
+
+    // ── Conversation folders CRUD ────────────────────────────────────────
+    {
+        const auto segs = split_path(req.path);
+        if (segs.size() >= 2 && segs[0] == "v1"
+            && segs[1] == "conversation-folders") {
+            if (segs.size() == 2) {
+                if (req.method == "GET")
+                    return handle_conversation_folder_list(fd, tenants_, *tenant);
+                if (req.method == "POST")
+                    return handle_conversation_folder_create(
+                        fd, req, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            int64_t id = 0;
+            try { id = std::stoll(segs[2]); } catch (...) { id = 0; }
+            if (id <= 0) {
+                write_plain_response(fd, 400, "Bad Request", "bad folder id\n");
+                return;
+            }
+            if (segs.size() == 3) {
+                if (req.method == "PATCH")
+                    return handle_conversation_folder_patch(
+                        fd, id, req, tenants_, *tenant);
+                if (req.method == "DELETE")
+                    return handle_conversation_folder_delete(
+                        fd, id, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            write_plain_response(fd, 404, "Not Found", "not found\n");
+            return;
         }
     }
 

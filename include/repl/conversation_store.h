@@ -34,6 +34,16 @@ struct ConversationEntry {
     // model-generated title landed (success or exhausted attempt) or the
     // user renamed it manually via /chat title.
     bool titled = false;
+    // Empty = unfiled. Otherwise stringified conversation_folders.id.
+    std::string folder_id;
+};
+
+struct ConversationFolderEntry {
+    std::string id;
+    std::string name;
+    int position = 0;
+    std::int64_t created_at = 0;
+    std::int64_t updated_at = 0;
 };
 
 // One conversation matching a cross-conversation search.  `snippet` is a
@@ -69,15 +79,19 @@ public:
     search(const std::string& term, size_t max_hits = 20) const;
 
     // Create a new empty conversation and make it active.
-    std::string create(const std::string& cwd);
+    // Optional `folder_id` (stringified) files it into that folder.
+    std::string create(const std::string& cwd,
+                       const std::string& folder_id = {});
 
     // Like create(), but if the active conversation has no turns yet, reuses
     // it instead of creating another empty entry.
-    std::string create_or_reuse(const std::string& cwd);
+    std::string create_or_reuse(const std::string& cwd,
+                                const std::string& folder_id = {});
 
     // Like create_or_reuse(), but checks emptiness of `prefer_id`.
     std::string create_or_reuse_for(const std::string& cwd,
-                                    const std::string& prefer_id);
+                                    const std::string& prefer_id,
+                                    const std::string& folder_id = {});
 
     bool load(const std::string& id, Orchestrator& orch);
     void save(const std::string& id, Orchestrator& orch);
@@ -113,6 +127,20 @@ public:
     void soft_delete(const std::string& id);
     void purge(const std::string& id);
 
+    // ── Folders ────────────────────────────────────────────────────────
+    [[nodiscard]] std::vector<ConversationFolderEntry> list_folders() const;
+    std::string create_folder(const std::string& name);
+    bool rename_folder(const std::string& id, const std::string& name);
+    // Unfiles children, then deletes the folder.
+    bool delete_folder(const std::string& id);
+    // Empty folder_id unfiles. Returns false if conversation or folder missing.
+    bool move_to_folder(const std::string& conversation_id,
+                        const std::string& folder_id);
+
+    // Persisted collapsed folder ids (JSON array of numbers).
+    [[nodiscard]] std::string folder_collapse_json() const;
+    void set_folder_collapse_json(const std::string& json);
+
     // Session body for `id` (empty if unknown). Preferred over session_path
     // now that sessions live in SQLite.
     [[nodiscard]] std::string session_json(const std::string& id) const;
@@ -130,7 +158,8 @@ private:
     void reload_entries_unlocked();
     void gc_stale_empty_unlocked();
 
-    std::string create_unlocked(const std::string& cwd);
+    std::string create_unlocked(const std::string& cwd,
+                                const std::string& folder_id = {});
     void set_active_unlocked(const std::string& id);
     bool session_is_empty_unlocked(const std::string& id) const;
     void remove_and_reassign_active_unlocked(const std::string& id,
@@ -138,6 +167,8 @@ private:
     [[nodiscard]] int64_t parse_id(const std::string& id) const;
     [[nodiscard]] static std::string format_id(int64_t id);
     [[nodiscard]] ConversationEntry entry_from_row(const Conversation& c) const;
+    [[nodiscard]] ConversationFolderEntry
+    folder_from_row(const ConversationFolder& f) const;
 
     void save_worker_loop();
     void autosave_timer_loop();

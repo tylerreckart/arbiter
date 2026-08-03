@@ -899,6 +899,38 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_conversation_store COMMAND unit_conversation_store)
 
+    add_executable(unit_conversation_folders
+        tests/test_conversation_folders.cpp
+        tests/orchestrator_session_stub.cpp
+        src/repl/conversation_store.cpp
+        src/repl/conversation_titling.cpp
+        src/repl/layout_snapshot.cpp
+        src/tenant_store.cpp
+        src/atomic_file.cpp
+        src/json.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+    )
+    target_include_directories(unit_conversation_folders PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+        ${SQLite3_INCLUDE_DIRS}
+    )
+    target_link_libraries(unit_conversation_folders PRIVATE
+        Threads::Threads
+        CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        SQLite3::SQLite3
+    )
+    add_test(NAME unit_conversation_folders COMMAND unit_conversation_folders)
+
     # --- Autosave tests: exercise save_async/flush against a real (but
     # network-inert) Orchestrator. Needs ApiClient's real constructor, so
     # this links api_client.cpp + its own deps — see
@@ -1409,6 +1441,7 @@ if(INDEX_BUILD_TESTS)
         unit_layout_snapshot
         unit_history_sidebar
         unit_conversation_store
+        unit_conversation_folders
         unit_conversation_store_autosave
         unit_conversation_titling
         unit_message_replay_roundtrip

@@ -576,6 +576,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         std::string target_id;   // empty + create_new=false + switch_op=true means "use sidebar selection"
         bool delete_op = false;
         bool hard_delete = false;
+        // When create_new: optional folder to file the new conversation into.
+        std::string folder_id;
     };
     std::mutex                          pending_conv_mu;
     std::vector<PendingConversationOp>  pending_conv_ops;
@@ -607,6 +609,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     struct PendingMouseSwitch {
         bool pending = false;
         bool create_new = false;
+        bool toggle_folder = false;
+        std::string folder_id;  // create_new target folder (empty = unfiled)
     } mouse_switch;
 
     // After confirming switch/delete during an in-flight turn, cancel is
@@ -618,6 +622,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         bool create_new = false;
         std::string target_id;
         bool hard_delete = false;
+        std::string folder_id;  // create_new target folder
         // For Switch: wait until this pane's cmd_queue is idle.
         // For Delete: wait until no pane bound to wait_conversation_id is busy.
         Pane* pane = nullptr;
@@ -767,6 +772,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         {"/chat switch",  "switch conversation"},
         {"/chat search",  "find text across saved conversations"},
         {"/chat title",   "rename the active conversation"},
+        {"/chat folder",  "list/new/rename/delete/move folders"},
         {"/help",         "command reference"},
         {"/quit",         "exit"},
     };
@@ -1246,8 +1252,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         const Rect hb = HistorySidebarState::rect_for_terminal(
             cols, rows, history_sidebar.enabled());
         if (hb.w > 0) {
-            history_sidebar.refresh_entries(conversation_store);
+            // Avoid reloading the store mid-edit — refresh is unnecessary
+            // while the user types a rename / navigates an overlay.
             HistorySidebarSnapshot hs = history_sidebar.snapshot();
+            if (!hs.renaming && !hs.moving
+                && !hs.menu_open && !hs.confirming_delete) {
+                history_sidebar.refresh_entries(conversation_store);
+                hs = history_sidebar.snapshot();
+            }
             hs.active_id = conversation_store.active_id();
             arbiter::opentui::draw_history_sidebar(
                 frame, hs, hb, outer, sidebar_input_rows, outer_bottom_pad);
@@ -2141,6 +2153,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
                     "  /chat title <text>               — rename the active conversation (locks title)\n"
                     "  /chat search <text>              — find text across saved conversations\n"
+                    "  /chat folder list|new|rename|delete|move — manage conversation folders\n"
                     "  /find <text> | next | prev       — search the focused pane's scrollback\n"
                     "  /help                            — this list\n"
                     "  /quit                            — exit\n"
@@ -2296,7 +2309,143 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     push_status(out.str());
                     return;
                 }
-                push_status("Usage: /chat list|new|switch|search|title|delete|purge");
+                if (sub == "folder") {
+                    std::string fsub;
+                    iss >> fsub;
+
+                    auto resolve_folder = [&](const std::string& arg) -> std::string {
+                        if (arg.empty()) return {};
+                        const auto folders = conversation_store.list_folders();
+                        const bool all_digits = std::all_of(arg.begin(), arg.end(),
+                            [](unsigned char c) { return std::isdigit(c) != 0; });
+                        if (all_digits) {
+                            for (const auto& f : folders) {
+                                if (f.id == arg) return f.id;
+                            }
+                            // Also allow 1-based index into folder list.
+                            try {
+                                const unsigned long idx = std::stoul(arg);
+                                if (idx >= 1 && idx <= folders.size()) {
+                                    return folders[idx - 1].id;
+                                }
+                            } catch (...) {}
+                            return {};
+                        }
+                        for (const auto& f : folders) {
+                            if (f.name == arg) return f.id;
+                            if (f.id.rfind(arg, 0) == 0) return f.id;
+                        }
+                        // Case-insensitive name match.
+                        const std::string arg_lc = [&]{
+                            std::string s = arg;
+                            for (char& c : s) {
+                                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                            }
+                            return s;
+                        }();
+                        for (const auto& f : folders) {
+                            std::string n = f.name;
+                            for (char& c : n) {
+                                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                            }
+                            if (n == arg_lc) return f.id;
+                        }
+                        return {};
+                    };
+
+                    if (fsub == "list") {
+                        const auto folders = conversation_store.list_folders();
+                        if (folders.empty()) {
+                            push_status("(no folders)");
+                            return;
+                        }
+                        std::ostringstream out;
+                        int n = 1;
+                        for (const auto& f : folders) {
+                            out << "  " << n << ". " << f.name
+                                << "  [" << f.id << "]\n";
+                            ++n;
+                        }
+                        push_status(out.str());
+                        return;
+                    }
+                    if (fsub == "new") {
+                        std::string name;
+                        std::getline(iss, name);
+                        size_t a = 0;
+                        while (a < name.size() && std::isspace(static_cast<unsigned char>(name[a]))) ++a;
+                        name = name.substr(a);
+                        if (name.empty()) {
+                            push_status("Usage: /chat folder new <name>");
+                            return;
+                        }
+                        const std::string id = conversation_store.create_folder(name);
+                        push_status("folder created: " + name + " [" + id + "]");
+                        return;
+                    }
+                    if (fsub == "rename") {
+                        std::string target;
+                        iss >> target;
+                        std::string name;
+                        std::getline(iss, name);
+                        size_t a = 0;
+                        while (a < name.size() && std::isspace(static_cast<unsigned char>(name[a]))) ++a;
+                        name = name.substr(a);
+                        const std::string id = resolve_folder(target);
+                        if (id.empty() || name.empty()) {
+                            push_status("Usage: /chat folder rename <id|name> <new>");
+                            return;
+                        }
+                        if (!conversation_store.rename_folder(id, name)) {
+                            push_status("folder not found");
+                            return;
+                        }
+                        push_status("folder renamed: " + name);
+                        return;
+                    }
+                    if (fsub == "delete") {
+                        std::string target;
+                        iss >> target;
+                        const std::string id = resolve_folder(target);
+                        if (id.empty()) {
+                            push_status("Usage: /chat folder delete <id|name>");
+                            return;
+                        }
+                        if (!conversation_store.delete_folder(id)) {
+                            push_status("folder not found");
+                            return;
+                        }
+                        push_status("folder deleted (conversations unfiled)");
+                        return;
+                    }
+                    if (fsub == "move") {
+                        std::string conv_arg;
+                        std::string folder_arg;
+                        iss >> conv_arg >> folder_arg;
+                        const std::string cid = resolve_chat_target(conv_arg);
+                        if (cid.empty() || folder_arg.empty()) {
+                            push_status("Usage: /chat folder move <conv> <folder|unfiled>");
+                            return;
+                        }
+                        std::string fid;
+                        if (folder_arg != "unfiled" && folder_arg != "-") {
+                            fid = resolve_folder(folder_arg);
+                            if (fid.empty()) {
+                                push_status("folder not found (use a folder id/name or 'unfiled')");
+                                return;
+                            }
+                        }
+                        if (!conversation_store.move_to_folder(cid, fid)) {
+                            push_status("move failed");
+                            return;
+                        }
+                        push_status(fid.empty() ? "moved to unfiled" : "moved to folder [" + fid + "]");
+                        return;
+                    }
+                    push_status("Usage: /chat folder list|new|rename|delete|move");
+                    return;
+                }
+                push_status("Usage: /chat list|new|switch|search|title|delete|purge|folder");
                 return;
             }
             if (cmd == "verbose") {
@@ -3218,7 +3367,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // Completes a conversation switch after any in-flight turn has unwound.
     // Caller holds layout_mu. Drains queued follow-ups on the focused pane
     // only at this point so an abandoned wait keeps them (#46).
-    auto finish_switch_conversation = [&](bool create_new, std::string explicit_id) {
+    auto finish_switch_conversation = [&](bool create_new, std::string explicit_id,
+                                          std::string folder_id = {}) {
         clear_mouse_drag();
         Pane& focused = layout.focused();
         focused.cmd_queue.drain();
@@ -3233,7 +3383,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         if (create_new) {
             const std::string before = focused.conversation_id;
             const std::string after = conversation_store.create_or_reuse_for(
-                fs::current_path().string(), before);
+                fs::current_path().string(), before, folder_id);
             if (after == before) {
                 history_sidebar.exit_focus();
                 present_unlocked();
@@ -3375,7 +3525,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         pending_cancel_wait.store(false);
 
         if (op.kind == PendingAfterCancel::Kind::Switch) {
-            finish_switch_conversation(op.create_new, op.target_id);
+            finish_switch_conversation(op.create_new, op.target_id, op.folder_id);
         } else if (op.kind == PendingAfterCancel::Kind::Delete) {
             finish_delete_conversation(op.target_id, op.hard_delete, /*any_showing=*/true);
         }
@@ -3387,7 +3537,11 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     // history_sidebar.selected_conversation_id() instead (sidebar Enter).
     // Attaches to the *focused* pane only — sibling panes keep their
     // conversations and the split layout stays intact (#40).
-    auto switch_conversation = [&](bool create_new, std::string explicit_id = {}) {
+    // `folder_id` files a create_new conversation into that folder (empty =
+    // unfiled); when omitted and create_new comes from the sidebar, callers
+    // should pass history_sidebar.new_target_folder_id().
+    auto switch_conversation = [&](bool create_new, std::string explicit_id = {},
+                                   std::string folder_id = {}) {
         if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
             std::lock_guard<std::recursive_mutex> lk(layout_mu);
             layout.focused().tui.set_status("Already cancelling… (Esc to abort)");
@@ -3433,6 +3587,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 pending.kind = PendingAfterCancel::Kind::Switch;
                 pending.create_new = create_new;
                 pending.target_id = std::move(explicit_id);
+                pending.folder_id = std::move(folder_id);
                 pending.pane = pane;
                 pending.abandon_status = "Switch cancelled";
                 begin_pending_after_cancel(std::move(pending));
@@ -3441,7 +3596,8 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         }
 
         std::unique_lock<std::recursive_mutex> lk(layout_mu);
-        finish_switch_conversation(create_new, std::move(explicit_id));
+        finish_switch_conversation(create_new, std::move(explicit_id),
+                                   std::move(folder_id));
     };
 
     // Soft/hard-deletes `id`. Any pane bound to it is reassigned to the
@@ -3492,7 +3648,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
         for (auto& op : snapshot) {
             if (op.switch_op) {
-                switch_conversation(op.create_new, op.target_id);
+                switch_conversation(op.create_new, op.target_id, op.folder_id);
             } else if (op.delete_op) {
                 delete_conversation(op.target_id, op.hard_delete);
             }
@@ -3540,7 +3696,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
         return arbiter::opentui::history_sidebar_visible_rows(
             hb, outer, outer_bottom_input_rows(), history_sidebar.focused(),
-            history_sidebar.filter_line_visible(), outer_bottom_pad);
+            outer_bottom_pad);
     };
 
     // Returns true when the focused editor should exit read_line (focus moved
@@ -3642,11 +3798,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             cols, rows, history_sidebar.enabled());
         const Rect rb = right_sidebar_rect();
         const int hist_vis = (hb.w > 0) ? history_visible_rows(hb) : 0;
-        const int hist_len = (hb.w > 0) ? history_sidebar.list_row_count() : 0;
-        const bool hist_filter = (hb.w > 0) && history_sidebar.filter_line_visible();
+        const auto hist_snap = (hb.w > 0)
+            ? history_sidebar.snapshot()
+            : arbiter::HistorySidebarSnapshot{};
         const auto hit = arbiter::opentui::hit_test(
-            layout, hb, rb, history_sidebar.scroll_offset(), hist_vis, hist_len,
-            hist_filter, ev.x, ev.y);
+            layout, hb, rb, hist_snap.scroll_offset, hist_vis, hist_snap.rows,
+            ev.x, ev.y);
 
         if (ev.type == MouseType::Scroll) {
             const int dir = (ev.scroll == ScrollDir::Up || ev.scroll == ScrollDir::Left)
@@ -3689,8 +3846,19 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                     history_sidebar.select_at_index(hit.history_row, hist_vis);
                     // Queue activation — never call switch_conversation from
                     // inside the mouse handler (nested stdin confirm + lock).
-                    mouse_switch.pending = true;
-                    mouse_switch.create_new = history_sidebar.is_new_selected();
+                    if (history_sidebar.is_folder_selected()) {
+                        mouse_switch.pending = true;
+                        mouse_switch.toggle_folder = true;
+                        mouse_switch.create_new = false;
+                        mouse_switch.folder_id.clear();
+                    } else {
+                        mouse_switch.pending = true;
+                        mouse_switch.toggle_folder = false;
+                        mouse_switch.create_new = history_sidebar.is_new_selected();
+                        mouse_switch.folder_id = mouse_switch.create_new
+                            ? history_sidebar.new_target_folder_id()
+                            : std::string{};
+                    }
                 }
                 refresh_focused_input.store(true);
                 if (pump_notify) pump_notify();
@@ -3756,8 +3924,22 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     auto service_mouse_switch = [&]() -> bool {
         if (!mouse_switch.pending) return false;
         const bool create_new = mouse_switch.create_new;
+        const bool toggle_folder = mouse_switch.toggle_folder;
+        const std::string folder_id = mouse_switch.folder_id;
         mouse_switch.pending = false;
-        switch_conversation(create_new);
+        mouse_switch.toggle_folder = false;
+        mouse_switch.folder_id.clear();
+        if (toggle_folder) {
+            // Simulate Enter on the folder header to toggle collapse.
+            const auto action = history_sidebar.handle_key('\r', 0, "");
+            if (action == HistorySidebarKey::ToggleFolder) {
+                conversation_store.set_folder_collapse_json(
+                    history_sidebar.collapse_json());
+            }
+            if (pump_notify) pump_notify();
+            return true;
+        }
+        switch_conversation(create_new, {}, folder_id);
         return true;
     };
 
@@ -3853,8 +4035,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             const int outer_bottom_pad =
                 arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
             const int visible_rows = arbiter::opentui::history_sidebar_visible_rows(
-                hb, outer, outer_bottom_input_rows(), true,
-                history_sidebar.filter_line_visible(), outer_bottom_pad);
+                hb, outer, outer_bottom_input_rows(), true, outer_bottom_pad);
 
             char csi = 0;
             std::string csi_params;
@@ -3889,11 +4070,35 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 continue;
             }
             if (action == HistorySidebarKey::Enter) {
-                switch_conversation(history_sidebar.is_new_selected());
+                switch_conversation(history_sidebar.is_new_selected(), {},
+                                    history_sidebar.is_new_selected()
+                                        ? history_sidebar.new_target_folder_id()
+                                        : std::string{});
                 continue;
             }
             if (action == HistorySidebarKey::New) {
-                switch_conversation(true);
+                switch_conversation(true, {},
+                                    history_sidebar.new_target_folder_id());
+                continue;
+            }
+            if (action == HistorySidebarKey::ToggleFolder) {
+                conversation_store.set_folder_collapse_json(
+                    history_sidebar.collapse_json());
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == HistorySidebarKey::MoveStart) {
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == HistorySidebarKey::MoveCommit) {
+                const std::string cid = history_sidebar.selected_conversation_id();
+                const std::string fid = history_sidebar.take_move_folder_id();
+                if (!cid.empty()) {
+                    conversation_store.move_to_folder(cid, fid);
+                }
+                history_sidebar.refresh_entries(conversation_store);
+                if (pump_notify) pump_notify();
                 continue;
             }
             if (action == HistorySidebarKey::PageUp) {
@@ -3915,12 +4120,32 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 continue;
             }
             if (action == HistorySidebarKey::RenameCommit) {
-                const std::string id = history_sidebar.selected_conversation_id();
+                const bool creating = history_sidebar.is_creating_folder();
+                const bool target_folder = history_sidebar.rename_target_is_folder();
+                const std::string target_id = history_sidebar.rename_target_id();
                 const std::string text = history_sidebar.take_rename_buffer();
-                if (!id.empty() && !text.empty()) {
-                    conversation_store.set_title_locked(id, text);
+                if (!text.empty()) {
+                    if (creating) {
+                        const std::string fid =
+                            conversation_store.create_folder(text);
+                        history_sidebar.refresh_entries(conversation_store);
+                        if (!fid.empty()) {
+                            history_sidebar.select_folder(fid, visible_rows);
+                        }
+                    } else if (target_folder) {
+                        if (!target_id.empty()) {
+                            conversation_store.rename_folder(target_id, text);
+                        }
+                        history_sidebar.refresh_entries(conversation_store);
+                    } else if (!target_id.empty()) {
+                        conversation_store.set_title_locked(target_id, text);
+                        history_sidebar.refresh_entries(conversation_store);
+                    } else {
+                        history_sidebar.refresh_entries(conversation_store);
+                    }
+                } else {
+                    history_sidebar.refresh_entries(conversation_store);
                 }
-                history_sidebar.refresh_entries(conversation_store);
                 if (pump_notify) pump_notify();
                 continue;
             }
@@ -3929,10 +4154,20 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 continue;
             }
             if (action == HistorySidebarKey::DeleteConfirmed) {
-                const std::string id = history_sidebar.selected_conversation_id();
-                if (!id.empty()) delete_conversation(id, /*hard=*/false);
+                if (history_sidebar.is_folder_selected()) {
+                    const std::string fid = history_sidebar.selected_folder_id();
+                    if (!fid.empty()) conversation_store.delete_folder(fid);
+                    history_sidebar.refresh_entries(conversation_store);
+                    if (pump_notify) pump_notify();
+                } else {
+                    const std::string id = history_sidebar.selected_conversation_id();
+                    if (!id.empty()) delete_conversation(id, /*hard=*/false);
+                }
                 continue;
             }
+            // Rename typing, backspace, menu/move navigation, etc. return
+            // None — still repaint so the inline buffer updates immediately.
+            if (pump_notify) pump_notify();
             continue;
         }
 

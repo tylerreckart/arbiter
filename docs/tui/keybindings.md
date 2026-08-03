@@ -75,12 +75,12 @@ If the chord byte doesn't match any of the above, it's silently dropped — the 
 | `↑` / `↓` | Move selection (`+ New conversation` at top, then prior threads newest-first). |
 | `j` / `k` | Vim-style aliases for down / up.                                             |
 | `Enter`   | Attach the selected conversation (or start a new one) to the **focused pane**. Sibling panes and the split layout are left alone. |
-| `m`       | Open an action menu on the selected conversation: **Open**, **Rename**, or **Delete** (footer shows `m`). `↑`/`↓` move; `Enter` commits; `Esc` (or `m` again) cancels. First-letter shortcuts (`o` / `r` / `d`) jump straight to that action. No-op on `+ New conversation`. |
-| `r`       | Rename the selected conversation inline (Enter commits, Esc cancels).        |
-| `d`       | Soft-delete the selected conversation after a `Delete? [y/N]` confirm.       |
+| `m`       | Open an action menu on the selected row. **Chat:** Open · Rename · Move to… · Delete. **Folder:** Rename · New chat here · Delete folder. **+ New:** New folder. Shortcuts (`o`/`r`/`v`/`d`, `r`/`n`/`d`, or `f`) jump to an action. Footer shows context hints while open. |
+| `r`       | Rename the selected chat or folder. Type on the title line (caption on the line below). Enter saves (rejects empty); Esc cancels rename (Esc again leaves the sidebar). |
+| `d`       | Soft-delete the selected chat, or delete the selected folder (chats are unfiled, not removed), after a `Delete chat? y/n` / `Delete folder? y/n` confirm. |
 | `n`       | Start a new conversation on the focused pane.                                |
-| `/`       | Type-to-filter the list by title or working directory.                       |
-| `Esc`     | Cancel and return focus to the pane input (clears an applied filter first).  |
+| `f`       | Create a new folder: type a name (caption `New folder`), Enter saves, Esc cancels. Also available from the `+ New` row menu (`m` → New folder). |
+| `Esc`     | Cancel an in-progress rename / menu / move; otherwise return focus to the pane input. |
 
 Choosing **Delete** from the menu (or pressing `d`) enters the same confirm step: type `y` to soft-delete, any other key cancels.
 

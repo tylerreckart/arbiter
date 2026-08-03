@@ -59,6 +59,18 @@ struct Conversation {
     int         total_tokens    = 0;    // cumulative billed tokens (TUI sidebar)
     bool        titled          = false;// title locked against auto-titling
     std::string origin          = "api"; // "api" | "tui" — sidebar lists "tui"
+    // Nullable FK into conversation_folders. 0 = unfiled.
+    int64_t     folder_id       = 0;
+};
+
+// Tenant-scoped folder for grouping conversations (API + TUI). Flat in v1.
+struct ConversationFolder {
+    int64_t     id          = 0;
+    int64_t     tenant_id   = 0;
+    std::string name;
+    int         position    = 0;
+    int64_t     created_at  = 0;
+    int64_t     updated_at  = 0;
 };
 
 // One row from the messages table.  Append-only; rows are never edited.
@@ -263,18 +275,22 @@ public:
     // List newest first.  `before_updated_at == 0` means "from the latest";
     // pass the previous page's last `updated_at` to paginate backward.
     // `limit` is hard-capped at 200.
+    // `folder_id_filter`: -1 = no filter; 0 = unfiled only; >0 = that folder.
     std::vector<Conversation> list_conversations(int64_t tenant_id,
                                                   int64_t before_updated_at,
-                                                  int     limit) const;
+                                                  int     limit,
+                                                  int64_t folder_id_filter = -1) const;
 
     std::optional<Conversation> get_conversation(int64_t tenant_id, int64_t id) const;
 
     // PATCH-style: any non-empty field replaces.  `archived` flag uses the
     // tri-state encoding (-1 = no change, 0 = false, 1 = true) since bool
-    // can't represent absence.
+    // can't represent absence.  `set_folder_id`: -1 = no change; 0 = unfile;
+    // >0 = move into that folder (must belong to the same tenant).
     bool update_conversation(int64_t tenant_id, int64_t id,
                               const std::string& new_title,    // "" = no change
-                              int                set_archived);// -1 = no change
+                              int                set_archived, // -1 = no change
+                              int64_t            set_folder_id = -1);
 
     bool delete_conversation(int64_t tenant_id, int64_t id);
 
@@ -339,7 +355,8 @@ public:
                                          const std::string& title,
                                          const std::string& cwd,
                                          const std::string& session_json = "",
-                                         const std::string& legacy_id = "");
+                                         const std::string& legacy_id = "",
+                                         int64_t folder_id = 0);
 
     // Lookup by migration key. Soft-deleted rows still match.
     std::optional<Conversation>
@@ -396,6 +413,33 @@ public:
     bool reassign_conversation_scoped_data(int64_t tenant_id,
                                            int64_t from_id,
                                            int64_t to_id);
+
+    // ── Conversation folders (API + TUI grouping) ──────────────────────
+    //
+    // Flat folders per tenant. Conversations reference them via
+    // `folder_id` (0 = unfiled). Deleting a folder unfiles children.
+
+    ConversationFolder create_conversation_folder(int64_t tenant_id,
+                                                  const std::string& name);
+    std::optional<ConversationFolder>
+    get_conversation_folder(int64_t tenant_id, int64_t id) const;
+    std::vector<ConversationFolder>
+    list_conversation_folders(int64_t tenant_id) const;
+    // Rename and/or reorder. Empty name = no change; position < 0 = no change.
+    bool update_conversation_folder(int64_t tenant_id, int64_t id,
+                                    const std::string& new_name,
+                                    int new_position);
+    // Unfiles children, then deletes the folder row.
+    bool delete_conversation_folder(int64_t tenant_id, int64_t id);
+
+    // Move any conversation (API or TUI) into a folder. folder_id=0 unfiles.
+    // Returns false if the conversation or (when >0) folder is missing.
+    bool set_conversation_folder(int64_t tenant_id, int64_t conversation_id,
+                                 int64_t folder_id);
+
+    // Persisted collapse set for the TUI sidebar (JSON array of folder ids).
+    std::string get_tui_folder_collapse_json(int64_t tenant_id) const;
+    bool set_tui_folder_collapse_json(int64_t tenant_id, const std::string& json);
 
     // ── Tenant-stored agent definitions ────────────────────────────────
     //

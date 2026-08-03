@@ -55,6 +55,6 @@ TEST_CASE("sidebar section labels appear when remaining width clears 96 cols") {
     // 120 remaining → 28-col session sidebar (see SidebarState::breakpoint_width).
     PtySession s = ready_repl(40, 147);
     s.send("hello\r");
-    CHECK(wait_for_plain(s, "Context", 15000));
+    CHECK(wait_for_plain(s, "Agent", 15000));
     s.terminate();
 }

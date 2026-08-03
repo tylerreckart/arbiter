@@ -69,13 +69,32 @@ TEST_CASE("modifiers beyond plain ctrl (alt, shift) are not collapsed to a legac
     CHECK(decode_kitty_csi_u("112;6") == std::nullopt);
 }
 
-TEST_CASE("no-modifier printable-range codepoints without ctrl are not touched") {
-    // Plain 'p' with no modifiers shouldn't normally reach this decoder at
-    // all (it stays a legacy byte the terminal never re-encodes), but if it
-    // did, it has no ctrl-derived mapping and isn't one of the
-    // Esc/Enter/Tab/Backspace special cases, so it must decode to nothing.
-    CHECK(decode_kitty_csi_u("112") == std::nullopt);
-    CHECK(decode_kitty_csi_u("112;1") == std::nullopt);  // mods=1 == "no modifiers"
+TEST_CASE("no-modifier printable-range codepoints decode to ASCII") {
+    // When report-all-keys (or a terminal that CSI-u encodes plain text) is
+    // active, unmodified letters arrive as CSI-u and must round-trip so
+    // rename / text entry keeps working.
+    CHECK(decode_kitty_csi_u("112") == 'p');
+    CHECK(decode_kitty_csi_u("112;1") == 'p');  // mods=1 == "no modifiers"
+    CHECK(decode_kitty_csi_u("97;1:1") == 'a'); // explicit press event-type
+    CHECK(decode_kitty_csi_u("65") == 'A');
+    CHECK(decode_kitty_csi_u("32") == ' ');
+}
+
+TEST_CASE("text-as-codepoints third field does not break printable decode") {
+    // Flag 16 ("report associated text") appends `;text` after mods:event.
+    // Older parsers treated `1;97` as a non-numeric event-type and dropped
+    // the key — that made sidebar rename appear to ignore typing.
+    CHECK(decode_kitty_csi_u("97;1:1;97") == 'a');
+    CHECK(decode_kitty_csi_u("97;1;97") == 'a');
+    CHECK(decode_kitty_csi_u("13;1:1;13") == '\r');
+    CHECK(decode_kitty_csi_u("127;1:1;127") == 0x7F);
+    CHECK(decode_kitty_csi_u("97:65;2:1;65") == 'A');
+}
+
+TEST_CASE("shift-only printable reports use the shifted glyph") {
+    CHECK(decode_kitty_csi_u("97:65;2") == 'A');  // a → A via alternate field
+    CHECK(decode_kitty_csi_u("97;2") == 'A');      // a + shift, no alternate
+    CHECK(decode_kitty_csi_u("65;2") == 'A');      // already shifted primary
 }
 
 TEST_CASE("malformed or empty parameter strings decode to nothing") {
