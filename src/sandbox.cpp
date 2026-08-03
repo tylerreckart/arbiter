@@ -125,7 +125,11 @@ int run_capture(const std::vector<std::string>& argv,
             int status_check = 0;
             pid_t r = ::waitpid(pid, &status_check, WNOHANG);
             if (r == pid) {
-                // Drain any remaining bytes before declaring EOF.
+                // Child is gone — flip the pipe back to blocking so a
+                // transient EAGAIN cannot abort the drain before the
+                // remaining buffered bytes (and truncation) are seen.
+                int fl = ::fcntl(read_fd, F_GETFL);
+                if (fl >= 0) ::fcntl(read_fd, F_SETFL, fl & ~O_NONBLOCK);
                 ssize_t k;
                 while ((k = ::read(read_fd, buf, sizeof(buf))) > 0) {
                     if (out.size() < output_cap) {
@@ -141,6 +145,9 @@ int run_capture(const std::vector<std::string>& argv,
                     }
                 }
                 ::close(read_fd);
+                if (WIFEXITED(status_check)) return WEXITSTATUS(status_check);
+                if (WIFSIGNALED(status_check))
+                    return 128 + WTERMSIG(status_check);
                 return status_check;
             }
             continue;
