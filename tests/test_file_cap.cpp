@@ -82,3 +82,32 @@ TEST_CASE("release_file_bytes restores cap budget after failed write") {
     CHECK(try_reserve_file_bytes(captured, 1000, 1000));
     CHECK(captured.load() == 1000);
 }
+
+// Protocol for SSE /write interceptors: persist (sandbox) may fail and
+// release BEFORE commit (SSE emit).  After commit, the reservation must
+// stay charged — releasing would let later writes exceed file_max_bytes
+// while earlier payloads remain in the response.
+TEST_CASE("capped write: release only before commit, never after") {
+    constexpr size_t kCap = 1000;
+    constexpr size_t kChunk = 600;
+    std::atomic<size_t> captured{0};
+    size_t committed = 0;
+
+    // Attempt 1: reserve → persist fails → release (no commit).
+    REQUIRE(try_reserve_file_bytes(captured, kChunk, kCap));
+    release_file_bytes(captured, kChunk);  // persist failed pre-commit
+    CHECK(captured.load() == 0);
+    CHECK(committed == 0);
+
+    // Attempt 2: reserve → persist ok → commit.  Must not release.
+    REQUIRE(try_reserve_file_bytes(captured, kChunk, kCap));
+    committed += kChunk;  // SSE emit
+    CHECK(captured.load() == kChunk);
+
+    // Attempt 3: another kChunk would exceed cap — correctly rejected
+    // because attempt 2's committed bytes still charge the budget.
+    CHECK_FALSE(try_reserve_file_bytes(captured, kChunk, kCap));
+    CHECK(captured.load() == kChunk);
+    CHECK(committed == kChunk);
+    CHECK(committed + kChunk > kCap);
+}

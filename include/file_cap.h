@@ -26,6 +26,9 @@ inline bool try_reserve_file_bytes(std::atomic<size_t>& captured,
 }
 
 // Undo a prior try_reserve_file_bytes when the write did not complete.
+// Only call this BEFORE committing bytes to the client response (e.g.
+// SSE `file` emit).  Releasing after commit frees budget for payloads
+// already delivered and lets later /write calls exceed file_max_bytes.
 inline void release_file_bytes(std::atomic<size_t>& captured, size_t size) {
     captured.fetch_sub(size, std::memory_order_relaxed);
 }

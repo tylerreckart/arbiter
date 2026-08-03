@@ -34,7 +34,8 @@ int run_capture(const std::vector<std::string>& argv,
                 int timeout_seconds,
                 size_t output_cap,
                 std::string& out,
-                bool& timed_out_out) {
+                bool& timed_out_out,
+                bool* truncated_out = nullptr) {
     timed_out_out = false;
     out.clear();
     if (argv.empty()) {
@@ -124,16 +125,29 @@ int run_capture(const std::vector<std::string>& argv,
             int status_check = 0;
             pid_t r = ::waitpid(pid, &status_check, WNOHANG);
             if (r == pid) {
-                // Drain any remaining bytes before declaring EOF.
+                // Child is gone — flip the pipe back to blocking so a
+                // transient EAGAIN cannot abort the drain before the
+                // remaining buffered bytes (and truncation) are seen.
+                int fl = ::fcntl(read_fd, F_GETFL);
+                if (fl >= 0) ::fcntl(read_fd, F_SETFL, fl & ~O_NONBLOCK);
                 ssize_t k;
                 while ((k = ::read(read_fd, buf, sizeof(buf))) > 0) {
                     if (out.size() < output_cap) {
                         size_t to_take = std::min(
                             static_cast<size_t>(k), output_cap - out.size());
                         out.append(buf, to_take);
+                        if (truncated_out &&
+                            to_take < static_cast<size_t>(k)) {
+                            *truncated_out = true;
+                        }
+                    } else if (truncated_out) {
+                        *truncated_out = true;
                     }
                 }
                 ::close(read_fd);
+                if (WIFEXITED(status_check)) return WEXITSTATUS(status_check);
+                if (WIFSIGNALED(status_check))
+                    return 128 + WTERMSIG(status_check);
                 return status_check;
             }
             continue;
@@ -145,6 +159,12 @@ int run_capture(const std::vector<std::string>& argv,
                     size_t to_take = std::min(
                         static_cast<size_t>(k), output_cap - out.size());
                     out.append(buf, to_take);
+                    if (truncated_out &&
+                        to_take < static_cast<size_t>(k)) {
+                        *truncated_out = true;
+                    }
+                } else if (truncated_out) {
+                    *truncated_out = true;
                 }
                 continue;
             }
@@ -673,9 +693,10 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     }
 
     bool timed_out = false;
+    bool truncated = false;
     int rc = run_capture(argv, cfg_.exec_timeout_seconds,
                           static_cast<size_t>(cfg_.output_max_bytes),
-                          r.output, timed_out);
+                          r.output, timed_out, &truncated);
     r.timed_out  = timed_out;
     r.exit_status = rc;
 
@@ -722,6 +743,11 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     // Match cmd_exec's output framing so the dispatcher's downstream
     // handling is identical.
     if (r.output.empty()) r.output = "(no output)";
+    if (truncated) {
+        const int kb =
+            static_cast<int>((cfg_.output_max_bytes + 1023) / 1024);
+        r.output += "\n... [truncated at " + std::to_string(kb) + " KB]";
+    }
     if (timed_out) {
         r.output += "\n[timed out after " +
                     std::to_string(cfg_.exec_timeout_seconds) + "s]";

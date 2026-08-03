@@ -185,6 +185,33 @@ TEST_CASE("sandbox exec: post-check fails when shell write exceeds quota") {
     fs::remove_all(root);
 }
 
+TEST_CASE("sandbox exec: oversized output includes truncation marker") {
+    const std::string root = make_temp_root("sandbox-trunc");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+
+    SandboxConfig cfg = make_quota_config(root, 0);
+    cfg.output_max_bytes = 512;
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 3;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    // Generate oversized ASCII without NUL/`tr`: BSD `tr` on some macOS
+    // images stops or yields little output on NUL-heavy stdin, so the
+    // 512-byte cap never trips and the truncation trailer is missing.
+    auto result = mgr.exec(tid, "yes x | head -c 4096");
+    CHECK(result.ok);
+    CHECK(result.output.size() >= 512);
+    CHECK(result.output.find("... [truncated at") != std::string::npos);
+    CHECK(result.output.find(" KB]") != std::string::npos);
+
+    fs::remove_all(root);
+}
+
 TEST_CASE("sandbox exec: holds quota mutex so parallel /write cannot interleave") {
     const std::string root = make_temp_root("quota-exec-mutex");
     install_docker_stub(root);

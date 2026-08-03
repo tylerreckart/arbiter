@@ -9146,11 +9146,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
     // File-write interceptor — captures content to the SSE stream so the
     // client sees every generated file regardless of where the bytes
-    // also live.  When the sandbox is wired, the same bytes also land
-    // in the tenant's workspace volume so a subsequent /exec inside the
-    // container can read what /write just produced.  Per-response size
-    // cap stops a runaway agent from OOMing the SSE buffer; once
-    // exceeded, further writes are rejected with an ERR.
+    // also live.  When the sandbox is wired, persist to the workspace
+    // first; only then emit the SSE `file` event.  Releasing the
+    // per-response size cap after emit would free budget while those
+    // bytes remain in the response.  Once the cap is exceeded, further
+    // writes are rejected with an ERR.
     std::atomic<size_t> bytes_captured{0};
     const size_t cap = opts.file_max_bytes;
     SandboxManager* sandbox_mgr = opts.sandbox;
@@ -9166,6 +9166,23 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                    "response.  Reduce the file size or split across requests.";
         }
 
+        // Persist to the sandbox BEFORE the SSE `file` emit.  Releasing
+        // the reservation after the payload has already streamed would
+        // free cap budget while those bytes remain in the response, so
+        // later /write calls could exceed file_max_bytes.
+        std::string sandbox_suffix = ", not persisted)";
+        if (sandbox_mgr) {
+            std::string werr;
+            if (!sandbox_mgr->write_to_workspace(
+                    sandbox_tid, path, content, werr)) {
+                release_file_bytes(bytes_captured, size);
+                return "ERR: sandbox write failed for '" + path +
+                       "': " + werr;
+            }
+            sandbox_suffix = "; also saved to /workspace/" + path +
+                             " in sandbox)";
+        }
+
         auto p = jobj();
         auto& m = p->as_object_mut();
         m["path"]     = jstr(path);
@@ -9175,19 +9192,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         stamp(p);
         emit("file", p);
 
-        std::string note = "OK: captured " + std::to_string(size) +
-            " bytes for '" + path + "' (streamed to client";
-        if (sandbox_mgr) {
-            std::string werr;
-            if (sandbox_mgr->write_to_workspace(sandbox_tid, path, content, werr)) {
-                note += "; also saved to /workspace/" + path + " in sandbox)";
-            } else {
-                note += "; sandbox write failed: " + werr + ")";
-            }
-        } else {
-            note += ", not persisted)";
-        }
-        return note;
+        return "OK: captured " + std::to_string(size) +
+               " bytes for '" + path + "' (streamed to client" +
+               sandbox_suffix;
     };
     orch->set_write_interceptor(write_interceptor);
     orch->set_exec_disabled(opts.exec_disabled);
