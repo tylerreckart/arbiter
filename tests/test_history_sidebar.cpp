@@ -438,6 +438,26 @@ TEST_CASE("folder tree: headers, collapse, and new-in-folder") {
     fs::remove_all(dir);
 }
 
+TEST_CASE("refresh_entries does not clobber an in-memory collapse toggle") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string fid = store.create_folder("Work");
+    const std::string child = store.create(dir, fid);
+
+    HistorySidebarState sidebar;
+    sidebar.set_enabled(true, dir);
+    sidebar.enter_focus(store, child);
+    sidebar.select_folder(fid, 10);
+    CHECK(sidebar.handle_key('\r') == HistorySidebarKey::ToggleFolder);
+    // Simulate a paint-time refresh before main persists collapse_json.
+    sidebar.refresh_entries(store);
+    CHECK_FALSE(sidebar.snapshot().rows[2].expanded);
+    // Persistence still sees the toggled state.
+    CHECK(sidebar.collapse_json().find(fid) != std::string::npos);
+
+    fs::remove_all(dir);
+}
+
 TEST_CASE("conversation menu Move to… opens picker and commits") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);

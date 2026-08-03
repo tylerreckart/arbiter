@@ -476,7 +476,10 @@ void HistorySidebarState::refresh_entries(const ConversationStore& store) {
     std::lock_guard<std::mutex> lk(mu_);
     entries_ = store.list();
     folders_ = store.list_folders();
-    load_collapse_locked(store);
+    // Do not reload collapsed_ from SQLite here — paint calls refresh on
+    // every frame, and that can race a ToggleFolder before main persists
+    // collapse_json(), wiping the in-memory toggle. Collapse is loaded on
+    // enter_focus and owned by the sidebar until the next focus session.
     ensure_pin_visible_locked();
     // Re-align scroll to the (possibly jumped) pin using the last known
     // line budget so the highlight does not sit off-screen.
