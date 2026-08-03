@@ -15,5 +15,9 @@ Orchestrator::Orchestrator(std::map<std::string, std::string> api_keys)
 
 bool Orchestrator::load_session(const std::string&) { return false; }
 void Orchestrator::save_session(const std::string&) const {}
+bool Orchestrator::load_session_json(const std::string&) { return false; }
+std::string Orchestrator::session_to_json() const {
+    return R"({"version":2,"index":[],"agents":{},"compaction":{}})";
+}
 
 } // namespace arbiter

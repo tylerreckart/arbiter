@@ -193,11 +193,23 @@ build_blocking_orchestrator(const ApiServerOptions& opts,
 // `orch` must outlive all invoker lambdas that capture its pointer
 // (structured-memory reader/writer).  Artifact store bridges are wired
 // only when conversation_id > 0.
+//
+// Prefer the shared atomic overload for long-lived Orchestrators (TUI)
+// so conversation scope can move without reinstalling callbacks mid-turn.
 void wire_orchestrator_tools(Orchestrator& orch,
                              const ApiServerOptions& opts,
                              TenantStore& tenants,
                              int64_t tenant_id,
                              int64_t conversation_id);
+void wire_orchestrator_tools(Orchestrator& orch,
+                             const ApiServerOptions& opts,
+                             TenantStore& tenants,
+                             int64_t tenant_id,
+                             std::shared_ptr<std::atomic<int64_t>> conversation_id);
+
+// Per-exec-thread override for tool conversation scope.  Pane exec threads
+// set this at turn start so concurrent panes don't share one atomic id.
+void set_tool_conversation_tls(int64_t conversation_id);
 
 class ApiServer {
 public:

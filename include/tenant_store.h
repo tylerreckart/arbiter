@@ -53,6 +53,12 @@ struct Conversation {
     int64_t     updated_at      = 0;    // bumped on every message append
     int64_t     message_count   = 0;
     bool        archived        = false;
+    // TUI-shared columns (defaults keep HTTP conversations unchanged).
+    std::string cwd;                    // working directory at creation (TUI)
+    int64_t     deleted_at      = 0;    // soft-delete; 0 = visible
+    int         total_tokens    = 0;    // cumulative billed tokens (TUI sidebar)
+    bool        titled          = false;// title locked against auto-titling
+    std::string origin          = "api"; // "api" | "tui" — sidebar lists "tui"
 };
 
 // One row from the messages table.  Append-only; rows are never edited.
@@ -272,6 +278,10 @@ public:
 
     bool delete_conversation(int64_t tenant_id, int64_t id);
 
+    // Hard-delete including TUI-origin rows (sidebar purge / GC). HTTP
+    // delete_conversation refuses origin='tui'.
+    bool delete_conversation_force(int64_t tenant_id, int64_t id);
+
     // Append a message; bumps the parent conversation's updated_at + count.
     ConversationMessage append_message(int64_t tenant_id, int64_t conversation_id,
                                         const std::string& role,
@@ -314,6 +324,78 @@ public:
     bool set_conversation_compaction_json(int64_t tenant_id,
                                           int64_t conversation_id,
                                           const std::string& json);
+
+    // ── TUI conversation body + metadata (unified store) ───────────────
+    //
+    // Interactive TUI sessions live in the same `conversations` table as
+    // HTTP threads.  The multi-agent session document (index/agents/
+    // compaction) is stored as `session_json`; HTTP message rows remain
+    // the API path.  `origin = 'tui'` marks sidebar-visible threads.
+
+    // Create a TUI-origin conversation with an empty session document.
+    // `legacy_id` is optional; when non-empty it must be unique per tenant
+    // (used by the JSON→SQLite importer for crash-safe resume).
+    Conversation create_tui_conversation(int64_t tenant_id,
+                                         const std::string& title,
+                                         const std::string& cwd,
+                                         const std::string& session_json = "",
+                                         const std::string& legacy_id = "");
+
+    // Lookup by migration key. Soft-deleted rows still match.
+    std::optional<Conversation>
+    find_tui_by_legacy_id(int64_t tenant_id, const std::string& legacy_id) const;
+
+    // Non-deleted TUI-origin conversations, newest updated_at first.
+    // When `include_deleted` is true, soft-deleted rows are included so
+    // purge can resolve ids after process restart.
+    std::vector<Conversation> list_tui_conversations(int64_t tenant_id,
+                                                     bool include_deleted = false) const;
+
+    std::string get_conversation_session_json(int64_t tenant_id,
+                                              int64_t conversation_id) const;
+    bool set_conversation_session_json(int64_t tenant_id,
+                                       int64_t conversation_id,
+                                       const std::string& json,
+                                       bool bump_updated_at = true);
+
+    // PATCH-style TUI metadata. Empty strings / negative sentinels = no change.
+    // `set_titled`: -1 no change, 0 false, 1 true.
+    // `set_deleted_at`: -1 no change; >=0 writes that absolute epoch (0 = undelete).
+    // `set_total_tokens`: -1 no change; >=0 replaces the rollup.
+    bool update_tui_conversation(int64_t tenant_id, int64_t id,
+                                 const std::string& new_title,
+                                 const std::string& new_cwd,
+                                 int set_titled,
+                                 int64_t set_deleted_at,
+                                 int set_total_tokens);
+
+    // Overwrite created_at / updated_at (migration). Pass <0 to leave a field.
+    bool set_conversation_timestamps(int64_t tenant_id, int64_t id,
+                                     int64_t created_at, int64_t updated_at);
+
+    bool add_conversation_tokens(int64_t tenant_id, int64_t id, int delta);
+
+    // Soft-delete (sets deleted_at=now). Hard delete uses delete_conversation.
+    bool soft_delete_conversation(int64_t tenant_id, int64_t id);
+
+    // Per-tenant TUI chrome (active conversation + multi-pane layout).
+    int64_t get_tui_active_conversation(int64_t tenant_id) const;
+    bool set_tui_active_conversation(int64_t tenant_id, int64_t conversation_id);
+    std::string get_tui_layout_json(int64_t tenant_id) const;
+    bool set_tui_layout_json(int64_t tenant_id, const std::string& layout_json);
+
+    // One-shot JSON→SQLite migration gate for ~/.arbiter/conversations/.
+    bool tui_conversations_migrated(int64_t tenant_id) const;
+    bool mark_tui_conversations_migrated(int64_t tenant_id);
+
+    // Move conversation-scoped todos / schedules / memory / artifacts from
+    // `from_id` onto `to_id` (same tenant). Used when retiring the legacy
+    // per-cwd `sessions/<hash>.conv` API "TUI session" row. Artifact paths
+    // that already exist on `to_id` keep the destination row; the source
+    // duplicate is dropped. Returns false if either conversation is missing.
+    bool reassign_conversation_scoped_data(int64_t tenant_id,
+                                           int64_t from_id,
+                                           int64_t to_id);
 
     // ── Tenant-stored agent definitions ────────────────────────────────
     //

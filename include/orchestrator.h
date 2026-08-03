@@ -275,8 +275,9 @@ public:
 
     // Binder installed by the REPL on the pane exec thread so /parallel
     // workers can pin the spawning pane onto their thread-local callback
-    // routing (g_active_pane).  Stored thread-locally and captured by value
-    // when workers spawn — multi-pane safe under concurrent turns.
+    // routing (g_active_pane) and tool conversation scope.  Stored
+    // thread-locally and captured by value when workers spawn — multi-pane
+    // safe under concurrent turns.
     void set_worker_pane_binder(std::function<void()> fn);
 
     // Global stats
@@ -312,10 +313,14 @@ public:
 
     // Session persistence — save/restore all agent conversation histories
     // for the *current* ConversationScope (see agent_conversation.h).
-    // Histories are stored as JSON at the given path; agent configs come from
-    // the normal .json files and are not duplicated in the session file.
+    // Histories are stored as JSON; agent configs come from the normal
+    // .json files and are not duplicated in the session document.
+    // Path helpers write/read files; the string forms are what the unified
+    // SQLite store uses for `session_json`.
+    [[nodiscard]] std::string session_to_json() const;
+    bool load_session_json(const std::string& raw);  // true if anything loaded
     void save_session(const std::string& path) const;
-    bool load_session(const std::string& path);  // returns true if anything loaded
+    bool load_session(const std::string& path);
 
     // Clear index master and all loaded agent histories for the current
     // ConversationScope only.  Other conversation slots stay intact.

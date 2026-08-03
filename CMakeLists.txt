@@ -828,6 +828,8 @@ if(INDEX_BUILD_TESTS)
         src/tui/history_sidebar.cpp
         src/repl/conversation_store.cpp
         src/repl/conversation_titling.cpp
+        src/repl/layout_snapshot.cpp
+        src/tenant_store.cpp
         src/atomic_file.cpp
         src/json.cpp
         src/api_client.cpp
@@ -842,12 +844,14 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
         ${OPENSSL_INCLUDE_DIR}
+        ${SQLite3_INCLUDE_DIRS}
     )
     target_link_libraries(unit_history_sidebar PRIVATE
         Threads::Threads
         CURL::libcurl
         OpenSSL::SSL
         OpenSSL::Crypto
+        SQLite3::SQLite3
     )
     add_test(NAME unit_history_sidebar COMMAND unit_history_sidebar)
 
@@ -860,18 +864,16 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_theme_picker COMMAND unit_theme_picker)
 
-    # --- Unit tests for the conversation-history store (persistence, atomic
-    # writes, manifest recovery, soft delete, titling). Links a stub for the
-    # two Orchestrator methods it calls instead of the full orchestrator.cpp
-    # dependency chain — see tests/orchestrator_session_stub.cpp. Still
-    # needs api_client.cpp + friends because conversation_store.cpp's title
-    # job calls ApiClient::complete() directly (no Orchestrator construction
-    # required for that symbol to resolve).
+    # --- Unit tests for the conversation-history store (SQLite-backed TUI
+    # threads, soft delete, titling, JSON→SQLite migration). Links a stub for
+    # Orchestrator session methods — see tests/orchestrator_session_stub.cpp.
     add_executable(unit_conversation_store
         tests/test_conversation_store.cpp
         tests/orchestrator_session_stub.cpp
         src/repl/conversation_store.cpp
         src/repl/conversation_titling.cpp
+        src/repl/layout_snapshot.cpp
+        src/tenant_store.cpp
         src/atomic_file.cpp
         src/json.cpp
         src/api_client.cpp
@@ -886,12 +888,14 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
         ${OPENSSL_INCLUDE_DIR}
+        ${SQLite3_INCLUDE_DIRS}
     )
     target_link_libraries(unit_conversation_store PRIVATE
         Threads::Threads
         CURL::libcurl
         OpenSSL::SSL
         OpenSSL::Crypto
+        SQLite3::SQLite3
     )
     add_test(NAME unit_conversation_store COMMAND unit_conversation_store)
 
@@ -905,6 +909,8 @@ if(INDEX_BUILD_TESTS)
         tests/orchestrator_constructible_stub.cpp
         src/repl/conversation_store.cpp
         src/repl/conversation_titling.cpp
+        src/repl/layout_snapshot.cpp
+        src/tenant_store.cpp
         src/atomic_file.cpp
         src/json.cpp
         src/api_client.cpp
@@ -919,12 +925,14 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
         ${OPENSSL_INCLUDE_DIR}
+        ${SQLite3_INCLUDE_DIRS}
     )
     target_link_libraries(unit_conversation_store_autosave PRIVATE
         Threads::Threads
         CURL::libcurl
         OpenSSL::SSL
         OpenSSL::Crypto
+        SQLite3::SQLite3
     )
     add_test(NAME unit_conversation_store_autosave COMMAND unit_conversation_store_autosave)
 

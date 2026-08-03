@@ -321,10 +321,12 @@ using arbiter::LoopManager;
 using arbiter::Pane;
 using arbiter::LayoutTree;
 using arbiter::LayoutSnapshot;
-using arbiter::layout_snapshot_path;
-using arbiter::load_layout_snapshot;
-using arbiter::save_layout_snapshot;
-using arbiter::validate_layout_snapshot;
+    using arbiter::layout_snapshot_path;
+    using arbiter::load_layout_snapshot;
+    using arbiter::save_layout_snapshot;
+    using arbiter::layout_snapshot_to_json;
+    using arbiter::layout_snapshot_from_json;
+    using arbiter::validate_layout_snapshot;
 using arbiter::kMaxLayoutSnapshotLeaves;
 using arbiter::for_each_layout_leaf;
 using arbiter::PaneFrameHooks;
@@ -660,43 +662,40 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     bool restored = conversation_store.load(conversation_store.active_id(), orch);
     if (restored) sidebar.mark_prompt_started();
 
-    TenantStore tenants;
-    tenants.open(dir + "/tenants.db");
-    Tenant primary = ensure_primary_tenant(tenants);
-
-    auto cwd_session_key = []() -> std::string {
-        std::string cwd = fs::current_path().string();
-        uint32_t h = 2166136261u;
-        for (unsigned char c : cwd) { h ^= c; h *= 16777619u; }
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%08x", h);
-        return buf;
-    };
-    std::string sessions_dir = dir + "/sessions";
-    fs::create_directories(sessions_dir);
-
-    std::string session_meta_path =
-        sessions_dir + "/" + cwd_session_key() + ".conv";
-    int64_t conversation_id = 0;
-    {
-        std::ifstream mf(session_meta_path);
-        if (mf) mf >> conversation_id;
-        if (conversation_id <= 0 ||
-            !tenants.get_conversation(primary.id, conversation_id)) {
-            auto conv = tenants.create_conversation(
-                primary.id, "TUI session", "index");
-            conversation_id = conv.id;
-            std::ofstream wf(session_meta_path);
-            wf << conversation_id << '\n';
-        }
+    // TUI chat history and tool scoping share tenants.db via ConversationStore.
+    TenantStore& tenants = conversation_store.tenant_store();
+    const int64_t primary_tenant_id = conversation_store.tenant_id();
+    Tenant primary = tenants.get_tenant(primary_tenant_id)
+                         .value_or(Tenant{});
+    if (primary.id == 0) {
+        primary = ensure_primary_tenant(tenants);
     }
 
+    auto parse_conversation_db_id = [](const std::string& id) -> int64_t {
+        if (id.empty()) return 0;
+        char* end = nullptr;
+        const long long v = std::strtoll(id.c_str(), &end, 10);
+        if (end == id.c_str() || *end != '\0' || v <= 0) return 0;
+        return static_cast<int64_t>(v);
+    };
+
+    // Live conversation id for tool callbacks. Wired once; turns update
+    // the atomic so /todo|/mem|artifacts follow the executing pane without
+    // reinstalling callbacks mid-sibling-turn.
+    auto tool_conversation_id = std::make_shared<std::atomic<int64_t>>(
+        parse_conversation_db_id(conversation_store.active_id()));
     ApiServerOptions api_opts =
         make_cli_api_options(dir, get_api_keys(), exec_allowed_flag);
-    wire_orchestrator_tools(orch, api_opts, tenants, primary.id, conversation_id);
+    wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
+                            tool_conversation_id);
     // API wiring installs a capture-only /write interceptor (no host cwd).
     // The interactive TUI must persist to the process cwd after confirm.
     orch.set_write_interceptor(nullptr);
+    auto bind_tools_conversation = [&](const std::string& conv_id) {
+        const int64_t cid = parse_conversation_db_id(conv_id);
+        tool_conversation_id->store(cid, std::memory_order_relaxed);
+        arbiter::set_tool_conversation_tls(cid);
+    };
 
     NotificationBus notifications;
     Scheduler scheduler(&api_opts, &tenants, &notifications);
@@ -1087,8 +1086,12 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
 
     auto persist_layout = [&]() {
         if (!layout_ptr) return;
-        if (!save_layout_snapshot(layout_snapshot_path(dir),
-                                  layout_ptr->capture_snapshot())) {
+        const auto snap = layout_ptr->capture_snapshot();
+        const std::string json = layout_snapshot_to_json(snap);
+        conversation_store.tenant_store().set_tui_layout_json(
+            conversation_store.tenant_id(), json);
+        fs::create_directories(dir + "/conversations");
+        if (!save_layout_snapshot(layout_snapshot_path(dir), snap)) {
             std::fprintf(stderr,
                          "[layout] failed to persist pane layout to %s\n",
                          layout_snapshot_path(dir).c_str());
@@ -1096,25 +1099,34 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
     };
 
     // Restore multi-pane layout + per-pane conversation bindings (#42).
+    // Prefer the SQLite tui_prefs copy; fall back to the legacy file path.
     // Missing/deleted conversation ids fall back to the store's active id;
     // corrupt or oversized snapshots keep the single-pane default.
-    if (auto snap = load_layout_snapshot(layout_snapshot_path(dir))) {
-        std::unordered_set<std::string> known;
-        for (const auto& e : conversation_store.list()) known.insert(e.id);
-        const std::string fallback = conversation_store.active_id();
-        for_each_layout_leaf(snap->root, [&](LayoutSnapshot::Node& leaf) {
-            if (leaf.conversation_id.empty() ||
-                !known.count(leaf.conversation_id)) {
-                leaf.conversation_id = fallback;
+    {
+        std::optional<LayoutSnapshot> snap;
+        const std::string prefs_json =
+            conversation_store.tenant_store().get_tui_layout_json(
+                conversation_store.tenant_id());
+        if (!prefs_json.empty()) snap = layout_snapshot_from_json(prefs_json);
+        if (!snap) snap = load_layout_snapshot(layout_snapshot_path(dir));
+        if (snap) {
+            std::unordered_set<std::string> known;
+            for (const auto& e : conversation_store.list()) known.insert(e.id);
+            const std::string fallback = conversation_store.active_id();
+            for_each_layout_leaf(snap->root, [&](LayoutSnapshot::Node& leaf) {
+                if (leaf.conversation_id.empty() ||
+                    !known.count(leaf.conversation_id)) {
+                    leaf.conversation_id = fallback;
+                }
+                if (leaf.agent.empty()) leaf.agent = "index";
+            });
+            if (validate_layout_snapshot(*snap) &&
+                layout.restore_snapshot(*snap, make_pane, layout_bounds())) {
+                // layout_bounds() above used pane_count==1 (pre-restore). The
+                // session sidebar hides when pane_count > 1, so recompute now
+                // before col sync / transcript replay.
+                layout.resize(layout_bounds());
             }
-            if (leaf.agent.empty()) leaf.agent = "index";
-        });
-        if (validate_layout_snapshot(*snap) &&
-            layout.restore_snapshot(*snap, make_pane, layout_bounds())) {
-            // layout_bounds() above used pane_count==1 (pre-restore). The
-            // session sidebar hides when pane_count > 1, so recompute now
-            // before col sync / transcript replay.
-            layout.resize(layout_bounds());
         }
     }
 
@@ -1163,6 +1175,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         });
         if (!layout.focused().conversation_id.empty()) {
             conversation_store.set_active(layout.focused().conversation_id);
+            bind_tools_conversation(layout.focused().conversation_id);
         }
         if (any_history) sidebar.mark_prompt_started();
     }
@@ -2486,7 +2499,14 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
             Pane& p = *pane_ptr;
             g_active_pane = &p;
             // /parallel workers capture this binder by value at spawn time.
-            orch.set_worker_pane_binder([pane_ptr]() { g_active_pane = pane_ptr; });
+            {
+                const int64_t cid =
+                    parse_conversation_db_id(p.conversation_id);
+                orch.set_worker_pane_binder([pane_ptr, cid]() {
+                    g_active_pane = pane_ptr;
+                    arbiter::set_tool_conversation_tls(cid);
+                });
+            }
             std::string line;
             while (p.cmd_queue.pop(line)) {
                 auto turn_token = std::make_shared<arbiter::CancelToken>();
@@ -2497,13 +2517,21 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 p.last_response.clear();
                 // Re-install each turn so a sibling pane that also ran
                 // /parallel can't leave a stale binder in place.
-                orch.set_worker_pane_binder([pane_ptr]() { g_active_pane = pane_ptr; });
+                {
+                    const int64_t cid =
+                        parse_conversation_db_id(p.conversation_id);
+                    orch.set_worker_pane_binder([pane_ptr, cid]() {
+                        g_active_pane = pane_ptr;
+                        arbiter::set_tool_conversation_tls(cid);
+                    });
+                }
                 if (layout_ptr && &layout_ptr->focused() != &p) {
                     p.activity_unfocused.store(true);
                     p.tui.set_activity_badge("●");
                 }
                 {
                     ConversationScope scope(p.conversation_id);
+                    bind_tools_conversation(p.conversation_id);
                     handle(p, line);
                 }
                 p.turn_running.store(false);
@@ -3053,6 +3081,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
                 layout.focus_next();
                 if (!layout.focused().conversation_id.empty()) {
                     conversation_store.set_active(layout.focused().conversation_id);
+                    bind_tools_conversation(layout.focused().conversation_id);
                 }
                 break;
             case 's':
@@ -3183,6 +3212,7 @@ static void cmd_interactive(bool exec_allowed_flag, std::string_view theme_overr
         }
 
         conversation_store.set_active(id);
+        bind_tools_conversation(id);
     };
 
     // Completes a conversation switch after any in-flight turn has unwound.

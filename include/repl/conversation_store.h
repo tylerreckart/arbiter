@@ -1,5 +1,7 @@
 #pragma once
 
+#include "tenant_store.h"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -23,10 +25,10 @@ struct ConversationEntry {
     std::int64_t created_at = 0;
     std::int64_t updated_at = 0;
     // 0 = not deleted. Soft-deleted entries are filtered out of list() but
-    // their session file stays on disk until purge().
+    // remain in the DB until purge().
     std::int64_t deleted_at = 0;
     // Cumulative input+output tokens billed to this conversation (persisted
-    // in the manifest; updated on each completed turn).
+    // on the conversation row; updated on each completed turn).
     int total_tokens = 0;
     // True once the title is locked against further auto-titling: either a
     // model-generated title landed (success or exhausted attempt) or the
@@ -44,23 +46,25 @@ struct ConversationSearchHit {
     std::string snippet;
 };
 
-// Global conversation registry under ~/.arbiter/conversations/.
+// Global conversation registry backed by tenants.db (TUI-origin rows in
+// the shared `conversations` table).  Previously a JSON manifest under
+// ~/.arbiter/conversations/; that tree is imported once on first open.
 class ConversationStore {
 public:
     explicit ConversationStore(std::string config_dir);
     ~ConversationStore();
 
+    [[nodiscard]] TenantStore& tenant_store() { return tenants_; }
+    [[nodiscard]] const TenantStore& tenant_store() const { return tenants_; }
+    [[nodiscard]] int64_t tenant_id() const { return tenant_id_; }
+
     [[nodiscard]] std::string active_id() const;
 
-    // Non-deleted conversations, most-recently-updated first.
+    // Non-deleted TUI conversations, most-recently-updated first.
     [[nodiscard]] std::vector<ConversationEntry> list() const;
 
     // Case-insensitive substring search across every non-deleted
-    // conversation's saved messages (index master + agents).  Returns hits
-    // in list() order (most-recently-updated first), capped at max_hits.
-    // Reads session files without holding the store lock, so it can run
-    // while autosaves land; a conversation saved mid-scan just reflects
-    // whichever version the read caught.
+    // conversation's saved session JSON (index master + agents).
     [[nodiscard]] std::vector<ConversationSearchHit>
     search(const std::string& term, size_t max_hits = 20) const;
 
@@ -68,37 +72,25 @@ public:
     std::string create(const std::string& cwd);
 
     // Like create(), but if the active conversation has no turns yet, reuses
-    // it instead of creating another empty entry. Returns the resulting
-    // active id (compare against active_id() beforehand to tell reuse from
-    // creation).
+    // it instead of creating another empty entry.
     std::string create_or_reuse(const std::string& cwd);
 
-    // Like create_or_reuse(), but checks emptiness of `prefer_id` (the
-    // focused pane's conversation) instead of the global active id.  When
-    // `prefer_id` is empty or unknown, falls back to create_or_reuse().
+    // Like create_or_reuse(), but checks emptiness of `prefer_id`.
     std::string create_or_reuse_for(const std::string& cwd,
                                     const std::string& prefer_id);
 
     bool load(const std::string& id, Orchestrator& orch);
     void save(const std::string& id, Orchestrator& orch);
 
-    // Marshal a save onto the store's single background thread.  Per-id
-    // "latest wins": a burst of saves for the same conversation coalesces,
-    // but distinct conversation ids (multi-pane) each keep a pending slot.
-    // Call after every completed turn.  Also marks the id dirty for the
-    // periodic flusher.  `flush()` drains pending work on exit / search.
+    // Marshal a save onto the store's single background thread.
     void save_async(const std::string& id, Orchestrator& orch);
 
-    // Mark `id` dirty without immediately queueing a save.  The periodic
-    // worker will persist it on the next interval tick (and `save_async`
-    // still coalesces an immediate write when called).
+    // Mark `id` dirty without immediately queueing a save.
     void mark_dirty(const std::string& id, Orchestrator& orch);
 
     // Blocks until any pending/in-flight autosave has completed.
     void flush();
 
-    // Autosave interval used by the background worker (0 = periodic off).
-    // Default 30s; override with ARBITER_AUTOSAVE_INTERVAL_SEC.
     [[nodiscard]] static std::chrono::seconds autosave_interval_from_env();
     [[nodiscard]] std::chrono::seconds autosave_interval() const {
         return autosave_interval_;
@@ -106,70 +98,47 @@ public:
 
     void set_active(const std::string& id);
 
-    // Sets the title without locking it — used for the instant deterministic
-    // title so the async model-generated title can still land afterward.
     void set_title(const std::string& id, const std::string& title);
-
-    // Sets the title AND locks it against further auto-titling. Used by the
-    // manual /chat title command and by a successful model-generated title.
     void set_title_locked(const std::string& id, const std::string& title);
-
-    // Add `delta` tokens (typically input+output from one turn) to the
-    // conversation's running total and persist the manifest.
     void add_tokens(const std::string& id, int delta);
-
-    // Locks the current title without changing it — used when the model
-    // title job fails/times out, so restarts don't retry it forever
-    // ("one attempt per conversation, ever").
     void lock_title(const std::string& id);
-
     [[nodiscard]] bool is_titled(const std::string& id) const;
 
-    // Enqueues a best-effort, one-shot model call to refine `id`'s title.
-    // Runs on the store's title worker thread (FIFO, separate from the
-    // autosave thread so a slow title call never delays a save). On success
-    // the sanitized reply replaces the title via set_title_locked(); on
-    // failure/timeout (10s) the title is left as-is and lock_title() is
-    // still called so this conversation is never retried. No-ops if `id`
-    // is already titled. `orch` must outlive the job (same lifetime
-    // assumption as save_async's Orchestrator&).
     void enqueue_title_job(const std::string& id,
                            const std::string& user_msg,
                            const std::string& assistant_msg,
                            const std::string& model,
                            Orchestrator& orch);
 
-    // Soft delete: marks the entry deleted (filtered from list()), leaves
-    // the session file on disk. If `id` was active, switches to the next
-    // remaining conversation, or creates a fresh one if none remain.
     void soft_delete(const std::string& id);
-
-    // Hard delete: removes the manifest row and the session file. If `id`
-    // was active, behaves like soft_delete's active-reassignment.
     void purge(const std::string& id);
 
-    [[nodiscard]] std::string session_path(const std::string& id) const;
+    // Session body for `id` (empty if unknown). Preferred over session_path
+    // now that sessions live in SQLite.
+    [[nodiscard]] std::string session_json(const std::string& id) const;
 
-    std::string session_path_unlocked(const std::string& id) const {
-        return store_dir_ + "/" + id + ".json";
-    }
+    // Deprecated path helper — returns empty; kept so older call sites /
+    // tests compile while migrating. Prefer session_json().
+    [[nodiscard]] std::string session_path(const std::string& id) const;
 
 private:
     void ensure_initialized();
-    void migrate_legacy_sessions();
-    void load_manifest_unlocked();
-    void save_manifest_unlocked() const;
+    void migrate_json_store_if_needed();
+    // Lift conversation-scoped tool rows off legacy sessions/<hash>.conv
+    // API "TUI session" conversations onto unified origin=tui threads.
+    void migrate_legacy_conv_tool_scope();
+    void reload_entries_unlocked();
     void gc_stale_empty_unlocked();
-    std::string import_legacy_file(const std::string& src_path,
-                                   const std::string& cwd_hint,
-                                   bool set_active);
 
-    // Assumes mu_ is already held by the caller.
     std::string create_unlocked(const std::string& cwd);
     void set_active_unlocked(const std::string& id);
     bool session_is_empty_unlocked(const std::string& id) const;
     void remove_and_reassign_active_unlocked(const std::string& id,
-                                             bool delete_file);
+                                             bool hard_delete);
+    [[nodiscard]] int64_t parse_id(const std::string& id) const;
+    [[nodiscard]] static std::string format_id(int64_t id);
+    [[nodiscard]] ConversationEntry entry_from_row(const Conversation& c) const;
+
     void save_worker_loop();
     void autosave_timer_loop();
 
@@ -185,16 +154,13 @@ private:
 
     mutable std::mutex mu_;
     std::string config_dir_;
-    std::string store_dir_;
+    std::string legacy_store_dir_;
+    TenantStore tenants_;
+    int64_t tenant_id_ = 0;
     std::string active_id_;
+    // Includes soft-deleted rows until purge (mirrors prior manifest behaviour).
     std::vector<ConversationEntry> entries_;
 
-    // Background autosave: per-conversation pending map (latest orch wins
-    // per id) plus a dirty set for periodic ticks.  Shared orch pointer is
-    // the TUI's long-lived Orchestrator (same lifetime assumption as before).
-    // Periodic wakes come from autosave_timer_thread_ (chunked sleep + flag)
-    // so the save worker only uses condition_variable::wait — wait_for on
-    // this mutex races destructor/mark_dirty under Linux TSan.
     std::thread save_thread_;
     std::thread autosave_timer_thread_;
     std::mutex async_mu_;
@@ -208,10 +174,6 @@ private:
     Orchestrator* last_orch_ = nullptr;
     std::chrono::seconds autosave_interval_{30};
 
-    // Background titling: a real FIFO (unlike the autosave slot) since each
-    // conversation's title job must run at most once, ever — dropping one
-    // to a "latest wins" slot would strand that conversation on its
-    // deterministic title forever.
     std::thread title_thread_;
     std::mutex title_mu_;
     std::condition_variable title_cv_;

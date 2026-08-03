@@ -6,18 +6,20 @@ A session captures the *agents' memory of the conversation* — every message ex
 
 The TUI stores **multiple conversations globally** (not per working directory). Each conversation has its own agent message histories and title. Use the left-hand **conversation sidebar** (`Ctrl-w b`) to switch threads or start a new one.
 
-Storage layout:
+TUI threads live in **`~/.arbiter/tenants.db`** — the same SQLite database the HTTP API uses for conversations, memory, todos, and schedules. Sidebar rows are `origin = 'tui'` conversation rows; the multi-agent session document (index + agents + compaction) is stored as `session_json` on that row. Active conversation id and the multi-pane layout also live in `tui_prefs` in the same DB (with a file mirror of `layout.json` for convenience).
 
 ```
-~/.arbiter/conversations/
-  manifest.json     # [{id, title, cwd, created_at, updated_at}]
-  active            # UUID of the last-open conversation
-  layout.json       # multi-pane tree + per-pane conversation ids
-  <uuid>.json       # agent histories (index + loaded agents)
+~/.arbiter/tenants.db
+  conversations     # shared table; TUI rows have origin='tui' + session_json
+  tui_prefs         # active_conversation_id, layout_json, migration flag
+~/.arbiter/conversations/   # legacy archive (imported once) + layout.json mirror
+  manifest.json / <uuid>.json / active   # read once on upgrade, then ignored
+  layout.json                            # file mirror of tui_prefs.layout_json
 ```
 
-On first launch after upgrading, legacy per-cwd session files under `~/.arbiter/sessions/*.json` are imported into the global store automatically. Legacy files are left in place; new saves go only to `conversations/`.
+On first launch after this unification, any existing `~/.arbiter/conversations/` manifest + session files are imported into `tenants.db` automatically (layout leaf ids are rewritten). The legacy tree is left in place as an archive and is not re-imported.
 
+Older per-cwd session files under `~/.arbiter/sessions/*.json` were already folded into the JSON conversation store in a prior migration; those imports ride along when the JSON store is lifted into SQLite.
 ## When sessions save and load
 
 | Event             | What happens                                                       |
@@ -33,17 +35,16 @@ On first launch after upgrading, legacy per-cwd session files under `~/.arbiter/
 
 Saves write a full conversation snapshot (not an incremental journal). A hard kill can still lose an **unfinished** model stream (tokens not yet committed as an assistant message). Completed tool-result envelopes are committed to history and checkpoint-saved before the next LLM wait.
 
-## What's in a conversation file
+## What's in a conversation session
 
-Each `<uuid>.json` is a snapshot of the orchestrator's agent histories:
+Each TUI conversation's `session_json` is a snapshot of the orchestrator's agent histories:
 
 - **Index master history** — messages for the default `index` agent.
 - **Loaded agent histories** — any sub-agents that had non-empty history when saved.
 
-Per-agent scratchpads (`/mem write`) and the structured memory graph (`/mem search|entries|entry|add …`) live in `~/.arbiter/tenants.db` (same store the API uses), independent of any conversation file — they survive across conversation switches.
+Per-agent scratchpads (`/mem write`) and the structured memory graph (`/mem search|entries|entry|add …`) live in the same `tenants.db`, and are now scoped to the **active sidebar conversation** (same integer id as the TUI thread).
 
-Conversation **titles** are auto-generated from the first exchange (visible in the header and sidebar). Titles are stored in `manifest.json`.
-
+Conversation **titles** are auto-generated from the first exchange (visible in the header and sidebar). Titles, token totals, and the titled-lock flag are columns on the conversation row.
 ## What's not persisted
 
 - **Scrollback pixels.** On relaunch the painted history is rebuilt from a transcript tail replay (same as conversation switch), not from a pixel buffer.
@@ -56,10 +57,9 @@ Deleted conversations referenced by `layout.json` are remapped to the active con
 
 ## Cleaning up
 
-Use the sidebar to start fresh (`+ New conversation`) or delete individual files under `~/.arbiter/conversations/`. `/reset` only clears history in memory for the active conversation.
+Use the sidebar to start fresh (`+ New conversation`) or soft-delete / purge via the sidebar / `/chat delete`. `/reset` only clears history in memory for the active conversation.
 
-To purge everything: `rm -rf ~/.arbiter/conversations/`.
-
+To wipe TUI threads while keeping tenants/memory: delete `origin='tui'` rows from `tenants.db` (or remove the DB and re-import from a backup). The legacy `~/.arbiter/conversations/` archive is unused after migration.
 ## Context Length
 
 Arbiter keeps the **full** conversation history on disk and in memory (for
@@ -79,7 +79,7 @@ view and a warning is logged.
 
 ## Sessions vs the structured memory graph
 
-The conversation file is per-thread continuity. The **structured memory graph** (typed nodes + relations in `tenants.db`, FTS-ranked search, temporal validity windows) is per-tenant durable knowledge. Both the TUI (`/mem search|entries|entry|expand|density|add entry|add link|invalidate`) and the HTTP API (`/v1/memory/*`) share that store. Two different tools:
+The conversation session is per-thread continuity. The **structured memory graph** (typed nodes + relations in `tenants.db`, FTS-ranked search, temporal validity windows) is per-tenant durable knowledge. Both the TUI (`/mem search|entries|entry|expand|density|add entry|add link|invalidate`) and the HTTP API (`/v1/memory/*`) share that store. Two different tools:
 
 - Conversation: "what did we just talk about in this thread" — restored when you switch back.
 - Memory graph: "what facts has the agent recorded over time" — queried via `/mem …` in the TUI or `/v1/memory/entries?q=…` over HTTP.

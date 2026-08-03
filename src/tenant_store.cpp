@@ -375,6 +375,54 @@ void TenantStore::open(const std::string& path) {
                      "compaction_json TEXT NOT NULL DEFAULT '';");
         }
     }
+    // TUI/unified-store columns.  Additive; defaults keep pre-existing
+    // HTTP API rows behaving as before (origin='api', no soft-delete).
+    {
+        auto conv_col_exists = [this](const char* col) -> bool {
+            Stmt q(db_, "PRAGMA table_info(conversations);");
+            while (q.step() == SQLITE_ROW) {
+                if (q.column_text(1) == col) return true;
+            }
+            return false;
+        };
+        auto add_conv_col = [this, &conv_col_exists](const char* col,
+                                                     const char* defn) {
+            if (conv_col_exists(col)) return;
+            std::string sql = std::string("ALTER TABLE conversations ADD COLUMN ")
+                            + col + " " + defn + ";";
+            exec_sql(db_, sql.c_str());
+        };
+        add_conv_col("cwd", "TEXT NOT NULL DEFAULT ''");
+        add_conv_col("deleted_at", "INTEGER NOT NULL DEFAULT 0");
+        add_conv_col("total_tokens", "INTEGER NOT NULL DEFAULT 0");
+        add_conv_col("titled", "INTEGER NOT NULL DEFAULT 0");
+        add_conv_col("origin", "TEXT NOT NULL DEFAULT 'api'");
+        add_conv_col("session_json", "TEXT NOT NULL DEFAULT ''");
+        // Stable key for JSON→SQLite import so a crash mid-migration can
+        // resume without duplicating threads.
+        add_conv_col("legacy_id", "TEXT NOT NULL DEFAULT ''");
+    }
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS conversations_tenant_tui
+            ON conversations(tenant_id, updated_at DESC)
+            WHERE origin = 'tui' AND deleted_at = 0;
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE UNIQUE INDEX IF NOT EXISTS conversations_tenant_legacy
+            ON conversations(tenant_id, legacy_id)
+            WHERE legacy_id != '';
+    )SQL");
+    // Interactive TUI chrome: active conversation + multi-pane layout JSON.
+    // One row per tenant.  Layout used to live at conversations/layout.json.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS tui_prefs (
+            tenant_id               INTEGER PRIMARY KEY,
+            active_conversation_id  INTEGER NOT NULL DEFAULT 0,
+            layout_json             TEXT    NOT NULL DEFAULT '',
+            conversations_migrated  INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+        );
+    )SQL");
     exec_sql(db_, R"SQL(
         CREATE TABLE IF NOT EXISTS messages (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1148,7 +1196,8 @@ namespace {
 
 constexpr const char* kConvCols =
     "id, tenant_id, title, agent_id, agent_def_json, "
-    "created_at, updated_at, message_count, archived";
+    "created_at, updated_at, message_count, archived, "
+    "cwd, deleted_at, total_tokens, titled, origin";
 
 Conversation row_to_conversation(Stmt& q) {
     Conversation c;
@@ -1161,6 +1210,12 @@ Conversation row_to_conversation(Stmt& q) {
     c.updated_at      = q.column_int64(6);
     c.message_count   = q.column_int64(7);
     c.archived        = q.column_int64(8) != 0;
+    c.cwd             = q.column_text(9);
+    c.deleted_at      = q.column_int64(10);
+    c.total_tokens    = static_cast<int>(q.column_int64(11));
+    c.titled          = q.column_int64(12) != 0;
+    c.origin          = q.column_text(13);
+    if (c.origin.empty()) c.origin = "api";
     return c;
 }
 
@@ -1213,6 +1268,7 @@ Conversation TenantStore::create_conversation(int64_t tenant_id,
     c.updated_at      = now;
     c.message_count   = 0;
     c.archived        = false;
+    c.origin          = "api";
     return c;
 }
 
@@ -1225,7 +1281,9 @@ TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
     const int cap = (limit > 0 && limit <= 200) ? limit : 50;
 
     std::string sql = std::string("SELECT ") + kConvCols +
-                       " FROM conversations WHERE tenant_id = ?";
+                       " FROM conversations WHERE tenant_id = ?"
+                       " AND deleted_at = 0"
+                       " AND origin != 'tui'";
     if (before_updated_at > 0) sql += " AND updated_at < ?";
     sql += " ORDER BY updated_at DESC LIMIT ?;";
 
@@ -1255,6 +1313,10 @@ bool TenantStore::update_conversation(int64_t tenant_id, int64_t id,
                                        int set_archived) {
     if (!db_) return false;
 
+    auto existing = get_conversation(tenant_id, id);
+    if (!existing) return false;
+    if (existing->origin == "tui") return false;
+
     // Build dynamic UPDATE so we only touch fields the caller actually
     // wanted to change.  No-op (both args sentinel) returns true if the
     // conversation exists, false otherwise — same as a normal PATCH.
@@ -1262,7 +1324,7 @@ bool TenantStore::update_conversation(int64_t tenant_id, int64_t id,
     if (!new_title.empty()) sets.push_back("title = ?");
     if (set_archived >= 0)  sets.push_back("archived = ?");
     if (sets.empty()) {
-        return get_conversation(tenant_id, id).has_value();
+        return true;
     }
     sets.push_back("updated_at = ?");
 
@@ -1286,6 +1348,16 @@ bool TenantStore::update_conversation(int64_t tenant_id, int64_t id,
 
 bool TenantStore::delete_conversation(int64_t tenant_id, int64_t id) {
     if (!db_) return false;
+    // TUI sidebar threads share this table; HTTP DELETE must not destroy
+    // session_json history the interactive UI still references.
+    auto conv = get_conversation(tenant_id, id);
+    if (!conv) return false;
+    if (conv->origin == "tui") return false;
+    return delete_conversation_force(tenant_id, id);
+}
+
+bool TenantStore::delete_conversation_force(int64_t tenant_id, int64_t id) {
+    if (!db_) return false;
     Stmt q(db_, "DELETE FROM conversations WHERE tenant_id = ? AND id = ?;");
     q.bind(1, tenant_id);
     q.bind(2, id);
@@ -1305,10 +1377,13 @@ ConversationMessage TenantStore::append_message(int64_t tenant_id,
 
     // Verify the conversation belongs to this tenant before inserting.
     // Without this a leaked conversation_id would let any tenant write
-    // into someone else's thread.
+    // into someone else's thread.  TUI-origin rows are session_json-backed
+    // and must not receive HTTP message appends.
     auto conv = get_conversation(tenant_id, conversation_id);
     if (!conv)
         throw std::runtime_error("conversation not found for tenant");
+    if (conv->origin == "tui")
+        throw std::runtime_error("cannot append HTTP messages to a TUI conversation");
 
     const int64_t now = now_epoch();
     exec_sql(db_, "BEGIN IMMEDIATE;");
@@ -1468,6 +1543,336 @@ bool TenantStore::set_conversation_compaction_json(
     q.bind(2, tenant_id);
     q.bind(3, conversation_id);
     return q.step() == SQLITE_DONE;
+}
+
+namespace {
+
+std::string empty_tui_session_json() {
+    return R"({"version":2,"index":[],"agents":{},"compaction":{}})";
+}
+
+void ensure_tui_prefs_row(sqlite3* db, int64_t tenant_id) {
+    Stmt q(db,
+           "INSERT OR IGNORE INTO tui_prefs (tenant_id) VALUES (?);");
+    q.bind(1, tenant_id);
+    q.step();
+}
+
+} // namespace
+
+Conversation TenantStore::create_tui_conversation(int64_t tenant_id,
+                                                  const std::string& title,
+                                                  const std::string& cwd,
+                                                  const std::string& session_json,
+                                                  const std::string& legacy_id) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+
+    const int64_t now = now_epoch();
+    const std::string body =
+        session_json.empty() ? empty_tui_session_json() : session_json;
+    Stmt q(db_,
+        "INSERT INTO conversations "
+        "(tenant_id, title, agent_id, agent_def_json, created_at, updated_at, "
+        " cwd, origin, session_json, legacy_id) "
+        "VALUES (?, ?, 'index', '', ?, ?, ?, 'tui', ?, ?);");
+    q.bind(1, tenant_id);
+    q.bind(2, title.empty() ? std::string("Untitled") : title);
+    q.bind(3, now);
+    q.bind(4, now);
+    q.bind(5, cwd);
+    q.bind(6, body);
+    q.bind(7, legacy_id);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert tui conversation");
+
+    Conversation c;
+    c.id              = sqlite3_last_insert_rowid(db_);
+    c.tenant_id       = tenant_id;
+    c.title           = title.empty() ? "Untitled" : title;
+    c.agent_id        = "index";
+    c.created_at      = now;
+    c.updated_at      = now;
+    c.cwd             = cwd;
+    c.origin          = "tui";
+    return c;
+}
+
+std::optional<Conversation>
+TenantStore::find_tui_by_legacy_id(int64_t tenant_id,
+                                   const std::string& legacy_id) const {
+    if (!db_ || legacy_id.empty()) return std::nullopt;
+    const std::string sql = std::string("SELECT ") + kConvCols +
+        " FROM conversations WHERE tenant_id = ? AND legacy_id = ? LIMIT 1;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, legacy_id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_conversation(q);
+}
+
+std::vector<Conversation>
+TenantStore::list_tui_conversations(int64_t tenant_id,
+                                    bool include_deleted) const {
+    std::vector<Conversation> out;
+    if (!db_) return out;
+    std::string sql = std::string("SELECT ") + kConvCols +
+        " FROM conversations WHERE tenant_id = ?"
+        " AND origin = 'tui'";
+    if (!include_deleted) sql += " AND deleted_at = 0";
+    sql += " ORDER BY updated_at DESC, id DESC;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_conversation(q));
+    return out;
+}
+
+std::string TenantStore::get_conversation_session_json(
+    int64_t tenant_id, int64_t conversation_id) const {
+    if (!db_) return {};
+    Stmt q(db_,
+           "SELECT session_json FROM conversations "
+           "WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, conversation_id);
+    if (q.step() != SQLITE_ROW) return {};
+    return q.column_text(0);
+}
+
+bool TenantStore::set_conversation_session_json(int64_t tenant_id,
+                                                 int64_t conversation_id,
+                                                 const std::string& json,
+                                                 bool bump_updated_at) {
+    if (!db_) return false;
+    if (!get_conversation(tenant_id, conversation_id)) return false;
+    if (bump_updated_at) {
+        Stmt q(db_,
+               "UPDATE conversations SET session_json = ?, updated_at = ? "
+               "WHERE tenant_id = ? AND id = ?;");
+        q.bind(1, json);
+        q.bind(2, now_epoch());
+        q.bind(3, tenant_id);
+        q.bind(4, conversation_id);
+        return q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0;
+    }
+    Stmt q(db_,
+           "UPDATE conversations SET session_json = ? "
+           "WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, json);
+    q.bind(2, tenant_id);
+    q.bind(3, conversation_id);
+    return q.step() == SQLITE_DONE && sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::update_tui_conversation(int64_t tenant_id, int64_t id,
+                                          const std::string& new_title,
+                                          const std::string& new_cwd,
+                                          int set_titled,
+                                          int64_t set_deleted_at,
+                                          int set_total_tokens) {
+    if (!db_) return false;
+
+    std::vector<std::string> sets;
+    if (!new_title.empty()) sets.push_back("title = ?");
+    if (!new_cwd.empty()) sets.push_back("cwd = ?");
+    if (set_titled >= 0) sets.push_back("titled = ?");
+    if (set_deleted_at >= 0) sets.push_back("deleted_at = ?");
+    if (set_total_tokens >= 0) sets.push_back("total_tokens = ?");
+    if (sets.empty()) {
+        return get_conversation(tenant_id, id).has_value();
+    }
+    sets.push_back("updated_at = ?");
+
+    std::string sql = "UPDATE conversations SET ";
+    for (size_t i = 0; i < sets.size(); ++i) {
+        if (i) sql += ", ";
+        sql += sets[i];
+    }
+    sql += " WHERE tenant_id = ? AND id = ?;";
+
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    if (!new_title.empty()) q.bind(idx++, new_title);
+    if (!new_cwd.empty()) q.bind(idx++, new_cwd);
+    if (set_titled >= 0) q.bind(idx++, static_cast<int64_t>(set_titled ? 1 : 0));
+    if (set_deleted_at >= 0) q.bind(idx++, set_deleted_at);
+    if (set_total_tokens >= 0) {
+        q.bind(idx++, static_cast<int64_t>(set_total_tokens));
+    }
+    q.bind(idx++, now_epoch());
+    q.bind(idx++, tenant_id);
+    q.bind(idx, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::set_conversation_timestamps(int64_t tenant_id, int64_t id,
+                                              int64_t created_at,
+                                              int64_t updated_at) {
+    if (!db_) return false;
+    if (created_at < 0 && updated_at < 0) {
+        return get_conversation(tenant_id, id).has_value();
+    }
+    std::vector<std::string> sets;
+    if (created_at >= 0) sets.push_back("created_at = ?");
+    if (updated_at >= 0) sets.push_back("updated_at = ?");
+    std::string sql = "UPDATE conversations SET ";
+    for (size_t i = 0; i < sets.size(); ++i) {
+        if (i) sql += ", ";
+        sql += sets[i];
+    }
+    sql += " WHERE tenant_id = ? AND id = ?;";
+    Stmt q(db_, sql.c_str());
+    int idx = 1;
+    if (created_at >= 0) q.bind(idx++, created_at);
+    if (updated_at >= 0) q.bind(idx++, updated_at);
+    q.bind(idx++, tenant_id);
+    q.bind(idx, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::add_conversation_tokens(int64_t tenant_id, int64_t id,
+                                          int delta) {
+    if (!db_ || delta == 0) return false;
+    Stmt q(db_,
+           "UPDATE conversations "
+           "   SET total_tokens = MAX(0, total_tokens + ?) "
+           " WHERE tenant_id = ? AND id = ?;");
+    q.bind(1, static_cast<int64_t>(delta));
+    q.bind(2, tenant_id);
+    q.bind(3, id);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
+bool TenantStore::soft_delete_conversation(int64_t tenant_id, int64_t id) {
+    return update_tui_conversation(tenant_id, id, "", "", -1, now_epoch(), -1);
+}
+
+int64_t TenantStore::get_tui_active_conversation(int64_t tenant_id) const {
+    if (!db_) return 0;
+    Stmt q(db_,
+           "SELECT active_conversation_id FROM tui_prefs WHERE tenant_id = ?;");
+    q.bind(1, tenant_id);
+    if (q.step() != SQLITE_ROW) return 0;
+    return q.column_int64(0);
+}
+
+bool TenantStore::set_tui_active_conversation(int64_t tenant_id,
+                                              int64_t conversation_id) {
+    if (!db_) return false;
+    ensure_tui_prefs_row(db_, tenant_id);
+    Stmt q(db_,
+           "UPDATE tui_prefs SET active_conversation_id = ? "
+           "WHERE tenant_id = ?;");
+    q.bind(1, conversation_id);
+    q.bind(2, tenant_id);
+    return q.step() == SQLITE_DONE;
+}
+
+std::string TenantStore::get_tui_layout_json(int64_t tenant_id) const {
+    if (!db_) return {};
+    Stmt q(db_, "SELECT layout_json FROM tui_prefs WHERE tenant_id = ?;");
+    q.bind(1, tenant_id);
+    if (q.step() != SQLITE_ROW) return {};
+    return q.column_text(0);
+}
+
+bool TenantStore::set_tui_layout_json(int64_t tenant_id,
+                                      const std::string& layout_json) {
+    if (!db_) return false;
+    ensure_tui_prefs_row(db_, tenant_id);
+    Stmt q(db_,
+           "UPDATE tui_prefs SET layout_json = ? WHERE tenant_id = ?;");
+    q.bind(1, layout_json);
+    q.bind(2, tenant_id);
+    return q.step() == SQLITE_DONE;
+}
+
+bool TenantStore::tui_conversations_migrated(int64_t tenant_id) const {
+    if (!db_) return false;
+    Stmt q(db_,
+           "SELECT conversations_migrated FROM tui_prefs WHERE tenant_id = ?;");
+    q.bind(1, tenant_id);
+    if (q.step() != SQLITE_ROW) return false;
+    return q.column_int64(0) != 0;
+}
+
+bool TenantStore::mark_tui_conversations_migrated(int64_t tenant_id) {
+    if (!db_) return false;
+    ensure_tui_prefs_row(db_, tenant_id);
+    Stmt q(db_,
+           "UPDATE tui_prefs SET conversations_migrated = 1 "
+           "WHERE tenant_id = ?;");
+    q.bind(1, tenant_id);
+    return q.step() == SQLITE_DONE;
+}
+
+bool TenantStore::reassign_conversation_scoped_data(int64_t tenant_id,
+                                                    int64_t from_id,
+                                                    int64_t to_id) {
+    if (!db_ || from_id <= 0 || to_id <= 0 || from_id == to_id) return false;
+    if (!get_conversation(tenant_id, from_id) ||
+        !get_conversation(tenant_id, to_id)) {
+        return false;
+    }
+
+    exec_sql(db_, "BEGIN IMMEDIATE;");
+    auto rollback = [this]() { exec_sql(db_, "ROLLBACK;"); };
+
+    auto run = [&](const char* sql) -> bool {
+        Stmt q(db_, sql);
+        q.bind(1, to_id);
+        q.bind(2, tenant_id);
+        q.bind(3, from_id);
+        return q.step() == SQLITE_DONE;
+    };
+
+    if (!run("UPDATE todos SET conversation_id = ? "
+             "WHERE tenant_id = ? AND conversation_id = ?;")) {
+        rollback();
+        return false;
+    }
+    if (!run("UPDATE scheduled_tasks SET conversation_id = ? "
+             "WHERE tenant_id = ? AND conversation_id = ?;")) {
+        rollback();
+        return false;
+    }
+    if (!run("UPDATE memory_entries SET conversation_id = ? "
+             "WHERE tenant_id = ? AND conversation_id = ?;")) {
+        rollback();
+        return false;
+    }
+
+    // Artifacts: UNIQUE(tenant_id, conversation_id, path). Destination keeps
+    // conflicting paths; remaining source rows move over.
+    {
+        Stmt q(db_,
+               "DELETE FROM tenant_artifacts "
+               "WHERE tenant_id = ? AND conversation_id = ? "
+               "AND path IN ("
+               "  SELECT path FROM ("
+               "    SELECT path FROM tenant_artifacts "
+               "    WHERE tenant_id = ? AND conversation_id = ?"
+               "  )"
+               ");");
+        q.bind(1, tenant_id);
+        q.bind(2, from_id);
+        q.bind(3, tenant_id);
+        q.bind(4, to_id);
+        if (q.step() != SQLITE_DONE) {
+            rollback();
+            return false;
+        }
+    }
+    if (!run("UPDATE tenant_artifacts SET conversation_id = ? "
+             "WHERE tenant_id = ? AND conversation_id = ?;")) {
+        rollback();
+        return false;
+    }
+
+    exec_sql(db_, "COMMIT;");
+    return true;
 }
 
 bool TenantStore::reload_tenant(int64_t id, Tenant& t) const {

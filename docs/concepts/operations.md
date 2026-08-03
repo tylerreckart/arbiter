@@ -8,10 +8,10 @@ Everything arbiter persists lives under `~/.arbiter/`:
 |--------------------------|---------|
 | `openrouter_api_key`     | OpenRouter API key (mode 0600). Read if `$OPENROUTER_API_KEY` is unset. |
 | `admin_token`            | Admin bearer token (mode 0600). Read if `$ARBITER_ADMIN_TOKEN` is unset. |
-| `tenants.db`             | SQLite ledger (TUI + `--api`): scratchpads, structured memory, schedules, todos, lessons. WAL mode + `SQLITE_OPEN_FULLMUTEX`, foreign keys enforced. Schema migrates on open. |
+| `tenants.db`               | SQLite ledger (TUI + `--api`): tenants, conversations (HTTP messages + TUI `session_json`), scratchpads, structured memory, schedules, todos, lessons. WAL mode + `SQLITE_OPEN_FULLMUTEX`, foreign keys enforced. Schema migrates on open. |
 | `agents/*.json`          | Agent constitutions. Loaded by the TUI, `--send`, and `--api`. |
-| `conversations/`         | Global TUI conversation store (`manifest.json`, `<uuid>.json`, `active`). |
-| `sessions/*.json`        | Legacy per-cwd TUI snapshots (imported into `conversations/` on first launch). |
+| `conversations/`           | Legacy TUI JSON archive (imported once into `tenants.db`) plus `layout.json` mirror of the pane tree. |
+| `sessions/*.json`        | Legacy per-cwd TUI snapshots (imported into the conversation store on earlier upgrades). |
 | `memory/t<tenant_id>/*.md` | Legacy filesystem scratchpad fallback. Primary storage is `agent_scratchpad` in `tenants.db`. |
 | `workspaces/t<tenant_id>/` | Per-tenant sandbox workspace (mode 0700). Created on demand when the sandbox is enabled. See [Sandbox](sandbox.md). |
 | `master_model`           | Override for the master agent's model. |
