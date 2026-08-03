@@ -848,13 +848,16 @@ std::string ConversationStore::create_or_reuse(const std::string& cwd,
                                                const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
     if (session_is_empty_unlocked(active_id_)) {
-        if (!folder_id.empty()) {
-            const int64_t fid = parse_id(folder_id);
-            if (fid > 0
-                && tenants_.set_conversation_folder(
+        // Match create(): empty folder_id means unfiled, even when reusing.
+        const int64_t fid = folder_id.empty() ? 0 : parse_id(folder_id);
+        if (folder_id.empty() || fid > 0) {
+            if (tenants_.set_conversation_folder(
                     tenant_id_, parse_id(active_id_), fid)) {
                 for (auto& e : entries_) {
-                    if (e.id == active_id_) e.folder_id = format_id(fid);
+                    if (e.id == active_id_) {
+                        e.folder_id = folder_id.empty() ? std::string{}
+                                                        : format_id(fid);
+                    }
                 }
             }
         }
@@ -867,20 +870,24 @@ std::string ConversationStore::create_or_reuse_for(
     const std::string& cwd, const std::string& prefer_id,
     const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
-    auto try_apply_folder = [&](const std::string& id) {
-        if (folder_id.empty() || id.empty()) return;
-        const int64_t fid = parse_id(folder_id);
-        if (fid <= 0) return;
+    auto apply_folder = [&](const std::string& id) {
+        if (id.empty()) return;
+        // Empty folder_id clears membership (unfiled); non-empty must parse.
+        const int64_t fid = folder_id.empty() ? 0 : parse_id(folder_id);
+        if (!folder_id.empty() && fid <= 0) return;
         if (!tenants_.set_conversation_folder(tenant_id_, parse_id(id), fid))
             return;
         for (auto& e : entries_) {
-            if (e.id == id) e.folder_id = format_id(fid);
+            if (e.id == id) {
+                e.folder_id = folder_id.empty() ? std::string{}
+                                                : format_id(fid);
+            }
         }
     };
 
     if (!prefer_id.empty() && session_is_empty_unlocked(prefer_id)) {
         set_active_unlocked(prefer_id);
-        try_apply_folder(prefer_id);
+        apply_folder(prefer_id);
         return prefer_id;
     }
     // Only when the caller has no prefer_id (no focused conversation) —
@@ -889,7 +896,7 @@ std::string ConversationStore::create_or_reuse_for(
     if (prefer_id.empty()
         && !active_id_.empty()
         && session_is_empty_unlocked(active_id_)) {
-        try_apply_folder(active_id_);
+        apply_folder(active_id_);
         return active_id_;
     }
     return create_unlocked(cwd, folder_id);

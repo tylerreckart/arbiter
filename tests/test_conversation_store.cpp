@@ -212,6 +212,20 @@ TEST_CASE("create_or_reuse_for does not steal empty active when prefer has turns
     fs::remove_all(dir);
 }
 
+TEST_CASE("create_or_reuse_for with empty folder_id unfiles a reused chat") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const std::string fid = store.create_folder("Work");
+    const std::string id = store.create(dir, fid);
+    REQUIRE(store.list().front().folder_id == fid);
+
+    const std::string after = store.create_or_reuse_for(dir, id, /*folder_id=*/"");
+    CHECK(after == id);
+    CHECK(store.list().front().folder_id.empty());
+
+    fs::remove_all(dir);
+}
+
 TEST_CASE("create with a deleted folder id files as unfiled instead of throwing") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);
