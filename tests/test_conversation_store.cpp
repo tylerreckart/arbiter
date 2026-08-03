@@ -3,8 +3,12 @@
 
 #include "atomic_file.h"
 #include "repl/conversation_store.h"
+#include "tenant_store.h"
+
+#include <sqlite3.h>
 
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -35,6 +39,16 @@ std::string read_all(const std::string& path) {
     return ss.str();
 }
 
+int64_t to_db_id(const std::string& id) {
+    return static_cast<int64_t>(std::stoll(id));
+}
+
+void write_session(ConversationStore& store, const std::string& id,
+                   const std::string& body) {
+    store.tenant_store().set_conversation_session_json(
+        store.tenant_id(), to_db_id(id), body, /*bump_updated_at=*/false);
+}
+
 } // namespace
 
 TEST_CASE("create-on-empty-store does not deadlock") {
@@ -53,7 +67,7 @@ TEST_CASE("create-on-empty-store does not deadlock") {
         CHECK_FALSE(fut.get().empty());
         t.join();
     } else {
-        t.detach(); // already failed; avoid blocking process teardown on a hung thread
+        t.detach();
     }
 
     fs::remove_all(dir);
@@ -68,7 +82,6 @@ TEST_CASE("atomic_write_file leaves no partial file and no stray tmp file") {
     CHECK_FALSE(fs::exists(path + ".tmp"));
     CHECK(read_all(path) == "hello world");
 
-    // Overwrite: still atomic, still no leftover tmp file.
     CHECK(atomic_write_file(path, "second write"));
     CHECK(read_all(path) == "second write");
     CHECK_FALSE(fs::exists(path + ".tmp"));
@@ -76,18 +89,15 @@ TEST_CASE("atomic_write_file leaves no partial file and no stray tmp file") {
     fs::remove_all(dir);
 }
 
-TEST_CASE("corrupt manifest is recovered by scanning session files, not cleared") {
+TEST_CASE("legacy JSON store migrates into sqlite on first open") {
     const std::string dir = make_temp_dir();
     const std::string conv_dir = dir + "/conversations";
     fs::create_directories(conv_dir);
 
-    // Corrupt manifest.
     {
         std::ofstream f(conv_dir + "/manifest.json");
         f << "{ this is not valid json";
     }
-    // One orphaned-but-real session file that the corrupt manifest would
-    // otherwise silently disown.
     {
         std::ofstream f(conv_dir + "/deadbeefcafebabe.json");
         f << R"({"version":1,"index":[{"role":"user","content":"hi"}],"agents":{}})";
@@ -98,17 +108,19 @@ TEST_CASE("corrupt manifest is recovered by scanning session files, not cleared"
 
     bool found = false;
     for (const auto& e : entries) {
-        if (e.id == "deadbeefcafebabe") {
+        if (e.title == "Untitled (recovered)") {
             found = true;
-            CHECK(e.title == "Untitled (recovered)");
+            CHECK_FALSE(store.session_json(e.id).empty());
+            CHECK(store.session_json(e.id).find("hi") != std::string::npos);
         }
     }
     CHECK(found);
+    CHECK(store.tenant_store().tui_conversations_migrated(store.tenant_id()));
 
     fs::remove_all(dir);
 }
 
-TEST_CASE("soft delete filters list() but keeps the session file; purge removes it") {
+TEST_CASE("soft delete filters list() but keeps session_json; purge removes it") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);
 
@@ -122,12 +134,10 @@ TEST_CASE("soft delete filters list() but keeps the session file; purge removes 
         for (const auto& e : entries) if (e.id == a) a_visible = true;
         CHECK_FALSE(a_visible);
     }
-    CHECK(fs::exists(store.session_path(a)));
-    CHECK(read_all(dir + "/conversations/manifest.json").find("deleted_at") != std::string::npos);
+    CHECK_FALSE(store.session_json(a).empty());
 
     store.purge(b);
-    CHECK_FALSE(fs::exists(store.session_path(b)));
-    CHECK(read_all(dir + "/conversations/manifest.json").find(b) == std::string::npos);
+    CHECK(store.session_json(b).empty());
 
     fs::remove_all(dir);
 }
@@ -192,8 +202,6 @@ TEST_CASE("set_title does not lock; set_title_locked and lock_title do") {
     CHECK(store.list().front().title == "model refined title");
     CHECK(store.is_titled(id));
 
-    // Once locked, a plain set_title (as the deterministic path would issue
-    // on a later, unrelated turn) must not silently unlock it.
     store.set_title(id, "should not apply");
     CHECK(store.list().front().title == "model refined title");
     CHECK(store.is_titled(id));
@@ -207,21 +215,21 @@ TEST_CASE("lock_title locks without changing the title text") {
     const std::string id = store.active_id();
 
     store.set_title(id, "deterministic title");
-    store.lock_title(id); // simulates the model-title job failing/timing out
+    store.lock_title(id);
     CHECK(store.list().front().title == "deterministic title");
     CHECK(store.is_titled(id));
 
     fs::remove_all(dir);
 }
 
-TEST_CASE("titled flag round-trips through the manifest on disk") {
+TEST_CASE("titled flag round-trips through sqlite on reload") {
     const std::string dir = make_temp_dir();
     {
         ConversationStore store(dir);
         store.set_title_locked(store.active_id(), "locked title");
     }
     {
-        ConversationStore store(dir); // fresh instance re-reads manifest.json
+        ConversationStore store(dir);
         CHECK(store.is_titled(store.active_id()));
         CHECK(store.list().front().title == "locked title");
     }
@@ -243,64 +251,20 @@ TEST_CASE("add_tokens persists total_tokens across store reloads") {
         REQUIRE_FALSE(store.list().empty());
         CHECK(store.list().front().id == id);
         CHECK(store.list().front().total_tokens == 1545);
-        // Session file also carries usage for manifest backfill.
-        const std::string session = read_all(store.session_path(id));
-        CHECK(session.find("\"total_tokens\"") != std::string::npos);
-        CHECK(session.find("1545") != std::string::npos);
-    }
-    fs::remove_all(dir);
-}
-
-TEST_CASE("manifest load prefers higher of manifest and session totals") {
-    const std::string dir = make_temp_dir();
-    std::string id;
-    std::string session_path;
-    {
-        ConversationStore store(dir);
-        id = store.active_id();
-        session_path = store.session_path(id);
-        store.add_tokens(id, 5000);
-        CHECK(store.list().front().total_tokens == 5000);
-    }
-    // Stale lower manifest total with a fresher session-file total.
-    {
-        const std::string manifest_path = dir + "/conversations/manifest.json";
-        std::string manifest = read_all(manifest_path);
-        REQUIRE(manifest.find("\"total_tokens\":5000") != std::string::npos);
-        const auto pos = manifest.find("\"total_tokens\":5000");
-        manifest.replace(pos, std::string("\"total_tokens\":5000").size(),
-                         "\"total_tokens\":100");
-        CHECK(atomic_write_file(manifest_path, manifest));
-        CHECK(read_all(session_path).find("5000") != std::string::npos);
-    }
-    {
-        ConversationStore store(dir);
-        REQUIRE_FALSE(store.list().empty());
-        CHECK(store.list().front().id == id);
-        CHECK(store.list().front().total_tokens == 5000);
     }
     fs::remove_all(dir);
 }
 
 TEST_CASE("equal updated_at ties break by id so list order is deterministic") {
-    // updated_at has second resolution, so conversations created/saved in
-    // the same second tie constantly.  The sidebar's keyboard navigation
-    // depends on list() order being stable — with no tie-break, std::sort's
-    // handling of equal keys made row order (and therefore which
-    // conversation Enter switched to) nondeterministic on fast machines.
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);
 
-    // Three conversations created back-to-back land in the same epoch
-    // second (ids embed a per-process counter, so they stay distinct and
-    // monotonically increasing).
     const std::string first = store.active_id();
     const std::string second = store.create(dir);
     const std::string third = store.create(dir);
 
     const auto entries = store.list();
     REQUIRE(entries.size() == 3);
-    // Later-created conversations sort first on an updated_at tie.
     CHECK(entries[0].id == third);
     CHECK(entries[1].id == second);
     CHECK(entries[2].id == first);
@@ -317,7 +281,6 @@ TEST_CASE("equal updated_at ties break by id so list order is deterministic") {
 
 namespace {
 
-// Minimal session JSON with one index-master exchange and one sub-agent turn.
 std::string session_with(const std::string& user, const std::string& assistant,
                          const std::string& agent_msg = {}) {
     std::ostringstream ss;
@@ -340,17 +303,16 @@ TEST_CASE("search finds text across conversations, case-insensitively") {
 
     const std::string first = store.active_id();
     const std::string second = store.create(dir);
-    atomic_write_file(store.session_path(first),
-                      session_with("tune the flux capacitor",
-                                   "the Flux capacitor is tuned",
-                                   "flux readings nominal"));
-    atomic_write_file(store.session_path(second),
-                      session_with("write a haiku", "done"));
+    write_session(store, first,
+                  session_with("tune the flux capacitor",
+                               "the Flux capacitor is tuned",
+                               "flux readings nominal"));
+    write_session(store, second, session_with("write a haiku", "done"));
 
     auto hits = store.search("FLUX");
     REQUIRE(hits.size() == 1);
     CHECK(hits[0].id == first);
-    CHECK(hits[0].match_count == 3);   // user + assistant + sub-agent
+    CHECK(hits[0].match_count == 3);
     CHECK(hits[0].snippet.find("flux") != std::string::npos);
 
     CHECK(store.search("no-such-text").empty());
@@ -365,10 +327,8 @@ TEST_CASE("search matches titles and skips deleted conversations") {
 
     const std::string first = store.active_id();
     const std::string second = store.create(dir);
-    atomic_write_file(store.session_path(first),
-                      session_with("hello", "world"));
-    atomic_write_file(store.session_path(second),
-                      session_with("hello", "world"));
+    write_session(store, first, session_with("hello", "world"));
+    write_session(store, second, session_with("hello", "world"));
     store.set_title_locked(first, "flux notes");
 
     auto hits = store.search("flux");
@@ -376,13 +336,146 @@ TEST_CASE("search matches titles and skips deleted conversations") {
     CHECK(hits[0].id == first);
     CHECK(hits[0].match_count == 1);
 
-    // Soft-deleted conversations drop out of search like they do list().
     hits = store.search("hello");
     CHECK(hits.size() == 2);
     store.soft_delete(second);
     hits = store.search("hello");
     REQUIRE(hits.size() == 1);
     CHECK(hits[0].id == first);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("tui and api conversations share tenants.db but sidebar lists tui only") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+    const auto tid = store.tenant_id();
+    store.tenant_store().create_conversation(tid, "HTTP thread", "index");
+
+    CHECK(store.list().size() == 1);
+    CHECK(store.list().front().title == "Untitled");
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("migration is idempotent across a crash before the migrated flag") {
+    const std::string dir = make_temp_dir();
+    const std::string conv_dir = dir + "/conversations";
+    fs::create_directories(conv_dir);
+    {
+        std::ofstream f(conv_dir + "/manifest.json");
+        f << R"({"conversations":[{"id":"abc123","title":"Keep me","cwd":"/tmp",)"
+          << R"("created_at":100,"updated_at":200,"total_tokens":7}]})";
+    }
+    {
+        std::ofstream f(conv_dir + "/abc123.json");
+        f << R"({"version":2,"index":[{"role":"user","content":"hi"}],)"
+          << R"("agents":{},"compaction":{},"usage":{"total_tokens":42}})";
+    }
+
+    {
+        ConversationStore store(dir);
+        REQUIRE(store.list().size() == 1);
+        CHECK(store.list().front().title == "Keep me");
+        CHECK(store.list().front().total_tokens == 42); // session wins over manifest
+        CHECK(store.list().front().created_at == 100);
+        CHECK(store.list().front().updated_at == 200);
+    }
+
+    // Simulate crash after rows landed but before conversations_migrated=1.
+    {
+        sqlite3* db = nullptr;
+        REQUIRE(sqlite3_open((dir + "/tenants.db").c_str(), &db) == SQLITE_OK);
+        char* err = nullptr;
+        REQUIRE(sqlite3_exec(db,
+                             "UPDATE tui_prefs SET conversations_migrated = 0;",
+                             nullptr, nullptr, &err) == SQLITE_OK);
+        sqlite3_free(err);
+        sqlite3_close(db);
+    }
+
+    {
+        ConversationStore store(dir);
+        CHECK(store.list().size() == 1); // no duplicate on resume
+        CHECK(store.list().front().title == "Keep me");
+        CHECK(store.list().front().total_tokens == 42);
+        CHECK(store.tenant_store().tui_conversations_migrated(store.tenant_id()));
+    }
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("sessions/*.json import when conversations/ is absent") {
+    const std::string dir = make_temp_dir();
+    const std::string sessions = dir + "/sessions";
+    fs::create_directories(sessions);
+    {
+        std::ofstream f(sessions + "/deadbeef.json");
+        f << R"({"version":2,"index":[{"role":"user","content":"legacy"}],)"
+          << R"("agents":{},"compaction":{}})";
+    }
+
+    ConversationStore store(dir);
+    REQUIRE(store.list().size() == 1);
+    CHECK(store.session_json(store.list().front().id).find("legacy")
+          != std::string::npos);
+    CHECK(store.tenant_store().tui_conversations_migrated(store.tenant_id()));
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("sessions/*.conv tool scope remaps onto active TUI thread") {
+    const std::string dir = make_temp_dir();
+    fs::create_directories(dir + "/sessions");
+
+    // Seed an API-origin "TUI session" row the way main.cpp used to, plus a
+    // todo pinned to it, then point sessions/<cwd-hash>.conv at that id.
+    int64_t legacy_tool_id = 0;
+    {
+        TenantStore tenants;
+        tenants.open(dir + "/tenants.db");
+        auto primary = tenants.create_tenant("default").tenant;
+        auto api = tenants.create_conversation(primary.id, "TUI session", "index");
+        legacy_tool_id = api.id;
+        tenants.create_todo(primary.id, legacy_tool_id, "index",
+                            "carry me", "");
+        tenants.put_artifact(primary.id, legacy_tool_id, "note.txt",
+                             "hello", "text/plain");
+
+        std::string cwd = fs::current_path().string();
+        std::uint32_t h = 2166136261u;
+        for (unsigned char c : cwd) { h ^= c; h *= 16777619u; }
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%08x", h);
+        std::ofstream f(dir + "/sessions/" + std::string(buf) + ".conv");
+        f << legacy_tool_id << '\n';
+    }
+
+    ConversationStore store(dir);
+    REQUIRE_FALSE(store.active_id().empty());
+    const int64_t active = to_db_id(store.active_id());
+    CHECK(active != legacy_tool_id);
+
+    TenantStore::TodoFilter f;
+    f.conversation_id = active;
+    auto todos = store.tenant_store().list_todos(store.tenant_id(), f);
+    REQUIRE(todos.size() == 1);
+    CHECK(todos.front().subject == "carry me");
+
+    auto arts = store.tenant_store().list_artifacts_conversation(
+        store.tenant_id(), active, 50);
+    REQUIRE(arts.size() == 1);
+    CHECK(arts.front().path == "note.txt");
+
+    CHECK_FALSE(store.tenant_store().get_conversation(
+        store.tenant_id(), legacy_tool_id).has_value());
+
+    // Idempotent: .conv is renamed so a reopen does not invent another thread.
+    const auto before = store.list().size();
+    {
+        ConversationStore again(dir);
+        CHECK(again.list().size() == before);
+    }
 
     fs::remove_all(dir);
 }

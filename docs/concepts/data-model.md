@@ -25,7 +25,13 @@ Reference shapes for the rows arbiter persists. Every endpoint that returns one 
 | `updated_at`     | integer | Epoch seconds. Bumped on every message append. |
 | `message_count`  | integer | Total messages in the thread. |
 | `archived`       | boolean | Hidden from default UI views; not deleted. |
+| `origin`         | string  | `"api"` (HTTP) or `"tui"` (interactive sidebar). Defaults to `"api"`. |
+| `cwd`            | string  | Working directory at creation (TUI); empty for typical API threads. |
+| `deleted_at`     | integer | Soft-delete epoch; `0` = visible. Soft-deleted rows are omitted from list endpoints. |
+| `total_tokens`   | integer | Cumulative billed tokens (TUI sidebar); `0` for API-only threads unless set. |
+| `titled`         | boolean | Title locked against auto-titling (TUI). |
 
+TUI sessions also store a multi-agent `session_json` blob on the row (not exposed on the HTTP conversation resource today). HTTP turns continue to use the `messages` table.
 ## ConversationMessage
 
 | Field             | Type    | Notes |

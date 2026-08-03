@@ -93,10 +93,10 @@ Distinct from env vars but listed here for completeness, since the env-vs-file p
 | `openrouter_api_key`       | OpenRouter API key (one line, no whitespace).                        |
 | `search_api_key`           | Brave Search API key for `/search` (one line). Written by `--setup-tools`. |
 | `admin_token`              | Admin token used by `/v1/admin/*`. Generated automatically on first `--api` launch if missing. |
-| `tenants.db`               | Tenant store (SQLite): identities, scratchpads, structured memory, schedules, todos, lessons. Used by TUI and `--api`. |
+| `tenants.db`               | Tenant store (SQLite): identities, conversations (API + TUI sessions), scratchpads, structured memory, schedules, todos, lessons. Used by TUI and `--api`. |
 | `agents/*.json`            | Agent constitutions.                                                 |
-| `conversations/`           | Global TUI conversation store (`manifest.json`, `<uuid>.json`, `active`). |
-| `sessions/*.json`          | Legacy per-cwd snapshots (imported into `conversations/` on first launch). |
+| `conversations/`           | Legacy TUI JSON archive (imported once into `tenants.db`) plus `layout.json` mirror. |
+| `sessions/*.json`          | Legacy per-cwd snapshots (imported into the conversation store on earlier upgrades). |
 | `memory/t<tid>/`           | Legacy filesystem scratchpad fallback; DB `agent_scratchpad` is primary. |
 | `workspaces/t<id>/…`       | Per-tenant sandbox workspace (mode 0700). Created on demand when the sandbox is enabled. See [`docs/concepts/sandbox.md`](../concepts/sandbox.md). |
 | `mcp_servers.json`         | Optional MCP server registry. See [`docs/concepts/mcp.md`](../concepts/mcp.md). Editable via `arbiter --setup-tools`. |

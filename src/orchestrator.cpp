@@ -326,7 +326,7 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             child_clients.back()->set_metrics(client_.metrics());
             // Share the parent's reasoning sink so thought deltas still reach
             // the TUI when the provider emits them.  Workers also re-pin the
-            // spawning pane via tl_worker_pane_binder so g_active_pane is set.
+            // spawning pane + tool conversation TLS via tl_worker_pane_binder.
             if (client_.reasoning_callback()) {
                 child_clients.back()->set_reasoning_callback(
                     client_.reasoning_callback());
@@ -2048,6 +2048,10 @@ static constexpr size_t kSessionWarnBytes = 4 * 1024 * 1024;  // 4 MB total
 static constexpr size_t kAgentWarnBytes   = 512 * 1024;        // per-agent
 
 void Orchestrator::save_session(const std::string& path) const {
+    atomic_write_file(path, session_to_json());
+}
+
+std::string Orchestrator::session_to_json() const {
     auto root = jobj();
     auto& m = root->as_object_mut();
     m["version"] = jnum(2);
@@ -2106,7 +2110,7 @@ void Orchestrator::save_session(const std::string& path) const {
             over_limit.empty() ? "" : (" — large agents: " + over_limit).c_str());
     }
 
-    atomic_write_file(path, serialized);
+    return serialized;
 }
 
 bool Orchestrator::load_session(const std::string& path) {
@@ -2115,7 +2119,10 @@ bool Orchestrator::load_session(const std::string& path) {
 
     std::ostringstream ss;
     ss << f.rdbuf();
-    std::string raw = ss.str();
+    return load_session_json(ss.str());
+}
+
+bool Orchestrator::load_session_json(const std::string& raw) {
     if (raw.empty()) return false;
 
     if (raw.size() > kSessionWarnBytes) {

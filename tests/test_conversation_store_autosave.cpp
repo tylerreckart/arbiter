@@ -88,9 +88,9 @@ TEST_CASE("save_async coalesces a burst into the latest save") {
     }
     store.flush();
 
-    // The session file must reflect a completed, non-corrupt save (valid
+    // The session blob must reflect a completed, non-corrupt save (valid
     // JSON), not a torn write from an overlapping save.
-    const std::string raw = read_all(store.session_path(id));
+    const std::string raw = store.session_json(id);
     CHECK_FALSE(raw.empty());
     CHECK(raw.find("\"version\"") != std::string::npos);
 

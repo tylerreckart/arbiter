@@ -1810,6 +1810,12 @@ std::shared_ptr<JsonValue> conversation_to_json(const Conversation& c) {
     m["updated_at"]    = jnum(static_cast<double>(c.updated_at));
     m["message_count"] = jnum(static_cast<double>(c.message_count));
     m["archived"]      = jbool(c.archived);
+    m["origin"]        = jstr(c.origin.empty() ? "api" : c.origin);
+    if (!c.cwd.empty()) m["cwd"] = jstr(c.cwd);
+    if (c.total_tokens > 0) {
+        m["total_tokens"] = jnum(static_cast<double>(c.total_tokens));
+    }
+    if (c.titled) m["titled"] = jbool(true);
     if (!c.agent_def_json.empty()) {
         // Re-parse so it serializes as nested JSON, not an escaped string.
         try {
@@ -1819,6 +1825,15 @@ std::shared_ptr<JsonValue> conversation_to_json(const Conversation& c) {
         }
     }
     return o;
+}
+
+// HTTP-visible conversations only. TUI sidebar threads share the table but
+// are excluded from the public conversation/memory/todo/schedule API.
+std::optional<Conversation>
+get_http_conversation(TenantStore& tenants, int64_t tenant_id, int64_t id) {
+    auto c = tenants.get_conversation(tenant_id, id);
+    if (!c || c->origin == "tui") return std::nullopt;
+    return c;
 }
 
 std::shared_ptr<JsonValue>
@@ -1898,7 +1913,7 @@ void handle_conversation_list(int fd, const HttpRequest& req,
 
 void handle_conversation_get(int fd, int64_t id,
                               TenantStore& tenants, const Tenant& tenant) {
-    auto c = tenants.get_conversation(tenant.id, id);
+    auto c = get_http_conversation(tenants, tenant.id, id);
     if (!c) {
         auto err = jobj();
         err->as_object_mut()["error"] = jstr("conversation not found");
@@ -1958,7 +1973,7 @@ void handle_conversation_delete(int fd, int64_t id,
 
 void handle_conversation_messages(int fd, int64_t id, const HttpRequest& req,
                                    TenantStore& tenants, const Tenant& tenant) {
-    auto conv = tenants.get_conversation(tenant.id, id);
+    auto conv = get_http_conversation(tenants, tenant.id, id);
     if (!conv) {
         auto err = jobj();
         err->as_object_mut()["error"] = jstr("conversation not found");
@@ -2985,7 +3000,7 @@ void handle_memory_entry_create(int fd, const HttpRequest& req,
         if (conversation_id < 0)
             return write_memory_error(fd, 400, "conversation_id must be ≥ 0");
         if (conversation_id > 0 &&
-            !tenants.get_conversation(tenant.id, conversation_id)) {
+            !get_http_conversation(tenants, tenant.id, conversation_id)) {
             return write_memory_error(fd, 400,
                 "conversation_id does not exist for this tenant");
         }
@@ -3215,7 +3230,7 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     // than 400 because it's a hint, not a hard constraint.
     f.conversation_id   = get_int("conversation_id");
     if (f.conversation_id > 0 &&
-        !tenants.get_conversation(tenant.id, f.conversation_id)) {
+        !get_http_conversation(tenants, tenant.id, f.conversation_id)) {
         f.conversation_id = 0;
     }
     // Question-intent routing.  When the caller hasn't supplied an
@@ -3912,8 +3927,9 @@ bool is_valid_mime_type(const std::string& s) {
 void handle_artifact_create(int fd, int64_t conversation_id,
                               const HttpRequest& req,
                               TenantStore& tenants, const Tenant& tenant) {
-    auto conv = tenants.get_conversation(tenant.id, conversation_id);
-    if (!conv) return write_artifact_error(fd, 404, "conversation not found");
+    auto conv = get_http_conversation(tenants, tenant.id, conversation_id);
+    if (!conv)
+        return write_artifact_error(fd, 404, "conversation not found");
 
     std::shared_ptr<JsonValue> body;
     try { body = json_parse(req.body); }
@@ -3963,8 +3979,9 @@ void handle_artifact_create(int fd, int64_t conversation_id,
 // Lists this conversation's artifacts, newest-updated first.
 void handle_artifact_list_conversation(int fd, int64_t conversation_id,
                                         TenantStore& tenants, const Tenant& tenant) {
-    auto conv = tenants.get_conversation(tenant.id, conversation_id);
-    if (!conv) return write_artifact_error(fd, 404, "conversation not found");
+    auto conv = get_http_conversation(tenants, tenant.id, conversation_id);
+    if (!conv)
+        return write_artifact_error(fd, 404, "conversation not found");
 
     auto rows = tenants.list_artifacts_conversation(tenant.id, conversation_id, 200);
     auto arr = jarr();
@@ -4582,6 +4599,14 @@ void handle_todo_create(int fd, const HttpRequest& req,
         write_json_response(fd, 400, err);
         return;
     }
+    if (conv_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conv_id)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("conversation_id does not exist for this tenant");
+        write_json_response(fd, 400, err);
+        return;
+    }
     auto row = tenants.create_todo(tenant.id, conv_id, agent_id,
                                     subject, description, status);
     auto out = jobj();
@@ -4611,6 +4636,11 @@ void handle_todo_list(int fd, const HttpRequest& req,
                     // unscoped, 0 = no filter, negative = unscoped only).
                     if (v == "tenant" || v == "unscoped") f.conversation_id = -1;
                     else try { f.conversation_id = std::stoll(v); } catch (...) {}
+                    if (f.conversation_id > 0 &&
+                        !get_http_conversation(tenants, tenant.id,
+                                               f.conversation_id)) {
+                        f.conversation_id = 0;
+                    }
                 }
                 else if (k == "status")   f.status_filter   = v;
                 else if (k == "agent_id") f.agent_id_filter = v;
@@ -4935,6 +4965,14 @@ void handle_schedule_create(int fd, const HttpRequest& req,
             write_json_response(fd, 404, err);
             return;
         }
+    }
+    if (conv_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conv_id)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("conversation_id does not exist for this tenant");
+        write_json_response(fd, 400, err);
+        return;
     }
 
     std::string kind_str = (parsed.spec.kind == ScheduleSpec::Kind::Once)
@@ -5427,11 +5465,15 @@ std::shared_ptr<mcp::Manager> make_mcp_manager(
 // Renders user-facing tool-result bodies — the dispatcher wraps them in
 // [/schedule …] / [END SCHEDULE] framing.
 SchedulerInvoker make_scheduler_invoker_callback(
-        TenantStore& tenants, int64_t tenant_id, int64_t conversation_id) {
-    return [&tenants, tenant_id, conversation_id](
+        TenantStore& tenants, int64_t tenant_id,
+        std::function<int64_t()> conversation_id_fn) {
+    return [&tenants, tenant_id,
+            conversation_id_fn = std::move(conversation_id_fn)](
             const std::string& kind,
             const std::string& args,
             const std::string& caller_agent_id) -> std::string {
+        const int64_t conversation_id =
+            conversation_id_fn ? conversation_id_fn() : 0;
         auto trim = [](std::string s) {
             while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
             while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
@@ -5717,11 +5759,15 @@ LessonInvoker make_lesson_invoker_callback(
 //   "<subject>\n\n<body>"             — block-form with description
 // (the writ dispatcher packs the body in for us when /endtodo is seen.)
 TodoInvoker make_todo_invoker_callback(
-        TenantStore& tenants, int64_t tenant_id, int64_t conversation_id) {
-    return [&tenants, tenant_id, conversation_id](
+        TenantStore& tenants, int64_t tenant_id,
+        std::function<int64_t()> conversation_id_fn) {
+    return [&tenants, tenant_id,
+            conversation_id_fn = std::move(conversation_id_fn)](
             const std::string& kind,
             const std::string& args,
             const std::string& caller_agent_id) -> std::string {
+        const int64_t conversation_id =
+            conversation_id_fn ? conversation_id_fn() : 0;
         auto trim = [](std::string s) {
             while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
             while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
@@ -6038,10 +6084,16 @@ SearchInvoker make_search_invoker_callback(const ApiServerOptions& opts) {
 // context" hint.
 
 ArtifactWriter make_artifact_writer_callback(int64_t tenant_id,
-                                              int64_t conversation_id,
+                                              std::function<int64_t()> conversation_id_fn,
                                               TenantStore* store) {
-    return [tenant_id, conversation_id, store](const std::string& raw_path,
-                                                 const std::string& content) -> std::string {
+    return [tenant_id, conversation_id_fn = std::move(conversation_id_fn), store](
+               const std::string& raw_path,
+               const std::string& content) -> std::string {
+        const int64_t conversation_id =
+            conversation_id_fn ? conversation_id_fn() : 0;
+        if (conversation_id <= 0) {
+            return "ERR: no conversation context for artifact persist";
+        }
         std::string err;
         auto canonical = sanitize_artifact_path(raw_path, err);
         if (!canonical) {
@@ -6077,17 +6129,22 @@ ArtifactWriter make_artifact_writer_callback(int64_t tenant_id,
 }
 
 ArtifactReader make_artifact_reader_callback(int64_t tenant_id,
-                                              int64_t conversation_id,
+                                              std::function<int64_t()> conversation_id_fn,
                                               TenantStore* store) {
     auto err = [](std::string msg) {
         ArtifactReadResult r;
         r.body = std::move(msg);
         return r;
     };
-    return [tenant_id, conversation_id, store, err](
+    return [tenant_id, conversation_id_fn = std::move(conversation_id_fn), store, err](
                const std::string& raw_path,
                int64_t artifact_id,
                int64_t via_memory_id) -> ArtifactReadResult {
+        const int64_t conversation_id =
+            conversation_id_fn ? conversation_id_fn() : 0;
+        if (conversation_id <= 0) {
+            return err("ERR: no conversation context for artifact read");
+        }
         // Path-form: same-conversation lookup.  Sanitiser gates bad
         // paths before we touch the DB.
         if (artifact_id == 0) {
@@ -6157,9 +6214,14 @@ ArtifactReader make_artifact_reader_callback(int64_t tenant_id,
 }
 
 ArtifactLister make_artifact_lister_callback(int64_t tenant_id,
-                                              int64_t conversation_id,
+                                              std::function<int64_t()> conversation_id_fn,
                                               TenantStore* store) {
-    return [tenant_id, conversation_id, store]() -> std::string {
+    return [tenant_id, conversation_id_fn = std::move(conversation_id_fn), store]() -> std::string {
+        const int64_t conversation_id =
+            conversation_id_fn ? conversation_id_fn() : 0;
+        if (conversation_id <= 0) {
+            return "ERR: no conversation context for artifact list";
+        }
         auto rows = store->list_artifacts_conversation(tenant_id,
                                                          conversation_id, 200);
         if (rows.empty()) return std::string{};
@@ -6181,11 +6243,14 @@ ArtifactLister make_artifact_lister_callback(int64_t tenant_id,
 
 StructuredMemoryReader make_structured_memory_reader_callback(
     TenantStore& tenants, int64_t reader_tenant_id,
-    int64_t reader_conversation_id, Orchestrator* orch_ptr) {
+    std::function<int64_t()> reader_conversation_id_fn, Orchestrator* orch_ptr) {
     return
-        [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
+        [&tenants, reader_tenant_id,
+         reader_conversation_id_fn = std::move(reader_conversation_id_fn), orch_ptr]
         (const std::string& kind, const std::string& args,
          const std::string& caller_id) -> std::string {
+            const int64_t reader_conversation_id =
+                reader_conversation_id_fn ? reader_conversation_id_fn() : 0;
             // Helper formatters reused across kinds.
             auto fmt_tags = [](const std::string& tags_json) -> std::string {
                 try {
@@ -6846,13 +6911,16 @@ StructuredMemoryReader make_structured_memory_reader_callback(
 }
 StructuredMemoryWriter make_structured_memory_writer_callback(
     TenantStore& tenants, int64_t reader_tenant_id,
-    int64_t reader_conversation_id, Orchestrator* orch_ptr) {
+    std::function<int64_t()> reader_conversation_id_fn, Orchestrator* orch_ptr) {
     return
-        [&tenants, reader_tenant_id, reader_conversation_id, orch_ptr]
+        [&tenants, reader_tenant_id,
+         reader_conversation_id_fn = std::move(reader_conversation_id_fn), orch_ptr]
         (const std::string& kind,
          const std::string& args,
          const std::string& body,
          const std::string& caller_id) -> std::string {
+            const int64_t reader_conversation_id =
+                reader_conversation_id_fn ? reader_conversation_id_fn() : 0;
             // Trim leading/trailing whitespace from a token.
             auto trim = [](std::string s) {
                 while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
@@ -7423,11 +7491,21 @@ A2AInvoker make_a2a_invoker(const ApiServerOptions& opts,
 // cwd — SECURITY.md's "orchestrate intercepts /write" guarantee applies
 // to every API entrypoint.  Streaming handlers may replace the
 // interceptor afterward with one that also emits SSE `file` events.
+namespace {
+thread_local int64_t g_tls_tool_conversation_id = 0;
+} // namespace
+
 void wire_orch_tools_impl(Orchestrator& orch,
                              const ApiServerOptions& opts,
                              TenantStore& tenants,
                              int64_t tenant_id,
-                             int64_t conversation_id) {
+                             std::shared_ptr<std::atomic<int64_t>> conversation_id) {
+    auto conv_fn = [conversation_id]() -> int64_t {
+        if (g_tls_tool_conversation_id > 0) return g_tls_tool_conversation_id;
+        return conversation_id
+            ? conversation_id->load(std::memory_order_relaxed)
+            : 0;
+    };
     if (!opts.memory_root.empty()) {
         orch.set_memory_dir(opts.memory_root + "/t" + std::to_string(tenant_id));
     }
@@ -7476,10 +7554,10 @@ void wire_orch_tools_impl(Orchestrator& orch,
         make_memory_scratchpad_callback(tenant_id, &tenants));
     orch.set_structured_memory_reader(
         make_structured_memory_reader_callback(
-            tenants, tenant_id, conversation_id, &orch));
+            tenants, tenant_id, conv_fn, &orch));
     orch.set_structured_memory_writer(
         make_structured_memory_writer_callback(
-            tenants, tenant_id, conversation_id, &orch));
+            tenants, tenant_id, conv_fn, &orch));
     orch.set_mcp_invoker(make_mcp_invoker_callback(make_mcp_manager(opts,
         [](const std::string& m) {
             std::fprintf(stderr, "[tools] %s\n", m.c_str());
@@ -7494,19 +7572,22 @@ void wire_orch_tools_impl(Orchestrator& orch,
         if (roster_cb) orch.set_remote_roster_provider(std::move(roster_cb));
     }
     orch.set_scheduler_invoker(
-        make_scheduler_invoker_callback(tenants, tenant_id, conversation_id));
+        make_scheduler_invoker_callback(tenants, tenant_id, conv_fn));
     orch.set_todo_invoker(
-        make_todo_invoker_callback(tenants, tenant_id, conversation_id));
+        make_todo_invoker_callback(tenants, tenant_id, conv_fn));
     orch.set_lesson_invoker(
         make_lesson_invoker_callback(tenants, tenant_id));
 
-    if (conversation_id > 0) {
+    // Artifact bridges only when a conversation scope exists. A null
+    // shared_ptr (A2A, --send, scheduler) leaves writer null so
+    // /write --persist falls back to the ephemeral WARN path.
+    if (conversation_id) {
         orch.set_artifact_writer(
-            make_artifact_writer_callback(tenant_id, conversation_id, &tenants));
+            make_artifact_writer_callback(tenant_id, conv_fn, &tenants));
         orch.set_artifact_reader(
-            make_artifact_reader_callback(tenant_id, conversation_id, &tenants));
+            make_artifact_reader_callback(tenant_id, conv_fn, &tenants));
         orch.set_artifact_lister(
-            make_artifact_lister_callback(tenant_id, conversation_id, &tenants));
+            make_artifact_lister_callback(tenant_id, conv_fn, &tenants));
     }
 }
 
@@ -7537,7 +7618,8 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
         }
     }
 
-    wire_orch_tools_impl(*orch, opts, tenants, tenant.id, /*conversation_id=*/0);
+    wire_orch_tools_impl(*orch, opts, tenants, tenant.id,
+                         /*conversation_id=*/nullptr);
     return orch;
 }
 
@@ -9121,9 +9203,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // conversation (raw /v1/orchestrate); any artifact link is
     // therefore cross-conversation by definition.
     const int64_t reader_conversation_id = conversation_id;
+    auto reader_conv_fn = [reader_conversation_id]() {
+        return reader_conversation_id;
+    };
     orch->set_structured_memory_reader(
         make_structured_memory_reader_callback(
-            tenants, reader_tenant_id, reader_conversation_id, orch_ptr));
+            tenants, reader_tenant_id, reader_conv_fn, orch_ptr));
 
     // Structured-memory writer.  Tenant-scoped (mirrors the reader); writes
     // land directly in the curated graph and are visible to subsequent
@@ -9133,7 +9218,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // body is meaningful synthesised text.
     orch->set_structured_memory_writer(
         make_structured_memory_writer_callback(
-            tenants, reader_tenant_id, reader_conversation_id, orch_ptr));
+            tenants, reader_tenant_id, reader_conv_fn, orch_ptr));
 
     // ── MCP session manager ───────────────────────────────────────────
     // One Manager per request; subprocesses spawn lazily on first /mcp
@@ -9168,14 +9253,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // this is what lets a scheduled run land its work in the same
     // thread the agent originally scheduled it from.
     orch->set_scheduler_invoker(
-        make_scheduler_invoker_callback(tenants, tenant.id, conversation_id));
+        make_scheduler_invoker_callback(tenants, tenant.id, reader_conv_fn));
 
     // ── Todo bridge ──────────────────────────────────────────────────
     // /todo resolves through this callback.  Pinned to the request's
     // conversation_id (or 0 = unscoped for raw /v1/orchestrate) so
     // /todo list scopes to the active thread by default.
     orch->set_todo_invoker(
-        make_todo_invoker_callback(tenants, tenant.id, conversation_id));
+        make_todo_invoker_callback(tenants, tenant.id, reader_conv_fn));
 
     // ── Lesson bridge ────────────────────────────────────────────────
     // /lesson resolves through this callback.  Lessons are agent-scoped
@@ -9205,11 +9290,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // fallback for /write --persist.
     if (conversation_id > 0) {
         orch->set_artifact_writer(
-            make_artifact_writer_callback(tenant.id, conversation_id, &tenants));
+            make_artifact_writer_callback(tenant.id, reader_conv_fn, &tenants));
         ArtifactReader base_reader =
-            make_artifact_reader_callback(tenant.id, conversation_id, &tenants);
+            make_artifact_reader_callback(tenant.id, reader_conv_fn, &tenants);
         ArtifactLister base_lister =
-            make_artifact_lister_callback(tenant.id, conversation_id, &tenants);
+            make_artifact_lister_callback(tenant.id, reader_conv_fn, &tenants);
         // Sandbox fallback for path-form /read and /list: when the
         // artifact store doesn't have a hit (or the conversation has
         // no artifacts) but the tenant's workspace does, serve the
@@ -9630,12 +9715,29 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 
 } // namespace
 
+void set_tool_conversation_tls(int64_t conversation_id) {
+    g_tls_tool_conversation_id = conversation_id;
+}
+
 void wire_orchestrator_tools(Orchestrator& orch,
                              const ApiServerOptions& opts,
                              TenantStore& tenants,
                              int64_t tenant_id,
                              int64_t conversation_id) {
-    wire_orch_tools_impl(orch, opts, tenants, tenant_id, conversation_id);
+    wire_orch_tools_impl(
+        orch, opts, tenants, tenant_id,
+        conversation_id > 0
+            ? std::make_shared<std::atomic<int64_t>>(conversation_id)
+            : nullptr);
+}
+
+void wire_orchestrator_tools(Orchestrator& orch,
+                             const ApiServerOptions& opts,
+                             TenantStore& tenants,
+                             int64_t tenant_id,
+                             std::shared_ptr<std::atomic<int64_t>> conversation_id) {
+    wire_orch_tools_impl(orch, opts, tenants, tenant_id,
+                         std::move(conversation_id));
 }
 
 // Public wrapper exposing the (anon-namespace) builder so other TUs —
@@ -10254,7 +10356,7 @@ void ApiServer::handle_connection(int fd) {
                 // set; history is hydrated from prior messages and the
                 // user/assistant pair is persisted around the call.
                 if (req.method == "POST") {
-                    auto conv = tenants_.get_conversation(tenant->id, id);
+                    auto conv = get_http_conversation(tenants_, tenant->id, id);
                     if (!conv) {
                         auto err = jobj();
                         err->as_object_mut()["error"] = jstr("conversation not found");
