@@ -3225,13 +3225,14 @@ void handle_memory_entry_list(int fd, const HttpRequest& req,
     // moment.  Default 0 ⇒ "now", which means "active rows only".
     f.as_of             = get_int("as_of");
     // `conversation_id=<id>` scopes results to one conversation, with
-    // an OR-NULL fallback so unscoped entries stay reachable.  Stripped
-    // here if it doesn't belong to this tenant — silent drop rather
-    // than 400 because it's a hint, not a hard constraint.
+    // an OR-NULL fallback so unscoped entries stay reachable.  Reject
+    // unknown / TUI-origin ids rather than clearing the filter — a silent
+    // reset to 0 would return tenant-wide rows and expose TUI-scoped data.
     f.conversation_id   = get_int("conversation_id");
     if (f.conversation_id > 0 &&
         !get_http_conversation(tenants, tenant.id, f.conversation_id)) {
-        f.conversation_id = 0;
+        return write_memory_error(fd, 400,
+            "conversation_id does not exist for this tenant");
     }
     // Question-intent routing.  When the caller hasn't supplied an
     // explicit `type=` filter, classify the query for cue words and
@@ -4636,11 +4637,6 @@ void handle_todo_list(int fd, const HttpRequest& req,
                     // unscoped, 0 = no filter, negative = unscoped only).
                     if (v == "tenant" || v == "unscoped") f.conversation_id = -1;
                     else try { f.conversation_id = std::stoll(v); } catch (...) {}
-                    if (f.conversation_id > 0 &&
-                        !get_http_conversation(tenants, tenant.id,
-                                               f.conversation_id)) {
-                        f.conversation_id = 0;
-                    }
                 }
                 else if (k == "status")   f.status_filter   = v;
                 else if (k == "agent_id") f.agent_id_filter = v;
@@ -4650,6 +4646,16 @@ void handle_todo_list(int fd, const HttpRequest& req,
             if (amp == std::string::npos) break;
             i = amp + 1;
         }
+    }
+    // Reject unknown / TUI-origin conversation ids. Clearing the filter
+    // would return tenant-wide todos and leak TUI-scoped rows over HTTP.
+    if (f.conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, f.conversation_id)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("conversation_id does not exist for this tenant");
+        write_json_response(fd, 400, err);
+        return;
     }
     auto rows = tenants.list_todos(tenant.id, f);
     auto arr = jarr();
