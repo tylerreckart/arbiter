@@ -48,6 +48,7 @@
 #include <ctime>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -10067,6 +10068,12 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         sc.exec_timeout_seconds = opts_.sandbox_exec_timeout_seconds;
         sc.workspace_max_bytes  = opts_.sandbox_workspace_max_bytes;
         sc.idle_seconds         = opts_.sandbox_idle_seconds;
+        if (opts_.file_max_bytes > 0) {
+            const size_t cap = std::min(
+                opts_.file_max_bytes,
+                static_cast<size_t>(std::numeric_limits<int>::max()));
+            sc.read_max_bytes = static_cast<int>(cap);
+        }
         // Always keep the manager, even on usability failure — cli.cpp
         // queries it post-banner-clear to render the startup status
         // line (the ctor's stderr log is wiped by `\033[2J`).  The

@@ -4,6 +4,7 @@
 #include "metrics.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <limits>
 #include <chrono>
@@ -901,9 +902,40 @@ bool SandboxManager::read_from_workspace(int64_t tenant_id,
     }
     std::ifstream f(target, std::ios::in | std::ios::binary);
     if (!f.is_open()) { err_out = "open for reading failed"; return false; }
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    content_out = ss.str();
+
+    const int cap = cfg_.read_max_bytes;
+    if (cap > 0) {
+        std::error_code sz_ec;
+        const auto fsz = fs::file_size(target, sz_ec);
+        if (!sz_ec && fsz > static_cast<uintmax_t>(cap)) {
+            err_out = "file too large to read (" +
+                      std::to_string(static_cast<int64_t>(fsz)) +
+                      " bytes; limit " + std::to_string(cap) + ")";
+            return false;
+        }
+        std::array<char, 65536> buf{};
+        std::ostringstream ss;
+        std::ios::off_type total = 0;
+        while (f) {
+            f.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+            const auto n = static_cast<size_t>(f.gcount());
+            if (n == 0) break;
+            if (total < 0 ||
+                static_cast<int64_t>(n) >
+                    static_cast<int64_t>(cap) - total) {
+                err_out = "file too large to read (limit " +
+                          std::to_string(cap) + " bytes)";
+                return false;
+            }
+            ss.write(buf.data(), static_cast<std::streamsize>(n));
+            total += static_cast<std::ios::off_type>(n);
+        }
+        content_out = ss.str();
+    } else {
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        content_out = ss.str();
+    }
     mime_out    = mime_for(clean);
     touch_access(tenant_id);
     return true;
