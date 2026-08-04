@@ -200,10 +200,10 @@ TEST_CASE("sandbox exec: oversized output includes truncation marker") {
     REQUIRE_FALSE(ws.empty());
     WorkspaceEnvGuard ws_env(ws);
 
-    // Generate oversized ASCII without NUL/`tr` or GNU-only `head -c` (BSD
-    // macOS CI can yield far less than 512 bytes from `yes x | head -c`).
+    // Generate 4096 bytes of ASCII without GNU-only `head -c`, NUL/`tr` (BSD
+    // tr flakes), or nested-quote `awk` one-liners (macOS stub eval → ~133 B).
     auto result = mgr.exec(
-        tid, "awk 'BEGIN{for(i=0;i<4096;i++)printf(\"x\")}'");
+        tid, "python3 -c \"import sys; sys.stdout.write('x'*4096)\"");
     CHECK(result.ok);
     CHECK(result.output.size() >= 512);
     CHECK(result.output.find("... [truncated at") != std::string::npos);
