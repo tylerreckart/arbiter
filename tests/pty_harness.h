@@ -10,9 +10,10 @@
 // writes large startup frames (otherwise the child blocks in writev).
 //
 // Isolation: every session gets a private temp HOME so the real ~/.arbiter
-// isn't touched. A dummy OpenRouter key suppresses first-run setup; tests avoid
-// live model calls. Session files land in the temp HOME and get blown away on
-// destruct.
+// isn't touched. A dummy OpenRouter key plus ARBITER_OFFLINE=1 suppresses
+// first-run setup and refuses the provider wire path (no live TLS) —
+// turns still record the user message then fail with a stable auth error.
+// Session files land in the temp HOME and get blown away on destruct.
 //
 // NOT thread-safe; each test owns its own PtySession.
 

@@ -208,6 +208,11 @@ public:
     ApiResponse complete(const ApiRequest& req);
     ApiResponse stream(const ApiRequest& req, StreamCallback cb);
 
+    // True when complete()/stream() will refuse the wire path: either
+    // ARBITER_OFFLINE is set, or this client's key for `prov` is the PTY
+    // harness sentinel (`dummy-key-no-network`).  Public for unit tests.
+    bool should_skip_network(const Provider& prov) const;
+
     // Optional reasoning/thinking stream sink.  Fired from the same thread
     // as StreamCallback when a provider emits a separate reasoning channel.
     void set_reasoning_callback(ReasoningCallback cb) { reasoning_cb_ = std::move(cb); }
@@ -370,6 +375,9 @@ private:
     void send_request(const Provider& p, Conn& c,
                       const std::string& path,
                       const std::string& body, bool streaming);
+
+    // Shared offline failure payload used by complete()/stream().
+    static ApiResponse offline_auth_failure();
     std::string read_response(Conn& c);
     ApiResponse read_streaming_response(Conn& c, StreamCallback cb,
                                          Provider::Format fmt);

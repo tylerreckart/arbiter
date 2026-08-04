@@ -1200,6 +1200,43 @@ static bool is_retryable(const std::string& error_type) {
            error_type == "UNAVAILABLE";
 }
 
+namespace {
+
+// Stable error surface for hermetic / CI runs.  PTY tests wait on the
+// "Authentication header" substring (historically from a live 401 body);
+// keep that token so those waiters stay meaningful offline.
+constexpr const char* kOfflineAuthError =
+    "Authentication header offline: no network "
+    "(ARBITER_OFFLINE or dummy-key-no-network)";
+
+// Sentinel used by tests/pty_harness.cpp — never a real provider key.
+constexpr const char* kHarnessDummyKey = "dummy-key-no-network";
+
+bool arbiter_offline_env() {
+    const char* e = std::getenv("ARBITER_OFFLINE");
+    return e && e[0] != '\0' && e[0] != '0';
+}
+
+} // namespace
+
+bool ApiClient::should_skip_network(const Provider& prov) const {
+    if (arbiter_offline_env()) return true;
+    if (!prov.uses_api_key) return false;
+    std::string key = unmask_api_key(prov.name);
+    if (key.empty()) return false;
+    const bool dummy = (key == kHarnessDummyKey);
+    OPENSSL_cleanse(key.data(), key.size());
+    return dummy;
+}
+
+ApiResponse ApiClient::offline_auth_failure() {
+    ApiResponse r;
+    r.ok         = false;
+    r.error_type = "authentication_error";
+    r.error      = kOfflineAuthError;
+    return r;
+}
+
 // ─── Blocking complete() ─────────────────────────────────────────────────────
 
 ApiResponse ApiClient::complete(const ApiRequest& req) {
@@ -1222,6 +1259,12 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
         r.error_type = "circuit_open";
         r.error      = "circuit breaker open for provider '" + prov.name + "'";
         return r;
+    }
+    // Hermetic short-circuit: PTY/CI runs must not depend on live TLS to a
+    // provider.  ARBITER_OFFLINE=1 or the harness dummy key fail locally.
+    if (should_skip_network(prov)) {
+        if (metrics_) metrics_->inc_provider_call(prov.name);
+        return offline_auth_failure();
     }
     if (metrics_) metrics_->inc_provider_call(prov.name);
 
@@ -1661,6 +1704,10 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
         r.error_type = "circuit_open";
         r.error      = "circuit breaker open for provider '" + prov.name + "'";
         return r;
+    }
+    if (should_skip_network(prov)) {
+        if (metrics_) metrics_->inc_provider_call(prov.name);
+        return offline_auth_failure();
     }
     if (metrics_) metrics_->inc_provider_call(prov.name);
 

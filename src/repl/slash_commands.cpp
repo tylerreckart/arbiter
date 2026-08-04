@@ -156,9 +156,23 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                 if (r.total == 0) {
                     tui.set_status("find \"" + pane.find_term + "\": no matches");
                 } else {
-                    tui.set_status("find \"" + pane.find_term + "\": "
-                                   + std::to_string(r.hit) + "/" + std::to_string(r.total)
-                                   + "  /find next|prev");
+                    // Include the absolute visual row so consecutive /find
+                    // next paints differ by more than a single digit.  OpenTUI
+                    // cell-diff otherwise often emits nothing when only the
+                    // hit index changes (N/N → 1/N), which made PTY CI flake.
+                    std::string status = "find \"" + pane.find_term + "\": "
+                        + std::to_string(r.hit) + "/" + std::to_string(r.total);
+                    if (r.row >= 0) {
+                        status += " @";
+                        status += std::to_string(r.row);
+                    }
+                    status += "  /find next|prev";
+                    // Clear then set forces a full status-bar rewrite instead of
+                    // a one-cell digit morph that OpenTUI may silently drop.
+                    tui.clear_status();
+                    if (ui_ctx.present_all) ui_ctx.present_all();
+                    ot_session.flush_display();
+                    tui.set_status(status);
                 }
                 // Back-to-back /find and /find next calls are the only case
                 // in the app where the *entire* visible delta is a one-line

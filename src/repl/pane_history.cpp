@@ -224,8 +224,9 @@ PaneFindResult pane_history_find(Pane& pane, const std::string& term) {
     // Start at the most recent match — searching typically targets output
     // that just scrolled away.
     pane.find_idx = static_cast<int>(rows.size()) - 1;
-    jump_to_row(pane, rows[static_cast<size_t>(pane.find_idx)]);
-    return {pane.find_idx + 1, static_cast<int>(rows.size())};
+    const int row = rows[static_cast<size_t>(pane.find_idx)];
+    jump_to_row(pane, row);
+    return {pane.find_idx + 1, static_cast<int>(rows.size()), row};
 }
 
 PaneFindResult pane_history_find_step(Pane& pane, int delta) {
@@ -241,8 +242,9 @@ PaneFindResult pane_history_find_step(Pane& pane, int delta) {
     // Wrap around so cycling never dead-ends.
     idx = ((idx % n) + n) % n;
     pane.find_idx = idx;
-    jump_to_row(pane, rows[static_cast<size_t>(idx)]);
-    return {idx + 1, n};
+    const int row = rows[static_cast<size_t>(idx)];
+    jump_to_row(pane, row);
+    return {idx + 1, n, row};
 }
 
 void pane_history_begin_frame(UiContext& ctx) {

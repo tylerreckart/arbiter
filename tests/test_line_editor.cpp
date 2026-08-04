@@ -153,12 +153,10 @@ TEST_CASE("Ctrl-U kills the whole input line") {
 TEST_CASE("history: up arrow recalls previous submission") {
     PtySession s = ready_editor();
 
-    // Submit a first line.  With a dummy API key the send will surface an
-    // error, but the line is nonetheless pushed into editor history.
-    // The wait covers a real TLS handshake to api.anthropic.com (and back
-    // with a 401) — slow CI runners can take 3-4 s for the round trip.
+    // Submit a first line.  With the harness dummy key / ARBITER_OFFLINE the
+    // send fails locally (no TLS) after pushing the line into editor history.
     s.send("first\r");
-    s.read_for(5000);
+    s.read_for(2000);
 
     // Up arrow — should repaint the input row with "first" in the buffer.
     s.send(kArrUp);

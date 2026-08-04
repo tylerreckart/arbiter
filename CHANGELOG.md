@@ -44,6 +44,12 @@ diagrams, plus sandbox write and sidebar hardening.
   [`docs/concepts/architecture.md`](docs/concepts/architecture.md).
 
 ### Fixed
+- **Hermetic PTY / CI provider calls.** `ARBITER_OFFLINE=1` and the
+  PTY harness `dummy-key-no-network` short-circuit `ApiClient` before
+  any TLS round-trip, so TUI integration tests no longer depend on
+  live provider 401 latency. `/find` status paints clear-then-rewrite
+  and include the match `@row` so OpenTUI cell-diff cannot drop a
+  digit-only `/find next` update (the recent `chat_command_tui` flake).
 - **Sandbox `/write` file-cap and ERR responses.** Orchestrate and tool
   interceptors release the per-response file cap and return ERR when
   sandbox persist fails (including after SSE `file` emit ordering), and

@@ -99,13 +99,14 @@ void pane_history_clear_selection(Pane& pane);
 // /find support.  pane_history_find() records `term` on the pane and jumps
 // to the last (most recent) match; pane_history_find_step() re-runs the
 // recorded term and moves delta hits (+1 = older→newer, -1 = newer→older).
-// Both return {hit_number (1-based), total_hits}; {0, 0} means no matches
-// (or no recorded term for find_step).  Caller repositions are done via
-// pane.scroll_offset, so hold layout_mu around these like any other
-// scroll mutation.
+// Both return {hit_number (1-based), total_hits, visual_row}; {0, 0, -1}
+// means no matches (or no recorded term for find_step).  Caller
+// repositions are done via pane.scroll_offset, so hold layout_mu around
+// these like any other scroll mutation.
 struct PaneFindResult {
-    int hit = 0;
+    int hit   = 0;   // 1-based index into the current hit list
     int total = 0;
+    int row   = -1;  // absolute visual row jumped to (-1 if none)
 };
 PaneFindResult pane_history_find(Pane& pane, const std::string& term);
 PaneFindResult pane_history_find_step(Pane& pane, int delta);

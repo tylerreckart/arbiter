@@ -166,17 +166,22 @@ void PtySession::spawn(const std::vector<std::string>& argv) {
     // (spawn replaces the full environment and would otherwise drop them).
     bool has_home = false, has_key = false, has_term = false;
     bool has_asan = false, has_tsan = false, has_lsan = false, has_ubsan = false;
+    bool has_offline = false;
     for (auto& kv : env_) {
         if (kv.first == "HOME") has_home = true;
         if (kv.first == "OPENROUTER_API_KEY") has_key = true;
         if (kv.first == "TERM") has_term = true;
+        if (kv.first == "ARBITER_OFFLINE") has_offline = true;
         if (kv.first == "ASAN_OPTIONS") has_asan = true;
         if (kv.first == "TSAN_OPTIONS") has_tsan = true;
         if (kv.first == "LSAN_OPTIONS") has_lsan = true;
         if (kv.first == "UBSAN_OPTIONS") has_ubsan = true;
     }
     if (!has_home) env_.emplace_back("HOME", home_dir_);
+    // Sentinel key + ARBITER_OFFLINE: ApiClient refuses the wire path so
+    // PTY tests stay hermetic (no live TLS / provider round-trips).
     if (!has_key)  env_.emplace_back("OPENROUTER_API_KEY", "dummy-key-no-network");
+    if (!has_offline) env_.emplace_back("ARBITER_OFFLINE", "1");
     if (!has_term) env_.emplace_back("TERM", "xterm-256color");
     auto forward_if_set = [&](bool already, const char* key) {
         if (already) return;
