@@ -1,46 +1,29 @@
-// Interactive REPL entry — carved out of main.cpp.
+// Interactive REPL entry — thin cmd_interactive + ReplSession boot/shutdown.
 #include "cli.h"
+#include "repl/session.h"
+#include "repl/session_internal.h"
+
 #include "cli_helpers.h"
 #include "orchestrator.h"
 #include "agent_conversation.h"
-#include "commands.h"
-#include "constitution.h"
-#include "markdown.h"
-#include "stream_renderer.h"
-#include "render_policy.h"
-#include "styled_text.h"
 #include "api_server.h"
 #include "tenant_store.h"
 #include "scheduler.h"
 #include "notification_bus.h"
-#include "repl/queues.h"
-#include "loop_manager.h"
+#include "repl/layout.h"
+#include "repl/layout_snapshot.h"
+#include "repl/pane_history.h"
+#include "repl/conversation_store.h"
+#include "repl/transcript_replay.h"
 #include "tui/tui.h"
 #include "tui/tui_design.h"
-#include "tui/stream_filter.h"
 #include "tui/tty_guard.h"
-#include "tui/confirm_keys.h"
-#include "tui/interactive_prompt.h"
-#include "tui/prompt_bridge.h"
-#include "tui/sidebar.h"
-#include "tui/history_sidebar.h"
-#include "tui/theme_picker.h"
-#include "tui/clipboard.h"
 #include "tui/opentui/session.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
 #include "tui/opentui/theme_picker_frame.h"
-#include "tui/opentui/mouse_decode.h"
-#include "tui/opentui/mouse_hit.h"
-#include "repl/pane.h"
-#include "repl/layout.h"
-#include "repl/layout_snapshot.h"
-#include "repl/pane_history.h"
-#include "repl/repl_argv.h"
-#include "repl/conversation_store.h"
-#include "repl/conversation_titling.h"
-#include "repl/transcript_replay.h"
-#include "diff/apply.h"
+#include "tui/sidebar.h"
+#include "tui/history_sidebar.h"
 #include "theme.h"
 #include "config.h"
 
@@ -48,8 +31,6 @@
 #include <string>
 #include <string_view>
 #include <cstdlib>
-#include <csignal>
-#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -57,462 +38,35 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <set>
-#include <sstream>
 #include <unordered_set>
 #include <vector>
-#include <ctime>
 #include <cstdio>
 #include <unistd.h>
-#include <fcntl.h>
-#include <sys/select.h>
-#include <sys/ioctl.h>
 
 namespace fs = std::filesystem;
 
 namespace arbiter {
 
-
-using TenantStore = ::arbiter::TenantStore;
-using Tenant = ::arbiter::Tenant;
-// Prefer unqualified names matching the old main.cpp usings.
-using ::arbiter::TUI;
-using ::arbiter::ThinkingIndicator;
-using ::arbiter::ToolCallIndicator;
-using ::arbiter::StreamFilter;
-using ::arbiter::StyleId;
-using ::arbiter::StyledLine;
-using ::arbiter::MarkdownRenderer;
-using ::arbiter::CommandQueue;
-using ::arbiter::OutputQueue;
-using ::arbiter::LoopManager;
-using ::arbiter::Pane;
-using ::arbiter::LayoutTree;
-using ::arbiter::LayoutSnapshot;
-using ::arbiter::PaneFrameHooks;
-using ::arbiter::Rect;
-using ::arbiter::SidebarState;
-using ::arbiter::SidebarLoopEntry;
-using ::arbiter::ConversationStore;
-using ::arbiter::HistorySidebarState;
-using ::arbiter::HistorySidebarKey;
-using ::arbiter::HistorySidebarSnapshot;
-using ::arbiter::ThemePickerState;
-using ::arbiter::ThemePickerSnapshot;
-using ::arbiter::layout_snapshot_path;
-using ::arbiter::load_layout_snapshot;
-using ::arbiter::save_layout_snapshot;
-using ::arbiter::layout_snapshot_to_json;
-using ::arbiter::layout_snapshot_from_json;
-using ::arbiter::validate_layout_snapshot;
-using ::arbiter::kMaxLayoutSnapshotLeaves;
-using ::arbiter::for_each_layout_leaf;
-using ::arbiter::read_history_sidebar_key;
-using ::arbiter::styled_append;
-using ::arbiter::get_config_dir;
-using ::arbiter::get_api_keys;
-using ::arbiter::fetch_url;
-using ::arbiter::theme;
-using ::arbiter::ConversationScope;
-using ::arbiter::ensure_primary_tenant;
-using ::arbiter::make_cli_api_options;
-using ::arbiter::ApiServerOptions;
-using ::arbiter::wire_orchestrator_tools;
-using ::arbiter::NotificationBus;
-using ::arbiter::Scheduler;
-
-namespace {
-
-struct ReplGetcState {
-    Pane*                     pane = nullptr;
-};
-
-ReplGetcState g_getc_state;
-arbiter::UiContext* g_ui_ctx = nullptr;
-
-void wire_markdown_diff_sink(arbiter::MarkdownRenderer& md, OutputQueue& oq) {
-    md.set_diff_sink([&oq](const std::string& patch) {
-        if (!patch.empty()) oq.push_diff(patch);
-    });
-}
-
-arbiter::RenderPolicy master_stream_policy(const arbiter::Config& cfg) {
-    return cfg.verbose ? arbiter::kVerbose : arbiter::kMasterStream;
-}
-
-// Set by each pane's exec thread at startup and left untouched thereafter.
-// Orchestrator callbacks (progress/tool-status/agent-start) run
-// synchronously from whichever exec thread invoked orch.send_streaming, so
-// reading this thread-local gets the owning pane with zero synchronization.
-// /parallel workers re-pin it via orch.set_worker_pane_binder (captured at
-// spawn time from the pane exec thread).  Main/pump leave it nullptr.
-thread_local Pane* g_active_pane = nullptr;
-
-// Pin the advisor gate's original task across foreground turns until the gate
-// approves termination; mirrors LoopManager's original_task pinning.
-void update_pane_original_task(Pane& pane,
-                                      const std::string& user_line,
-                                      const arbiter::ApiResponse& resp) {
-    if (resp.ok && resp.gate_approved) {
-        pane.original_task.clear();
-    } else if (resp.ok && pane.original_task.empty()) {
-        pane.original_task = user_line;
-    }
-}
-
-// Drain any pending exec output into the pane scroll view and repaint.
-void getc_flush_output() {
-    auto& S = g_getc_state;
-    if (!S.pane) return;
-    pane_history_drain_queue(*S.pane);
-    if (g_ui_ctx) pane_history_render(*S.pane, *g_ui_ctx);
-}
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-}  // namespace
-
-void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
-    std::string dir = get_config_dir();
-    arbiter::load_tui_design(dir, theme_override);
-    auto api_keys = get_api_keys();
-
-    // ── Raw stdin ──────────────────────────────────────────────────────────
-    // Must happen before Session::start() below: setupTerminal() sends
-    // capability queries (OSC 10/11, DECRQM, DA/XTVERSION, CPR) and the
-    // terminal's replies land on stdin. With ECHO still enabled (inherited
-    // cooked mode), the kernel line discipline echoes those bytes to the
-    // screen the instant they arrive — reading them later doesn't undo
-    // that. Raw mode has to be in effect *before* the queries go out.
-    // Declared before Session so exception unwind restores termios after
-    // OpenTUI teardown (reverse destruction order).
-    arbiter::StdinRawModeGuard stdin_guard;
-
-    arbiter::opentui::Session ot_session;
-    arbiter::UiContext ui_ctx;
-    ot_session.start(static_cast<std::uint32_t>(arbiter::term_cols()),
-                     static_cast<std::uint32_t>(arbiter::term_rows()));
-    // Install fatal handlers BEFORE enabling mouse / arming so a crash or
-    // SIGTERM during the rest of startup cannot leave sticky DEC modes or
-    // raw termios in the host shell.
-    arbiter::install_tui_fatal_handlers();
-    arbiter::g_tui_armed = 1;
-    // Button+drag+wheel tracking without any-event motion (?1003).
-    if (arbiter::tui_design().layout.mouse) {
-        ot_session.engine().set_mouse_enabled(true, /*enable_movement=*/false);
-    }
-    if (stdin_guard.active) arbiter::drain_stdin_spurious(200);
-    ui_ctx.session = &ot_session;
-    g_ui_ctx = &ui_ctx;
-
-    arbiter::Orchestrator orch(std::move(api_keys));
-    orch.load_agents(dir + "/agents");
-
-    // ── App-scope shared state ─────────────────────────────────────────────
-    arbiter::Config cfg;
+ReplSession::ReplSession(std::string config_dir,
+                         std::map<std::string, std::string> api_keys,
+                         bool exec_allowed_flag)
+    : dir(std::move(config_dir))
+    , orch(std::move(api_keys))
+    , conversation_store(dir)
+{
     cfg.exec_allowed = exec_allowed_flag;
     orch.set_exec_disabled(!cfg.exec_allowed);
-    LoopManager loops;
+    orch.load_agents(dir + "/agents");
 
-    // Serializes layout tree mutations against the pump thread's iteration.
-    // Recursive because dispatch_chord can call back into the tree.
-    std::recursive_mutex layout_mu;
+    history_sidebar.set_enabled(
+        tui_design().layout.show_history_sidebar, dir);
 
-    // Forward declaration — layout_ptr lets lambdas registered before layout
-    // construction reach it safely (we set it once and never clear).
-    LayoutTree* layout_ptr = nullptr;
+    interactive_prompts.set_notify([this]() { wake_main_input(); });
 
-    // FIFO interactive prompt queue (confirm + auto/manual diff review).
-    // Concurrent producers enqueue without failing prior waiters.
-    arbiter::InteractivePromptQueue interactive_prompts;
-
-    // Main thread publishes the editor currently inside read_line so exec
-    // threads can wake it without racing layout.focused() under layout_mu
-    // (close/join may already hold that lock).
-    std::atomic<arbiter::opentui::PaneInputEditor*> active_readline{nullptr};
-    std::atomic<bool> deferred_main_interrupt{false};
-
-    auto wake_main_input = [&]() {
-        deferred_main_interrupt.store(true, std::memory_order_release);
-        if (auto* ed = active_readline.load(std::memory_order_acquire)) {
-            ed->interrupt();
-            return;
-        }
-        if (!layout_ptr) return;
-        // try_lock: never block if main already holds layout_mu (e.g. chord
-        // dispatch / present). Join no longer holds the lock, but other
-        // paths still do.
-        std::unique_lock<std::recursive_mutex> lk(layout_mu, std::try_to_lock);
-        if (lk) layout_ptr->focused().editor.interrupt();
-    };
-
-    auto fail_pending_prompts = [&]() {
-        interactive_prompts.fail_all(arbiter::InteractiveDecision::Cancel);
-    };
-
-    interactive_prompts.set_notify(wake_main_input);
-
-    // Apply a pending/failed proposal by id.  Returns a status line for the pane.
-    auto apply_diff_proposal = [](Pane& pane, int id) -> std::string {
-        auto& store = pane.diff_proposals;
-        auto prop = store.get(id);
-        if (!prop) return "ERR: no patch #" + std::to_string(id);
-        if (prop->status == arbiter::DiffProposalStatus::Applied) {
-            return "ERR: patch #" + std::to_string(id) +
-                   " already applied — /diff undo " + std::to_string(id) +
-                   " to revert";
-        }
-        if (prop->status == arbiter::DiffProposalStatus::Rejected) {
-            return "ERR: patch #" + std::to_string(id) + " was rejected";
-        }
-        auto applied = arbiter::apply_unified_diff(prop->patch);
-        if (!applied.ok) {
-            store.mark_failed(id, applied.error);
-            return "ERR: apply #" + std::to_string(id) +
-                   " failed: " + applied.error;
-        }
-        arbiter::DiffUndoSnapshot snap;
-        snap.resolved_path = applied.resolved_path;
-        snap.had_file = applied.had_file;
-        snap.pre_image = applied.pre_image;
-        snap.post_image = applied.post_image;
-        store.mark_applied(id, std::move(snap));
-        std::string msg = "applied patch #" + std::to_string(id) +
-            ": " + applied.path;
-        if (!applied.had_file) msg += " (created)";
-        msg += "\n  /diff undo " + std::to_string(id) +
-            " to restore the previous contents";
-        return msg;
-    };
-
-    auto patch_preview_lines = [](const std::string& patch)
-        -> std::vector<std::string> {
-        std::vector<std::string> out;
-        std::istringstream ps(patch);
-        std::string line;
-        while (std::getline(ps, line) && out.size() < 6) {
-            if (line.rfind("---", 0) == 0 ||
-                line.rfind("+++", 0) == 0 ||
-                line.rfind("@@", 0) == 0 ||
-                line.rfind("diff ", 0) == 0 ||
-                line.rfind("index ", 0) == 0) {
-                continue;
-            }
-            if (line.size() > 72) line = line.substr(0, 69) + "...";
-            out.push_back(std::move(line));
-        }
-        return out;
-    };
-
-    auto handle_diff_decision = [&](Pane& pane, int patch_id,
-                                    arbiter::InteractiveDecision d) {
-        auto push = [&](const std::string& msg) {
-            pane.output_queue.push_prose(
-                {arbiter::styled_activity_line(msg, arbiter::StyleId::System)});
-            pane.output_queue.end_message();
-        };
-        if (d == arbiter::InteractiveDecision::Allow ||
-            d == arbiter::InteractiveDecision::AllowAll) {
-            push(apply_diff_proposal(pane, patch_id));
-            return;
-        }
-        if (d == arbiter::InteractiveDecision::Deny) {
-            if (pane.diff_proposals.mark_rejected(patch_id)) {
-                auto prop = pane.diff_proposals.get(patch_id);
-                push("rejected patch #" + std::to_string(patch_id) +
-                     (prop ? (": " + prop->path) : std::string{}));
-            } else {
-                push("ERR: could not reject patch #" + std::to_string(patch_id));
-            }
-        }
-        // Cancel: leave pending.
-    };
-
-    std::atomic<bool> quit_requested{false};
-
-    ConversationStore conversation_store(dir);
-    HistorySidebarState history_sidebar;
-    history_sidebar.set_enabled(arbiter::tui_design().layout.show_history_sidebar, dir);
-    ThemePickerState theme_picker;
-
-    // Signals the main thread to repaint the focused input after a layout mutation.
-    std::atomic<bool> refresh_focused_input{false};
-
-    // Pane close requests queued by exec threads for the main thread to process.
-    struct PendingClose {
-        Pane*       pane;
-        std::string agent_id;  // for the prompt text
-    };
-    std::mutex                pending_closes_mu;
-    std::vector<PendingClose> pending_closes;
-
-    // Conversation switch/delete requests queued by /chat (which runs on a
-    // pane's exec thread) for the main thread to process — the actual
-    // switch touches `layout`/stdin-adjacent state that isn't safe to
-    // drive from a background thread. Mirrors pending_closes above.
-    struct PendingConversationOp {
-        bool switch_op = false;   // vs delete_op
-        bool create_new = false; // only meaningful when switch_op
-        std::string target_id;   // empty + create_new=false + switch_op=true means "use sidebar selection"
-        bool delete_op = false;
-        bool hard_delete = false;
-        // When create_new: optional folder to file the new conversation into.
-        std::string folder_id;
-    };
-    std::mutex                          pending_conv_mu;
-    std::vector<PendingConversationOp>  pending_conv_ops;
-
-    SidebarState sidebar;
-
-    // Filled in after switch_conversation exists; make_pane editors call through.
-    std::function<bool(const arbiter::opentui::MouseEvent&)> route_mouse;
-
-    // Active separator drag (mouse button held on a split gutter). Uses a
-    // path-based SeparatorRef so a mid-drag layout mutation cannot UAF.
-    struct MouseDragState {
-        bool active = false;
-        LayoutTree::SeparatorRef sep{};
-    } mouse_drag;
-
-    // Active output-area text selection (left button held in PaneScroll).
-    // Expand/collapse fires on Up only when the pointer never moved a cell.
-    struct MouseSelectState {
-        bool active = false;
-        bool dragged = false;
-        Pane* pane = nullptr;
-        arbiter::opentui::ScrollCellPos anchor{};
-    } mouse_select;
-
-    // History-row activation is queued out of route_mouse so we never nest
-    // switch_conversation's stdin confirm inside the mouse handler / while
-    // holding layout_mu across a blocking read.
-    struct PendingMouseSwitch {
-        bool pending = false;
-        bool create_new = false;
-        bool toggle_folder = false;
-        std::string folder_id;  // create_new target folder (empty = unfiled)
-    } mouse_switch;
-
-    // After confirming switch/delete during an in-flight turn, cancel is
-    // scoped to the pane token(s) and completion is deferred onto the main
-    // loop (#46).  The render pump keeps painting; Esc abandons via the
-    // editor cancel handler; queued follow-ups are preserved until success.
-    struct PendingAfterCancel {
-        enum class Kind { None, Switch, Delete } kind = Kind::None;
-        bool create_new = false;
-        std::string target_id;
-        bool hard_delete = false;
-        std::string folder_id;  // create_new target folder
-        // For Switch: wait until this pane's cmd_queue is idle.
-        // For Delete: wait until no pane bound to wait_conversation_id is busy.
-        Pane* pane = nullptr;
-        std::string wait_conversation_id;
-        const char* abandon_status = "Switch cancelled";
-    } pending_after_cancel;
-    std::atomic<bool> pending_cancel_wait{false};
-
-    auto clear_mouse_select = [&]() { mouse_select = {}; };
-    // Drop the gesture *and* any in-progress highlight so a cancelled drag
-    // (or layout teardown) cannot leave a stuck selection with no release/copy.
-    auto clear_mouse_select_and_highlight = [&]() {
-        if (mouse_select.pane) pane_history_clear_selection(*mouse_select.pane);
-        mouse_select = {};
-    };
-    auto clear_mouse_drag = [&]() {
-        mouse_drag = {};
-        clear_mouse_select_and_highlight();
-    };
-    auto clear_all_selections = [&]() {
-        if (!layout_ptr) return;
-        layout_ptr->for_each_pane([&](Pane& p) {
-            pane_history_clear_selection(p);
-        });
-    };
-
-    auto layout_bounds = [&sidebar, &layout_ptr, &history_sidebar]() -> Rect {
-        const int cols = arbiter::term_cols();
-        const int rows = arbiter::term_rows();
-        const int leading = HistorySidebarState::width_for_terminal(
-            cols, history_sidebar.enabled());
-        const int panes = layout_ptr ? static_cast<int>(layout_ptr->pane_count()) : 1;
-        const int session_w = sidebar.effective_width(cols, panes, leading);
-        // Reserve a trailing gutter so the session box isn't flush to the edge.
-        const int trailing = session_w > 0
-            ? session_w + SidebarState::kOuterGutter
-            : 0;
-        // Full terminal height — no top header bar.
-        return Rect{leading, 0, std::max(1, cols - leading - trailing), std::max(1, rows)};
-    };
-
-    bool restored = conversation_store.load(conversation_store.active_id(), orch);
-    if (restored) sidebar.mark_prompt_started();
-
-    // TUI chat history and tool scoping share tenants.db via ConversationStore.
-    TenantStore& tenants = conversation_store.tenant_store();
-    const int64_t primary_tenant_id = conversation_store.tenant_id();
-    Tenant primary = tenants.get_tenant(primary_tenant_id)
-                         .value_or(Tenant{});
-    if (primary.id == 0) {
-        primary = ensure_primary_tenant(tenants);
-    }
-
-    auto parse_conversation_db_id = [](const std::string& id) -> int64_t {
-        if (id.empty()) return 0;
-        char* end = nullptr;
-        const long long v = std::strtoll(id.c_str(), &end, 10);
-        if (end == id.c_str() || *end != '\0' || v <= 0) return 0;
-        return static_cast<int64_t>(v);
-    };
-
-    // Live conversation id for tool callbacks. Wired once; turns update
-    // the atomic so /todo|/mem|artifacts follow the executing pane without
-    // reinstalling callbacks mid-sibling-turn.
-    auto tool_conversation_id = std::make_shared<std::atomic<int64_t>>(
-        parse_conversation_db_id(conversation_store.active_id()));
-    ApiServerOptions api_opts =
-        make_cli_api_options(dir, get_api_keys(), exec_allowed_flag);
-    wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
-                            tool_conversation_id);
-    // API wiring installs a capture-only /write interceptor (no host cwd).
-    // The interactive TUI must persist to the process cwd after confirm.
-    orch.set_write_interceptor(nullptr);
-    auto bind_tools_conversation = [&](const std::string& conv_id) {
-        const int64_t cid = parse_conversation_db_id(conv_id);
-        tool_conversation_id->store(cid, std::memory_order_relaxed);
-        arbiter::set_tool_conversation_tls(cid);
-    };
-
-    NotificationBus notifications;
-    Scheduler scheduler(&api_opts, &tenants, &notifications);
-    scheduler.start();
-
-    // Load input history into one live store shared by every pane's editor:
-    // a command typed in any pane is instantly in every pane's Up-arrow /
-    // Ctrl-R history.
-    auto shared_history = std::make_shared<arbiter::opentui::SharedInputHistory>();
-    {
-        std::vector<std::string> loaded;
-        std::ifstream hf(get_config_dir() + "/history");
-        std::string line;
-        while (std::getline(hf, line))
-            if (!line.empty()) loaded.push_back(std::move(line));
-        shared_history->replace(std::move(loaded));
-    }
-
-    std::cout.flush();
-
-    arbiter::install_sigwinch_handler();
-
-    std::function<void()> pump_notify;
-
-    // Ctrl-P command palette: one shared table of every REPL command with a
-    // one-line hint.  Kept in sync with /help by review (both live in this
-    // file); Enter inserts the name into the input buffer.
-    const std::vector<arbiter::PaletteItem> palette_items = {
+    palette_items = {
         {"/ask",          "ask the index master"},
         {"/send",         "send a message to a specific agent"},
         {"/use",          "switch the focused pane's current agent"},
@@ -560,333 +114,199 @@ void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
         {"/help",         "command reference"},
         {"/quit",         "exit"},
     };
+}
 
-    // ── Pane factory ───────────────────────────────────────────────────────
-    auto make_pane = [&]() -> std::unique_ptr<Pane> {
-        auto p = std::make_unique<Pane>();
-        // Wire pump wakeup so any output push wakes the drain thread
-        // immediately rather than waiting for the next 30ms tick.
-        p->output_queue.set_notify_fn([&pump_notify](){
-            if (pump_notify) pump_notify();
-        });
-        p->current_agent = "index";
-        p->current_model = orch.get_agent_model(p->current_agent);
-        // New splits inherit the focused pane's conversation (same buffer in
-        // a new window).  The very first pane binds to the store's active id.
-        if (layout_ptr) {
-            p->conversation_id = layout_ptr->focused().conversation_id;
-        } else {
-            p->conversation_id = conversation_store.active_id();
+ReplSession::~ReplSession() = default;
+
+void ReplSession::wake_main_input() {
+    deferred_main_interrupt.store(true, std::memory_order_release);
+    if (auto* ed = active_readline.load(std::memory_order_acquire)) {
+        ed->interrupt();
+        return;
+    }
+    if (!layout_ptr) return;
+    // try_lock: never block if main already holds layout_mu (e.g. chord
+    // dispatch / present). Join no longer holds the lock, but other
+    // paths still do.
+    std::unique_lock<std::recursive_mutex> lk(layout_mu, std::try_to_lock);
+    if (lk) layout_ptr->focused().editor.interrupt();
+}
+
+void ReplSession::fail_pending_prompts() {
+    interactive_prompts.fail_all(InteractiveDecision::Cancel);
+}
+
+Rect ReplSession::layout_bounds() {
+    const int cols = term_cols();
+    const int rows = term_rows();
+    const int leading = HistorySidebarState::width_for_terminal(
+        cols, history_sidebar.enabled());
+    const int panes = layout_ptr ? static_cast<int>(layout_ptr->pane_count()) : 1;
+    const int session_w = sidebar.effective_width(cols, panes, leading);
+    // Reserve a trailing gutter so the session box isn't flush to the edge.
+    const int trailing = session_w > 0
+        ? session_w + SidebarState::kOuterGutter
+        : 0;
+    // Full terminal height — no top header bar.
+    return Rect{leading, 0, std::max(1, cols - leading - trailing), std::max(1, rows)};
+}
+
+int64_t ReplSession::parse_conversation_db_id(const std::string& id) {
+    if (id.empty()) return 0;
+    char* end = nullptr;
+    const long long v = std::strtoll(id.c_str(), &end, 10);
+    if (end == id.c_str() || *end != '\0' || v <= 0) return 0;
+    return static_cast<int64_t>(v);
+}
+
+void ReplSession::bind_tools_conversation(const std::string& conv_id) {
+    const int64_t cid = parse_conversation_db_id(conv_id);
+    tool_conversation_id->store(cid, std::memory_order_relaxed);
+    set_tool_conversation_tls(cid);
+}
+
+void ReplSession::persist_layout() {
+    if (!layout_ptr) return;
+    const auto snap = layout_ptr->capture_snapshot();
+    const std::string json = layout_snapshot_to_json(snap);
+    conversation_store.tenant_store().set_tui_layout_json(
+        conversation_store.tenant_id(), json);
+    fs::create_directories(dir + "/conversations");
+    if (!save_layout_snapshot(layout_snapshot_path(dir), snap)) {
+        std::fprintf(stderr,
+                     "[layout] failed to persist pane layout to %s\n",
+                     layout_snapshot_path(dir).c_str());
+    }
+}
+
+bool ReplSession::sync_layout_to_terminal() {
+    const Rect want = layout_bounds();
+    const Rect have = layout_ptr->outer_bounds();
+    if (want.x == have.x && want.y == have.y
+        && want.w == have.w && want.h == have.h) {
+        return false;
+    }
+    layout_ptr->resize(want);
+    layout_ptr->for_each_pane([&](Pane& p) {
+        pane_history_set_cols(p, p.tui.cols());
+    });
+    return true;
+}
+
+void ReplSession::reveal_sidebar() {
+    if (sidebar.session_started()) return;
+    sidebar.mark_prompt_started();
+    std::lock_guard<std::recursive_mutex> lk(layout_mu);
+    sync_layout_to_terminal();
+    refresh_focused_input.store(true);
+    layout_ptr->focused().editor.interrupt();
+}
+
+void ReplSession::refresh_chrome() {
+    std::lock_guard<std::recursive_mutex> lk(layout_mu);
+    layout_ptr->for_each_pane([&](Pane& p) { pane_history_retheme(p); });
+    ot_session.apply_design();
+    if (ui_ctx.present_all) ui_ctx.present_all();
+    ot_session.flush_display();
+    refresh_focused_input.store(true);
+    layout_ptr->focused().editor.interrupt();
+}
+
+int ReplSession::outer_bottom_input_rows() {
+    int rows = 0;
+    layout_ptr->for_each_pane([&](Pane& p) {
+        const TuiChromeSnapshot chrome = p.tui.chrome_snapshot();
+        if (chrome.outer_bottom) {
+            rows = std::max(rows, chrome.input_rows);
         }
-        pane_history_init(*p);
+    });
+    return rows;
+}
 
-        p->editor.set_shared_history(shared_history);
-        p->editor.set_max_history(1000);
-        p->editor.set_palette_items(palette_items);
-        p->editor.set_present_fn([&]() { if (pump_notify) pump_notify(); });
+void ReplSession::present_unlocked() {
+    pane_history_present(ui_ctx, pane_hooks);
+}
 
-        p->editor.set_completion_provider(
-            [&orch, &loops, &dir](const std::string& buf, const std::string& tok)
-            -> std::vector<std::string> {
-                auto match = [&](const std::vector<std::string>& candidates) {
-                    std::vector<std::string> out;
-                    for (auto& c : candidates)
-                        if (c.substr(0, tok.size()) == tok) out.push_back(c);
-                    return out;
-                };
-                std::string cmd;
-                {
-                    std::istringstream iss(buf);
-                    iss >> cmd;
-                    if (!cmd.empty() && cmd[0] == '/') cmd = cmd.substr(1);
-                }
-                bool only_cmd = (buf.find(' ') == std::string::npos);
-                if (only_cmd || buf.empty()) {
-                    return match({"/send","/ask","/use","/agents","/status","/tokens",
-                                  "/create","/remove","/reset","/compact","/model",
-                                  "/pane","/find",
-                                  "/loop","/loops","/log","/watch",
-                                  "/kill","/suspend","/resume","/inject",
-                                  "/fetch","/mem","/search","/browse",
-                                  "/todo","/schedule","/exec","/diff","/write",
-                                  "/read","/list","/mcp","/a2a","/lesson",
-                                  "/plan","/theme","/verbose","/chat","/quit","/help"});
-                }
-                if (cmd == "diff") {
-                    return match({"review","list","apply","reject","undo"});
-                }
-                if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
-                    cmd == "reset" || cmd == "compact" || cmd == "pane") {
-                    auto agents = orch.list_agents();
-                    agents.push_back("index");
-                    return match(agents);
-                }
-                if (cmd == "kill"    || cmd == "suspend" || cmd == "resume" ||
-                    cmd == "watch"   || cmd == "log"     || cmd == "inject") {
-                    return match(loops.list_ids());
-                }
-                if (cmd == "mem") return match({"write","read","show","clear","shared",
-                                                "search","entries","entry","add"});
-                if (cmd == "todo") return match({"list","add","start","done","cancel","reorder"});
-                if (cmd == "schedule") return match({"list","cancel","pause","resume"});
-                if (cmd == "chat") return match({"list", "new", "switch", "search", "title", "delete", "purge"});
-                if (cmd == "mcp") return match({"tools","call"});
-                if (cmd == "a2a") return match({"list","call"});
-                if (cmd == "theme") return match(arbiter::tui_list_available_themes(dir));
-                return {};
-            });
+void ReplSession::present_holding_lock() {
+    if (sync_layout_to_terminal()) refresh_focused_input.store(true);
+    present_unlocked();
+}
 
-        Pane* raw = p.get();
-        p->editor.set_scroll_handler([raw, &pump_notify, &orch, &layout_mu](int direction, int step) {
-            // Must serialize against the output pump's drain/draw under
-            // layout_mu — replay_load_previous_chunk mutates segments_.
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            const int max_off = pane_history_max_scroll(*raw);
-            if (direction < 0) {
-                raw->scroll_offset = std::min(raw->scroll_offset + step, max_off);
-                // Hit the top of currently-loaded scrollback: pull in the
-                // next chunk of older transcript history, if any is behind
-                // the gap marker (see replay_transcript/kReplayTailMessages).
-                if (raw->scroll_offset >= max_off && raw->scroll && raw->scroll->has_gap()) {
-                    ConversationScope scope(raw->conversation_id);
-                    const std::string& agent = raw->current_agent.empty()
-                        ? "index" : raw->current_agent;
-                    const auto history = orch.get_agent_history(agent);
-                    arbiter::replay_load_previous_chunk(*raw, history);
-                }
-            } else {
-                raw->scroll_offset = std::max(0, raw->scroll_offset - step);
-                raw->new_while_scrolled = 0;
-                if (raw->scroll_offset == 0) raw->tui.clear_status();
-            }
-            if (pump_notify) pump_notify();
-        });
-        p->editor.set_code_expand_handler([raw, &pump_notify, &layout_mu]() {
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            if (pane_history_toggle_code_block(*raw, raw->scroll_offset) && pump_notify) {
-                pump_notify();
-            }
-        });
-        p->editor.set_cancel_handler(
-            [raw, &orch, &pending_after_cancel, &pending_cancel_wait,
-             &pump_notify, &fail_pending_prompts]() {
-            // Esc clears an active scrollback selection first; a second Esc
-            // (or Esc with no selection) cancels the in-flight turn.
-            if (pane_history_has_selection(*raw)) {
-                pane_history_clear_selection(*raw);
-                if (pump_notify) pump_notify();
-                return;
-            }
-            // Esc during a deferred switch/delete wait abandons the pending
-            // op without a second global cancel (token cancel already fired).
-            if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
-                const char* status = pending_after_cancel.abandon_status
-                    ? pending_after_cancel.abandon_status
-                    : "Cancelled";
-                pending_after_cancel = {};
-                pending_cancel_wait.store(false);
-                raw->thinking.stop();
-                raw->tui.set_status(status);
-                if (pump_notify) pump_notify();
-                return;
-            }
-            // Unblock any in-flight confirm / diff-review waiter before
-            // cancelling the turn — otherwise fut.get() hangs and pane
-            // close blocks forever in join.
-            fail_pending_prompts();
-            // Scoped cancel: stop this pane's turn only so sibling panes
-            // keep streaming (#46 / #48).  atomic_load: races exec reset.
-            auto token = std::atomic_load(&raw->turn_cancel);
-            if (token) orch.cancel_token(token);
-            else orch.cancel();
-            raw->multiline_accum.clear();
-            raw->output_queue.push_prose(
-                {arbiter::styled_activity_line("[interrupted]", StyleId::Error)});
-            raw->output_queue.end_message();
-        });
-        // Chord prefix: Ctrl-w.  Recognized follow-ups: w (next pane),
-        // h (horizontal split), v (vertical split), s (sidebar toggle),
-        // c (close pane), z (zoom), t/b (history sidebar); Ctrl-w itself
-        // is a synonym for 'w'.
-        p->editor.set_chord_handler([](char cmd) -> bool {
-            return cmd == 'w' || cmd == 'h' || cmd == 's' || cmd == 'v' || cmd == 'c'
-                || cmd == 'z' || cmd == 't' || cmd == 'b'
-                || cmd == 0x17;
-        });
-        p->editor.set_mouse_handler([&route_mouse](const arbiter::opentui::MouseEvent& ev) {
-            return route_mouse ? route_mouse(ev) : false;
-        });
-        return p;
+void ReplSession::setup_pane_hooks() {
+    pane_hooks.for_each_pane = [this](const std::function<void(Pane&)>& fn) {
+        layout_ptr->for_each_pane(fn);
     };
+    pane_hooks.draw_overlays = [this](OpenTuiHandle frame, int cols, int rows) {
+        if (frame == 0 || cols <= 0 || rows <= 0) return;
 
-    // Provider reasoning/thinking → collapsible ThinkingSegment (when emitted).
-    // Header ThinkingIndicator remains the wait-state spinner for all models.
-    // When an assistant message already exists (tool / nested phase), also
-    // persist onto the pane agent so conversation switch rebuilds the rows.
-    orch.client().set_reasoning_callback([&](const std::string& delta) {
-        Pane* p = g_active_pane;
-        if (!p) return;
-        p->output_queue.push_thinking(delta, p->current_agent);
-        orch.append_thinking(p->current_agent, delta);
-    });
+        // Align both sidebars to the layout's outer bottom chrome, not the
+        // focused pane — mid-column focus must not shorten Conversations /
+        // Session relative to the column bottoms.
+        const Rect outer = layout_ptr->outer_bounds();
+        const int outer_bottom_pad =
+            tui_outer_bottom_pad_rows(tui_design());
+        const int sidebar_input_rows = outer_bottom_input_rows();
 
-    // ── Orchestrator callbacks ─────────────────────────────────────────────
-    // All pane-facing callbacks route through g_active_pane (thread-local),
-    // which each pane's exec thread sets at startup. /parallel workers pin
-    // the same pane via worker_pane_binder.
-    orch.set_progress_callback([&](const std::string& agent_id,
-                                    const std::string& content) {
-        Pane* p = g_active_pane;
-        if (!p) return;
-        // One header per distinct sub-agent per master turn (not every API
-        // iteration — that was flooding scroll with repeated → agent rows).
-        if (p->last_interim_agent != agent_id) {
-            p->output_queue.push_prose({arbiter::styled_interim_header(agent_id)});
-            p->last_interim_agent = agent_id;
-        }
-        arbiter::StreamRenderer renderer(arbiter::kInterim, p->output_queue);
-        renderer.feed(content);
-        renderer.flush();
-    });
-    orch.set_tool_status_callback([&](const arbiter::ToolActivityEvent& ev) {
-        Pane* p = g_active_pane;
-        if (p) {
-            // In-scroll timeline row (Started creates, Finished updates).
-            p->output_queue.push_tool(ev);
-            // Do NOT call begin() here — turn entry already arms the spinner.
-            // begin() zeroes counters, so N tools would always display as "1".
-            if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
-                p->tool_indicator.bump(ev.label, ev.ok);
+        const Rect hb = HistorySidebarState::rect_for_terminal(
+            cols, rows, history_sidebar.enabled());
+        if (hb.w > 0) {
+            // Avoid reloading the store mid-edit — refresh is unnecessary
+            // while the user types a rename / navigates an overlay.
+            HistorySidebarSnapshot hs = history_sidebar.snapshot();
+            if (!hs.renaming && !hs.moving
+                && !hs.menu_open && !hs.confirming_delete) {
+                history_sidebar.refresh_entries(conversation_store);
+                hs = history_sidebar.snapshot();
             }
+            hs.active_id = conversation_store.active_id();
+            opentui::draw_history_sidebar(
+                frame, hs, hb, outer, sidebar_input_rows, outer_bottom_pad);
         }
-        if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
-            sidebar.record_tool(ev.label, ev.ok);
-            // Persist for conversation-switch replay.  Pane history is what
-            // apply_conversation_to_pane rebuilds (usually "index"), so the
-            // pane agent always gets the row.  When a nested /agent dispatched
-            // the tool, also mirror onto that child so its own history stays
-            // accurate if inspected later.
-            if (p) {
-                arbiter::ToolTraceEntry te;
-                te.id = ev.id;
-                te.label = ev.label;
-                te.kind = ev.kind;
-                te.detail = ev.detail;
-                te.ok = ev.ok;
-                te.result_preview = ev.result_preview;
-                orch.append_tool_trace(p->current_agent, te);
-                if (!ev.agent_id.empty() && ev.agent_id != p->current_agent) {
-                    orch.append_tool_trace(ev.agent_id, std::move(te));
-                }
-            }
+
+        if (layout_ptr->pane_count() > 1) layout_ptr->draw_borders(frame);
+
+        if (theme_picker.active()) {
+            opentui::draw_theme_picker(
+                frame, theme_picker.snapshot(), layout_ptr->focused().tui);
         }
-    });
-    orch.set_cost_callback([&](const std::string& agent_id,
-                                 const std::string& model,
-                                 const arbiter::ApiResponse& resp) {
-        sidebar.record_turn(agent_id, model, resp);
-        // Prefer the ConversationScope key — cost_cb runs on the pane exec
-        // thread inside handle()'s scope, even when g_active_pane is unset
-        // (e.g. nested /parallel workers that re-pin late).
-        const std::string& cid = arbiter::agent_conversation_key();
-        const int delta = resp.input_tokens + resp.output_tokens;
-        if (delta > 0 && !cid.empty()) {
-            conversation_store.add_tokens(cid, delta);
+
+        const int panes = static_cast<int>(layout_ptr->pane_count());
+        const int leading = HistorySidebarState::width_for_terminal(
+            cols, history_sidebar.enabled());
+        int sw = sidebar.effective_width(cols, panes, leading);
+        if (sw <= 0) return;
+
+        int pane_x = outer.x;
+        int pane_w = outer.w;
+        int gap = cols - pane_x - pane_w;
+        // Trailing gutter is reserved in layout_bounds; keep the box width at sw.
+        if (sw <= 0 || gap < sw) return;
+
+        const Rect sb = {pane_x + pane_w, 0, sw, std::max(1, rows)};
+        Pane& focused = layout_ptr->focused();
+        sidebar.set_focus_context(focused.current_agent,
+                                  focused.current_model);
+        sidebar.set_active_tool_calls(focused.tool_indicator.total());
+        std::vector<SidebarLoopEntry> loop_rows;
+        for (const auto& b : loops.briefs()) {
+            SidebarLoopEntry row;
+            row.id       = b.id;
+            row.agent_id = b.agent_id;
+            row.state    = b.state;
+            row.iter     = b.iter;
+            loop_rows.push_back(std::move(row));
         }
-    });
-    orch.set_agent_start_callback([&](const std::string& /*agent_id*/) {
-        Pane* p = g_active_pane;
-        if (p) p->thinking.start();
-    });
-    // Mid-turn durability: after each committed model iteration and each
-    // tool-result envelope, queue an autosave so quit/cancel/SIGKILL cannot
-    // drop completed tool work that is already in histories_.
-    orch.set_history_checkpoint_callback([&]() {
-        const std::string& cid = arbiter::agent_conversation_key();
-        if (cid.empty()) return;
-        conversation_store.save_async(cid, orch);
-    });
-    orch.set_escalation_callback([&](const std::string& agent_id,
-                                      int /*stream_id*/,
-                                      const std::string& reason) {
-        Pane* p = g_active_pane;
-        if (!p) return;
-        std::string text = "[advisor halt: " + agent_id + "] " + reason;
-        p->output_queue.push_prose(
-            {arbiter::styled_activity_line(std::move(text), arbiter::StyleId::Error)});
-        p->output_queue.end_message();
-    });
-
-    orch.set_advisor_event_callback([&](const arbiter::Orchestrator::AdvisorEvent& ev) {
-        Pane* p = g_active_pane;
-        if (!p) return;
-        if (ev.kind == "gate_continue") return;  // quiet success
-        arbiter::StyleId style = arbiter::StyleId::System;
-        std::string label;
-        if      (ev.kind == "consult")       { label = "advisor consult"; style = arbiter::StyleId::System; }
-        else if (ev.kind == "gate_redirect") { label = "advisor redirect"; style = arbiter::StyleId::Warning; }
-        else if (ev.kind == "gate_halt")     { label = "advisor halt";    style = arbiter::StyleId::Error;  }
-        else if (ev.kind == "gate_budget")   { label = "advisor budget";  style = arbiter::StyleId::Error;  }
-        else                                  { label = ev.kind;            style = arbiter::StyleId::System; }
-        std::string detail = ev.detail;
-        if (detail.size() > 200) { detail.resize(197); detail += "..."; }
-        std::string text = "[" + label + ": " + ev.agent_id + "]";
-        if (!detail.empty()) text += " " + detail;
-        p->output_queue.push_prose(
-            {arbiter::styled_activity_line(std::move(text), style)});
-        p->output_queue.end_message();
-    });
-
-    orch.set_confirm_callback([&](const arbiter::ConfirmRequest& req) -> bool {
-        return interactive_prompts.request_confirm(req);
-    });
-
-    // Auto-enqueue interactive diff review when ```diff fences register.
-    arbiter::pane_history_set_diff_auto_review(
-        [&](Pane& pane, const arbiter::DiffProposal& prop) {
-            Pane* pane_ptr = &pane;
-            const int id = prop.id;
-            arbiter::InteractiveRequest req;
-            req.kind = arbiter::InteractiveKind::DiffReview;
-            req.action = "diff";
-            req.target = prop.path;
-            req.patch_id = id;
-            req.path = prop.path;
-            req.summary =
-                "Apply under process cwd. Missing files are created.";
-            req.preview_lines = patch_preview_lines(prop.patch);
-            req.pane = pane_ptr;
-            req.auto_review = true;
-            req.on_complete = [pane_ptr, id, &handle_diff_decision,
-                               &layout_ptr](arbiter::InteractiveDecision d) {
-                if (!layout_ptr || !pane_ptr) return;
-                bool alive = false;
-                layout_ptr->for_each_pane([&](Pane& p) {
-                    if (&p == pane_ptr) alive = true;
-                });
-                if (!alive) return;
-                handle_diff_decision(*pane_ptr, id, d);
-            };
-            interactive_prompts.enqueue_auto(std::move(req));
-        });
-
-    // ── Layout + initial pane ──────────────────────────────────────────────
-    LayoutTree layout(make_pane(), layout_bounds());
-    layout_ptr = &layout;
-
-    auto persist_layout = [&]() {
-        if (!layout_ptr) return;
-        const auto snap = layout_ptr->capture_snapshot();
-        const std::string json = layout_snapshot_to_json(snap);
-        conversation_store.tenant_store().set_tui_layout_json(
-            conversation_store.tenant_id(), json);
-        fs::create_directories(dir + "/conversations");
-        if (!save_layout_snapshot(layout_snapshot_path(dir), snap)) {
-            std::fprintf(stderr,
-                         "[layout] failed to persist pane layout to %s\n",
-                         layout_snapshot_path(dir).c_str());
-        }
+        sidebar.set_loops(std::move(loop_rows));
+        const SidebarSnapshot snap = sidebar.snapshot();
+        opentui::draw_sidebar(
+            frame, snap, sb, outer, sidebar_input_rows, outer_bottom_pad);
     };
+}
+
+void ReplSession::boot_layout_and_transcripts(bool restored) {
+    layout_holder = std::make_unique<LayoutTree>(
+        make_pane(), layout_bounds());
+    layout_ptr = layout_holder.get();
 
     // Restore multi-pane layout + per-pane conversation bindings (#42).
     // Prefer the SQLite tui_prefs copy; fall back to the legacy file path.
@@ -911,16 +331,19 @@ void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
                 if (leaf.agent.empty()) leaf.agent = "index";
             });
             if (validate_layout_snapshot(*snap) &&
-                layout.restore_snapshot(*snap, make_pane, layout_bounds())) {
+                layout_ptr->restore_snapshot(
+                    *snap,
+                    [this]() { return make_pane(); },
+                    layout_bounds())) {
                 // layout_bounds() above used pane_count==1 (pre-restore). The
                 // session sidebar hides when pane_count > 1, so recompute now
                 // before col sync / transcript replay.
-                layout.resize(layout_bounds());
+                layout_ptr->resize(layout_bounds());
             }
         }
     }
 
-    layout.for_each_pane([&](Pane& p) {
+    layout_ptr->for_each_pane([&](Pane& p) {
         pane_history_set_cols(p, p.tui.cols());
         if (p.current_agent != "index" && !orch.has_agent(p.current_agent)) {
             p.current_agent = "index";
@@ -938,7 +361,7 @@ void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
         std::set<std::string> loaded_ids;
         std::unordered_set<std::string> replayed_bindings;
         bool any_history = restored;
-        layout.for_each_pane([&](Pane& pane) {
+        layout_ptr->for_each_pane([&](Pane& pane) {
             const std::string& id = pane.conversation_id;
             if (id.empty()) return;
             if (loaded_ids.insert(id).second) {
@@ -948,7 +371,7 @@ void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
             }
             const std::string& agent = pane.current_agent.empty()
                 ? "index" : pane.current_agent;
-            if (!arbiter::claim_pane_transcript_replay(replayed_bindings, id, agent)) {
+            if (!claim_pane_transcript_replay(replayed_bindings, id, agent)) {
                 return;
             }
             ConversationScope scope(id);
@@ -959,3095 +382,19 @@ void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
             const size_t total = history.size();
             if (total > 0) {
                 any_history = true;
-                arbiter::replay_transcript(
-                    pane, history, arbiter::replay_tail_begin(total), total);
+                replay_transcript(
+                    pane, history, replay_tail_begin(total), total);
             }
         });
-        if (!layout.focused().conversation_id.empty()) {
-            conversation_store.set_active(layout.focused().conversation_id);
-            bind_tools_conversation(layout.focused().conversation_id);
+        if (!layout_ptr->focused().conversation_id.empty()) {
+            conversation_store.set_active(layout_ptr->focused().conversation_id);
+            bind_tools_conversation(layout_ptr->focused().conversation_id);
         }
         if (any_history) sidebar.mark_prompt_started();
     }
+}
 
-    auto sync_layout_to_terminal = [&]() -> bool {
-        const Rect want = layout_bounds();
-        const Rect have = layout.outer_bounds();
-        if (want.x == have.x && want.y == have.y
-            && want.w == have.w && want.h == have.h) {
-            return false;
-        }
-        layout.resize(want);
-        layout.for_each_pane([&](Pane& p) {
-            pane_history_set_cols(p, p.tui.cols());
-        });
-        return true;
-    };
-
-    auto reveal_sidebar = [&]() {
-        if (sidebar.session_started()) return;
-        sidebar.mark_prompt_started();
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
-        sync_layout_to_terminal();
-        refresh_focused_input.store(true);
-        layout.focused().editor.interrupt();
-    };
-
-    auto refresh_chrome = [&]() {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
-        layout.for_each_pane([&](Pane& p) { pane_history_retheme(p); });
-        ot_session.apply_design();
-        if (ui_ctx.present_all) ui_ctx.present_all();
-        ot_session.flush_display();
-        refresh_focused_input.store(true);
-        layout.focused().editor.interrupt();
-    };
-
-    // Tallest live input among outer-bottom panes — sidebars must reserve
-    // the same band so list/scroll bottoms don't spill into multiline input.
-    // Inactive panes use input_rows=0 (content-only); only the focused
-    // outer-bottom pane contributes a readline band.
-    auto outer_bottom_input_rows = [&]() -> int {
-        int rows = 0;
-        layout.for_each_pane([&](Pane& p) {
-            const arbiter::TuiChromeSnapshot chrome = p.tui.chrome_snapshot();
-            if (chrome.outer_bottom) {
-                rows = std::max(rows, chrome.input_rows);
-            }
-        });
-        return rows;
-    };
-
-    PaneFrameHooks pane_hooks;
-    pane_hooks.for_each_pane = [&](const std::function<void(Pane&)>& fn) {
-        layout.for_each_pane(fn);
-    };
-    pane_hooks.draw_overlays = [&](OpenTuiHandle frame, int cols, int rows) {
-        if (frame == 0 || cols <= 0 || rows <= 0) return;
-
-        // Align both sidebars to the layout's outer bottom chrome, not the
-        // focused pane — mid-column focus must not shorten Conversations /
-        // Session relative to the column bottoms.
-        const Rect outer = layout.outer_bounds();
-        const int outer_bottom_pad =
-            arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
-        const int sidebar_input_rows = outer_bottom_input_rows();
-
-        const Rect hb = HistorySidebarState::rect_for_terminal(
-            cols, rows, history_sidebar.enabled());
-        if (hb.w > 0) {
-            // Avoid reloading the store mid-edit — refresh is unnecessary
-            // while the user types a rename / navigates an overlay.
-            HistorySidebarSnapshot hs = history_sidebar.snapshot();
-            if (!hs.renaming && !hs.moving
-                && !hs.menu_open && !hs.confirming_delete) {
-                history_sidebar.refresh_entries(conversation_store);
-                hs = history_sidebar.snapshot();
-            }
-            hs.active_id = conversation_store.active_id();
-            arbiter::opentui::draw_history_sidebar(
-                frame, hs, hb, outer, sidebar_input_rows, outer_bottom_pad);
-        }
-
-        if (layout.pane_count() > 1) layout.draw_borders(frame);
-
-        if (theme_picker.active()) {
-            arbiter::opentui::draw_theme_picker(
-                frame, theme_picker.snapshot(), layout.focused().tui);
-        }
-
-        const int panes = static_cast<int>(layout.pane_count());
-        const int leading = HistorySidebarState::width_for_terminal(
-            cols, history_sidebar.enabled());
-        int sw = sidebar.effective_width(cols, panes, leading);
-        if (sw <= 0) return;
-
-        int pane_x = outer.x;
-        int pane_w = outer.w;
-        int gap = cols - pane_x - pane_w;
-        // Trailing gutter is reserved in layout_bounds; keep the box width at sw.
-        if (sw <= 0 || gap < sw) return;
-
-        const Rect sb = {pane_x + pane_w, 0, sw, std::max(1, rows)};
-        Pane& focused = layout.focused();
-        sidebar.set_focus_context(focused.current_agent,
-                                  focused.current_model);
-        sidebar.set_active_tool_calls(focused.tool_indicator.total());
-        std::vector<SidebarLoopEntry> loop_rows;
-        for (const auto& b : loops.briefs()) {
-            SidebarLoopEntry row;
-            row.id       = b.id;
-            row.agent_id = b.agent_id;
-            row.state    = b.state;
-            row.iter     = b.iter;
-            loop_rows.push_back(std::move(row));
-        }
-        sidebar.set_loops(std::move(loop_rows));
-        const arbiter::SidebarSnapshot snap = sidebar.snapshot();
-        arbiter::opentui::draw_sidebar(
-            frame, snap, sb, outer, sidebar_input_rows, outer_bottom_pad);
-    };
-    auto present_unlocked = [&]() {
-        pane_history_present(ui_ctx, pane_hooks);
-    };
-    // Caller already holds layout_mu. Mirrors present_all's sync step without
-    // re-locking (confirm/diff/close paths paint under the same guard that
-    // mutates scrollback).
-    auto present_holding_lock = [&]() {
-        if (sync_layout_to_terminal()) refresh_focused_input.store(true);
-        present_unlocked();
-    };
-    ui_ctx.present_all = [&]() {
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
-        present_holding_lock();
-    };
-
-    present_unlocked();
-
-    // Exec-capability warning — list any agents that can run shell commands.
-    // Queued here so the pump thread renders it on its first tick.
-    if (cfg.exec_allowed) {
-        std::vector<std::string> exec_agents;
-        for (const auto& id : orch.list_agents_all()) {
-            for (const auto& cap : orch.get_constitution(id).capabilities) {
-                if (cap == "exec") { exec_agents.push_back(id); break; }
-            }
-        }
-        if (!exec_agents.empty()) {
-            std::string names;
-            for (size_t i = 0; i < exec_agents.size(); ++i) {
-                if (i) names += ", ";
-                names += exec_agents[i];
-            }
-            layout.focused().output_queue.push_prose_msg(
-                "[exec enabled: " + names +
-                " \xe2\x80\x94 shell commands will run as you]",
-                StyleId::System);
-        }
-    }
-
-    g_getc_state.pane = &layout.focused();
-    ui_ctx.focused_pane = &layout.focused();
-
-    std::function<std::string(const std::string& agent, const std::string& message)>
-        spawn_pane_fn;
-
-    // ── Command handler ────────────────────────────────────────────────────
-    auto handle = [&](Pane& pane, const std::string& line) {
-        auto& tui             = pane.tui;
-        auto& output_queue    = pane.output_queue;
-        auto& thinking        = pane.thinking;
-        auto& tool_indicator  = pane.tool_indicator;
-        auto& current_agent   = pane.current_agent;
-        auto& current_model   = pane.current_model;
-
-        auto push_sys = [&](const std::string& s) {
-            output_queue.push_prose_msg(s, StyleId::System);
-        };
-        auto push_err = [&](const std::string& s) {
-            output_queue.push_prose_msg(s, StyleId::Error);
-        };
-        auto push_status = [&](const std::string& s) {
-            if (s.rfind("ERR:", 0) == 0) push_err(s);
-            else push_sys(s);
-        };
-        // Loop logs embed render_markdown() ANSI — must stay on the TextSegment
-        // path (push_msg). push_prose_msg would paint CSI escapes as glyphs.
-        auto push_ansi = [&](const std::string& s) {
-            output_queue.push_msg(s);
-        };
-        auto push_md = [&](const std::string& md) {
-            MarkdownRenderer renderer;
-            auto lines = renderer.feed_styled(md);
-            auto tail = renderer.flush_styled();
-            lines.insert(lines.end(), tail.begin(), tail.end());
-            if (!lines.empty()) {
-                output_queue.push_prose(lines);
-                output_queue.end_message();
-            }
-        };
-
-        if (line[0] == '/') {
-            // Parse command
-            std::istringstream iss(line.substr(1));
-            std::string cmd;
-            iss >> cmd;
-
-            if (cmd == "quit" || cmd == "exit" || cmd == "q") {
-                quit_requested = true; return;
-            }
-
-            if (cmd == "agents") {
-                std::string out;
-                for (auto& id : orch.list_agents()) out += "  " + id + "\n";
-                out += "\n";
-                push_sys(out);
-                return;
-            }
-            if (cmd == "status") {
-                push_status(orch.global_status());
-                return;
-            }
-            if (cmd == "find") {
-                std::string rest;
-                std::getline(iss, rest);
-                size_t a = 0;
-                while (a < rest.size() && std::isspace(static_cast<unsigned char>(rest[a]))) ++a;
-                rest = rest.substr(a);
-                while (!rest.empty() && std::isspace(static_cast<unsigned char>(rest.back())))
-                    rest.pop_back();
-
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                arbiter::PaneFindResult r;
-                if (rest == "next" || (rest.empty() && !pane.find_term.empty())) {
-                    r = pane_history_find_step(pane, +1);
-                } else if (rest == "prev") {
-                    r = pane_history_find_step(pane, -1);
-                } else if (rest.empty()) {
-                    push_status("Usage: /find <text>, then /find next|prev to cycle");
-                    return;
-                } else {
-                    r = pane_history_find(pane, rest);
-                }
-                if (r.total == 0) {
-                    tui.set_status("find \"" + pane.find_term + "\": no matches");
-                } else {
-                    tui.set_status("find \"" + pane.find_term + "\": "
-                                   + std::to_string(r.hit) + "/" + std::to_string(r.total)
-                                   + "  /find next|prev");
-                }
-                // Back-to-back /find and /find next calls are the only case
-                // in the app where the *entire* visible delta is a one-line
-                // status-bar change with no accompanying scrollback content
-                // change (jump_to_row can also leave scroll_offset
-                // unchanged, e.g. cycling between two matches that map to
-                // the same visual row).  OpenTUI's diffed render occasionally
-                // fails to pick up such a narrow change from the normal
-                // pump-driven cadence — same class of issue /theme already
-                // works around (via refresh_chrome()) by forcing a full
-                // repaint instead of relying on pump_notify()'s diffed redraw.
-                if (ui_ctx.present_all) ui_ctx.present_all();
-                ot_session.flush_display();
-                return;
-            }
-            if (cmd == "tokens") {
-                push_status(sidebar.tokens_report());
-                return;
-            }
-            if (cmd == "use" || cmd == "switch") {
-                std::string id;
-                iss >> id;
-                if (id == "index" || orch.has_agent(id)) {
-                    current_agent = id;
-                    current_model = orch.get_agent_model(id);
-                    pane.original_task.clear();
-                } else {
-                    push_status("ERR: no agent '" + id + "'");
-                }
-                return;
-            }
-            if (cmd == "send") {
-                std::string id;
-                iss >> id;
-                std::string msg;
-                std::getline(iss, msg);
-                if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
-                reveal_sidebar();
-                try {
-                    if (!cfg.verbose) tool_indicator.begin();
-                    pane.last_interim_agent.clear();
-                    arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
-                    auto resp = orch.send_streaming(id, msg, [&](const std::string& chunk) {
-                        renderer.feed(chunk);
-                    });
-                    renderer.flush();
-                    // Per-tool rows already landed via ToolActivityEvent; just
-                    // clear the mid-separator spinner.
-                    tool_indicator.finalize();
-                    // Separator: md.flush() guarantees the stream ends with
-                    // a `\n`, so one more gives exactly one blank line before
-                    // the next message.
-                    output_queue.end_message();
-                    if (!resp.ok) {
-                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
-                    }
-                } catch (const std::exception& e) {
-                    output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
-                }
-                thinking.stop();
-                return;
-            }
-            if (cmd == "pane") {
-                // Manual /pane <agent> <msg> from the REPL — delegates to
-                // the same helper the orchestrator uses when an agent emits
-                // /pane in its response.  Fire-and-queue: the new pane runs
-                // the message on its own exec thread, result flows back to
-                // the pane that issued /pane when the task completes.
-                std::string id;
-                iss >> id;
-                std::string msg;
-                std::getline(iss, msg);
-                if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
-                if (id.empty() || msg.empty()) {
-                    push_status(
-                        "Usage: /pane <agent-id> <message>");
-                    return;
-                }
-                std::string result = spawn_pane_fn
-                    ? spawn_pane_fn(id, msg)
-                    : std::string("ERR: pane spawner not initialized");
-                push_status(result);
-                return;
-            }
-            if (cmd == "ask") {
-                std::string query;
-                std::getline(iss, query);
-                if (!query.empty() && query[0] == ' ') query.erase(0, 1);
-                reveal_sidebar();
-                try {
-                    if (!cfg.verbose) tool_indicator.begin();
-                    pane.last_interim_agent.clear();
-                    arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
-                    auto resp = orch.send_streaming("index", query, [&](const std::string& chunk) {
-                        renderer.feed(chunk);
-                    });
-                    renderer.flush();
-                    tool_indicator.finalize();
-                    output_queue.end_message();
-                    if (!resp.ok) {
-                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
-                    }
-                } catch (const std::exception& e) {
-                    output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
-                }
-                thinking.stop();
-                return;
-            }
-            if (cmd == "create") {
-                std::string id;
-                iss >> id;
-                try {
-                    auto config = arbiter::master_constitution();
-                    config.name = id;
-                    orch.create_agent(id, std::move(config));
-                    push_status("Created: " + id + " (default config)\n"
-                                      "Edit ~/.arbiter/agents/" + id + ".json to customize");
-                } catch (const std::exception& e) {
-                    push_status("ERR: " + std::string(e.what()));
-                }
-                return;
-            }
-            if (cmd == "remove") {
-                std::string id;
-                iss >> id;
-                orch.remove_agent(id);
-                push_status("Removed: " + id);
-                if (current_agent == id) current_agent = "index";
-                return;
-            }
-            if (cmd == "reset") {
-                std::string id;
-                iss >> id;
-                if (id.empty()) id = current_agent;
-                try {
-                    orch.get_agent(id).reset_history();
-                    push_status("History cleared: " + id);
-                    conversation_store.save_async(pane.conversation_id, orch);
-                } catch (const std::exception& e) {
-                    push_status("ERR: " + std::string(e.what()));
-                }
-                return;
-            }
-            if (cmd == "compact") {
-                std::string id;
-                iss >> id;
-                if (id.empty()) id = current_agent;
-                try {
-                    auto& agent = orch.get_agent(id);
-                    if (agent.force_compact()) {
-                        auto note = agent.take_compaction_notice();
-                        push_status(note.empty()
-                            ? ("Compacted: " + id)
-                            : note);
-                        conversation_store.save_async(pane.conversation_id, orch);
-                    } else {
-                        push_status("Nothing to compact for " + id +
-                                    " (history already within keep window, "
-                                    "or summarize failed).");
-                    }
-                } catch (const std::exception& e) {
-                    push_status("ERR: " + std::string(e.what()));
-                }
-                return;
-            }
-            if (cmd == "loop") {
-                std::string id;
-                iss >> id;
-                std::string prompt;
-                std::getline(iss, prompt);
-                if (!prompt.empty() && prompt[0] == ' ') prompt.erase(0, 1);
-                if (id.empty() || prompt.empty()) {
-                    push_status("Usage: /loop <agent> <initial prompt>");
-                    return;
-                }
-                if (id != "index" && !orch.has_agent(id)) {
-                    push_status("ERR: no agent '" + id + "'");
-                    return;
-                }
-                std::string lid = loops.start(orch, id, prompt, &output_queue);
-                push_status("Loop started: " + lid + " (agent: " + id + ")");
-                return;
-            }
-            if (cmd == "loops") {
-                push_status(loops.list());
-                return;
-            }
-            if (cmd == "kill") {
-                std::string lid;
-                iss >> lid;
-                if (loops.kill(lid))
-                    push_status("Killed: " + lid);
-                else
-                    push_status("ERR: no loop '" + lid + "'");
-                return;
-            }
-            if (cmd == "suspend") {
-                std::string lid;
-                iss >> lid;
-                if (loops.suspend(lid))
-                    push_status("Suspended: " + lid);
-                else
-                    push_status("ERR: no loop '" + lid + "' or not running");
-                return;
-            }
-            if (cmd == "resume") {
-                std::string lid;
-                iss >> lid;
-                if (loops.resume(lid))
-                    push_status("Resumed: " + lid);
-                else
-                    push_status("ERR: no loop '" + lid + "' or not suspended");
-                return;
-            }
-            if (cmd == "inject") {
-                std::string lid;
-                iss >> lid;
-                std::string msg;
-                std::getline(iss, msg);
-                if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
-                if (loops.inject(lid, msg))
-                    push_status("Injected into " + lid);
-                else
-                    push_status("ERR: no loop '" + lid + "'");
-                return;
-            }
-            if (cmd == "log") {
-                std::string lid;
-                iss >> lid;
-                if (lid.empty()) {
-                    push_status("Usage: /log <loop-id> [last-N]");
-                    return;
-                }
-                int n = 0;
-                iss >> n;
-                push_ansi(loops.log(lid, n));
-                return;
-            }
-            if (cmd == "watch") {
-                std::string lid;
-                iss >> lid;
-                if (lid.empty()) {
-                    push_status("Usage: /watch <loop-id>");
-                    return;
-                }
-                if (loops.is_stopped(lid) && loops.log_count(lid) == 0) {
-                    push_status("ERR: no loop '" + lid + "'");
-                    return;
-                }
-                // Dump everything buffered so far
-                size_t seen = loops.log_count(lid);
-                output_queue.push(loops.log(lid, 0));
-                if (!loops.is_stopped(lid)) {
-                    push_sys("--- watching " + lid +
-                             " — press Enter to detach ---");
-                    // Tail new entries — exec thread polls while main thread flushes
-                    while (!loops.is_stopped(lid)) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                        size_t now = loops.log_count(lid);
-                        if (now > seen) {
-                            output_queue.push(loops.log_since(lid, seen));
-                            seen = now;
-                        }
-                    }
-                    // Flush any remaining entries after stop
-                    size_t now = loops.log_count(lid);
-                    if (now > seen) {
-                        output_queue.push(loops.log_since(lid, seen));
-                    }
-                    if (loops.is_stopped(lid)) {
-                        push_sys("--- loop finished ---");
-                    } else {
-                        push_sys("--- detached ---");
-                    }
-                }
-                return;
-            }
-            if (cmd == "fetch") {
-                std::string url;
-                iss >> url;
-                if (url.empty()) {
-                    push_status("Usage: /fetch <url>");
-                    return;
-                }
-                thinking.start("fetching");
-                std::string content = fetch_url(url);
-                thinking.stop();
-                if (content.substr(0, 4) == "ERR:") {
-                    push_err(content);
-                    return;
-                }
-                static constexpr size_t kFetchLimit = 32768;
-                if (content.size() > kFetchLimit) {
-                    content.resize(kFetchLimit);
-                    content += "\n... [content truncated to 32 KB]";
-                }
-                std::string msg = "[FETCHED: " + url + "]\n" + content +
-                                  "\n[END FETCHED]\n";
-                try {
-                    thinking.start("generating");
-                    auto resp = orch.send(current_agent, msg);
-                    thinking.stop();
-                    if (resp.ok) {
-                        push_md(resp.content);
-                    } else {
-                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
-                    }
-                } catch (const std::exception& ex) {
-                    thinking.stop();
-                    push_err("ERR: " + std::string(ex.what()));
-                }
-                return;
-            }
-            if (cmd == "search") {
-                // Operator /search mirrors /fetch: bypass the focused
-                // agent's capability gate, run the wired Brave invoker,
-                // and inject results into the conversation so the agent
-                // can synthesize — not just flash status text.
-                std::string rest;
-                std::getline(iss, rest);
-                if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
-                while (!rest.empty() && (rest.back() == ' ' || rest.back() == '\t'))
-                    rest.pop_back();
-                std::string query = rest;
-                int top_n = 10;
-                {
-                    auto pos = query.rfind(" top=");
-                    if (pos != std::string::npos) {
-                        try {
-                            int parsed = std::stoi(query.substr(pos + 5));
-                            if (parsed > 0) {
-                                top_n = std::min(parsed, 20);
-                                query.resize(pos);
-                            }
-                        } catch (...) { /* keep query, default top_n */ }
-                    }
-                }
-                while (!query.empty() && (query.back() == ' ' || query.back() == '\t'))
-                    query.pop_back();
-                if (query.empty()) {
-                    push_status("Usage: /search <query> [top=N]");
-                    return;
-                }
-                thinking.start("searching");
-                std::string body = orch.web_search(query, top_n);
-                thinking.stop();
-                if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0) {
-                    push_err(body);
-                    return;
-                }
-                static constexpr size_t kSearchLimit = 32768;
-                if (body.size() > kSearchLimit) {
-                    body.resize(kSearchLimit);
-                    body += "\n... [truncated]";
-                }
-                std::string msg = "[/search " + query + "]\n" + body;
-                if (msg.empty() || msg.back() != '\n') msg.push_back('\n');
-                msg += "[END SEARCH]\n";
-                try {
-                    thinking.start("generating");
-                    auto resp = orch.send(current_agent, msg);
-                    thinking.stop();
-                    if (resp.ok) {
-                        push_md(resp.content);
-                    } else {
-                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
-                    }
-                } catch (const std::exception& ex) {
-                    thinking.stop();
-                    push_err("ERR: " + std::string(ex.what()));
-                }
-                return;
-            }
-            if (cmd == "model") {
-                std::string id, model;
-                iss >> id >> model;
-                if (id.empty() || model.empty()) {
-                    push_status("Usage: /model <agent-id> <model-id>\n"
-                                      "  e.g. /model research claude-haiku-4-5-20251001");
-                    return;
-                }
-                try {
-                    orch.get_agent(id).config_mut().model = model;
-                    push_status(id + " model -> " + model);
-                } catch (const std::exception& ex) {
-                    push_status("ERR: " + std::string(ex.what()));
-                }
-                return;
-            }
-            if (cmd == "diff") {
-                std::string sub;
-                iss >> sub;
-                auto& store = pane.diff_proposals;
-
-                auto resolve_id = [&](bool prefer_pending) -> std::optional<int> {
-                    std::string id_tok;
-                    iss >> id_tok;
-                    if (!id_tok.empty()) {
-                        try {
-                            return std::stoi(id_tok);
-                        } catch (...) {
-                            return std::nullopt;
-                        }
-                    }
-                    if (prefer_pending) {
-                        if (auto p = store.latest_pending()) return p->id;
-                    } else {
-                        if (auto p = store.latest_applied()) return p->id;
-                    }
-                    return std::nullopt;
-                };
-
-                auto apply_proposal = [&](int id) -> bool {
-                    const std::string msg = apply_diff_proposal(pane, id);
-                    push_status(msg);
-                    return msg.rfind("ERR:", 0) != 0;
-                };
-
-                auto run_interactive_review = [&](std::optional<int> only_id) {
-                    std::vector<int> ids;
-                    if (only_id) {
-                        auto prop = store.get(*only_id);
-                        if (!prop) {
-                            push_status("ERR: no patch #" +
-                                        std::to_string(*only_id));
-                            return;
-                        }
-                        if (prop->status != arbiter::DiffProposalStatus::Pending &&
-                            prop->status != arbiter::DiffProposalStatus::Failed) {
-                            push_status("ERR: patch #" + std::to_string(*only_id) +
-                                        " is " +
-                                        diff_proposal_status_label(prop->status) +
-                                        " — only pending/failed can be reviewed");
-                            return;
-                        }
-                        ids.push_back(*only_id);
-                    } else {
-                        for (const auto& p : store.list()) {
-                            if (p.status == arbiter::DiffProposalStatus::Pending ||
-                                p.status == arbiter::DiffProposalStatus::Failed) {
-                                ids.push_back(p.id);
-                            }
-                        }
-                    }
-                    if (ids.empty()) {
-                        push_status("No pending patches to review.\n"
-                                    "  /diff list — all proposals; "
-                                    "agent ```diff fences auto-prompt review");
-                        return;
-                    }
-                    for (int id : ids) {
-                        auto prop = store.get(id);
-                        if (!prop) continue;
-                        if (prop->status != arbiter::DiffProposalStatus::Pending &&
-                            prop->status != arbiter::DiffProposalStatus::Failed) {
-                            continue;
-                        }
-                        std::string summary =
-                            "Apply under process cwd. Missing files are created.";
-                        if (!prop->error.empty()) {
-                            summary = "Previously failed: " + prop->error;
-                        }
-                        const auto decision =
-                            interactive_prompts.request_diff_review(
-                                id, prop->path, summary,
-                                patch_preview_lines(prop->patch), &pane);
-                        if (decision == arbiter::InteractiveDecision::Allow ||
-                            decision == arbiter::InteractiveDecision::AllowAll) {
-                            // AllowAll may already have applied this id on the
-                            // main thread — skip if no longer pending.
-                            auto cur = store.get(id);
-                            if (cur &&
-                                (cur->status ==
-                                     arbiter::DiffProposalStatus::Pending ||
-                                 cur->status ==
-                                     arbiter::DiffProposalStatus::Failed)) {
-                                apply_proposal(id);
-                            }
-                            // AllowAll sets accept_edits; later ids short-circuit.
-                        } else if (decision ==
-                                   arbiter::InteractiveDecision::Deny) {
-                            if (store.mark_rejected(id)) {
-                                push_status("rejected patch #" +
-                                            std::to_string(id) + ": " +
-                                            prop->path);
-                            } else {
-                                push_status("ERR: could not reject patch #" +
-                                            std::to_string(id));
-                            }
-                        } else {
-                            push_status("review cancelled"
-                                        " (remaining patches stay pending)");
-                            return;
-                        }
-                    }
-                };
-
-                if (sub.empty() || sub == "review") {
-                    // Optional N: review one patch.  Bare `/diff` / `/diff review`
-                    // walks every pending/failed proposal.
-                    std::string id_tok;
-                    iss >> id_tok;
-                    if (!id_tok.empty()) {
-                        try {
-                            run_interactive_review(std::stoi(id_tok));
-                        } catch (...) {
-                            push_status("Usage: /diff review [N]");
-                        }
-                    } else {
-                        run_interactive_review(std::nullopt);
-                    }
-                    return;
-                }
-
-                if (sub == "list") {
-                    auto items = store.list();
-                    if (items.empty()) {
-                        push_status("No diff proposals in this pane yet.\n"
-                                    "  Agent ```diff fences register as Patch #N — "
-                                    "then /diff or /diff apply N");
-                        return;
-                    }
-                    std::ostringstream out;
-                    out << "Diff proposals (this pane)\n";
-                    for (const auto& p : items) {
-                        out << "  #" << p.id << "  "
-                            << diff_proposal_status_label(p.status)
-                            << "  " << p.path;
-                        if (!p.error.empty()) out << "  (" << p.error << ")";
-                        out << "\n";
-                    }
-                    out << "\n  /diff [review] [N]   /diff apply [N]   "
-                           "/diff reject [N]   /diff undo [N]";
-                    push_status(out.str());
-                    return;
-                }
-
-                if (sub == "reject") {
-                    auto id = resolve_id(/*prefer_pending=*/true);
-                    if (!id) {
-                        push_status("Usage: /diff reject [N]\n"
-                                    "  N defaults to the latest pending proposal.");
-                        return;
-                    }
-                    auto prop = store.get(*id);
-                    if (!prop) {
-                        push_status("ERR: no patch #" + std::to_string(*id));
-                        return;
-                    }
-                    if (!store.mark_rejected(*id)) {
-                        push_status("ERR: patch #" + std::to_string(*id) +
-                                    " is " + diff_proposal_status_label(prop->status) +
-                                    " — only pending/failed can be rejected");
-                        return;
-                    }
-                    push_status("rejected patch #" + std::to_string(*id) +
-                                ": " + prop->path);
-                    return;
-                }
-
-                if (sub == "apply") {
-                    auto id = resolve_id(/*prefer_pending=*/true);
-                    if (!id) {
-                        push_status("Usage: /diff apply [N]\n"
-                                    "  N defaults to the latest pending proposal.\n"
-                                    "  Applies under the process cwd (creates missing "
-                                    "files; no write confirm); /diff undo N to revert.");
-                        return;
-                    }
-                    apply_proposal(*id);
-                    return;
-                }
-
-                if (sub == "undo") {
-                    auto id = resolve_id(/*prefer_pending=*/false);
-                    if (!id) {
-                        push_status("Usage: /diff undo [N]\n"
-                                    "  N defaults to the latest applied proposal.");
-                        return;
-                    }
-                    auto prop = store.get(*id);
-                    if (!prop) {
-                        push_status("ERR: no patch #" + std::to_string(*id));
-                        return;
-                    }
-                    if (prop->status != arbiter::DiffProposalStatus::Applied) {
-                        push_status("ERR: patch #" + std::to_string(*id) +
-                                    " is " + diff_proposal_status_label(prop->status) +
-                                    " — nothing to undo");
-                        return;
-                    }
-                    auto undone = arbiter::undo_unified_diff(prop->undo);
-                    if (!undone.ok) {
-                        push_status("ERR: undo #" + std::to_string(*id) +
-                                    " failed: " + undone.error);
-                        return;
-                    }
-                    store.clear_undo_after_revert(*id);
-                    push_status("undid patch #" + std::to_string(*id) +
-                                ": " + prop->path + " (pending again)");
-                    return;
-                }
-
-                push_status("Usage: /diff [review] [N]|list|apply [N]|reject [N]|undo [N]\n"
-                            "  /diff or /diff review — interactive [a]pply / [r]eject.\n"
-                            "  Apply writes under the process cwd; missing files are created\n"
-                            "  (apply is the permission grant — no write confirm).\n"
-                            "  Omit N to target the latest pending (apply/reject) or applied (undo).");
-                return;
-            }
-            if (cmd == "plan") {
-                std::string subcmd;
-                iss >> subcmd;
-                if (subcmd != "execute") {
-                    push_status("Usage: /plan execute <path>\n"
-                                      "  Runs a plan file produced by /agent planner, executing each\n"
-                                      "  phase sequentially and injecting prior outputs into dependents.");
-                    return;
-                }
-                std::string path;
-                iss >> path;
-                if (path.empty()) {
-                    push_status("Usage: /plan execute <path>");
-                    return;
-                }
-                push_sys("[plan] executing: " + path + "]");
-                auto result = orch.execute_plan(path,
-                    [&](const std::string& msg) {
-                        push_sys(msg);
-                    });
-                if (!result.ok) {
-                    push_err("[plan] failed: " + result.error);
-                } else {
-                    push_sys("[plan] complete — " +
-                             std::to_string(result.phases.size()) + " phase(s) executed]");
-                    // Print final phase output (the deliverable)
-                    if (!result.phases.empty()) {
-                        auto& [num, name, out] = result.phases.back();
-                        push_md(out);
-                    }
-                }
-                return;
-            }
-            if (cmd == "help") {
-                std::string topic;
-                std::getline(iss, topic);
-                if (!topic.empty() && topic[0] == ' ') topic.erase(0, 1);
-                if (!topic.empty()) {
-                    std::string result = orch.execute_slash_command(line, current_agent);
-                    push_status(result.empty()
-                        ? "Unknown help topic '" + topic + "'"
-                        : result);
-                    return;
-                }
-                push_status(
-                    "Conversation\n"
-                    "  <text>                           — send to the focused pane's agent\n"
-                    "  /send <agent> <msg>              — send to a specific agent\n"
-                    "  /ask <query>                     — ask the index master\n"
-                    "  /use <agent>                     — switch the focused pane's current agent\n"
-                    "\n"
-                    "Agents\n"
-                    "  /agents                          — list loaded agents\n"
-                    "  /status                          — system status\n"
-                    "  /tokens                          — full token + cost breakdown\n"
-                    "  /create <id>                     — create agent with default config\n"
-                    "  /remove <id>                     — remove agent\n"
-                    "  /reset [id]                      — clear an agent's history (default: focused)\n"
-                    "  /compact [id]                    — summarize older turns to free context\n"
-                    "  /model <agent> <model-id>        — change agent model at runtime\n"
-                    "\n"
-                    "Panes  (each pane is an independent conversation view)\n"
-                    "  /pane <agent> <msg>              — spawn a parallel pane running the agent;\n"
-                    "                                     result flows back to the spawner when done\n"
-                    "  Ctrl-w v                         — split the focused pane vertically\n"
-                    "  Ctrl-w h                         — split the focused pane horizontally\n"
-                    "  Ctrl-w s                         — toggle the session sidebar\n"
-                    "  Ctrl-w w                         — cycle focus to the next pane\n"
-                    "  Ctrl-w c                         — close the focused pane\n"
-                    "  Ctrl-w t                         — toggle conversation history sidebar\n"
-                    "  Ctrl-w b                         — enter sidebar to pick a conversation\n"
-                    "\n"
-                    "Background loops\n"
-                    "  /loop <agent> <prompt>           — run agent in a background loop\n"
-                    "  /loops                           — list running / suspended loops\n"
-                    "  /log <loop-id> [last-N]          — show buffered loop output\n"
-                    "  /watch <loop-id>                 — tail loop output live (Enter to detach)\n"
-                    "  /kill <loop-id>                  — stop a loop\n"
-                    "  /suspend <loop-id>               — pause a loop\n"
-                    "  /resume <loop-id>                — resume a paused loop\n"
-                    "  /inject <loop-id> <msg>          — inject a message into a running loop\n"
-                    "\n"
-                    "Fetch + memory\n"
-                    "  /fetch <url>                     — fetch URL, send readable text to agent\n"
-                    "  /mem write|read|show|clear       — scratchpad (tenants.db, same as API)\n"
-                    "  /mem shared write|read|clear     — tenant shared scratchpad\n"
-                    "  /mem search|entries|entry|expand|density|add|invalidate — memory graph\n"
-                    "\n"
-                    "Tools  (same dispatch as API agent turns)\n"
-                    "  /search <query> [top=N]          — web search; injects results like /fetch\n"
-                    "  /browse <url>                    — fetch + extract readable text\n"
-                    "  /todo list|add|start|done|…      — conversation-scoped task list\n"
-                    "  /schedule list|<phrase>: <msg>   — schedule recurring/one-shot tasks\n"
-                    "  /schedule cancel|pause|resume    — manage scheduled tasks by id\n"
-                    "  /exec <cmd>                      — host shell (confirm gate; on by default; --no-exec disables)\n"
-                    "  /diff [review]|list|apply|reject|undo — interactive a/r or apply streamed ```diff\n"
-                    "  /write <path>                    — write file / --persist to artifact store\n"
-                    "  /read <path> | /list             — conversation artifacts\n"
-                    "  /mcp tools|call                  — MCP server registry\n"
-                    "  /a2a list|call                   — remote A2A agents\n"
-                    "  /lesson list|add                 — agent-scoped lessons\n"
-                    "  /help <topic>                    — detailed reference for one command\n"
-                    "\n"
-                    "Plans\n"
-                    "  /plan execute <path>             — execute a planner-produced plan file\n"
-                    "\n"
-                    "Session\n"
-                    "  /theme                           — browse themes (↑↓ preview, Enter)\n"
-                    "  /theme list|<preset>             — list or switch TUI color theme\n"
-                    "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
-                    "  /chat title <text>               — rename the active conversation (locks title)\n"
-                    "  /chat search <text>              — find text across saved conversations\n"
-                    "  /chat folder list|new|rename|delete|move — manage conversation folders\n"
-                    "  /find <text> | next | prev       — search the focused pane's scrollback\n"
-                    "  /help                            — this list\n"
-                    "  /quit                            — exit\n"
-                    "\n"
-                    "Scroll: PgUp / PgDn scroll the focused pane's history.  Esc cancels\n"
-                    "any in-flight agent turn.\n"
-                    "Keys: Ctrl-P command palette, Ctrl-R reverse history search,\n"
-                    "Ctrl-W pane chords (w/h/v/c/t/b).");
-                return;
-            }
-            if (cmd == "chat") {
-                std::string sub;
-                iss >> sub;
-
-                // Resolves "<n>" (1-based index into /chat list's order) or
-                // an id-prefix to a real conversation id. Empty on no match.
-                auto resolve_chat_target = [&](const std::string& arg) -> std::string {
-                    if (arg.empty()) return {};
-                    const auto entries = conversation_store.list();
-                    const bool all_digits = std::all_of(arg.begin(), arg.end(),
-                        [](unsigned char c) { return std::isdigit(c) != 0; });
-                    if (all_digits) {
-                        const unsigned long idx = std::stoul(arg);
-                        if (idx >= 1 && idx <= entries.size()) return entries[idx - 1].id;
-                        return {};
-                    }
-                    for (const auto& e : entries) {
-                        if (e.id.rfind(arg, 0) == 0) return e.id;
-                    }
-                    return {};
-                };
-
-                if (sub == "list") {
-                    const auto entries = conversation_store.list();
-                    if (entries.empty()) {
-                        push_status("(no conversations)");
-                        return;
-                    }
-                    // Star the conversation bound to *this* pane, not the
-                    // global active id — panes can show different threads.
-                    const std::string starred = pane.conversation_id;
-                    std::ostringstream out;
-                    int n = 1;
-                    for (const auto& e : entries) {
-                        out << (e.id == starred ? "* " : "  ") << n << ". "
-                            << (e.title.empty() ? "Untitled" : e.title)
-                            << "  [" << e.id.substr(0, std::min<size_t>(8, e.id.size())) << "]\n";
-                        ++n;
-                    }
-                    push_status(out.str());
-                    return;
-                }
-                if (sub == "new") {
-                    {
-                        std::lock_guard<std::mutex> lk(pending_conv_mu);
-                        pending_conv_ops.push_back({true, true, "", false, false});
-                    }
-                    if (layout_ptr) wake_main_input();
-                    push_status("switching to a new conversation...");
-                    return;
-                }
-                if (sub == "switch") {
-                    std::string arg;
-                    iss >> arg;
-                    const std::string id = resolve_chat_target(arg);
-                    if (id.empty()) {
-                        push_status("Usage: /chat switch <n | id-prefix> (see /chat list)");
-                        return;
-                    }
-                    {
-                        std::lock_guard<std::mutex> lk(pending_conv_mu);
-                        pending_conv_ops.push_back({true, false, id, false, false});
-                    }
-                    if (layout_ptr) wake_main_input();
-                    push_status("switching...");
-                    return;
-                }
-                if (sub == "title") {
-                    std::string text;
-                    std::getline(iss, text);
-                    size_t a = 0;
-                    while (a < text.size() && std::isspace(static_cast<unsigned char>(text[a]))) ++a;
-                    text = text.substr(a);
-                    if (text.empty()) {
-                        push_status("Usage: /chat title <text>");
-                        return;
-                    }
-                    conversation_store.set_title_locked(pane.conversation_id, text);
-                    push_status("title: " + text);
-                    return;
-                }
-                if (sub == "delete") {
-                    std::string arg;
-                    iss >> arg;
-                    const std::string id = resolve_chat_target(arg);
-                    if (id.empty()) {
-                        push_status("Usage: /chat delete <n | id-prefix> (see /chat list)");
-                        return;
-                    }
-                    {
-                        std::lock_guard<std::mutex> lk(pending_conv_mu);
-                        pending_conv_ops.push_back({false, false, id, true, false});
-                    }
-                    if (layout_ptr) wake_main_input();
-                    push_status("deleted (session file kept — /chat purge removes it)");
-                    return;
-                }
-                if (sub == "purge") {
-                    std::string arg;
-                    iss >> arg;
-                    const std::string id = resolve_chat_target(arg);
-                    if (id.empty()) {
-                        push_status("Usage: /chat purge <n | id-prefix> (see /chat list)");
-                        return;
-                    }
-                    {
-                        std::lock_guard<std::mutex> lk(pending_conv_mu);
-                        pending_conv_ops.push_back({false, false, id, true, true});
-                    }
-                    if (layout_ptr) wake_main_input();
-                    push_status("purged");
-                    return;
-                }
-                if (sub == "search") {
-                    std::string term;
-                    std::getline(iss, term);
-                    size_t a = 0;
-                    while (a < term.size() && std::isspace(static_cast<unsigned char>(term[a]))) ++a;
-                    term = term.substr(a);
-                    if (term.empty()) {
-                        push_status("Usage: /chat search <text>");
-                        return;
-                    }
-                    // Flush the coalesced autosave first so the active
-                    // conversation's newest turns are searchable too.
-                    conversation_store.flush();
-                    const auto hits = conversation_store.search(term);
-                    if (hits.empty()) {
-                        push_status("(no conversations match \"" + term + "\")");
-                        return;
-                    }
-                    const std::string starred = pane.conversation_id;
-                    std::ostringstream out;
-                    for (const auto& h : hits) {
-                        out << (h.id == starred ? "* " : "  ")
-                            << (h.title.empty() ? "Untitled" : h.title)
-                            << "  [" << h.id.substr(0, std::min<size_t>(8, h.id.size())) << "]"
-                            << "  (" << h.match_count
-                            << (h.match_count == 1 ? " match)" : " matches)") << "\n";
-                        if (!h.snippet.empty()) out << "      " << h.snippet << "\n";
-                    }
-                    out << "  Switch with /chat switch <id-prefix>.\n";
-                    push_status(out.str());
-                    return;
-                }
-                if (sub == "folder") {
-                    std::string fsub;
-                    iss >> fsub;
-
-                    auto resolve_folder = [&](const std::string& arg) -> std::string {
-                        if (arg.empty()) return {};
-                        const auto folders = conversation_store.list_folders();
-                        const bool all_digits = std::all_of(arg.begin(), arg.end(),
-                            [](unsigned char c) { return std::isdigit(c) != 0; });
-                        if (all_digits) {
-                            for (const auto& f : folders) {
-                                if (f.id == arg) return f.id;
-                            }
-                            // Also allow 1-based index into folder list.
-                            try {
-                                const unsigned long idx = std::stoul(arg);
-                                if (idx >= 1 && idx <= folders.size()) {
-                                    return folders[idx - 1].id;
-                                }
-                            } catch (...) {}
-                            return {};
-                        }
-                        for (const auto& f : folders) {
-                            if (f.name == arg) return f.id;
-                            if (f.id.rfind(arg, 0) == 0) return f.id;
-                        }
-                        // Case-insensitive name match.
-                        const std::string arg_lc = [&]{
-                            std::string s = arg;
-                            for (char& c : s) {
-                                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                            }
-                            return s;
-                        }();
-                        for (const auto& f : folders) {
-                            std::string n = f.name;
-                            for (char& c : n) {
-                                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                            }
-                            if (n == arg_lc) return f.id;
-                        }
-                        return {};
-                    };
-
-                    if (fsub == "list") {
-                        const auto folders = conversation_store.list_folders();
-                        if (folders.empty()) {
-                            push_status("(no folders)");
-                            return;
-                        }
-                        std::ostringstream out;
-                        int n = 1;
-                        for (const auto& f : folders) {
-                            out << "  " << n << ". " << f.name
-                                << "  [" << f.id << "]\n";
-                            ++n;
-                        }
-                        push_status(out.str());
-                        return;
-                    }
-                    if (fsub == "new") {
-                        std::string name;
-                        std::getline(iss, name);
-                        size_t a = 0;
-                        while (a < name.size() && std::isspace(static_cast<unsigned char>(name[a]))) ++a;
-                        name = name.substr(a);
-                        if (name.empty()) {
-                            push_status("Usage: /chat folder new <name>");
-                            return;
-                        }
-                        const std::string id = conversation_store.create_folder(name);
-                        push_status("folder created: " + name + " [" + id + "]");
-                        return;
-                    }
-                    if (fsub == "rename") {
-                        std::string target;
-                        iss >> target;
-                        std::string name;
-                        std::getline(iss, name);
-                        size_t a = 0;
-                        while (a < name.size() && std::isspace(static_cast<unsigned char>(name[a]))) ++a;
-                        name = name.substr(a);
-                        const std::string id = resolve_folder(target);
-                        if (id.empty() || name.empty()) {
-                            push_status("Usage: /chat folder rename <id|name> <new>");
-                            return;
-                        }
-                        if (!conversation_store.rename_folder(id, name)) {
-                            push_status("folder not found");
-                            return;
-                        }
-                        push_status("folder renamed: " + name);
-                        return;
-                    }
-                    if (fsub == "delete") {
-                        std::string target;
-                        iss >> target;
-                        const std::string id = resolve_folder(target);
-                        if (id.empty()) {
-                            push_status("Usage: /chat folder delete <id|name>");
-                            return;
-                        }
-                        if (!conversation_store.delete_folder(id)) {
-                            push_status("folder not found");
-                            return;
-                        }
-                        push_status("folder deleted (conversations unfiled)");
-                        return;
-                    }
-                    if (fsub == "move") {
-                        std::string conv_arg;
-                        std::string folder_arg;
-                        iss >> conv_arg >> folder_arg;
-                        const std::string cid = resolve_chat_target(conv_arg);
-                        if (cid.empty() || folder_arg.empty()) {
-                            push_status("Usage: /chat folder move <conv> <folder|unfiled>");
-                            return;
-                        }
-                        std::string fid;
-                        if (folder_arg != "unfiled" && folder_arg != "-") {
-                            fid = resolve_folder(folder_arg);
-                            if (fid.empty()) {
-                                push_status("folder not found (use a folder id/name or 'unfiled')");
-                                return;
-                            }
-                        }
-                        if (!conversation_store.move_to_folder(cid, fid)) {
-                            push_status("move failed");
-                            return;
-                        }
-                        push_status(fid.empty() ? "moved to unfiled" : "moved to folder [" + fid + "]");
-                        return;
-                    }
-                    push_status("Usage: /chat folder list|new|rename|delete|move");
-                    return;
-                }
-                push_status("Usage: /chat list|new|switch|search|title|delete|purge|folder");
-                return;
-            }
-            if (cmd == "verbose") {
-                std::string arg;
-                iss >> arg;
-                if (arg == "on")        cfg.verbose = true;
-                else if (arg == "off")  cfg.verbose = false;
-                else if (arg.empty())   cfg.verbose = !cfg.verbose;
-                else {
-                    push_status("Usage: /verbose [on|off]");
-                    return;
-                }
-                push_status(std::string("verbose: ") +
-                                      (cfg.verbose ? "on" : "off"));
-                return;
-            }
-                if (cmd == "theme") {
-                std::string arg;
-                iss >> arg;
-                if (arg.empty()) {
-                    auto themes = arbiter::tui_list_available_themes(dir);
-                    if (themes.empty()) {
-                        push_status("ERR: no themes found");
-                        return;
-                    }
-                    std::string active = arbiter::tui_active_preset();
-                    if (active.empty()) {
-                        // theme_file path → try basename stem so the picker
-                        // lands on the matching user theme when present.
-                        const std::string file = arbiter::tui_active_theme_file();
-                        if (!file.empty()) {
-                            const auto slash = file.find_last_of("/\\");
-                            const std::string base = (slash == std::string::npos)
-                                ? file : file.substr(slash + 1);
-                            if (base.size() > 5 && base.ends_with(".json")) {
-                                active = base.substr(0, base.size() - 5);
-                            }
-                        }
-                    }
-                    theme_picker.open(std::move(themes), active);
-                    // Wake the main loop so it takes stdin for ↑↓/Enter/Esc.
-                    refresh_focused_input.store(true);
-                    wake_main_input();
-                    if (pump_notify) pump_notify();
-                    return;
-                }
-                if (arg == "list") {
-                    const std::string active_preset = arbiter::tui_active_preset();
-                    const std::string active_file = arbiter::tui_active_theme_file();
-                    std::ostringstream out;
-                    out << "Themes";
-                    if (!active_preset.empty()) {
-                        out << " (active preset: " << active_preset << ")";
-                    } else if (!active_file.empty()) {
-                        out << " (active file: " << active_file << ")";
-                    }
-                    out << ":\n";
-                    for (const auto& preset : arbiter::tui_list_available_themes(dir)) {
-                        out << "  " << preset;
-                        if (preset == active_preset) out << "  *";
-                        out << '\n';
-                    }
-                    out << "\nUsage:\n"
-                           "  /theme                    — browse themes (↑↓ preview, Enter select)\n"
-                           "  /theme <preset>           — built-in or ~/.arbiter/themes/<name>.json\n"
-                           "  /theme save <name>        — export current look to themes/<name>.json\n"
-                           "  /theme file <path>        — load theme JSON (sets theme_file in tui.json)\n"
-                           "\nConfig (~/.arbiter/tui.json):\n"
-                           "  { \"preset\": \"nord\" }   or   { \"theme_file\": \"themes/mine.json\" }\n"
-                           "Override any token with bg/text/accent/border/content groups (#RRGGBB).\n"
-                           "Export a starter: arbiter --export-theme high-contrast > ~/.arbiter/themes/mine.json";
-                    push_status(out.str());
-                    return;
-                }
-                if (arg == "save") {
-                    std::string name;
-                    iss >> name;
-                    if (name.empty()) {
-                        push_status("Usage: /theme save <name>");
-                        return;
-                    }
-                    namespace fs = std::filesystem;
-                    const std::string themes_dir = arbiter::tui_themes_dir(dir);
-                    fs::create_directories(themes_dir);
-                    const std::string path = themes_dir + "/" + name + ".json";
-                    const std::string preset_hint = arbiter::tui_active_preset();
-                    if (!arbiter::tui_write_theme_file(path,
-                                                       arbiter::tui_design(),
-                                                       preset_hint)) {
-                        push_status("ERR: could not write " + path);
-                        return;
-                    }
-                    push_status("saved theme: " + path);
-                    return;
-                }
-                if (arg == "file") {
-                    std::string path_arg;
-                    iss >> path_arg;
-                    if (path_arg.empty()) {
-                        push_status("Usage: /theme file <path>\n"
-                                            "  Path is relative to ~/.arbiter/ unless absolute.");
-                        return;
-                    }
-                    if (!arbiter::set_tui_theme_file(dir, path_arg)) {
-                        push_status("ERR: could not load theme file '" + path_arg + "'");
-                        return;
-                    }
-                    refresh_chrome();
-                    push_status("theme file: " + path_arg);
-                    return;
-                }
-                if (!arbiter::tui_theme_name_is_valid(dir, arg)) {
-                    push_status("ERR: unknown theme '" + arg + "' (/theme list)");
-                    return;
-                }
-                arbiter::set_tui_preset(dir, arg);
-                refresh_chrome();
-                push_status("theme: " + arg);
-                return;
-            }
-
-            {
-                std::string result = orch.execute_slash_command(line, current_agent);
-                if (!result.empty()) {
-                    push_status(result);
-                    return;
-                }
-            }
-
-            push_status("Unknown command. /help for list.");
-            return;
-        }
-
-        // Plain text → stream to current agent
-        reveal_sidebar();
-        try {
-            tool_indicator.begin();
-            pane.last_interim_agent.clear();
-            arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
-            auto resp = orch.send_streaming(current_agent, line,
-                [&](const std::string& chunk) { renderer.feed(chunk); },
-                pane.original_task);
-            renderer.flush();
-            // Per-tool ToolSegment rows already reflect the turn; finalize
-            // only clears the mid-separator spinner.
-            tool_indicator.finalize();
-            // md.flush() guarantees the stream ended on `\n`; one more gives
-            // exactly one blank line before the next message.
-            output_queue.end_message();
-            // Stash the raw agent response (or error) so start_pane_thread's
-            // post-handle hook can flow it back to the parent when this is
-            // a delegated pane.  Written regardless of resp.ok so the
-            // parent sees the failure, not silence.
-            pane.last_response = resp.ok ? resp.content
-                                         : ("ERR: " + resp.error);
-            update_pane_original_task(pane, line, resp);
-            try {
-                auto note = orch.get_agent(current_agent).take_compaction_notice();
-                if (!note.empty()) push_status(note);
-            } catch (...) {}
-            if (!resp.ok) {
-                output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
-            } else {
-                // First turn of a still-"Untitled" conversation: set an
-                // instant deterministic title from the user's message, then
-                // best-effort refine it with a small model call in the
-                // background. Both are no-ops once the conversation already
-                // has a real (or locked) title.
-                const std::string conv_id = pane.conversation_id;
-                for (auto& e : conversation_store.list()) {
-                    if (e.id != conv_id || e.title != "Untitled") continue;
-                    const std::string det = arbiter::deterministic_conversation_title(line);
-                    if (!det.empty()) {
-                        conversation_store.set_title(conv_id, det);
-                        std::string title_model = arbiter::load_title_model_override(dir);
-                        if (title_model.empty()) title_model = orch.get_agent_model("index");
-                        conversation_store.enqueue_title_job(conv_id, line, resp.content,
-                                                             title_model, orch);
-                    }
-                    break;
-                }
-            }
-            // Durable per-turn autosave: coalesces onto the store's
-            // background thread so a crash never loses more than the
-            // in-flight turn, without stalling the input loop on JSON I/O.
-            conversation_store.save_async(pane.conversation_id, orch);
-        } catch (const std::exception& e) {
-            output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
-            pane.last_response = std::string("ERR: ") + e.what();
-            conversation_store.save_async(pane.conversation_id, orch);
-        }
-        thinking.stop();
-    };  // end handle lambda
-
-    // Starts a pane's exec thread.  The thread pins g_active_pane at entry
-    // and binds ConversationScope so agent histories are per-conversation.
-    auto start_pane_thread = [&](Pane& p_ref) {
-        Pane* pane_ptr = &p_ref;
-        pane_ptr->exec_thread = std::thread([&, pane_ptr]() {
-            Pane& p = *pane_ptr;
-            g_active_pane = &p;
-            // /parallel workers capture this binder by value at spawn time.
-            {
-                const int64_t cid =
-                    parse_conversation_db_id(p.conversation_id);
-                orch.set_worker_pane_binder([pane_ptr, cid]() {
-                    g_active_pane = pane_ptr;
-                    arbiter::set_tool_conversation_tls(cid);
-                });
-            }
-            std::string line;
-            while (p.cmd_queue.pop(line)) {
-                auto turn_token = std::make_shared<arbiter::CancelToken>();
-                std::atomic_store(&p.turn_cancel, turn_token);
-                arbiter::RequestCancelScope cancel_scope(orch.client(), turn_token);
-                p.cmd_queue.set_busy(true);
-                p.turn_running.store(true);
-                p.last_response.clear();
-                // Re-install each turn so a sibling pane that also ran
-                // /parallel can't leave a stale binder in place.
-                {
-                    const int64_t cid =
-                        parse_conversation_db_id(p.conversation_id);
-                    orch.set_worker_pane_binder([pane_ptr, cid]() {
-                        g_active_pane = pane_ptr;
-                        arbiter::set_tool_conversation_tls(cid);
-                    });
-                }
-                if (layout_ptr && &layout_ptr->focused() != &p) {
-                    p.activity_unfocused.store(true);
-                    p.tui.set_activity_badge("●");
-                }
-                {
-                    ConversationScope scope(p.conversation_id);
-                    bind_tools_conversation(p.conversation_id);
-                    handle(p, line);
-                }
-                p.turn_running.store(false);
-                // Only latch a completion badge when this turn actually ran an
-                // agent response (last_response set). Slash-only commands skip.
-                const bool had_agent_turn = !p.last_response.empty();
-                const bool ok = p.last_response.rfind("ERR:", 0) != 0;
-                p.last_turn_ok.store(ok);
-                if (layout_ptr && &layout_ptr->focused() != &p) {
-                    if (had_agent_turn) {
-                        p.completed_unfocused.store(true);
-                        p.tui.set_activity_badge(ok ? "✓" : "✗");
-                    }
-                } else {
-                    p.completed_unfocused.store(false);
-                    p.tui.clear_activity_badge();
-                }
-                p.cmd_queue.set_busy(false);
-                p.tui.clear_queue_indicator();
-                std::atomic_store(&p.turn_cancel, std::shared_ptr<arbiter::CancelToken>{});
-                // Wake the main loop if a deferred switch/delete is waiting
-                // for this turn to unwind (#46).
-                if (pending_cancel_wait.load()) {
-                    wake_main_input();
-                }
-
-                if (p.parent_pane != nullptr &&
-                    !p.spawn_flowed.exchange(true)) {
-
-                    Pane* parent = p.parent_pane;
-                    {
-                        // Hold layout_mu across the alive check *and* the
-                        // push: close can destroy `parent` the instant we
-                        // unlock, and cmd_queue lives on the Pane.
-                        std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                        bool parent_alive = false;
-                        layout.for_each_pane([&](Pane& other) {
-                            if (&other == parent) parent_alive = true;
-                        });
-                        if (parent_alive) {
-                            std::string task_preview = p.spawn_message.size() > 80
-                                ? p.spawn_message.substr(0, 77) + "..."
-                                : p.spawn_message;
-                            std::string frame = "[PANE RESULT from '"
-                                + p.current_agent + "' (task: "
-                                + task_preview + ")]\n"
-                                + p.last_response
-                                + "\n[END PANE RESULT]";
-                            parent->cmd_queue.push(frame);
-                        }
-                    }
-
-                    {
-                        std::lock_guard<std::mutex> lk(pending_closes_mu);
-                        pending_closes.push_back({&p, p.current_agent});
-                    }
-                    if (layout_ptr) wake_main_input();
-                }
-            }
-        });
-    };
-
-    spawn_pane_fn = [&](const std::string& req_agent,
-                         const std::string& message) -> std::string {
-        if (req_agent != "index" && !orch.has_agent(req_agent))
-            return "ERR: no agent '" + req_agent + "'";
-
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
-        clear_mouse_drag();
-
-        if (layout.pane_count() >= kMaxLayoutSnapshotLeaves) {
-            return "ERR: pane cap reached (" +
-                   std::to_string(kMaxLayoutSnapshotLeaves) +
-                   " open); close one before spawning more";
-        }
-
-        Pane* spawner_pane = g_active_pane;
-        // Mid-close: main has moved this pane's exec_thread out for join, so
-        // the Pane is still in the tree but must not become a parent — that
-        // would leave children with a dangling parent_pane after destroy.
-        if (spawner_pane && !spawner_pane->exec_thread.joinable()) {
-            spawner_pane = nullptr;
-        } else if (spawner_pane) {
-            bool spawner_alive = false;
-            layout.for_each_pane([&](Pane& p) {
-                if (&p == spawner_pane) spawner_alive = true;
-            });
-            if (!spawner_alive) spawner_pane = nullptr;
-        }
-        std::string captured_agent = req_agent;
-        Pane* new_pane_ptr = layout.split_focused(
-            LayoutTree::Orient::Vertical,
-            [&, captured_agent]() -> std::unique_ptr<Pane> {
-                auto p = make_pane();
-                if (!p) return p;
-                p->current_agent = captured_agent;
-                p->current_model = orch.get_agent_model(captured_agent);
-                pane_history_clear(*p);
-                return p;
-            },
-            /*focus_new=*/false);
-
-        if (!new_pane_ptr) {
-            return "ERR: focused pane too small to split";
-        }
-
-        Pane& new_pane = *new_pane_ptr;
-        new_pane.parent_pane   = spawner_pane;
-        new_pane.spawn_message = message;
-        new_pane.spawn_flowed.store(false);
-        start_pane_thread(new_pane);
-        new_pane.cmd_queue.push(message);
-
-        sync_layout_to_terminal();
-        layout.for_each_pane([&](Pane& p) {
-            pane_history_set_cols(p, p.tui.cols());
-        });
-        persist_layout();
-        present_holding_lock();
-
-        refresh_focused_input.store(true);
-        layout.focused().editor.interrupt();
-
-        return "OK: spawned pane on agent '" + captured_agent +
-               "'; output streams in its own view";
-    };
-
-    // Register the orchestrator callback — thin wrapper around
-    // spawn_pane_fn so agent-emitted /pane lines and REPL-typed /pane
-    // commands go through the same path.
-    orch.set_pane_spawner([&](const std::string& agent, const std::string& msg) {
-        return spawn_pane_fn(agent, msg);
-    });
-
-    // ── Per-pane exec threads ──────────────────────────────────────────────
-    // Start the initial pane's thread now that handle is defined.  Every
-    // pane created afterward (via dispatch_chord's split) starts its own
-    // thread immediately.  Threads run in parallel: concurrent sends to
-    // different agents execute simultaneously (same-provider sends still
-    // serialize at ApiClient's connection mutex, which is a network-layer
-    // constraint rather than an app-level one).
-    // ── Output pump ────────────────────────────────────────────────────────
-    // Drains every pane's output_queue every tick and repaints its scroll
-    // region.  Holds layout_mu for the whole iteration so a concurrent
-    // split/close/focus on the main thread can't mutate the tree mid-walk.
-    //
-    // The pump wakes immediately when any pane's OutputQueue receives data
-    // (via the notify_fn_ callback) and falls back to a 30ms poll so
-    // SIGWINCH repaints and the stop signal are still serviced promptly.
-    std::mutex          pump_cv_mu;
-    std::condition_variable pump_cv;
-    bool                pump_notified = false;
-
-    // Assign the notify function before starting any exec thread so the
-    // callback is fully visible to any thread that calls push().
-    pump_notify = [&]() {
-        { std::lock_guard<std::mutex> lk(pump_cv_mu); pump_notified = true; }
-        pump_cv.notify_one();
-    };
-
-    // Start exec threads after pump_notify is assigned — each exec thread
-    // captures pump_notify by reference via OutputQueue::notify_fn_ and
-    // may call push() on its first tick.  Restored multi-pane layouts need
-    // a thread per leaf, not only the focused pane.
-    layout.for_each_pane([&](Pane& p) { start_pane_thread(p); });
-
-    std::atomic<bool> pump_stop{false};
-    std::thread output_pump([&]() {
-        auto push_pane_output = [&](Pane& p) {
-            const int before = pane_history_total_rows(p);
-            pane_history_drain_queue(p);
-            // New output on an unfocused pane → activity pulse (#41).
-            if (&p != &layout.focused()
-                && pane_history_total_rows(p) > before
-                && !p.turn_running.load()) {
-                p.activity_unfocused.store(true);
-                if (!p.completed_unfocused.load()) {
-                    p.tui.set_activity_badge("●");
-                }
-            }
-        };
-        auto present_all = [&]() { present_unlocked(); };
-        while (!pump_stop.load()) {
-            {
-                std::unique_lock<std::mutex> wlk(pump_cv_mu);
-                pump_cv.wait_for(wlk, std::chrono::milliseconds(30),
-                                 [&]{ return pump_notified || pump_stop.load(); });
-                pump_notified = false;
-            }
-            std::unique_lock<std::recursive_mutex> lk(layout_mu);
-            (void)arbiter::consume_sigwinch();
-            if (sync_layout_to_terminal()) {
-                g_getc_state.pane = &layout.focused();
-                ui_ctx.focused_pane = &layout.focused();
-                refresh_focused_input.store(true);
-                layout.focused().editor.interrupt();
-            }
-            layout.for_each_pane(push_pane_output);
-            present_all();
-        }
-        layout.for_each_pane(push_pane_output);
-        present_all();
-    });
-
-    // Service the next interactive prompt (permission confirm or diff review).
-    auto service_interactive = [&]() -> bool {
-        auto entry_opt = interactive_prompts.take_front();
-        if (!entry_opt) return false;
-        auto& entry = *entry_opt;
-        auto& req = entry.request;
-
-        Pane* target = nullptr;
-        Pane* pane_ptr = nullptr;
-        {
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            if (req.pane) {
-                target = static_cast<Pane*>(req.pane);
-                // Verify the pane is still in the layout.
-                bool alive = false;
-                layout.for_each_pane([&](Pane& p) {
-                    if (&p == target) alive = true;
-                });
-                if (!alive) target = nullptr;
-            }
-            pane_ptr = target ? target : &layout.focused();
-        }
-        // Main-thread only: pane lifetime is stable across the blocking
-        // key read below (close/chord also run on this thread).
-        Pane& pane = *pane_ptr;
-
-        // Skip DiffReview cards whose proposal was already resolved (e.g.
-        // auto-review + /diff review both queued the same id).
-        if (req.kind == arbiter::InteractiveKind::DiffReview) {
-            // Never use the focused pane's store for another pane's patch id.
-            if (!target) {
-                if (req.on_complete)
-                    req.on_complete(arbiter::InteractiveDecision::Cancel);
-                if (entry.promise) {
-                    arbiter::complete_prompt_promise(
-                        entry.promise, arbiter::InteractiveDecision::Cancel);
-                }
-                return true;
-            }
-            auto prop = pane.diff_proposals.get(req.patch_id);
-            if (!prop) {
-                if (req.on_complete)
-                    req.on_complete(arbiter::InteractiveDecision::Cancel);
-                if (entry.promise) {
-                    arbiter::complete_prompt_promise(
-                        entry.promise, arbiter::InteractiveDecision::Cancel);
-                }
-                return true;
-            }
-            if (prop->status == arbiter::DiffProposalStatus::Applied) {
-                // Already applied — treat waiters as success, not cancel.
-                if (entry.promise) {
-                    arbiter::complete_prompt_promise(
-                        entry.promise, arbiter::InteractiveDecision::Allow);
-                }
-                return true;
-            }
-            if (prop->status != arbiter::DiffProposalStatus::Pending &&
-                prop->status != arbiter::DiffProposalStatus::Failed) {
-                if (entry.promise) {
-                    arbiter::complete_prompt_promise(
-                        entry.promise, arbiter::InteractiveDecision::Cancel);
-                }
-                return true;
-            }
-        }
-
-        arbiter::InteractiveDecision decision =
-            arbiter::InteractiveDecision::Cancel;
-
-        if (req.kind == arbiter::InteractiveKind::Confirm) {
-            std::vector<std::string> preview = req.preview_lines;
-            if (!req.summary.empty()) {
-                preview.insert(preview.begin(), req.summary);
-            }
-            auto card = arbiter::styled_permission_card(
-                req.action, req.target, preview);
-            // Scroll mutations must hold layout_mu — the output pump draws
-            // PaneScrollView under the same lock (UAF → DiffPanel::set_patch abort).
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                pane_history_push_prose(pane, card, true);
-                present_holding_lock();
-            }
-
-            const int key = arbiter::read_confirm_key();
-            if (key == 'y' || key == 'Y') {
-                decision = arbiter::InteractiveDecision::Allow;
-            } else if (key == 'A') {
-                // Allow this confirm; also accept remaining file edits.
-                decision = arbiter::InteractiveDecision::AllowAll;
-            } else {
-                decision = arbiter::InteractiveDecision::Deny;
-            }
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                pane_history_push_prose(
-                    pane,
-                    {arbiter::styled_activity_line(
-                        decision_is_affirmative(decision)
-                            ? "[user accepted input]"
-                            : "[user denied input]",
-                        decision_is_affirmative(decision)
-                            ? StyleId::Success
-                            : StyleId::Error)},
-                    true);
-                present_holding_lock();
-            }
-        } else if (entry.enqueued_under_accept_edits) {
-            // Session accept-edits was already on when this entry was queued.
-            decision = arbiter::InteractiveDecision::Allow;
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                pane_history_push_prose(
-                    pane,
-                    {arbiter::styled_activity_line(
-                        "[diff auto-applied — accept edits on]",
-                        StyleId::Success)},
-                    true);
-                present_holding_lock();
-            }
-        } else {
-            // DiffReview card
-            auto card = arbiter::styled_diff_review_card(
-                req.patch_id, req.path, req.summary, req.preview_lines);
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                pane_history_push_prose(pane, card, true);
-                present_holding_lock();
-            }
-
-            while (true) {
-                char csi = 0;
-                std::string csi_params;
-                const int key = arbiter::read_history_sidebar_key(csi, csi_params);
-                if (key < 0) {
-                    decision = arbiter::InteractiveDecision::Cancel;
-                    break;
-                }
-                if (key == 0x1B && (csi == 'M' || csi == 'm')
-                    && !csi_params.empty() && csi_params[0] == '<') {
-                    continue;
-                }
-                if (key == 'a') {
-                    decision = arbiter::InteractiveDecision::Allow;
-                    break;
-                }
-                if (key == 'A') {
-                    decision = arbiter::InteractiveDecision::AllowAll;
-                    break;
-                }
-                if (key == 'r' || key == 'R') {
-                    decision = arbiter::InteractiveDecision::Deny;
-                    break;
-                }
-                if (key == 0x1B && csi == 0) {
-                    decision = arbiter::InteractiveDecision::Cancel;
-                    break;
-                }
-            }
-
-            const char* label =
-                (decision == arbiter::InteractiveDecision::Allow)
-                    ? "[diff apply]"
-                : (decision == arbiter::InteractiveDecision::AllowAll)
-                    ? "[diff allow all]"
-                : (decision == arbiter::InteractiveDecision::Deny)
-                    ? "[diff reject]"
-                    : "[diff review cancelled]";
-            const StyleId style =
-                (decision == arbiter::InteractiveDecision::Allow ||
-                 decision == arbiter::InteractiveDecision::AllowAll)
-                    ? StyleId::Success
-                : (decision == arbiter::InteractiveDecision::Deny)
-                    ? StyleId::Warning
-                    : StyleId::Dim;
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                pane_history_push_prose(
-                    pane,
-                    {arbiter::styled_activity_line(label, style)},
-                    true);
-                present_holding_lock();
-            }
-        }
-
-        if (decision == arbiter::InteractiveDecision::AllowAll) {
-            if (req.kind == arbiter::InteractiveKind::DiffReview) {
-                // Apply the current patch first, then remaining queued diffs,
-                // so multi-file / same-file FIFO order is preserved.
-                if (req.on_complete && (req.auto_review || !entry.promise)) {
-                    req.on_complete(decision);
-                } else if (target) {
-                    // Blocking /diff review: apply on main before remaining.
-                    handle_diff_decision(*target, req.patch_id, decision);
-                }
-                interactive_prompts.allow_remaining_diff_reviews();
-                if (entry.promise) {
-                    arbiter::complete_prompt_promise(entry.promise, decision);
-                }
-                return true;
-            }
-            // Confirm `A`: allow this exec and auto-accept future file
-            // diffs — do not silently apply already-queued patches.
-            interactive_prompts.set_accept_edits(true);
-        }
-
-        // Auto-review (and any request with on_complete) applies here.
-        // Blocking /diff review waiters apply in their own handler after
-        // the promise resolves — skip on_complete for those to avoid
-        // double-apply.  auto_review entries always use on_complete.
-        if (req.on_complete && (req.auto_review || !entry.promise)) {
-            req.on_complete(decision);
-        }
-        if (entry.promise) {
-            arbiter::complete_prompt_promise(entry.promise, decision);
-        }
-        return true;
-    };
-
-    // Drop spawn parent links before destroying a pane. Join runs outside
-    // layout_mu, so the closing pane can still finish an in-flight /pane
-    // spawn that sets child.parent_pane = victim; clearing here prevents
-    // dangling parent pointers after close_pane.
-    auto clear_spawn_parent_refs = [&](Pane* parent) {
-        if (!parent) return;
-        layout.for_each_pane([&](Pane& p) {
-            if (p.parent_pane == parent) p.parent_pane = nullptr;
-        });
-    };
-
-    // Service any pending-close requests queued by pane exec threads that
-    // finished their delegated task.  Runs on the main thread; prompts the
-    // user on the focused pane ("close X? [y/N]") and — on yes — stops the
-    // target pane's cmd_queue, joins its thread, and removes it from the
-    // layout.  Returns true if at least one entry was handled so the REPL
-    // loop can re-enter read_line afterward.
-    auto service_pending_closes = [&]() -> bool {
-        std::vector<PendingClose> snapshot;
-        {
-            std::lock_guard<std::mutex> lk(pending_closes_mu);
-            snapshot.swap(pending_closes);
-        }
-        if (snapshot.empty()) return false;
-
-        for (auto& pc : snapshot) {
-            // Verify the pane is still in the layout (user could have
-            // Ctrl-w c'd it already).  If gone, skip silently.
-            bool still_alive = false;
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                layout.for_each_pane([&](Pane& p) {
-                    if (&p == pc.pane) still_alive = true;
-                });
-            }
-            if (!still_alive) continue;
-
-            // Render the confirm prompt in the focused pane's scrollback.
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                StyledLine prompt_line;
-                styled_append(prompt_line, StyleId::Warning,
-                              "pane '" + pc.agent_id + "' finished — close it? [y/N]");
-                pane_history_push_prose(layout.focused(), {prompt_line}, true);
-                present_holding_lock();
-            }
-
-            const int key = arbiter::read_confirm_key();
-            bool yes = (key == 'y' || key == 'Y');
-
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                StyledLine answer;
-                if (yes) {
-                    styled_append(answer, StyleId::Success,
-                                  "[closing '" + pc.agent_id + "']");
-                } else {
-                    styled_append(answer, StyleId::Error,
-                                  "[keeping '" + pc.agent_id + "' open]");
-                }
-                pane_history_push_prose(layout.focused(), {answer}, true);
-                present_holding_lock();
-            }
-
-            if (yes) {
-                // Unblock confirm/diff waiters before join. Never join while
-                // holding layout_mu — exec threads take that lock for /pane
-                // spawn, /find, present_all, etc. (hang → SIGHUP/SIGSEGV in
-                // pthread_join when the terminal is closed mid-wait).
-                fail_pending_prompts();
-                std::thread to_join;
-                {
-                    std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                    bool alive = false;
-                    layout.for_each_pane([&](Pane& p) {
-                        if (&p == pc.pane) alive = true;
-                    });
-                    if (!alive) continue;
-                    clear_mouse_drag();
-                    pc.pane->cmd_queue.stop();
-                    // Docs: close cancels the in-flight turn so join returns
-                    // promptly instead of waiting out a network call.
-                    if (auto tok = std::atomic_load(&pc.pane->turn_cancel)) {
-                        orch.cancel_token(tok);
-                    }
-                    to_join = std::move(pc.pane->exec_thread);
-                }
-                if (to_join.joinable()) to_join.join();
-                {
-                    std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                    bool alive = false;
-                    layout.for_each_pane([&](Pane& p) {
-                        if (&p == pc.pane) alive = true;
-                    });
-                    if (!alive) continue;
-                    clear_mouse_drag();
-                    clear_spawn_parent_refs(pc.pane);
-                    layout.close_pane(pc.pane, [](Pane&) {});
-                    g_getc_state.pane = &layout.focused();
-                    ui_ctx.focused_pane = &layout.focused();
-                    layout.for_each_pane([&](Pane& p) {
-                        pane_history_set_cols(p, p.tui.cols());
-                    });
-                    persist_layout();
-                    present_holding_lock();
-                }
-            }
-        }
-        return true;
-    };
-
-    // Chord dispatcher — runs after the focused editor returned with a
-    // pending chord.  Takes layout_mu so the pump thread's iteration can't
-    // observe a partially-mutated tree.  On close, stop the victim pane's
-    // cmd_queue and join its exec thread BEFORE the Pane is destroyed;
-    // join() is done *outside* layout_mu (see service_pending_closes).
-    auto dispatch_chord = [&](char cmd) {
-        std::unique_lock<std::recursive_mutex> lk(layout_mu);
-        clear_mouse_drag();
-        switch (cmd) {
-            case 'w':
-            case 0x17:  // Ctrl-w Ctrl-w → next pane
-                layout.focus_next();
-                if (!layout.focused().conversation_id.empty()) {
-                    conversation_store.set_active(layout.focused().conversation_id);
-                    bind_tools_conversation(layout.focused().conversation_id);
-                }
-                break;
-            case 's':
-                if (sidebar.session_started()) {
-                    sidebar.toggle_visible();
-                    sync_layout_to_terminal();
-                }
-                break;
-            case 'h':
-                if (layout.pane_count() >= kMaxLayoutSnapshotLeaves) {
-                    layout.focused().tui.set_status(
-                        "pane cap reached (" +
-                        std::to_string(kMaxLayoutSnapshotLeaves) +
-                        ") — close one before splitting");
-                } else if (Pane* np = layout.split_focused(
-                        LayoutTree::Orient::Horizontal, make_pane)) {
-                    start_pane_thread(*np);
-                }
-                break;
-            case 'v':
-                if (layout.pane_count() >= kMaxLayoutSnapshotLeaves) {
-                    layout.focused().tui.set_status(
-                        "pane cap reached (" +
-                        std::to_string(kMaxLayoutSnapshotLeaves) +
-                        ") — close one before splitting");
-                } else if (Pane* np = layout.split_focused(
-                        LayoutTree::Orient::Vertical, make_pane)) {
-                    start_pane_thread(*np);
-                }
-                break;
-            case 'c':
-                if (layout.pane_count() > 1) {
-                    // Unblock confirm/diff waiters before join.
-                    fail_pending_prompts();
-                    Pane* victim = &layout.focused();
-                    victim->cmd_queue.stop();
-                    // Match docs/tui keybindings: close cancels the in-flight
-                    // turn so join is not stuck on a live network call.
-                    if (auto tok = std::atomic_load(&victim->turn_cancel)) {
-                        orch.cancel_token(tok);
-                    }
-                    std::thread to_join = std::move(victim->exec_thread);
-                    lk.unlock();
-                    if (to_join.joinable()) to_join.join();
-                    lk.lock();
-                    bool still_alive = false;
-                    layout.for_each_pane([&](Pane& p) {
-                        if (&p == victim) still_alive = true;
-                    });
-                    if (still_alive) {
-                        clear_spawn_parent_refs(victim);
-                        layout.close_pane(victim, [](Pane&) {});
-                    }
-                }
-                break;
-            case 'z':
-                layout.toggle_zoom_focused();
-                break;
-            case 't':
-                history_sidebar.toggle_enabled(dir);
-                break;
-            case 'b': {
-                const int cols = arbiter::term_cols();
-                if (HistorySidebarState::width_for_terminal(cols, true) <= 0) {
-                    layout.focused().tui.set_status(
-                        "History sidebar needs a wider terminal (>=72 cols) — try /chat list");
-                    break;
-                }
-                if (!history_sidebar.enabled()) {
-                    history_sidebar.set_enabled(true, dir);
-                }
-                history_sidebar.enter_focus(conversation_store,
-                                            layout.focused().conversation_id);
-                break;
-            }
-        }
-        sync_layout_to_terminal();
-        layout.for_each_pane([&](Pane& p) {
-            pane_history_set_cols(p, p.tui.cols());
-        });
-        // Split / close / focus change the persisted tree (#42).
-        persist_layout();
-        present_unlocked();
-        g_getc_state.pane = &layout.focused();
-        ui_ctx.focused_pane = &layout.focused();
-    };
-
-    auto focused_turn_in_flight = [&]() {
-        return layout.focused().cmd_queue.is_busy();
-    };
-
-    // True when any pane bound to `id` still has a turn in flight.
-    auto conversation_turn_in_flight = [&](const std::string& id) {
-        bool busy = false;
-        layout.for_each_pane([&](Pane& p) {
-            if (p.conversation_id == id && p.cmd_queue.is_busy()) busy = true;
-        });
-        return busy;
-    };
-
-    // Attach `id` to a single pane without tearing down the layout (#40).
-    // Loads into that conversation's history slot if not already resident,
-    // clears the pane's scrollback, and optionally replays the transcript.
-    auto apply_conversation_to_pane = [&](Pane& pane, const std::string& id, bool replay) {
-        clear_mouse_drag();
-        pane.conversation_id = id;
-        pane.current_agent = "index";
-        pane.current_model = orch.get_agent_model("index");
-        pane.original_task.clear();
-        pane.scroll_offset = 0;
-        pane.new_while_scrolled = 0;
-        pane.activity_unfocused.store(false);
-        pane.completed_unfocused.store(false);
-        pane.tui.clear_status();
-        pane.tui.clear_activity_badge();
-        pane_history_clear(pane);
-        pane_history_set_cols(pane, pane.tui.cols());
-
-        if (!orch.has_conversation_loaded(id)) {
-            conversation_store.load(id, orch);
-        }
-
-        if (replay) {
-            ConversationScope scope(id);
-            const auto history = orch.get_agent_history("index");
-            const size_t total = history.size();
-            arbiter::replay_transcript(pane, history, arbiter::replay_tail_begin(total), total);
-        }
-
-        conversation_store.set_active(id);
-        bind_tools_conversation(id);
-    };
-
-    // Completes a conversation switch after any in-flight turn has unwound.
-    // Caller holds layout_mu. Drains queued follow-ups on the focused pane
-    // only at this point so an abandoned wait keeps them (#46).
-    auto finish_switch_conversation = [&](bool create_new, std::string explicit_id,
-                                          std::string folder_id = {}) {
-        clear_mouse_drag();
-        Pane& focused = layout.focused();
-        focused.cmd_queue.drain();
-        focused.tui.clear_queue_indicator();
-        focused.thinking.stop();
-
-        conversation_store.flush();
-        if (!focused.conversation_id.empty()) {
-            conversation_store.save(focused.conversation_id, orch);
-        }
-
-        if (create_new) {
-            const std::string before = focused.conversation_id;
-            const std::string after = conversation_store.create_or_reuse_for(
-                fs::current_path().string(), before, folder_id);
-            if (after == before) {
-                history_sidebar.exit_focus();
-                present_unlocked();
-                return;
-            }
-            {
-                ConversationScope scope(after);
-                orch.reset_all_histories();
-            }
-            history_sidebar.exit_focus();
-            apply_conversation_to_pane(focused, after, /*replay=*/false);
-            history_sidebar.refresh_entries(conversation_store);
-            persist_layout();
-            present_unlocked();
-            g_getc_state.pane = &layout.focused();
-            ui_ctx.focused_pane = &layout.focused();
-            return;
-        }
-
-        const std::string picked = !explicit_id.empty() ? explicit_id
-                                                         : history_sidebar.selected_conversation_id();
-        if (picked.empty() || picked == focused.conversation_id) {
-            history_sidebar.exit_focus();
-            present_unlocked();
-            return;
-        }
-        history_sidebar.exit_focus();
-        apply_conversation_to_pane(focused, picked, /*replay=*/true);
-        history_sidebar.refresh_entries(conversation_store);
-        persist_layout();
-        present_unlocked();
-        g_getc_state.pane = &layout.focused();
-        ui_ctx.focused_pane = &layout.focused();
-    };
-
-    // Completes a delete after bound panes' turns have unwound.
-    auto finish_delete_conversation = [&](const std::string& id, bool hard, bool any_showing) {
-        clear_mouse_drag();
-        if (any_showing) {
-            layout.for_each_pane([&](Pane& p) {
-                if (p.conversation_id == id) {
-                    p.cmd_queue.drain();
-                    p.tui.clear_queue_indicator();
-                }
-            });
-            layout.focused().thinking.stop();
-            conversation_store.flush();
-            layout.for_each_pane([&](Pane& p) {
-                if (p.conversation_id == id && !p.conversation_id.empty()) {
-                    conversation_store.save(p.conversation_id, orch);
-                }
-            });
-        }
-
-        if (hard) conversation_store.purge(id);
-        else conversation_store.soft_delete(id);
-
-        orch.erase_conversation_histories(id);
-
-        const std::string replacement = conversation_store.active_id();
-        bool rebound = false;
-        layout.for_each_pane([&](Pane& p) {
-            if (p.conversation_id != id) return;
-            apply_conversation_to_pane(p, replacement, /*replay=*/true);
-            rebound = true;
-        });
-
-        history_sidebar.refresh_entries(conversation_store);
-        if (rebound) {
-            persist_layout();
-            present_unlocked();
-            g_getc_state.pane = &layout.focused();
-            ui_ctx.focused_pane = &layout.focused();
-        } else {
-            present_unlocked();
-        }
-    };
-
-    // Start a scoped cancel and defer the switch/delete onto the main loop
-    // so read_line keeps running (spinner via pump; Esc abandons).
-    auto begin_pending_after_cancel = [&](PendingAfterCancel pending) {
-        {
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            if (pending.kind == PendingAfterCancel::Kind::Switch && pending.pane) {
-                auto token = std::atomic_load(&pending.pane->turn_cancel);
-                if (token) {
-                    orch.cancel_token(token);
-                } else {
-                    orch.cancel();
-                }
-            } else if (pending.kind == PendingAfterCancel::Kind::Delete) {
-                bool cancelled_any = false;
-                layout.for_each_pane([&](Pane& p) {
-                    if (p.conversation_id != pending.wait_conversation_id) return;
-                    auto token = std::atomic_load(&p.turn_cancel);
-                    if (token) {
-                        orch.cancel_token(token);
-                        cancelled_any = true;
-                    }
-                });
-                if (!cancelled_any) orch.cancel();
-            }
-            history_sidebar.exit_focus();
-            layout.focused().thinking.start("cancelling… (Esc to abort)");
-            present_unlocked();
-        }
-        pending_after_cancel = std::move(pending);
-        pending_cancel_wait.store(true);
-    };
-
-    // Service deferred switch/delete once the waited-on turn(s) are idle.
-    // Returns true when an op completed (caller should continue the REPL loop).
-    auto service_pending_after_cancel = [&]() -> bool {
-        if (pending_after_cancel.kind == PendingAfterCancel::Kind::None) return false;
-
-        std::unique_lock<std::recursive_mutex> lk(layout_mu);
-        bool busy = false;
-        if (pending_after_cancel.kind == PendingAfterCancel::Kind::Switch) {
-            Pane* pane = pending_after_cancel.pane;
-            bool alive = false;
-            if (pane) {
-                layout.for_each_pane([&](Pane& p) {
-                    if (&p == pane) alive = true;
-                });
-            }
-            busy = alive && pane->cmd_queue.is_busy();
-        } else {
-            busy = conversation_turn_in_flight(pending_after_cancel.wait_conversation_id);
-        }
-
-        if (busy) {
-            layout.focused().thinking.start("cancelling… (Esc to abort)");
-            layout.focused().thinking.tick();
-            return false;
-        }
-
-        const auto op = pending_after_cancel;
-        pending_after_cancel = {};
-        pending_cancel_wait.store(false);
-
-        if (op.kind == PendingAfterCancel::Kind::Switch) {
-            finish_switch_conversation(op.create_new, op.target_id, op.folder_id);
-        } else if (op.kind == PendingAfterCancel::Kind::Delete) {
-            finish_delete_conversation(op.target_id, op.hard_delete, /*any_showing=*/true);
-        }
-        return true;
-    };
-
-    // `explicit_id`: switch straight to this id, bypassing the sidebar's
-    // current selection (used by /chat switch). Empty + !create_new reads
-    // history_sidebar.selected_conversation_id() instead (sidebar Enter).
-    // Attaches to the *focused* pane only — sibling panes keep their
-    // conversations and the split layout stays intact (#40).
-    // `folder_id` files a create_new conversation into that folder (empty =
-    // unfiled); when omitted and create_new comes from the sidebar, callers
-    // should pass history_sidebar.new_target_folder_id().
-    auto switch_conversation = [&](bool create_new, std::string explicit_id = {},
-                                   std::string folder_id = {}) {
-        if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            layout.focused().tui.set_status("Already cancelling… (Esc to abort)");
-            present_unlocked();
-            return;
-        }
-
-        // Confirm outside layout_mu so the output pump can keep painting and
-        // so nested mouse Up reports are drained by read_confirm_key.
-        {
-            bool busy = false;
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                busy = focused_turn_in_flight();
-                if (busy) {
-                    layout.focused().tui.set_status(
-                        "Turn in progress — switch anyway? [y/N]");
-                    present_unlocked();
-                }
-            }
-            if (busy) {
-                const int key = arbiter::read_confirm_key();
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                layout.focused().tui.clear_status();
-                if (key != 'y' && key != 'Y') {
-                    history_sidebar.exit_focus();
-                    present_unlocked();
-                    return;
-                }
-            }
-        }
-
-        {
-            bool need_cancel = false;
-            Pane* pane = nullptr;
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                need_cancel = focused_turn_in_flight();
-                pane = &layout.focused();
-            }
-            if (need_cancel) {
-                PendingAfterCancel pending;
-                pending.kind = PendingAfterCancel::Kind::Switch;
-                pending.create_new = create_new;
-                pending.target_id = std::move(explicit_id);
-                pending.folder_id = std::move(folder_id);
-                pending.pane = pane;
-                pending.abandon_status = "Switch cancelled";
-                begin_pending_after_cancel(std::move(pending));
-                return;
-            }
-        }
-
-        std::unique_lock<std::recursive_mutex> lk(layout_mu);
-        finish_switch_conversation(create_new, std::move(explicit_id),
-                                   std::move(folder_id));
-    };
-
-    // Soft/hard-deletes `id`. Any pane bound to it is reassigned to the
-    // store's new active conversation; layout is preserved.
-    auto delete_conversation = [&](const std::string& id, bool hard) {
-        if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            layout.focused().tui.set_status("Already cancelling… (Esc to abort)");
-            present_unlocked();
-            return;
-        }
-
-        bool any_showing = false;
-        bool need_cancel = false;
-        {
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            layout.for_each_pane([&](Pane& p) {
-                if (p.conversation_id == id) any_showing = true;
-            });
-            if (any_showing) need_cancel = conversation_turn_in_flight(id);
-        }
-
-        if (need_cancel) {
-            PendingAfterCancel pending;
-            pending.kind = PendingAfterCancel::Kind::Delete;
-            pending.target_id = id;
-            pending.hard_delete = hard;
-            pending.wait_conversation_id = id;
-            pending.abandon_status = "Delete cancelled";
-            begin_pending_after_cancel(std::move(pending));
-            return;
-        }
-
-        std::unique_lock<std::recursive_mutex> lk(layout_mu);
-        finish_delete_conversation(id, hard, any_showing);
-    };
-
-    // Drains /chat-queued switch/delete requests (see PendingConversationOp)
-    // onto the main thread — /chat itself runs on a pane's exec thread and
-    // must not drive `layout`/stdin directly.
-    auto service_pending_conv_ops = [&]() -> bool {
-        std::vector<PendingConversationOp> snapshot;
-        {
-            std::lock_guard<std::mutex> lk(pending_conv_mu);
-            snapshot.swap(pending_conv_ops);
-        }
-        if (snapshot.empty()) return false;
-
-        for (auto& op : snapshot) {
-            if (op.switch_op) {
-                switch_conversation(op.create_new, op.target_id, op.folder_id);
-            } else if (op.delete_op) {
-                delete_conversation(op.target_id, op.hard_delete);
-            }
-        }
-        return true;
-    };
-
-    auto scroll_pane = [&](Pane& pane, int direction, int step) {
-        const int max_off = pane_history_max_scroll(pane);
-        if (direction < 0) {
-            pane.scroll_offset = std::min(pane.scroll_offset + step, max_off);
-            if (pane.scroll_offset >= max_off && pane.scroll && pane.scroll->has_gap()) {
-                ConversationScope scope(pane.conversation_id);
-                const std::string& agent = pane.current_agent.empty()
-                    ? "index" : pane.current_agent;
-                const auto history = orch.get_agent_history(agent);
-                arbiter::replay_load_previous_chunk(pane, history);
-            }
-        } else {
-            pane.scroll_offset = std::max(0, pane.scroll_offset - step);
-            pane.new_while_scrolled = 0;
-            if (pane.scroll_offset == 0) pane.tui.clear_status();
-        }
-        if (pump_notify) pump_notify();
-    };
-
-    auto right_sidebar_rect = [&]() -> Rect {
-        const int cols = arbiter::term_cols();
-        const int rows = arbiter::term_rows();
-        const int panes = static_cast<int>(layout.pane_count());
-        const int leading = HistorySidebarState::width_for_terminal(
-            cols, history_sidebar.enabled());
-        const int sw = sidebar.effective_width(cols, panes, leading);
-        if (sw <= 0) return {};
-        const int pane_x = layout.outer_bounds().x;
-        const int pane_w = layout.outer_bounds().w;
-        const int gap = cols - pane_x - pane_w;
-        if (gap < sw) return {};
-        return Rect{pane_x + pane_w, 0, sw, std::max(1, rows)};
-    };
-
-    auto history_visible_rows = [&](const Rect& hb) -> int {
-        const Rect outer = layout.outer_bounds();
-        const int outer_bottom_pad =
-            arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
-        return arbiter::opentui::history_sidebar_visible_rows(
-            hb, outer, outer_bottom_input_rows(), history_sidebar.focused(),
-            outer_bottom_pad);
-    };
-
-    // Returns true when the focused editor should exit read_line (focus moved
-    // or a pending history switch was queued).
-    route_mouse = [&](const arbiter::opentui::MouseEvent& ev) -> bool {
-        using arbiter::opentui::HitKind;
-        using arbiter::opentui::MouseButton;
-        using arbiter::opentui::MouseType;
-        using arbiter::opentui::ScrollDir;
-
-        if (!arbiter::tui_design().layout.mouse) return false;
-
-        std::lock_guard<std::recursive_mutex> lk(layout_mu);
-
-        // Separator drag: re-resolve the path-based ref each event so a
-        // mid-drag tree mutation fails cleanly instead of UAFing.
-        if (mouse_drag.active) {
-            if (ev.type == MouseType::Up) {
-                mouse_drag.active = false;
-                // Persist asymmetric weights after a completed drag (#42).
-                persist_layout();
-                return false;
-            }
-            if (ev.type == MouseType::Drag && ev.button == MouseButton::Left) {
-                if (!layout.drag_separator(mouse_drag.sep, ev.x, ev.y)) {
-                    mouse_drag.active = false;
-                    persist_layout();
-                } else {
-                    layout.for_each_pane([&](Pane& p) {
-                        pane_history_set_cols(p, p.tui.cols());
-                    });
-                    if (pump_notify) pump_notify();
-                }
-                return false;
-            }
-            if (ev.type == MouseType::Move) return false;
-            // Any other event cancels an in-progress drag.
-            mouse_drag.active = false;
-            persist_layout();
-        }
-
-        // Output text selection drag — continue even if the pointer leaves
-        // the scroll band so the range can still grow / finish.
-        if (mouse_select.active && mouse_select.pane) {
-            if (ev.type == MouseType::Drag && ev.button == MouseButton::Left) {
-                if (auto cell = pane_history_hit_cell_at(
-                        *mouse_select.pane, ev.x, ev.y)) {
-                    if (*cell != mouse_select.anchor) mouse_select.dragged = true;
-                    pane_history_set_selection(
-                        *mouse_select.pane, mouse_select.anchor, *cell);
-                } else {
-                    // Outside content: clamp focus to the nearest edge of the
-                    // selection pane's last hit by keeping the prior focus.
-                    mouse_select.dragged = true;
-                }
-                if (pump_notify) pump_notify();
-                return false;
-            }
-            if (ev.type == MouseType::Up) {
-                Pane* pane = mouse_select.pane;
-                const bool dragged = mouse_select.dragged;
-                const auto anchor = mouse_select.anchor;
-                clear_mouse_select();
-                if (dragged) {
-                    if (auto cell = pane_history_hit_cell_at(*pane, ev.x, ev.y)) {
-                        pane_history_set_selection(*pane, anchor, *cell);
-                    }
-                    const std::string text = pane_history_selection_text(*pane);
-                    if (!text.empty()) {
-                        if (arbiter::clipboard_write_osc52(text)) {
-                            char buf[64];
-                            std::snprintf(buf, sizeof(buf),
-                                          "copied %zu character%s",
-                                          text.size(),
-                                          text.size() == 1 ? "" : "s");
-                            pane->tui.set_status(buf);
-                        }
-                    }
-                    if (pump_notify) pump_notify();
-                    return false;
-                }
-                // Click (no drag): clear any prior selection and toggle
-                // expand/collapse on the expandable under the pointer.
-                pane_history_clear_selection(*pane);
-                const bool toggled =
-                    pane_history_toggle_expandable_at(*pane, ev.x, ev.y);
-                if (toggled && pump_notify) pump_notify();
-                else if (pump_notify) pump_notify();
-                return false;
-            }
-            if (ev.type == MouseType::Move) return false;
-            // Other events cancel an in-progress select gesture.
-            clear_mouse_select_and_highlight();
-        }
-
-        const int cols = arbiter::term_cols();
-        const int rows = arbiter::term_rows();
-        const Rect hb = HistorySidebarState::rect_for_terminal(
-            cols, rows, history_sidebar.enabled());
-        const Rect rb = right_sidebar_rect();
-        const int hist_vis = (hb.w > 0) ? history_visible_rows(hb) : 0;
-        const auto hist_snap = (hb.w > 0)
-            ? history_sidebar.snapshot()
-            : arbiter::HistorySidebarSnapshot{};
-        const auto hit = arbiter::opentui::hit_test(
-            layout, hb, rb, hist_snap.scroll_offset, hist_vis, hist_snap.rows,
-            ev.x, ev.y);
-
-        if (ev.type == MouseType::Scroll) {
-            const int dir = (ev.scroll == ScrollDir::Up || ev.scroll == ScrollDir::Left)
-                ? -1 : +1;
-            if (hit.kind == HitKind::HistorySidebar && hb.w > 0) {
-                history_sidebar.page_selection(dir, hist_vis);
-                if (pump_notify) pump_notify();
-                return false;
-            }
-            // Only scroll when the pointer is over a pane scroll/input/chrome
-            // region — never fall back to the focused pane for Outside /
-            // RightSidebar / separator hits.
-            if (hit.pane
-                && (hit.kind == HitKind::PaneScroll
-                    || hit.kind == HitKind::PaneInput
-                    || hit.kind == HitKind::PaneChrome)) {
-                const int step = std::max(1, hit.pane->tui.scroll_region_rows() / 4);
-                scroll_pane(*hit.pane, dir, step * std::max(1, ev.scroll_delta));
-            }
-            return false;
-        }
-
-        if (ev.type == MouseType::Down && ev.button == MouseButton::Left) {
-            if (hit.kind == HitKind::SplitSeparator) {
-                clear_mouse_select();
-                clear_all_selections();
-                mouse_drag.active = true;
-                mouse_drag.sep = hit.sep;
-                if (pump_notify) pump_notify();
-                return false;
-            }
-            if (hit.kind == HitKind::HistorySidebar) {
-                clear_mouse_select();
-                clear_all_selections();
-                if (!history_sidebar.focused()) {
-                    history_sidebar.enter_focus(conversation_store,
-                                                conversation_store.active_id());
-                }
-                if (hit.history_row >= 0) {
-                    history_sidebar.select_at_index(hit.history_row, hist_vis);
-                    // Queue activation — never call switch_conversation from
-                    // inside the mouse handler (nested stdin confirm + lock).
-                    if (history_sidebar.is_folder_selected()) {
-                        mouse_switch.pending = true;
-                        mouse_switch.toggle_folder = true;
-                        mouse_switch.create_new = false;
-                        mouse_switch.folder_id.clear();
-                    } else {
-                        mouse_switch.pending = true;
-                        mouse_switch.toggle_folder = false;
-                        mouse_switch.create_new = history_sidebar.is_new_selected();
-                        mouse_switch.folder_id = mouse_switch.create_new
-                            ? history_sidebar.new_target_folder_id()
-                            : std::string{};
-                    }
-                }
-                refresh_focused_input.store(true);
-                if (pump_notify) pump_notify();
-                return true;
-            }
-            if (hit.kind == HitKind::RightSidebar) {
-                // Display-only telemetry panel — clicks are intentionally
-                // ignored (documented in docs/tui/panes.md).
-                return false;
-            }
-            if ((hit.kind == HitKind::PaneInput
-                 || hit.kind == HitKind::PaneScroll
-                 || hit.kind == HitKind::PaneChrome)
-                && hit.pane) {
-                const bool focus_changed = (hit.pane != layout.focused_ptr());
-                const bool was_history = history_sidebar.focused();
-                if (was_history) history_sidebar.exit_focus();
-                layout.focus_pane(hit.pane);
-                if (hit.kind == HitKind::PaneInput
-                    || hit.kind == HitKind::PaneChrome) {
-                    clear_mouse_select();
-                    clear_all_selections();
-                    if (hit.kind == HitKind::PaneInput) {
-                        hit.pane->editor.set_cursor_from_click(ev.x, ev.y);
-                    }
-                    if (focus_changed || was_history) {
-                        refresh_focused_input.store(true);
-                        if (pump_notify) pump_notify();
-                        return focus_changed || was_history;
-                    }
-                    if (pump_notify) pump_notify();
-                    return false;
-                }
-                // PaneScroll: start a selection gesture. Expand/collapse is
-                // deferred to Up so a drag can select without toggling.
-                clear_all_selections();
-                if (auto cell = pane_history_hit_cell_at(*hit.pane, ev.x, ev.y)) {
-                    mouse_select.active = true;
-                    mouse_select.dragged = false;
-                    mouse_select.pane = hit.pane;
-                    mouse_select.anchor = *cell;
-                    pane_history_set_selection(*hit.pane, *cell, *cell);
-                } else {
-                    clear_mouse_select();
-                }
-                if (focus_changed || was_history) {
-                    refresh_focused_input.store(true);
-                    if (pump_notify) pump_notify();
-                    return focus_changed || was_history;
-                }
-                if (pump_notify) pump_notify();
-                return false;
-            }
-            // Outside / unknown: drop any selection.
-            clear_mouse_select();
-            clear_all_selections();
-            if (pump_notify) pump_notify();
-        }
-
-        return false;
-    };
-
-    auto service_mouse_switch = [&]() -> bool {
-        if (!mouse_switch.pending) return false;
-        const bool create_new = mouse_switch.create_new;
-        const bool toggle_folder = mouse_switch.toggle_folder;
-        const std::string folder_id = mouse_switch.folder_id;
-        mouse_switch.pending = false;
-        mouse_switch.toggle_folder = false;
-        mouse_switch.folder_id.clear();
-        if (toggle_folder) {
-            // Simulate Enter on the folder header to toggle collapse.
-            const auto action = history_sidebar.handle_key('\r', 0, "");
-            if (action == HistorySidebarKey::ToggleFolder) {
-                conversation_store.set_folder_collapse_json(
-                    history_sidebar.collapse_json());
-            }
-            if (pump_notify) pump_notify();
-            return true;
-        }
-        switch_conversation(create_new, {}, folder_id);
-        return true;
-    };
-
-    // ── Main readline loop ──────────────────────────────────────────────────
-    while (!quit_requested) {
-        deferred_main_interrupt.store(false, std::memory_order_release);
-        while (service_interactive()) {}
-        while (service_pending_closes()) {}
-        while (service_pending_conv_ops()) {}
-        while (service_mouse_switch()) {}
-        while (service_pending_after_cancel()) {}
-
-        // A wake arrived while we were draining services (no active
-        // read_line).  Re-enter so confirm/diff posts are not starved.
-        if (deferred_main_interrupt.exchange(false, std::memory_order_acq_rel)) {
-            continue;
-        }
-
-        if (theme_picker.active()) {
-            if (pump_notify) pump_notify();
-            const int visible_rows =
-                arbiter::opentui::theme_picker_visible_rows(layout.focused().tui);
-
-            char csi = 0;
-            std::string csi_params;
-            const int key = read_history_sidebar_key(csi, csi_params);
-            if (key < 0) break;
-
-            // Swallow mouse reports while the picker owns stdin.
-            if (key == 0x1B && (csi == 'M' || csi == 'm')
-                && !csi_params.empty() && csi_params[0] == '<') {
-                continue;
-            }
-
-            auto preview_selected = [&]() {
-                const std::string name = theme_picker.selected_theme();
-                if (name.empty()) return;
-                arbiter::load_tui_design(dir, name);
-                refresh_chrome();
-            };
-
-            // Up / Down / Left / Right cycle with live preview.
-            if (key == 0x1B && (csi == 'A' || csi == 'D')) {
-                theme_picker.move_selection(-1, visible_rows);
-                preview_selected();
-                continue;
-            }
-            if (key == 0x1B && (csi == 'B' || csi == 'C')) {
-                theme_picker.move_selection(1, visible_rows);
-                preview_selected();
-                continue;
-            }
-            // PgUp / PgDn (CSI 5~ / 6~)
-            if (key == 0x1B && csi == '~' && csi_params == "5") {
-                theme_picker.page_selection(-1, visible_rows);
-                preview_selected();
-                continue;
-            }
-            if (key == 0x1B && csi == '~' && csi_params == "6") {
-                theme_picker.page_selection(1, visible_rows);
-                preview_selected();
-                continue;
-            }
-            if (key == '\r' || key == '\n') {
-                const std::string name = theme_picker.selected_theme();
-                theme_picker.close();
-                if (!name.empty()) {
-                    arbiter::set_tui_preset(dir, name);
-                    refresh_chrome();
-                    layout.focused().output_queue.push_prose_msg(
-                        "theme: " + name, StyleId::System);
-                }
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (key == 0x1B && csi == 0) {
-                // Bare Esc — restore disk theme (previews never wrote tui.json).
-                theme_picker.close();
-                arbiter::load_tui_design(dir);
-                refresh_chrome();
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            continue;
-        }
-
-        if (history_sidebar.focused()) {
-            if (pump_notify) pump_notify();
-            const int cols = arbiter::term_cols();
-            const int rows = arbiter::term_rows();
-            const Rect hb = HistorySidebarState::rect_for_terminal(cols, rows, true);
-            const Rect outer = layout.outer_bounds();
-            const int outer_bottom_pad =
-                arbiter::tui_outer_bottom_pad_rows(arbiter::tui_design());
-            const int visible_rows = arbiter::opentui::history_sidebar_visible_rows(
-                hb, outer, outer_bottom_input_rows(), true, outer_bottom_pad);
-
-            char csi = 0;
-            std::string csi_params;
-            const int key = read_history_sidebar_key(csi, csi_params);
-            if (key < 0) break;
-
-            // Mouse reports while the history sidebar owns stdin.
-            if (key == 0x1B && (csi == 'M' || csi == 'm')
-                && !csi_params.empty() && csi_params[0] == '<') {
-                if (auto ev = arbiter::opentui::decode_sgr_mouse(csi_params, csi)) {
-                    (void)route_mouse(*ev);
-                }
-                // Pane click exits history focus; queued history activation
-                // is drained at the top of the next loop iteration.
-                continue;
-            }
-
-            const HistorySidebarKey action = history_sidebar.handle_key(key, csi, csi_params);
-            if (action == HistorySidebarKey::Up) {
-                history_sidebar.move_selection(-1, visible_rows);
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::Down) {
-                history_sidebar.move_selection(1, visible_rows);
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::Escape) {
-                history_sidebar.exit_focus();
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::Enter) {
-                switch_conversation(history_sidebar.is_new_selected(), {},
-                                    history_sidebar.is_new_selected()
-                                        ? history_sidebar.new_target_folder_id()
-                                        : std::string{});
-                continue;
-            }
-            if (action == HistorySidebarKey::New) {
-                switch_conversation(true, {},
-                                    history_sidebar.new_target_folder_id());
-                continue;
-            }
-            if (action == HistorySidebarKey::ToggleFolder) {
-                conversation_store.set_folder_collapse_json(
-                    history_sidebar.collapse_json());
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::MoveStart) {
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::MoveCommit) {
-                const std::string cid = history_sidebar.selected_conversation_id();
-                const std::string fid = history_sidebar.take_move_folder_id();
-                if (!cid.empty()) {
-                    conversation_store.move_to_folder(cid, fid);
-                }
-                history_sidebar.refresh_entries(conversation_store);
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::PageUp) {
-                history_sidebar.page_selection(-1, visible_rows);
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::PageDown) {
-                history_sidebar.page_selection(1, visible_rows);
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::RenameStart) {
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::MenuOpen) {
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::RenameCommit) {
-                const bool creating = history_sidebar.is_creating_folder();
-                const bool target_folder = history_sidebar.rename_target_is_folder();
-                const std::string target_id = history_sidebar.rename_target_id();
-                const std::string text = history_sidebar.take_rename_buffer();
-                if (!text.empty()) {
-                    if (creating) {
-                        const std::string fid =
-                            conversation_store.create_folder(text);
-                        history_sidebar.refresh_entries(conversation_store);
-                        if (!fid.empty()) {
-                            history_sidebar.select_folder(fid, visible_rows);
-                        }
-                    } else if (target_folder) {
-                        if (!target_id.empty()) {
-                            conversation_store.rename_folder(target_id, text);
-                        }
-                        history_sidebar.refresh_entries(conversation_store);
-                    } else if (!target_id.empty()) {
-                        conversation_store.set_title_locked(target_id, text);
-                        history_sidebar.refresh_entries(conversation_store);
-                    } else {
-                        history_sidebar.refresh_entries(conversation_store);
-                    }
-                } else {
-                    history_sidebar.refresh_entries(conversation_store);
-                }
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::DeleteStart) {
-                if (pump_notify) pump_notify();
-                continue;
-            }
-            if (action == HistorySidebarKey::DeleteConfirmed) {
-                if (history_sidebar.is_folder_selected()) {
-                    const std::string fid = history_sidebar.selected_folder_id();
-                    if (!fid.empty()) conversation_store.delete_folder(fid);
-                    history_sidebar.refresh_entries(conversation_store);
-                    if (pump_notify) pump_notify();
-                } else {
-                    const std::string id = history_sidebar.selected_conversation_id();
-                    if (!id.empty()) delete_conversation(id, /*hard=*/false);
-                }
-                continue;
-            }
-            // Rename typing, backspace, menu/move navigation, etc. return
-            // None — still repaint so the inline buffer updates immediately.
-            if (pump_notify) pump_notify();
-            continue;
-        }
-
-        Pane& focused = layout.focused();
-        ui_ctx.focused_pane = &focused;
-        focused.tui.begin_input([&focused]() { return focused.cmd_queue.pending(); });
-
-        std::string prompt = focused.multiline_accum.empty()
-            ? focused.tui.build_prompt()
-            : "\001" + theme().prompt_color + "\002"
-                + arbiter::tui_design().component.continuation_prompt
-                + "\001" + theme().reset + "\002";
-
-        std::string line;
-        active_readline.store(&focused.editor, std::memory_order_release);
-        // Cover the gap between the deferred check above and publishing
-        // active_readline: a wake that only set the flag (try_lock missed)
-        // must still interrupt this read_line.
-        if (deferred_main_interrupt.exchange(false, std::memory_order_acq_rel)) {
-            focused.editor.interrupt();
-        }
-        const bool got_line = focused.editor.read_line(prompt, line);
-        active_readline.store(nullptr, std::memory_order_release);
-        if (!got_line) {
-            char chord;
-            if (focused.editor.take_chord(chord)) {
-                dispatch_chord(chord);
-                continue;
-            }
-            if (service_interactive()) continue;
-            if (service_pending_closes()) continue;
-            if (service_pending_conv_ops()) continue;
-            if (service_mouse_switch()) continue;
-            if (service_pending_after_cancel()) continue;
-            if (theme_picker.active()) continue;
-            // Layout mutation woke us up just to repaint the focused
-            // pane's prompt — loop back so begin_input paints a fresh
-            // one.  Without this, read_line returning false here would
-            // be treated as EOF and we'd exit.
-            if (refresh_focused_input.exchange(false)) continue;
-            if (deferred_main_interrupt.exchange(false)) continue;
-            break;   // real EOF
-        }
-        if (quit_requested) break;
-
-        // While a deferred switch/delete is waiting on cancel, keep the
-        // input loop live but don't queue new turns onto the pane (#46).
-        if (pending_after_cancel.kind != PendingAfterCancel::Kind::None) {
-            if (service_pending_after_cancel()) continue;
-            {
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                layout.focused().thinking.start("cancelling… (Esc to abort)");
-                present_unlocked();
-            }
-            continue;
-        }
-
-        if (!line.empty()) focused.editor.add_to_history(line);
-
-        focused.scroll_offset      = 0;
-        focused.new_while_scrolled = 0;
-
-        if (!line.empty() && line.back() == '\\') {
-            focused.multiline_accum += line.substr(0, line.size() - 1) + "\n";
-            continue;
-        }
-        line = focused.multiline_accum + line;
-        focused.multiline_accum.clear();
-
-        if (line.empty()) continue;
-
-        {
-            std::string lower = line;
-            for (auto& c : lower) c = static_cast<char>(std::tolower((unsigned char)c));
-            while (!lower.empty() && lower.back()  == ' ') lower.pop_back();
-            while (!lower.empty() && lower.front() == ' ') lower.erase(lower.begin());
-            if (lower == "exit" || lower == "quit" || lower == "q" ||
-                lower == "bye"  || lower == ":q"   ||
-                lower == "/quit"|| lower == "/exit" || lower == "/q") {
-                orch.cancel();
-                layout.for_each_pane([&](Pane& p) { p.cmd_queue.drain(); });
-                break;
-            }
-        }
-
-        focused.output_queue.push_prose(arbiter::styled_user_echo_lines(line));
-        focused.output_queue.end_message();
-
-        focused.cmd_queue.push(line);
-        if (focused.cmd_queue.is_busy()) {
-            focused.tui.show_queue_depth(focused.cmd_queue.pending());
-            if (pump_notify) pump_notify();
-        }
-    }
-
-    // ── Shutdown ───────────────────────────────────────────────────────────
+void ReplSession::shutdown() {
     // Fail any confirm/diff waiters before joining so exec threads cannot
     // stay blocked in fut.get() while we wait on join.
     fail_pending_prompts();
@@ -4058,7 +405,7 @@ void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
     std::vector<std::thread> exec_joins;
     {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
-        layout.for_each_pane([&](Pane& p) {
+        layout_ptr->for_each_pane([&](Pane& p) {
             p.cmd_queue.stop();
             if (auto tok = std::atomic_load(&p.turn_cancel)) {
                 orch.cancel_token(tok);
@@ -4074,7 +421,7 @@ void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
 
     pump_stop = true;
     pump_cv.notify_one();   // unblock the pump's wait_for so it exits promptly
-    output_pump.join();
+    if (output_pump.joinable()) output_pump.join();
 
     g_ui_ctx = nullptr;
     ot_session.shutdown();
@@ -4099,24 +446,145 @@ void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
     conversation_store.flush();
     {
         std::set<std::string> saved;
-        layout.for_each_pane([&](Pane& p) {
+        layout_ptr->for_each_pane([&](Pane& p) {
             if (p.conversation_id.empty() || !saved.insert(p.conversation_id).second) return;
             conversation_store.save(p.conversation_id, orch);
         });
         if (saved.empty()) {
             conversation_store.save(conversation_store.active_id(), orch);
         } else {
-            conversation_store.set_active(layout.focused().conversation_id);
+            conversation_store.set_active(layout_ptr->focused().conversation_id);
         }
     }
     persist_layout();
 
-    scheduler.stop();
+    if (scheduler) scheduler->stop();
 
     ::write(STDOUT_FILENO, "\n", 1);
     // StdinRawModeGuard disarms g_tui_armed and restores cooked mode at
     // scope exit (and on exception unwind).
 }
 
+void ReplSession::run() {
+    // ── Raw stdin + OpenTUI session ────────────────────────────────────────
+    // Must happen before Session::start() below: setupTerminal() sends
+    // capability queries (OSC 10/11, DECRQM, DA/XTVERSION, CPR) and the
+    // terminal's replies land on stdin. With ECHO still enabled (inherited
+    // cooked mode), the kernel line discipline echoes those bytes to the
+    // screen the instant they arrive — reading them later doesn't undo
+    // that. Raw mode has to be in effect *before* the queries go out.
+    // stdin_guard is a member declared before ot_session so exception unwind
+    // restores termios after OpenTUI teardown (reverse destruction order).
+    ot_session.start(static_cast<std::uint32_t>(term_cols()),
+                     static_cast<std::uint32_t>(term_rows()));
+    // Install fatal handlers BEFORE enabling mouse / arming so a crash or
+    // SIGTERM during the rest of startup cannot leave sticky DEC modes or
+    // raw termios in the host shell.
+    install_tui_fatal_handlers();
+    g_tui_armed = 1;
+    // Button+drag+wheel tracking without any-event motion (?1003).
+    if (tui_design().layout.mouse) {
+        ot_session.engine().set_mouse_enabled(true, /*enable_movement=*/false);
+    }
+    if (stdin_guard.active) drain_stdin_spurious(200);
+    ui_ctx.session = &ot_session;
+    g_ui_ctx = &ui_ctx;
+
+    bool restored = conversation_store.load(conversation_store.active_id(), orch);
+    if (restored) sidebar.mark_prompt_started();
+
+    // TUI chat history and tool scoping share tenants.db via ConversationStore.
+    TenantStore& tenants = conversation_store.tenant_store();
+    const int64_t primary_tenant_id = conversation_store.tenant_id();
+    Tenant primary = tenants.get_tenant(primary_tenant_id)
+                         .value_or(Tenant{});
+    if (primary.id == 0) {
+        primary = ensure_primary_tenant(tenants);
+    }
+
+    // Live conversation id for tool callbacks. Wired once; turns update
+    // the atomic so /todo|/mem|artifacts follow the executing pane without
+    // reinstalling callbacks mid-sibling-turn.
+    tool_conversation_id = std::make_shared<std::atomic<int64_t>>(
+        parse_conversation_db_id(conversation_store.active_id()));
+    api_opts = make_cli_api_options(dir, get_api_keys(), cfg.exec_allowed);
+    wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
+                            tool_conversation_id);
+    // API wiring installs a capture-only /write interceptor (no host cwd).
+    // The interactive TUI must persist to the process cwd after confirm.
+    orch.set_write_interceptor(nullptr);
+
+    scheduler = std::make_unique<Scheduler>(&api_opts, &tenants, &notifications);
+    scheduler->start();
+
+    // Load input history into one live store shared by every pane's editor:
+    // a command typed in any pane is instantly in every pane's Up-arrow /
+    // Ctrl-R history.
+    shared_history = std::make_shared<opentui::SharedInputHistory>();
+    {
+        std::vector<std::string> loaded;
+        std::ifstream hf(get_config_dir() + "/history");
+        std::string line;
+        while (std::getline(hf, line))
+            if (!line.empty()) loaded.push_back(std::move(line));
+        shared_history->replace(std::move(loaded));
+    }
+
+    std::cout.flush();
+    install_sigwinch_handler();
+
+    install_orch_callbacks();
+    boot_layout_and_transcripts(restored);
+    setup_pane_hooks();
+
+    ui_ctx.present_all = [this]() {
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        present_holding_lock();
+    };
+
+    present_unlocked();
+
+    // Exec-capability warning — list any agents that can run shell commands.
+    // Queued here so the pump thread renders it on its first tick.
+    if (cfg.exec_allowed) {
+        std::vector<std::string> exec_agents;
+        for (const auto& id : orch.list_agents_all()) {
+            for (const auto& cap : orch.get_constitution(id).capabilities) {
+                if (cap == "exec") { exec_agents.push_back(id); break; }
+            }
+        }
+        if (!exec_agents.empty()) {
+            std::string names;
+            for (size_t i = 0; i < exec_agents.size(); ++i) {
+                if (i) names += ", ";
+                names += exec_agents[i];
+            }
+            layout_ptr->focused().output_queue.push_prose_msg(
+                "[exec enabled: " + names +
+                " \xe2\x80\x94 shell commands will run as you]",
+                StyleId::System);
+        }
+    }
+
+    g_getc_state.pane = &layout_ptr->focused();
+    ui_ctx.focused_pane = &layout_ptr->focused();
+
+    orch.set_pane_spawner([this](const std::string& agent, const std::string& msg) {
+        return spawn_pane(agent, msg);
+    });
+
+    start_output_pump();
+    run_input_loop();
+    shutdown();
+}
+
+void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
+    std::string dir = get_config_dir();
+    load_tui_design(dir, theme_override);
+    auto api_keys = get_api_keys();
+
+    ReplSession session(std::move(dir), std::move(api_keys), exec_allowed_flag);
+    session.run();
+}
 
 }  // namespace arbiter
