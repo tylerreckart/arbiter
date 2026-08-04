@@ -22,19 +22,15 @@ Run multi-agent workflows on your machine — interactive TUI, one-shot CLI, or 
 ## Quick start
 
 ```bash
-# Install (macOS arm64)
-curl -L https://github.com/tylerreckart/arbiter/releases/latest/download/arbiter-macos-arm64.tar.gz \
-  | tar xz -C /usr/local/bin
+curl -fsSL https://arbiter.run/install.sh | sh
 
-export OPENROUTER_API_KEY="sk-or-..."   # or use Ollama — see docs
-arbiter --init                          # seed starter agents under ~/.arbiter/
-arbiter                                 # open the TUI
+arbiter # open the TUI
 ```
 
 Linux binaries, source builds, Ollama, `--send`, and `--api` are in
-[getting-started/local](docs/getting-started/local.md).
+[getting-started/local](https://arbiter.run/docs/getting-started/local/).
 
-## Same agents, three faces
+## One runtime, three faces
 
 | Mode | Command | For |
 |------|---------|-----|
@@ -46,10 +42,10 @@ One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollam
 
 ## Why run it
 
-- **Own the harness.** Orchestrate specialists, durable memory, and tool use without duct-taping a chat CLI to FastAPI and SQLite. The runtime stays thin; agent behavior lives in constitutions (JSON: model, role, rules, tool allowlist).
-- **Hard limits, not prompt suggestions.** Every agent's tool surface is an allowlist checked at dispatch. Optional advisor gate: a second model signs off before consequential turns reach you.
-- **One event model everywhere.** The orchestration loop streams the same SSE-shaped events the TUI already consumes — text, tool calls, files, sub-agent responses, done. API clients get that stream over the wire; durable request logs make reconnect and replay possible.
-- **Route work in, don't write a dispatcher.** Webhooks, queues, firmware, and sensors can `POST /v1/events`; declare a glob per agent and Arbiter routes matching events there.
+- **Own the harness.** Orchestrate specialists, durable memory, and tool use without duct-taping a chat CLI to someone else's API. The runtime stays thin; agent behavior lives in constitutions (JSON: model, role, rules, tool allowlist).
+- **Hard limits, not prompt suggestions.** Every agent's tool surface is an allowlist checked at dispatch.
+- **One event model everywhere.** The orchestration loop streams the same SSE-shaped events the TUI already consumes. API clients get that stream over the wire; durable request logs make reconnect and replay possible.
+- **Realtime reasoning.** Webhooks, queues, firmware, and sensors can `POST /v1/events`; declare a glob per agent and Arbiter routes matching events there.
 
 ## Documentation
 
