@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="assets/icons/terminal_blue.png" alt="Logo" width="104">
+  <img src="assets/icons/terminal_blue.png" alt="Logo" width="100">
   <h1 align="left">Arbiter</h1>
   <p align="left">
     A multi-agent runtime in a single native binary.
