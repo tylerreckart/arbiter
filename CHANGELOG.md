@@ -50,6 +50,10 @@ diagrams, plus sandbox write and sidebar hardening.
   live provider 401 latency. `/find` status paints clear-then-rewrite
   and include the match `@row` so OpenTUI cell-diff cannot drop a
   digit-only `/find next` update (the recent `chat_command_tui` flake).
+- **macOS `unit_sandbox_quota` truncation seed.** Seed oversized
+  `/exec` output via `/write` + `cat` (and run the docker stub through
+  `sh -c` instead of `eval`) so nested-quote generators cannot collapse
+  to ~137 bytes on macOS CI.
 - **Sandbox `/write` file-cap and ERR responses.** Orchestrate and tool
   interceptors release the per-response file cap and return ERR when
   sandbox persist fails (including after SSE `file` emit ordering), and

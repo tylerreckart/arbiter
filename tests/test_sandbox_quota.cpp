@@ -50,7 +50,9 @@ if [ "$1" = exec ]; then
     shift
   done
   if [ -n "$ARBITER_TEST_WORKSPACE" ] && [ -n "$cmd" ]; then
-    cd "$ARBITER_TEST_WORKSPACE" && eval "$cmd"
+    # Match real `docker exec … sh -c <cmd>`: run the command string as a
+    # script.  `eval` re-parses quotes and broke nested generators on macOS CI.
+    cd "$ARBITER_TEST_WORKSPACE" && /bin/sh -c "$cmd"
     exit $?
   fi
 fi
@@ -200,10 +202,13 @@ TEST_CASE("sandbox exec: oversized output includes truncation marker") {
     REQUIRE_FALSE(ws.empty());
     WorkspaceEnvGuard ws_env(ws);
 
-    // Generate 4096 bytes of ASCII without GNU-only `head -c`, NUL/`tr` (BSD
-    // tr flakes), or nested-quote `awk` one-liners (macOS stub eval → ~133 B).
-    auto result = mgr.exec(
-        tid, "python3 -c \"import sys; sys.stdout.write('x'*4096)\"");
+    // Seed the oversized payload via /write — not via a nested-quote shell
+    // generator.  The docker stub historically used `eval` (and macOS CI
+    // still mishandles nested quotes under `sh -c`), which truncated
+    // awk/python seeds to ~133–137 bytes and skipped the truncation path.
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "blob.txt", std::string(4096, 'x'), err));
+    auto result = mgr.exec(tid, "cat blob.txt");
     CHECK(result.ok);
     CHECK(result.output.size() >= 512);
     CHECK(result.output.find("... [truncated at") != std::string::npos);
