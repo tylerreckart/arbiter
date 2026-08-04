@@ -2,7 +2,7 @@
   <img src="assets/icons/terminal_blue.png" alt="Logo" width="104">
   <h1 align="left">Arbiter</h1>
   <p align="left">
-    A local agent runtime in a single native binary.
+    A multi-agent runtime in a single native binary.
     <br> Local-first; network optional.
     <br><br>
     <a href="#about">About</a>
