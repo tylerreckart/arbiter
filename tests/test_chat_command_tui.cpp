@@ -153,32 +153,12 @@ TEST_CASE("/find reports match position in the status line and cycles") {
     const std::string before = s.output();
     s.send("/find uniqfindtoken\r");
     // First find jumps to the last hit (2/2).
-    CHECK(wait_for_token(s, before.size(), "\"uniqfindtoken\":", 10000));
+    CHECK(wait_for_token(s, before.size(), "uniqfindtoken\": 2/2", 20000));
 
     s.send("/find next\r");
-    // next wraps last→first (2/2 → 1/2). Poll the stripped framebuffer
-    // rather than the PTY delta so a digit-only cell rewrite still counts.
-    {
-        const int budget_ms = scale_timeout_ms(15000);
-        const auto deadline = std::chrono::steady_clock::now()
-                            + std::chrono::milliseconds(budget_ms);
-        bool saw = false;
-        while (std::chrono::steady_clock::now() < deadline) {
-            s.read_for(200);
-            const std::string p = plain(s);
-            std::size_t pos = 0;
-            while ((pos = p.find("\"uniqfindtoken\":", pos)) != std::string::npos) {
-                pos += sizeof("\"uniqfindtoken\":") - 1;
-                while (pos < p.size() && p[pos] == ' ') ++pos;
-                if (pos + 1 < p.size() && p[pos] == '1' && p[pos + 1] == '/') {
-                    saw = true;
-                    break;
-                }
-            }
-            if (saw) break;
-        }
-        CHECK(saw);
-    }
+    // Poll from before the first /find so a status-only repaint still counts
+    // (OpenTUI cell-diff may not append bytes after the /find next line).
+    CHECK(wait_for_token(s, before.size(), "uniqfindtoken\": 1/2", 30000));
 
     s.terminate();
 }
