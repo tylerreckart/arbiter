@@ -129,6 +129,68 @@ Built-in presets:
 | `moonlight` | Moonlight — soft indigo panels with pastel syntax. |
 | `material` | Material Oceanic — blue-gray chrome, Material accents. |
 | `andromeda` | Andromeda — cyan/magenta pops on slate. |
+| `catppuccin-frappe` | Catppuccin Frappé — muted pastels on soft charcoal. |
+| `catppuccin-macchiato` | Catppuccin Macchiato — balanced midnight pastels. |
+| `tokyo-night-storm` | Tokyo Night Storm — stormier panels, same city blues. |
+| `tokyo-night-light` | Tokyo Night Light — day-mode blues on cool gray paper. |
+| `rose-pine-moon` | Rosé Pine Moon — rose/iris on cooler violet night. |
+| `ayu-mirage` | Ayu Mirage — warm gold focus on slate mirage. |
+| `ayu-light` | Ayu Light — orange/cyan pops on bright paper. |
+| `kanagawa-dragon` | Kanagawa Dragon — ink blacks with muted gold. |
+| `kanagawa-lotus` | Kanagawa Lotus — parchment with sea and plum accents. |
+| `everforest-light` | Everforest Light — soft sage on cream paper. |
+| `papercolor-dark` | PaperColor Dark — high-legibility print on charcoal. |
+| `nightfox` | Nightfox — cool blue focus on deep navy. |
+| `dawnfox` | Dawnfox — Rosé Pine–adjacent dawn warm light. |
+| `dayfox` | Dayfox — bright warm light with bold accents. |
+| `duskfox` | Duskfox — violet dusk with soft rose accents. |
+| `nordfox` | Nordfox — Nightfox × Nord arctic blues. |
+| `terafox` | Terafox — teal earth tones on deep green-black. |
+| `carbonfox` | Carbonfox — IBM Carbon blacks with neon accents. |
+| `iceberg` | Iceberg — cool blue-gray chrome, soft contrasts. |
+| `sonokai` | Sonokai — vivid Motoko accents on dark gray. |
+| `aura` | Aura — purple/mint neon on near-black. |
+| `laserwave` | Laserwave — magenta synthwave on violet black. |
+| `cyberdream` | Cyberdream — high-saturation neon on OLED black. |
+| `cyberdream-light` | Cyberdream Light — neon accents on white. |
+| `nightfly` | Nightfly — deep navy with soft violet and mint. |
+| `moonfly` | Moonfly — near-black with bright pastel syntax. |
+| `jellybeans` | Jellybeans — warm classic Vim palette. |
+| `apprentice` | Apprentice — low-contrast muted dark. |
+| `gotham` | Gotham — teal-forward noir chrome. |
+| `srcery` | Srcery — high-contrast earth and crimson. |
+| `tender` | Tender — soft olive/cream accents on dark. |
+| `tomorrow-night` | Tomorrow Night — classic Base16 dark. |
+| `tomorrow` | Tomorrow — classic Base16 light. |
+| `oceanic-next` | Oceanic Next — slate ocean with soft pastels. |
+| `shades-of-purple` | Shades of Purple — vivid purple chrome, neon pops. |
+| `cobalt2` | Cobalt2 — Wes Bos yellow focus on deep blue. |
+| `panda` | Panda Syntax — pink/mint accents on charcoal. |
+| `noctis` | Noctis — cool teal focus on deep blue-green. |
+| `bluloco` | Bluloco Dark — saturated workbench accents. |
+| `bluloco-light` | Bluloco Light — same accents on bright paper. |
+| `doom-one` | Doom One — Emacs Doom dark, OneDark-adjacent. |
+| `doom-one-light` | Doom One Light — Emacs Doom light variant. |
+| `modus-vivendi` | Modus Vivendi — WCAG-oriented high-contrast dark. |
+| `modus-operandi` | Modus Operandi — WCAG-oriented high-contrast light. |
+| `seoul256` | Seoul256 — low-contrast warm gray. |
+| `lucario` | Lucario — blue slate with purple/cyan pops. |
+| `miasma` | Miasma — swampy olive/brown noir. |
+| `zenbones` | Zenbones — muted stone with soft rose accents. |
+| `fairy-floss` | Fairy Floss — pastel candy on soft purple. |
+| `outrun` | Outrun — hot pink/cyan neon on deep purple. |
+| `monokai-pro` | Monokai Pro — refined Monokai spectrum. |
+| `monokai-light` | Monokai Light — classic Monokai on cream. |
+| `github-dimmed` | GitHub Dimmed — softer GitHub Dark neutrals. |
+| `quiet-light` | Quiet Light — gentle gray-white workbench. |
+| `winter-is-coming` | Winter is Coming — icy blues on deep navy. |
+| `abyss` | Abyss — deep blue-black, restrained accents. |
+| `kimbie-dark` | Kimbie Dark — warm brown with orange focus. |
+| `tomorrow-night-blue` | Tomorrow Night Blue — bright pastels on navy. |
+| `tomorrow-night-bright` | Tomorrow Night Bright — high-contrast on black. |
+| `spacegray` | Spacegray — cool gray chrome with soft blues. |
+| `paraiso-dark` | Paraiso Dark — purple-brown Base16 dark. |
+| `paraiso-light` | Paraiso Light — purple-brown Base16 light. |
 
 Pick a preset in `tui.json`:
 
