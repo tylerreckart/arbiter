@@ -22,4 +22,9 @@ inline bool is_abandon_key(int key, char csi_final, const std::string& csi_param
     return false;
 }
 
+// Read one key for y/N confirms, skipping SGR mouse reports so a click's
+// trailing button-Up cannot cancel the prompt.
+int read_confirm_key();
+
 }  // namespace arbiter
+
