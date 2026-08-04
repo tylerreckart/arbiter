@@ -148,3 +148,53 @@ TEST_CASE("sandbox write/read reject symlink escape outside workspace") {
     else ::unsetenv("PATH");
     fs::remove_all(root);
 }
+
+TEST_CASE("sandbox read: rejects workspace files over read_max_bytes") {
+    const std::string root = make_temp_root("readcap");
+    SandboxConfig cfg;
+    cfg.image = "unused";
+    cfg.workspaces_root = root + "/workspaces";
+    cfg.runtime = "docker";
+    cfg.idle_seconds = 0;
+    cfg.read_max_bytes = 512;
+
+    const std::string bin = root + "/bin";
+    fs::create_directories(bin);
+    const std::string stub = bin + "/docker";
+    {
+        std::ofstream f(stub);
+        f << "#!/bin/sh\nexit 0\n";
+    }
+    ::chmod(stub.c_str(), 0755);
+    const char* old_path = std::getenv("PATH");
+    std::string new_path = bin + ":" + (old_path ? old_path : "");
+    ::setenv("PATH", new_path.c_str(), 1);
+
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+
+    const int64_t tid = 11;
+    std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+
+    const std::string path = ws + "/big.bin";
+    {
+        std::ofstream f(path, std::ios::binary);
+        f << std::string(700, 'x');
+    }
+
+    std::string content, mime, err;
+    CHECK_FALSE(mgr.read_from_workspace(tid, "big.bin", content, mime, err));
+    CHECK(err.find("too large") != std::string::npos);
+
+    err.clear();
+    REQUIRE(mgr.write_to_workspace(tid, "small.txt", "hi", err));
+    content.clear();
+    err.clear();
+    REQUIRE(mgr.read_from_workspace(tid, "small.txt", content, mime, err));
+    CHECK(content == "hi");
+
+    if (old_path) ::setenv("PATH", old_path, 1);
+    else ::unsetenv("PATH");
+    fs::remove_all(root);
+}
