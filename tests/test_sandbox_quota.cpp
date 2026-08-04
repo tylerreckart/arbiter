@@ -32,9 +32,19 @@ std::string make_temp_root(const char* tag) {
 // Minimal docker stub.  When ARBITER_TEST_WORKSPACE is set, `docker exec …
 // sh -c <cmd>` runs <cmd> in that directory so /exec quota tests can mutate
 // the bind-mounted workspace without a real daemon.
+//
+// `__ARB_TEST_OVERFLOW__` is a hermetic oversized-stdout seed (reads a
+// pre-written sibling file) so truncation tests never depend on nested-quote
+// shell generators or workspace visibility under the stub.
 void install_docker_stub(const std::string& root) {
     const std::string bin = root + "/bin";
     fs::create_directories(bin);
+    {
+        std::ofstream overflow(bin + "/overflow.dat",
+                               std::ios::binary | std::ios::trunc);
+        overflow << std::string(4096, 'x');
+        REQUIRE(overflow.good());
+    }
     const std::string stub = bin + "/docker";
     {
         std::ofstream f(stub);
@@ -49,9 +59,21 @@ if [ "$1" = exec ]; then
     fi
     shift
   done
-  if [ -n "$ARBITER_TEST_WORKSPACE" ] && [ -n "$cmd" ]; then
-    cd "$ARBITER_TEST_WORKSPACE" && eval "$cmd"
-    exit $?
+  if [ -n "$cmd" ]; then
+    if [ "$cmd" = "__ARB_TEST_OVERFLOW__" ]; then
+      # Use $0 dirname expansion — not `dirname(1)` — because tests
+      # put this stub's directory first on PATH and have no dirname there.
+      here=${0%/*}
+      /bin/cat "$here/overflow.dat"
+      exit $?
+    fi
+    if [ -n "$ARBITER_TEST_WORKSPACE" ]; then
+      # Match real `docker exec … sh -c <cmd>` (not `eval`, which re-parses
+      # quotes and broke nested generators on macOS CI). Absolute /bin/sh
+      # so PATH shadows from the stub directory cannot hide the shell.
+      cd "$ARBITER_TEST_WORKSPACE" && /bin/sh -c "$cmd"
+      exit $?
+    fi
   fi
 fi
 exit 0
@@ -196,14 +218,13 @@ TEST_CASE("sandbox exec: oversized output includes truncation marker") {
     SandboxManager mgr(cfg);
     REQUIRE(mgr.usable());
     const int64_t tid = 3;
-    const std::string ws = mgr.ensure_workspace(tid);
-    REQUIRE_FALSE(ws.empty());
-    WorkspaceEnvGuard ws_env(ws);
+    REQUIRE_FALSE(mgr.ensure_workspace(tid).empty());
 
-    // Generate 4096 bytes of ASCII without GNU-only `head -c`, NUL/`tr` (BSD
-    // tr flakes), or nested-quote `awk` one-liners (macOS stub eval → ~133 B).
-    auto result = mgr.exec(
-        tid, "python3 -c \"import sys; sys.stdout.write('x'*4096)\"");
+    // Stub-local overflow seed — no workspace bind, no nested quotes, no
+    // python/awk.  macOS CI repeatedly collapsed every in-container generator
+    // (and even `cat` of a /write'd blob) to a few dozen bytes.
+    auto result = mgr.exec(tid, "__ARB_TEST_OVERFLOW__");
+    INFO("exec output (" << result.output.size() << " bytes): " << result.output);
     CHECK(result.ok);
     CHECK(result.output.size() >= 512);
     CHECK(result.output.find("... [truncated at") != std::string::npos);

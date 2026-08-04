@@ -7,7 +7,26 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-04
+
+Minor release: conversation folders in the history sidebar, TUI threads
+unified into `tenants.db`, 100 built-in color schemes, Mermaid docs
+diagrams, plus sandbox write and sidebar hardening.
+
 ### Added
+- **Conversation folders.** File chats into named folders in
+  `tenants.db` (`conversation_folders`). The history sidebar shows a
+  sectioned tree (New / Folders / Chats) with collapse state in
+  `tui_prefs`, per-row menus (`m`), and `/chat folder
+  list|new|rename|delete|move` for narrow terminals. REST:
+  `GET|POST|PATCH|DELETE /v1/conversation-folders`. See
+  [`docs/tui/sessions.md`](docs/tui/sessions.md).
+- **TUI conversations in `tenants.db`.** `ConversationStore` now backs
+  sidebar threads on SQLite so `/todo`, `/mem`, and artifacts share one
+  conversation id with the HTTP API surface. Legacy
+  `~/.arbiter/conversations/` JSON is imported once; `origin=tui` rows
+  stay isolated from API list endpoints. See
+  [`docs/tui/sessions.md`](docs/tui/sessions.md).
 - **100 built-in TUI color schemes.** Expanded the embedded theme catalog
   from 38 to 100 presets, filling out known families already in-tree
   (Catppuccin Frappé/Macchiato, Tokyo Night Storm/Light, Rosé Pine Moon,
@@ -15,6 +34,41 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   Dark, Nightfox variants) plus popular editor/terminal schemes such as
   Iceberg, Sonokai, Aura, Cyberdream, Doom One, Modus, Cobalt2, and
   Tomorrow Night. Docs table and theme JSON tests updated accordingly.
+- **Mermaid diagrams in self-hosted docs.** ` ```mermaid ` fences render
+  client-side from a vendored bundle so `npm run serve` stays
+  offline-capable; the script injects only on docs pages that contain
+  diagrams.
+- **High-level architecture overview.** Conceptual diagram of TUI /
+  CLI / API sharing the orchestration runtime, persistence, and
+  outbound integrations. See
+  [`docs/concepts/architecture.md`](docs/concepts/architecture.md).
+
+### Fixed
+- **Hermetic PTY / CI provider calls.** `ARBITER_OFFLINE=1` and the
+  PTY harness `dummy-key-no-network` short-circuit `ApiClient` before
+  any TLS round-trip, so TUI integration tests no longer depend on
+  live provider 401 latency. `/find` status paints clear-then-rewrite
+  and include the match `@row` so OpenTUI cell-diff cannot drop a
+  digit-only `/find next` update (the recent `chat_command_tui` flake).
+- **macOS `unit_sandbox_quota` truncation seed.** The docker stub serves
+  a hermetic `__ARB_TEST_OVERFLOW__` payload (sibling `overflow.dat`) and
+  runs workspace commands via `sh -c` instead of `eval`, so nested-quote
+  generators and bind-mount visibility cannot collapse oversized `/exec`
+  output on macOS CI.
+- **Sandbox `/write` file-cap and ERR responses.** Orchestrate and tool
+  interceptors release the per-response file cap and return ERR when
+  sandbox persist fails (including after SSE `file` emit ordering), and
+  append a truncation trailer when docker exec hits `output_max_bytes`.
+- **HTTP list endpoints and TUI conversation ids.** Invalid or
+  `origin=tui` `conversation_id` filters on todos/memory list endpoints
+  return 400 instead of falling back to tenant-wide rows.
+- **Wrapped `/find` jump targets.** Search maps matches through visual
+  wrap rows so jumps land on the painted line that contains the hit.
+- **History sidebar pin, scroll, and empty-chat reuse.** Selection stays
+  coherent after folder delete/collapse; scroll clamps to the painted
+  line budget; multi-pane new-chat reuse and pin-jump scroll behave
+  correctly; unused empty chats are unfiled when new-chat targets no
+  folder.
 
 ## [0.9.1] — 2026-07-30
 

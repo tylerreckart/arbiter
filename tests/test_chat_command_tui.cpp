@@ -1,7 +1,7 @@
 // End-to-end coverage for the /chat command family and sidebar
-// rename/delete (Part 4.4/4.2). No live API calls (dummy key, see
-// pty_harness.h) — turns fail after the request but the user's message is
-// still recorded in agent history beforehand, which is all these tests need.
+// rename/delete (Part 4.4/4.2). No live API calls (dummy key +
+// ARBITER_OFFLINE via pty_harness) — turns fail locally after recording the
+// user message, which is all these tests need.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -56,20 +56,20 @@ TEST_CASE("/chat new + /chat switch <n> performs a full switch with replay in a 
 
     // Same race as transcript_replay_tui: switching while a turn is still
     // in flight hits the "Turn in progress — switch anyway?" gate and hangs.
-    // Wait for the dummy-key auth failure before /chat new|/chat switch.
+    // Wait for the hermetic offline auth failure before /chat new|/chat switch.
     // Pane-edge clipping can drop the first glyph of a replayed line, so
     // assert on an interior substring (matches transcript_replay_tui).
     const std::string marker_probe = "conversation-marker";
     const std::size_t before_first = s.output().size();
     s.send("first-conversation-marker\r");
     REQUIRE(wait_for_token(s, before_first, marker_probe, 5000));
-    REQUIRE(wait_for_token(s, before_first, "Authentication header", 20000));
+    REQUIRE(wait_for_token(s, before_first, "Authentication header", 5000));
 
     s.send("/chat new\r");
     s.read_for(1000);
     const std::size_t before_second = s.output().size();
     s.send("second-conversation-text\r");
-    REQUIRE(wait_for_token(s, before_second, "Authentication header", 20000));
+    REQUIRE(wait_for_token(s, before_second, "Authentication header", 5000));
 
     s.send("/chat list\r");
     s.read_for(800);
@@ -138,59 +138,39 @@ TEST_CASE("/find reports match position in the status line and cycles") {
     s.send("/find\r");
     CHECK(wait_for_token(s, before_usage.size(), "cycle", 10000));
 
-    // Seed ≥2 scrollback hits. /help alone mentions "scrollback" once — with
-    // a single hit, /find next leaves the status string unchanged and
-    // OpenTUI's cell-diff can emit no new bytes (macos-arm64 CI flake).
-    // User echoes land before the dummy-key auth failure.
+    // Seed ≥2 scrollback hits via hermetic offline turns (instant local
+    // auth failure — no TLS). /help alone mentions "scrollback" once; with
+    // a single hit, /find next leaves the hit index unchanged.
     const std::size_t before_seed_a = s.output().size();
     s.send("seed-scrollback-aaa\r");
     REQUIRE(wait_for_token(s, before_seed_a, "seed-scrollback-aaa", 5000));
-    REQUIRE(wait_for_token(s, before_seed_a, "Authentication header", 20000));
+    REQUIRE(wait_for_token(s, before_seed_a, "Authentication header", 5000));
     const std::size_t before_seed_b = s.output().size();
     s.send("seed-scrollback-bbb\r");
     REQUIRE(wait_for_token(s, before_seed_b, "seed-scrollback-bbb", 5000));
-    REQUIRE(wait_for_token(s, before_seed_b, "Authentication header", 20000));
+    REQUIRE(wait_for_token(s, before_seed_b, "Authentication header", 5000));
 
-    // /help adds a third hit. Wait for it to land — ASAN runners are slow
-    // enough that a fixed 800ms read_for can race ahead of the paint.
     {
         const std::size_t before_help = s.output().size();
         s.send("/help\r");
         REQUIRE(wait_for_token(s, before_help, "/find", 15000));
     }
 
-    const std::string before = s.output();
+    const std::size_t before = s.output().size();
     s.send("/find scrollback\r");
-    // First find jumps to the last hit (N/N).
-    CHECK(wait_for_token(s, before.size(), "\"scrollback\":", 10000));
+    // First find jumps to the last hit (N/N) and paints @row into status.
+    CHECK(wait_for_token(s, before, "\"scrollback\":", 10000));
+    CHECK(wait_for_token(s, before, " @", 10000));
 
+    // /find next clears then rewrites the whole status line (see
+    // slash_commands.cpp), so the post-command delta contains a full
+    // "1/N @row" paint — not a one-cell digit morph against the accumulated
+    // stream.
+    const std::size_t before_next = s.output().size();
     s.send("/find next\r");
-    // next wraps last→first (N/N → 1/N). Poll the stripped framebuffer
-    // rather than the PTY delta so a digit-only cell rewrite still counts.
-    // Scan every "scrollback": occurrence — the first-find status (N/N) is
-    // still in the accumulated stream. Allow a missing space after ':' —
-    // OpenTUI cell-diff draws can split the status run.
-    {
-        const int budget_ms = scale_timeout_ms(15000);
-        const auto deadline = std::chrono::steady_clock::now()
-                            + std::chrono::milliseconds(budget_ms);
-        bool saw = false;
-        while (std::chrono::steady_clock::now() < deadline) {
-            s.read_for(200);
-            const std::string p = plain(s);
-            std::size_t pos = 0;
-            while ((pos = p.find("\"scrollback\":", pos)) != std::string::npos) {
-                pos += sizeof("\"scrollback\":") - 1;
-                while (pos < p.size() && p[pos] == ' ') ++pos;
-                if (pos + 1 < p.size() && p[pos] == '1' && p[pos + 1] == '/') {
-                    saw = true;
-                    break;
-                }
-            }
-            if (saw) break;
-        }
-        CHECK(saw);
-    }
+    CHECK(wait_for_token(s, before_next, "\"scrollback\":", 15000));
+    CHECK(wait_for_token(s, before_next, "1/", 15000));
+    CHECK(wait_for_token(s, before_next, " @", 15000));
 
     s.terminate();
 }

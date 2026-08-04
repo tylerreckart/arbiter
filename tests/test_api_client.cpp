@@ -13,6 +13,7 @@
 #include "api_client.h"
 
 #include <cstdlib>
+#include <map>
 #include <string>
 
 namespace {
@@ -453,3 +454,60 @@ TEST_CASE("current_request_cancel_token tracks RequestCancelScope nesting") {
     }
     CHECK(current_request_cancel_token() == nullptr);
 }
+
+TEST_CASE("ARBITER_OFFLINE short-circuits complete/stream without touching the wire") {
+    using arbiter::ApiClient;
+    using arbiter::ApiRequest;
+    using arbiter::Message;
+
+    const char* prev = std::getenv("ARBITER_OFFLINE");
+    ::setenv("ARBITER_OFFLINE", "1", 1);
+
+    std::map<std::string, std::string> keys{
+        {"openrouter", "sk-live-looking-but-offline"},
+    };
+    ApiClient client(std::move(keys));
+    ApiRequest req;
+    req.model = "openrouter/openai/gpt-4o-mini";
+    req.messages.push_back(Message{"user", "ping"});
+
+    auto completed = client.complete(req);
+    CHECK_FALSE(completed.ok);
+    CHECK(completed.error_type == "authentication_error");
+    CHECK(completed.error.find("Authentication header") != std::string::npos);
+    CHECK(completed.error.find("no network") != std::string::npos);
+
+    auto streamed = client.stream(req, [](const std::string&) {});
+    CHECK_FALSE(streamed.ok);
+    CHECK(streamed.error.find("Authentication header") != std::string::npos);
+
+    if (prev) ::setenv("ARBITER_OFFLINE", prev, 1);
+    else ::unsetenv("ARBITER_OFFLINE");
+}
+
+TEST_CASE("harness dummy key short-circuits without ARBITER_OFFLINE") {
+    using arbiter::ApiClient;
+    using arbiter::ApiRequest;
+    using arbiter::Message;
+    using arbiter::provider_for;
+
+    const char* prev = std::getenv("ARBITER_OFFLINE");
+    ::unsetenv("ARBITER_OFFLINE");
+
+    std::map<std::string, std::string> keys{
+        {"openrouter", "dummy-key-no-network"},
+    };
+    ApiClient client(std::move(keys));
+    const auto& prov = provider_for("openrouter/openai/gpt-4o-mini");
+    CHECK(client.should_skip_network(prov));
+
+    ApiRequest req;
+    req.model = "openrouter/openai/gpt-4o-mini";
+    req.messages.push_back(Message{"user", "ping"});
+    auto resp = client.complete(req);
+    CHECK_FALSE(resp.ok);
+    CHECK(resp.error.find("Authentication header") != std::string::npos);
+
+    if (prev) ::setenv("ARBITER_OFFLINE", prev, 1);
+}
+
