@@ -33,8 +33,10 @@ TEST_CASE("built-in themes are embedded; default is high-contrast") {
     CHECK(tui_preset_is_valid("high-contrast"));
     CHECK(tui_preset_is_valid("onedark"));
     const auto presets = tui_builtin_presets();
-    CHECK(presets.size() >= 30);
+    CHECK(presets.size() >= 100);
     CHECK(std::find(presets.begin(), presets.end(), "high-contrast") != presets.end());
+    CHECK(std::find(presets.begin(), presets.end(), "catppuccin-macchiato") != presets.end());
+    CHECK(std::find(presets.begin(), presets.end(), "nightfox") != presets.end());
 
     const TuiDesign d = tui_design_for_preset("high-contrast");
     // themes/high-contrast.json: bg.base #000000, text.primary white-ish

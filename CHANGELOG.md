@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **100 built-in TUI color schemes.** Expanded the embedded theme catalog
+  from 38 to 100 presets, filling out known families already in-tree
+  (Catppuccin Frappé/Macchiato, Tokyo Night Storm/Light, Rosé Pine Moon,
+  Ayu Mirage/Light, Kanagawa Dragon/Lotus, Everforest Light, PaperColor
+  Dark, Nightfox variants) plus popular editor/terminal schemes such as
+  Iceberg, Sonokai, Aura, Cyberdream, Doom One, Modus, Cobalt2, and
+  Tomorrow Night. Docs table and theme JSON tests updated accordingly.
+
 ## [0.9.1] — 2026-07-30
 
 Patch release: mouse text selection in scrollback, unified interactive
