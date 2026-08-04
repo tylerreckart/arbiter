@@ -153,6 +153,16 @@ set(ARBITER_SOURCES
     src/repl/conversation_titling.cpp
     src/repl/transcript_replay.cpp
     src/repl/transcript_replay_predicates.cpp
+    src/repl/session_internal.cpp
+    src/repl/interactive.cpp
+    src/repl/session_callbacks.cpp
+    src/repl/slash_commands.cpp
+    src/repl/pane_runtime.cpp
+    src/repl/interactive_prompts.cpp
+    src/repl/chords.cpp
+    src/repl/conversations_ui.cpp
+    src/repl/mouse_input.cpp
+    src/repl/input_loop.cpp
     src/atomic_file.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
@@ -169,6 +179,8 @@ set(ARBITER_SOURCES
     src/tui/block_parser.cpp
     src/tui/ansi_util.cpp
     src/tui/stream_filter.cpp
+    src/tui/tty_guard.cpp
+    src/tui/confirm_read.cpp
     src/api_client.cpp
     src/agent.cpp
     src/model_context.cpp

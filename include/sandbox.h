@@ -73,6 +73,11 @@ struct SandboxConfig {
     // ceiling so the agent sees uniform behaviour regardless of sandbox.
     int output_max_bytes = 32768;
 
+    // Max bytes loadable via read_from_workspace (/read sandbox fallback).
+    // Workspace writes are quota-checked but reads previously had no bound,
+    // which could OOM the API process on large files.  0 = no cap.
+    int read_max_bytes = 10 * 1024 * 1024;
+
     // Per-tenant workspace disk quota, bytes.  Enforced on host-visible
     // workspace mutations: /write rejects writes that would exceed the
     // cap; /exec holds the per-tenant quota mutex for the duration of
