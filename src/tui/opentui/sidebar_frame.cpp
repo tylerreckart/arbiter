@@ -389,9 +389,9 @@ void draw_sidebar(OpenTuiHandle frame,
     }
 
 #ifdef INDEX_VERSION
-    const std::string ver = std::string("v") + INDEX_VERSION;
+    const std::string ver = std::string("Arbiter v") + INDEX_VERSION;
 #else
-    const std::string ver = "dev";
+    const std::string ver = "Arbiter dev";
 #endif
     // Same row as the pane footer hints, right-justified under the session box.
     const int hint_y = pr.y + pr.h - 2;
