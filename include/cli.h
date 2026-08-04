@@ -15,12 +15,12 @@
 //     arbiter --disable-tenant <id|name>         → cmd_disable_tenant
 //     arbiter --enable-tenant <id|name>          → cmd_enable_tenant
 //
-// The interactive REPL (cmd_interactive) is still in main.cpp until we finish
-// carving up that function.
+// Interactive REPL lives under src/repl/ (cmd_interactive).
 
 #include <cstdint>
 #include <map>
 #include <string>
+#include <string_view>
 
 namespace arbiter {
 
@@ -36,6 +36,10 @@ void cmd_init(bool force = false);
 void cmd_api(int port, const std::string& bind, bool verbose,
              bool allow_host_exec = false);
 void cmd_oneshot(const std::string& agent_id, const std::string& msg);
+
+// Interactive TUI/REPL.  `exec_allowed` gates /exec; `theme_override` selects
+// a preset or custom theme name (empty ⇒ design-file / default).
+void cmd_interactive(bool exec_allowed, std::string_view theme_override = {});
 
 // Tenant admin.  Each opens ~/.arbiter/tenants.db, runs one operation, and
 // prints a human-readable report.

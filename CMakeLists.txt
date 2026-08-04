@@ -153,6 +153,7 @@ set(ARBITER_SOURCES
     src/repl/conversation_titling.cpp
     src/repl/transcript_replay.cpp
     src/repl/transcript_replay_predicates.cpp
+    src/repl/interactive.cpp
     src/atomic_file.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
@@ -169,6 +170,8 @@ set(ARBITER_SOURCES
     src/tui/block_parser.cpp
     src/tui/ansi_util.cpp
     src/tui/stream_filter.cpp
+    src/tui/tty_guard.cpp
+    src/tui/confirm_read.cpp
     src/api_client.cpp
     src/agent.cpp
     src/model_context.cpp
