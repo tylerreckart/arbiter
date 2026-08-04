@@ -13,6 +13,7 @@
 #include "api_client.h"
 
 #include <cstdlib>
+#include <map>
 #include <string>
 
 namespace {
@@ -462,7 +463,10 @@ TEST_CASE("ARBITER_OFFLINE short-circuits complete/stream without touching the w
     const char* prev = std::getenv("ARBITER_OFFLINE");
     ::setenv("ARBITER_OFFLINE", "1", 1);
 
-    ApiClient client({{"openrouter", "sk-live-looking-but-offline"}});
+    std::map<std::string, std::string> keys{
+        {"openrouter", "sk-live-looking-but-offline"},
+    };
+    ApiClient client(std::move(keys));
     ApiRequest req;
     req.model = "openrouter/openai/gpt-4o-mini";
     req.messages.push_back(Message{"user", "ping"});
@@ -490,7 +494,10 @@ TEST_CASE("harness dummy key short-circuits without ARBITER_OFFLINE") {
     const char* prev = std::getenv("ARBITER_OFFLINE");
     ::unsetenv("ARBITER_OFFLINE");
 
-    ApiClient client({{"openrouter", "dummy-key-no-network"}});
+    std::map<std::string, std::string> keys{
+        {"openrouter", "dummy-key-no-network"},
+    };
+    ApiClient client(std::move(keys));
     const auto& prov = provider_for("openrouter/openai/gpt-4o-mini");
     CHECK(client.should_skip_network(prov));
 
