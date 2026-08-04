@@ -151,11 +151,13 @@ TEST_CASE("/find reports match position in the status line and cycles") {
     REQUIRE(wait_for_token(s, before_seed_b, "seed-scrollback-bbb", 5000));
     REQUIRE(wait_for_token(s, before_seed_b, "Authentication header", 20000));
 
-    // /help adds a third hit. The first /find paints a whole new status line
-    // (contiguous token OK). /find next may only rewrite the hit digit in
-    // the cell-diff stream — assert against the assembled framebuffer.
-    s.send("/help\r");
-    s.read_for(800);
+    // /help adds a third hit. Wait for it to land — ASAN runners are slow
+    // enough that a fixed 800ms read_for can race ahead of the paint.
+    {
+        const std::size_t before_help = s.output().size();
+        s.send("/help\r");
+        REQUIRE(wait_for_token(s, before_help, "/find", 15000));
+    }
 
     const std::string before = s.output();
     s.send("/find scrollback\r");
@@ -165,17 +167,27 @@ TEST_CASE("/find reports match position in the status line and cycles") {
     s.send("/find next\r");
     // next wraps last→first (N/N → 1/N). Poll the stripped framebuffer
     // rather than the PTY delta so a digit-only cell rewrite still counts.
+    // Scan every "scrollback": occurrence — the first-find status (N/N) is
+    // still in the accumulated stream. Allow a missing space after ':' —
+    // OpenTUI cell-diff draws can split the status run.
     {
-        const int budget_ms = scale_timeout_ms(10000);
+        const int budget_ms = scale_timeout_ms(15000);
         const auto deadline = std::chrono::steady_clock::now()
                             + std::chrono::milliseconds(budget_ms);
         bool saw = false;
         while (std::chrono::steady_clock::now() < deadline) {
             s.read_for(200);
-            if (plain(s).find("\"scrollback\": 1/") != std::string::npos) {
-                saw = true;
-                break;
+            const std::string p = plain(s);
+            std::size_t pos = 0;
+            while ((pos = p.find("\"scrollback\":", pos)) != std::string::npos) {
+                pos += sizeof("\"scrollback\":") - 1;
+                while (pos < p.size() && p[pos] == ' ') ++pos;
+                if (pos + 1 < p.size() && p[pos] == '1' && p[pos + 1] == '/') {
+                    saw = true;
+                    break;
+                }
             }
+            if (saw) break;
         }
         CHECK(saw);
     }
