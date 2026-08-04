@@ -138,38 +138,26 @@ TEST_CASE("/find reports match position in the status line and cycles") {
     s.send("/find\r");
     CHECK(wait_for_token(s, before_usage.size(), "cycle", 10000));
 
-    // Seed ≥2 scrollback hits. /help alone mentions "scrollback" once — with
-    // a single hit, /find next leaves the status string unchanged and
-    // OpenTUI's cell-diff can emit no new bytes (macos-arm64 CI flake).
-    // User echoes land before the dummy-key auth failure.
+    // Seed ≥2 scrollback hits with a term that does not appear in /help or
+    // slash-command usage (searching "scrollback" also matches /help and the
+    // seed lines themselves, so N/N is nondeterministic on CI).
     const std::size_t before_seed_a = s.output().size();
-    s.send("seed-scrollback-aaa\r");
-    REQUIRE(wait_for_token(s, before_seed_a, "seed-scrollback-aaa", 5000));
+    s.send("uniqfindtoken-aaa\r");
+    REQUIRE(wait_for_token(s, before_seed_a, "uniqfindtoken-aaa", 5000));
     REQUIRE(wait_for_token(s, before_seed_a, "Authentication header", 20000));
     const std::size_t before_seed_b = s.output().size();
-    s.send("seed-scrollback-bbb\r");
-    REQUIRE(wait_for_token(s, before_seed_b, "seed-scrollback-bbb", 5000));
+    s.send("uniqfindtoken-bbb\r");
+    REQUIRE(wait_for_token(s, before_seed_b, "uniqfindtoken-bbb", 5000));
     REQUIRE(wait_for_token(s, before_seed_b, "Authentication header", 20000));
 
-    // /help adds a third hit. Wait for it to land — ASAN runners are slow
-    // enough that a fixed 800ms read_for can race ahead of the paint.
-    {
-        const std::size_t before_help = s.output().size();
-        s.send("/help\r");
-        REQUIRE(wait_for_token(s, before_help, "/find", 15000));
-    }
-
     const std::string before = s.output();
-    s.send("/find scrollback\r");
-    // First find jumps to the last hit (N/N).
-    CHECK(wait_for_token(s, before.size(), "\"scrollback\":", 10000));
+    s.send("/find uniqfindtoken\r");
+    // First find jumps to the last hit (2/2).
+    CHECK(wait_for_token(s, before.size(), "\"uniqfindtoken\":", 10000));
 
     s.send("/find next\r");
-    // next wraps last→first (N/N → 1/N). Poll the stripped framebuffer
+    // next wraps last→first (2/2 → 1/2). Poll the stripped framebuffer
     // rather than the PTY delta so a digit-only cell rewrite still counts.
-    // Scan every "scrollback": occurrence — the first-find status (N/N) is
-    // still in the accumulated stream. Allow a missing space after ':' —
-    // OpenTUI cell-diff draws can split the status run.
     {
         const int budget_ms = scale_timeout_ms(15000);
         const auto deadline = std::chrono::steady_clock::now()
@@ -179,8 +167,8 @@ TEST_CASE("/find reports match position in the status line and cycles") {
             s.read_for(200);
             const std::string p = plain(s);
             std::size_t pos = 0;
-            while ((pos = p.find("\"scrollback\":", pos)) != std::string::npos) {
-                pos += sizeof("\"scrollback\":") - 1;
+            while ((pos = p.find("\"uniqfindtoken\":", pos)) != std::string::npos) {
+                pos += sizeof("\"uniqfindtoken\":") - 1;
                 while (pos < p.size() && p[pos] == ' ') ++pos;
                 if (pos + 1 < p.size() && p[pos] == '1' && p[pos + 1] == '/') {
                     saw = true;
