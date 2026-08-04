@@ -61,12 +61,16 @@ if [ "$1" = exec ]; then
   done
   if [ -n "$cmd" ]; then
     if [ "$cmd" = "__ARB_TEST_OVERFLOW__" ]; then
-      cat "$(dirname "$0")/overflow.dat"
+      # Use $0 dirname expansion — not `dirname(1)` — because tests
+      # put this stub's directory first on PATH and have no dirname there.
+      here=${0%/*}
+      /bin/cat "$here/overflow.dat"
       exit $?
     fi
     if [ -n "$ARBITER_TEST_WORKSPACE" ]; then
       # Match real `docker exec … sh -c <cmd>` (not `eval`, which re-parses
-      # quotes and broke nested generators on macOS CI).
+      # quotes and broke nested generators on macOS CI). Absolute /bin/sh
+      # so PATH shadows from the stub directory cannot hide the shell.
       cd "$ARBITER_TEST_WORKSPACE" && /bin/sh -c "$cmd"
       exit $?
     fi
