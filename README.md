@@ -1,10 +1,10 @@
-<p align="center">
-  <img src="https://github.com/tylerreckart/arbiter/blob/main/assets/arbiter_icon.png" alt="Logo" width="128">
-  <br><h1 align="center">Arbiter</h1>
-  <p align="center">
+<p align="left">
+  <img src="assets/icons/terminal_blue.png" alt="Logo" width="104">
+  <h1 align="left">Arbiter</h1>
+  <p align="left">
     A local agent runtime in a single native binary.
     <br> Local-first; network optional.
-    <br>
+    <br><br>
     <a href="#about">About</a>
     ·
     <a href="https://arbiter.run/">Download</a>
@@ -15,7 +15,7 @@
   </p>
 </p>
 
-![Arbiter session sidebar and inline diff rendering](assets/vesper.jpg)
+![Arbiter session sidebar and inline diff rendering](assets/screenshots/gotham.jpg)
 
 Run multi-agent workflows on your machine — interactive TUI, one-shot CLI, or HTTP+SSE — with hard tool allowlists and a shared streaming event bus.
 
