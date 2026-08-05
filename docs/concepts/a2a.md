@@ -65,7 +65,9 @@ Each A2A `AgentCard` is built from the agent's `Constitution` at fetch time:
 | `security` | `[{ "bearer": [] }]`. |
 | `preferredTransport` | `"JSONRPC"`. |
 
-`public_base_url` is set via `ApiServerOptions::public_base_url` (use this when terminating TLS in a reverse proxy); without it, arbiter falls back to `http://<Host header>`.
+`public_base_url` is set via `ApiServerOptions::public_base_url`, which
+`arbiter --api` fills from `ARBITER_PUBLIC_BASE_URL` (use this when terminating
+TLS in a reverse proxy); without it, arbiter falls back to `http://<Host header>`.
 
 ## Task lifecycle states
 

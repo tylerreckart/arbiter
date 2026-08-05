@@ -71,7 +71,7 @@ For a stored agent with declared capabilities, additional `Skill` entries are ap
 
 `version` for the master is the literal `"index"`; for a stored agent it's the catalog row's `updated_at` epoch, so a card consumer can cheap-cache and re-fetch on a version mismatch.
 
-`url` is built from `ApiServerOptions::public_base_url` (or the `Host` header fallback). See the [well-known endpoint](well-known.md) for the same behaviour.
+`url` is built from `ApiServerOptions::public_base_url` / `ARBITER_PUBLIC_BASE_URL` (or the `Host` header fallback). See the [well-known endpoint](well-known.md) for the same behaviour.
 
 ## Failure modes
 

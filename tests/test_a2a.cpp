@@ -22,6 +22,7 @@
 #include "json.h"
 
 #include <atomic>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -331,6 +332,17 @@ TEST_CASE("build_well_known_stub has at least one skill (spec requires)") {
     REQUIRE_FALSE(card.skills.empty());
     CHECK(card.skills[0].id == "discover");
     REQUIRE(card.security_schemes);
+}
+
+TEST_CASE("resolve_public_base_url prefers opts over Host and strips slash") {
+    arbiter::ApiServerOptions opts;
+    opts.public_base_url = "https://arbiter.example.com/";
+    // Request headers are lower-cased by the HTTP parser before lookup.
+    std::map<std::string, std::string> headers{{"host", "internal:8080"}};
+    CHECK(resolve_public_base_url(opts, headers) == "https://arbiter.example.com");
+
+    opts.public_base_url.clear();
+    CHECK(resolve_public_base_url(opts, headers) == "http://internal:8080");
 }
 
 TEST_CASE("AgentCard parses back into the same shape") {

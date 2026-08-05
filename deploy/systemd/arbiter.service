@@ -1,0 +1,43 @@
+[Unit]
+Description=Arbiter HTTP+SSE API
+Documentation=https://github.com/tylerreckart/arbiter/blob/main/docs/getting-started/server.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=arbiter
+Group=arbiter
+# HOME drives ~/.arbiter/ resolution (tenants.db, agents, admin_token).
+Environment=HOME=/var/lib/arbiter
+EnvironmentFile=-/etc/arbiter/arbiter.env
+# Bind loopback only — TLS and the public socket live on the reverse proxy.
+ExecStart=/usr/local/bin/arbiter --api --bind 127.0.0.1 --port 8080
+WorkingDirectory=/var/lib/arbiter
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+KillSignal=SIGTERM
+# Hardening — arbiter needs outbound HTTPS for providers; no inbound ports.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/arbiter
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+# CapabilityBoundingSet empty: no raw sockets, no bind below 1024 (proxy owns 443).
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+# If you enable the Docker sandbox, comment out RestrictAddressFamilies's
+# AF_UNIX restriction is fine; you must also grant the arbiter user access
+# to the docker socket (or drop some of these locks). Prefer leaving the
+# sandbox off for a first public API.
+
+[Install]
+WantedBy=multi-user.target

@@ -29,6 +29,8 @@ arbiter # open the TUI
 
 Linux binaries, source builds, Ollama, `--send`, and `--api` are in
 [getting-started/local](https://arbiter.run/docs/getting-started/local/).
+Exposing `--api` on a VPS with TLS: [secure remote API](docs/getting-started/server.md)
+(templates under [`deploy/`](deploy/)).
 
 ## One runtime, three faces
 

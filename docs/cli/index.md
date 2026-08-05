@@ -33,6 +33,7 @@ arbiter --help                             Print built-in help
 
 - [Getting started](../getting-started/index.md) — pick a path:
   - [Local install](../getting-started/local.md) — install + first run on your own machine.
+  - [Secure remote API](../getting-started/server.md) — Ubuntu VPS with TLS + systemd.
 - [`--init`](init.md) — what gets created, the `~/.arbiter/` layout.
 - [`--setup-tools`](setup-tools.md) — interactive MCP / search / browse wizard.
 - [`--send`](send.md) — the one-shot mode for scripts, pipes, and CI hooks.

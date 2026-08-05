@@ -312,6 +312,13 @@ void cmd_api(int port, const std::string& bind, bool verbose,
             try { opts.sandbox_idle_seconds = std::stoi(i); } catch (...) {}
         }
     }
+    // Public origin advertised in A2A agent cards.  Required when TLS
+    // terminates at a reverse proxy — otherwise cards fall back to
+    // http:// + Host and advertise the wrong scheme.
+    if (const char* base = std::getenv("ARBITER_PUBLIC_BASE_URL");
+            base && *base) {
+        opts.public_base_url = base;
+    }
 
     ApiServer server(std::move(opts), tenants);
 

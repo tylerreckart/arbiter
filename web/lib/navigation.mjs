@@ -109,7 +109,7 @@ export function buildSidebarModel(docs, activeDoc) {
 
 export function buildDocsIndexCards(docs) {
   const blurbs = {
-    'getting-started': 'Install the binary, seed starter agents, and open the TUI.',
+    'getting-started': 'Local install, TUI first run, and a secure remote API on a VPS.',
     concepts: 'Runtime model, memory, security boundaries, and how the pieces fit.',
     cli: 'One-shot dispatch, API server mode, environment, and admin commands.',
     tui: 'Sessions, panes, keybindings, themes, and streaming output.',

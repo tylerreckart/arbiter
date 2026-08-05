@@ -1,0 +1,35 @@
+# Replace arbiter.example.com with your DNS name pointing at this host.
+# Caddy obtains and renews Let's Encrypt certificates automatically.
+
+arbiter.example.com {
+	encode gzip
+
+	# Metrics are unauthenticated — keep them off the public internet.
+	handle /v1/metrics* {
+		respond "Forbidden" 403
+	}
+
+	# Single upstream for all API traffic. flush_interval -1 + long
+	# timeouts keep SSE streams (/v1/orchestrate, messages, notifications,
+	# request reconnect) open through multi-minute LLM calls.
+	handle {
+		reverse_proxy 127.0.0.1:8080 {
+			flush_interval -1
+			transport http {
+				read_timeout 3600s
+				write_timeout 3600s
+			}
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-For {remote_host}
+			header_up Authorization {http.request.header.Authorization}
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+}

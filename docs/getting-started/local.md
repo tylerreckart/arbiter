@@ -84,7 +84,7 @@ arbiter --add-tenant me                       # prints the bearer token — save
 arbiter --api --port 8080                     # bind 127.0.0.1 by default
 ```
 
-Authenticate with `Authorization: Bearer <token>`. The endpoint catalogue is at [`api/`](../api/index.md). Production deployments belong behind a reverse proxy for TLS and rate limiting — see [`concepts/operations.md`](../concepts/operations.md).
+Authenticate with `Authorization: Bearer <token>`. The endpoint catalogue is at [`api/`](../api/index.md). To put this on a public host with TLS (Ubuntu 24 / Linode), follow the [secure remote API](server.md) guide — templates live under [`deploy/`](../../deploy/).
 
 ## Where things live
 

@@ -48,7 +48,7 @@ curl http://arbiter.example.com/.well-known/agent-card.json
 }
 ```
 
-The `url` field is built from `ApiServerOptions::public_base_url` when set; otherwise it's derived from the inbound `Host` header with scheme `http://`. Operators terminating TLS in front of arbiter should set `public_base_url` explicitly so the card advertises the public `https://` origin.
+The `url` field is built from `ApiServerOptions::public_base_url` when set; otherwise it's derived from the inbound `Host` header with scheme `http://`. Operators terminating TLS in front of arbiter should set `ARBITER_PUBLIC_BASE_URL` (or `public_base_url` in options) explicitly so the card advertises the public `https://` origin.
 
 ## Failure modes
 

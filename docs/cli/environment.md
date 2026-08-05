@@ -23,6 +23,11 @@ Env-var values take precedence over the file values. The file is read once at pr
 | `ARBITER_API_VERBOSE`     | When set to a non-empty, non-`0` value, mirrors every SSE event to stderr. Equivalent to passing `--verbose`. The CLI flag wins if both are present. |
 | `ARBITER_DRAIN_SECONDS`   | Wall-clock grace period on `SIGTERM` / `SIGINT` shutdown. The listen socket closes immediately and every in-flight orchestration is signalled to cancel; the server then waits up to this many seconds for connection threads to finish before tearing down sandbox containers. `0` skips the wait. Default `30`. See [Operations → Graceful shutdown](../concepts/operations.md#graceful-shutdown). |
 | `ARBITER_LOG_FORMAT`      | Output format for operational stderr events (startup, recovery sweep, drain, sandbox lifecycle). `human` (default) renders `[HH:MM:SS] [level] event key=value`. `json` emits one JSON object per line for log aggregators. The per-request SSE-mirror verbose mode keeps its existing human format regardless. See [Operations → Structured logging](../concepts/operations.md#structured-logging). |
+| `ARBITER_PUBLIC_BASE_URL` | Public origin (scheme + host, no trailing slash) advertised in A2A agent cards. Set this when TLS terminates at a reverse proxy so cards use `https://…` instead of falling back to `http://` + the inbound `Host` header. Example: `https://arbiter.example.com`. |
+| `ARBITER_ADMIN_TOKEN`     | Admin bearer for `/v1/admin/*`. Overrides `~/.arbiter/admin_token`. Prefer this in systemd `EnvironmentFile=` so the token is not only a file under HOME. |
+| `ARBITER_TENANT_MAX_CONCURRENT` | Max concurrent in-flight LLM requests per tenant (`0` = unlimited). See [Operations → rate limiting](../concepts/operations.md#per-tenant-rate--concurrency-limiting). |
+| `ARBITER_TENANT_RATE_PER_MIN`   | Token-bucket refill rate per tenant (`0` = unlimited). |
+| `ARBITER_TENANT_RATE_BURST`     | Token-bucket capacity (defaults to `rate_per_min` when unset/`0`). |
 
 ## TUI session durability
 

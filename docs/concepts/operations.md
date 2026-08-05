@@ -57,6 +57,10 @@ A `0` on either axis disables that axis (the limiter grants every acquire withou
 
 Run behind a reverse proxy. TLS, rate limiting, and DDoS protection are out of scope for arbiter itself — it binds `127.0.0.1` by default specifically to encourage this layout.
 
+**Step-by-step (Ubuntu 24 + systemd + Caddy/nginx):** [Secure remote API](../getting-started/server.md). Copy-paste unit files and proxy configs: [`deploy/`](../../deploy/).
+
+Set `ARBITER_PUBLIC_BASE_URL=https://your.host` when TLS terminates at the proxy so A2A agent cards advertise `https://` instead of falling back to `http://` + `Host`.
+
 ### Example nginx location block
 
 ```nginx
@@ -71,7 +75,7 @@ location /v1/ {
 }
 ```
 
-`X-Accel-Buffering: no` is already set by arbiter on its SSE responses; the nginx directive here is belt-and-suspenders.
+`X-Accel-Buffering: no` is already set by arbiter on its SSE responses; the nginx directive here is belt-and-suspenders. A fuller site config (TLS, metrics deny, HSTS) is in [`deploy/nginx/arbiter.conf`](../../deploy/nginx/arbiter.conf).
 
 ## Scaling characteristics
 

@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Secure remote API deploy guide.** Ubuntu 24 / Linode walkthrough with
+  systemd, Caddy and nginx templates, env file, and UFW checklist under
+  [`docs/getting-started/server.md`](docs/getting-started/server.md) and
+  [`deploy/`](deploy/).
+- **`ARBITER_PUBLIC_BASE_URL`.** `arbiter --api` reads this env var into
+  `ApiServerOptions::public_base_url` so A2A agent cards advertise the
+  public `https://` origin when TLS terminates at a reverse proxy.
+
 ## [0.10.0] — 2026-08-04
 
 Minor release: conversation folders in the history sidebar, TUI threads

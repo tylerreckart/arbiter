@@ -30,9 +30,9 @@ arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]
 
 ## What it doesn't do
 
-- **TLS termination.** The server speaks plain HTTP. Production deployments should put TLS termination, DDoS protection, and rate limiting in a reverse proxy (nginx, caddy, cloudflare) in front of the process.
+- **TLS termination.** The server speaks plain HTTP. Production deployments should put TLS termination, DDoS protection, and rate limiting in a reverse proxy (nginx, caddy, cloudflare) in front of the process. Walkthrough + templates: [Secure remote API](../getting-started/server.md), [`deploy/`](../../deploy/).
 - **Sandboxing.** By default the API server disables `/exec` (no shell execution from agents) and intercepts `/write` so file output streams to the client without landing on the server's disk. To enable `/exec` safely, configure the per-tenant Docker sandbox — see [`docs/concepts/sandbox.md`](../concepts/sandbox.md). Even with the sandbox on, the arbiter daemon itself is not isolated; run the process in a container or a dedicated user account in production.
-- **Process supervision.** The binary doesn't daemonise itself. Run it under systemd / launchd / docker / pm2 — whichever your platform uses.
+- **Process supervision.** The binary doesn't daemonise itself. Run it under systemd / launchd / docker / pm2 — whichever your platform uses. A ready-made unit is in [`deploy/systemd/arbiter.service`](../../deploy/systemd/arbiter.service).
 
 ## Endpoint reference
 
