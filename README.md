@@ -54,6 +54,7 @@ One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollam
 - [`docs/api/`](https://arbiter.run/docs/api) — HTTP API, tenants, SSE, MCP, A2A, memory
 - [`docs/cli/`](https://arbiter.run/docs/cli) — `--init`, `--send`, `--api`, env vars
 - [`docs/tui/`](https://arbiter.run/docs/tui) — panes, keybindings, themes, sessions
+- [`arbiter-ios/`](arbiter-ios/) — SwiftUI chat client scaffold for a deployed `--api` server
 - [`ROADMAP.md`](ROADMAP.md) — phased plan toward 1.0 readiness
 - [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md)
 

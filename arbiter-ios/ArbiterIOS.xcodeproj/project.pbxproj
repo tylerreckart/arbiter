@@ -1,0 +1,336 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* ArbiterIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* ArbiterIOSApp.swift */; };
+		A10000000000000000000002 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* AppConfig.swift */; };
+		A10000000000000000000003 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* KeychainStore.swift */; };
+		A10000000000000000000004 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* ChatMessage.swift */; };
+		A10000000000000000000005 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* Conversation.swift */; };
+		A10000000000000000000006 /* SSEEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* SSEEvent.swift */; };
+		A10000000000000000000007 /* SSEParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* SSEParser.swift */; };
+		A10000000000000000000008 /* ArbiterClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* ArbiterClient.swift */; };
+		A10000000000000000000009 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* ChatViewModel.swift */; };
+		A1000000000000000000000A /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A /* ChatView.swift */; };
+		A1000000000000000000000B /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000B /* MessageBubble.swift */; };
+		A1000000000000000000000C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000C /* SettingsView.swift */; };
+		A1000000000000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000D /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		C10000000000000000000001 /* ArbiterIOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ArbiterIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000001 /* ArbiterIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArbiterIOSApp.swift; sourceTree = "<group>"; };
+		B10000000000000000000002 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000004 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
+		B10000000000000000000005 /* Conversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Conversation.swift; sourceTree = "<group>"; };
+		B10000000000000000000006 /* SSEEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEEvent.swift; sourceTree = "<group>"; };
+		B10000000000000000000007 /* SSEParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
+		B10000000000000000000008 /* ArbiterClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArbiterClient.swift; sourceTree = "<group>"; };
+		B10000000000000000000009 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
+		B1000000000000000000000A /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000B /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
+		B1000000000000000000000C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		D10000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E10000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				E10000000000000000000002 /* ArbiterIOS */,
+				E10000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		E10000000000000000000002 /* ArbiterIOS */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000001 /* ArbiterIOSApp.swift */,
+				E10000000000000000000004 /* Models */,
+				E10000000000000000000005 /* Networking */,
+				E10000000000000000000006 /* Storage */,
+				E10000000000000000000007 /* ViewModels */,
+				E10000000000000000000008 /* Views */,
+				B1000000000000000000000D /* Assets.xcassets */,
+			);
+			path = ArbiterIOS;
+			sourceTree = "<group>";
+		};
+		E10000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C10000000000000000000001 /* ArbiterIOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E10000000000000000000004 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000004 /* ChatMessage.swift */,
+				B10000000000000000000005 /* Conversation.swift */,
+				B10000000000000000000006 /* SSEEvent.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		E10000000000000000000005 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000008 /* ArbiterClient.swift */,
+				B10000000000000000000007 /* SSEParser.swift */,
+			);
+			path = Networking;
+			sourceTree = "<group>";
+		};
+		E10000000000000000000006 /* Storage */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000002 /* AppConfig.swift */,
+				B10000000000000000000003 /* KeychainStore.swift */,
+			);
+			path = Storage;
+			sourceTree = "<group>";
+		};
+		E10000000000000000000007 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000009 /* ChatViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		E10000000000000000000008 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000000A /* ChatView.swift */,
+				B1000000000000000000000B /* MessageBubble.swift */,
+				B1000000000000000000000C /* SettingsView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F10000000000000000000001 /* ArbiterIOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F10000000000000000000004 /* Build configuration list for PBXNativeTarget "ArbiterIOS" */;
+			buildPhases = (
+				F10000000000000000000002 /* Sources */,
+				D10000000000000000000001 /* Frameworks */,
+				F10000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ArbiterIOS;
+			productName = ArbiterIOS;
+			productReference = C10000000000000000000001 /* ArbiterIOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F10000000000000000000005 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					F10000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = F10000000000000000000006 /* Build configuration list for PBXProject "ArbiterIOS" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E10000000000000000000001;
+			productRefGroup = E10000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				F10000000000000000000001 /* ArbiterIOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F10000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000000000000000000000D /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		F10000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001 /* ArbiterIOSApp.swift in Sources */,
+				A10000000000000000000002 /* AppConfig.swift in Sources */,
+				A10000000000000000000003 /* KeychainStore.swift in Sources */,
+				A10000000000000000000004 /* ChatMessage.swift in Sources */,
+				A10000000000000000000005 /* Conversation.swift in Sources */,
+				A10000000000000000000006 /* SSEEvent.swift in Sources */,
+				A10000000000000000000007 /* SSEParser.swift in Sources */,
+				A10000000000000000000008 /* ArbiterClient.swift in Sources */,
+				A10000000000000000000009 /* ChatViewModel.swift in Sources */,
+				A1000000000000000000000A /* ChatView.swift in Sources */,
+				A1000000000000000000000B /* MessageBubble.swift in Sources */,
+				A1000000000000000000000C /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		F10000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		F10000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		F10000000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Arbiter;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = run.arbiter.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		F1000000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Arbiter;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = run.arbiter.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F10000000000000000000006 /* Build configuration list for PBXProject "ArbiterIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F10000000000000000000007 /* Debug */,
+				F10000000000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F10000000000000000000004 /* Build configuration list for PBXNativeTarget "ArbiterIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F10000000000000000000009 /* Debug */,
+				F1000000000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = F10000000000000000000005 /* Project object */;
+}

@@ -1,0 +1,33 @@
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+timeline.xctimeline
+playground.xcworkspace
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# Secrets — never commit tokens
+Config.local.plist
+*.local.swift
+.env
+.env.*
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# CocoaPods / Carthage (unused, defensive)
+Pods/
+Carthage/Build/

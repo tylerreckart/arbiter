@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **`arbiter-ios` scaffold.** SwiftUI chat client (iOS 17+) for a deployed
+  Arbiter API: Keychain token storage, conversation create + SSE message
+  streaming, stop/cancel, and settings for base URL / agent id. See
+  [`arbiter-ios/`](arbiter-ios/).
+
 ## [0.10.0] — 2026-08-04
 
 Minor release: conversation folders in the history sidebar, TUI threads
