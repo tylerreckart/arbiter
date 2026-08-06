@@ -9091,6 +9091,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // contract for v1 — clients retrying after a network blip send the
     // same body.
     if (auto replay_id = check_idempotency_replay(opts, req, tenant.id)) {
+        if (!refresh_active_tenant(tenants, tenant)) {
+            reject_disabled_tenant(fd);
+            return;
+        }
         if (opts.metrics) opts.metrics->inc_idempotency_replay();
         handle_request_events(fd, *replay_id, req, tenants, tenant,
                               request_event_bus,
@@ -9286,6 +9290,21 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 opts, req, tenant.id, request_id);
         }
         if (replay_id) {
+            if (!refresh_active_tenant(tenants, tenant)) {
+                if (request_status_created && *replay_id != request_id) {
+                    const int64_t completed = static_cast<int64_t>(
+                        std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count());
+                    tenants.update_request_status(
+                        request_id, std::optional<std::string>("failed"),
+                        completed,
+                        std::optional<std::string>("tenant disabled"),
+                        std::nullopt);
+                }
+                reject_disabled_tenant(fd);
+                return;
+            }
             if (opts.metrics) opts.metrics->inc_idempotency_replay();
             if (request_status_created && *replay_id != request_id) {
                 const int64_t completed = static_cast<int64_t>(
@@ -9400,6 +9419,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         log_error(std::string("orchestrator init failed: ") + e.what());
         return;
     }
+    auto* orch_ptr = orch.get();
+    // Register as soon as the Orchestrator exists so an admin kill-switch
+    // that lands during catalog load / history hydration can cancel() it.
+    // Lifetime still matches the orchestrator via RAII.
+    InFlightScope in_flight_scope(in_flight, request_id, orch_ptr, tenant.id);
+
     // Memory is tenant-scoped so /mem commands can never leak between
     // accounts.  set_memory_dir is kept as a no-op fallback path for
     // any code that still expects a filesystem location, but the
@@ -9454,14 +9479,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         sse.close();
         return;
     }
-
-    auto* orch_ptr = orch.get();
-
-    // Register this orchestration so `POST /v1/requests/:id/cancel` can
-    // reach it.  Lifetime matches the orchestrator; scope unwinds on every
-    // exit path (including exceptions), so cancels arriving after
-    // completion harmlessly miss the map.
-    InFlightScope in_flight_scope(in_flight, request_id, orch_ptr, tenant.id);
 
     // ── Conversation thread resumption ──────────────────────────────────
     // When this request belongs to a stored conversation, replay prior
