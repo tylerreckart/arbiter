@@ -377,6 +377,39 @@ void HistorySidebarState::enter_focus(const ConversationStore& store,
     scroll_offset_ = 0;
 }
 
+void HistorySidebarState::enter_focus_list(
+    std::vector<ConversationEntry> entries,
+    const std::string& active_id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!enabled_) return;
+    focused_ = true;
+    mode_ = Mode::Normal;
+    rename_buffer_.clear();
+    creating_folder_ = false;
+    rename_target_id_.clear();
+    rename_target_is_folder_ = false;
+    menu_index_ = 0;
+    move_index_ = 0;
+    move_labels_.clear();
+    move_folder_ids_.clear();
+    move_result_.clear();
+    active_id_ = active_id;
+    entries_ = std::move(entries);
+    folders_.clear();
+    collapsed_.clear();
+    pin_kind_ = PinKind::New;
+    pin_id_.clear();
+    for (const auto& e : entries_) {
+        if (e.id == active_id_) {
+            pin_kind_ = PinKind::Conversation;
+            pin_id_ = e.id;
+            break;
+        }
+    }
+    ensure_pin_visible_locked();
+    scroll_offset_ = 0;
+}
+
 void HistorySidebarState::exit_focus() {
     std::lock_guard<std::mutex> lk(mu_);
     focused_ = false;
@@ -483,6 +516,17 @@ void HistorySidebarState::refresh_entries(const ConversationStore& store) {
     ensure_pin_visible_locked();
     // Re-align scroll to the (possibly jumped) pin using the last known
     // line budget so the highlight does not sit off-screen.
+    clamp_scroll_locked(index_for_pin_locked(), last_visible_lines_);
+}
+
+void HistorySidebarState::refresh_entries_list(
+    std::vector<ConversationEntry> entries,
+    const std::string& active_id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    entries_ = std::move(entries);
+    folders_.clear();
+    if (!active_id.empty()) active_id_ = active_id;
+    ensure_pin_visible_locked();
     clamp_scroll_locked(index_for_pin_locked(), last_visible_lines_);
 }
 

@@ -163,6 +163,10 @@ set(ARBITER_SOURCES
     src/repl/conversations_ui.cpp
     src/repl/mouse_input.cpp
     src/repl/input_loop.cpp
+    src/repl/remote_session.cpp
+    src/remote/connect_config.cpp
+    src/remote/api_client.cpp
+    src/remote/sse_turn.cpp
     src/atomic_file.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
@@ -1441,6 +1445,39 @@ if(INDEX_BUILD_TESTS)
     target_link_libraries(unit_advisor_gate PRIVATE CURL::libcurl)
     add_test(NAME unit_advisor_gate COMMAND unit_advisor_gate)
 
+    # Remote TUI (--connect): URL/token resolution + SSE→renderer consumption.
+    add_executable(unit_remote_connect
+        tests/test_remote_connect.cpp
+        src/remote/connect_config.cpp
+        src/remote/sse_turn.cpp
+        src/a2a/sse_reader.cpp
+        src/stream_renderer.cpp
+        src/render_policy.cpp
+        src/styled_text.cpp
+        src/markdown.cpp
+        src/latex_math.cpp
+        src/code_highlighter.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/tui/style_resolver.cpp
+        src/tui/block_parser.cpp
+        src/repl/queues.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_remote_connect PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_compile_definitions(unit_remote_connect PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    target_link_libraries(unit_remote_connect PRIVATE
+        Threads::Threads
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    add_test(NAME unit_remote_connect COMMAND unit_remote_connect)
+
     # tui_design.cpp includes themes_data.h — wire every unit target that
     # compiles it to the embed generator (same header as the main binary).
     foreach(_t
@@ -1457,6 +1494,7 @@ if(INDEX_BUILD_TESTS)
         unit_conversation_store_autosave
         unit_conversation_titling
         unit_message_replay_roundtrip
+        unit_remote_connect
     )
         arbiter_use_embedded_themes(${_t})
     endforeach()

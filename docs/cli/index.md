@@ -5,6 +5,7 @@ Arbiter is a single binary with three operating modes — interactive, one-shot,
 | You want…                                            | Run                                          |
 |------------------------------------------------------|----------------------------------------------|
 | Interactive multi-pane TUI                           | `arbiter`                                    |
+| Thin-client TUI against a remote `--api` host        | `arbiter --connect [URL] [--token TOKEN]`    |
 | One agent reply, piped output, no TTY                | `arbiter --send <agent> <message>`           |
 | HTTP+SSE orchestration server for other clients      | `arbiter --api [--port N] [--bind ADDR]`     |
 | Initialize `~/.arbiter/` with example agents         | `arbiter --init`                             |
@@ -17,6 +18,7 @@ The interactive mode is documented separately under [`docs/tui`](../tui/index.md
 
 ```
 arbiter                                    Interactive REPL (the TUI)
+arbiter --connect [URL] [--token TOKEN]    Thin-client TUI → remote --api
 arbiter --init                             Create ~/.arbiter/ + example agents
 arbiter --setup-tools                      Interactive wizard for search / browse / MCP
 arbiter --send <agent> <message>           One-shot — print agent reply to stdout
@@ -37,6 +39,7 @@ arbiter --help                             Print built-in help
 - [`--setup-tools`](setup-tools.md) — interactive MCP / search / browse wizard.
 - [`--send`](send.md) — the one-shot mode for scripts, pipes, and CI hooks.
 - [`--api`](api.md) — the HTTP server mode: flags, behaviour, links to the endpoint docs.
+- [`--connect`](connect.md) — thin-client TUI against a remote `--api` instance.
 - [Tenant admin](tenants.md) — managing `--api` bearer tokens.
 - [A2A agents](a2a-agents.md) — outbound remote-agent registry + the `/a2a` slash command.
 - [Environment](environment.md) — every env var arbiter reads, what overrides what.
@@ -56,7 +59,9 @@ The agent runs the full orchestration loop internally (tool calls, sub-agent del
 
 **API (`--api`).** A long-running HTTP+SSE server. Real applications (web UIs, automations, mobile clients) call it instead of forking the binary per request. Multi-tenant: every request authenticates with a bearer token from `--add-tenant`, all conversations / artifacts / memory / scratchpads are tenant-scoped. See [`docs/api`](../api/index.md) for the endpoint catalogue.
 
-The three modes share the same on-disk state — agents under `~/.arbiter/agents/*.json`, the OpenRouter key from `OPENROUTER_API_KEY` or `~/.arbiter/openrouter_api_key`, and provider settings at the same precedence everywhere. A change made in one mode is visible to the others on next launch.
+**Remote TUI (`--connect`).** Same binary, client mode: render the TUI locally while turns stream from a remote `--api` over HTTP+SSE. No local provider keys. See [`connect.md`](connect.md).
+
+The interactive and API modes share the same on-disk state when they run on the same host — agents under `~/.arbiter/agents/*.json`, the OpenRouter key from `OPENROUTER_API_KEY` or `~/.arbiter/openrouter_api_key`, and provider settings at the same precedence everywhere. A `--connect` client does not use the local provider key store; keys are required only on the API host.
 
 ## Exit codes
 

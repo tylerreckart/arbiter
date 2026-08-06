@@ -9,6 +9,8 @@
 #include "loop_manager.h"
 #include "notification_bus.h"
 #include "orchestrator.h"
+#include "remote/api_client.h"
+#include "remote/connect_config.h"
 #include "repl/conversation_store.h"
 #include "repl/layout.h"
 #include "repl/pane.h"
@@ -145,17 +147,42 @@ struct ReplSession {
     std::atomic<bool>       pump_stop{false};
     std::thread             output_pump;
 
+    // Remote TUI (--connect): null when local in-process mode.
+    std::unique_ptr<RemoteApiClient> remote;
+    std::string remote_tenant_name;
+    // In-memory conversation list mirrored from the remote API (not local
+    // ~/.arbiter / tenants.db TUI rows).
+    mutable std::mutex remote_conv_mu;
+    std::vector<ConversationEntry> remote_conversations;
+    std::string remote_active_id;
+
     // Constructed after load_tui_design / get_api_keys in cmd_interactive so
     // StdinRawModeGuard arms only once the theme path has run.
     ReplSession(std::string config_dir,
                 std::map<std::string, std::string> api_keys,
+                bool exec_allowed_flag);
+    // Remote connect mode — no local provider keys required.
+    ReplSession(std::string config_dir,
+                RemoteConnectConfig remote_cfg,
                 bool exec_allowed_flag);
     ~ReplSession();
 
     ReplSession(const ReplSession&) = delete;
     ReplSession& operator=(const ReplSession&) = delete;
 
+    [[nodiscard]] bool is_remote() const { return remote != nullptr; }
     void run();
+
+    // Remote conversation helpers (no-ops / local store when !is_remote()).
+    void remote_refresh_conversations();
+    std::vector<ConversationEntry> conversation_list() const;
+    std::string conversation_active_id() const;
+    void conversation_set_active(const std::string& id);
+    std::string conversation_create(const std::string& folder_id = {});
+    bool conversation_delete_remote(const std::string& id, std::string* err);
+    void refresh_history_sidebar_entries();
+    void enter_history_sidebar_focus();
+    ApiResponse run_remote_turn(Pane& pane, const std::string& line);
 
     // ── Shared helpers (interactive.cpp) ───────────────────────────────────
     void wake_main_input();

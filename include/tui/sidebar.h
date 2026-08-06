@@ -63,6 +63,11 @@ struct SidebarSnapshot {
     int         context_window      = 0;
     int         context_pct_current = -1;
     int         context_pct_peak      = -1;
+
+    // Remote TUI (--connect): host[:port] and optional tenant name for chrome.
+    // Empty remote_host ⇒ local in-process session.
+    std::string remote_host;
+    std::string remote_tenant;
 };
 
 // Session-scoped sidebar data: token usage and recent tool/MCP activity.
@@ -95,6 +100,7 @@ public:
     void set_focus_context(const std::string& agent,
                            const std::string& model);
     void set_loops(std::vector<SidebarLoopEntry> loops);
+    void set_remote_info(std::string host, std::string tenant = {});
 
     [[nodiscard]] SidebarSnapshot snapshot() const;
     [[nodiscard]] std::string tokens_report() const;
@@ -138,6 +144,9 @@ private:
     std::vector<SidebarTodoEntry> todos_;
     std::vector<SidebarScheduleEntry> schedules_;
     std::vector<SidebarLoopEntry> loops_;
+
+    std::string remote_host_;
+    std::string remote_tenant_;
 };
 
 } // namespace arbiter

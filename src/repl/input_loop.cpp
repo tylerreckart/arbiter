@@ -230,7 +230,7 @@ void ReplSession::run_input_loop() {
                 if (!cid.empty()) {
                     conversation_store.move_to_folder(cid, fid);
                 }
-                history_sidebar.refresh_entries(conversation_store);
+                refresh_history_sidebar_entries();
                 if (pump_notify) pump_notify();
                 continue;
             }
@@ -261,7 +261,7 @@ void ReplSession::run_input_loop() {
                     if (creating) {
                         const std::string fid =
                             conversation_store.create_folder(text);
-                        history_sidebar.refresh_entries(conversation_store);
+                        refresh_history_sidebar_entries();
                         if (!fid.empty()) {
                             history_sidebar.select_folder(fid, visible_rows);
                         }
@@ -269,15 +269,15 @@ void ReplSession::run_input_loop() {
                         if (!target_id.empty()) {
                             conversation_store.rename_folder(target_id, text);
                         }
-                        history_sidebar.refresh_entries(conversation_store);
+                        refresh_history_sidebar_entries();
                     } else if (!target_id.empty()) {
                         conversation_store.set_title_locked(target_id, text);
-                        history_sidebar.refresh_entries(conversation_store);
+                        refresh_history_sidebar_entries();
                     } else {
-                        history_sidebar.refresh_entries(conversation_store);
+                        refresh_history_sidebar_entries();
                     }
                 } else {
-                    history_sidebar.refresh_entries(conversation_store);
+                    refresh_history_sidebar_entries();
                 }
                 if (pump_notify) pump_notify();
                 continue;
@@ -290,7 +290,7 @@ void ReplSession::run_input_loop() {
                 if (history_sidebar.is_folder_selected()) {
                     const std::string fid = history_sidebar.selected_folder_id();
                     if (!fid.empty()) conversation_store.delete_folder(fid);
-                    history_sidebar.refresh_entries(conversation_store);
+                    refresh_history_sidebar_entries();
                     if (pump_notify) pump_notify();
                 } else {
                     const std::string id = history_sidebar.selected_conversation_id();

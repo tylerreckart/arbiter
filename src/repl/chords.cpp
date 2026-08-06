@@ -263,8 +263,7 @@ void ReplSession::dispatch_chord(char cmd) {
                 if (!history_sidebar.enabled()) {
                     history_sidebar.set_enabled(true, dir);
                 }
-                history_sidebar.enter_focus(conversation_store,
-                                            layout_ptr->focused().conversation_id);
+                enter_history_sidebar_focus();
                 break;
             }
         }

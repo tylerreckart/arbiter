@@ -97,7 +97,8 @@ void ReplSession::apply_conversation_to_pane(Pane& pane, const std::string& id, 
         clear_mouse_drag();
         pane.conversation_id = id;
         pane.current_agent = "index";
-        pane.current_model = orch.get_agent_model("index");
+        pane.current_model = is_remote() ? std::string("remote")
+                                         : orch.get_agent_model("index");
         pane.original_task.clear();
         pane.scroll_offset = 0;
         pane.new_while_scrolled = 0;
@@ -107,6 +108,29 @@ void ReplSession::apply_conversation_to_pane(Pane& pane, const std::string& id, 
         pane.tui.clear_activity_badge();
         pane_history_clear(pane);
         pane_history_set_cols(pane, pane.tui.cols());
+
+        if (is_remote()) {
+            conversation_set_active(id);
+            if (replay && remote) {
+                std::string err;
+                auto msgs = remote->list_messages(id, &err, 200);
+                // Render a simple user/assistant transcript into scrollback.
+                for (const auto& m : msgs) {
+                    if (m.role == "user") {
+                        pane.output_queue.push_prose_msg(
+                            m.content, StyleId::UserEchoText);
+                        pane.output_queue.end_message();
+                    } else if (m.role == "assistant") {
+                        StreamRenderer renderer(kReplay, pane.output_queue);
+                        renderer.feed(m.content);
+                        renderer.flush();
+                        pane.output_queue.end_message();
+                    }
+                }
+            }
+            refresh_history_sidebar_entries();
+            return;
+        }
 
         if (!orch.has_conversation_loaded(id)) {
             conversation_store.load(id, orch);
@@ -133,6 +157,36 @@ void ReplSession::finish_switch_conversation(bool create_new, std::string explic
         focused.tui.clear_queue_indicator();
         focused.thinking.stop();
 
+        if (is_remote()) {
+            if (create_new) {
+                const std::string after = conversation_create(folder_id);
+                if (after.empty() || after == focused.conversation_id) {
+                    history_sidebar.exit_focus();
+                    present_unlocked();
+                    return;
+                }
+                history_sidebar.exit_focus();
+                apply_conversation_to_pane(focused, after, /*replay=*/false);
+                present_unlocked();
+                g_getc_state.pane = &layout_ptr->focused();
+                ui_ctx.focused_pane = &layout_ptr->focused();
+                return;
+            }
+            const std::string picked = !explicit_id.empty() ? explicit_id
+                                                             : history_sidebar.selected_conversation_id();
+            if (picked.empty() || picked == focused.conversation_id) {
+                history_sidebar.exit_focus();
+                present_unlocked();
+                return;
+            }
+            history_sidebar.exit_focus();
+            apply_conversation_to_pane(focused, picked, /*replay=*/true);
+            present_unlocked();
+            g_getc_state.pane = &layout_ptr->focused();
+            ui_ctx.focused_pane = &layout_ptr->focused();
+            return;
+        }
+
         conversation_store.flush();
         if (!focused.conversation_id.empty()) {
             conversation_store.save(focused.conversation_id, orch);
@@ -153,7 +207,7 @@ void ReplSession::finish_switch_conversation(bool create_new, std::string explic
             }
             history_sidebar.exit_focus();
             apply_conversation_to_pane(focused, after, /*replay=*/false);
-            history_sidebar.refresh_entries(conversation_store);
+            refresh_history_sidebar_entries();
             persist_layout();
             present_unlocked();
             g_getc_state.pane = &layout_ptr->focused();
@@ -170,7 +224,7 @@ void ReplSession::finish_switch_conversation(bool create_new, std::string explic
         }
         history_sidebar.exit_focus();
         apply_conversation_to_pane(focused, picked, /*replay=*/true);
-        history_sidebar.refresh_entries(conversation_store);
+        refresh_history_sidebar_entries();
         persist_layout();
         present_unlocked();
         g_getc_state.pane = &layout_ptr->focused();
@@ -181,6 +235,37 @@ void ReplSession::finish_switch_conversation(bool create_new, std::string explic
 void ReplSession::finish_delete_conversation(const std::string& id, bool hard, bool any_showing) {
 
         clear_mouse_drag();
+        if (is_remote()) {
+            if (any_showing) {
+                layout_ptr->for_each_pane([&](Pane& p) {
+                    if (p.conversation_id == id) {
+                        p.cmd_queue.drain();
+                        p.tui.clear_queue_indicator();
+                    }
+                });
+                layout_ptr->focused().thinking.stop();
+            }
+            std::string err;
+            if (!conversation_delete_remote(id, &err)) {
+                layout_ptr->focused().tui.set_status(
+                    err.empty() ? "ERR: delete failed" : ("ERR: " + err));
+                present_unlocked();
+                return;
+            }
+            const std::string replacement = [&]() {
+                auto list = conversation_list();
+                if (!list.empty()) return list.front().id;
+                return conversation_create();
+            }();
+            layout_ptr->for_each_pane([&](Pane& p) {
+                if (p.conversation_id == id) {
+                    apply_conversation_to_pane(p, replacement, /*replay=*/true);
+                }
+            });
+            present_unlocked();
+            return;
+        }
+
         if (any_showing) {
             layout_ptr->for_each_pane([&](Pane& p) {
                 if (p.conversation_id == id) {
@@ -210,7 +295,7 @@ void ReplSession::finish_delete_conversation(const std::string& id, bool hard, b
             rebound = true;
         });
 
-        history_sidebar.refresh_entries(conversation_store);
+        refresh_history_sidebar_entries();
         if (rebound) {
             persist_layout();
             present_unlocked();

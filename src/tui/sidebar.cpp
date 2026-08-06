@@ -247,6 +247,12 @@ void SidebarState::set_loops(std::vector<SidebarLoopEntry> loops) {
     loops_ = std::move(loops);
 }
 
+void SidebarState::set_remote_info(std::string host, std::string tenant) {
+    std::lock_guard<std::mutex> lk(mu_);
+    remote_host_ = std::move(host);
+    remote_tenant_ = std::move(tenant);
+}
+
 SidebarSnapshot SidebarState::snapshot() const {
     std::lock_guard<std::mutex> lk(mu_);
     SidebarSnapshot s;
@@ -273,6 +279,8 @@ SidebarSnapshot SidebarState::snapshot() const {
     s.context_window      = context_window_;
     s.context_pct_current = context_pct_current_;
     s.context_pct_peak    = context_pct_peak_;
+    s.remote_host         = remote_host_;
+    s.remote_tenant       = remote_tenant_;
     return s;
 }
 
