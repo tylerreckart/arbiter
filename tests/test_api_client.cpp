@@ -432,6 +432,34 @@ TEST_CASE("CancelToken request_cancel is independent of ApiClient::cancel()") {
     }
 }
 
+TEST_CASE("ApiClient::cancel hard-cancel survives stream/complete entry clear") {
+    using arbiter::ApiClient;
+    using arbiter::ApiRequest;
+
+    ApiClient client({});
+    client.cancel();
+    CHECK(client.hard_cancelled());
+
+    ApiRequest req;
+    req.model = "claude-haiku-4-5-20251001";
+    req.messages = {{"user", "hi"}};
+
+    // stream()/complete() clear the ephemeral cancelled_ bit at entry but
+    // must still refuse provider I/O while hard_cancelled_ is set.
+    auto streamed = client.stream(req, [](const std::string&) {});
+    CHECK_FALSE(streamed.ok);
+    CHECK(streamed.error_type == "cancelled");
+    CHECK(client.hard_cancelled());
+
+    auto completed = client.complete(req);
+    CHECK_FALSE(completed.ok);
+    CHECK(completed.error_type == "cancelled");
+    CHECK(client.hard_cancelled());
+
+    client.clear_hard_cancel();
+    CHECK_FALSE(client.hard_cancelled());
+}
+
 TEST_CASE("current_request_cancel_token tracks RequestCancelScope nesting") {
     using arbiter::ApiClient;
     using arbiter::CancelToken;

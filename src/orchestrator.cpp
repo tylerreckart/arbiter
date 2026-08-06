@@ -1107,13 +1107,20 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
 ApiResponse Orchestrator::send(const std::string& agent_id,
                                const std::string& message,
                                const std::string& original_query) {
-    // Clear sticky on scope exit so a prior cancel() does not permanently
-    // lock a long-lived REPL Orchestrator out of the next user turn.
+    // Clear sticky cancel on scope exit so a prior cancel() does not
+    // permanently lock a long-lived REPL Orchestrator out of the next
+    // user turn.  Also clears ApiClient hard-cancel so tool-loop
+    // stream()/complete() calls inside this turn still honor kill-switch,
+    // but the next intentional turn can proceed.
     struct StickyGuard {
-        std::atomic<bool>& flag;
-        ~StickyGuard() { flag.store(false, std::memory_order_release); }
-    } sticky_guard{sticky_cancel_};
-    if (sticky_cancel_.load(std::memory_order_acquire)) {
+        Orchestrator& orch;
+        ~StickyGuard() {
+            orch.sticky_cancel_.store(false, std::memory_order_release);
+            orch.client_.clear_hard_cancel();
+        }
+    } sticky_guard{*this};
+    if (sticky_cancel_.load(std::memory_order_acquire) ||
+        client_.hard_cancelled()) {
         ApiResponse r;
         r.ok         = false;
         r.error_type = "cancelled";
@@ -1193,10 +1200,14 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                          StreamCallback cb,
                                          const std::string& original_query) {
     struct StickyGuard {
-        std::atomic<bool>& flag;
-        ~StickyGuard() { flag.store(false, std::memory_order_release); }
-    } sticky_guard{sticky_cancel_};
-    if (sticky_cancel_.load(std::memory_order_acquire)) {
+        Orchestrator& orch;
+        ~StickyGuard() {
+            orch.sticky_cancel_.store(false, std::memory_order_release);
+            orch.client_.clear_hard_cancel();
+        }
+    } sticky_guard{*this};
+    if (sticky_cancel_.load(std::memory_order_acquire) ||
+        client_.hard_cancelled()) {
         ApiResponse r;
         r.ok         = false;
         r.error_type = "cancelled";

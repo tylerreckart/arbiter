@@ -241,11 +241,23 @@ public:
     // Interrupt any in-progress streaming call.  Shuts down every open socket
     // so an in-flight SSL_read / read returns immediately.  Thread-safe.
     // Prefer cancel(CancelToken&) when only one pane's turn should stop.
+    // Also sets a sticky hard-cancel bit that survives stream()/complete()
+    // clearing the ephemeral cancelled_ flag at call entry — clear it with
+    // clear_hard_cancel() when starting the next intentional turn.
     void cancel();
 
     // Cancel a single in-flight request identified by token.  Sibling panes
     // streaming on other leases keep their sockets.  Thread-safe.
     void cancel(CancelToken& token);
+
+    // Drop the sticky bit set by cancel() so the next stream()/complete()
+    // may proceed.  Does not touch per-token CancelToken state.
+    void clear_hard_cancel() {
+        hard_cancelled_.store(false, std::memory_order_release);
+    }
+    [[nodiscard]] bool hard_cancelled() const {
+        return hard_cancelled_.load(std::memory_order_acquire);
+    }
 
     // Pure helpers — request body builders.  Public so unit tests can verify
     // each provider's wire shape directly without spinning up a mock server.
@@ -350,6 +362,9 @@ private:
     std::atomic<int>  total_in_{0};
     std::atomic<int>  total_out_{0};
     std::atomic<bool> cancelled_{false};
+    // Sticky kill-switch: set by cancel(), honored by every stream()/complete()
+    // attempt, NOT cleared when those methods reset cancelled_ at entry.
+    std::atomic<bool> hard_cancelled_{false};
 
     // Tokens currently installed via RequestCancelScope.  cancel() fans out
     // to every entry so a process-wide Esc still stops all in-flight turns.

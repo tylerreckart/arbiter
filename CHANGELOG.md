@@ -22,8 +22,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   / rotated `api_key_hash` after bearer lookup; orchestrate constructs the
   `Orchestrator` and registers `InFlightRegistry` before SSE headers so a
   mid-setup kill-switch can cancel. Re-validates again immediately before
-  `send_streaming`/`send` (ApiClient clears its cancel flag at call entry);
-  `Orchestrator::cancel()` also sets a sticky flag checked at send entry.
+  `send_streaming`/`send` (ApiClient clears its ephemeral cancel flag at call
+  entry); `ApiClient::cancel()` also sets a sticky `hard_cancelled_` bit
+  checked on every stream/complete attempt until `clear_hard_cancel()`.
   Admin PATCH requires a boolean `disabled` field (no silent 200 no-op).
   A2A RPC kill-switch failures stay JSON-RPC-shaped (not plain HTTP 401).
 

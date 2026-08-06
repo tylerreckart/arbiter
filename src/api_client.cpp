@@ -476,6 +476,7 @@ void ApiClient::unbind_token_conn(CancelToken* token, Conn* conn) {
 }
 
 bool ApiClient::is_request_cancelled() const {
+    if (hard_cancelled_.load(std::memory_order_acquire)) return true;
     if (cancelled_.load(std::memory_order_acquire)) return true;
     if (tls_request_token && tls_request_token->is_cancelled()) return true;
     return false;
@@ -522,6 +523,7 @@ void ApiClient::cancel(CancelToken& token) {
 }
 
 void ApiClient::cancel() {
+    hard_cancelled_.store(true, std::memory_order_release);
     cancelled_.store(true);
     // Fan out to every scoped token first so their conn_ pointers are shut
     // down even if we also sweep the pools below.
@@ -1240,10 +1242,16 @@ ApiResponse ApiClient::offline_auth_failure() {
 // ─── Blocking complete() ─────────────────────────────────────────────────────
 
 ApiResponse ApiClient::complete(const ApiRequest& req) {
-    // New call — clear any cancellation left over from a previous turn
-    // (mirrors stream()).  Checked at every attempt boundary below so a
-    // cancel() aborts this call instead of burning the retry budget
-    // reconnecting through sockets it just shut down.
+    // Sticky hard-cancel (admin kill-switch / Orchestrator::cancel) must
+    // survive across tool-loop iterations.  Only the ephemeral cancelled_
+    // bit is cleared so a prior soft cancel doesn't burn the retry budget.
+    if (hard_cancelled_.load(std::memory_order_acquire)) {
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "request cancelled";
+        return r;
+    }
     cancelled_.store(false);
     static const int kMaxAttempts = 4;
     const Provider& prov = provider_for(req.model);
@@ -1694,6 +1702,13 @@ stream_done:
 }
 
 ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
+    if (hard_cancelled_.load(std::memory_order_acquire)) {
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "request cancelled";
+        return r;
+    }
     cancelled_.store(false);
     static const int kMaxAttempts = 3;
     const Provider& prov = provider_for(req.model);
@@ -1719,6 +1734,15 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        if (is_request_cancelled()) {
+            if (breaker_) breaker_->record_abandoned(prov.name);
+            ApiResponse r;
+            r.ok         = false;
+            r.error_type = "cancelled";
+            r.error      = "request cancelled";
+            return r;
+        }
+
         if (attempt > 0) {
             usleep((1 << (attempt - 1)) * 1000000);
             if (metrics_) metrics_->inc_provider_retry(prov.name);
