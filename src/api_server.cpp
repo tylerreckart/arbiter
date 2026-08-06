@@ -4583,7 +4583,7 @@ void handle_request_get(int fd, const std::string& request_id,
 // seq; the bus does no buffering.
 void handle_request_events(int fd, const std::string& request_id,
                              const HttpRequest& req,
-                             TenantStore& tenants, const Tenant& tenant,
+                             TenantStore& tenants, Tenant tenant,
                              RequestEventBus* bus,
                              bool wait_for_status_row = false) {
     std::optional<TenantStore::RequestStatus> status;
@@ -4607,6 +4607,13 @@ void handle_request_events(int fd, const std::string& request_id,
             err->as_object_mut()["error"] = jstr("request not found");
             write_json_response(fd, 404, err);
         }
+        return;
+    }
+
+    // Kill-switch after the optional wait loop — a disable that landed
+    // while we slept must still yield HTTP 401 before SSE headers.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
         return;
     }
 
@@ -8192,6 +8199,10 @@ void handle_a2a_message_stream(int fd,
             "no agent '" + agent_id + "' for this tenant; POST it to /v1/agents first"));
         return;
     }
+    auto* orch_ptr = orch.get();
+    // Register immediately so an admin kill-switch during task persist /
+    // SSE setup can cancel().  Lifetime matches the orchestrator.
+    InFlightScope in_flight_scope(in_flight, task_id, orch_ptr, tenant.id);
 
     // Persist before opening the stream so a tasks/get racing the start
     // sees at least the submitted row.
@@ -8289,7 +8300,6 @@ void handle_a2a_message_stream(int fd,
     // as a side artifact.  current_stream_depth() reads the depth at
     // the time the callback fires, which is the sub-agent's turn
     // depth (>0).
-    Orchestrator* orch_ptr = orch.get();
     orch->set_progress_callback(
         [&writer, orch_ptr](const std::string& a, const std::string& content) {
             writer.emit_sub_agent(a, orch_ptr->current_stream_depth(), content);
@@ -8331,10 +8341,6 @@ void handle_a2a_message_stream(int fd,
                    " bytes for '" + path + "' (streamed to client" +
                    sandbox_suffix;
         });
-
-    // Cancellation hook so /v1/requests/:task_id/cancel can interrupt
-    // an in-flight stream.  Same RAII shape as /v1/orchestrate.
-    InFlightScope in_flight_scope(in_flight, task_id, orch_ptr, tenant.id);
 
     // Drive the agentic loop.  send_streaming returns the final
     // ApiResponse once the dispatch loop terminates (success or fail).
