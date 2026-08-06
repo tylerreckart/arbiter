@@ -44,13 +44,22 @@ TEST_CASE("resolve_remote_connect requires URL") {
     CHECK_FALSE(err.empty());
 }
 
-TEST_CASE("resolve_remote_connect accepts URL without token") {
+TEST_CASE("resolve_remote_connect requires token") {
     RemoteConnectConfig cfg;
     cfg.base_url = "https://arbiter.example.com/";
+    const std::string err = resolve_remote_connect(cfg);
+    CHECK_FALSE(err.empty());
+    CHECK(err.find("token") != std::string::npos);
+}
+
+TEST_CASE("resolve_remote_connect accepts URL with token") {
+    RemoteConnectConfig cfg;
+    cfg.base_url = "https://arbiter.example.com/";
+    cfg.token = "atr_test";
     CHECK(resolve_remote_connect(cfg).empty());
     CHECK(cfg.base_url == "https://arbiter.example.com");
     CHECK(cfg.display_host == "arbiter.example.com");
-    CHECK(cfg.token.empty());
+    CHECK(cfg.token == "atr_test");
 }
 
 TEST_CASE("resolve_remote_connect reads env fallbacks") {

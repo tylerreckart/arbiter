@@ -155,10 +155,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                        << "  url:    " << remote->config().base_url << "\n";
                     if (!remote_tenant_name.empty())
                         os << "  tenant: " << remote_tenant_name << "\n";
-                    os << "  auth:   "
-                       << (remote->config().token.empty() ? "none (single-tenant)"
-                                                          : "bearer token")
-                       << "\n"
+                    os << "  auth:   bearer token\n"
                        << "  conv:   " << pane.conversation_id << "\n";
                     push_status(os.str());
                     return;

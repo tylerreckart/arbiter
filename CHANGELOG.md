@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **HTTP API multi-tenant bearer auth restored.** Runtime `/v1/*` routes again
+  require `Authorization: Bearer atr_…` resolved via `TenantStore::find_by_token`.
+  `/v1/admin/tenants*` create/list/get/patch are available again (admin bearer).
+  `--api` no longer auto-provisions a default tenant or serves the data plane
+  without a token; `--connect` requires `--token` / `ARBITER_API_TOKEN`.
+
 ## [0.11.0] — 2026-08-06
 
 Minor release: remote TUI `--connect` thin client, API idempotency replay

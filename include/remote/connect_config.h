@@ -11,7 +11,7 @@ namespace arbiter {
 
 struct RemoteConnectConfig {
     std::string base_url;   // scheme://host[:port], no trailing slash
-    std::string token;      // atr_… bearer; empty allowed for single-tenant APIs
+    std::string token;      // atr_… bearer (required for multi-tenant --api)
     std::string display_host; // host[:port] for chrome (no credentials)
 };
 

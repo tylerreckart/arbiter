@@ -111,9 +111,9 @@ std::string resolve_remote_connect(RemoteConnectConfig& cfg) {
     if (cfg.display_host.empty()) {
         return "invalid API URL host";
     }
-    // Token is optional: current single-tenant `arbiter --api` accepts
-    // unauthenticated runtime routes.  When a token is supplied it is
-    // always sent as Authorization: Bearer.
+    if (cfg.token.empty()) {
+        return "missing API token — pass --token <atr_…> or set ARBITER_API_TOKEN";
+    }
     return {};
 }
 

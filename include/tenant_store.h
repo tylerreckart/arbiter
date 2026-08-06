@@ -31,9 +31,11 @@ struct Tenant {
     int64_t     last_used_at       = 0;  // epoch seconds (0 if never)
 };
 
-// Single-tenant mode: return the enabled tenant with the lowest id.
-// Disabled rows are skipped so `--disable-tenant` acts as a kill-switch.
-// Returns nullopt when `tenants` is empty or every row is disabled.
+// Prefer the enabled tenant with the lowest id (TUI / local default
+// identity). Disabled rows are skipped so `--disable-tenant` acts as a
+// kill-switch. Returns nullopt when `tenants` is empty or every row is
+// disabled. The HTTP API does **not** use this — it authenticates via
+// per-tenant bearer tokens (`find_by_token`).
 std::optional<Tenant> resolve_primary_tenant(const std::vector<Tenant>& tenants);
 
 // One row from the conversations table.  Each conversation is a thread of

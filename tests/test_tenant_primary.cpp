@@ -122,3 +122,26 @@ TEST_CASE("tenant kill-switch: find_by_token rejects disabled tenant") {
 
     CHECK_FALSE(store.find_by_token(token).has_value());
 }
+
+TEST_CASE("find_by_token: isolates tenants by API key") {
+    TempDb db;
+    TenantStore store;
+    store.open(db.path.string());
+
+    const auto a = store.create_tenant("alice");
+    const auto b = store.create_tenant("bob");
+    REQUIRE(a.token != b.token);
+
+    auto ta = store.find_by_token(a.token);
+    auto tb = store.find_by_token(b.token);
+    REQUIRE(ta);
+    REQUIRE(tb);
+    CHECK(ta->id == a.tenant.id);
+    CHECK(tb->id == b.tenant.id);
+    CHECK(ta->name == "alice");
+    CHECK(tb->name == "bob");
+
+    CHECK_FALSE(store.find_by_token("").has_value());
+    CHECK_FALSE(store.find_by_token("atr_not_a_real_token").has_value());
+    CHECK_FALSE(store.find_by_token(a.token + "x").has_value());
+}

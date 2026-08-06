@@ -1033,7 +1033,6 @@ void handle_admin(int fd, const HttpRequest& req,
                   TenantStore& tenants,
                   InFlightRegistry& in_flight,
                   const ApiServerOptions& opts) {
-    (void)in_flight;
     if (opts.admin_token.empty()) {
         admin_error(fd, 503, "admin endpoints disabled (no admin token configured)");
         return;
@@ -1054,7 +1053,134 @@ void handle_admin(int fd, const HttpRequest& req,
 
     // ── /v1/admin/tenants and /v1/admin/tenants/{id} ────────────────────
     if (resource == "tenants") {
-        admin_error(fd, 410, "tenant registration is removed in single-tenant mode");
+        if (segs.size() == 3) {
+            if (req.method == "GET") {
+                auto arr = jarr();
+                auto& a = arr->as_array_mut();
+                for (auto& t : tenants.list_tenants()) a.push_back(tenant_to_json(t));
+                auto body = jobj();
+                body->as_object_mut()["tenants"] = arr;
+                write_json_response(fd, 200, body);
+                return;
+            }
+            if (req.method == "POST") {
+                std::shared_ptr<JsonValue> body;
+                try { body = json_parse(req.body); }
+                catch (const std::exception& e) {
+                    admin_error(fd, 400, std::string("invalid JSON: ") + e.what());
+                    return;
+                }
+                if (!body || !body->is_object()) {
+                    admin_error(fd, 400, "body must be a JSON object");
+                    return;
+                }
+                const std::string name = body->get_string("name");
+                if (name.empty()) {
+                    admin_error(fd, 400, "missing required field: 'name'");
+                    return;
+                }
+
+                TenantStore::CreatedTenant created;
+                try { created = tenants.create_tenant(name); }
+                catch (const std::exception& e) {
+                    admin_error(fd, 500, std::string("create failed: ") + e.what());
+                    return;
+                }
+                // Audit log: record the create.  Token plaintext is
+                // deliberately NOT included — we don't want it sitting
+                // in the audit table where a future read endpoint
+                // exposes it.
+                {
+                    auto after = jobj();
+                    auto& am = after->as_object_mut();
+                    am["id"]   = jnum(static_cast<double>(created.tenant.id));
+                    am["name"] = jstr(created.tenant.name);
+                    try {
+                        tenants.append_admin_audit("admin", "create_tenant",
+                            "tenant", std::to_string(created.tenant.id),
+                            /*before=*/"", json_serialize(*after));
+                    } catch (...) { /* audit is best-effort */ }
+                }
+                auto resp = tenant_to_json(created.tenant);
+                // The plaintext token is ONLY returned here — the DB stores
+                // SHA-256 digest, so a misplaced token means rotating it.
+                resp->as_object_mut()["token"] = jstr(created.token);
+                write_json_response(fd, 201, resp);
+                return;
+            }
+            admin_error(fd, 405, "method not allowed");
+            return;
+        }
+
+        if (segs.size() == 4) {
+            int64_t id = 0;
+            try { id = std::stoll(segs[3]); } catch (...) { id = 0; }
+            if (id <= 0) { admin_error(fd, 400, "bad tenant id"); return; }
+
+            if (req.method == "GET") {
+                auto t = tenants.get_tenant(id);
+                if (!t) { admin_error(fd, 404, "tenant not found"); return; }
+                write_json_response(fd, 200, tenant_to_json(*t));
+                return;
+            }
+            if (req.method == "PATCH") {
+                std::shared_ptr<JsonValue> body;
+                try { body = json_parse(req.body); }
+                catch (const std::exception& e) {
+                    admin_error(fd, 400, std::string("invalid JSON: ") + e.what());
+                    return;
+                }
+                if (!body || !body->is_object()) {
+                    admin_error(fd, 400, "body must be a JSON object");
+                    return;
+                }
+                // `disabled` is the only mutable field.
+                if (auto v = body->get("disabled"); v && v->is_bool()) {
+                    const bool now_disabled = v->as_bool();
+                    // Capture pre-update state for the audit row.  If
+                    // the tenant doesn't exist we'll bail out before
+                    // writing the audit, so capturing before set_disabled
+                    // is safe.
+                    auto before = tenants.get_tenant(id);
+                    tenants.set_disabled(std::to_string(id), now_disabled);
+                    // Kill in-flight streams immediately when disabling.
+                    // Without this, an authenticated tenant's existing
+                    // SSE stream keeps running until the model finishes —
+                    // the operator believes the kill-switch is hot when
+                    // it isn't.  Holding reg.mu across cancel() is safe:
+                    // Orchestrator::cancel only flips an atomic and
+                    // shuts down sockets under its own mutex.
+                    if (now_disabled) {
+                        std::lock_guard<std::mutex> lk(in_flight.mu);
+                        for (auto& [_, entry] : in_flight.by_id) {
+                            if (entry.tenant_id == id && entry.orch) {
+                                entry.orch->cancel();
+                            }
+                        }
+                    }
+                    // Audit only if the row existed (else the PATCH
+                    // would 404 below and we'd be auditing a no-op).
+                    if (before) {
+                        auto bj = jobj(); auto aj = jobj();
+                        bj->as_object_mut()["disabled"] = jbool(before->disabled);
+                        aj->as_object_mut()["disabled"] = jbool(now_disabled);
+                        try {
+                            tenants.append_admin_audit("admin", "update_tenant",
+                                "tenant", std::to_string(id),
+                                json_serialize(*bj), json_serialize(*aj));
+                        } catch (...) {}
+                    }
+                }
+                auto t = tenants.get_tenant(id);
+                if (!t) { admin_error(fd, 404, "tenant not found"); return; }
+                write_json_response(fd, 200, tenant_to_json(*t));
+                return;
+            }
+            admin_error(fd, 405, "method not allowed");
+            return;
+        }
+
+        admin_error(fd, 404, "admin route not found");
         return;
     }
 
@@ -10509,16 +10635,12 @@ void ApiServer::handle_connection(int fd) {
         return;
     }
 
-    const auto all_tenants = tenants_.list_tenants();
-    std::optional<Tenant> tenant = resolve_primary_tenant(all_tenants);
+    const std::string token = extract_bearer(req);
+    std::optional<Tenant> tenant;
+    if (!token.empty()) tenant = tenants_.find_by_token(token);
     if (!tenant) {
-        if (!all_tenants.empty()) {
-            write_plain_response(fd, 403, "Forbidden",
-                                 "tenant is disabled\n");
-            return;
-        }
-        write_plain_response(fd, 503, "Service Unavailable",
-                             "tenant database is not initialized\n");
+        write_plain_response(fd, 401, "Unauthorized",
+                             "missing or invalid bearer token\n");
         return;
     }
 

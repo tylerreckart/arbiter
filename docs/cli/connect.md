@@ -17,13 +17,13 @@ Local in-process TUI (`arbiter` with no args) is unchanged and remains the defau
 | Flag / env | Required | Description |
 |------------|----------|-------------|
 | `--connect [URL]` | yes (flag) | Enter remote client mode. URL may be omitted when `ARBITER_API_URL` is set. |
-| `--token TOKEN` | no* | Tenant bearer (`atr_…`). Prefer `ARBITER_API_TOKEN` — `--token` is visible in `ps`. |
+| `--token TOKEN` | yes* | Tenant bearer (`atr_…`). Prefer `ARBITER_API_TOKEN` — `--token` is visible in `ps`. |
 | `ARBITER_API_URL` | when URL omitted | Default base URL (`https://host` or `http://host:port`). |
-| `ARBITER_API_TOKEN` | no* | Default bearer token. |
+| `ARBITER_API_TOKEN` | yes* | Default bearer token. |
 | `--theme PRESET` | no | Same theme switch as the local TUI. |
 | `--no-exec` | no | Accepted for argv parity; remote mode never runs host `/exec` on the client. |
 
-\*Current single-tenant `arbiter --api` accepts unauthenticated runtime routes. A token is still sent when provided (forward-compatible with multi-tenant / reverse-proxy auth). Startup fails with a readable error on `401` / `403`.
+\*Required. Startup fails with a readable error if the token is missing or the API returns `401` / `403`.
 
 ## Startup sequence
 

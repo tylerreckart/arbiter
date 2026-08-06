@@ -216,20 +216,11 @@ void cmd_api(int port, const std::string& bind, bool verbose,
 
     TenantStore tenants;
     tenants.open(dir + "/tenants.db");
-    // Single-tenant mode: ensure one primary tenant row exists so the rest
-    // of the API surface can keep using tenant-scoped tables unchanged.
-    // Existing multi-tenant DBs are tolerated; we pin to the smallest id.
-    auto all = tenants.list_tenants();
-    if (all.empty()) {
-        auto created = tenants.create_tenant("default");
-        all.push_back(created.tenant);
-    }
-    const auto active_primary = resolve_primary_tenant(all);
-    if (!active_primary) {
-        ::fprintf(stderr,
-            "WARN: all tenants are disabled — API requests will be rejected "
-            "until one is re-enabled (arbiter --enable-tenant <id|name>)\n");
-    }
+
+    // Defer the no-tenants warning until after the screen clear, otherwise
+    // the message scrolls off when we redraw with the banner.
+    const auto all = tenants.list_tenants();
+    const bool no_tenants = all.empty();
 
     bool fresh_admin = false;
     std::string admin_token = resolve_admin_token(dir, fresh_admin);
@@ -244,7 +235,7 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     opts.port          = port;
     opts.bind          = bind;
     opts.agents_dir    = dir + "/agents";
-    opts.memory_root   = dir + "/memory";    // single primary tenant uses one subdir
+    opts.memory_root   = dir + "/memory";    // per-tenant subdirs land under here
     opts.api_keys      = std::move(api_keys);
     opts.exec_disabled = true;               // SaaS default: no shell
     // Host exec opt-in: CLI flag or ARBITER_ALLOW_HOST_EXEC=1.  Sandbox
@@ -328,9 +319,9 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     std::cout << "\033[2J\033[H";
 
     std::cout << "API listening on " << bind << ":" << server.port() << "\n";
-    std::cout << "  POST  /v1/orchestrate          (single-tenant; no bearer required)\n";
+    std::cout << "  POST  /v1/orchestrate          (Bearer <tenant-token>)\n";
     std::cout << "  GET   /v1/health\n";
-    std::cout << "  *     /v1/admin/*              (Bearer <admin-token>)\n";
+    std::cout << "  *     /v1/admin/tenants[/:id]  (Bearer <admin-token>)\n";
     std::cout << "Logging: " << (log_verbose ? "verbose (per-event mirror to stderr)"
                                               : "request-level only "
                                                 "(use --verbose for streamed deltas)")
@@ -364,15 +355,12 @@ void cmd_api(int port, const std::string& bind, bool verbose,
                   << "\n";
     }
 
-    if (all.size() > 1) {
-        std::cerr << "WARN: legacy multi-tenant DB detected (" << all.size()
-                  << " tenant rows). Running in single-tenant mode";
-        if (active_primary) {
-            std::cerr << " with tenant #" << active_primary->id;
-        } else {
-            std::cerr << " but no enabled tenant is active";
-        }
-        std::cerr << ".\n";
+    if (no_tenants) {
+        std::cerr << "\nWARN: no tenants configured.  Run "
+                     "`arbiter --add-tenant <name>` (or POST /v1/admin/tenants) "
+                     "and retry.\n"
+                     "      The server will start, but every /v1/orchestrate "
+                     "call will reject with 401.\n";
     }
     std::cout << "\n";
 
