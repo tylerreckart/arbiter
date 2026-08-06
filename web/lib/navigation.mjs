@@ -8,6 +8,7 @@ const apiGroupLabels = {
   agents: 'Agents',
   artifacts: 'Artifacts',
   conversations: 'Conversations',
+  examples: 'Examples',
   lessons: 'Lessons',
   memory: 'Memory',
   notifications: 'Notifications',

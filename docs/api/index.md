@@ -127,6 +127,10 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`PATCH /v1/admin/tenants/:id`](admin/tenants-patch.md)
 - [`GET /v1/admin/audit`](admin/audit.md)
 
+## Examples
+
+- [Book byline agent](examples/byline.md) — inline `agent_def` against `--api`: JSON book summary → one-sentence byline on a small Flash Lite model.
+
 ## Versioning
 
 All routes are prefixed `/v1/`. Breaking changes will land at `/v2/`; additive changes (new fields on responses, new optional query params) ship under `/v1/` with a note in this index.

@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Byline starter agent.** Tool-less `agents/byline.json` on
+  `google/gemini-3.1-flash-lite` turns a book-summary JSON object into one
+  commercial byline. Documented as an over-the-network inline `agent_def`
+  example against `arbiter --api` in
+  [`docs/api/examples/byline.md`](docs/api/examples/byline.md).
+
 ## [0.11.0] — 2026-08-06
 
 Minor release: remote TUI `--connect` thin client, API idempotency replay

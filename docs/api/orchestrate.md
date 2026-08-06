@@ -94,6 +94,10 @@ Send a complete agent configuration in the request body to run it for one call w
 
 `agent_def` field schema is in the [Agent data model](../concepts/data-model.md#agent-catalog-row).
 
+For a complete worked example — a tool-less Flash Lite agent that turns a book
+summary JSON object into one commercial byline — see
+[examples/byline.md](examples/byline.md).
+
 ### ID resolution precedence
 
 When multiple id sources are present, they must agree or the request fails with `400`:

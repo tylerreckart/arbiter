@@ -20,7 +20,8 @@ arbiter --init --force     # overwrite every starter back to the embedded defaul
 │   ├── backend.json        APIs/data — Claude Sonnet 5 + Opus advisor
 │   ├── frontend.json       UI/a11y — Claude Sonnet 5 + Opus advisor
 │   ├── marketer.json       strategy/campaigns — GPT-5.5
-│   └── social.json         platform-native content — Grok 4.5
+│   ├── social.json         platform-native content — Grok 4.5
+│   └── byline.json         book-summary JSON → jacket byline — Gemini Flash Lite
 ```
 
 The master orchestrator (`index`) is not written to disk — it ships as a compiled-in constitution and is loaded automatically. Only sub-agent definitions live in `~/.arbiter/agents/`.
