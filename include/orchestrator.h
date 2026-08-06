@@ -372,6 +372,13 @@ public:
         return sticky_cancel_.load(std::memory_order_acquire);
     }
 
+    // Drop sticky + ApiClient hard-cancel.  Used by the REPL when Esc fires
+    // while idle (no turn token) so the next user message is not rejected.
+    void clear_sticky_cancel() {
+        sticky_cancel_.store(false, std::memory_order_release);
+        client_.clear_hard_cancel();
+    }
+
     // Run a user-typed slash command through the same tool dispatch path
     // agents use during a turn. Returns formatted tool-result text, or empty
     // if the line didn't parse to any command.

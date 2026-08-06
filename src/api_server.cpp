@@ -8237,6 +8237,9 @@ void handle_a2a_message_stream(int fd,
     }
 
     if (!refresh_active_tenant(tenants, tenant)) {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INVALID_REQUEST,
             "missing or invalid bearer token"));
@@ -8586,8 +8589,16 @@ void handle_a2a_tasks_resubscribe(int fd,
                                     const std::string& /*agent_id_param*/,
                                     const a2a::RpcRequest& rpc,
                                     TenantStore& tenants,
-                                    const Tenant& tenant,
+                                    const Tenant& tenant_in,
                                     RequestEventBus* bus) {
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
+
     if (!rpc.params || !rpc.params->is_object()) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INVALID_PARAMS, "params required"));
@@ -8616,6 +8627,16 @@ void handle_a2a_tasks_resubscribe(int fd,
     const std::string context_id = a2a_task ? a2a_task->context_id : "";
     const std::string agent_id   = a2a_task ? a2a_task->agent_id
                                             : (rs ? rs->agent_id : "index");
+
+    // Kill-switch again immediately before SSE headers (mirrors
+    // handle_request_events) so a disable/rotate during lookup still
+    // yields a clean JSON-RPC error rather than a half-open stream.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
 
     // Open the SSE response.  CORS + no-buffering so dev-mode clients
     // and reverse proxies behave.
@@ -10890,8 +10911,16 @@ void ApiServer::handle_connection(int fd) {
     // Central kill-switch re-check for every authenticated route (CRUD
     // included).  Closes the TOCTOU between find_by_token and handler
     // entry when an admin disable/rotate lands on another thread.
+    // A2A JSON-RPC POSTs keep the protocol error envelope (HTTP 200 +
+    // error object) instead of a plain 401 body.
     if (!refresh_active_tenant(tenants_, *tenant)) {
-        reject_disabled_tenant(fd);
+        if (req.method == "POST" && req.path.rfind("/v1/a2a/", 0) == 0) {
+            write_a2a_rpc(fd, a2a::make_error_response(
+                nullptr, a2a::RPC_INVALID_REQUEST,
+                "missing or invalid bearer token"));
+        } else {
+            reject_disabled_tenant(fd);
+        }
         return;
     }
 

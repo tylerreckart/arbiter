@@ -218,6 +218,14 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
                 cancel_pane_turn(*raw);
             } else {
                 orch.cancel();
+                // Idle Esc (no turn token): cancel() still arms hard_cancel
+                // for kill-switch semantics, but nothing is in flight — clear
+                // so the next intentional user turn is not rejected as
+                // cancelled.  If the queue is busy we may be in the race
+                // before the token is installed; leave hard_cancel armed.
+                if (!raw->cmd_queue.is_busy()) {
+                    orch.clear_sticky_cancel();
+                }
             }
             raw->multiline_accum.clear();
             raw->output_queue.push_prose(
