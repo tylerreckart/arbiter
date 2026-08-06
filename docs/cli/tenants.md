@@ -52,10 +52,15 @@ Rotated API key for tenant #2 (acme)
   API key (save this — it will not be shown again):
     atr_…
 
-  Previous key is invalid immediately.
+  Previous key is invalid immediately for new requests.
+
+  NOTE: This CLI command updates the database only.  It cannot cancel()
+  in-flight streams inside a running `arbiter --api` process.  For a hot
+  revoke that stops outstanding work immediately, use
+  POST /v1/admin/tenants/:id/rotate-token (or disable the tenant first).
 ```
 
-HTTP equivalent: `POST /v1/admin/tenants/:id/rotate-token` (admin bearer).
+HTTP equivalent: `POST /v1/admin/tenants/:id/rotate-token` (admin bearer). That path also cancels in-flight orchestrations for the tenant.
 
 ## `--disable-tenant <id|name>`
 

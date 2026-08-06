@@ -26,7 +26,7 @@ Plaintext tenant tokens are returned **only** in the response to:
 - [`POST /v1/admin/tenants`](../api/admin/tenants-create.md)
 - `arbiter --add-tenant <name>` (CLI)
 
-The database stores only the SHA-256 digest. If a tenant loses their token, rotate it with `arbiter --rotate-tenant-token <id|name>` or `POST /v1/admin/tenants/:id/rotate-token`.
+The database stores only the SHA-256 digest. If a tenant loses their token, rotate it with `arbiter --rotate-tenant-token <id|name>` or `POST /v1/admin/tenants/:id/rotate-token`. The HTTP admin rotate path also cancels in-flight streams for that tenant; the CLI updates the digest only (use admin HTTP rotate, or disable first, for a hot revoke on a running `--api` process).
 
 ## Failure modes
 

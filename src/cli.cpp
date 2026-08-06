@@ -540,7 +540,14 @@ void cmd_rotate_tenant_token(const std::string& key) {
               << " (" << rotated->tenant.name << ")\n"
               << "\n  API key (save this — it will not be shown again):\n"
               << "    " << rotated->token << "\n\n"
-              << "  Previous key is invalid immediately.\n";
+              << "  Previous key is invalid immediately for new requests.\n"
+              << "\n  NOTE: This CLI command updates the database only.  It\n"
+              << "  cannot cancel() in-flight streams inside a running\n"
+              << "  `arbiter --api` process.  For a hot revoke that stops\n"
+              << "  outstanding work immediately, use\n"
+              << "  POST /v1/admin/tenants/:id/rotate-token (or disable the\n"
+              << "  tenant first).  Mid-request handlers still reject the\n"
+              << "  old digest on their next kill-switch refresh.\n";
 }
 
 void cmd_disable_tenant(const std::string& key) {

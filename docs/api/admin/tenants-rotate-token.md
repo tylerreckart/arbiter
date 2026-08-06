@@ -52,4 +52,4 @@ A successful rotation appends a `rotate_tenant_token` row to the [admin audit lo
 ## See also
 
 - [`POST /v1/admin/tenants`](tenants-create.md) — create + first token.
-- [Tenant admin CLI](../../cli/tenants.md) — `arbiter --rotate-tenant-token`.
+- [Tenant admin CLI](../../cli/tenants.md) — `arbiter --rotate-tenant-token` (DB-only; does not cancel in-flight streams on a running `--api` process).

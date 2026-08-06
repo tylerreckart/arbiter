@@ -9368,14 +9368,68 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         return;
     }
 
+    // Per-request Orchestrator + InFlight registration BEFORE SSE headers.
+    // Concurrent API calls don't share agent history or callback state —
+    // each request is a fresh universe.  Registering before write_headers()
+    // means an admin kill-switch that lands in the init window (or right
+    // after headers) can cancel(); orch-init failure still returns a clean
+    // JSON body because headers are not on the wire yet.
+    //
+    // The API path does NOT load agent .json definitions from disk.  It
+    // does install the tenant's stored agent catalog (`POST /v1/agents`)
+    // onto every per-request orchestrator so /agent and /parallel can
+    // reference siblings by id without re-sending their constitutions.
+    // Inline `agent_def` from the request body still wins on a colliding
+    // id — useful for one-off ephemeral agents and mid-thread overrides.
+    std::unique_ptr<Orchestrator> orch;
+    try {
+        orch = std::make_unique<Orchestrator>(opts.api_keys);
+    } catch (const std::exception& e) {
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>(
+                    std::string("orchestrator init failed: ") + e.what()),
+                std::nullopt);
+        }
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("orchestrator init failed: ") + e.what());
+        write_json_response(fd, 500, err);
+        return;
+    }
+    auto* orch_ptr = orch.get();
+    InFlightScope in_flight_scope(in_flight, request_id, orch_ptr, tenant.id);
+
+    // Final kill-switch after InFlight registration, still ahead of SSE
+    // headers — closes the window between construction and write_headers().
+    if (!refresh_active_tenant(tenants, tenant)) {
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>("tenant disabled"),
+                std::nullopt);
+        }
+        reject_disabled_tenant(fd);
+        return;
+    }
+
     // Begin the SSE response.
     SseStream sse(fd);
     sse.write_headers();
 
     const auto start_time = std::chrono::steady_clock::now();
 
-    // Server-side event logger so every error path below — including
-    // orchestrator-init failure — logs to stderr alongside its SSE frame.
+    // Server-side event logger so every error path below logs to stderr
+    // alongside its SSE frame.
     EventLogger logger(opts.log_verbose, request_id, tenant.name);
 
     // Metrics: classify the route from the entry-point arguments
@@ -9422,27 +9476,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         o->as_object_mut()["message"] = jstr(msg);
         emit("error", o);
     };
-
-    // Per-request Orchestrator.  Concurrent API calls don't share agent
-    // history or callback state — each request is a fresh universe.  The
-    // The API path does NOT load agent .json definitions from disk.  It
-    // does install the tenant's stored agent catalog (`POST /v1/agents`)
-    // onto every per-request orchestrator so /agent and /parallel can
-    // reference siblings by id without re-sending their constitutions.
-    // Inline `agent_def` from the request body still wins on a colliding
-    // id — useful for one-off ephemeral agents and mid-thread overrides.
-    std::unique_ptr<Orchestrator> orch;
-    try {
-        orch = std::make_unique<Orchestrator>(opts.api_keys);
-    } catch (const std::exception& e) {
-        log_error(std::string("orchestrator init failed: ") + e.what());
-        return;
-    }
-    auto* orch_ptr = orch.get();
-    // Register as soon as the Orchestrator exists so an admin kill-switch
-    // that lands during catalog load / history hydration can cancel() it.
-    // Lifetime still matches the orchestrator via RAII.
-    InFlightScope in_flight_scope(in_flight, request_id, orch_ptr, tenant.id);
 
     // Memory is tenant-scoped so /mem commands can never leak between
     // accounts.  set_memory_dir is kept as a no-op fallback path for
@@ -10790,12 +10823,15 @@ void ApiServer::handle_connection(int fd) {
                              "missing or invalid bearer token\n");
         return;
     }
+    // Central kill-switch re-check for every authenticated route (CRUD
+    // included).  Closes the TOCTOU between find_by_token and handler
+    // entry when an admin disable/rotate lands on another thread.
+    if (!refresh_active_tenant(tenants_, *tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
 
     if (req.method == "POST" && req.path == "/v1/orchestrate") {
-        if (!refresh_active_tenant(tenants_, *tenant)) {
-            reject_disabled_tenant(fd);
-            return;
-        }
         auto lim = limiter_->acquire(tenant->id);
         if (!lim.granted()) {
             write_429_response(fd, lim.retry_after_seconds,

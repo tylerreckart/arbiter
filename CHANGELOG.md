@@ -16,9 +16,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Tenant token rotation.** `arbiter --rotate-tenant-token <id|name>` and
   `POST /v1/admin/tenants/:id/rotate-token` issue a new `atr_…` key (upgrade
   recovery from single-tenant installs whose plaintext was never shown).
-- **Kill-switch hardening.** Runtime handlers re-check `disabled` before
-  expensive work / `InFlightRegistry` registration; admin PATCH requires a
-  boolean `disabled` field (no silent 200 no-op).
+  Admin HTTP rotate also cancels in-flight streams; the CLI is DB-only and
+  warns that hot revoke needs the admin path (or disable-first).
+- **Kill-switch hardening.** Every authenticated route re-checks `disabled`
+  / rotated `api_key_hash` after bearer lookup; orchestrate constructs the
+  `Orchestrator` and registers `InFlightRegistry` before SSE headers so a
+  mid-setup kill-switch can cancel. Admin PATCH requires a boolean
+  `disabled` field (no silent 200 no-op).
 
 ## [0.11.0] — 2026-08-06
 
