@@ -148,9 +148,11 @@ void ReplSession::cancel_pane_turn(Pane& pane) {
         if (!rid.empty() && remote) (void)remote->cancel_request(rid);
         return;
     }
+    // Scoped only — never fall back to orch.cancel(). An idle pane (no
+    // turn_cancel token) must not abort sibling panes' in-flight turns
+    // during switch/delete/close.
     auto token = std::atomic_load(&pane.turn_cancel);
     if (token) orch.cancel_token(token);
-    else orch.cancel();
 }
 
 ApiResponse ReplSession::run_remote_turn(Pane& pane, const std::string& line) {

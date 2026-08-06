@@ -315,13 +315,10 @@ void ReplSession::begin_pending_after_cancel(PendingAfterCancel pending) {
             if (pending.kind == PendingAfterCancel::Kind::Switch && pending.pane) {
                 cancel_pane_turn(*pending.pane);
             } else if (pending.kind == PendingAfterCancel::Kind::Delete) {
-                bool cancelled_any = false;
                 layout_ptr->for_each_pane([&](Pane& p) {
                     if (p.conversation_id != pending.wait_conversation_id) return;
                     cancel_pane_turn(p);
-                    cancelled_any = true;
                 });
-                if (!cancelled_any && !is_remote()) orch.cancel();
             }
             history_sidebar.exit_focus();
             layout_ptr->focused().thinking.start("cancelling… (Esc to abort)");
