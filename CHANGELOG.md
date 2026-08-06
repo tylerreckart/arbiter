@@ -21,8 +21,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Kill-switch hardening.** Every authenticated route re-checks `disabled`
   / rotated `api_key_hash` after bearer lookup; orchestrate constructs the
   `Orchestrator` and registers `InFlightRegistry` before SSE headers so a
-  mid-setup kill-switch can cancel. Admin PATCH requires a boolean
-  `disabled` field (no silent 200 no-op).
+  mid-setup kill-switch can cancel. Re-validates again immediately before
+  `send_streaming`/`send` (ApiClient clears its cancel flag at call entry);
+  `Orchestrator::cancel()` also sets a sticky flag checked at send entry.
+  Admin PATCH requires a boolean `disabled` field (no silent 200 no-op).
+  A2A RPC kill-switch failures stay JSON-RPC-shaped (not plain HTTP 401).
 
 ## [0.11.0] — 2026-08-06
 

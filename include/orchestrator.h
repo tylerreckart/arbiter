@@ -364,6 +364,14 @@ public:
     // keep streaming.
     void cancel_token(const std::shared_ptr<CancelToken>& token);
 
+    // True after cancel() until the next send()/send_streaming() exits.
+    // Survives ApiClient::stream()/complete() clearing their own cancelled
+    // flag at call entry — used so an admin kill-switch during pre-send
+    // setup still aborts the turn.
+    [[nodiscard]] bool sticky_cancelled() const {
+        return sticky_cancel_.load(std::memory_order_acquire);
+    }
+
     // Run a user-typed slash command through the same tool dispatch path
     // agents use during a turn. Returns formatted tool-result text, or empty
     // if the line didn't parse to any command.
@@ -402,6 +410,10 @@ public:
 
 private:
     ApiClient client_;
+    // Set by cancel(); checked at send()/send_streaming() entry and cleared
+    // when those calls return.  Distinct from ApiClient::cancelled_, which
+    // stream()/complete() reset at the start of each provider call.
+    std::atomic<bool> sticky_cancel_{false};
     // Stored so make_parallel_invoker can create per-child ApiClient instances
     // (each with its own connection pool) instead of sharing the parent's
     // conn_mutex_.  Keys are plaintext — same exposure as the constructor arg.

@@ -8111,6 +8111,16 @@ void handle_a2a_message_send(int fd,
                              /*final_message_json=*/"",
                              /*error_message=*/"");
 
+    if (!refresh_active_tenant(tenants, tenant)) {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
+
     ApiResponse resp;
     try {
         resp = orch->send(agent_id, prompt);
@@ -8352,8 +8362,30 @@ void handle_a2a_message_stream(int fd,
             writer.emit_file(path, content, "text/plain");
             return "OK: captured " + std::to_string(size) +
                    " bytes for '" + path + "' (streamed to client" +
-                   sandbox_suffix;
+                    sandbox_suffix;
         });
+
+    // Same post-setup kill-switch as handle_orchestrate: cancel() during
+    // SSE callback wiring can be cleared by ApiClient::stream() at entry,
+    // so re-validate disabled / rotated digest before provider I/O.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        a2a::Message err_msg;
+        err_msg.role       = "agent";
+        err_msg.message_id = task_id + "-err";
+        err_msg.task_id    = task_id;
+        err_msg.context_id = context_id;
+        a2a::Part p_err;
+        p_err.kind = "text";
+        p_err.text = "missing or invalid bearer token";
+        err_msg.parts.push_back(std::move(p_err));
+        writer.emit_status(a2a::TaskState::failed, /*final=*/true,
+                           std::move(err_msg));
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
+        sse.close();
+        return;
+    }
 
     // Drive the agentic loop.  send_streaming returns the final
     // ApiResponse once the dispatch loop terminates (success or fail).
@@ -8797,7 +8829,9 @@ void handle_a2a_rpc(int fd, const std::string& agent_id,
                      RequestEventBus* request_event_bus = nullptr) {
     Tenant tenant = tenant_in;
     if (!refresh_active_tenant(tenants, tenant)) {
-        reject_disabled_tenant(fd);
+        write_a2a_rpc(fd, a2a::make_error_response(
+            nullptr, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
         return;
     }
 
@@ -10135,6 +10169,36 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             if (ev.malformed)        m["malformed"] = jbool(true);
             emit("advisor", p);
         });
+
+    // Kill-switch re-check immediately before provider I/O.  Admin
+    // disable/rotate during post-SSE setup (catalog load, history
+    // hydration, callback wiring) calls Orchestrator::cancel(), but
+    // ApiClient::stream()/complete() clear the cancelled flag at call
+    // entry — so cancel alone is not enough.  Re-reading disabled /
+    // api_key_hash here refuses the turn before any upstream traffic.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        log_error("missing or invalid bearer token");
+        auto done = jobj();
+        auto& m = done->as_object_mut();
+        m["ok"]         = jbool(false);
+        m["error"]      = jstr("missing or invalid bearer token");
+        m["error_code"] = jstr("unauthorized");
+        m["tenant_id"]  = jnum(static_cast<double>(tenant.id));
+        m["request_id"] = jstr(request_id);
+        emit("done", done);
+        sse.close();
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>("tenant disabled"),
+                std::nullopt);
+        }
+        return;
+    }
 
     try {
         auto resp = orch->send_streaming(agent_id, std::move(message_parts),

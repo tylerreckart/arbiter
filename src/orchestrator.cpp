@@ -1107,6 +1107,19 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
 ApiResponse Orchestrator::send(const std::string& agent_id,
                                const std::string& message,
                                const std::string& original_query) {
+    // Clear sticky on scope exit so a prior cancel() does not permanently
+    // lock a long-lived REPL Orchestrator out of the next user turn.
+    struct StickyGuard {
+        std::atomic<bool>& flag;
+        ~StickyGuard() { flag.store(false, std::memory_order_release); }
+    } sticky_guard{sticky_cancel_};
+    if (sticky_cancel_.load(std::memory_order_acquire)) {
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "cancelled";
+        return r;
+    }
     return send_internal(agent_id, message, 0, nullptr, original_query);
 }
 
@@ -1179,6 +1192,18 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                          std::vector<ContentPart> parts,
                                          StreamCallback cb,
                                          const std::string& original_query) {
+    struct StickyGuard {
+        std::atomic<bool>& flag;
+        ~StickyGuard() { flag.store(false, std::memory_order_release); }
+    } sticky_guard{sticky_cancel_};
+    if (sticky_cancel_.load(std::memory_order_acquire)) {
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "cancelled";
+        return r;
+    }
+
     Agent* agent_ptr;
     std::vector<ContentPart> current_parts;
 
@@ -2005,6 +2030,7 @@ void Orchestrator::fire_history_checkpoint() {
 }
 
 void Orchestrator::cancel() {
+    sticky_cancel_.store(true, std::memory_order_release);
     client_.cancel();
     // Also cancel any per-child clients active inside a /parallel turn.
     std::lock_guard<std::mutex> lk(parallel_clients_mu_);
