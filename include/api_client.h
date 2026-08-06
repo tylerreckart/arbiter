@@ -259,6 +259,20 @@ public:
         return hard_cancelled_.load(std::memory_order_acquire);
     }
 
+    // Optional preflight checked at every stream()/complete() entry (and
+    // retry attempt).  Return false to abort as cancelled — used by the
+    // API server to re-read tenant disabled/rotated state mid-turn so a
+    // CLI DB-only revoke stops further provider I/O.
+    using PreflightFn = std::function<bool()>;
+    void set_preflight(PreflightFn fn) {
+        std::lock_guard<std::mutex> lk(preflight_mu_);
+        preflight_ = std::move(fn);
+    }
+    void clear_preflight() {
+        std::lock_guard<std::mutex> lk(preflight_mu_);
+        preflight_ = nullptr;
+    }
+
     // Pure helpers — request body builders.  Public so unit tests can verify
     // each provider's wire shape directly without spinning up a mock server.
     // The OpenAI-compatible builder branches on provider name (OpenRouter vs
@@ -365,6 +379,9 @@ private:
     // Sticky kill-switch: set by cancel(), honored by every stream()/complete()
     // attempt, NOT cleared when those methods reset cancelled_ at entry.
     std::atomic<bool> hard_cancelled_{false};
+    std::mutex   preflight_mu_;
+    PreflightFn  preflight_;
+    [[nodiscard]] bool run_preflight();
 
     // Tokens currently installed via RequestCancelScope.  cancel() fans out
     // to every entry so a process-wide Esc still stops all in-flight turns.

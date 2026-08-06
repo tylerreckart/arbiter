@@ -5612,6 +5612,13 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     const std::string request_id = new_request_id();
     InFlightScope in_flight_scope(in_flight, request_id, orch.get(), tenant.id);
 
+    orch->client().set_preflight(
+        [&tenants, &tenant]() { return refresh_active_tenant(tenants, tenant); });
+    struct PreflightGuard {
+        ApiClient& client;
+        ~PreflightGuard() { client.clear_preflight(); }
+    } preflight_guard{orch->client()};
+
     AdvisorGateOutput out = run_advisor_gate(
         orch->client(), advisor_model, prompt_override, in);
 
@@ -5802,7 +5809,7 @@ void handle_notifications_stream(int fd, TenantStore& tenants, Tenant tenant,
 const char* sanitised_provider_error_code(const std::string& error_type) {
     if (error_type == "authentication_error") return "auth_failed";
     if (error_type == "permission_error")     return "auth_failed";
-    if (error_type == "cancelled")            return "unauthorized";
+    if (error_type == "cancelled")            return "cancelled";
     if (error_type == "rate_limit_error")     return "rate_limited";
     if (error_type == "overloaded_error")     return "rate_limited";
     if (error_type == "invalid_request_error")return "invalid_request";
@@ -5816,6 +5823,8 @@ const char* sanitised_provider_error_message(const char* code) {
         return "the provider rejected the runtime's credentials";
     if (std::strcmp(code, "unauthorized") == 0)
         return "missing or invalid bearer token";
+    if (std::strcmp(code, "cancelled") == 0)
+        return "request cancelled";
     if (std::strcmp(code, "rate_limited") == 0)
         return "the provider is rate-limiting or overloaded — retry with backoff";
     if (std::strcmp(code, "invalid_request") == 0)
@@ -8187,6 +8196,13 @@ void handle_a2a_message_send(int fd,
         return;
     }
 
+    orch->client().set_preflight(
+        [&tenants, &tenant]() { return refresh_active_tenant(tenants, tenant); });
+    struct PreflightGuard {
+        ApiClient& client;
+        ~PreflightGuard() { client.clear_preflight(); }
+    } preflight_guard{orch->client()};
+
     ApiResponse resp;
     try {
         resp = orch->send(agent_id, prompt);
@@ -8200,14 +8216,22 @@ void handle_a2a_message_send(int fd,
         return;
     }
 
-    if (!refresh_active_tenant(tenants, tenant) ||
-        resp.error_type == "cancelled") {
+    if (!refresh_active_tenant(tenants, tenant)) {
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::failed),
                                  "", "tenant disabled");
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INVALID_REQUEST,
             "missing or invalid bearer token"));
+        return;
+    }
+    if (resp.error_type == "cancelled") {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::canceled),
+                                 "", "cancelled");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "request cancelled"));
         return;
     }
 
@@ -8467,6 +8491,13 @@ void handle_a2a_message_stream(int fd,
         return;
     }
 
+    orch->client().set_preflight(
+        [&tenants, &tenant]() { return refresh_active_tenant(tenants, tenant); });
+    struct PreflightGuard {
+        ApiClient& client;
+        ~PreflightGuard() { client.clear_preflight(); }
+    } preflight_guard{orch->client()};
+
     // Drive the agentic loop.  send_streaming returns the final
     // ApiResponse once the dispatch loop terminates (success or fail).
     // The StreamCallback we pass is intentionally a no-op — text deltas
@@ -8498,11 +8529,9 @@ void handle_a2a_message_stream(int fd,
         return;
     }
 
-    // Post-send kill-switch (CLI DB-only revoke does not cancel()).
-    // Admin cancel is visible via resp.error_type after send_streaming
-    // clears sticky bits on exit.
-    if (!refresh_active_tenant(tenants, tenant) ||
-        resp.error_type == "cancelled") {
+    // Post-send kill-switch (CLI DB-only revoke).  Caller cancel stays
+    // TaskState::canceled rather than failed/tenant-disabled.
+    if (!refresh_active_tenant(tenants, tenant)) {
         a2a::Message err_msg;
         err_msg.role       = "agent";
         err_msg.message_id = task_id + "-err";
@@ -8517,6 +8546,24 @@ void handle_a2a_message_stream(int fd,
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::failed),
                                  "", "tenant disabled");
+        sse.close();
+        return;
+    }
+    if (resp.error_type == "cancelled") {
+        a2a::Message err_msg;
+        err_msg.role       = "agent";
+        err_msg.message_id = task_id + "-err";
+        err_msg.task_id    = task_id;
+        err_msg.context_id = context_id;
+        a2a::Part p_err;
+        p_err.kind = "text";
+        p_err.text = "request cancelled";
+        err_msg.parts.push_back(std::move(p_err));
+        writer.emit_status(a2a::TaskState::canceled, /*final=*/true,
+                           std::move(err_msg));
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::canceled),
+                                 "", "cancelled");
         sse.close();
         return;
     }
@@ -10325,23 +10372,28 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         return;
     }
 
+    // Mid-turn kill-switch for CLI DB-only disable/rotate: re-read the
+    // tenant before every provider stream()/complete() attempt.
+    orch->client().set_preflight(
+        [&tenants, &tenant]() { return refresh_active_tenant(tenants, tenant); });
+    struct PreflightGuard {
+        ApiClient& client;
+        ~PreflightGuard() { client.clear_preflight(); }
+    } preflight_guard{orch->client()};
+
     try {
         auto resp = orch->send_streaming(agent_id, std::move(message_parts),
             [&filter](const std::string& chunk) { filter.feed(chunk); },
             original_query);
         filter.flush();
 
-        // Post-send kill-switch: CLI DB-only disable/rotate does not
-        // cancel() in-flight work, so revalidate before emitting a
-        // successful done / persisting completion.  Admin cancel clears
-        // sticky bits when send_streaming returns — detect via
-        // resp.error_type == "cancelled".
-        const bool revoked = !refresh_active_tenant(tenants, tenant) ||
-                             resp.error_type == "cancelled";
+        // Post-send: distinguish tenant revoke (unauthorized) from a
+        // caller cancel via /v1/requests/:id/cancel (cancelled).
+        const bool tenant_revoked = !refresh_active_tenant(tenants, tenant);
 
         auto done = jobj();
         auto& m = done->as_object_mut();
-        if (revoked) {
+        if (tenant_revoked) {
             m["ok"]         = jbool(false);
             m["error"]      = jstr("missing or invalid bearer token");
             m["error_code"] = jstr("unauthorized");
@@ -10374,7 +10426,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_time).count();
         m["duration_ms"] = jnum(static_cast<double>(elapsed_ms));
-        metric_scope.ok  = !revoked && resp.ok;
+        metric_scope.ok  = !tenant_revoked && resp.ok;
         emit("done", done);
 
         // Flush any pending coalesced text and stamp the run terminal.
@@ -10385,13 +10437,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             const int64_t completed = static_cast<int64_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count());
-            const bool ok_final = !revoked && resp.ok;
+            const bool ok_final = !tenant_revoked && resp.ok;
             tenants.update_request_status(request_id,
                 std::optional<std::string>(ok_final ? "completed" : "failed"),
                 completed,
                 ok_final ? std::nullopt
                          : std::optional<std::string>(
-                               revoked ? "tenant disabled" : resp.error),
+                               tenant_revoked ? "tenant disabled" : resp.error),
                 std::nullopt);
         }
 
@@ -10400,7 +10452,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         // re-entry iterations (Orchestrator::send_streaming aggregates
         // them before returning), so what we persist is the full
         // multi-turn assistant response — not just the closing remark.
-        if (conversation_id > 0 && !revoked && resp.ok) {
+        if (conversation_id > 0 && !tenant_revoked && resp.ok) {
             try {
                 tenants.append_message(tenant.id, conversation_id,
                                         "assistant", resp.content,

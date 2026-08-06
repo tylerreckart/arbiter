@@ -482,6 +482,20 @@ bool ApiClient::is_request_cancelled() const {
     return false;
 }
 
+bool ApiClient::run_preflight() {
+    PreflightFn fn;
+    {
+        std::lock_guard<std::mutex> lk(preflight_mu_);
+        fn = preflight_;
+    }
+    if (!fn) return true;
+    try {
+        return fn();
+    } catch (...) {
+        return false;
+    }
+}
+
 // Lease a Conn out of the provider's pool.  Prefer an idle Conn (reuse its
 // keep-alive socket); otherwise open a new slot up to the cap; otherwise wait
 // for a lease to be returned.  The leased Conn stays owned by the pool (via
@@ -1245,7 +1259,8 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     // Sticky hard-cancel (admin kill-switch / Orchestrator::cancel) must
     // survive across tool-loop iterations.  Only the ephemeral cancelled_
     // bit is cleared so a prior soft cancel doesn't burn the retry budget.
-    if (hard_cancelled_.load(std::memory_order_acquire)) {
+    if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
+        hard_cancelled_.store(true, std::memory_order_release);
         ApiResponse r;
         r.ok         = false;
         r.error_type = "cancelled";
@@ -1284,7 +1299,8 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (is_request_cancelled()) {
+        if (is_request_cancelled() || !run_preflight()) {
+            hard_cancelled_.store(true, std::memory_order_release);
             // record_abandoned (not record_failure): the provider wasn't
             // proven bad, and a leaked HalfOpen probe would otherwise
             // reject the provider forever.
@@ -1702,7 +1718,8 @@ stream_done:
 }
 
 ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
-    if (hard_cancelled_.load(std::memory_order_acquire)) {
+    if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
+        hard_cancelled_.store(true, std::memory_order_release);
         ApiResponse r;
         r.ok         = false;
         r.error_type = "cancelled";
@@ -1734,7 +1751,8 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (is_request_cancelled()) {
+        if (is_request_cancelled() || !run_preflight()) {
+            hard_cancelled_.store(true, std::memory_order_release);
             if (breaker_) breaker_->record_abandoned(prov.name);
             ApiResponse r;
             r.ok         = false;
