@@ -35,9 +35,9 @@ void IdempotencyCache::remember_locked(
     table_[k] = Entry{request_id, now, wall_created_at};
 }
 
-void IdempotencyCache::prune_store(TenantStore* store) const {
+void IdempotencyCache::prune_store(TenantStore* store, int64_t wall_now) const {
     if (!store) return;
-    store->prune_idempotency_keys(wall_now_seconds() - ttl_seconds_);
+    store->prune_idempotency_keys(wall_now - ttl_seconds_);
 }
 
 std::optional<IdempotencyCache::Entry>
@@ -112,7 +112,7 @@ bool IdempotencyCache::put(int64_t tenant_id, const std::string& key,
                                 durable->created_at);
             }
         }
-        if (do_store_prune) prune_store(store);
+        if (do_store_prune) prune_store(store, wall_now);
         if (ok) return true;
         if (durable) return durable->request_id == request_id;
         return false;
@@ -152,7 +152,7 @@ void IdempotencyCache::prune_expired() {
         store = store_;
         prune_expired_locked(now, wall_now);
     }
-    prune_store(store);
+    prune_store(store, wall_now);
 }
 
 void IdempotencyCache::prune_expired_locked(
