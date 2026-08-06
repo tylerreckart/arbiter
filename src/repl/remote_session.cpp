@@ -135,6 +135,24 @@ void ReplSession::enter_history_sidebar_focus() {
     }
 }
 
+void ReplSession::cancel_pane_turn(Pane& pane) {
+    if (is_remote()) {
+        auto gate = std::atomic_load(&pane.remote_turn);
+        if (!gate) return;
+        gate->stream_cancel.store(true, std::memory_order_release);
+        std::string rid;
+        {
+            std::lock_guard<std::mutex> lk(gate->mu);
+            rid = gate->request_id;
+        }
+        if (!rid.empty() && remote) (void)remote->cancel_request(rid);
+        return;
+    }
+    auto token = std::atomic_load(&pane.turn_cancel);
+    if (token) orch.cancel_token(token);
+    else orch.cancel();
+}
+
 ApiResponse ReplSession::run_remote_turn(Pane& pane, const std::string& line) {
     ApiResponse fail;
     fail.ok = false;

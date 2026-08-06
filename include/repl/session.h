@@ -183,6 +183,8 @@ struct ReplSession {
     void refresh_history_sidebar_entries();
     void enter_history_sidebar_focus();
     ApiResponse run_remote_turn(Pane& pane, const std::string& line);
+    // Cancel in-flight turn on a pane (local CancelToken or remote SSE gate).
+    void cancel_pane_turn(Pane& pane);
 
     // ── Shared helpers (interactive.cpp) ───────────────────────────────────
     void wake_main_input();

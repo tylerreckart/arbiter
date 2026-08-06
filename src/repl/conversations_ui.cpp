@@ -129,6 +129,7 @@ void ReplSession::apply_conversation_to_pane(Pane& pane, const std::string& id, 
                 }
             }
             refresh_history_sidebar_entries();
+            bind_tools_conversation(id);
             return;
         }
 
@@ -312,23 +313,15 @@ void ReplSession::begin_pending_after_cancel(PendingAfterCancel pending) {
         {
             std::lock_guard<std::recursive_mutex> lk(layout_mu);
             if (pending.kind == PendingAfterCancel::Kind::Switch && pending.pane) {
-                auto token = std::atomic_load(&pending.pane->turn_cancel);
-                if (token) {
-                    orch.cancel_token(token);
-                } else {
-                    orch.cancel();
-                }
+                cancel_pane_turn(*pending.pane);
             } else if (pending.kind == PendingAfterCancel::Kind::Delete) {
                 bool cancelled_any = false;
                 layout_ptr->for_each_pane([&](Pane& p) {
                     if (p.conversation_id != pending.wait_conversation_id) return;
-                    auto token = std::atomic_load(&p.turn_cancel);
-                    if (token) {
-                        orch.cancel_token(token);
-                        cancelled_any = true;
-                    }
+                    cancel_pane_turn(p);
+                    cancelled_any = true;
                 });
-                if (!cancelled_any) orch.cancel();
+                if (!cancelled_any && !is_remote()) orch.cancel();
             }
             history_sidebar.exit_focus();
             layout_ptr->focused().thinking.start("cancelling… (Esc to abort)");

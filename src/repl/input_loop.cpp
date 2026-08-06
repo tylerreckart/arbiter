@@ -227,7 +227,10 @@ void ReplSession::run_input_loop() {
             if (action == HistorySidebarKey::MoveCommit) {
                 const std::string cid = history_sidebar.selected_conversation_id();
                 const std::string fid = history_sidebar.take_move_folder_id();
-                if (!cid.empty()) {
+                if (is_remote()) {
+                    layout_ptr->focused().tui.set_status(
+                        "ERR: folders are not available in remote (--connect) mode");
+                } else if (!cid.empty()) {
                     conversation_store.move_to_folder(cid, fid);
                 }
                 refresh_history_sidebar_entries();
@@ -259,19 +262,36 @@ void ReplSession::run_input_loop() {
                 const std::string text = history_sidebar.take_rename_buffer();
                 if (!text.empty()) {
                     if (creating) {
-                        const std::string fid =
-                            conversation_store.create_folder(text);
-                        refresh_history_sidebar_entries();
-                        if (!fid.empty()) {
-                            history_sidebar.select_folder(fid, visible_rows);
+                        if (is_remote()) {
+                            layout_ptr->focused().tui.set_status(
+                                "ERR: folders are not available in remote (--connect) mode");
+                        } else {
+                            const std::string fid =
+                                conversation_store.create_folder(text);
+                            refresh_history_sidebar_entries();
+                            if (!fid.empty()) {
+                                history_sidebar.select_folder(fid, visible_rows);
+                            }
                         }
+                        refresh_history_sidebar_entries();
                     } else if (target_folder) {
-                        if (!target_id.empty()) {
+                        if (is_remote()) {
+                            layout_ptr->focused().tui.set_status(
+                                "ERR: folders are not available in remote (--connect) mode");
+                        } else if (!target_id.empty()) {
                             conversation_store.rename_folder(target_id, text);
                         }
                         refresh_history_sidebar_entries();
                     } else if (!target_id.empty()) {
-                        conversation_store.set_title_locked(target_id, text);
+                        if (is_remote()) {
+                            std::string err;
+                            if (!remote->patch_conversation_title(target_id, text, &err)) {
+                                layout_ptr->focused().tui.set_status(
+                                    err.empty() ? "ERR: rename failed" : ("ERR: " + err));
+                            }
+                        } else {
+                            conversation_store.set_title_locked(target_id, text);
+                        }
                         refresh_history_sidebar_entries();
                     } else {
                         refresh_history_sidebar_entries();
@@ -289,7 +309,12 @@ void ReplSession::run_input_loop() {
             if (action == HistorySidebarKey::DeleteConfirmed) {
                 if (history_sidebar.is_folder_selected()) {
                     const std::string fid = history_sidebar.selected_folder_id();
-                    if (!fid.empty()) conversation_store.delete_folder(fid);
+                    if (is_remote()) {
+                        layout_ptr->focused().tui.set_status(
+                            "ERR: folders are not available in remote (--connect) mode");
+                    } else if (!fid.empty()) {
+                        conversation_store.delete_folder(fid);
+                    }
                     refresh_history_sidebar_entries();
                     if (pump_notify) pump_notify();
                 } else {

@@ -162,7 +162,11 @@ int64_t ReplSession::parse_conversation_db_id(const std::string& id) {
 
 void ReplSession::bind_tools_conversation(const std::string& conv_id) {
     const int64_t cid = parse_conversation_db_id(conv_id);
-    tool_conversation_id->store(cid, std::memory_order_relaxed);
+    if (!tool_conversation_id) {
+        tool_conversation_id = std::make_shared<std::atomic<int64_t>>(cid);
+    } else {
+        tool_conversation_id->store(cid, std::memory_order_relaxed);
+    }
     set_tool_conversation_tls(cid);
 }
 
@@ -425,19 +429,7 @@ void ReplSession::shutdown() {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
         layout_ptr->for_each_pane([&](Pane& p) {
             p.cmd_queue.stop();
-            if (is_remote()) {
-                if (auto gate = std::atomic_load(&p.remote_turn)) {
-                    gate->stream_cancel.store(true, std::memory_order_release);
-                    std::string rid;
-                    {
-                        std::lock_guard<std::mutex> lk(gate->mu);
-                        rid = gate->request_id;
-                    }
-                    if (!rid.empty() && remote) (void)remote->cancel_request(rid);
-                }
-            } else if (auto tok = std::atomic_load(&p.turn_cancel)) {
-                orch.cancel_token(tok);
-            }
+            cancel_pane_turn(p);
             if (p.exec_thread.joinable()) {
                 exec_joins.push_back(std::move(p.exec_thread));
             }
@@ -558,6 +550,10 @@ void ReplSession::run() {
         if (remote_active_id.empty() && !remote_conversations.empty()) {
             remote_active_id = remote_conversations.front().id;
         }
+        // Pane exec threads call bind_tools_conversation each turn — keep a
+        // live atomic even though remote mode does not wire local tools.
+        tool_conversation_id = std::make_shared<std::atomic<int64_t>>(
+            parse_conversation_db_id(remote_active_id));
     }
 
     // Load input history into one live store shared by every pane's editor:

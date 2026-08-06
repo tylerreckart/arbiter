@@ -229,6 +229,31 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             if (cmd == "use" || cmd == "switch") {
                 std::string id;
                 iss >> id;
+                if (is_remote()) {
+                    if (id.empty()) {
+                        push_status("Usage: /use <agent>");
+                        return;
+                    }
+                    bool found = (id == "index");
+                    if (!found) {
+                        std::string err;
+                        for (const auto& a : remote->list_agents(&err)) {
+                            if (a.id == id) { found = true; break; }
+                        }
+                    }
+                    if (!found) {
+                        push_status("ERR: no remote agent '" + id + "'");
+                        return;
+                    }
+                    current_agent = id;
+                    current_model = "remote";
+                    pane.original_task.clear();
+                    push_status(
+                        "agent: " + id +
+                        " (remote conversations pin agent at create; "
+                        "follow-ups reuse the conversation snapshot)");
+                    return;
+                }
                 if (id == "index" || orch.has_agent(id)) {
                     current_agent = id;
                     current_model = orch.get_agent_model(id);
@@ -1094,6 +1119,39 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                         push_status("Usage: /chat search <text>");
                         return;
                     }
+                    if (is_remote()) {
+                        // Remote full-text search is not on the wire yet —
+                        // match against cached conversation titles / ids.
+                        remote_refresh_conversations();
+                        auto lower = [](std::string s) {
+                            for (char& c : s) c = static_cast<char>(
+                                std::tolower(static_cast<unsigned char>(c)));
+                            return s;
+                        };
+                        const std::string needle = lower(term);
+                        const auto entries = conversation_list();
+                        const std::string starred = pane.conversation_id;
+                        std::ostringstream out;
+                        int n = 0;
+                        for (const auto& e : entries) {
+                            const std::string title = e.title.empty() ? "Untitled" : e.title;
+                            if (lower(title).find(needle) == std::string::npos &&
+                                lower(e.id).find(needle) == std::string::npos) {
+                                continue;
+                            }
+                            ++n;
+                            out << (e.id == starred ? "* " : "  ")
+                                << title
+                                << "  [" << e.id.substr(0, std::min<size_t>(8, e.id.size())) << "]\n";
+                        }
+                        if (n == 0) {
+                            push_status("(no remote conversations match \"" + term + "\")");
+                        } else {
+                            out << "  Switch with /chat switch <id-prefix>.\n";
+                            push_status(out.str());
+                        }
+                        return;
+                    }
                     // Flush the coalesced autosave first so the active
                     // conversation's newest turns are searchable too.
                     conversation_store.flush();
@@ -1117,6 +1175,12 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                     return;
                 }
                 if (sub == "folder") {
+                    if (is_remote()) {
+                        push_status(
+                            "ERR: /chat folder is not available in remote "
+                            "(--connect) mode");
+                        return;
+                    }
                     std::string fsub;
                     iss >> fsub;
 

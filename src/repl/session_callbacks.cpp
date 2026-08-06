@@ -210,25 +210,7 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
             fail_pending_prompts();
             // Scoped cancel: stop this pane's turn only so sibling panes
             // keep streaming (#46 / #48).  atomic_load: races exec reset.
-            if (is_remote()) {
-                auto gate = std::atomic_load(&raw->remote_turn);
-                if (gate) {
-                    gate->stream_cancel.store(true, std::memory_order_release);
-                    std::string rid;
-                    {
-                        std::lock_guard<std::mutex> lk(gate->mu);
-                        rid = gate->request_id;
-                    }
-                    if (!rid.empty() && remote) {
-                        // Best-effort server cancel; stream abort is primary.
-                        (void)remote->cancel_request(rid);
-                    }
-                }
-            } else {
-                auto token = std::atomic_load(&raw->turn_cancel);
-                if (token) orch.cancel_token(token);
-                else orch.cancel();
-            }
+            cancel_pane_turn(*raw);
             raw->multiline_accum.clear();
             raw->output_queue.push_prose(
                 {arbiter::styled_activity_line("[interrupted]", StyleId::Error)});
