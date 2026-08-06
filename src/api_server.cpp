@@ -585,6 +585,9 @@ std::string extract_bearer(const HttpRequest& req) {
 bool refresh_active_tenant(TenantStore& tenants, Tenant& tenant) {
     auto fresh = tenants.get_tenant(tenant.id);
     if (!fresh || fresh->disabled) return false;
+    // Token rotation updates api_key_hash; reject requests that
+    // authenticated with the previous digest so rotate is a live revoke.
+    if (fresh->api_key_hash != tenant.api_key_hash) return false;
     tenant = *fresh;
     return true;
 }
@@ -1215,6 +1218,16 @@ void handle_admin(int fd, const HttpRequest& req,
             if (!rotated) {
                 admin_error(fd, 500, "token rotation failed");
                 return;
+            }
+            // Same hot kill-switch as disable: outstanding streams
+            // authenticated with the old digest must stop immediately.
+            {
+                std::lock_guard<std::mutex> lk(in_flight.mu);
+                for (auto& [_, entry] : in_flight.by_id) {
+                    if (entry.tenant_id == id && entry.orch) {
+                        entry.orch->cancel();
+                    }
+                }
             }
             try {
                 auto after = jobj();

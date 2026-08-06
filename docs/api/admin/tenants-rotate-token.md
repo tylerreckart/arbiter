@@ -37,7 +37,7 @@ Tenant object plus the new plaintext `token` field.
 }
 ```
 
-A successful rotation appends a `rotate_tenant_token` row to the [admin audit log](audit.md). The audit payload does **not** include the plaintext token.
+A successful rotation appends a `rotate_tenant_token` row to the [admin audit log](audit.md). The audit payload does **not** include the plaintext token. In-flight orchestrations for the tenant are cancelled immediately (same hot path as `disabled=true`).
 
 ## Failure modes
 
