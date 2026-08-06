@@ -5523,9 +5523,17 @@ void handle_schedule_runs(int fd, int64_t task_id, const HttpRequest& /*req*/,
 //   text     — guidance (REDIRECT) or reason (HALT); "" for CONTINUE
 //   malformed — true when the advisor's reply was unparseable
 void handle_advise_gate(int fd, const HttpRequest& req,
+                        TenantStore& tenants, Tenant& tenant_in,
+                        InFlightRegistry& in_flight,
                         const std::map<std::string, std::string>& api_keys) {
     if (req.method != "POST") {
         write_plain_response(fd, 405, "Method Not Allowed", "method not allowed\n");
+        return;
+    }
+
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
         return;
     }
 
@@ -5574,8 +5582,37 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     in.terminating_text = terminating_text;
     in.tool_summary     = tool_summary;
 
-    ApiClient client(api_keys);
-    AdvisorGateOutput out = run_advisor_gate(client, advisor_model, prompt_override, in);
+    // Build a per-request Orchestrator solely so admin kill-switch can
+    // cancel() the provider call via InFlightRegistry (same path as
+    // orchestrate / A2A).  No agents are installed.
+    std::unique_ptr<Orchestrator> orch;
+    try {
+        orch = std::make_unique<Orchestrator>(api_keys);
+    } catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("orchestrator init failed: ") + e.what());
+        write_json_response(fd, 500, err);
+        return;
+    }
+
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
+
+    const std::string request_id = new_request_id();
+    InFlightScope in_flight_scope(in_flight, request_id, orch.get(), tenant.id);
+
+    AdvisorGateOutput out = run_advisor_gate(
+        orch->client(), advisor_model, prompt_override, in);
+
+    if (orch->sticky_cancelled() || orch->client().hard_cancelled()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("missing or invalid bearer token");
+        write_json_response(fd, 401, err);
+        return;
+    }
 
     const char* signal_str = "CONTINUE";
     if      (out.kind == AdvisorGateOutput::Kind::Redirect) signal_str = "REDIRECT";
@@ -5637,8 +5674,15 @@ void handle_run_get(int fd, int64_t id, TenantStore& tenants, const Tenant& tena
 // for this tenant.  The handler subscribes on entry and unsubscribes
 // on exit (RAII via Subscription guard).  Events queue in a per-handler
 // mailbox to keep the publisher thread from blocking on slow clients.
-void handle_notifications_stream(int fd, const Tenant& tenant,
+void handle_notifications_stream(int fd, TenantStore& tenants, Tenant tenant,
                                    NotificationBus& bus) {
+    // Kill-switch before committing SSE headers (same contract as
+    // handle_request_events / A2A resubscribe).
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
+
     // Open the SSE response.  CORS headers match the rest of the API so
     // browser fetch() / EventSource clients on a different origin (e.g.
     // a Vite dev server on :5173 dialling :8080) can subscribe.
@@ -5719,6 +5763,11 @@ void handle_notifications_stream(int fd, const Tenant& tenant,
             // We accept best-effort here; the heartbeat path catches dead
             // peers within 30s anyway.
             continue;
+        }
+        // Heartbeat path: re-check kill-switch so a long-lived subscription
+        // drops within ~30s of admin disable/rotate.
+        if (!refresh_active_tenant(tenants, tenant)) {
+            break;
         }
         const char* hb = ": heartbeat\n\n";
         write_all(fd, hb, std::strlen(hb));
@@ -8086,6 +8135,10 @@ void handle_a2a_message_send(int fd,
         return;
     }
 
+    // Register immediately (same order as message/stream) so an admin
+    // kill-switch during task persist can cancel() before send().
+    InFlightScope in_flight_scope(in_flight, task_id, orch.get(), tenant.id);
+
     // Persistence: rows go in at submitted, transition to working, then
     // to a terminal state.  A failure to insert is non-fatal — we log
     // and continue (the call still completes; tasks/get just won't
@@ -8098,13 +8151,14 @@ void handle_a2a_message_send(int fd,
     }
 
     if (!refresh_active_tenant(tenants, tenant)) {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INVALID_REQUEST,
             "missing or invalid bearer token"));
         return;
     }
-
-    InFlightScope in_flight_scope(in_flight, task_id, orch.get(), tenant.id);
 
     tenants.update_a2a_task(tenant.id, task_id,
                              a2a::task_state_to_string(a2a::TaskState::working),
@@ -11581,7 +11635,7 @@ void ApiServer::handle_connection(int fd) {
                                      "notifications subsystem not initialized\n");
                 return;
             }
-            handle_notifications_stream(fd, *tenant, *notifications_);
+            handle_notifications_stream(fd, tenants_, *tenant, *notifications_);
             return;
         }
 
@@ -11589,7 +11643,8 @@ void ApiServer::handle_connection(int fd) {
         // POST /v1/advise/gate — stateless gate verdict for external callers
         if (segs.size() == 3 && segs[0] == "v1" && segs[1] == "advise"
             && segs[2] == "gate") {
-            return handle_advise_gate(fd, req, opts_.api_keys);
+            return handle_advise_gate(fd, req, tenants_, *tenant, in_flight_,
+                                      opts_.api_keys);
         }
 
         // ── Event ingestion ───────────────────────────────────────────────
