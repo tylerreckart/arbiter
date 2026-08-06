@@ -9012,31 +9012,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     }
 
-    // Allocate request_id before opening SSE.  Claim the idempotency slot
-    // before inserting request_status so concurrent losers replay the
-    // winner without leaving orphan "running" rows.
+    // Allocate request_id and durable status before opening SSE so a
+    // concurrent Idempotency-Key retry can replay instead of starting
+    // a second execution once headers are on the wire.
     const std::string request_id = new_request_id();
 
     const bool persist_events_pre = (request_event_bus != nullptr);
-    const bool idempotency_key_present = !read_idempotency_key(req).empty();
-    if (idempotency_key_present && (persist_events_pre || opts.idempotency)) {
-        if (auto replay_id = claim_idempotency_key(
-                opts, req, tenant.id, request_id)) {
-            if (opts.metrics) opts.metrics->inc_idempotency_replay();
-            if (persist_events_pre) {
-                // Winner may still be inserting request_status.
-                for (int i = 0; i < 100; ++i) {
-                    if (tenants.get_request_status(tenant.id, *replay_id)) break;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                }
-            }
-            handle_request_events(fd, *replay_id, req, tenants, tenant,
-                                  request_event_bus);
-            return;
-        }
-    }
-
-    bool request_status_created = false;
+    bool       request_status_created = false;
     if (persist_events_pre) {
         const int64_t now_s_for_request = static_cast<int64_t>(
             std::chrono::duration_cast<std::chrono::seconds>(
@@ -9050,6 +9032,31 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             std::fprintf(stderr,
                 "[orchestrate] persist init failed for %s: %s\n",
                 request_id.c_str(), e.what());
+        }
+    }
+
+    // Claim the idempotency slot only when replay has a durable target
+    // (or the caller runs without persistence, as in tests).  Losers
+    // terminate their own request_status row so listings don't show a
+    // stuck "running" duplicate.
+    if (request_status_created || !persist_events_pre) {
+        if (auto replay_id = claim_idempotency_key(
+                opts, req, tenant.id, request_id)) {
+            if (opts.metrics) opts.metrics->inc_idempotency_replay();
+            if (request_status_created && *replay_id != request_id) {
+                const int64_t completed = static_cast<int64_t>(
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count());
+                tenants.update_request_status(
+                    request_id, std::optional<std::string>("failed"), completed,
+                    std::optional<std::string>(
+                        "duplicate Idempotency-Key — joined in-flight replay"),
+                    std::nullopt);
+            }
+            handle_request_events(fd, *replay_id, req, tenants, tenant,
+                                  request_event_bus);
+            return;
         }
     }
 
