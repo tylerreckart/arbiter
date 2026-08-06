@@ -4408,8 +4408,18 @@ void handle_request_get(int fd, const std::string& request_id,
 void handle_request_events(int fd, const std::string& request_id,
                              const HttpRequest& req,
                              TenantStore& tenants, const Tenant& tenant,
-                             RequestEventBus* bus) {
-    auto status = tenants.get_request_status(tenant.id, request_id);
+                             RequestEventBus* bus,
+                             bool wait_for_status_row = false) {
+    std::optional<TenantStore::RequestStatus> status;
+    if (wait_for_status_row) {
+        for (int i = 0; i < 100; ++i) {
+            status = tenants.get_request_status(tenant.id, request_id);
+            if (status) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    } else {
+        status = tenants.get_request_status(tenant.id, request_id);
+    }
     if (!status) {
         auto err = jobj();
         err->as_object_mut()["error"] = jstr("request not found");
@@ -9055,7 +9065,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                     std::nullopt);
             }
             handle_request_events(fd, *replay_id, req, tenants, tenant,
-                                  request_event_bus);
+                                  request_event_bus,
+                                  /*wait_for_status_row=*/persist_events_pre);
             return;
         }
     }
