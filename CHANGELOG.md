@@ -7,8 +7,31 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-06
+
+Minor release: remote TUI `--connect` thin client, API idempotency replay
+hardening under concurrency, and A2A streaming `/write` aligned with
+orchestrate sandbox persist.
+
 ### Added
 - **Remote TUI (`--connect`).** `arbiter --connect <base-url> [--token atr_…]` (or `ARBITER_API_URL` / `ARBITER_API_TOKEN`) opens the interactive TUI as a thin client of a remote `arbiter --api`. Startup probes `/v1/health` and `/v1/conversations`, binds a remote conversation, streams `POST /v1/conversations/:id/messages` SSE into the same scrollback path as local mode, and cancels via `POST /v1/requests/:id/cancel`. Session chrome shows `Remote · host`; local provider keys are not required on the client. See [`docs/cli/connect.md`](docs/cli/connect.md).
+
+### Fixed
+- **API idempotency replay under concurrency.** Claim `Idempotency-Key` before
+  opening orchestrate SSE and before inserting `request_status` so duplicate
+  keys tail the winner instead of starting a second run or leaving orphan
+  rows. Losers mark stale `running` rows failed, wait briefly for the winner
+  row (`503` when not ready yet), and still join replay when
+  `request_status` insert fails after a claim.
+- **A2A streaming `/write`.** Same sandbox persist and per-response byte-cap
+  rollback as orchestrate SSE.
+- **Remote TUI lifecycle and catalog routing.** Cancel remote SSE turns on
+  conversation switch/delete/pane close without aborting sibling panes;
+  sidebar rename, `/chat` search, and `/use` hit the remote API; folder ops
+  are rejected in remote mode.
+- **Pane turn cancel vs global interrupt.** `cancel_pane_turn` only cancels a
+  pane with an active turn token or remote SSE gate — no fallback to
+  process-wide `orch.cancel()` during idle pane teardown.
 
 ## [0.10.0] — 2026-08-04
 

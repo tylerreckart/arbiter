@@ -28,17 +28,20 @@ The Arbiter runtime is a thin, event-streaming orchestration engine for building
 ```bash
 curl -fsSL https://arbiter.run/install.sh | sh
 
-arbiter # open the TUI
+arbiter # local TUI
+# remote session (thin client to arbiter --api on another host):
+arbiter --connect https://arbiter.example.com --token atr_…
 ```
 
-Linux binaries, source builds, Ollama, `--send`, and `--api` are in
+Linux binaries, source builds, Ollama, `--send`, `--api`, and `--connect` are in
 [getting-started/local](https://arbiter.run/docs/getting-started/local/).
 
-## One Engine, Three Surfaces
+## One Engine, Four Modes
 
 | Mode | Command | For |
 |------|---------|-----|
 | Interactive | `arbiter` | Multi-pane TUI, global conversation store |
+| Remote TUI | `arbiter --connect <url>` | Same TUI as a thin client of a remote `arbiter --api` (no local provider keys) |
 | One-shot | `arbiter --send <agent> "..."` | Scripts, cron, CI |
 | Server | `arbiter --api` | HTTP+SSE API, tenant-isolated, A2A v1.0 |
 
@@ -49,7 +52,7 @@ One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollam
 - [`docs/getting-started`](https://arbiter.run/docs/getting-started/local) — first agent reply
 - [`docs/philosophy`](https://arbiter.run/docs/philosophy) — why Arbiter is shaped this way
 - [`docs/api/`](https://arbiter.run/docs/api) — HTTP API, tenants, SSE, MCP, A2A, memory
-- [`docs/cli/`](https://arbiter.run/docs/cli) — `--init`, `--send`, `--api`, env vars
+- [`docs/cli/`](https://arbiter.run/docs/cli) — `--init`, `--send`, `--api`, `--connect`, env vars
 - [`docs/tui/`](https://arbiter.run/docs/tui) — panes, keybindings, themes, sessions
 - [`ROADMAP.md`](ROADMAP.md) — phased plan toward 1.0 readiness
 - [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md)
