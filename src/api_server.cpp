@@ -5790,6 +5790,15 @@ void handle_notifications_stream(int fd, TenantStore& tenants, Tenant tenant,
             }
         }
         if (have) {
+            // Kill-switch on every delivered notification — heartbeats alone
+            // would not fire while the mailbox stays busy.
+            if (!refresh_active_tenant(tenants, tenant)) {
+                std::string frame =
+                    "event: error\ndata: {\"error\":\"missing or invalid bearer token\","
+                    "\"error_code\":\"unauthorized\"}\n\n";
+                write_all(fd, frame);
+                break;
+            }
             write_event(ev);
             // Crude liveness check — if the peer hung up, write_all returns
             // silently but a follow-up zero-byte send will surface EPIPE.

@@ -1727,6 +1727,12 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
 stream_done:
     if (!line_buf.empty()) process_line(line_buf);
     resp.content = content;
+    if (is_request_cancelled() ||
+        hard_cancelled_.load(std::memory_order_acquire)) {
+        resp.ok         = false;
+        resp.error_type = "cancelled";
+        resp.error      = "request cancelled";
+    }
     return resp;
 }
 
