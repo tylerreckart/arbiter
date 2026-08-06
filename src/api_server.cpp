@@ -4422,8 +4422,15 @@ void handle_request_events(int fd, const std::string& request_id,
     }
     if (!status) {
         auto err = jobj();
-        err->as_object_mut()["error"] = jstr("request not found");
-        write_json_response(fd, 404, err);
+        if (wait_for_status_row) {
+            err->as_object_mut()["error"] = jstr(
+                "request not ready — retry shortly (in-flight Idempotency-Key "
+                "claim may still be persisting)");
+            write_json_response(fd, 503, err);
+        } else {
+            err->as_object_mut()["error"] = jstr("request not found");
+            write_json_response(fd, 404, err);
+        }
         return;
     }
 
@@ -8867,7 +8874,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     if (auto replay_id = check_idempotency_replay(opts, req, tenant.id)) {
         if (opts.metrics) opts.metrics->inc_idempotency_replay();
         handle_request_events(fd, *replay_id, req, tenants, tenant,
-                              request_event_bus);
+                              request_event_bus,
+                              /*wait_for_status_row=*/(request_event_bus != nullptr));
         return;
     }
     // No cached hit, but the client still sent an Idempotency-Key —
@@ -9058,11 +9066,18 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                     std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::system_clock::now().time_since_epoch())
                         .count());
-                tenants.update_request_status(
-                    request_id, std::optional<std::string>("failed"), completed,
-                    std::optional<std::string>(
-                        "duplicate Idempotency-Key — joined in-flight replay"),
-                    std::nullopt);
+                if (!tenants.update_request_status(
+                        request_id, std::optional<std::string>("failed"),
+                        completed,
+                        std::optional<std::string>(
+                            "duplicate Idempotency-Key — joined in-flight "
+                            "replay"),
+                        std::nullopt)) {
+                    std::fprintf(stderr,
+                        "[orchestrate] could not mark duplicate request %s "
+                        "failed after idempotency replay\n",
+                        request_id.c_str());
+                }
             }
             handle_request_events(fd, *replay_id, req, tenants, tenant,
                                   request_event_bus,
