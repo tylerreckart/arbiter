@@ -1,4 +1,3 @@
-// Interactive REPL entry — thin cmd_interactive + ReplSession boot/shutdown.
 #include "cli.h"
 #include "repl/session.h"
 #include "repl/session_internal.h"
@@ -10,6 +9,8 @@
 #include "tenant_store.h"
 #include "scheduler.h"
 #include "notification_bus.h"
+#include "remote/api_client.h"
+#include "remote/connect_config.h"
 #include "repl/layout.h"
 #include "repl/layout_snapshot.h"
 #include "repl/pane_history.h"
@@ -161,7 +162,11 @@ int64_t ReplSession::parse_conversation_db_id(const std::string& id) {
 
 void ReplSession::bind_tools_conversation(const std::string& conv_id) {
     const int64_t cid = parse_conversation_db_id(conv_id);
-    tool_conversation_id->store(cid, std::memory_order_relaxed);
+    if (!tool_conversation_id) {
+        tool_conversation_id = std::make_shared<std::atomic<int64_t>>(cid);
+    } else {
+        tool_conversation_id->store(cid, std::memory_order_relaxed);
+    }
     set_tool_conversation_tls(cid);
 }
 
@@ -255,10 +260,10 @@ void ReplSession::setup_pane_hooks() {
             HistorySidebarSnapshot hs = history_sidebar.snapshot();
             if (!hs.renaming && !hs.moving
                 && !hs.menu_open && !hs.confirming_delete) {
-                history_sidebar.refresh_entries(conversation_store);
+                refresh_history_sidebar_entries();
                 hs = history_sidebar.snapshot();
             }
-            hs.active_id = conversation_store.active_id();
+            hs.active_id = conversation_active_id();
             opentui::draw_history_sidebar(
                 frame, hs, hb, outer, sidebar_input_rows, outer_bottom_pad);
         }
@@ -307,6 +312,23 @@ void ReplSession::boot_layout_and_transcripts(bool restored) {
     layout_holder = std::make_unique<LayoutTree>(
         make_pane(), layout_bounds());
     layout_ptr = layout_holder.get();
+
+    if (is_remote()) {
+        // Remote sessions are single-pane for v1 (no local layout.json).
+        const std::string active = conversation_active_id();
+        layout_ptr->for_each_pane([&](Pane& p) {
+            p.conversation_id = active;
+            p.current_agent = "index";
+            p.current_model = "remote";
+            pane_history_set_cols(p, p.tui.cols());
+        });
+        if (!active.empty()) {
+            apply_conversation_to_pane(layout_ptr->focused(), active,
+                                       /*replay=*/true);
+        }
+        refresh_history_sidebar_entries();
+        return;
+    }
 
     // Restore multi-pane layout + per-pane conversation bindings (#42).
     // Prefer the SQLite tui_prefs copy; fall back to the legacy file path.
@@ -407,9 +429,7 @@ void ReplSession::shutdown() {
         std::lock_guard<std::recursive_mutex> lk(layout_mu);
         layout_ptr->for_each_pane([&](Pane& p) {
             p.cmd_queue.stop();
-            if (auto tok = std::atomic_load(&p.turn_cancel)) {
-                orch.cancel_token(tok);
-            }
+            cancel_pane_turn(p);
             if (p.exec_thread.joinable()) {
                 exec_joins.push_back(std::move(p.exec_thread));
             }
@@ -443,20 +463,24 @@ void ReplSession::shutdown() {
     // Drain any autosave still in flight, then save every distinct open
     // pane conversation (and fall back to the store's active id). Persist
     // the pane layout last so relaunch restores the same split tree (#42).
-    conversation_store.flush();
-    {
-        std::set<std::string> saved;
-        layout_ptr->for_each_pane([&](Pane& p) {
-            if (p.conversation_id.empty() || !saved.insert(p.conversation_id).second) return;
-            conversation_store.save(p.conversation_id, orch);
-        });
-        if (saved.empty()) {
-            conversation_store.save(conversation_store.active_id(), orch);
-        } else {
-            conversation_store.set_active(layout_ptr->focused().conversation_id);
+    // Remote sessions own conversation state on the API host — skip local
+    // tenants.db writes.
+    if (!is_remote()) {
+        conversation_store.flush();
+        {
+            std::set<std::string> saved;
+            layout_ptr->for_each_pane([&](Pane& p) {
+                if (p.conversation_id.empty() || !saved.insert(p.conversation_id).second) return;
+                conversation_store.save(p.conversation_id, orch);
+            });
+            if (saved.empty()) {
+                conversation_store.save(conversation_store.active_id(), orch);
+            } else {
+                conversation_store.set_active(layout_ptr->focused().conversation_id);
+            }
         }
+        persist_layout();
     }
-    persist_layout();
 
     if (scheduler) scheduler->stop();
 
@@ -490,32 +514,47 @@ void ReplSession::run() {
     ui_ctx.session = &ot_session;
     g_ui_ctx = &ui_ctx;
 
-    bool restored = conversation_store.load(conversation_store.active_id(), orch);
-    if (restored) sidebar.mark_prompt_started();
+    bool restored = false;
+    if (!is_remote()) {
+        restored = conversation_store.load(conversation_store.active_id(), orch);
+        if (restored) sidebar.mark_prompt_started();
 
-    // TUI chat history and tool scoping share tenants.db via ConversationStore.
-    TenantStore& tenants = conversation_store.tenant_store();
-    const int64_t primary_tenant_id = conversation_store.tenant_id();
-    Tenant primary = tenants.get_tenant(primary_tenant_id)
-                         .value_or(Tenant{});
-    if (primary.id == 0) {
-        primary = ensure_primary_tenant(tenants);
+        // TUI chat history and tool scoping share tenants.db via ConversationStore.
+        TenantStore& tenants = conversation_store.tenant_store();
+        const int64_t primary_tenant_id = conversation_store.tenant_id();
+        Tenant primary = tenants.get_tenant(primary_tenant_id)
+                             .value_or(Tenant{});
+        if (primary.id == 0) {
+            primary = ensure_primary_tenant(tenants);
+        }
+
+        // Live conversation id for tool callbacks. Wired once; turns update
+        // the atomic so /todo|/mem|artifacts follow the executing pane without
+        // reinstalling callbacks mid-sibling-turn.
+        tool_conversation_id = std::make_shared<std::atomic<int64_t>>(
+            parse_conversation_db_id(conversation_store.active_id()));
+        api_opts = make_cli_api_options(dir, get_api_keys(), cfg.exec_allowed);
+        wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
+                                tool_conversation_id);
+        // API wiring installs a capture-only /write interceptor (no host cwd).
+        // The interactive TUI must persist to the process cwd after confirm.
+        orch.set_write_interceptor(nullptr);
+
+        scheduler = std::make_unique<Scheduler>(&api_opts, &tenants, &notifications);
+        scheduler->start();
+    } else {
+        // Remote: conversations already bootstrapped in cmd_interactive_remote.
+        sidebar.mark_prompt_started();
+        sidebar.set_remote_info(remote->config().display_host, remote_tenant_name);
+        // Ensure active id is set for pane bind.
+        if (remote_active_id.empty() && !remote_conversations.empty()) {
+            remote_active_id = remote_conversations.front().id;
+        }
+        // Pane exec threads call bind_tools_conversation each turn — keep a
+        // live atomic even though remote mode does not wire local tools.
+        tool_conversation_id = std::make_shared<std::atomic<int64_t>>(
+            parse_conversation_db_id(remote_active_id));
     }
-
-    // Live conversation id for tool callbacks. Wired once; turns update
-    // the atomic so /todo|/mem|artifacts follow the executing pane without
-    // reinstalling callbacks mid-sibling-turn.
-    tool_conversation_id = std::make_shared<std::atomic<int64_t>>(
-        parse_conversation_db_id(conversation_store.active_id()));
-    api_opts = make_cli_api_options(dir, get_api_keys(), cfg.exec_allowed);
-    wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
-                            tool_conversation_id);
-    // API wiring installs a capture-only /write interceptor (no host cwd).
-    // The interactive TUI must persist to the process cwd after confirm.
-    orch.set_write_interceptor(nullptr);
-
-    scheduler = std::make_unique<Scheduler>(&api_opts, &tenants, &notifications);
-    scheduler->start();
 
     // Load input history into one live store shared by every pane's editor:
     // a command typed in any pane is instantly in every pane's Up-arrow /
@@ -546,7 +585,8 @@ void ReplSession::run() {
 
     // Exec-capability warning — list any agents that can run shell commands.
     // Queued here so the pump thread renders it on its first tick.
-    if (cfg.exec_allowed) {
+    // Remote sessions orchestrate on the API host — skip local exec notice.
+    if (cfg.exec_allowed && !is_remote()) {
         std::vector<std::string> exec_agents;
         for (const auto& id : orch.list_agents_all()) {
             for (const auto& cap : orch.get_constitution(id).capabilities) {
@@ -584,6 +624,34 @@ void cmd_interactive(bool exec_allowed_flag, std::string_view theme_override) {
     auto api_keys = get_api_keys();
 
     ReplSession session(std::move(dir), std::move(api_keys), exec_allowed_flag);
+    session.run();
+}
+
+void cmd_interactive_remote(RemoteConnectConfig cfg, bool exec_allowed_flag,
+                            std::string_view theme_override) {
+    std::string dir = get_config_dir();
+    load_tui_design(dir, theme_override);
+
+    // Fail-fast bootstrap before raw terminal mode / OpenTUI.
+    RemoteApiClient client(cfg);
+    auto boot = client.bootstrap();
+    if (!boot.ok) {
+        std::cerr << "ERR: " << boot.error << "\n";
+        std::cerr << "  Tried " << cfg.base_url << "\n";
+        std::exit(1);
+    }
+
+    ReplSession session(std::move(dir), std::move(cfg), exec_allowed_flag);
+    {
+        std::lock_guard<std::mutex> lk(session.remote_conv_mu);
+        session.remote_conversations = std::move(boot.conversations);
+        session.remote_active_id = boot.active_conversation_id;
+    }
+    if (!boot.tenant_name.empty()) {
+        session.remote_tenant_name = boot.tenant_name;
+        session.sidebar.set_remote_info(
+            session.remote->config().display_host, boot.tenant_name);
+    }
     session.run();
 }
 

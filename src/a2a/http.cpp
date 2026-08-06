@@ -51,9 +51,10 @@ struct curl_slist* build_headers(const std::vector<HttpHeader>& extra,
 }
 
 // Common easy-handle setup so the three entry points share the same
-// TLS / signal / user-agent / SSRF posture.  Opensocket denylist runs
-// on every connect including after redirects — same guard as /fetch.
-void apply_common_opts(CURL* curl, long timeout_secs) {
+// TLS / signal / user-agent posture.  Opensocket denylist runs on every
+// connect including after redirects when ssrf_guard is on (A2A /fetch).
+// Operator `--connect` clients disable the guard so LAN/loopback APIs work.
+void apply_common_opts(CURL* curl, long timeout_secs, bool ssrf_guard) {
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL,         1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER,   1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST,   2L);
@@ -62,7 +63,7 @@ void apply_common_opts(CURL* curl, long timeout_secs) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION,   1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS,        10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT,        "arbiter-a2a/1.0");
-    curl_apply_ssrf_guard(curl);
+    if (ssrf_guard) curl_apply_ssrf_guard(curl);
 }
 
 // Streaming write context.  Holds a reference to the SseReader and the
@@ -106,7 +107,8 @@ size_t write_to_sse(char* ptr, size_t size, size_t nmemb, void* userdata) {
 HttpResponse rpc_call(const std::string& url,
                        const std::vector<HttpHeader>& extra_headers,
                        const std::string& body,
-                       long timeout_secs) {
+                       long timeout_secs,
+                       bool ssrf_guard) {
     HttpResponse out;
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -125,7 +127,7 @@ HttpResponse rpc_call(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &out.body);
-    apply_common_opts(curl, timeout_secs);
+    apply_common_opts(curl, timeout_secs, ssrf_guard);
 
     CURLcode rc = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &out.status_code);
@@ -140,7 +142,8 @@ HttpResponse rpc_call(const std::string& url,
 
 HttpResponse http_get(const std::string& url,
                        const std::vector<HttpHeader>& extra_headers,
-                       long timeout_secs) {
+                       long timeout_secs,
+                       bool ssrf_guard) {
     HttpResponse out;
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -160,7 +163,7 @@ HttpResponse http_get(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_HTTPGET,       1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &out.body);
-    apply_common_opts(curl, timeout_secs);
+    apply_common_opts(curl, timeout_secs, ssrf_guard);
 
     CURLcode rc = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &out.status_code);
@@ -178,7 +181,8 @@ HttpResponse rpc_stream(const std::string& url,
                          const std::string& body,
                          SseReader::EventCallback on_event,
                          std::atomic<bool>& cancel,
-                         long timeout_secs) {
+                         long timeout_secs,
+                         bool ssrf_guard) {
     HttpResponse out;
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -205,7 +209,7 @@ HttpResponse rpc_stream(const std::string& url,
     // latency.  Without these the SSE consumer can stall waiting for
     // libcurl's coalesced flush.
     curl_easy_setopt(curl, CURLOPT_TCP_NODELAY,   1L);
-    apply_common_opts(curl, timeout_secs);
+    apply_common_opts(curl, timeout_secs, ssrf_guard);
 
     CURLcode rc = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &out.status_code);

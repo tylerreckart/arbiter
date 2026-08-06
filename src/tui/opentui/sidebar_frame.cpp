@@ -278,6 +278,12 @@ void draw_sidebar(OpenTuiHandle frame,
     const int block_h = std::max(2, input_bottom_y - panel_top_y + 1);
 
     const TuiRgba& bg = d.bg.scroll;
+    std::string session_title = "Session";
+    if (!snap.remote_host.empty()) {
+        session_title = "Remote · " + snap.remote_host;
+        if (!snap.remote_tenant.empty())
+            session_title += " · " + snap.remote_tenant;
+    }
     draw_rounded_box(frame,
                      block_x,
                      panel_top_y,
@@ -285,7 +291,7 @@ void draw_sidebar(OpenTuiHandle frame,
                      block_h,
                      d.text.muted,
                      bg,
-                     "Session",
+                     session_title,
                      &d.accent.primary);
 
     // Leave one blank row directly beneath the title-bearing top border.

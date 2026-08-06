@@ -27,6 +27,7 @@ namespace arbiter {
 struct ApiServerOptions;
 class TenantStore;
 struct Tenant;
+struct RemoteConnectConfig;
 
 // `force` overwrites existing agent JSON files in ~/.arbiter/agents/.  By
 // default cmd_init preserves files the user may have edited and only
@@ -40,6 +41,11 @@ void cmd_oneshot(const std::string& agent_id, const std::string& msg);
 // Interactive TUI/REPL.  `exec_allowed` gates /exec; `theme_override` selects
 // a preset or custom theme name (empty ⇒ design-file / default).
 void cmd_interactive(bool exec_allowed, std::string_view theme_override = {});
+
+// Thin-client TUI bound to a remote `arbiter --api` (issue #83).
+// Does not require local provider API keys.
+void cmd_interactive_remote(RemoteConnectConfig cfg, bool exec_allowed,
+                            std::string_view theme_override = {});
 
 // Tenant admin.  Each opens ~/.arbiter/tenants.db, runs one operation, and
 // prints a human-readable report.

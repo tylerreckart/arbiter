@@ -16,6 +16,15 @@ to use Ollama when the model id starts with `ollama/`.
 
 Env-var values take precedence over the file values. The file is read once at process start; changes during a long-running `--api` session require a restart.
 
+## Remote TUI (`--connect`)
+
+| Variable             | Purpose |
+|----------------------|---------|
+| `ARBITER_API_URL`    | Default base URL for `arbiter --connect` when the flag omits a URL. Must be `http://` or `https://`. |
+| `ARBITER_API_TOKEN`  | Default tenant bearer token for `--connect`. Preferred over `--token` (tokens on argv are visible in `ps`). |
+
+See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KEY`, …) are **not** required on the client host for remote sessions.
+
 ## Server (`--api`) configuration
 
 | Variable                  | Purpose                                                                       |

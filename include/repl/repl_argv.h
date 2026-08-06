@@ -6,10 +6,12 @@
 namespace arbiter {
 
 inline bool argv_is_repl_flag(std::string_view arg) {
-    return arg == "--no-exec" || arg == "--theme";
+    return arg == "--no-exec" || arg == "--theme" || arg == "--connect"
+        || arg == "--token";
 }
 
-// True when argv is bare `arbiter`, `--no-exec`, `--theme PRESET`, or combos.
+// True when argv is bare `arbiter`, or only interactive flags
+// (--no-exec / --theme / --connect / --token and their values).
 inline bool argv_launches_interactive(int argc, char* argv[]) {
     if (argc < 2) return true;
     for (int i = 1; i < argc; ) {
@@ -18,9 +20,15 @@ inline bool argv_launches_interactive(int argc, char* argv[]) {
             ++i;
             continue;
         }
-        if (arg == "--theme") {
+        if (arg == "--theme" || arg == "--token") {
             if (i + 1 >= argc) return false;
             i += 2;
+            continue;
+        }
+        if (arg == "--connect") {
+            ++i;
+            // Optional URL value (may be omitted when ARBITER_API_URL is set).
+            if (i < argc && argv[i][0] != '-') ++i;
             continue;
         }
         return false;

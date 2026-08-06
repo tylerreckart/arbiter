@@ -122,6 +122,26 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             }
 
             if (cmd == "agents") {
+                if (is_remote()) {
+                    std::string err;
+                    auto agents = remote->list_agents(&err);
+                    if (agents.empty() && !err.empty()) {
+                        push_status("ERR: " + err);
+                        return;
+                    }
+                    std::string out;
+                    if (agents.empty()) out = "  (no agents)\n";
+                    else {
+                        for (auto& a : agents) {
+                            out += "  " + a.id;
+                            if (!a.model.empty()) out += "  (" + a.model + ")";
+                            out += "\n";
+                        }
+                    }
+                    out += "\n";
+                    push_sys(out);
+                    return;
+                }
                 std::string out;
                 for (auto& id : orch.list_agents()) out += "  " + id + "\n";
                 out += "\n";
@@ -129,6 +149,20 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                 return;
             }
             if (cmd == "status") {
+                if (is_remote()) {
+                    std::ostringstream os;
+                    os << "remote: " << remote->config().display_host << "\n"
+                       << "  url:    " << remote->config().base_url << "\n";
+                    if (!remote_tenant_name.empty())
+                        os << "  tenant: " << remote_tenant_name << "\n";
+                    os << "  auth:   "
+                       << (remote->config().token.empty() ? "none (single-tenant)"
+                                                          : "bearer token")
+                       << "\n"
+                       << "  conv:   " << pane.conversation_id << "\n";
+                    push_status(os.str());
+                    return;
+                }
                 push_status(orch.global_status());
                 return;
             }
@@ -195,6 +229,31 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             if (cmd == "use" || cmd == "switch") {
                 std::string id;
                 iss >> id;
+                if (is_remote()) {
+                    if (id.empty()) {
+                        push_status("Usage: /use <agent>");
+                        return;
+                    }
+                    bool found = (id == "index");
+                    if (!found) {
+                        std::string err;
+                        for (const auto& a : remote->list_agents(&err)) {
+                            if (a.id == id) { found = true; break; }
+                        }
+                    }
+                    if (!found) {
+                        push_status("ERR: no remote agent '" + id + "'");
+                        return;
+                    }
+                    current_agent = id;
+                    current_model = "remote";
+                    pane.original_task.clear();
+                    push_status(
+                        "agent: " + id +
+                        " (remote conversations pin agent at create; "
+                        "follow-ups reuse the conversation snapshot)");
+                    return;
+                }
                 if (id == "index" || orch.has_agent(id)) {
                     current_agent = id;
                     current_model = orch.get_agent_model(id);
@@ -214,20 +273,32 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                 try {
                     if (!cfg.verbose) tool_indicator.begin();
                     pane.last_interim_agent.clear();
-                    arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
-                    auto resp = orch.send_streaming(id, msg, [&](const std::string& chunk) {
-                        renderer.feed(chunk);
-                    });
-                    renderer.flush();
-                    // Per-tool rows already landed via ToolActivityEvent; just
-                    // clear the mid-separator spinner.
-                    tool_indicator.finalize();
-                    // Separator: md.flush() guarantees the stream ends with
-                    // a `\n`, so one more gives exactly one blank line before
-                    // the next message.
-                    output_queue.end_message();
-                    if (!resp.ok) {
-                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+                    if (is_remote()) {
+                        // Remote conversations pin agent at create time;
+                        // /send still posts to the bound conversation.
+                        (void)id;
+                        auto resp = run_remote_turn(pane, msg);
+                        tool_indicator.finalize();
+                        output_queue.end_message();
+                        if (!resp.ok) {
+                            output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+                        }
+                    } else {
+                        arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
+                        auto resp = orch.send_streaming(id, msg, [&](const std::string& chunk) {
+                            renderer.feed(chunk);
+                        });
+                        renderer.flush();
+                        // Per-tool rows already landed via ToolActivityEvent; just
+                        // clear the mid-separator spinner.
+                        tool_indicator.finalize();
+                        // Separator: md.flush() guarantees the stream ends with
+                        // a `\n`, so one more gives exactly one blank line before
+                        // the next message.
+                        output_queue.end_message();
+                        if (!resp.ok) {
+                            output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+                        }
                     }
                 } catch (const std::exception& e) {
                     output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
@@ -263,15 +334,24 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                 try {
                     if (!cfg.verbose) tool_indicator.begin();
                     pane.last_interim_agent.clear();
-                    arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
-                    auto resp = orch.send_streaming("index", query, [&](const std::string& chunk) {
-                        renderer.feed(chunk);
-                    });
-                    renderer.flush();
-                    tool_indicator.finalize();
-                    output_queue.end_message();
-                    if (!resp.ok) {
-                        output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+                    if (is_remote()) {
+                        auto resp = run_remote_turn(pane, query);
+                        tool_indicator.finalize();
+                        output_queue.end_message();
+                        if (!resp.ok) {
+                            output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+                        }
+                    } else {
+                        arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
+                        auto resp = orch.send_streaming("index", query, [&](const std::string& chunk) {
+                            renderer.feed(chunk);
+                        });
+                        renderer.flush();
+                        tool_indicator.finalize();
+                        output_queue.end_message();
+                        if (!resp.ok) {
+                            output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+                        }
                     }
                 } catch (const std::exception& e) {
                     output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
@@ -912,7 +992,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                 // an id-prefix to a real conversation id. Empty on no match.
                 auto resolve_chat_target = [&](const std::string& arg) -> std::string {
                     if (arg.empty()) return {};
-                    const auto entries = conversation_store.list();
+                    const auto entries = conversation_list();
                     const bool all_digits = std::all_of(arg.begin(), arg.end(),
                         [](unsigned char c) { return std::isdigit(c) != 0; });
                     if (all_digits) {
@@ -927,7 +1007,8 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                 };
 
                 if (sub == "list") {
-                    const auto entries = conversation_store.list();
+                    if (is_remote()) remote_refresh_conversations();
+                    const auto entries = conversation_list();
                     if (entries.empty()) {
                         push_status("(no conversations)");
                         return;
@@ -981,6 +1062,17 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                         push_status("Usage: /chat title <text>");
                         return;
                     }
+                    if (is_remote()) {
+                        std::string err;
+                        if (!remote->patch_conversation_title(pane.conversation_id, text, &err)) {
+                            push_status("ERR: " + (err.empty() ? "rename failed" : err));
+                            return;
+                        }
+                        remote_refresh_conversations();
+                        refresh_history_sidebar_entries();
+                        push_status("title: " + text);
+                        return;
+                    }
                     conversation_store.set_title_locked(pane.conversation_id, text);
                     push_status("title: " + text);
                     return;
@@ -1027,6 +1119,39 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                         push_status("Usage: /chat search <text>");
                         return;
                     }
+                    if (is_remote()) {
+                        // Remote full-text search is not on the wire yet —
+                        // match against cached conversation titles / ids.
+                        remote_refresh_conversations();
+                        auto lower = [](std::string s) {
+                            for (char& c : s) c = static_cast<char>(
+                                std::tolower(static_cast<unsigned char>(c)));
+                            return s;
+                        };
+                        const std::string needle = lower(term);
+                        const auto entries = conversation_list();
+                        const std::string starred = pane.conversation_id;
+                        std::ostringstream out;
+                        int n = 0;
+                        for (const auto& e : entries) {
+                            const std::string title = e.title.empty() ? "Untitled" : e.title;
+                            if (lower(title).find(needle) == std::string::npos &&
+                                lower(e.id).find(needle) == std::string::npos) {
+                                continue;
+                            }
+                            ++n;
+                            out << (e.id == starred ? "* " : "  ")
+                                << title
+                                << "  [" << e.id.substr(0, std::min<size_t>(8, e.id.size())) << "]\n";
+                        }
+                        if (n == 0) {
+                            push_status("(no remote conversations match \"" + term + "\")");
+                        } else {
+                            out << "  Switch with /chat switch <id-prefix>.\n";
+                            push_status(out.str());
+                        }
+                        return;
+                    }
                     // Flush the coalesced autosave first so the active
                     // conversation's newest turns are searchable too.
                     conversation_store.flush();
@@ -1050,6 +1175,12 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                     return;
                 }
                 if (sub == "folder") {
+                    if (is_remote()) {
+                        push_status(
+                            "ERR: /chat folder is not available in remote "
+                            "(--connect) mode");
+                        return;
+                    }
                     std::string fsub;
                     iss >> fsub;
 
@@ -1308,6 +1439,13 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             }
 
             {
+                if (is_remote()) {
+                    push_status(
+                        "ERR: /" + cmd + " is not available in remote "
+                        "(--connect) mode — run it on the API host or use "
+                        "an HTTP-backed equivalent");
+                    return;
+                }
                 std::string result = orch.execute_slash_command(line, current_agent);
                 if (!result.empty()) {
                     push_status(result);
@@ -1324,6 +1462,27 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
         try {
             tool_indicator.begin();
             pane.last_interim_agent.clear();
+
+            if (is_remote()) {
+                auto resp = run_remote_turn(pane, line);
+                tool_indicator.finalize();
+                output_queue.end_message();
+                pane.last_response = resp.ok ? resp.content
+                                             : ("ERR: " + resp.error);
+                if (!resp.ok) {
+                    output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
+                } else {
+                    // Best-effort title refresh after first turn.
+                    remote_refresh_conversations();
+                    refresh_history_sidebar_entries();
+                    if (resp.input_tokens + resp.output_tokens > 0) {
+                        sidebar.record_turn(current_agent, pane.current_model, resp);
+                    }
+                }
+                thinking.stop();
+                return;
+            }
+
             arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
             auto resp = orch.send_streaming(current_agent, line,
                 [&](const std::string& chunk) { renderer.feed(chunk); },

@@ -139,10 +139,15 @@ public:
     void toggle_enabled(const std::string& config_dir);
     [[nodiscard]] bool enabled() const;
     void enter_focus(const ConversationStore& store, const std::string& active_id);
+    void enter_focus_list(std::vector<ConversationEntry> entries,
+                          const std::string& active_id);
     void exit_focus();
     [[nodiscard]] bool focused() const;
 
     void refresh_entries(const ConversationStore& store);
+    // Remote TUI: feed an in-memory conversation list (no local store).
+    void refresh_entries_list(std::vector<ConversationEntry> entries,
+                              const std::string& active_id);
     void move_selection(int delta, int visible_rows);
     // PgUp (direction < 0) / PgDn (direction > 0): move a full page.
     void page_selection(int direction, int visible_rows);

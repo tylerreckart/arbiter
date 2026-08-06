@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -33,6 +34,15 @@ struct Pane {
     // All reads/writes MUST use std::atomic_load / std::atomic_store — Esc's
     // cancel_handler races the exec thread's assign/reset on this member.
     std::shared_ptr<CancelToken> turn_cancel;
+
+    // Remote (--connect) turn cancel: stream abort flag + request_id for
+    // POST /v1/requests/:id/cancel.  Same atomic_load/store discipline.
+    struct RemoteTurnGate {
+        std::atomic<bool> stream_cancel{false};
+        std::mutex        mu;
+        std::string       request_id;
+    };
+    std::shared_ptr<RemoteTurnGate> remote_turn;
 
     std::unique_ptr<opentui::PaneScrollView> scroll;
 

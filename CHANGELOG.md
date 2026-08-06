@@ -7,6 +7,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Remote TUI (`--connect`).** `arbiter --connect <base-url> [--token atr_…]` (or `ARBITER_API_URL` / `ARBITER_API_TOKEN`) opens the interactive TUI as a thin client of a remote `arbiter --api`. Startup probes `/v1/health` and `/v1/conversations`, binds a remote conversation, streams `POST /v1/conversations/:id/messages` SSE into the same scrollback path as local mode, and cancels via `POST /v1/requests/:id/cancel`. Session chrome shows `Remote · host`; local provider keys are not required on the client. See [`docs/cli/connect.md`](docs/cli/connect.md).
+
 ## [0.10.0] — 2026-08-04
 
 Minor release: conversation folders in the history sidebar, TUI threads

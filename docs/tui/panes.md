@@ -78,8 +78,8 @@ Independent per-pane:
 - Token counter
 
 Shared across all panes:
-- Tenant identity (when running against a remote API)
-- Agents catalogue (`/create` / `/remove` affects every pane immediately)
+- Tenant identity (when running against a remote API via `--connect`)
+- Agents catalogue (`/create` / `/remove` affects every pane immediately; remote mode lists agents from `GET /v1/agents`)
 - Loops (`/loops`, `/log`, etc. operate on the global loop manager)
 - The shared scratchpad (`/mem shared`)
 - Per-conversation agent histories (shared when two panes bind the same conversation)

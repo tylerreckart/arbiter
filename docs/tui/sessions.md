@@ -2,6 +2,10 @@
 
 A session captures the *agents' memory of the conversation* — every message exchanged. Restoring a session means the agent picks up the conversation where it left off; the **rendered scrollback** (what you saw painted on screen) is not preserved.
 
+## Remote sessions (`--connect`)
+
+`arbiter --connect <url> [--token …]` attaches the TUI to a remote [`arbiter --api`](../cli/api.md). Conversations, messages, and agents live on the server (HTTP `/v1/conversations`, SSE turns). The client does not read or write local `origin='tui'` rows for that session; the session sidebar shows `Remote · host`. See [`docs/cli/connect.md`](../cli/connect.md).
+
 ## Global conversations
 
 The TUI stores **multiple conversations globally** (not per working directory). Each conversation has its own agent message histories and title. Use the left-hand **conversation sidebar** (`Ctrl-w b`) to switch threads or start a new one.

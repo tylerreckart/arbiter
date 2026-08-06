@@ -7,6 +7,7 @@
 
 #include "cli.h"
 #include "cli_helpers.h"
+#include "remote/connect_config.h"
 #include "repl/repl_argv.h"
 #include "tui/tui_design.h"
 
@@ -48,6 +49,23 @@ int main(int argc, char* argv[]) {
                 std::cerr << "\nCustom: place JSON in " << arbiter::tui_themes_dir(dir) << "/\n";
                 return 1;
             }
+
+            if (arbiter::argv_has_connect(argc, argv)) {
+                auto cfg = arbiter::parse_connect_argv(argc, argv);
+                if (const std::string err = arbiter::resolve_remote_connect(cfg);
+                    !err.empty()) {
+                    std::cerr << "ERR: " << err << "\n";
+                    std::cerr << "Usage: arbiter --connect [URL] [--token TOKEN] [--theme PRESET]\n"
+                                 "  URL/token may also come from ARBITER_API_URL / ARBITER_API_TOKEN\n";
+                    return 1;
+                }
+                arbiter::cmd_interactive_remote(
+                    std::move(cfg),
+                    !arbiter::argv_has_no_exec(argc, argv),
+                    theme);
+                return 0;
+            }
+
             arbiter::cmd_interactive(!arbiter::argv_has_no_exec(argc, argv), theme);
             return 0;
         }
@@ -172,6 +190,13 @@ int main(int argc, char* argv[]) {
                 "                                     modern, nord, dracula, solarized, light,\n"
                 "                                     gruvbox, catppuccin, tokyo-night, …\n"
                 "                                     (/theme list for all presets)\n"
+                "  arbiter --connect [URL] [--token TOKEN] [--theme PRESET]\n"
+                "                                     Thin-client TUI against a remote\n"
+                "                                     `arbiter --api` (no local provider keys).\n"
+                "                                     URL/token from ARBITER_API_URL /\n"
+                "                                     ARBITER_API_TOKEN when omitted. Prefer\n"
+                "                                     env for the token (visible in `ps` via\n"
+                "                                     --token).\n"
                 "  arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]\n"
                 "                                     HTTP+SSE orchestration API (default 127.0.0.1:8080).\n"
                 "                                     --verbose mirrors every SSE event (text deltas, tool calls,\n"
@@ -195,6 +220,8 @@ int main(int argc, char* argv[]) {
                 "Environment:\n"
                 "  OPENROUTER_API_KEY                 OpenRouter key for hosted models\n"
                 "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n"
+                "  ARBITER_API_URL                    Default --connect base URL\n"
+                "  ARBITER_API_TOKEN                  Default --connect bearer token\n"
                 "Config: ~/.arbiter/\n"
                 "  openrouter_api_key                 OpenRouter key file\n"
                 "  search_api_key                     Brave Search key for /search\n"

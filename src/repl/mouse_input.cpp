@@ -284,8 +284,7 @@ bool ReplSession::route_mouse(const opentui::MouseEvent& ev) {
                 clear_mouse_select();
                 clear_all_selections();
                 if (!history_sidebar.focused()) {
-                    history_sidebar.enter_focus(conversation_store,
-                                                conversation_store.active_id());
+                    enter_history_sidebar_focus();
                 }
                 if (hit.history_row >= 0) {
                     history_sidebar.select_at_index(hit.history_row, hist_vis);

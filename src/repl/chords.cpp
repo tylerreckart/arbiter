@@ -150,9 +150,7 @@ bool ReplSession::service_pending_closes() {
                     pc.pane->cmd_queue.stop();
                     // Docs: close cancels the in-flight turn so join returns
                     // promptly instead of waiting out a network call.
-                    if (auto tok = std::atomic_load(&pc.pane->turn_cancel)) {
-                        orch.cancel_token(tok);
-                    }
+                    cancel_pane_turn(*pc.pane);
                     to_join = std::move(pc.pane->exec_thread);
                 }
                 if (to_join.joinable()) to_join.join();
@@ -230,9 +228,7 @@ void ReplSession::dispatch_chord(char cmd) {
                     victim->cmd_queue.stop();
                     // Match docs/tui keybindings: close cancels the in-flight
                     // turn so join is not stuck on a live network call.
-                    if (auto tok = std::atomic_load(&victim->turn_cancel)) {
-                        orch.cancel_token(tok);
-                    }
+                    cancel_pane_turn(*victim);
                     std::thread to_join = std::move(victim->exec_thread);
                     lk.unlock();
                     if (to_join.joinable()) to_join.join();
@@ -263,8 +259,7 @@ void ReplSession::dispatch_chord(char cmd) {
                 if (!history_sidebar.enabled()) {
                     history_sidebar.set_enabled(true, dir);
                 }
-                history_sidebar.enter_focus(conversation_store,
-                                            layout_ptr->focused().conversation_id);
+                enter_history_sidebar_focus();
                 break;
             }
         }

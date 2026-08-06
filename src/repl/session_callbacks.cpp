@@ -91,7 +91,7 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
         if (layout_ptr) {
             p->conversation_id = layout_ptr->focused().conversation_id;
         } else {
-            p->conversation_id = conversation_store.active_id();
+            p->conversation_id = conversation_active_id();
         }
         pane_history_init(*p);
 
@@ -209,10 +209,16 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
             // close blocks forever in join.
             fail_pending_prompts();
             // Scoped cancel: stop this pane's turn only so sibling panes
-            // keep streaming (#46 / #48).  atomic_load: races exec reset.
+            // keep streaming (#46 / #48).  Prefer the pane token; fall back
+            // to process-wide cancel only for Esc on the focused pane when
+            // no token is installed (legacy / race), never from idle-pane
+            // close/delete helpers.
             auto token = std::atomic_load(&raw->turn_cancel);
-            if (token) orch.cancel_token(token);
-            else orch.cancel();
+            if (is_remote() || token) {
+                cancel_pane_turn(*raw);
+            } else {
+                orch.cancel();
+            }
             raw->multiline_accum.clear();
             raw->output_queue.push_prose(
                 {arbiter::styled_activity_line("[interrupted]", StyleId::Error)});
