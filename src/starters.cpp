@@ -41,7 +41,7 @@ constexpr StarterMeta kCuratedOrder[] = {
     { "frontend", "components, state, accessibility, performance"  },
     { "marketer", "strategy, positioning, campaign concepts"       },
     { "social",   "platform-native content, growth, engagement"    },
-    { "byline",   "book-summary JSON → one-sentence jacket byline" },
+    { "byline",   "book JSON → jacket byline; web lookup if no summary" },
 };
 
 // A starter that's in the embedded JSON table but not in kCuratedOrder

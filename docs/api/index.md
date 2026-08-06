@@ -129,7 +129,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 
 ## Examples
 
-- [Book byline agent](examples/byline.md) — inline `agent_def` against `--api`: JSON book summary → one-sentence byline on a small Flash Lite model.
+- [Book byline agent](examples/byline.md) — inline `agent_def` against `--api`: book JSON → one-sentence byline on Flash Lite; web lookup when summary is missing.
 
 ## Versioning
 
