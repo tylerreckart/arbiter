@@ -4,8 +4,6 @@ Living document: where Arbiter stands today and a prioritized path toward a comp
 
 ### Known sharp edges
 
-Already called out in CHANGELOG / docs / code comments:
-
 - Circuit breaker thresholds hard-coded
 - Sandbox: Docker-only; idle reaper documented but not implemented; no workspace-root env
 - Hard kill can still lose an unfinished model stream; loops die on exit; queue depth is dropped
@@ -57,7 +55,7 @@ calendar commitments.
 - [ ] **A2A pushNotificationConfig-** Scheduling bus for agent notifications
 
 **Acceptance criteria:** 
-- [ ] New user setup zero to first message < 2 minutes
+- [x] New user setup zero to first message < 2 minutes
 
 ### Phase 5 — Multi-agent mission control
 - [ ] **Fleet dashboard pane-** Live tree of depth, agent, tools, tokens; click-to-focus/Ctrl-W bindings
@@ -74,33 +72,3 @@ calendar commitments.
 - [ ] **Sandbox + compaction test suites-** Automated coverage for the 1.0 risk surfaces
 - [ ] **Stability freeze-** Constitution / SSE / writ schema versioning; compatibility promises
 - [ ] **1.0 declaration-** Drop “experimental” once A–B exit criteria met and schemas versioned
-
----
-
-## Deliberate non-goals
-
-Keep these out unless philosophy changes — they dilute the product:
-
-| Non-goal | Why |
-|----------|-----|
-| Becoming a Python/TS agent **library** | Arbiter is a process you run |
-| Built-in TLS / WAF / global rate limit | Reverse proxy owns ops ([philosophy §6](docs/philosophy.md)) |
-| Hosted multi-tenant SaaS as the default product | Local-first; `--api` is self-hosted |
-| JSON tool-calling as the primary agent interface | Writ DSL is the point |
-| Full IDE / Electron desktop (Goose-style) as core | TUI + HTTP clients (e.g. Newton) cover surfaces |
-| Replacing git with a custom VCS UI | Integrate; don’t reimplement |
-| Plugin/WASM marketplace before 1.0 | Extension via MCP/A2A/constitutions is enough until schemas stabilize |
-| Real-time multi-user CRDT TUI | Tenants + A2A are the collab path |
-
----
-
-## Success metrics
-
-Use these to decide whether a phase actually “completed” Arbiter:
-
-1. **Survive the afternoon** — 4+ hour TUI session with parallel panes, no forced `/reset`, restart restores layout + history.
-2. **Unattended hour** — `--api` job with sandbox + schedule + reconnect after process restart; idempotent client retry safe.
-3. **Repo PR loop** — reviewer+backend crew proposes diff → user applies → tests via `/exec` → commit via git/MCP without leaving Arbiter.
-4. **Cold start** — new machine, one key, `--init`, first specialist reply under five minutes.
-5. **Fleet glance** — user can answer “which agent is blocked on which tool?” in one screen.
-
