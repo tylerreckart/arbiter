@@ -5615,7 +5615,8 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     AdvisorGateOutput out = run_advisor_gate(
         orch->client(), advisor_model, prompt_override, in);
 
-    if (orch->sticky_cancelled() || orch->client().hard_cancelled()) {
+    if (orch->sticky_cancelled() || orch->client().hard_cancelled() ||
+        !refresh_active_tenant(tenants, tenant)) {
         auto err = jobj();
         err->as_object_mut()["error"] = jstr("missing or invalid bearer token");
         write_json_response(fd, 401, err);
@@ -5801,6 +5802,7 @@ void handle_notifications_stream(int fd, TenantStore& tenants, Tenant tenant,
 const char* sanitised_provider_error_code(const std::string& error_type) {
     if (error_type == "authentication_error") return "auth_failed";
     if (error_type == "permission_error")     return "auth_failed";
+    if (error_type == "cancelled")            return "unauthorized";
     if (error_type == "rate_limit_error")     return "rate_limited";
     if (error_type == "overloaded_error")     return "rate_limited";
     if (error_type == "invalid_request_error")return "invalid_request";
@@ -5812,6 +5814,8 @@ const char* sanitised_provider_error_code(const std::string& error_type) {
 const char* sanitised_provider_error_message(const char* code) {
     if (std::strcmp(code, "auth_failed") == 0)
         return "the provider rejected the runtime's credentials";
+    if (std::strcmp(code, "unauthorized") == 0)
+        return "missing or invalid bearer token";
     if (std::strcmp(code, "rate_limited") == 0)
         return "the provider is rate-limiting or overloaded — retry with backoff";
     if (std::strcmp(code, "invalid_request") == 0)
@@ -8196,6 +8200,17 @@ void handle_a2a_message_send(int fd,
         return;
     }
 
+    if (!refresh_active_tenant(tenants, tenant) ||
+        resp.error_type == "cancelled") {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
+
     a2a::Task task = a2a::build_terminal_task(task_id, context_id, agent_id,
                                                user_msg, resp);
 
@@ -8479,6 +8494,29 @@ void handle_a2a_message_stream(int fd,
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::failed),
                                  "", e.what());
+        sse.close();
+        return;
+    }
+
+    // Post-send kill-switch (CLI DB-only revoke does not cancel()).
+    // Admin cancel is visible via resp.error_type after send_streaming
+    // clears sticky bits on exit.
+    if (!refresh_active_tenant(tenants, tenant) ||
+        resp.error_type == "cancelled") {
+        a2a::Message err_msg;
+        err_msg.role       = "agent";
+        err_msg.message_id = task_id + "-err";
+        err_msg.task_id    = task_id;
+        err_msg.context_id = context_id;
+        a2a::Part p_err;
+        p_err.kind = "text";
+        p_err.text = "missing or invalid bearer token";
+        err_msg.parts.push_back(std::move(p_err));
+        writer.emit_status(a2a::TaskState::failed, /*final=*/true,
+                           std::move(err_msg));
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
         sse.close();
         return;
     }
@@ -10293,22 +10331,37 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             original_query);
         filter.flush();
 
+        // Post-send kill-switch: CLI DB-only disable/rotate does not
+        // cancel() in-flight work, so revalidate before emitting a
+        // successful done / persisting completion.  Admin cancel clears
+        // sticky bits when send_streaming returns — detect via
+        // resp.error_type == "cancelled".
+        const bool revoked = !refresh_active_tenant(tenants, tenant) ||
+                             resp.error_type == "cancelled";
+
         auto done = jobj();
         auto& m = done->as_object_mut();
-        m["ok"]      = jbool(resp.ok);
-        if (resp.gate_approved) m["gate_approved"] = jbool(true);
-        if (!resp.ok) {
-            // Never proxy the provider's free-form error message —
-            // log it operator-side, ship a fixed taxonomy on the wire.
-            const char* code = sanitised_provider_error_code(resp.error_type);
-            m["error"]      = jstr(sanitised_provider_error_message(code));
-            m["error_code"] = jstr(code);
-            std::fprintf(stderr,
-                "[arbiter] tenant=%lld request=%s upstream error: type=%s message=%s\n",
-                static_cast<long long>(tenant.id), request_id.c_str(),
-                resp.error_type.c_str(), resp.error.c_str());
+        if (revoked) {
+            m["ok"]         = jbool(false);
+            m["error"]      = jstr("missing or invalid bearer token");
+            m["error_code"] = jstr("unauthorized");
+            m["content"]    = jstr("");
+        } else {
+            m["ok"] = jbool(resp.ok);
+            if (resp.gate_approved) m["gate_approved"] = jbool(true);
+            if (!resp.ok) {
+                // Never proxy the provider's free-form error message —
+                // log it operator-side, ship a fixed taxonomy on the wire.
+                const char* code = sanitised_provider_error_code(resp.error_type);
+                m["error"]      = jstr(sanitised_provider_error_message(code));
+                m["error_code"] = jstr(code);
+                std::fprintf(stderr,
+                    "[arbiter] tenant=%lld request=%s upstream error: type=%s message=%s\n",
+                    static_cast<long long>(tenant.id), request_id.c_str(),
+                    resp.error_type.c_str(), resp.error.c_str());
+            }
+            m["content"] = jstr(resp.content);
         }
-        m["content"] = jstr(resp.content);
         m["input_tokens"]  = jnum(static_cast<double>(resp.input_tokens));
         m["output_tokens"] = jnum(static_cast<double>(resp.output_tokens));
         m["files_bytes"]   = jnum(static_cast<double>(bytes_captured.load()));
@@ -10321,7 +10374,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_time).count();
         m["duration_ms"] = jnum(static_cast<double>(elapsed_ms));
-        metric_scope.ok  = resp.ok;
+        metric_scope.ok  = !revoked && resp.ok;
         emit("done", done);
 
         // Flush any pending coalesced text and stamp the run terminal.
@@ -10332,10 +10385,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             const int64_t completed = static_cast<int64_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count());
+            const bool ok_final = !revoked && resp.ok;
             tenants.update_request_status(request_id,
-                std::optional<std::string>(resp.ok ? "completed" : "failed"),
+                std::optional<std::string>(ok_final ? "completed" : "failed"),
                 completed,
-                resp.ok ? std::nullopt : std::optional<std::string>(resp.error),
+                ok_final ? std::nullopt
+                         : std::optional<std::string>(
+                               revoked ? "tenant disabled" : resp.error),
                 std::nullopt);
         }
 
@@ -10344,7 +10400,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         // re-entry iterations (Orchestrator::send_streaming aggregates
         // them before returning), so what we persist is the full
         // multi-turn assistant response — not just the closing remark.
-        if (conversation_id > 0 && resp.ok) {
+        if (conversation_id > 0 && !revoked && resp.ok) {
             try {
                 tenants.append_message(tenant.id, conversation_id,
                                         "assistant", resp.content,
