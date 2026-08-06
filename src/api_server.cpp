@@ -9053,13 +9053,20 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     }
 
-    // Claim the idempotency slot only when replay has a durable target
-    // (or the caller runs without persistence, as in tests).  Losers
-    // terminate their own request_status row so listings don't show a
-    // stuck "running" duplicate.
-    if (request_status_created || !persist_events_pre) {
-        if (auto replay_id = claim_idempotency_key(
-                opts, req, tenant.id, request_id)) {
+    // Join an in-flight run when this Idempotency-Key is already claimed.
+    // Reserve a new slot only when we have a durable request_status row
+    // (or persistence is off, as in tests).  If persist init failed, still
+    // look up an existing mapping so we do not start a duplicate run.
+    const bool idempotency_key_present = !read_idempotency_key(req).empty();
+    if (idempotency_key_present && opts.idempotency) {
+        std::optional<std::string> replay_id;
+        if (persist_events_pre && !request_status_created) {
+            replay_id = check_idempotency_replay(opts, req, tenant.id);
+        } else if (request_status_created || !persist_events_pre) {
+            replay_id = claim_idempotency_key(
+                opts, req, tenant.id, request_id);
+        }
+        if (replay_id) {
             if (opts.metrics) opts.metrics->inc_idempotency_replay();
             if (request_status_created && *replay_id != request_id) {
                 const int64_t completed = static_cast<int64_t>(
