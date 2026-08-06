@@ -145,3 +145,26 @@ TEST_CASE("find_by_token: isolates tenants by API key") {
     CHECK_FALSE(store.find_by_token("atr_not_a_real_token").has_value());
     CHECK_FALSE(store.find_by_token(a.token + "x").has_value());
 }
+
+TEST_CASE("rotate_token: invalidates old key and issues a new one") {
+    TempDb db;
+    TenantStore store;
+    store.open(db.path.string());
+
+    const auto created = store.create_tenant("acme");
+    const std::string old_token = created.token;
+    REQUIRE(store.find_by_token(old_token).has_value());
+
+    auto rotated = store.rotate_token(std::to_string(created.tenant.id));
+    REQUIRE(rotated);
+    CHECK(rotated->tenant.id == created.tenant.id);
+    CHECK(rotated->token != old_token);
+    CHECK(rotated->token.rfind("atr_", 0) == 0);
+
+    CHECK_FALSE(store.find_by_token(old_token).has_value());
+    auto fresh = store.find_by_token(rotated->token);
+    REQUIRE(fresh);
+    CHECK(fresh->id == created.tenant.id);
+
+    CHECK_FALSE(store.rotate_token("missing").has_value());
+}

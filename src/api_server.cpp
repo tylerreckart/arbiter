@@ -578,6 +578,22 @@ std::string extract_bearer(const HttpRequest& req) {
     return hdr.substr(kPrefixLen);
 }
 
+// Re-load a tenant and confirm it is still enabled.  Used after the
+// initial bearer lookup so a kill-switch that lands between auth and
+// InFlightRegistry registration still rejects the request (and so
+// expensive work does not proceed under a stale Tenant snapshot).
+bool refresh_active_tenant(TenantStore& tenants, Tenant& tenant) {
+    auto fresh = tenants.get_tenant(tenant.id);
+    if (!fresh || fresh->disabled) return false;
+    tenant = *fresh;
+    return true;
+}
+
+void reject_disabled_tenant(int fd) {
+    write_plain_response(fd, 401, "Unauthorized",
+                         "missing or invalid bearer token\n");
+}
+
 // ─── Orchestrate endpoint ───────────────────────────────────────────────────
 
 // EventLogger — mirrors SSE events to stderr in real time so the operator
@@ -1134,42 +1150,46 @@ void handle_admin(int fd, const HttpRequest& req,
                     admin_error(fd, 400, "body must be a JSON object");
                     return;
                 }
-                // `disabled` is the only mutable field.
-                if (auto v = body->get("disabled"); v && v->is_bool()) {
-                    const bool now_disabled = v->as_bool();
-                    // Capture pre-update state for the audit row.  If
-                    // the tenant doesn't exist we'll bail out before
-                    // writing the audit, so capturing before set_disabled
-                    // is safe.
-                    auto before = tenants.get_tenant(id);
-                    tenants.set_disabled(std::to_string(id), now_disabled);
-                    // Kill in-flight streams immediately when disabling.
-                    // Without this, an authenticated tenant's existing
-                    // SSE stream keeps running until the model finishes —
-                    // the operator believes the kill-switch is hot when
-                    // it isn't.  Holding reg.mu across cancel() is safe:
-                    // Orchestrator::cancel only flips an atomic and
-                    // shuts down sockets under its own mutex.
-                    if (now_disabled) {
-                        std::lock_guard<std::mutex> lk(in_flight.mu);
-                        for (auto& [_, entry] : in_flight.by_id) {
-                            if (entry.tenant_id == id && entry.orch) {
-                                entry.orch->cancel();
-                            }
+                // `disabled` is the only mutable field — require it so a
+                // misspelled / missing key cannot silently no-op as 200.
+                auto v = body->get("disabled");
+                if (!v || !v->is_bool()) {
+                    admin_error(fd, 400,
+                        "missing or invalid required field: 'disabled' (boolean)");
+                    return;
+                }
+                const bool now_disabled = v->as_bool();
+                // Capture pre-update state for the audit row.  If
+                // the tenant doesn't exist we'll bail out before
+                // writing the audit, so capturing before set_disabled
+                // is safe.
+                auto before = tenants.get_tenant(id);
+                if (!before) { admin_error(fd, 404, "tenant not found"); return; }
+                tenants.set_disabled(std::to_string(id), now_disabled);
+                // Kill in-flight streams immediately when disabling.
+                // Without this, an authenticated tenant's existing
+                // SSE stream keeps running until the model finishes —
+                // the operator believes the kill-switch is hot when
+                // it isn't.  Holding reg.mu across cancel() is safe:
+                // Orchestrator::cancel only flips an atomic and
+                // shuts down sockets under its own mutex.
+                if (now_disabled) {
+                    std::lock_guard<std::mutex> lk(in_flight.mu);
+                    for (auto& [_, entry] : in_flight.by_id) {
+                        if (entry.tenant_id == id && entry.orch) {
+                            entry.orch->cancel();
                         }
                     }
-                    // Audit only if the row existed (else the PATCH
-                    // would 404 below and we'd be auditing a no-op).
-                    if (before) {
-                        auto bj = jobj(); auto aj = jobj();
-                        bj->as_object_mut()["disabled"] = jbool(before->disabled);
-                        aj->as_object_mut()["disabled"] = jbool(now_disabled);
-                        try {
-                            tenants.append_admin_audit("admin", "update_tenant",
-                                "tenant", std::to_string(id),
-                                json_serialize(*bj), json_serialize(*aj));
-                        } catch (...) {}
-                    }
+                }
+                {
+                    auto bj = jobj(); auto aj = jobj();
+                    bj->as_object_mut()["disabled"] = jbool(before->disabled);
+                    aj->as_object_mut()["disabled"] = jbool(now_disabled);
+                    try {
+                        tenants.append_admin_audit("admin", "update_tenant",
+                            "tenant", std::to_string(id),
+                            json_serialize(*bj), json_serialize(*aj));
+                    } catch (...) {}
                 }
                 auto t = tenants.get_tenant(id);
                 if (!t) { admin_error(fd, 404, "tenant not found"); return; }
@@ -1177,6 +1197,36 @@ void handle_admin(int fd, const HttpRequest& req,
                 return;
             }
             admin_error(fd, 405, "method not allowed");
+            return;
+        }
+
+        // POST /v1/admin/tenants/{id}/rotate-token
+        if (segs.size() == 5 && segs[4] == "rotate-token") {
+            int64_t id = 0;
+            try { id = std::stoll(segs[3]); } catch (...) { id = 0; }
+            if (id <= 0) { admin_error(fd, 400, "bad tenant id"); return; }
+            if (req.method != "POST") {
+                admin_error(fd, 405, "method not allowed");
+                return;
+            }
+            auto before = tenants.get_tenant(id);
+            if (!before) { admin_error(fd, 404, "tenant not found"); return; }
+            auto rotated = tenants.rotate_token(std::to_string(id));
+            if (!rotated) {
+                admin_error(fd, 500, "token rotation failed");
+                return;
+            }
+            try {
+                auto after = jobj();
+                after->as_object_mut()["id"] = jnum(static_cast<double>(id));
+                after->as_object_mut()["rotated"] = jbool(true);
+                tenants.append_admin_audit("admin", "rotate_tenant_token",
+                    "tenant", std::to_string(id),
+                    /*before=*/"", json_serialize(*after));
+            } catch (...) {}
+            auto resp = tenant_to_json(rotated->tenant);
+            resp->as_object_mut()["token"] = jstr(rotated->token);
+            write_json_response(fd, 200, resp);
             return;
         }
 
@@ -7962,7 +8012,14 @@ void handle_a2a_message_send(int fd,
                               const ApiServerOptions& opts,
                               TenantStore& tenants,
                               InFlightRegistry& in_flight,
-                              const Tenant& tenant) {
+                              const Tenant& tenant_in) {
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
     a2a::Message user_msg;
     if (!rpc.params) {
         write_a2a_rpc(fd, a2a::make_error_response(
@@ -8020,6 +8077,13 @@ void handle_a2a_message_send(int fd,
         std::fprintf(stderr, "[a2a] create_a2a_task failed: %s\n", e.what());
     }
 
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
+
     InFlightScope in_flight_scope(in_flight, task_id, orch.get(), tenant.id);
 
     tenants.update_a2a_task(tenant.id, task_id,
@@ -8072,7 +8136,14 @@ void handle_a2a_message_stream(int fd,
                                 const ApiServerOptions& opts,
                                 TenantStore& tenants,
                                 InFlightRegistry& in_flight,
-                                const Tenant& tenant) {
+                                const Tenant& tenant_in) {
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
     // Same up-front parsing as message/send; we send any error as a
     // single non-streaming JSON-RPC error response (HTTP 200) BEFORE
     // opening the SSE stream.  Once the stream is open, errors
@@ -8129,6 +8200,13 @@ void handle_a2a_message_stream(int fd,
                                  a2a::task_state_to_string(a2a::TaskState::submitted));
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[a2a] create_a2a_task failed: %s\n", e.what());
+    }
+
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
     }
 
     // Begin the SSE response.  After this point every error must round-
@@ -8696,8 +8774,14 @@ void handle_a2a_rpc(int fd, const std::string& agent_id,
                      const ApiServerOptions& opts,
                      TenantStore& tenants,
                      InFlightRegistry& in_flight,
-                     const Tenant& tenant,
+                     const Tenant& tenant_in,
                      RequestEventBus* request_event_bus = nullptr) {
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
+
     // Version negotiation per spec section 3.6.  Empty header is
     // tolerated as 1.0 since every implementation in the wild today
     // omits it; explicit 1.0 + 1 (loose major) are accepted; anything
@@ -8987,6 +9071,15 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         // are present (lets callers update an agent mid-thread).
                         const std::string& conversation_agent_def_json = "") {
     Tenant tenant = tenant_in;   // mutable snapshot — MTD refreshes mid-request
+
+    // Kill-switch re-check: admin may have disabled this tenant after the
+    // connection-thread bearer lookup but before we register in
+    // InFlightRegistry.  Reject with the same 401 shape as a bad token so
+    // we don't oracle "exists but disabled."
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
 
     // Idempotency-Key short-circuit.  When the client supplies a key we
     // already have a request_id for, redirect into the resubscribe path
@@ -9345,6 +9438,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     }
 
     auto* orch_ptr = orch.get();
+
+    // Final kill-switch check immediately before becoming cancellable /
+    // starting LLM work.  Closes the window between the entry refresh
+    // (above) and InFlightRegistry registration.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
 
     // Register this orchestration so `POST /v1/requests/:id/cancel` can
     // reach it.  Lifetime matches the orchestrator; scope unwinds on every
@@ -10645,6 +10746,10 @@ void ApiServer::handle_connection(int fd) {
     }
 
     if (req.method == "POST" && req.path == "/v1/orchestrate") {
+        if (!refresh_active_tenant(tenants_, *tenant)) {
+            reject_disabled_tenant(fd);
+            return;
+        }
         auto lim = limiter_->acquire(tenant->id);
         if (!lim.granted()) {
             write_429_response(fd, lim.retry_after_seconds,
@@ -10795,6 +10900,10 @@ void ApiServer::handle_connection(int fd) {
                         write_json_response(fd, 404, err);
                         return;
                     }
+                    if (!refresh_active_tenant(tenants_, *tenant)) {
+                        reject_disabled_tenant(fd);
+                        return;
+                    }
                     auto lim = limiter_->acquire(tenant->id);
                     if (!lim.granted()) {
                         write_429_response(fd, lim.retry_after_seconds,
@@ -10936,6 +11045,10 @@ void ApiServer::handle_connection(int fd) {
                                          "method not allowed\n");
                     return;
                 }
+                if (!refresh_active_tenant(tenants_, *tenant)) {
+                    reject_disabled_tenant(fd);
+                    return;
+                }
                 auto lim = limiter_->acquire(tenant->id);
                 if (!lim.granted()) {
                     write_429_response(fd, lim.retry_after_seconds,
@@ -10986,6 +11099,10 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             if (req.method == "POST" && segs.size() == 4 && segs[3] == "chat") {
+                if (!refresh_active_tenant(tenants_, *tenant)) {
+                    reject_disabled_tenant(fd);
+                    return;
+                }
                 auto lim = limiter_->acquire(tenant->id);
                 if (!lim.granted()) {
                     write_429_response(fd, lim.retry_after_seconds,
@@ -11299,6 +11416,10 @@ void ApiServer::handle_connection(int fd) {
         // ── Event ingestion ───────────────────────────────────────────────
         // POST /v1/events — hardware/software event → agent routing
         if (segs.size() == 2 && segs[0] == "v1" && segs[1] == "events") {
+            if (!refresh_active_tenant(tenants_, *tenant)) {
+                reject_disabled_tenant(fd);
+                return;
+            }
             auto lim = limiter_->acquire(tenant->id);
             if (!lim.granted()) {
                 write_429_response(fd, lim.retry_after_seconds,

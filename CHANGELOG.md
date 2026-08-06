@@ -13,6 +13,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `/v1/admin/tenants*` create/list/get/patch are available again (admin bearer).
   `--api` no longer auto-provisions a default tenant or serves the data plane
   without a token; `--connect` requires `--token` / `ARBITER_API_TOKEN`.
+- **Tenant token rotation.** `arbiter --rotate-tenant-token <id|name>` and
+  `POST /v1/admin/tenants/:id/rotate-token` issue a new `atr_…` key (upgrade
+  recovery from single-tenant installs whose plaintext was never shown).
+- **Kill-switch hardening.** Runtime handlers re-check `disabled` before
+  expensive work / `InFlightRegistry` registration; admin PATCH requires a
+  boolean `disabled` field (no silent 200 no-op).
 
 ## [0.11.0] — 2026-08-06
 

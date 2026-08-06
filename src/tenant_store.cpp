@@ -1090,6 +1090,40 @@ TenantStore::create_tenant(const std::string& name) {
     return {t, token};
 }
 
+std::optional<TenantStore::CreatedTenant>
+TenantStore::rotate_token(const std::string& key) {
+    if (!db_ || key.empty()) return std::nullopt;
+
+    int64_t id = 0;
+    try { id = std::stoll(key); } catch (...) { id = 0; }
+
+    std::optional<Tenant> existing;
+    if (id > 0) {
+        existing = get_tenant(id);
+    } else {
+        for (auto& t : list_tenants()) {
+            if (t.name == key) { existing = t; break; }
+        }
+    }
+    if (!existing) return std::nullopt;
+
+    std::string token = generate_token();
+    std::string hash  = sha256_hex(token);
+
+    Stmt q(db_, "UPDATE tenants SET api_key_hash = ? WHERE id = ?;");
+    q.bind(1, hash);
+    q.bind(2, existing->id);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) {
+        check_sqlite(db_, rc, "rotate tenant token");
+        return std::nullopt;
+    }
+    if (sqlite3_changes(db_) <= 0) return std::nullopt;
+
+    existing->api_key_hash = hash;
+    return CreatedTenant{*existing, token};
+}
+
 bool TenantStore::set_disabled(const std::string& key, bool disabled) {
     if (!db_) return false;
 

@@ -214,6 +214,14 @@ public:
     struct CreatedTenant { Tenant tenant; std::string token; };
     CreatedTenant create_tenant(const std::string& name);
 
+    // Invalidate the current API key and issue a new one.  `key` matches
+    // either the numeric id or the display name (first hit wins).  Returns
+    // nullopt when no tenant matches.  The new plaintext token is shown
+    // exactly once — same contract as create_tenant.  Needed when upgrading
+    // from single-tenant (no-bearer) mode, where an auto-provisioned row
+    // may exist with only a digest and no recoverable plaintext.
+    std::optional<CreatedTenant> rotate_token(const std::string& key);
+
     // Disable or re-enable a tenant.  `key` matches either the numeric id
     // or the display name (first hit wins).  Returns true on success.
     bool set_disabled(const std::string& key, bool disabled);

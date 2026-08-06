@@ -12,9 +12,9 @@ Update a tenant. The only mutable field today is `disabled`.
 
 ### Body
 
-| Field      | Type    | Description |
-|------------|---------|-------------|
-| `disabled` | boolean | Set `true` to block new requests from this tenant (`401` on the orchestrate path). |
+| Field      | Type    | Required | Description |
+|------------|---------|----------|-------------|
+| `disabled` | boolean | yes      | Set `true` to block new requests from this tenant (`401` on the orchestrate path). Bodies missing this field, or with a non-boolean value, return `400` (no silent no-op). |
 
 ```bash
 curl -X PATCH \
@@ -36,7 +36,7 @@ A successful update appends an `update_tenant` row to the [admin audit log](audi
 
 | Status | When | Body |
 |--------|------|------|
-| 400    | Invalid JSON. | `{"error": "..."}` |
+| 400    | Invalid JSON; missing or non-boolean `disabled`. | `{"error": "..."}` |
 | 401    | Missing / invalid admin bearer. | `{"error": "..."}` |
 | 404    | Id doesn't exist. | `{"error": "tenant not found"}` |
 | 503    | Admin not configured. | `{"error": "admin not configured"}` |

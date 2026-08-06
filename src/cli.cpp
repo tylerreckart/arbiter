@@ -361,6 +361,15 @@ void cmd_api(int port, const std::string& bind, bool verbose,
                      "and retry.\n"
                      "      The server will start, but every /v1/orchestrate "
                      "call will reject with 401.\n";
+    } else {
+        // Upgrade hint: single-tenant builds auto-created a tenant row
+        // without ever showing a recoverable plaintext token.  Operators
+        // who lack atr_… keys after this restore can rotate.
+        std::cerr << "NOTE: runtime routes require Authorization: Bearer atr_….  "
+                     "If you upgraded from single-tenant mode and do not have "
+                     "a tenant API key, run:\n"
+                     "      arbiter --rotate-tenant-token <id|name>\n"
+                     "      (or POST /v1/admin/tenants/:id/rotate-token)\n";
     }
     std::cout << "\n";
 
@@ -513,6 +522,25 @@ void cmd_list_tenants() {
                   << std::setw(12) << (t.disabled ? "disabled" : "active")
                   << fmt_ts(t.last_used_at) << "\n";
     }
+}
+
+void cmd_rotate_tenant_token(const std::string& key) {
+    if (key.empty()) {
+        std::cerr << "Usage: arbiter --rotate-tenant-token <id|name>\n";
+        std::exit(1);
+    }
+    TenantStore store;
+    store.open(tenants_db_path());
+    auto rotated = store.rotate_token(key);
+    if (!rotated) {
+        std::cerr << "No tenant matched '" << key << "'.\n";
+        std::exit(1);
+    }
+    std::cout << "Rotated API key for tenant #" << rotated->tenant.id
+              << " (" << rotated->tenant.name << ")\n"
+              << "\n  API key (save this — it will not be shown again):\n"
+              << "    " << rotated->token << "\n\n"
+              << "  Previous key is invalid immediately.\n";
 }
 
 void cmd_disable_tenant(const std::string& key) {

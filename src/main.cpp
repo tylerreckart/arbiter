@@ -164,6 +164,14 @@ int main(int argc, char* argv[]) {
             arbiter::cmd_list_tenants();
             return 0;
         }
+        if (arg1 == "--rotate-tenant-token") {
+            if (argc < 3) {
+                std::cerr << "Usage: arbiter --rotate-tenant-token <id|name>\n";
+                return 1;
+            }
+            arbiter::cmd_rotate_tenant_token(argv[2]);
+            return 0;
+        }
         if (arg1 == "--disable-tenant") {
             if (argc < 3) {
                 std::cerr << "Usage: arbiter --disable-tenant <id|name>\n";
@@ -213,10 +221,11 @@ int main(int argc, char* argv[]) {
                 "                                     Writes ~/.arbiter/search_api_key and mcp_servers.json.\n"
                 "  arbiter --help                     This help\n\n"
                 "Tenants (for --api):\n"
-                "  arbiter --add-tenant <name>        Provision a tenant + API key\n"
-                "  arbiter --list-tenants             List tenants\n"
-                "  arbiter --disable-tenant <id|name> Revoke a tenant's access\n"
-                "  arbiter --enable-tenant  <id|name> Restore a tenant's access\n\n"
+                "  arbiter --add-tenant <name>              Provision a tenant + API key\n"
+                "  arbiter --list-tenants                   List tenants\n"
+                "  arbiter --rotate-tenant-token <id|name>  Issue a new API key (invalidates old)\n"
+                "  arbiter --disable-tenant <id|name>       Revoke a tenant's access\n"
+                "  arbiter --enable-tenant  <id|name>       Restore a tenant's access\n\n"
                 "Environment:\n"
                 "  OPENROUTER_API_KEY                 OpenRouter key for hosted models\n"
                 "  OLLAMA_HOST                        Ollama server URL (default http://localhost:11434)\n"

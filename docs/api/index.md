@@ -125,6 +125,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`POST /v1/admin/tenants`](admin/tenants-create.md)
 - [`GET /v1/admin/tenants/:id`](admin/tenants-get.md)
 - [`PATCH /v1/admin/tenants/:id`](admin/tenants-patch.md)
+- [`POST /v1/admin/tenants/:id/rotate-token`](admin/tenants-rotate-token.md)
 - [`GET /v1/admin/audit`](admin/audit.md)
 
 ## Versioning
