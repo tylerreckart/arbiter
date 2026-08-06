@@ -26,7 +26,17 @@ Plaintext tenant tokens are returned **only** in the response to:
 - [`POST /v1/admin/tenants`](../api/admin/tenants-create.md)
 - `arbiter --add-tenant <name>` (CLI)
 
-The database stores only the SHA-256 digest. If a tenant loses their token, rotate it with `arbiter --rotate-tenant-token <id|name>` or `POST /v1/admin/tenants/:id/rotate-token`. The HTTP admin rotate path also cancels in-flight streams for that tenant; the CLI updates the digest only (use admin HTTP rotate, or disable first, for a hot revoke on a running `--api` process).
+The database stores only the SHA-256 digest. If a tenant loses their token, rotate it with `arbiter --rotate-tenant-token <id|name>` or `POST /v1/admin/tenants/:id/rotate-token`.
+
+## Kill-switch model
+
+Revoking a tenant mid-request uses one durable mechanism — **`TenantGate`** — not a scatter of ad-hoc checks:
+
+1. After bearer auth, expensive handlers build a `TenantGate` from the tenant id + `api_key_hash` snapshot and **`bind()` it to the per-request `ApiClient` preflight**.
+2. Every `stream()` / `complete()` (including retries, mid-body reads, and `/parallel` child clients that inherit the preflight) re-probes the DB via `TenantGate::alive()`. Disable or rotate makes `alive()` false → provider I/O stops with `cancelled`.
+3. **Admin HTTP** disable / `rotate-token` also cancels `InFlightRegistry` entries immediately (hot path).
+4. **CLI** `--disable-tenant` / `--rotate-tenant-token` update SQLite only; running `--api` workers stop at the next preflight (tool-loop / provider-read boundary). Prefer admin HTTP rotate for an immediate cancel().
+5. Caller `POST /v1/requests/:id/cancel` stays the `cancelled` taxonomy; tenant revoke surfaces as `unauthorized` on terminal frames when the digest/disabled check fails.
 
 ## Failure modes
 

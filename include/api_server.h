@@ -19,6 +19,10 @@
 //   Admin  routes  — Bearer admin token.  Admin token is distinct from tenant
 //                    tokens and only works on /v1/admin/*; tenant tokens are
 //                    rejected on admin routes and vice versa.
+//   Kill-switch    — TenantGate bound to per-request ApiClient preflight
+//                    (see include/tenant_gate.h). Admin HTTP also cancels
+//                    InFlightRegistry; CLI disable/rotate is DB-only and
+//                    stops provider I/O at the next preflight.
 //
 // Concurrency:
 //   One thread per connection.  Each request gets a fresh Orchestrator —

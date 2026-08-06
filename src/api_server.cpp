@@ -31,6 +31,7 @@
 #include "sandbox.h"
 #include "tenant_limiter.h"
 #include "tenant_store.h"
+#include "tenant_gate.h"
 #include "tui/stream_filter.h"
 #include "api_client.h"
 
@@ -578,34 +579,37 @@ std::string extract_bearer(const HttpRequest& req) {
     return hdr.substr(kPrefixLen);
 }
 
-// Re-load a tenant and confirm it is still enabled.  Used after the
-// initial bearer lookup so a kill-switch that lands between auth and
-// InFlightRegistry registration still rejects the request (and so
-// expensive work does not proceed under a stale Tenant snapshot).
+// Single-threaded helper for request handlers: refresh a Tenant snapshot
+// when still authorized.  Provider I/O kill-switch uses TenantGate
+// (thread-safe, bound to ApiClient preflight) — do not call this from
+// parallel workers or preflight callbacks.
 bool refresh_active_tenant(TenantStore& tenants, Tenant& tenant) {
     auto fresh = tenants.get_tenant(tenant.id);
     if (!fresh || fresh->disabled) return false;
-    // Token rotation updates api_key_hash; reject requests that
-    // authenticated with the previous digest so rotate is a live revoke.
     if (fresh->api_key_hash != tenant.api_key_hash) return false;
     tenant = *fresh;
     return true;
-}
-
-// Read-only kill-switch probe for ApiClient preflight callbacks.  Safe to
-// call concurrently from /parallel workers — does not mutate the caller's
-// Tenant snapshot (unlike refresh_active_tenant).
-bool tenant_still_active(TenantStore& tenants, int64_t tenant_id,
-                         const std::string& api_key_hash) {
-    auto fresh = tenants.get_tenant(tenant_id);
-    if (!fresh || fresh->disabled) return false;
-    return fresh->api_key_hash == api_key_hash;
 }
 
 void reject_disabled_tenant(int fd) {
     write_plain_response(fd, 401, "Unauthorized",
                          "missing or invalid bearer token\n");
 }
+
+// RAII: bind TenantGate::alive to an ApiClient preflight for the request
+// lifetime.  /parallel children inherit via copy_preflight_from.
+struct TenantPreflight {
+    std::shared_ptr<TenantGate> gate;
+    ApiClient&                  client;
+    TenantPreflight(std::shared_ptr<TenantGate> g, ApiClient& c)
+        : gate(std::move(g)), client(c) {
+        auto held = gate;
+        client.set_preflight([held]() { return held->alive(); });
+    }
+    ~TenantPreflight() { client.clear_preflight(); }
+    TenantPreflight(const TenantPreflight&) = delete;
+    TenantPreflight& operator=(const TenantPreflight&) = delete;
+};
 
 // ─── Orchestrate endpoint ───────────────────────────────────────────────────
 
@@ -5639,14 +5643,8 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     const std::string request_id = new_request_id();
     InFlightScope in_flight_scope(in_flight, request_id, orch.get(), tenant.id);
 
-    orch->client().set_preflight(
-        [&tenants, tenant_id = tenant.id, hash = tenant.api_key_hash]() {
-            return tenant_still_active(tenants, tenant_id, hash);
-        });
-    struct PreflightGuard {
-        ApiClient& client;
-        ~PreflightGuard() { client.clear_preflight(); }
-    } preflight_guard{orch->client()};
+    TenantPreflight preflight{TenantGate::create(tenants, tenant),
+                              orch->client()};
 
     AdvisorGateOutput out = run_advisor_gate(
         orch->client(), advisor_model, prompt_override, in);
@@ -8238,14 +8236,8 @@ void handle_a2a_message_send(int fd,
         return;
     }
 
-    orch->client().set_preflight(
-        [&tenants, tenant_id = tenant.id, hash = tenant.api_key_hash]() {
-            return tenant_still_active(tenants, tenant_id, hash);
-        });
-    struct PreflightGuard {
-        ApiClient& client;
-        ~PreflightGuard() { client.clear_preflight(); }
-    } preflight_guard{orch->client()};
+    TenantPreflight preflight{TenantGate::create(tenants, tenant),
+                              orch->client()};
 
     ApiResponse resp;
     try {
@@ -8535,14 +8527,8 @@ void handle_a2a_message_stream(int fd,
         return;
     }
 
-    orch->client().set_preflight(
-        [&tenants, tenant_id = tenant.id, hash = tenant.api_key_hash]() {
-            return tenant_still_active(tenants, tenant_id, hash);
-        });
-    struct PreflightGuard {
-        ApiClient& client;
-        ~PreflightGuard() { client.clear_preflight(); }
-    } preflight_guard{orch->client()};
+    TenantPreflight preflight{TenantGate::create(tenants, tenant),
+                              orch->client()};
 
     // Drive the agentic loop.  send_streaming returns the final
     // ApiResponse once the dispatch loop terminates (success or fail).
@@ -9683,6 +9669,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         return;
     }
 
+    // Arm preflight before catalog load / conversation hydration — those
+    // paths can call the provider (e.g. fold_compaction_gap) before
+    // send_streaming.  Capture id/hash by value for /parallel safety.
+    TenantPreflight preflight{TenantGate::create(tenants, tenant),
+                              orch->client()};
+
     // Begin the SSE response.
     SseStream sse(fd);
     sse.write_headers();
@@ -10426,17 +10418,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
         return;
     }
-
-    // Mid-turn kill-switch for CLI DB-only disable/rotate: re-read the
-    // tenant before every provider stream()/complete() attempt.
-    orch->client().set_preflight(
-        [&tenants, tenant_id = tenant.id, hash = tenant.api_key_hash]() {
-            return tenant_still_active(tenants, tenant_id, hash);
-        });
-    struct PreflightGuard {
-        ApiClient& client;
-        ~PreflightGuard() { client.clear_preflight(); }
-    } preflight_guard{orch->client()};
 
     try {
         auto resp = orch->send_streaming(agent_id, std::move(message_parts),

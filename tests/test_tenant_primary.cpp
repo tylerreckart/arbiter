@@ -2,10 +2,13 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "tenant_gate.h"
 #include "tenant_store.h"
 
 #include <chrono>
 #include <filesystem>
+#include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace arbiter;
@@ -167,4 +170,46 @@ TEST_CASE("rotate_token: invalidates old key and issues a new one") {
     CHECK(fresh->id == created.tenant.id);
 
     CHECK_FALSE(store.rotate_token("missing").has_value());
+}
+
+TEST_CASE("TenantGate: alive tracks disable and rotate; concurrent probes") {
+    TempDb db;
+    TenantStore store;
+    store.open(db.path.string());
+
+    const auto created = store.create_tenant("gated");
+    auto gate = TenantGate::create(store, created.tenant);
+    CHECK(gate->alive());
+
+    Tenant snap = created.tenant;
+    CHECK(gate->refresh(snap));
+    CHECK(snap.id == created.tenant.id);
+
+    REQUIRE(store.set_disabled(std::to_string(created.tenant.id), true));
+    CHECK_FALSE(gate->alive());
+    CHECK_FALSE(gate->refresh(snap));
+
+    REQUIRE(store.set_disabled(std::to_string(created.tenant.id), false));
+    CHECK(gate->alive());
+
+    auto rotated = store.rotate_token(std::to_string(created.tenant.id));
+    REQUIRE(rotated);
+    // Gate still holds the pre-rotate digest — revoke is immediate.
+    CHECK_FALSE(gate->alive());
+
+    auto gate2 = TenantGate::create(store, rotated->tenant);
+    CHECK(gate2->alive());
+
+    // Concurrent alive() must not race (no mutable snapshot).
+    std::atomic<int> ok{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 8; ++i) {
+        threads.emplace_back([&]() {
+            for (int j = 0; j < 200; ++j) {
+                if (gate2->alive()) ok.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+    CHECK(ok.load() == 8 * 200);
 }

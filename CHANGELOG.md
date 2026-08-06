@@ -18,15 +18,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   recovery from single-tenant installs whose plaintext was never shown).
   Admin HTTP rotate also cancels in-flight streams; the CLI is DB-only and
   warns that hot revoke needs the admin path (or disable-first).
-- **Kill-switch hardening.** Every authenticated route re-checks `disabled`
-  / rotated `api_key_hash` after bearer lookup; orchestrate constructs the
-  `Orchestrator` and registers `InFlightRegistry` before SSE headers so a
-  mid-setup kill-switch can cancel. Re-validates again immediately before
-  `send_streaming`/`send` (ApiClient clears its ephemeral cancel flag at call
-  entry); `ApiClient::cancel()` also sets a sticky `hard_cancelled_` bit
-  checked on every stream/complete attempt until `clear_hard_cancel()`.
-  Admin PATCH requires a boolean `disabled` field (no silent 200 no-op).
-  A2A RPC kill-switch failures stay JSON-RPC-shaped (not plain HTTP 401).
+- **Kill-switch via `TenantGate`.** Durable revoke probe: after auth, handlers
+  bind a thread-safe `TenantGate` to the per-request `ApiClient` preflight
+  (inherited by `/parallel` children). `alive()` re-reads disabled /
+  `api_key_hash` on every provider call and mid-stream read. Admin HTTP
+  disable/rotate also cancels `InFlightRegistry`; CLI rotate remains DB-only
+  and stops work at the next preflight. Sticky `hard_cancelled_` survives
+  ephemeral cancel clears. Admin PATCH requires boolean `disabled`. A2A
+  kill-switch stays JSON-RPC-shaped.
 
 ## [0.11.0] — 2026-08-06
 
