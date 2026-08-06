@@ -97,7 +97,7 @@ private:
 
     void prune_expired_locked(std::chrono::steady_clock::time_point now,
                               int64_t wall_now);
-    void prune_store(TenantStore* store) const;
+    void prune_store(TenantStore* store, int64_t wall_now) const;
     void remember_locked(const std::string& k, const std::string& request_id,
                          std::chrono::steady_clock::time_point now,
                          int64_t wall_created_at);

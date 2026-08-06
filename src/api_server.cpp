@@ -4408,12 +4408,29 @@ void handle_request_get(int fd, const std::string& request_id,
 void handle_request_events(int fd, const std::string& request_id,
                              const HttpRequest& req,
                              TenantStore& tenants, const Tenant& tenant,
-                             RequestEventBus* bus) {
-    auto status = tenants.get_request_status(tenant.id, request_id);
+                             RequestEventBus* bus,
+                             bool wait_for_status_row = false) {
+    std::optional<TenantStore::RequestStatus> status;
+    if (wait_for_status_row) {
+        for (int i = 0; i < 100; ++i) {
+            status = tenants.get_request_status(tenant.id, request_id);
+            if (status) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    } else {
+        status = tenants.get_request_status(tenant.id, request_id);
+    }
     if (!status) {
         auto err = jobj();
-        err->as_object_mut()["error"] = jstr("request not found");
-        write_json_response(fd, 404, err);
+        if (wait_for_status_row) {
+            err->as_object_mut()["error"] = jstr(
+                "request not ready — retry shortly (in-flight Idempotency-Key "
+                "claim may still be persisting)");
+            write_json_response(fd, 503, err);
+        } else {
+            err->as_object_mut()["error"] = jstr("request not found");
+            write_json_response(fd, 404, err);
+        }
         return;
     }
 
@@ -7920,9 +7937,8 @@ void handle_a2a_message_send(int fd,
 // emits one JSON-RPC chunk per arbiter event, all wrapped in TaskStatus
 // or TaskArtifact updates.  Closes with a final TaskStatusUpdateEvent
 // (final=true).  Tool-side callbacks (memory, MCP, search, structured
-// memory) are NOT yet wired here — they degrade to the same ERR
-// behavior as PR-2's synchronous send_message; PR-4 lifts both paths
-// to /v1/orchestrate parity.
+// memory) are wired via build_a2a_orchestrator → wire_orch_tools_impl;
+// streaming overrides the /write interceptor to emit A2A artifacts.
 void handle_a2a_message_stream(int fd,
                                 const std::shared_ptr<JsonValue>& rpc_id,
                                 const std::string& agent_id,
@@ -8078,21 +8094,38 @@ void handle_a2a_message_stream(int fd,
     // /write capture so the agent can emit files mid-turn and the
     // remote client receives them as artifact-update events rather
     // than the server filesystem absorbing them.  Mirrors handle_orchestrate's
-    // bytes-cap semantics so a runaway agent can't blow up the response.
+    // bytes-cap + sandbox persist semantics (wire_orch_tools_impl is overridden
+    // here so streamed clients still see workspace writes).
     std::atomic<size_t> bytes_captured{0};
     const size_t cap = opts.file_max_bytes;
+    SandboxManager* sandbox_mgr = opts.sandbox;
+    const int64_t sandbox_tid   = tenant.id;
     orch->set_write_interceptor(
-        [&writer, &bytes_captured, cap](const std::string& path,
-                                         const std::string& content) -> std::string {
+        [&writer, &bytes_captured, cap, sandbox_mgr, sandbox_tid](
+            const std::string& path,
+            const std::string& content) -> std::string {
             const size_t size = content.size();
             if (!try_reserve_file_bytes(bytes_captured, size, cap)) {
                 return "ERR: per-response file-size cap (" +
                        std::to_string(cap) + " bytes) reached — this file "
                        "was NOT included in the response.";
             }
+            std::string sandbox_suffix = ", not persisted)";
+            if (sandbox_mgr) {
+                std::string werr;
+                if (!sandbox_mgr->write_to_workspace(
+                        sandbox_tid, path, content, werr)) {
+                    release_file_bytes(bytes_captured, size);
+                    return "ERR: sandbox write failed for '" + path +
+                           "': " + werr;
+                }
+                sandbox_suffix = "; also saved to /workspace/" + path +
+                                 " in sandbox)";
+            }
             writer.emit_file(path, content, "text/plain");
             return "OK: captured " + std::to_string(size) +
-                   " bytes for '" + path + "' (streamed to client)";
+                   " bytes for '" + path + "' (streamed to client" +
+                   sandbox_suffix;
         });
 
     // Cancellation hook so /v1/requests/:task_id/cancel can interrupt
@@ -8784,17 +8817,22 @@ check_idempotency_replay(const ApiServerOptions& opts,
     return entry->request_id;
 }
 
-// Register a new (tenant_id, idempotency-key) → request_id mapping.
-// No-op when the header is absent or the cache isn't wired.  Called
-// after the request_status row is created so a concurrent retry
-// finds a valid id to replay against.
-void record_idempotency_key(const ApiServerOptions& opts,
-                              const HttpRequest& req, int64_t tenant_id,
-                              const std::string& request_id) {
-    if (!opts.idempotency) return;
+// Reserve (tenant_id, idempotency-key) → request_id before starting work.
+// Returns the canonical request_id when another in-flight request already
+// claimed the key (caller should replay that run).  Empty optional when
+// there is no key, the claim succeeded, or the cache isn't wired.
+std::optional<std::string>
+claim_idempotency_key(const ApiServerOptions& opts,
+                      const HttpRequest& req, int64_t tenant_id,
+                      const std::string& request_id) {
+    if (!opts.idempotency) return std::nullopt;
     std::string k = read_idempotency_key(req);
-    if (k.empty()) return;
-    opts.idempotency->put(tenant_id, k, request_id);
+    if (k.empty()) return std::nullopt;
+    if (opts.idempotency->put(tenant_id, k, request_id)) return std::nullopt;
+    if (auto entry = opts.idempotency->get(tenant_id, k)) {
+        return entry->request_id;
+    }
+    return std::nullopt;
 }
 
 // Two entry points funnel here: /v1/orchestrate (agent_override == "", read
@@ -8836,7 +8874,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     if (auto replay_id = check_idempotency_replay(opts, req, tenant.id)) {
         if (opts.metrics) opts.metrics->inc_idempotency_replay();
         handle_request_events(fd, *replay_id, req, tenants, tenant,
-                              request_event_bus);
+                              request_event_bus,
+                              /*wait_for_status_row=*/(request_event_bus != nullptr));
         return;
     }
     // No cached hit, but the client still sent an Idempotency-Key —
@@ -8991,16 +9030,77 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     }
 
+    // Allocate request_id and durable status before opening SSE so a
+    // concurrent Idempotency-Key retry can replay instead of starting
+    // a second execution once headers are on the wire.
+    const std::string request_id = new_request_id();
+
+    const bool persist_events_pre = (request_event_bus != nullptr);
+    bool       request_status_created = false;
+    if (persist_events_pre) {
+        const int64_t now_s_for_request = static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        try {
+            tenants.create_request_status(tenant.id, request_id,
+                /*agent_id=*/agent_override.empty() ? "" : agent_override,
+                conversation_id, now_s_for_request);
+            request_status_created = true;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr,
+                "[orchestrate] persist init failed for %s: %s\n",
+                request_id.c_str(), e.what());
+        }
+    }
+
+    // Join an in-flight run when this Idempotency-Key is already claimed.
+    // Reserve a new slot only when we have a durable request_status row
+    // (or persistence is off, as in tests).  If persist init failed, still
+    // look up an existing mapping so we do not start a duplicate run.
+    const bool idempotency_key_present = !read_idempotency_key(req).empty();
+    if (idempotency_key_present && opts.idempotency) {
+        std::optional<std::string> replay_id;
+        if (persist_events_pre && !request_status_created) {
+            replay_id = check_idempotency_replay(opts, req, tenant.id);
+        } else if (request_status_created || !persist_events_pre) {
+            replay_id = claim_idempotency_key(
+                opts, req, tenant.id, request_id);
+        }
+        if (replay_id) {
+            if (opts.metrics) opts.metrics->inc_idempotency_replay();
+            if (request_status_created && *replay_id != request_id) {
+                const int64_t completed = static_cast<int64_t>(
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count());
+                if (!tenants.update_request_status(
+                        request_id, std::optional<std::string>("failed"),
+                        completed,
+                        std::optional<std::string>(
+                            "duplicate Idempotency-Key — joined in-flight "
+                            "replay"),
+                        std::nullopt)) {
+                    std::fprintf(stderr,
+                        "[orchestrate] could not mark duplicate request %s "
+                        "failed after idempotency replay\n",
+                        request_id.c_str());
+                }
+            }
+            handle_request_events(fd, *replay_id, req, tenants, tenant,
+                                  request_event_bus,
+                                  /*wait_for_status_row=*/persist_events_pre);
+            return;
+        }
+    }
+
     // Begin the SSE response.
     SseStream sse(fd);
     sse.write_headers();
 
     const auto start_time = std::chrono::steady_clock::now();
 
-    // Allocate request_id and the server-side event logger up front so
-    // every error path below — including orchestrator-init failure —
-    // logs to stderr alongside its SSE error frame.
-    const std::string request_id = new_request_id();
+    // Server-side event logger so every error path below — including
+    // orchestrator-init failure — logs to stderr alongside its SSE frame.
     EventLogger logger(opts.log_verbose, request_id, tenant.name);
 
     // Metrics: classify the route from the entry-point arguments
@@ -9029,41 +9129,12 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         opts.metrics->inc_in_flight(tenant.id);
     }
 
-    // Wire durable SSE persistence + live-tail broadcast.  Insert the
-    // request_status row first so a reconnecting client can find the
-    // run by id even if no events have been persisted yet (a slow
-    // start-up where the orchestrator init takes seconds, for example).
-    // The append_request_event statement enforces FK to request_status,
-    // so the create_request_status call MUST land before any emit().
-    const int64_t now_s_for_request = static_cast<int64_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
-    const bool persist_events = (request_event_bus != nullptr);
-    bool       request_status_created = false;
-    if (persist_events) {
-        try {
-            tenants.create_request_status(tenant.id, request_id,
-                /*agent_id=*/agent_override.empty() ? "" : agent_override,
-                conversation_id, now_s_for_request);
-            request_status_created = true;
-            sse.set_persistence(&tenants, request_event_bus,
-                                tenant.id, request_id);
-        } catch (const std::exception& e) {
-            std::fprintf(stderr,
-                "[orchestrate] persist init failed for %s: %s\n",
-                request_id.c_str(), e.what());
-            // Carry on without persistence rather than 500ing the call;
-            // durable replay degrades, the wire stream still works.
-        }
-    }
-
-    // Register the idempotency key only when a request_status row exists
-    // for replay to target.  If persist init failed, writing a durable
-    // mapping would strand post-restart retries on 404 until TTL.
-    // Non-persist callers (tests / legacy) still record so in-process
-    // retries dedup as before.
-    if (request_status_created || !persist_events) {
-        record_idempotency_key(opts, req, tenant.id, request_id);
+    // Wire durable SSE persistence + live-tail broadcast.  request_status
+    // was created before SSE headers when persistence is enabled.
+    const bool persist_events = persist_events_pre;
+    if (persist_events && request_status_created) {
+        sse.set_persistence(&tenants, request_event_bus,
+                            tenant.id, request_id);
     }
 
     auto emit = [&sse, &logger](const std::string& ev,
