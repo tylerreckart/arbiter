@@ -4680,6 +4680,9 @@ void handle_request_events(int fd, const std::string& request_id,
     // SQL fetch holding the connection's CPU time.
     int64_t cursor = since_seq;
     while (true) {
+        // Kill-switch between backlog pages so a long replay stops after
+        // admin disable/rotate without waiting for live-tail heartbeats.
+        if (!refresh_active_tenant(tenants, tenant)) return;
         auto chunk = tenants.list_request_events(tenant.id, request_id,
                                                     cursor, /*limit=*/1000);
         if (chunk.empty()) break;
@@ -4730,6 +4733,9 @@ void handle_request_events(int fd, const std::string& request_id,
             }
         }
         if (have) {
+            // Kill-switch while the producer is still emitting — heartbeats
+            // alone would not fire on a busy stream.
+            if (!refresh_active_tenant(tenants, tenant)) break;
             // Skip events at or before the cursor — the publisher races
             // the backlog scan and may republish events we already wrote.
             if (ev.seq > cursor) {
@@ -4739,7 +4745,9 @@ void handle_request_events(int fd, const std::string& request_id,
             if (was_terminal) break;
             continue;
         }
-        // Heartbeat
+        // Heartbeat + kill-switch: drop the stream within ~30s of
+        // admin disable/rotate (including CLI DB-only rotate).
+        if (!refresh_active_tenant(tenants, tenant)) break;
         const char* hb = ": heartbeat\n\n";
         write_all(fd, hb, std::strlen(hb));
         next_heartbeat = clock::now() + std::chrono::seconds(30);
@@ -8807,6 +8815,7 @@ void handle_a2a_tasks_resubscribe(int fd,
 
     int64_t cursor = 0;
     while (true) {
+        if (!refresh_active_tenant(tenants, tenant)) return;
         auto chunk = tenants.list_request_events(tenant.id, task_id,
                                                     cursor, 1000);
         if (chunk.empty()) break;
@@ -8865,6 +8874,7 @@ void handle_a2a_tasks_resubscribe(int fd,
             }
         }
         if (have) {
+            if (!refresh_active_tenant(tenants, tenant)) break;
             if (ev.seq > cursor) {
                 TenantStore::RequestEvent re;
                 re.event_kind   = ev.event_kind;
@@ -8886,7 +8896,9 @@ void handle_a2a_tasks_resubscribe(int fd,
         }
         // Heartbeat — same shape as the native resubscribe, the SSE
         // comment line keeps the connection alive without committing
-        // a payload that A2A clients would have to ignore.
+        // a payload that A2A clients would have to ignore.  Also drop
+        // the stream on kill-switch within ~30s.
+        if (!refresh_active_tenant(tenants, tenant)) break;
         const char* hb = ": heartbeat\n\n";
         write_all(fd, hb, std::strlen(hb));
         next_heartbeat = clock::now() + std::chrono::seconds(30);
