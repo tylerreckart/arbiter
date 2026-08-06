@@ -273,6 +273,18 @@ public:
         preflight_ = nullptr;
     }
 
+    // Copy the parent's preflight into a /parallel child client so CLI
+    // DB-only revoke stops sub-agent provider calls too.
+    void copy_preflight_from(ApiClient& other) {
+        PreflightFn fn;
+        {
+            std::lock_guard<std::mutex> lk(other.preflight_mu_);
+            fn = other.preflight_;
+        }
+        std::lock_guard<std::mutex> lk(preflight_mu_);
+        preflight_ = std::move(fn);
+    }
+
     // Pure helpers — request body builders.  Public so unit tests can verify
     // each provider's wire shape directly without spinning up a mock server.
     // The OpenAI-compatible builder branches on provider name (OpenRouter vs

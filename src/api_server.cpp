@@ -4675,6 +4675,14 @@ void handle_request_events(int fd, const std::string& request_id,
         write_all(fd, f.str());
     };
 
+    auto write_kill_switch_done = [&](int64_t seq) {
+        auto term = jobj();
+        term->as_object_mut()["ok"]         = jbool(false);
+        term->as_object_mut()["error"]      = jstr("missing or invalid bearer token");
+        term->as_object_mut()["error_code"] = jstr("unauthorized");
+        write_envelope("done", seq, json_serialize(*term));
+    };
+
     // Replay backlog.  Page through in chunks of 1000 — for runs
     // longer than that we'd rather many small writes than one huge
     // SQL fetch holding the connection's CPU time.
@@ -4682,7 +4690,10 @@ void handle_request_events(int fd, const std::string& request_id,
     while (true) {
         // Kill-switch between backlog pages so a long replay stops after
         // admin disable/rotate without waiting for live-tail heartbeats.
-        if (!refresh_active_tenant(tenants, tenant)) return;
+        if (!refresh_active_tenant(tenants, tenant)) {
+            write_kill_switch_done(cursor + 1);
+            return;
+        }
         auto chunk = tenants.list_request_events(tenant.id, request_id,
                                                     cursor, /*limit=*/1000);
         if (chunk.empty()) break;
@@ -4735,7 +4746,10 @@ void handle_request_events(int fd, const std::string& request_id,
         if (have) {
             // Kill-switch while the producer is still emitting — heartbeats
             // alone would not fire on a busy stream.
-            if (!refresh_active_tenant(tenants, tenant)) break;
+            if (!refresh_active_tenant(tenants, tenant)) {
+                write_kill_switch_done(cursor + 1);
+                break;
+            }
             // Skip events at or before the cursor — the publisher races
             // the backlog scan and may republish events we already wrote.
             if (ev.seq > cursor) {
@@ -4747,7 +4761,10 @@ void handle_request_events(int fd, const std::string& request_id,
         }
         // Heartbeat + kill-switch: drop the stream within ~30s of
         // admin disable/rotate (including CLI DB-only rotate).
-        if (!refresh_active_tenant(tenants, tenant)) break;
+        if (!refresh_active_tenant(tenants, tenant)) {
+            write_kill_switch_done(cursor + 1);
+            break;
+        }
         const char* hb = ": heartbeat\n\n";
         write_all(fd, hb, std::strlen(hb));
         next_heartbeat = clock::now() + std::chrono::seconds(30);
@@ -5783,6 +5800,10 @@ void handle_notifications_stream(int fd, TenantStore& tenants, Tenant tenant,
         // Heartbeat path: re-check kill-switch so a long-lived subscription
         // drops within ~30s of admin disable/rotate.
         if (!refresh_active_tenant(tenants, tenant)) {
+            std::string frame =
+                "event: error\ndata: {\"error\":\"missing or invalid bearer token\","
+                "\"error_code\":\"unauthorized\"}\n\n";
+            write_all(fd, frame);
             break;
         }
         const char* hb = ": heartbeat\n\n";
@@ -8900,7 +8921,10 @@ void handle_a2a_tasks_resubscribe(int fd,
 
     int64_t cursor = 0;
     while (true) {
-        if (!refresh_active_tenant(tenants, tenant)) return;
+        if (!refresh_active_tenant(tenants, tenant)) {
+            writer.emit_status(a2a::TaskState::failed, /*final=*/true);
+            return;
+        }
         auto chunk = tenants.list_request_events(tenant.id, task_id,
                                                     cursor, 1000);
         if (chunk.empty()) break;
@@ -8959,7 +8983,10 @@ void handle_a2a_tasks_resubscribe(int fd,
             }
         }
         if (have) {
-            if (!refresh_active_tenant(tenants, tenant)) break;
+            if (!refresh_active_tenant(tenants, tenant)) {
+                writer.emit_status(a2a::TaskState::failed, /*final=*/true);
+                break;
+            }
             if (ev.seq > cursor) {
                 TenantStore::RequestEvent re;
                 re.event_kind   = ev.event_kind;
@@ -8983,7 +9010,10 @@ void handle_a2a_tasks_resubscribe(int fd,
         // comment line keeps the connection alive without committing
         // a payload that A2A clients would have to ignore.  Also drop
         // the stream on kill-switch within ~30s.
-        if (!refresh_active_tenant(tenants, tenant)) break;
+        if (!refresh_active_tenant(tenants, tenant)) {
+            writer.emit_status(a2a::TaskState::failed, /*final=*/true);
+            break;
+        }
         const char* hb = ": heartbeat\n\n";
         write_all(fd, hb, std::strlen(hb));
         next_heartbeat = clock::now() + std::chrono::seconds(30);

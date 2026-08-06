@@ -1610,6 +1610,18 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
     // still there for the occasional large tool-result event.
     line_buf.reserve(8192);
     char buf[4096];
+    int preflight_ticks = 0;
+    auto should_abort_io = [&]() -> bool {
+        if (is_request_cancelled()) return true;
+        // Re-check kill-switch preflight every 32 recv iterations so a
+        // CLI DB-only revoke can interrupt a long provider read without
+        // hitting SQLite on every byte.
+        if ((++preflight_ticks % 32) == 0 && !run_preflight()) {
+            hard_cancelled_.store(true, std::memory_order_release);
+            return true;
+        }
+        return false;
+    };
 
     // Drain `leftover` before reading from the socket — same pattern as
     // read_response_body, so body bytes caught during the buffered header
@@ -1674,11 +1686,11 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
     };
 
     if (chunked) {
-        while (!is_request_cancelled()) {
+        while (!should_abort_io()) {
             std::string size_line;
             while (true) {
                 int n = recv_some(buf, 1);
-                if (n <= 0 || is_request_cancelled()) goto stream_done;
+                if (n <= 0 || should_abort_io()) goto stream_done;
                 if (buf[0] == '\n') break;
                 if (buf[0] != '\r') size_line += buf[0];
             }
@@ -1687,7 +1699,7 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
 
             int read_so_far = 0;
             while (read_so_far < chunk_size) {
-                if (is_request_cancelled()) goto stream_done;
+                if (should_abort_io()) goto stream_done;
                 int to_read = std::min(chunk_size - read_so_far, (int)sizeof(buf));
                 int n = recv_some(buf, to_read);
                 if (n <= 0) goto stream_done;
@@ -1696,14 +1708,15 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
             }
             recv_some(buf, 2);  // trailing \r\n
         }
-        if (!is_request_cancelled()) recv_some(buf, 2);
+        if (!is_request_cancelled() && !hard_cancelled_.load(std::memory_order_acquire))
+            recv_some(buf, 2);
     } else {
         int content_length = -1;
         auto cl_pos = headers.find("Content-Length: ");
         if (cl_pos != std::string::npos)
             content_length = std::atoi(headers.c_str() + cl_pos + 16);
         int read_so_far = 0;
-        while ((content_length < 0 || read_so_far < content_length) && !is_request_cancelled()) {
+        while ((content_length < 0 || read_so_far < content_length) && !should_abort_io()) {
             int n = recv_some(buf, sizeof(buf));
             if (n <= 0) break;
             feed(buf, n);

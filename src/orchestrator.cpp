@@ -324,6 +324,9 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             child_clients.push_back(std::make_unique<ApiClient>(api_keys_));
             child_clients.back()->set_circuit_breaker(client_.circuit_breaker());
             child_clients.back()->set_metrics(client_.metrics());
+            // Inherit kill-switch preflight so CLI DB-only revoke stops
+            // sub-agent provider traffic as well as the parent client.
+            child_clients.back()->copy_preflight_from(client_);
             // Share the parent's reasoning sink so thought deltas still reach
             // the TUI when the provider emits them.  Workers also re-pin the
             // spawning pane + tool conversation TLS via tl_worker_pane_binder.
