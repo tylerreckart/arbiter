@@ -9312,6 +9312,24 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     }
 
+    // Kill-switch re-check before committing SSE headers.  Must stay ahead
+    // of write_headers() so a disable that landed after the entry refresh
+    // still returns a clean HTTP 401 (not a corrupted half-SSE + plain body).
+    if (!refresh_active_tenant(tenants, tenant)) {
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>("tenant disabled"),
+                std::nullopt);
+        }
+        reject_disabled_tenant(fd);
+        return;
+    }
+
     // Begin the SSE response.
     SseStream sse(fd);
     sse.write_headers();
@@ -9438,14 +9456,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     }
 
     auto* orch_ptr = orch.get();
-
-    // Final kill-switch check immediately before becoming cancellable /
-    // starting LLM work.  Closes the window between the entry refresh
-    // (above) and InFlightRegistry registration.
-    if (!refresh_active_tenant(tenants, tenant)) {
-        reject_disabled_tenant(fd);
-        return;
-    }
 
     // Register this orchestration so `POST /v1/requests/:id/cancel` can
     // reach it.  Lifetime matches the orchestrator; scope unwinds on every
