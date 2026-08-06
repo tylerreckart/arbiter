@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="assets/icons/terminal_blue.png" alt="Logo" width="100">
+  <img src="assets/icons/terminal_orange.png" alt="Logo" width="98">
   <h1 align="left">Arbiter</h1>
   <p align="left">
     A multi-agent runtime in a single native binary.
@@ -15,9 +15,13 @@
   </p>
 </p>
 
-![Arbiter session sidebar and inline diff rendering](assets/screenshots/gotham.jpg)
+![Arbiter session sidebar and inline diff rendering](assets/screenshots/vesper.jpg)
 
-Run multi-agent workflows on your machine — interactive TUI, one-shot CLI, or HTTP+SSE — with hard tool allowlists and a shared streaming event bus.
+## About
+
+Arbiter is a multi-agent orchestration harness built to be secure, durable, and event-driven. While there are many excellent agent frameworks available, they often force you to choose between strict tool limits, durable memory, or real-time event routing. Arbiter provides all three.
+
+The Arbiter runtime is a thin, event-streaming orchestration engine for building agent specialists and integrating real-time reasoning functionality (such as routing webhooks and sensor data via glob matching). Anyone can use the runtime to own their harness and embed strict, constitution-driven agents into their own applications—without duct-taping a chat CLI to someone else's API.
 
 ## Quick start
 
@@ -30,7 +34,7 @@ arbiter # open the TUI
 Linux binaries, source builds, Ollama, `--send`, and `--api` are in
 [getting-started/local](https://arbiter.run/docs/getting-started/local/).
 
-## One runtime, three faces
+## One Engine, Three Surfaces
 
 | Mode | Command | For |
 |------|---------|-----|
@@ -39,13 +43,6 @@ Linux binaries, source builds, Ollama, `--send`, and `--api` are in
 | Server | `arbiter --api` | HTTP+SSE API, tenant-isolated, A2A v1.0 |
 
 One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollama, …) are the only external dependency for model calls.
-
-## Why run it
-
-- **Own the harness.** Orchestrate specialists, durable memory, and tool use without duct-taping a chat CLI to someone else's API. The runtime stays thin; agent behavior lives in constitutions (JSON: model, role, rules, tool allowlist).
-- **Hard limits, not prompt suggestions.** Every agent's tool surface is an allowlist checked at dispatch.
-- **One event model everywhere.** The orchestration loop streams the same SSE-shaped events the TUI already consumes. API clients get that stream over the wire; durable request logs make reconnect and replay possible.
-- **Realtime reasoning.** Webhooks, queues, firmware, and sensors can `POST /v1/events`; declare a glob per agent and Arbiter routes matching events there.
 
 ## Documentation
 
@@ -57,6 +54,10 @@ One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollam
 - [`ROADMAP.md`](ROADMAP.md) — phased plan toward 1.0 readiness
 - [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md)
 
-Arbiter is experimental. The event surface, agent constitutions, and HTTP shape may change. `/exec` is unsandboxed by default; treat it accordingly.
+> [!WARNING]
+>
+> Arbiter is experimental software and has not reached a stable v1.0.
+> The event surface, agent constitutions, and HTTP shape are subject to
+> change. `/exec` is [unsandboxed by default](https://arbiter.run/docs/concepts/sandbox/); treat it accordingly. 
 
 Licensed under the [Apache License 2.0](LICENSE).
