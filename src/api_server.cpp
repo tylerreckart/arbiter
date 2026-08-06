@@ -11192,7 +11192,11 @@ void ApiServer::handle_connection(int fd) {
                     return;
                 }
                 if (!refresh_active_tenant(tenants_, *tenant)) {
-                    reject_disabled_tenant(fd);
+                    // Stay on the JSON-RPC envelope contract for this POST
+                    // (same shape as handle_a2a_rpc) — never plain HTTP 401.
+                    write_a2a_rpc(fd, a2a::make_error_response(
+                        nullptr, a2a::RPC_INVALID_REQUEST,
+                        "missing or invalid bearer token"));
                     return;
                 }
                 auto lim = limiter_->acquire(tenant->id);
