@@ -23,29 +23,27 @@ Arbiter is a multi-agent orchestration harness built to be secure, durable, and 
 
 The Arbiter runtime is a thin, event-streaming orchestration engine for building agent specialists and integrating real-time reasoning functionality (such as routing webhooks and sensor data via glob matching). Anyone can use the runtime to own their harness and embed strict, constitution-driven agents into their own applications—without duct-taping a chat CLI to someone else's API.
 
+## One Event Model Everywhere
+
+| Mode | Command | For |
+|------|---------|-----|
+| Interactive | `arbiter` | Multi-pane TUI, global conversation store |
+| Remote TUI | `arbiter --connect <url>` | Same TUI as a thin client of a remote `arbiter --api` |
+| One-shot | `arbiter --send <agent> "..."` | Scripts, cron, CI |
+| Server | `arbiter --api` | HTTP+SSE API, tenant-isolated, A2A v1.0 |
+
+One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollama, …) are the only external dependency for model calls.
+
 ## Quick start
 
 ```bash
 curl -fsSL https://arbiter.run/install.sh | sh
 
 arbiter # local TUI
-# remote session (thin client to arbiter --api on another host):
-arbiter --connect https://arbiter.example.com --token atr_…
 ```
 
 Linux binaries, source builds, Ollama, `--send`, `--api`, and `--connect` are in
 [getting-started/local](https://arbiter.run/docs/getting-started/local/).
-
-## One Engine, Four Modes
-
-| Mode | Command | For |
-|------|---------|-----|
-| Interactive | `arbiter` | Multi-pane TUI, global conversation store |
-| Remote TUI | `arbiter --connect <url>` | Same TUI as a thin client of a remote `arbiter --api` (no local provider keys) |
-| One-shot | `arbiter --send <agent> "..."` | Scripts, cron, CI |
-| Server | `arbiter --api` | HTTP+SSE API, tenant-isolated, A2A v1.0 |
-
-One binary. Shared storage under `~/.arbiter/`. Provider keys (OpenRouter, Ollama, …) are the only external dependency for model calls.
 
 ## Documentation
 
