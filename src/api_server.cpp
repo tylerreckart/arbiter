@@ -592,6 +592,16 @@ bool refresh_active_tenant(TenantStore& tenants, Tenant& tenant) {
     return true;
 }
 
+// Read-only kill-switch probe for ApiClient preflight callbacks.  Safe to
+// call concurrently from /parallel workers — does not mutate the caller's
+// Tenant snapshot (unlike refresh_active_tenant).
+bool tenant_still_active(TenantStore& tenants, int64_t tenant_id,
+                         const std::string& api_key_hash) {
+    auto fresh = tenants.get_tenant(tenant_id);
+    if (!fresh || fresh->disabled) return false;
+    return fresh->api_key_hash == api_key_hash;
+}
+
 void reject_disabled_tenant(int fd) {
     write_plain_response(fd, 401, "Unauthorized",
                          "missing or invalid bearer token\n");
@@ -5630,7 +5640,9 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     InFlightScope in_flight_scope(in_flight, request_id, orch.get(), tenant.id);
 
     orch->client().set_preflight(
-        [&tenants, &tenant]() { return refresh_active_tenant(tenants, tenant); });
+        [&tenants, tenant_id = tenant.id, hash = tenant.api_key_hash]() {
+            return tenant_still_active(tenants, tenant_id, hash);
+        });
     struct PreflightGuard {
         ApiClient& client;
         ~PreflightGuard() { client.clear_preflight(); }
@@ -8227,7 +8239,9 @@ void handle_a2a_message_send(int fd,
     }
 
     orch->client().set_preflight(
-        [&tenants, &tenant]() { return refresh_active_tenant(tenants, tenant); });
+        [&tenants, tenant_id = tenant.id, hash = tenant.api_key_hash]() {
+            return tenant_still_active(tenants, tenant_id, hash);
+        });
     struct PreflightGuard {
         ApiClient& client;
         ~PreflightGuard() { client.clear_preflight(); }
@@ -8522,7 +8536,9 @@ void handle_a2a_message_stream(int fd,
     }
 
     orch->client().set_preflight(
-        [&tenants, &tenant]() { return refresh_active_tenant(tenants, tenant); });
+        [&tenants, tenant_id = tenant.id, hash = tenant.api_key_hash]() {
+            return tenant_still_active(tenants, tenant_id, hash);
+        });
     struct PreflightGuard {
         ApiClient& client;
         ~PreflightGuard() { client.clear_preflight(); }
@@ -10414,7 +10430,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // Mid-turn kill-switch for CLI DB-only disable/rotate: re-read the
     // tenant before every provider stream()/complete() attempt.
     orch->client().set_preflight(
-        [&tenants, &tenant]() { return refresh_active_tenant(tenants, tenant); });
+        [&tenants, tenant_id = tenant.id, hash = tenant.api_key_hash]() {
+            return tenant_still_active(tenants, tenant_id, hash);
+        });
     struct PreflightGuard {
         ApiClient& client;
         ~PreflightGuard() { client.clear_preflight(); }
