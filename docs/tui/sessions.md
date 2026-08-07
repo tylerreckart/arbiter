@@ -87,7 +87,8 @@ message window.
 Compaction triggers automatically when the last turn's prompt tokens reach
 ~75% of the model's known context window (or an approximate character budget
 when the window is unknown). Override with `ARBITER_COMPACT_THRESHOLD`
-(0–1) or disable autos with `ARBITER_COMPACT_DISABLED=1`. Use `/compact [agent]`
+(integer percent 1–100, default `75`) or disable autos with
+`ARBITER_COMPACT_DISABLED=1`. Use `/compact [agent]`
 to force it. `/reset` clears both history and compaction state for that agent.
 
 The summary call uses `constitution.advisor.model` when set, otherwise the
