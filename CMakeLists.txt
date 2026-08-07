@@ -199,6 +199,8 @@ set(ARBITER_SOURCES
     src/idempotency_cache.cpp
     src/metrics.cpp
     src/circuit_breaker.cpp
+    src/cors.cpp
+    src/event_routing.cpp
     src/logger.cpp
     src/tenant_limiter.cpp
     src/tenant_store.cpp
@@ -1179,6 +1181,39 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_circuit_breaker COMMAND unit_circuit_breaker)
 
+    # --- Unit tests for CORS allowlist policy ---
+    add_executable(unit_cors
+        tests/test_cors.cpp
+        src/cors.cpp
+    )
+    target_include_directories(unit_cors PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_cors COMMAND unit_cors)
+
+    # --- Unit tests for /v1/events agent routing ---
+    add_executable(unit_route_event
+        tests/test_route_event.cpp
+        src/event_routing.cpp
+        src/constitution.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_route_event PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_route_event PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+    )
+    add_test(NAME unit_route_event COMMAND unit_route_event)
+
     # --- Unit tests for the structured logger ---
     add_executable(unit_logger
         tests/test_logger.cpp
@@ -1300,6 +1335,7 @@ if(INDEX_BUILD_TESTS)
         src/sandbox.cpp
         src/ssrf_guard.cpp
         src/metrics.cpp
+        src/logger.cpp
     )
     target_include_directories(unit_sandbox_ssrf PRIVATE
         ${CMAKE_SOURCE_DIR}/include
@@ -1316,6 +1352,7 @@ if(INDEX_BUILD_TESTS)
         src/sandbox.cpp
         src/ssrf_guard.cpp
         src/metrics.cpp
+        src/logger.cpp
     )
     target_include_directories(unit_sandbox_quota PRIVATE
         ${CMAKE_SOURCE_DIR}/include

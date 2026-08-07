@@ -10,7 +10,6 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
-#include <fnmatch.h>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -163,29 +162,6 @@ void Orchestrator::load_agents(const std::string& dir) {
             }
         }
     }
-}
-
-std::string route_event(const std::string& agents_dir,
-                        const std::string& event_type) {
-    if (!fs::is_directory(agents_dir)) return "index";
-    for (auto& entry : fs::directory_iterator(agents_dir)) {
-        if (entry.path().extension() != ".json") continue;
-        try {
-            auto config = Constitution::from_file(entry.path().string());
-            for (const auto& pattern : config.event_types) {
-                if (fnmatch(pattern.c_str(), event_type.c_str(), 0) == 0) {
-                    std::string id = config.name.empty()
-                        ? entry.path().stem().string()
-                        : config.name;
-                    return id;
-                }
-            }
-        } catch (const std::exception& e) {
-            fprintf(stderr, "WARN: route_event skip %s: %s\n",
-                    entry.path().c_str(), e.what());
-        }
-    }
-    return "index";
 }
 
 // Build an AgentInvoker that runs a sub-agent through the full dispatch loop.

@@ -62,13 +62,17 @@ row is in view, or left-click the block in the scroll region.
 
 ## Permission cards
 
-Host `/exec` (when enabled) prompts with a multi-line permission card before
-running the shell command. Plain `/write` in the TUI confirms, then writes the
-process cwd (verified). The API server’s capture-only `/write` interceptor is
-cleared for the interactive TUI and `--send` CLI so host sessions persist files.
+Host `/exec` (when enabled and not Docker-sandboxed) always prompts with a
+multi-line permission card labelled `HOST SHELL (unsandboxed)` before running
+the command. Sandboxed `/exec` (opt-in via `ARBITER_SANDBOX_IMAGE`) only
+confirms destructive patterns. Plain `/write` in the TUI confirms, then writes
+the process cwd (verified). The API server’s capture-only `/write` interceptor
+is cleared for the interactive TUI and `--send` CLI so host sessions persist
+files.
 
 ```
 permission exec  git status
+  HOST SHELL (unsandboxed)
   allow? [y/N]
 ```
 

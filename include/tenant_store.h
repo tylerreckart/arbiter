@@ -480,6 +480,13 @@ public:
     std::vector<AgentRecord> list_agent_records(int64_t tenant_id,
                                                  int limit) const;
 
+    // All tenant agents ordered by `agent_id` ascending.  Intended for
+    // infrequent full scans (POST /v1/events routing).  Soft-capped at
+    // 10000 to bound pathological tenants — event routing must not miss
+    // agents that fell off the newest-200 list page.
+    std::vector<AgentRecord> list_agent_records_for_routing(
+        int64_t tenant_id) const;
+
     // Wholesale replace.  Bumps updated_at.  Returns false if the row
     // doesn't exist for this tenant.
     bool update_agent_record(int64_t tenant_id,

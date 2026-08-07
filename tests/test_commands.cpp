@@ -740,9 +740,76 @@ TEST_CASE("exec confirm request does not duplicate short command in preview") {
     CHECK(called);
     CHECK(seen.action == "exec");
     CHECK(seen.target == e.args);
+    CHECK(seen.summary.find("HOST SHELL") != std::string::npos);
     CHECK(seen.summary.find("destructive") != std::string::npos);
     CHECK(seen.preview_lines.empty());
     CHECK(result.find("user declined") != std::string::npos);
+}
+
+TEST_CASE("host exec always confirms with HOST SHELL danger label") {
+    ConfirmRequest seen;
+    bool called = false;
+    ConfirmFn capture = [&](const ConfirmRequest& req) {
+        called = true;
+        seen = req;
+        return false;
+    };
+
+    std::vector<AgentCommand> cmds;
+    AgentCommand e;
+    e.name = "exec";
+    e.args = "git status";
+    cmds.push_back(e);
+
+    auto result = execute_agent_commands(
+        cmds, "test", "", nullptr, capture);
+    CHECK(called);
+    CHECK(seen.summary == "HOST SHELL (unsandboxed)");
+    CHECK(result.find("user declined") != std::string::npos);
+}
+
+TEST_CASE("sandboxed exec skips confirm for safe commands") {
+    bool called = false;
+    ConfirmFn capture = [&](const ConfirmRequest&) {
+        called = true;
+        return false;
+    };
+    ExecInvoker sandbox = [](const std::string& cmd) {
+        return std::string("sandboxed:") + cmd;
+    };
+
+    std::vector<AgentCommand> cmds;
+    AgentCommand e;
+    e.name = "exec";
+    e.args = "git status";
+    cmds.push_back(e);
+
+    auto result = execute_agent_commands(
+        cmds, "test", "",
+        /*agent_invoker=*/nullptr,
+        capture,
+        /*dedup_cache=*/nullptr,
+        /*advisor_invoker=*/nullptr,
+        /*tool_status=*/nullptr,
+        /*pane_spawner=*/nullptr,
+        /*write_interceptor=*/nullptr,
+        /*exec_disabled=*/false,
+        /*parallel_invoker=*/nullptr,
+        /*structured_memory_reader=*/nullptr,
+        /*structured_memory_writer=*/nullptr,
+        /*mcp_invoker=*/nullptr,
+        /*memory_scratchpad=*/nullptr,
+        /*search_invoker=*/nullptr,
+        /*artifact_writer=*/nullptr,
+        /*artifact_reader=*/nullptr,
+        /*artifact_lister=*/nullptr,
+        /*a2a_invoker=*/nullptr,
+        /*scheduler_invoker=*/nullptr,
+        /*todo_invoker=*/nullptr,
+        /*lesson_invoker=*/nullptr,
+        sandbox);
+    CHECK_FALSE(called);
+    CHECK(result.find("sandboxed:git status") != std::string::npos);
 }
 
 TEST_CASE("exec confirm request previews when target is truncated") {

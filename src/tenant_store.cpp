@@ -2867,6 +2867,23 @@ TenantStore::list_agent_records(int64_t tenant_id, int limit) const {
     return out;
 }
 
+std::vector<AgentRecord>
+TenantStore::list_agent_records_for_routing(int64_t tenant_id) const {
+    std::vector<AgentRecord> out;
+    if (!db_) return out;
+    // Stable ascending agent_id so event routing is deterministic across
+    // restarts.  Soft cap keeps a pathological tenant from OOM-ing the
+    // infrequent /v1/events path; well above the REST list page size.
+    static constexpr int kRoutingCap = 10000;
+    Stmt q(db_, (std::string("SELECT ") + kAgentCols +
+                 " FROM tenant_agents WHERE tenant_id = ? "
+                 " ORDER BY agent_id ASC LIMIT ?;").c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, static_cast<int64_t>(kRoutingCap));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_agent(q));
+    return out;
+}
+
 bool TenantStore::update_agent_record(int64_t tenant_id,
                                        const std::string& agent_id,
                                        const std::string& name,

@@ -18,6 +18,7 @@
 #include "tenant_store.h"
 
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <thread>
 
@@ -202,4 +203,31 @@ TEST_CASE("list_agent_records caps limit at 200") {
 
     auto rows_negative = s.list_agent_records(tid, -5);
     CHECK(rows_negative.size() == 1);
+}
+
+TEST_CASE("list_agent_records_for_routing returns all agents by agent_id") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+
+    // Create 201 agents so the REST list page (hard-capped at 200) would
+    // drop at least one — event routing must still see the full catalog.
+    for (int i = 0; i < 201; ++i) {
+        char id[32];
+        std::snprintf(id, sizeof(id), "agent-%03d", i);
+        REQUIRE(s.create_agent_record(tid, id, id, "r", "m", kBlobV1).has_value());
+    }
+
+    auto page = s.list_agent_records(tid, 200);
+    CHECK(page.size() == 200);
+
+    auto all = s.list_agent_records_for_routing(tid);
+    REQUIRE(all.size() == 201);
+    // Ascending agent_id — independent of updated_at.
+    for (size_t i = 1; i < all.size(); ++i) {
+        CHECK(all[i - 1].agent_id < all[i].agent_id);
+    }
+    CHECK(all.front().agent_id == "agent-000");
+    CHECK(all.back().agent_id == "agent-200");
 }

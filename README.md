@@ -59,6 +59,7 @@ Linux binaries, source builds, Ollama, `--send`, `--api`, and `--connect` are in
 >
 > Arbiter is experimental software and has not reached a stable v1.0.
 > The event surface, agent constitutions, and HTTP shape are subject to
-> change. `/exec` is [unsandboxed by default](https://arbiter.run/docs/concepts/sandbox/); treat it accordingly. 
+> change. TUI `/exec` is [unsandboxed by default](https://arbiter.run/docs/concepts/sandbox/)
+> (confirm-gated host shell; set `ARBITER_SANDBOX_IMAGE` for Docker). 
 
 Licensed under the [Apache License 2.0](LICENSE).

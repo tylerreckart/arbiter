@@ -15,6 +15,7 @@
 #include "repl/layout.h"
 #include "repl/pane.h"
 #include "repl/pane_history.h"
+#include "sandbox.h"
 #include "scheduler.h"
 #include "tui/history_sidebar.h"
 #include "tui/interactive_prompt.h"
@@ -133,6 +134,9 @@ struct ReplSession {
 
     std::shared_ptr<std::atomic<int64_t>> tool_conversation_id;
     ApiServerOptions api_opts{};
+    // Owns the optional TUI Docker sandbox (ARBITER_SANDBOX_IMAGE).  Must
+    // outlive api_opts.sandbox / wire_orchestrator_tools callbacks.
+    std::unique_ptr<SandboxManager> sandbox_manager;
     NotificationBus notifications;
     std::unique_ptr<Scheduler> scheduler;  // constructed during boot
 

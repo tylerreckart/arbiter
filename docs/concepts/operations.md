@@ -29,9 +29,9 @@ If you build against a SQLite that already defaults to serialized mode (Linux di
 
 ## CORS
 
-Every response includes permissive CORS headers (`Access-Control-Allow-Origin: *`, methods `GET, POST, PATCH, DELETE, OPTIONS`, headers `Authorization, Content-Type, Accept`). `OPTIONS` preflights short-circuit before auth and return `204` so a SPA on a different origin can hit the API in dev with no proxy.
+By default every response includes permissive CORS headers (`Access-Control-Allow-Origin: *`, methods `GET, POST, PATCH, DELETE, OPTIONS`, headers `Authorization, Content-Type, Accept, Idempotency-Key, If-None-Match`). `OPTIONS` preflights short-circuit before auth and return `204` so a SPA on a different origin can hit the API in dev with no proxy.
 
-Bearer auth carries in the `Authorization` header — no cookies — so credentials are never sent. To restrict origins in production, terminate at a reverse proxy and override `Access-Control-Allow-Origin` there, or extend `kCorsHeaders` in `src/api_server.cpp` to read an allowlist from `ARBITER_CORS_ORIGINS`.
+Bearer auth carries in the `Authorization` header — no cookies — so credentials are never sent and `Access-Control-Allow-Credentials` is not set. To restrict origins in production without a reverse-proxy override, set `ARBITER_CORS_ORIGINS` to a comma-separated allowlist (for example `https://app.example.com,http://localhost:5173`). Matching requests echo the request `Origin` and add `Vary: Origin`; mismatches omit `Access-Control-Allow-Origin` so the browser blocks the cross-origin read. A reverse-proxy allowlist remains a valid alternative.
 
 ## Per-tenant rate / concurrency limiting
 
@@ -111,9 +111,14 @@ JSON mode is intended for log aggregators (Loki, ELK, Datadog) that index by fie
 
 ## Provider circuit breaker
 
-A per-provider circuit breaker sits in front of the per-request retry loop. After **5 consecutive failures** (5xx or 429 past the retry budget) against the same provider, the breaker opens for a **30 s cooldown**. Calls while open return a structured `circuit_open` error from the `done` event's `error_code` field — agents see a fast-fail instead of every parallel request burning four retries against a clearly-unhealthy upstream. When the cooldown elapses, the next call admits as a half-open probe; success closes the breaker, failure reopens it with a fresh cooldown.
+A per-provider circuit breaker sits in front of the per-request retry loop. After **N consecutive failures** (5xx or 429 past the retry budget) against the same provider, the breaker opens for a cooldown. Defaults are **5** failures and **30 s** cooldown. Calls while open return a structured `circuit_open` error from the `done` event's `error_code` field — agents see a fast-fail instead of every parallel request burning four retries against a clearly-unhealthy upstream. When the cooldown elapses, the next call admits as a half-open probe; success closes the breaker, failure reopens it with a fresh cooldown.
 
-State per provider is exposed via the `arbiter_provider_circuit_open_total` counter on `/v1/metrics`. Defaults are tuned conservatively for v1 — operator-tunable thresholds (env vars) are a Phase 5 follow-up.
+| Env var                                | Meaning                                         | Default |
+|----------------------------------------|-------------------------------------------------|---------|
+| `ARBITER_CIRCUIT_FAILURE_THRESHOLD`    | Consecutive failures that open the breaker (≥1) | `5`     |
+| `ARBITER_CIRCUIT_COOLDOWN_SECONDS`     | Open-state cooldown before a half-open probe    | `30`    |
+
+State per provider is exposed via the `arbiter_provider_circuit_open_total` counter on `/v1/metrics`.
 
 ## Admin audit log
 

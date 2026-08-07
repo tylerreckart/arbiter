@@ -5,8 +5,9 @@
 #include "doctest.h"
 #include "circuit_breaker.h"
 
-#include <thread>
 #include <chrono>
+#include <cstdlib>
+#include <thread>
 
 using namespace arbiter;
 
@@ -147,4 +148,35 @@ TEST_CASE("providers are tracked independently") {
     CHECK(cb.state("anthropic") == ProviderCircuitBreaker::State::Open);
     CHECK(cb.state("openai")    == ProviderCircuitBreaker::State::Closed);
     CHECK(cb.allow("openai"));
+}
+
+TEST_CASE("load_circuit_breaker_config_from_env reads ARBITER_CIRCUIT_*") {
+    // Save / restore so parallel doctest runs (if any) don't leak.
+    const char* old_th = std::getenv("ARBITER_CIRCUIT_FAILURE_THRESHOLD");
+    const char* old_cd = std::getenv("ARBITER_CIRCUIT_COOLDOWN_SECONDS");
+    auto restore = [&]() {
+        if (old_th) ::setenv("ARBITER_CIRCUIT_FAILURE_THRESHOLD", old_th, 1);
+        else ::unsetenv("ARBITER_CIRCUIT_FAILURE_THRESHOLD");
+        if (old_cd) ::setenv("ARBITER_CIRCUIT_COOLDOWN_SECONDS", old_cd, 1);
+        else ::unsetenv("ARBITER_CIRCUIT_COOLDOWN_SECONDS");
+    };
+
+    ::setenv("ARBITER_CIRCUIT_FAILURE_THRESHOLD", "3", 1);
+    ::setenv("ARBITER_CIRCUIT_COOLDOWN_SECONDS", "12", 1);
+    auto cfg = load_circuit_breaker_config_from_env();
+    CHECK(cfg.failure_threshold == 3);
+    CHECK(cfg.cooldown_seconds == 12);
+
+    ::setenv("ARBITER_CIRCUIT_FAILURE_THRESHOLD", "0", 1);  // clamp to 1
+    ::setenv("ARBITER_CIRCUIT_COOLDOWN_SECONDS", "-5", 1);  // clamp to 0
+    cfg = load_circuit_breaker_config_from_env();
+    CHECK(cfg.failure_threshold == 1);
+    CHECK(cfg.cooldown_seconds == 0);
+
+    ::unsetenv("ARBITER_CIRCUIT_FAILURE_THRESHOLD");
+    ::unsetenv("ARBITER_CIRCUIT_COOLDOWN_SECONDS");
+    cfg = load_circuit_breaker_config_from_env();
+    CHECK(cfg.failure_threshold == 5);
+    CHECK(cfg.cooldown_seconds == 30);
+    restore();
 }
