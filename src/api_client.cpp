@@ -476,9 +476,24 @@ void ApiClient::unbind_token_conn(CancelToken* token, Conn* conn) {
 }
 
 bool ApiClient::is_request_cancelled() const {
+    if (hard_cancelled_.load(std::memory_order_acquire)) return true;
     if (cancelled_.load(std::memory_order_acquire)) return true;
     if (tls_request_token && tls_request_token->is_cancelled()) return true;
     return false;
+}
+
+bool ApiClient::run_preflight() {
+    PreflightFn fn;
+    {
+        std::lock_guard<std::mutex> lk(preflight_mu_);
+        fn = preflight_;
+    }
+    if (!fn) return true;
+    try {
+        return fn();
+    } catch (...) {
+        return false;
+    }
 }
 
 // Lease a Conn out of the provider's pool.  Prefer an idle Conn (reuse its
@@ -522,6 +537,7 @@ void ApiClient::cancel(CancelToken& token) {
 }
 
 void ApiClient::cancel() {
+    hard_cancelled_.store(true, std::memory_order_release);
     cancelled_.store(true);
     // Fan out to every scoped token first so their conn_ pointers are shut
     // down even if we also sweep the pools below.
@@ -1240,10 +1256,17 @@ ApiResponse ApiClient::offline_auth_failure() {
 // ─── Blocking complete() ─────────────────────────────────────────────────────
 
 ApiResponse ApiClient::complete(const ApiRequest& req) {
-    // New call — clear any cancellation left over from a previous turn
-    // (mirrors stream()).  Checked at every attempt boundary below so a
-    // cancel() aborts this call instead of burning the retry budget
-    // reconnecting through sockets it just shut down.
+    // Sticky hard-cancel (admin kill-switch / Orchestrator::cancel) must
+    // survive across tool-loop iterations.  Only the ephemeral cancelled_
+    // bit is cleared so a prior soft cancel doesn't burn the retry budget.
+    if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
+        hard_cancelled_.store(true, std::memory_order_release);
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "request cancelled";
+        return r;
+    }
     cancelled_.store(false);
     static const int kMaxAttempts = 4;
     const Provider& prov = provider_for(req.model);
@@ -1276,7 +1299,8 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (is_request_cancelled()) {
+        if (is_request_cancelled() || !run_preflight()) {
+            hard_cancelled_.store(true, std::memory_order_release);
             // record_abandoned (not record_failure): the provider wasn't
             // proven bad, and a leaked HalfOpen probe would otherwise
             // reject the provider forever.
@@ -1586,6 +1610,18 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
     // still there for the occasional large tool-result event.
     line_buf.reserve(8192);
     char buf[4096];
+    int preflight_ticks = 0;
+    auto should_abort_io = [&]() -> bool {
+        if (is_request_cancelled()) return true;
+        // Re-check kill-switch preflight every 32 recv iterations so a
+        // CLI DB-only revoke can interrupt a long provider read without
+        // hitting SQLite on every byte.
+        if ((++preflight_ticks % 32) == 0 && !run_preflight()) {
+            hard_cancelled_.store(true, std::memory_order_release);
+            return true;
+        }
+        return false;
+    };
 
     // Drain `leftover` before reading from the socket — same pattern as
     // read_response_body, so body bytes caught during the buffered header
@@ -1650,11 +1686,11 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
     };
 
     if (chunked) {
-        while (!is_request_cancelled()) {
+        while (!should_abort_io()) {
             std::string size_line;
             while (true) {
                 int n = recv_some(buf, 1);
-                if (n <= 0 || is_request_cancelled()) goto stream_done;
+                if (n <= 0 || should_abort_io()) goto stream_done;
                 if (buf[0] == '\n') break;
                 if (buf[0] != '\r') size_line += buf[0];
             }
@@ -1663,7 +1699,7 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
 
             int read_so_far = 0;
             while (read_so_far < chunk_size) {
-                if (is_request_cancelled()) goto stream_done;
+                if (should_abort_io()) goto stream_done;
                 int to_read = std::min(chunk_size - read_so_far, (int)sizeof(buf));
                 int n = recv_some(buf, to_read);
                 if (n <= 0) goto stream_done;
@@ -1672,14 +1708,15 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
             }
             recv_some(buf, 2);  // trailing \r\n
         }
-        if (!is_request_cancelled()) recv_some(buf, 2);
+        if (!is_request_cancelled() && !hard_cancelled_.load(std::memory_order_acquire))
+            recv_some(buf, 2);
     } else {
         int content_length = -1;
         auto cl_pos = headers.find("Content-Length: ");
         if (cl_pos != std::string::npos)
             content_length = std::atoi(headers.c_str() + cl_pos + 16);
         int read_so_far = 0;
-        while ((content_length < 0 || read_so_far < content_length) && !is_request_cancelled()) {
+        while ((content_length < 0 || read_so_far < content_length) && !should_abort_io()) {
             int n = recv_some(buf, sizeof(buf));
             if (n <= 0) break;
             feed(buf, n);
@@ -1690,10 +1727,24 @@ ApiResponse ApiClient::read_streaming_response(Conn& c, StreamCallback cb,
 stream_done:
     if (!line_buf.empty()) process_line(line_buf);
     resp.content = content;
+    if (is_request_cancelled() ||
+        hard_cancelled_.load(std::memory_order_acquire)) {
+        resp.ok         = false;
+        resp.error_type = "cancelled";
+        resp.error      = "request cancelled";
+    }
     return resp;
 }
 
 ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
+    if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
+        hard_cancelled_.store(true, std::memory_order_release);
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "request cancelled";
+        return r;
+    }
     cancelled_.store(false);
     static const int kMaxAttempts = 3;
     const Provider& prov = provider_for(req.model);
@@ -1719,6 +1770,16 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        if (is_request_cancelled() || !run_preflight()) {
+            hard_cancelled_.store(true, std::memory_order_release);
+            if (breaker_) breaker_->record_abandoned(prov.name);
+            ApiResponse r;
+            r.ok         = false;
+            r.error_type = "cancelled";
+            r.error      = "request cancelled";
+            return r;
+        }
+
         if (attempt > 0) {
             usleep((1 << (attempt - 1)) * 1000000);
             if (metrics_) metrics_->inc_provider_retry(prov.name);

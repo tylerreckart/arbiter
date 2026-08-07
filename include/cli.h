@@ -12,6 +12,7 @@
 //   (name, token, disabled flag).
 //     arbiter --add-tenant <name>                → cmd_add_tenant
 //     arbiter --list-tenants                     → cmd_list_tenants
+//     arbiter --rotate-tenant-token <id|name>    → cmd_rotate_tenant_token
 //     arbiter --disable-tenant <id|name>         → cmd_disable_tenant
 //     arbiter --enable-tenant <id|name>          → cmd_enable_tenant
 //
@@ -51,6 +52,7 @@ void cmd_interactive_remote(RemoteConnectConfig cfg, bool exec_allowed,
 // prints a human-readable report.
 void cmd_add_tenant(const std::string& name);
 void cmd_list_tenants();
+void cmd_rotate_tenant_token(const std::string& key);
 void cmd_disable_tenant(const std::string& key);
 void cmd_enable_tenant(const std::string& key);
 

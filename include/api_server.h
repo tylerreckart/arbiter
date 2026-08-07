@@ -8,11 +8,21 @@
 //
 // Endpoints:
 //   GET  /v1/health              — 200 "ok", no auth, liveness probe
-//   POST /v1/orchestrate         — main orchestration call, SSE response
+//   POST /v1/orchestrate         — main orchestration call, SSE response (tenant auth)
+//   GET  /v1/admin/tenants       — list tenants (admin auth)
+//   POST /v1/admin/tenants       — create tenant, returns plaintext token (admin auth)
+//   GET  /v1/admin/tenants/{id}  — one tenant (admin auth)
+//   PATCH /v1/admin/tenants/{id} — update {disabled} (admin auth)
 //
 // Auth:
-//   Runtime routes — single-tenant mode; no tenant bearer required.
-//   Admin   routes — Bearer admin token for /v1/admin/*.
+//   Tenant routes  — Bearer token that maps to a Tenant in the TenantStore.
+//   Admin  routes  — Bearer admin token.  Admin token is distinct from tenant
+//                    tokens and only works on /v1/admin/*; tenant tokens are
+//                    rejected on admin routes and vice versa.
+//   Kill-switch    — TenantGate bound to per-request ApiClient preflight
+//                    (see include/tenant_gate.h). Admin HTTP also cancels
+//                    InFlightRegistry; CLI disable/rotate is DB-only and
+//                    stops provider I/O at the next preflight.
 //
 // Concurrency:
 //   One thread per connection.  Each request gets a fresh Orchestrator —
@@ -80,8 +90,10 @@ struct ApiServerOptions {
     std::string bind         = "127.0.0.1";   // bind 0.0.0.0 only behind a proxy
     std::string agents_dir;                   // absolute path, e.g. ~/.arbiter/agents
 
-    // Parent directory for tenant memory. In single-tenant mode every
-    // request resolves to one primary tenant subdir under this root.
+    // Parent directory for per-tenant memory.  Each request's orchestrator
+    // gets `memory_root + "/t<tenant_id>"` so /mem read/write for tenant A
+    // can never see tenant B's notes.  Created on-demand by the memory
+    // commands; empty memory is an empty dir, not an error.
     std::string memory_root;
 
     std::map<std::string, std::string> api_keys;   // provider name → key
@@ -255,8 +267,9 @@ private:
     // each newly-persisted event as it lands.  Always constructed; the
     // SSE writer publishes here whenever persistence is wired.
     std::unique_ptr<RequestEventBus> request_events_;
-    // Per-tenant rate / concurrency limiter. Single-tenant mode still
-    // uses this path keyed by the primary tenant id.
+    // Per-tenant rate / concurrency limiter.  Always constructed (defaults
+    // come from env at startup); a zeroed config means "unlimited" so
+    // operators not using this surface pay no cost.
     std::unique_ptr<TenantLimiter>   limiter_;
     // /exec sandbox.  Constructed iff opts.sandbox_enabled
     // AND usable() — null otherwise.  When null, /exec falls back to

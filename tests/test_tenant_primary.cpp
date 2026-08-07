@@ -2,10 +2,13 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "tenant_gate.h"
 #include "tenant_store.h"
 
 #include <chrono>
 #include <filesystem>
+#include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace arbiter;
@@ -121,4 +124,92 @@ TEST_CASE("tenant kill-switch: find_by_token rejects disabled tenant") {
     REQUIRE(store.set_disabled(std::to_string(created.tenant.id), true));
 
     CHECK_FALSE(store.find_by_token(token).has_value());
+}
+
+TEST_CASE("find_by_token: isolates tenants by API key") {
+    TempDb db;
+    TenantStore store;
+    store.open(db.path.string());
+
+    const auto a = store.create_tenant("alice");
+    const auto b = store.create_tenant("bob");
+    REQUIRE(a.token != b.token);
+
+    auto ta = store.find_by_token(a.token);
+    auto tb = store.find_by_token(b.token);
+    REQUIRE(ta);
+    REQUIRE(tb);
+    CHECK(ta->id == a.tenant.id);
+    CHECK(tb->id == b.tenant.id);
+    CHECK(ta->name == "alice");
+    CHECK(tb->name == "bob");
+
+    CHECK_FALSE(store.find_by_token("").has_value());
+    CHECK_FALSE(store.find_by_token("atr_not_a_real_token").has_value());
+    CHECK_FALSE(store.find_by_token(a.token + "x").has_value());
+}
+
+TEST_CASE("rotate_token: invalidates old key and issues a new one") {
+    TempDb db;
+    TenantStore store;
+    store.open(db.path.string());
+
+    const auto created = store.create_tenant("acme");
+    const std::string old_token = created.token;
+    REQUIRE(store.find_by_token(old_token).has_value());
+
+    auto rotated = store.rotate_token(std::to_string(created.tenant.id));
+    REQUIRE(rotated);
+    CHECK(rotated->tenant.id == created.tenant.id);
+    CHECK(rotated->token != old_token);
+    CHECK(rotated->token.rfind("atr_", 0) == 0);
+
+    CHECK_FALSE(store.find_by_token(old_token).has_value());
+    auto fresh = store.find_by_token(rotated->token);
+    REQUIRE(fresh);
+    CHECK(fresh->id == created.tenant.id);
+
+    CHECK_FALSE(store.rotate_token("missing").has_value());
+}
+
+TEST_CASE("TenantGate: alive tracks disable and rotate; concurrent probes") {
+    TempDb db;
+    TenantStore store;
+    store.open(db.path.string());
+
+    const auto created = store.create_tenant("gated");
+    auto gate = TenantGate::create(store, created.tenant);
+    CHECK(gate->alive());
+
+    Tenant snap = created.tenant;
+    CHECK(gate->refresh(snap));
+    CHECK(snap.id == created.tenant.id);
+
+    REQUIRE(store.set_disabled(std::to_string(created.tenant.id), true));
+    CHECK_FALSE(gate->alive());
+    CHECK_FALSE(gate->refresh(snap));
+
+    REQUIRE(store.set_disabled(std::to_string(created.tenant.id), false));
+    CHECK(gate->alive());
+
+    auto rotated = store.rotate_token(std::to_string(created.tenant.id));
+    REQUIRE(rotated);
+    // Gate still holds the pre-rotate digest — revoke is immediate.
+    CHECK_FALSE(gate->alive());
+
+    auto gate2 = TenantGate::create(store, rotated->tenant);
+    CHECK(gate2->alive());
+
+    // Concurrent alive() must not race (no mutable snapshot).
+    std::atomic<int> ok{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 8; ++i) {
+        threads.emplace_back([&]() {
+            for (int j = 0; j < 200; ++j) {
+                if (gate2->alive()) ok.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+    CHECK(ok.load() == 8 * 200);
 }

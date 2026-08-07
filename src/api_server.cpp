@@ -31,6 +31,7 @@
 #include "sandbox.h"
 #include "tenant_limiter.h"
 #include "tenant_store.h"
+#include "tenant_gate.h"
 #include "tui/stream_filter.h"
 #include "api_client.h"
 
@@ -578,6 +579,38 @@ std::string extract_bearer(const HttpRequest& req) {
     return hdr.substr(kPrefixLen);
 }
 
+// Single-threaded helper for request handlers: refresh a Tenant snapshot
+// when still authorized.  Provider I/O kill-switch uses TenantGate
+// (thread-safe, bound to ApiClient preflight) — do not call this from
+// parallel workers or preflight callbacks.
+bool refresh_active_tenant(TenantStore& tenants, Tenant& tenant) {
+    auto fresh = tenants.get_tenant(tenant.id);
+    if (!fresh || fresh->disabled) return false;
+    if (fresh->api_key_hash != tenant.api_key_hash) return false;
+    tenant = *fresh;
+    return true;
+}
+
+void reject_disabled_tenant(int fd) {
+    write_plain_response(fd, 401, "Unauthorized",
+                         "missing or invalid bearer token\n");
+}
+
+// RAII: bind TenantGate::alive to an ApiClient preflight for the request
+// lifetime.  /parallel children inherit via copy_preflight_from.
+struct TenantPreflight {
+    std::shared_ptr<TenantGate> gate;
+    ApiClient&                  client;
+    TenantPreflight(std::shared_ptr<TenantGate> g, ApiClient& c)
+        : gate(std::move(g)), client(c) {
+        auto held = gate;
+        client.set_preflight([held]() { return held->alive(); });
+    }
+    ~TenantPreflight() { client.clear_preflight(); }
+    TenantPreflight(const TenantPreflight&) = delete;
+    TenantPreflight& operator=(const TenantPreflight&) = delete;
+};
+
 // ─── Orchestrate endpoint ───────────────────────────────────────────────────
 
 // EventLogger — mirrors SSE events to stderr in real time so the operator
@@ -1033,7 +1066,6 @@ void handle_admin(int fd, const HttpRequest& req,
                   TenantStore& tenants,
                   InFlightRegistry& in_flight,
                   const ApiServerOptions& opts) {
-    (void)in_flight;
     if (opts.admin_token.empty()) {
         admin_error(fd, 503, "admin endpoints disabled (no admin token configured)");
         return;
@@ -1054,7 +1086,178 @@ void handle_admin(int fd, const HttpRequest& req,
 
     // ── /v1/admin/tenants and /v1/admin/tenants/{id} ────────────────────
     if (resource == "tenants") {
-        admin_error(fd, 410, "tenant registration is removed in single-tenant mode");
+        if (segs.size() == 3) {
+            if (req.method == "GET") {
+                auto arr = jarr();
+                auto& a = arr->as_array_mut();
+                for (auto& t : tenants.list_tenants()) a.push_back(tenant_to_json(t));
+                auto body = jobj();
+                body->as_object_mut()["tenants"] = arr;
+                write_json_response(fd, 200, body);
+                return;
+            }
+            if (req.method == "POST") {
+                std::shared_ptr<JsonValue> body;
+                try { body = json_parse(req.body); }
+                catch (const std::exception& e) {
+                    admin_error(fd, 400, std::string("invalid JSON: ") + e.what());
+                    return;
+                }
+                if (!body || !body->is_object()) {
+                    admin_error(fd, 400, "body must be a JSON object");
+                    return;
+                }
+                const std::string name = body->get_string("name");
+                if (name.empty()) {
+                    admin_error(fd, 400, "missing required field: 'name'");
+                    return;
+                }
+
+                TenantStore::CreatedTenant created;
+                try { created = tenants.create_tenant(name); }
+                catch (const std::exception& e) {
+                    admin_error(fd, 500, std::string("create failed: ") + e.what());
+                    return;
+                }
+                // Audit log: record the create.  Token plaintext is
+                // deliberately NOT included — we don't want it sitting
+                // in the audit table where a future read endpoint
+                // exposes it.
+                {
+                    auto after = jobj();
+                    auto& am = after->as_object_mut();
+                    am["id"]   = jnum(static_cast<double>(created.tenant.id));
+                    am["name"] = jstr(created.tenant.name);
+                    try {
+                        tenants.append_admin_audit("admin", "create_tenant",
+                            "tenant", std::to_string(created.tenant.id),
+                            /*before=*/"", json_serialize(*after));
+                    } catch (...) { /* audit is best-effort */ }
+                }
+                auto resp = tenant_to_json(created.tenant);
+                // The plaintext token is ONLY returned here — the DB stores
+                // SHA-256 digest, so a misplaced token means rotating it.
+                resp->as_object_mut()["token"] = jstr(created.token);
+                write_json_response(fd, 201, resp);
+                return;
+            }
+            admin_error(fd, 405, "method not allowed");
+            return;
+        }
+
+        if (segs.size() == 4) {
+            int64_t id = 0;
+            try { id = std::stoll(segs[3]); } catch (...) { id = 0; }
+            if (id <= 0) { admin_error(fd, 400, "bad tenant id"); return; }
+
+            if (req.method == "GET") {
+                auto t = tenants.get_tenant(id);
+                if (!t) { admin_error(fd, 404, "tenant not found"); return; }
+                write_json_response(fd, 200, tenant_to_json(*t));
+                return;
+            }
+            if (req.method == "PATCH") {
+                std::shared_ptr<JsonValue> body;
+                try { body = json_parse(req.body); }
+                catch (const std::exception& e) {
+                    admin_error(fd, 400, std::string("invalid JSON: ") + e.what());
+                    return;
+                }
+                if (!body || !body->is_object()) {
+                    admin_error(fd, 400, "body must be a JSON object");
+                    return;
+                }
+                // `disabled` is the only mutable field — require it so a
+                // misspelled / missing key cannot silently no-op as 200.
+                auto v = body->get("disabled");
+                if (!v || !v->is_bool()) {
+                    admin_error(fd, 400,
+                        "missing or invalid required field: 'disabled' (boolean)");
+                    return;
+                }
+                const bool now_disabled = v->as_bool();
+                // Capture pre-update state for the audit row.  If
+                // the tenant doesn't exist we'll bail out before
+                // writing the audit, so capturing before set_disabled
+                // is safe.
+                auto before = tenants.get_tenant(id);
+                if (!before) { admin_error(fd, 404, "tenant not found"); return; }
+                tenants.set_disabled(std::to_string(id), now_disabled);
+                // Kill in-flight streams immediately when disabling.
+                // Without this, an authenticated tenant's existing
+                // SSE stream keeps running until the model finishes —
+                // the operator believes the kill-switch is hot when
+                // it isn't.  Holding reg.mu across cancel() is safe:
+                // Orchestrator::cancel only flips an atomic and
+                // shuts down sockets under its own mutex.
+                if (now_disabled) {
+                    std::lock_guard<std::mutex> lk(in_flight.mu);
+                    for (auto& [_, entry] : in_flight.by_id) {
+                        if (entry.tenant_id == id && entry.orch) {
+                            entry.orch->cancel();
+                        }
+                    }
+                }
+                {
+                    auto bj = jobj(); auto aj = jobj();
+                    bj->as_object_mut()["disabled"] = jbool(before->disabled);
+                    aj->as_object_mut()["disabled"] = jbool(now_disabled);
+                    try {
+                        tenants.append_admin_audit("admin", "update_tenant",
+                            "tenant", std::to_string(id),
+                            json_serialize(*bj), json_serialize(*aj));
+                    } catch (...) {}
+                }
+                auto t = tenants.get_tenant(id);
+                if (!t) { admin_error(fd, 404, "tenant not found"); return; }
+                write_json_response(fd, 200, tenant_to_json(*t));
+                return;
+            }
+            admin_error(fd, 405, "method not allowed");
+            return;
+        }
+
+        // POST /v1/admin/tenants/{id}/rotate-token
+        if (segs.size() == 5 && segs[4] == "rotate-token") {
+            int64_t id = 0;
+            try { id = std::stoll(segs[3]); } catch (...) { id = 0; }
+            if (id <= 0) { admin_error(fd, 400, "bad tenant id"); return; }
+            if (req.method != "POST") {
+                admin_error(fd, 405, "method not allowed");
+                return;
+            }
+            auto before = tenants.get_tenant(id);
+            if (!before) { admin_error(fd, 404, "tenant not found"); return; }
+            auto rotated = tenants.rotate_token(std::to_string(id));
+            if (!rotated) {
+                admin_error(fd, 500, "token rotation failed");
+                return;
+            }
+            // Same hot kill-switch as disable: outstanding streams
+            // authenticated with the old digest must stop immediately.
+            {
+                std::lock_guard<std::mutex> lk(in_flight.mu);
+                for (auto& [_, entry] : in_flight.by_id) {
+                    if (entry.tenant_id == id && entry.orch) {
+                        entry.orch->cancel();
+                    }
+                }
+            }
+            try {
+                auto after = jobj();
+                after->as_object_mut()["id"] = jnum(static_cast<double>(id));
+                after->as_object_mut()["rotated"] = jbool(true);
+                tenants.append_admin_audit("admin", "rotate_tenant_token",
+                    "tenant", std::to_string(id),
+                    /*before=*/"", json_serialize(*after));
+            } catch (...) {}
+            auto resp = tenant_to_json(rotated->tenant);
+            resp->as_object_mut()["token"] = jstr(rotated->token);
+            write_json_response(fd, 200, resp);
+            return;
+        }
+
+        admin_error(fd, 404, "admin route not found");
         return;
     }
 
@@ -4407,7 +4610,7 @@ void handle_request_get(int fd, const std::string& request_id,
 // seq; the bus does no buffering.
 void handle_request_events(int fd, const std::string& request_id,
                              const HttpRequest& req,
-                             TenantStore& tenants, const Tenant& tenant,
+                             TenantStore& tenants, Tenant tenant,
                              RequestEventBus* bus,
                              bool wait_for_status_row = false) {
     std::optional<TenantStore::RequestStatus> status;
@@ -4431,6 +4634,13 @@ void handle_request_events(int fd, const std::string& request_id,
             err->as_object_mut()["error"] = jstr("request not found");
             write_json_response(fd, 404, err);
         }
+        return;
+    }
+
+    // Kill-switch after the optional wait loop — a disable that landed
+    // while we slept must still yield HTTP 401 before SSE headers.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
         return;
     }
 
@@ -4479,11 +4689,25 @@ void handle_request_events(int fd, const std::string& request_id,
         write_all(fd, f.str());
     };
 
+    auto write_kill_switch_done = [&](int64_t seq) {
+        auto term = jobj();
+        term->as_object_mut()["ok"]         = jbool(false);
+        term->as_object_mut()["error"]      = jstr("missing or invalid bearer token");
+        term->as_object_mut()["error_code"] = jstr("unauthorized");
+        write_envelope("done", seq, json_serialize(*term));
+    };
+
     // Replay backlog.  Page through in chunks of 1000 — for runs
     // longer than that we'd rather many small writes than one huge
     // SQL fetch holding the connection's CPU time.
     int64_t cursor = since_seq;
     while (true) {
+        // Kill-switch between backlog pages so a long replay stops after
+        // admin disable/rotate without waiting for live-tail heartbeats.
+        if (!refresh_active_tenant(tenants, tenant)) {
+            write_kill_switch_done(cursor + 1);
+            return;
+        }
         auto chunk = tenants.list_request_events(tenant.id, request_id,
                                                     cursor, /*limit=*/1000);
         if (chunk.empty()) break;
@@ -4534,6 +4758,12 @@ void handle_request_events(int fd, const std::string& request_id,
             }
         }
         if (have) {
+            // Kill-switch while the producer is still emitting — heartbeats
+            // alone would not fire on a busy stream.
+            if (!refresh_active_tenant(tenants, tenant)) {
+                write_kill_switch_done(cursor + 1);
+                break;
+            }
             // Skip events at or before the cursor — the publisher races
             // the backlog scan and may republish events we already wrote.
             if (ev.seq > cursor) {
@@ -4543,7 +4773,12 @@ void handle_request_events(int fd, const std::string& request_id,
             if (was_terminal) break;
             continue;
         }
-        // Heartbeat
+        // Heartbeat + kill-switch: drop the stream within ~30s of
+        // admin disable/rotate (including CLI DB-only rotate).
+        if (!refresh_active_tenant(tenants, tenant)) {
+            write_kill_switch_done(cursor + 1);
+            break;
+        }
         const char* hb = ": heartbeat\n\n";
         write_all(fd, hb, std::strlen(hb));
         next_heartbeat = clock::now() + std::chrono::seconds(30);
@@ -5327,9 +5562,17 @@ void handle_schedule_runs(int fd, int64_t task_id, const HttpRequest& /*req*/,
 //   text     — guidance (REDIRECT) or reason (HALT); "" for CONTINUE
 //   malformed — true when the advisor's reply was unparseable
 void handle_advise_gate(int fd, const HttpRequest& req,
+                        TenantStore& tenants, Tenant& tenant_in,
+                        InFlightRegistry& in_flight,
                         const std::map<std::string, std::string>& api_keys) {
     if (req.method != "POST") {
         write_plain_response(fd, 405, "Method Not Allowed", "method not allowed\n");
+        return;
+    }
+
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
         return;
     }
 
@@ -5378,8 +5621,41 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     in.terminating_text = terminating_text;
     in.tool_summary     = tool_summary;
 
-    ApiClient client(api_keys);
-    AdvisorGateOutput out = run_advisor_gate(client, advisor_model, prompt_override, in);
+    // Build a per-request Orchestrator solely so admin kill-switch can
+    // cancel() the provider call via InFlightRegistry (same path as
+    // orchestrate / A2A).  No agents are installed.
+    std::unique_ptr<Orchestrator> orch;
+    try {
+        orch = std::make_unique<Orchestrator>(api_keys);
+    } catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("orchestrator init failed: ") + e.what());
+        write_json_response(fd, 500, err);
+        return;
+    }
+
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
+
+    const std::string request_id = new_request_id();
+    InFlightScope in_flight_scope(in_flight, request_id, orch.get(), tenant.id);
+
+    TenantPreflight preflight{TenantGate::create(tenants, tenant),
+                              orch->client()};
+
+    AdvisorGateOutput out = run_advisor_gate(
+        orch->client(), advisor_model, prompt_override, in);
+
+    if (orch->sticky_cancelled() || orch->client().hard_cancelled() ||
+        !refresh_active_tenant(tenants, tenant)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("missing or invalid bearer token");
+        write_json_response(fd, 401, err);
+        return;
+    }
 
     const char* signal_str = "CONTINUE";
     if      (out.kind == AdvisorGateOutput::Kind::Redirect) signal_str = "REDIRECT";
@@ -5441,8 +5717,15 @@ void handle_run_get(int fd, int64_t id, TenantStore& tenants, const Tenant& tena
 // for this tenant.  The handler subscribes on entry and unsubscribes
 // on exit (RAII via Subscription guard).  Events queue in a per-handler
 // mailbox to keep the publisher thread from blocking on slow clients.
-void handle_notifications_stream(int fd, const Tenant& tenant,
+void handle_notifications_stream(int fd, TenantStore& tenants, Tenant tenant,
                                    NotificationBus& bus) {
+    // Kill-switch before committing SSE headers (same contract as
+    // handle_request_events / A2A resubscribe).
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
+
     // Open the SSE response.  CORS headers match the rest of the API so
     // browser fetch() / EventSource clients on a different origin (e.g.
     // a Vite dev server on :5173 dialling :8080) can subscribe.
@@ -5517,12 +5800,30 @@ void handle_notifications_stream(int fd, const Tenant& tenant,
             }
         }
         if (have) {
+            // Kill-switch on every delivered notification — heartbeats alone
+            // would not fire while the mailbox stays busy.
+            if (!refresh_active_tenant(tenants, tenant)) {
+                std::string frame =
+                    "event: error\ndata: {\"error\":\"missing or invalid bearer token\","
+                    "\"error_code\":\"unauthorized\"}\n\n";
+                write_all(fd, frame);
+                break;
+            }
             write_event(ev);
             // Crude liveness check — if the peer hung up, write_all returns
             // silently but a follow-up zero-byte send will surface EPIPE.
             // We accept best-effort here; the heartbeat path catches dead
             // peers within 30s anyway.
             continue;
+        }
+        // Heartbeat path: re-check kill-switch so a long-lived subscription
+        // drops within ~30s of admin disable/rotate.
+        if (!refresh_active_tenant(tenants, tenant)) {
+            std::string frame =
+                "event: error\ndata: {\"error\":\"missing or invalid bearer token\","
+                "\"error_code\":\"unauthorized\"}\n\n";
+            write_all(fd, frame);
+            break;
         }
         const char* hb = ": heartbeat\n\n";
         write_all(fd, hb, std::strlen(hb));
@@ -5548,6 +5849,7 @@ void handle_notifications_stream(int fd, const Tenant& tenant,
 const char* sanitised_provider_error_code(const std::string& error_type) {
     if (error_type == "authentication_error") return "auth_failed";
     if (error_type == "permission_error")     return "auth_failed";
+    if (error_type == "cancelled")            return "cancelled";
     if (error_type == "rate_limit_error")     return "rate_limited";
     if (error_type == "overloaded_error")     return "rate_limited";
     if (error_type == "invalid_request_error")return "invalid_request";
@@ -5559,6 +5861,10 @@ const char* sanitised_provider_error_code(const std::string& error_type) {
 const char* sanitised_provider_error_message(const char* code) {
     if (std::strcmp(code, "auth_failed") == 0)
         return "the provider rejected the runtime's credentials";
+    if (std::strcmp(code, "unauthorized") == 0)
+        return "missing or invalid bearer token";
+    if (std::strcmp(code, "cancelled") == 0)
+        return "request cancelled";
     if (std::strcmp(code, "rate_limited") == 0)
         return "the provider is rate-limiting or overloaded — retry with backoff";
     if (std::strcmp(code, "invalid_request") == 0)
@@ -7836,7 +8142,14 @@ void handle_a2a_message_send(int fd,
                               const ApiServerOptions& opts,
                               TenantStore& tenants,
                               InFlightRegistry& in_flight,
-                              const Tenant& tenant) {
+                              const Tenant& tenant_in) {
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
     a2a::Message user_msg;
     if (!rpc.params) {
         write_a2a_rpc(fd, a2a::make_error_response(
@@ -7883,6 +8196,10 @@ void handle_a2a_message_send(int fd,
         return;
     }
 
+    // Register immediately (same order as message/stream) so an admin
+    // kill-switch during task persist can cancel() before send().
+    InFlightScope in_flight_scope(in_flight, task_id, orch.get(), tenant.id);
+
     // Persistence: rows go in at submitted, transition to working, then
     // to a terminal state.  A failure to insert is non-fatal — we log
     // and continue (the call still completes; tasks/get just won't
@@ -7894,12 +8211,33 @@ void handle_a2a_message_send(int fd,
         std::fprintf(stderr, "[a2a] create_a2a_task failed: %s\n", e.what());
     }
 
-    InFlightScope in_flight_scope(in_flight, task_id, orch.get(), tenant.id);
+    if (!refresh_active_tenant(tenants, tenant)) {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
 
     tenants.update_a2a_task(tenant.id, task_id,
                              a2a::task_state_to_string(a2a::TaskState::working),
                              /*final_message_json=*/"",
                              /*error_message=*/"");
+
+    if (!refresh_active_tenant(tenants, tenant)) {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
+
+    TenantPreflight preflight{TenantGate::create(tenants, tenant),
+                              orch->client()};
 
     ApiResponse resp;
     try {
@@ -7911,6 +8249,25 @@ void handle_a2a_message_send(int fd,
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::ERR_INVALID_AGENT_RESPONSE,
             std::string("agent threw: ") + e.what()));
+        return;
+    }
+
+    if (!refresh_active_tenant(tenants, tenant)) {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
+    if (resp.error_type == "cancelled") {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::canceled),
+                                 "", "cancelled");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "request cancelled"));
         return;
     }
 
@@ -7946,7 +8303,14 @@ void handle_a2a_message_stream(int fd,
                                 const ApiServerOptions& opts,
                                 TenantStore& tenants,
                                 InFlightRegistry& in_flight,
-                                const Tenant& tenant) {
+                                const Tenant& tenant_in) {
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
     // Same up-front parsing as message/send; we send any error as a
     // single non-streaming JSON-RPC error response (HTTP 200) BEFORE
     // opening the SSE stream.  Once the stream is open, errors
@@ -7995,6 +8359,10 @@ void handle_a2a_message_stream(int fd,
             "no agent '" + agent_id + "' for this tenant; POST it to /v1/agents first"));
         return;
     }
+    auto* orch_ptr = orch.get();
+    // Register immediately so an admin kill-switch during task persist /
+    // SSE setup can cancel().  Lifetime matches the orchestrator.
+    InFlightScope in_flight_scope(in_flight, task_id, orch_ptr, tenant.id);
 
     // Persist before opening the stream so a tasks/get racing the start
     // sees at least the submitted row.
@@ -8003,6 +8371,16 @@ void handle_a2a_message_stream(int fd,
                                  a2a::task_state_to_string(a2a::TaskState::submitted));
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[a2a] create_a2a_task failed: %s\n", e.what());
+    }
+
+    if (!refresh_active_tenant(tenants, tenant)) {
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
     }
 
     // Begin the SSE response.  After this point every error must round-
@@ -8085,7 +8463,6 @@ void handle_a2a_message_stream(int fd,
     // as a side artifact.  current_stream_depth() reads the depth at
     // the time the callback fires, which is the sub-agent's turn
     // depth (>0).
-    Orchestrator* orch_ptr = orch.get();
     orch->set_progress_callback(
         [&writer, orch_ptr](const std::string& a, const std::string& content) {
             writer.emit_sub_agent(a, orch_ptr->current_stream_depth(), content);
@@ -8125,12 +8502,33 @@ void handle_a2a_message_stream(int fd,
             writer.emit_file(path, content, "text/plain");
             return "OK: captured " + std::to_string(size) +
                    " bytes for '" + path + "' (streamed to client" +
-                   sandbox_suffix;
+                    sandbox_suffix;
         });
 
-    // Cancellation hook so /v1/requests/:task_id/cancel can interrupt
-    // an in-flight stream.  Same RAII shape as /v1/orchestrate.
-    InFlightScope in_flight_scope(in_flight, task_id, orch_ptr, tenant.id);
+    // Same post-setup kill-switch as handle_orchestrate: cancel() during
+    // SSE callback wiring can be cleared by ApiClient::stream() at entry,
+    // so re-validate disabled / rotated digest before provider I/O.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        a2a::Message err_msg;
+        err_msg.role       = "agent";
+        err_msg.message_id = task_id + "-err";
+        err_msg.task_id    = task_id;
+        err_msg.context_id = context_id;
+        a2a::Part p_err;
+        p_err.kind = "text";
+        p_err.text = "missing or invalid bearer token";
+        err_msg.parts.push_back(std::move(p_err));
+        writer.emit_status(a2a::TaskState::failed, /*final=*/true,
+                           std::move(err_msg));
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
+        sse.close();
+        return;
+    }
+
+    TenantPreflight preflight{TenantGate::create(tenants, tenant),
+                              orch->client()};
 
     // Drive the agentic loop.  send_streaming returns the final
     // ApiResponse once the dispatch loop terminates (success or fail).
@@ -8159,6 +8557,45 @@ void handle_a2a_message_stream(int fd,
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::failed),
                                  "", e.what());
+        sse.close();
+        return;
+    }
+
+    // Post-send kill-switch (CLI DB-only revoke).  Caller cancel stays
+    // TaskState::canceled rather than failed/tenant-disabled.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        a2a::Message err_msg;
+        err_msg.role       = "agent";
+        err_msg.message_id = task_id + "-err";
+        err_msg.task_id    = task_id;
+        err_msg.context_id = context_id;
+        a2a::Part p_err;
+        p_err.kind = "text";
+        p_err.text = "missing or invalid bearer token";
+        err_msg.parts.push_back(std::move(p_err));
+        writer.emit_status(a2a::TaskState::failed, /*final=*/true,
+                           std::move(err_msg));
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::failed),
+                                 "", "tenant disabled");
+        sse.close();
+        return;
+    }
+    if (resp.error_type == "cancelled") {
+        a2a::Message err_msg;
+        err_msg.role       = "agent";
+        err_msg.message_id = task_id + "-err";
+        err_msg.task_id    = task_id;
+        err_msg.context_id = context_id;
+        a2a::Part p_err;
+        p_err.kind = "text";
+        p_err.text = "request cancelled";
+        err_msg.parts.push_back(std::move(p_err));
+        writer.emit_status(a2a::TaskState::canceled, /*final=*/true,
+                           std::move(err_msg));
+        tenants.update_a2a_task(tenant.id, task_id,
+                                 a2a::task_state_to_string(a2a::TaskState::canceled),
+                                 "", "cancelled");
         sse.close();
         return;
     }
@@ -8331,8 +8768,16 @@ void handle_a2a_tasks_resubscribe(int fd,
                                     const std::string& /*agent_id_param*/,
                                     const a2a::RpcRequest& rpc,
                                     TenantStore& tenants,
-                                    const Tenant& tenant,
+                                    const Tenant& tenant_in,
                                     RequestEventBus* bus) {
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
+
     if (!rpc.params || !rpc.params->is_object()) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INVALID_PARAMS, "params required"));
@@ -8361,6 +8806,16 @@ void handle_a2a_tasks_resubscribe(int fd,
     const std::string context_id = a2a_task ? a2a_task->context_id : "";
     const std::string agent_id   = a2a_task ? a2a_task->agent_id
                                             : (rs ? rs->agent_id : "index");
+
+    // Kill-switch again immediately before SSE headers (mirrors
+    // handle_request_events) so a disable/rotate during lookup still
+    // yields a clean JSON-RPC error rather than a half-open stream.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            rpc_id, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
 
     // Open the SSE response.  CORS + no-buffering so dev-mode clients
     // and reverse proxies behave.
@@ -8477,6 +8932,10 @@ void handle_a2a_tasks_resubscribe(int fd,
 
     int64_t cursor = 0;
     while (true) {
+        if (!refresh_active_tenant(tenants, tenant)) {
+            writer.emit_status(a2a::TaskState::failed, /*final=*/true);
+            return;
+        }
         auto chunk = tenants.list_request_events(tenant.id, task_id,
                                                     cursor, 1000);
         if (chunk.empty()) break;
@@ -8535,6 +8994,10 @@ void handle_a2a_tasks_resubscribe(int fd,
             }
         }
         if (have) {
+            if (!refresh_active_tenant(tenants, tenant)) {
+                writer.emit_status(a2a::TaskState::failed, /*final=*/true);
+                break;
+            }
             if (ev.seq > cursor) {
                 TenantStore::RequestEvent re;
                 re.event_kind   = ev.event_kind;
@@ -8556,7 +9019,12 @@ void handle_a2a_tasks_resubscribe(int fd,
         }
         // Heartbeat — same shape as the native resubscribe, the SSE
         // comment line keeps the connection alive without committing
-        // a payload that A2A clients would have to ignore.
+        // a payload that A2A clients would have to ignore.  Also drop
+        // the stream on kill-switch within ~30s.
+        if (!refresh_active_tenant(tenants, tenant)) {
+            writer.emit_status(a2a::TaskState::failed, /*final=*/true);
+            break;
+        }
         const char* hb = ": heartbeat\n\n";
         write_all(fd, hb, std::strlen(hb));
         next_heartbeat = clock::now() + std::chrono::seconds(30);
@@ -8570,8 +9038,16 @@ void handle_a2a_rpc(int fd, const std::string& agent_id,
                      const ApiServerOptions& opts,
                      TenantStore& tenants,
                      InFlightRegistry& in_flight,
-                     const Tenant& tenant,
+                     const Tenant& tenant_in,
                      RequestEventBus* request_event_bus = nullptr) {
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        write_a2a_rpc(fd, a2a::make_error_response(
+            nullptr, a2a::RPC_INVALID_REQUEST,
+            "missing or invalid bearer token"));
+        return;
+    }
+
     // Version negotiation per spec section 3.6.  Empty header is
     // tolerated as 1.0 since every implementation in the wild today
     // omits it; explicit 1.0 + 1 (loose major) are accepted; anything
@@ -8862,6 +9338,15 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                         const std::string& conversation_agent_def_json = "") {
     Tenant tenant = tenant_in;   // mutable snapshot — MTD refreshes mid-request
 
+    // Kill-switch re-check: admin may have disabled this tenant after the
+    // connection-thread bearer lookup but before we register in
+    // InFlightRegistry.  Reject with the same 401 shape as a bad token so
+    // we don't oracle "exists but disabled."
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
+
     // Idempotency-Key short-circuit.  When the client supplies a key we
     // already have a request_id for, redirect into the resubscribe path
     // so the retry receives the same SSE stream (live tail or
@@ -8872,6 +9357,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // contract for v1 — clients retrying after a network blip send the
     // same body.
     if (auto replay_id = check_idempotency_replay(opts, req, tenant.id)) {
+        if (!refresh_active_tenant(tenants, tenant)) {
+            reject_disabled_tenant(fd);
+            return;
+        }
         if (opts.metrics) opts.metrics->inc_idempotency_replay();
         handle_request_events(fd, *replay_id, req, tenants, tenant,
                               request_event_bus,
@@ -9067,6 +9556,21 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 opts, req, tenant.id, request_id);
         }
         if (replay_id) {
+            if (!refresh_active_tenant(tenants, tenant)) {
+                if (request_status_created && *replay_id != request_id) {
+                    const int64_t completed = static_cast<int64_t>(
+                        std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count());
+                    tenants.update_request_status(
+                        request_id, std::optional<std::string>("failed"),
+                        completed,
+                        std::optional<std::string>("tenant disabled"),
+                        std::nullopt);
+                }
+                reject_disabled_tenant(fd);
+                return;
+            }
             if (opts.metrics) opts.metrics->inc_idempotency_replay();
             if (request_status_created && *replay_id != request_id) {
                 const int64_t completed = static_cast<int64_t>(
@@ -9093,14 +9597,92 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     }
 
+    // Kill-switch re-check before committing SSE headers.  Must stay ahead
+    // of write_headers() so a disable that landed after the entry refresh
+    // still returns a clean HTTP 401 (not a corrupted half-SSE + plain body).
+    if (!refresh_active_tenant(tenants, tenant)) {
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>("tenant disabled"),
+                std::nullopt);
+        }
+        reject_disabled_tenant(fd);
+        return;
+    }
+
+    // Per-request Orchestrator + InFlight registration BEFORE SSE headers.
+    // Concurrent API calls don't share agent history or callback state —
+    // each request is a fresh universe.  Registering before write_headers()
+    // means an admin kill-switch that lands in the init window (or right
+    // after headers) can cancel(); orch-init failure still returns a clean
+    // JSON body because headers are not on the wire yet.
+    //
+    // The API path does NOT load agent .json definitions from disk.  It
+    // does install the tenant's stored agent catalog (`POST /v1/agents`)
+    // onto every per-request orchestrator so /agent and /parallel can
+    // reference siblings by id without re-sending their constitutions.
+    // Inline `agent_def` from the request body still wins on a colliding
+    // id — useful for one-off ephemeral agents and mid-thread overrides.
+    std::unique_ptr<Orchestrator> orch;
+    try {
+        orch = std::make_unique<Orchestrator>(opts.api_keys);
+    } catch (const std::exception& e) {
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>(
+                    std::string("orchestrator init failed: ") + e.what()),
+                std::nullopt);
+        }
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("orchestrator init failed: ") + e.what());
+        write_json_response(fd, 500, err);
+        return;
+    }
+    auto* orch_ptr = orch.get();
+    InFlightScope in_flight_scope(in_flight, request_id, orch_ptr, tenant.id);
+
+    // Final kill-switch after InFlight registration, still ahead of SSE
+    // headers — closes the window between construction and write_headers().
+    if (!refresh_active_tenant(tenants, tenant)) {
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>("tenant disabled"),
+                std::nullopt);
+        }
+        reject_disabled_tenant(fd);
+        return;
+    }
+
+    // Arm preflight before catalog load / conversation hydration — those
+    // paths can call the provider (e.g. fold_compaction_gap) before
+    // send_streaming.  Capture id/hash by value for /parallel safety.
+    TenantPreflight preflight{TenantGate::create(tenants, tenant),
+                              orch->client()};
+
     // Begin the SSE response.
     SseStream sse(fd);
     sse.write_headers();
 
     const auto start_time = std::chrono::steady_clock::now();
 
-    // Server-side event logger so every error path below — including
-    // orchestrator-init failure — logs to stderr alongside its SSE frame.
+    // Server-side event logger so every error path below logs to stderr
+    // alongside its SSE frame.
     EventLogger logger(opts.log_verbose, request_id, tenant.name);
 
     // Metrics: classify the route from the entry-point arguments
@@ -9148,21 +9730,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         emit("error", o);
     };
 
-    // Per-request Orchestrator.  Concurrent API calls don't share agent
-    // history or callback state — each request is a fresh universe.  The
-    // The API path does NOT load agent .json definitions from disk.  It
-    // does install the tenant's stored agent catalog (`POST /v1/agents`)
-    // onto every per-request orchestrator so /agent and /parallel can
-    // reference siblings by id without re-sending their constitutions.
-    // Inline `agent_def` from the request body still wins on a colliding
-    // id — useful for one-off ephemeral agents and mid-thread overrides.
-    std::unique_ptr<Orchestrator> orch;
-    try {
-        orch = std::make_unique<Orchestrator>(opts.api_keys);
-    } catch (const std::exception& e) {
-        log_error(std::string("orchestrator init failed: ") + e.what());
-        return;
-    }
     // Memory is tenant-scoped so /mem commands can never leak between
     // accounts.  set_memory_dir is kept as a no-op fallback path for
     // any code that still expects a filesystem location, but the
@@ -9217,14 +9784,6 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         sse.close();
         return;
     }
-
-    auto* orch_ptr = orch.get();
-
-    // Register this orchestration so `POST /v1/requests/:id/cancel` can
-    // reach it.  Lifetime matches the orchestrator; scope unwinds on every
-    // exit path (including exceptions), so cancels arriving after
-    // completion harmlessly miss the map.
-    InFlightScope in_flight_scope(in_flight, request_id, orch_ptr, tenant.id);
 
     // ── Conversation thread resumption ──────────────────────────────────
     // When this request belongs to a stored conversation, replay prior
@@ -9830,28 +10389,69 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             emit("advisor", p);
         });
 
+    // Kill-switch re-check immediately before provider I/O.  Admin
+    // disable/rotate during post-SSE setup (catalog load, history
+    // hydration, callback wiring) calls Orchestrator::cancel(), but
+    // ApiClient::stream()/complete() clear the cancelled flag at call
+    // entry — so cancel alone is not enough.  Re-reading disabled /
+    // api_key_hash here refuses the turn before any upstream traffic.
+    if (!refresh_active_tenant(tenants, tenant)) {
+        log_error("missing or invalid bearer token");
+        auto done = jobj();
+        auto& m = done->as_object_mut();
+        m["ok"]         = jbool(false);
+        m["error"]      = jstr("missing or invalid bearer token");
+        m["error_code"] = jstr("unauthorized");
+        m["tenant_id"]  = jnum(static_cast<double>(tenant.id));
+        m["request_id"] = jstr(request_id);
+        emit("done", done);
+        sse.close();
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>("tenant disabled"),
+                std::nullopt);
+        }
+        return;
+    }
+
     try {
         auto resp = orch->send_streaming(agent_id, std::move(message_parts),
             [&filter](const std::string& chunk) { filter.feed(chunk); },
             original_query);
         filter.flush();
 
+        // Post-send: distinguish tenant revoke (unauthorized) from a
+        // caller cancel via /v1/requests/:id/cancel (cancelled).
+        const bool tenant_revoked = !refresh_active_tenant(tenants, tenant);
+
         auto done = jobj();
         auto& m = done->as_object_mut();
-        m["ok"]      = jbool(resp.ok);
-        if (resp.gate_approved) m["gate_approved"] = jbool(true);
-        if (!resp.ok) {
-            // Never proxy the provider's free-form error message —
-            // log it operator-side, ship a fixed taxonomy on the wire.
-            const char* code = sanitised_provider_error_code(resp.error_type);
-            m["error"]      = jstr(sanitised_provider_error_message(code));
-            m["error_code"] = jstr(code);
-            std::fprintf(stderr,
-                "[arbiter] tenant=%lld request=%s upstream error: type=%s message=%s\n",
-                static_cast<long long>(tenant.id), request_id.c_str(),
-                resp.error_type.c_str(), resp.error.c_str());
+        if (tenant_revoked) {
+            m["ok"]         = jbool(false);
+            m["error"]      = jstr("missing or invalid bearer token");
+            m["error_code"] = jstr("unauthorized");
+            m["content"]    = jstr("");
+        } else {
+            m["ok"] = jbool(resp.ok);
+            if (resp.gate_approved) m["gate_approved"] = jbool(true);
+            if (!resp.ok) {
+                // Never proxy the provider's free-form error message —
+                // log it operator-side, ship a fixed taxonomy on the wire.
+                const char* code = sanitised_provider_error_code(resp.error_type);
+                m["error"]      = jstr(sanitised_provider_error_message(code));
+                m["error_code"] = jstr(code);
+                std::fprintf(stderr,
+                    "[arbiter] tenant=%lld request=%s upstream error: type=%s message=%s\n",
+                    static_cast<long long>(tenant.id), request_id.c_str(),
+                    resp.error_type.c_str(), resp.error.c_str());
+            }
+            m["content"] = jstr(resp.content);
         }
-        m["content"] = jstr(resp.content);
         m["input_tokens"]  = jnum(static_cast<double>(resp.input_tokens));
         m["output_tokens"] = jnum(static_cast<double>(resp.output_tokens));
         m["files_bytes"]   = jnum(static_cast<double>(bytes_captured.load()));
@@ -9864,7 +10464,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_time).count();
         m["duration_ms"] = jnum(static_cast<double>(elapsed_ms));
-        metric_scope.ok  = resp.ok;
+        metric_scope.ok  = !tenant_revoked && resp.ok;
         emit("done", done);
 
         // Flush any pending coalesced text and stamp the run terminal.
@@ -9875,10 +10475,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             const int64_t completed = static_cast<int64_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count());
+            const bool ok_final = !tenant_revoked && resp.ok;
             tenants.update_request_status(request_id,
-                std::optional<std::string>(resp.ok ? "completed" : "failed"),
+                std::optional<std::string>(ok_final ? "completed" : "failed"),
                 completed,
-                resp.ok ? std::nullopt : std::optional<std::string>(resp.error),
+                ok_final ? std::nullopt
+                         : std::optional<std::string>(
+                               tenant_revoked ? "tenant disabled" : resp.error),
                 std::nullopt);
         }
 
@@ -9887,7 +10490,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         // re-entry iterations (Orchestrator::send_streaming aggregates
         // them before returning), so what we persist is the full
         // multi-turn assistant response — not just the closing remark.
-        if (conversation_id > 0 && resp.ok) {
+        if (conversation_id > 0 && !tenant_revoked && resp.ok) {
             try {
                 tenants.append_message(tenant.id, conversation_id,
                                         "assistant", resp.content,
@@ -10509,16 +11112,27 @@ void ApiServer::handle_connection(int fd) {
         return;
     }
 
-    const auto all_tenants = tenants_.list_tenants();
-    std::optional<Tenant> tenant = resolve_primary_tenant(all_tenants);
+    const std::string token = extract_bearer(req);
+    std::optional<Tenant> tenant;
+    if (!token.empty()) tenant = tenants_.find_by_token(token);
     if (!tenant) {
-        if (!all_tenants.empty()) {
-            write_plain_response(fd, 403, "Forbidden",
-                                 "tenant is disabled\n");
-            return;
+        write_plain_response(fd, 401, "Unauthorized",
+                             "missing or invalid bearer token\n");
+        return;
+    }
+    // Central kill-switch re-check for every authenticated route (CRUD
+    // included).  Closes the TOCTOU between find_by_token and handler
+    // entry when an admin disable/rotate lands on another thread.
+    // A2A JSON-RPC POSTs keep the protocol error envelope (HTTP 200 +
+    // error object) instead of a plain 401 body.
+    if (!refresh_active_tenant(tenants_, *tenant)) {
+        if (req.method == "POST" && req.path.rfind("/v1/a2a/", 0) == 0) {
+            write_a2a_rpc(fd, a2a::make_error_response(
+                nullptr, a2a::RPC_INVALID_REQUEST,
+                "missing or invalid bearer token"));
+        } else {
+            reject_disabled_tenant(fd);
         }
-        write_plain_response(fd, 503, "Service Unavailable",
-                             "tenant database is not initialized\n");
         return;
     }
 
@@ -10673,6 +11287,10 @@ void ApiServer::handle_connection(int fd) {
                         write_json_response(fd, 404, err);
                         return;
                     }
+                    if (!refresh_active_tenant(tenants_, *tenant)) {
+                        reject_disabled_tenant(fd);
+                        return;
+                    }
                     auto lim = limiter_->acquire(tenant->id);
                     if (!lim.granted()) {
                         write_429_response(fd, lim.retry_after_seconds,
@@ -10814,6 +11432,14 @@ void ApiServer::handle_connection(int fd) {
                                          "method not allowed\n");
                     return;
                 }
+                if (!refresh_active_tenant(tenants_, *tenant)) {
+                    // Stay on the JSON-RPC envelope contract for this POST
+                    // (same shape as handle_a2a_rpc) — never plain HTTP 401.
+                    write_a2a_rpc(fd, a2a::make_error_response(
+                        nullptr, a2a::RPC_INVALID_REQUEST,
+                        "missing or invalid bearer token"));
+                    return;
+                }
                 auto lim = limiter_->acquire(tenant->id);
                 if (!lim.granted()) {
                     write_429_response(fd, lim.retry_after_seconds,
@@ -10864,6 +11490,10 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             if (req.method == "POST" && segs.size() == 4 && segs[3] == "chat") {
+                if (!refresh_active_tenant(tenants_, *tenant)) {
+                    reject_disabled_tenant(fd);
+                    return;
+                }
                 auto lim = limiter_->acquire(tenant->id);
                 if (!lim.granted()) {
                     write_429_response(fd, lim.retry_after_seconds,
@@ -11163,7 +11793,7 @@ void ApiServer::handle_connection(int fd) {
                                      "notifications subsystem not initialized\n");
                 return;
             }
-            handle_notifications_stream(fd, *tenant, *notifications_);
+            handle_notifications_stream(fd, tenants_, *tenant, *notifications_);
             return;
         }
 
@@ -11171,12 +11801,17 @@ void ApiServer::handle_connection(int fd) {
         // POST /v1/advise/gate — stateless gate verdict for external callers
         if (segs.size() == 3 && segs[0] == "v1" && segs[1] == "advise"
             && segs[2] == "gate") {
-            return handle_advise_gate(fd, req, opts_.api_keys);
+            return handle_advise_gate(fd, req, tenants_, *tenant, in_flight_,
+                                      opts_.api_keys);
         }
 
         // ── Event ingestion ───────────────────────────────────────────────
         // POST /v1/events — hardware/software event → agent routing
         if (segs.size() == 2 && segs[0] == "v1" && segs[1] == "events") {
+            if (!refresh_active_tenant(tenants_, *tenant)) {
+                reject_disabled_tenant(fd);
+                return;
+            }
             auto lim = limiter_->acquire(tenant->id);
             if (!lim.granted()) {
                 write_429_response(fd, lim.retry_after_seconds,

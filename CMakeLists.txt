@@ -1236,6 +1236,7 @@ if(INDEX_BUILD_TESTS)
         ${OPENSSL_INCLUDE_DIR}
     )
     target_link_libraries(unit_tenant_primary PRIVATE
+        Threads::Threads
         OpenSSL::SSL
         OpenSSL::Crypto
         SQLite3::SQLite3

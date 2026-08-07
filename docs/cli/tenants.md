@@ -2,7 +2,7 @@
 
 The `--api` server authenticates every request with a bearer token tied to a tenant identity. Tenants are managed from the CLI; the same identities are also exposed under `/v1/admin/tenants/*` when you'd rather drive provisioning over HTTP.
 
-All four commands operate on `~/.arbiter/tenants.db` (a SQLite file, opened single-writer). They are CLI-only — no `--api` server has to be running.
+All five commands operate on `~/.arbiter/tenants.db` (a SQLite file, opened single-writer). They are CLI-only — no `--api` server has to be running.
 
 ## `--add-tenant <name>`
 
@@ -22,7 +22,7 @@ Created tenant #3 (acme)
          http://<host>:<port>/v1/orchestrate
 ```
 
-The plaintext token is **only visible at provisioning time**. Arbiter stores its SHA-256 digest, never the token itself. Lose it and you re-provision: there's no recovery path.
+The plaintext token is **only visible at provisioning time** (and again if you rotate). Arbiter stores its SHA-256 digest, never the token itself. Lose it and rotate: `arbiter --rotate-tenant-token <id|name>`.
 
 `<name>` is a free-form label for your reference (logs, audit). It doesn't have to be unique, but reusing names makes auditing harder. The id (sequential integer) is the stable identifier.
 
@@ -41,6 +41,27 @@ ID   Name                Status      Last used
 
 `Last used` is the timestamp of the most recent authenticated request from that tenant; `never` for tenants that have been provisioned but haven't called the API yet. Disabled tenants are kept in the table so audit trails stay intact — they just can't authenticate.
 
+## `--rotate-tenant-token <id|name>`
+
+Issue a new API key for an existing tenant and invalidate the previous digest immediately. Use this when upgrading from single-tenant (no-bearer) mode — those installs may have a tenant row whose plaintext was never shown — or whenever a key is lost or leaked.
+
+```
+$ arbiter --rotate-tenant-token acme
+Rotated API key for tenant #2 (acme)
+
+  API key (save this — it will not be shown again):
+    atr_…
+
+  Previous key is invalid immediately for new requests.
+
+  NOTE: This CLI command updates the database only.  It cannot cancel()
+  in-flight streams inside a running `arbiter --api` process.  For a hot
+  revoke that stops outstanding work immediately, use
+  POST /v1/admin/tenants/:id/rotate-token (or disable the tenant first).
+```
+
+HTTP equivalent: `POST /v1/admin/tenants/:id/rotate-token` (admin bearer). That path also cancels in-flight orchestrations for the tenant.
+
 ## `--disable-tenant <id|name>`
 
 Revoke a tenant's access.
@@ -56,8 +77,7 @@ Either the numeric id or the name works. Disabled tenants:
 - Keep their conversations, artifacts, memory entries, and scratchpads intact in the store.
 - Do not have their tokens revoked at the cryptographic level — the digest is still in the DB. Re-enabling restores access with the same token.
 
-If you need to *invalidate* the token (irrecoverably), disable the tenant and provision a new one. There's no `--rotate-token`.
-
+If you need to *invalidate* the token (irrecoverably) without creating a new tenant row, use `--rotate-tenant-token`.
 ## `--enable-tenant <id|name>`
 
 Restore a previously-disabled tenant.

@@ -324,6 +324,9 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             child_clients.push_back(std::make_unique<ApiClient>(api_keys_));
             child_clients.back()->set_circuit_breaker(client_.circuit_breaker());
             child_clients.back()->set_metrics(client_.metrics());
+            // Inherit kill-switch preflight so CLI DB-only revoke stops
+            // sub-agent provider traffic as well as the parent client.
+            child_clients.back()->copy_preflight_from(client_);
             // Share the parent's reasoning sink so thought deltas still reach
             // the TUI when the provider emits them.  Workers also re-pin the
             // spawning pane + tool conversation TLS via tl_worker_pane_binder.
@@ -1107,6 +1110,26 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
 ApiResponse Orchestrator::send(const std::string& agent_id,
                                const std::string& message,
                                const std::string& original_query) {
+    // Clear sticky cancel on scope exit so a prior cancel() does not
+    // permanently lock a long-lived REPL Orchestrator out of the next
+    // user turn.  Also clears ApiClient hard-cancel so tool-loop
+    // stream()/complete() calls inside this turn still honor kill-switch,
+    // but the next intentional turn can proceed.
+    struct StickyGuard {
+        Orchestrator& orch;
+        ~StickyGuard() {
+            orch.sticky_cancel_.store(false, std::memory_order_release);
+            orch.client_.clear_hard_cancel();
+        }
+    } sticky_guard{*this};
+    if (sticky_cancel_.load(std::memory_order_acquire) ||
+        client_.hard_cancelled()) {
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "cancelled";
+        return r;
+    }
     return send_internal(agent_id, message, 0, nullptr, original_query);
 }
 
@@ -1179,6 +1202,22 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                          std::vector<ContentPart> parts,
                                          StreamCallback cb,
                                          const std::string& original_query) {
+    struct StickyGuard {
+        Orchestrator& orch;
+        ~StickyGuard() {
+            orch.sticky_cancel_.store(false, std::memory_order_release);
+            orch.client_.clear_hard_cancel();
+        }
+    } sticky_guard{*this};
+    if (sticky_cancel_.load(std::memory_order_acquire) ||
+        client_.hard_cancelled()) {
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "cancelled";
+        return r;
+    }
+
     Agent* agent_ptr;
     std::vector<ContentPart> current_parts;
 
@@ -2005,6 +2044,7 @@ void Orchestrator::fire_history_checkpoint() {
 }
 
 void Orchestrator::cancel() {
+    sticky_cancel_.store(true, std::memory_order_release);
     client_.cancel();
     // Also cancel any per-child clients active inside a /parallel turn.
     std::lock_guard<std::mutex> lk(parallel_clients_mu_);

@@ -7,6 +7,26 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **HTTP API multi-tenant bearer auth restored.** Runtime `/v1/*` routes again
+  require `Authorization: Bearer atr_…` resolved via `TenantStore::find_by_token`.
+  `/v1/admin/tenants*` create/list/get/patch are available again (admin bearer).
+  `--api` no longer auto-provisions a default tenant or serves the data plane
+  without a token; `--connect` requires `--token` / `ARBITER_API_TOKEN`.
+- **Tenant token rotation.** `arbiter --rotate-tenant-token <id|name>` and
+  `POST /v1/admin/tenants/:id/rotate-token` issue a new `atr_…` key (upgrade
+  recovery from single-tenant installs whose plaintext was never shown).
+  Admin HTTP rotate also cancels in-flight streams; the CLI is DB-only and
+  warns that hot revoke needs the admin path (or disable-first).
+- **Kill-switch via `TenantGate`.** Durable revoke probe: after auth, handlers
+  bind a thread-safe `TenantGate` to the per-request `ApiClient` preflight
+  (inherited by `/parallel` children). `alive()` re-reads disabled /
+  `api_key_hash` on every provider call and mid-stream read. Admin HTTP
+  disable/rotate also cancels `InFlightRegistry`; CLI rotate remains DB-only
+  and stops work at the next preflight. Sticky `hard_cancelled_` survives
+  ephemeral cancel clears. Admin PATCH requires boolean `disabled`. A2A
+  kill-switch stays JSON-RPC-shaped.
+
 ## [0.11.0] — 2026-08-06
 
 Minor release: remote TUI `--connect` thin client, API idempotency replay
