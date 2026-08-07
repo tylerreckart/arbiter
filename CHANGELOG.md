@@ -7,6 +7,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **TUI broken-sandbox host fallback.** When `ARBITER_SANDBOX_IMAGE` is set but
+  the sandbox fails usability, the TUI now disables `/exec` (returns `ERR`)
+  instead of falling through to confirm-gated host `popen`.
+- **Event routing past the newest-200 agent page.** `POST /v1/events` scans
+  tenant agents via `list_agent_records_for_routing` (ascending `agent_id`,
+  soft-capped at 10000) rather than the REST list page.
+- **Sandbox timeout survivor kill vs concurrent exec.** Same-tenant `/exec`
+  is always serialized on the per-tenant mutex so timeout cleanup cannot
+  SIGKILL a sibling exec when workspace quota is disabled.
+
 ### Added
 - **Tunable provider circuit breaker.** `ARBITER_CIRCUIT_FAILURE_THRESHOLD`
   (default 5) and `ARBITER_CIRCUIT_COOLDOWN_SECONDS` (default 30) configure the

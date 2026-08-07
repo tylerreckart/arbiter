@@ -10707,11 +10707,8 @@ void handle_event_ingest(int fd, HttpRequest req,
     if (agent_id.empty()) {
         agent_id = route_event(opts.agents_dir, event_type);
         if (agent_id == "index") {
-            auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
-            std::sort(records.begin(), records.end(),
-                      [](const AgentRecord& a, const AgentRecord& b) {
-                          return a.agent_id < b.agent_id;
-                      });
+            // Full scan ordered by agent_id — not the newest-200 REST page.
+            auto records = tenants.list_agent_records_for_routing(tenant.id);
             std::vector<std::pair<std::string, std::vector<std::string>>>
                 tenant_agents;
             tenant_agents.reserve(records.size());

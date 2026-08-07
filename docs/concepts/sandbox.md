@@ -143,7 +143,7 @@ The defaults are conservative for general-purpose `/exec`:
 | `--memory`          | 512m    | Hard cgroup memory ceiling. Container OOM-kills past this; agent sees `[exit 137]`. |
 | `--cpus`            | 1.0     | CPU shares. One full core, fractional values OK (`0.5`, `2.5`).                    |
 | `--pids-limit`      | 256     | Max processes inside the container. Catches fork bombs.                             |
-| Wall-clock timeout  | 30s     | Per-`/exec`. In-container `timeout` when available, plus parent-side `docker exec` SIGKILL and survivor cleanup; surfaces as `[timed out after 30s]`. |
+| Wall-clock timeout  | 30s     | Per-`/exec`. In-container `timeout` when available, plus parent-side `docker exec` SIGKILL and survivor cleanup; surfaces as `[timed out after 30s]`. Same-tenant `/exec` is serialized so survivor cleanup cannot clobber a concurrent exec. |
 | Output cap          | 32 KB   | Combined stdout+stderr per `/exec`. Trailing bytes truncated.                       |
 | Workspace tmpfs     | 64 MB   | `/tmp` inside the container. Persists only for the container's lifetime.            |
 

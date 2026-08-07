@@ -715,17 +715,16 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         ? cfg_.exec_timeout_seconds + 2
         : 0;
 
-    // When a workspace quota is configured, hold the same per-tenant mutex
-    // as write_to_workspace for the entire docker exec so a concurrent
-    // /write cannot grow the workspace between measure and flush (#136).
-    // Post-exec measurement surfaces shell redirects that bypass /write.
-    std::shared_ptr<std::mutex> quota_mu;
-    std::unique_lock<std::mutex> quota_lk;
+    // Always serialize same-tenant /exec on the per-tenant mutex:
+    //  1. Survivor cleanup on timeout SIGKILLs every non-PID-1 process in
+    //     the warm container — concurrent execs would clobber each other
+    //     if we only locked when workspace quota is enabled.
+    //  2. When quota is configured, the same mutex is what write_to_workspace
+    //     uses so concurrent /write cannot grow the workspace between
+    //     measure and flush (#136).
+    auto tenant_mu = start_mutex_for(tenant_id);
+    std::unique_lock<std::mutex> tenant_lk(*tenant_mu);
     const bool quota_enforced = cfg_.workspace_max_bytes > 0;
-    if (quota_enforced) {
-        quota_mu = start_mutex_for(tenant_id);
-        quota_lk = std::unique_lock<std::mutex>(*quota_mu);
-    }
 
     bool timed_out = false;
     bool truncated = false;
@@ -743,7 +742,8 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     if (timed_out) {
         // Best-effort: kill leftover non-PID-1 processes so a timed-out
         // workload cannot keep burning CPU/memory inside the warm
-        // container after docker-exec is gone.
+        // container after docker-exec is gone.  Safe under tenant_lk —
+        // no overlapping /exec for this tenant can be in-flight.
         std::string kill_out;
         bool kill_to = false;
         run_capture(

@@ -43,7 +43,7 @@ Routing order:
 
 1. Explicit `agent` in the request body (any file-backed or tenant-stored id).
 2. File-backed agents under the configured agents directory (`~/.arbiter/agents/*.json`).
-3. Tenant agents created through [`POST /v1/agents`](agents/create.md), scanned in ascending `agent_id` order.
+3. Tenant agents created through [`POST /v1/agents`](agents/create.md), scanned in ascending `agent_id` order (full catalog, not the newest-200 REST list page).
 4. If nothing matches, Arbiter routes the event to `index`.
 
 ```json

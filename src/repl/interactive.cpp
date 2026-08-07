@@ -562,8 +562,14 @@ void ReplSession::run() {
                           << "\n      /exec returns ERR until fixed; unset "
                              "ARBITER_SANDBOX_IMAGE to use host shell.\n";
                 // Keep sandbox_enabled so make_exec_invoker_callback does
-                // not silently fall back to host popen.
+                // not silently fall back to host popen, and force
+                // exec_disabled so the dispatcher cannot reach cmd_exec
+                // via the "no invoker but exec allowed" host path.
                 api_opts.sandbox = nullptr;
+                api_opts.exec_disabled = true;
+                api_opts.host_exec_enabled = false;
+                cfg.exec_allowed = false;
+                orch.set_exec_disabled(true);
             }
         }
         wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
