@@ -954,14 +954,45 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
         if (entry.is_regular_file(ec)) files.push_back(entry.path());
     }
     std::sort(files.begin(), files.end());
+    const int byte_cap  = cfg_.list_max_bytes;
+    const int entry_cap = cfg_.list_max_files;
+    size_t      listed_bytes = 0;
+    size_t      listed_files = 0;
+    bool        truncated           = false;
+    bool        truncated_by_entries = false;
     for (auto& p : files) {
+        if (entry_cap > 0 && listed_files >= static_cast<size_t>(entry_cap)) {
+            truncated            = true;
+            truncated_by_entries = true;
+            break;
+        }
         std::error_code sec;
         auto sz = fs::file_size(p, sec);
         if (sec) continue;
         std::error_code rec;
         auto rel = fs::relative(p, ws, rec);
         if (rec) continue;
-        out << rel.string() << "  " << sz << " bytes\n";
+        const std::string line =
+            rel.string() + "  " + std::to_string(sz) + " bytes\n";
+        if (byte_cap > 0 &&
+            listed_bytes + line.size() > static_cast<size_t>(byte_cap)) {
+            truncated = true;
+            break;
+        }
+        out << line;
+        listed_bytes += line.size();
+        ++listed_files;
+    }
+    if (truncated) {
+        // Report the cap that actually stopped the listing — entry-count
+        // vs byte-budget — so operators/agents don't misread the trailer.
+        if (truncated_by_entries) {
+            out << "... [truncated — listing entry cap reached]\n";
+        } else if (byte_cap >= 1024) {
+            out << "... [truncated at " << (byte_cap / 1024) << " KB]\n";
+        } else {
+            out << "... [truncated at " << byte_cap << " bytes]\n";
+        }
     }
     touch_access(tenant_id);
     return out.str();
