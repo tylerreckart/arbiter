@@ -198,3 +198,47 @@ TEST_CASE("sandbox read: rejects workspace files over read_max_bytes") {
     else ::unsetenv("PATH");
     fs::remove_all(root);
 }
+
+TEST_CASE("sandbox list: caps workspace listing output") {
+    const std::string root = make_temp_root("listcap");
+    SandboxConfig cfg;
+    cfg.image = "unused";
+    cfg.workspaces_root = root + "/workspaces";
+    cfg.runtime = "docker";
+    cfg.idle_seconds = 0;
+    cfg.list_max_bytes = 64;
+    cfg.list_max_files = 0;
+
+    const std::string bin = root + "/bin";
+    fs::create_directories(bin);
+    const std::string stub = bin + "/docker";
+    {
+        std::ofstream f(stub);
+        f << "#!/bin/sh\nexit 0\n";
+    }
+    ::chmod(stub.c_str(), 0755);
+    const char* old_path = std::getenv("PATH");
+    std::string new_path = bin + ":" + (old_path ? old_path : "");
+    ::setenv("PATH", new_path.c_str(), 1);
+
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+
+    const int64_t tid = 12;
+    std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+
+    for (int i = 0; i < 20; ++i) {
+        std::string err;
+        REQUIRE(mgr.write_to_workspace(
+            tid, "f" + std::to_string(i) + ".txt", "x", err));
+    }
+
+    const std::string listing = mgr.list_workspace(tid);
+    CHECK(listing.size() <= static_cast<size_t>(cfg.list_max_bytes + 80));
+    CHECK(listing.find("... [truncated at") != std::string::npos);
+
+    if (old_path) ::setenv("PATH", old_path, 1);
+    else ::unsetenv("PATH");
+    fs::remove_all(root);
+}

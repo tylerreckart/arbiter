@@ -78,6 +78,15 @@ struct SandboxConfig {
     // which could OOM the API process on large files.  0 = no cap.
     int read_max_bytes = 10 * 1024 * 1024;
 
+    // Max bytes returned by list_workspace (/list sandbox fallback).  0 = no
+    // cap.  ApiServer aligns this with file_max_bytes when set.
+    int list_max_bytes = 10 * 1024 * 1024;
+
+    // Max file entries enumerated by list_workspace.  Guards pathological
+    // trees with many tiny files when list_max_bytes alone is not enough.
+    // 0 = no cap.
+    int list_max_files = 65536;
+
     // Per-tenant workspace disk quota, bytes.  Enforced on host-visible
     // workspace mutations: /write rejects writes that would exceed the
     // cap; /exec holds the per-tenant quota mutex for the duration of
