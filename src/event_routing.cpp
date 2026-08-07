@@ -28,7 +28,7 @@ std::string route_event(
 
 std::string route_event(const std::string& agents_dir,
                         const std::string& event_type) {
-    if (!fs::is_directory(agents_dir)) return "index";
+    if (!fs::is_directory(agents_dir)) return {};
     std::vector<std::pair<std::string, std::vector<std::string>>> agents;
     for (auto& entry : fs::directory_iterator(agents_dir)) {
         if (entry.path().extension() != ".json") continue;
@@ -45,7 +45,7 @@ std::string route_event(const std::string& agents_dir,
         }
     }
     std::string matched = route_event(agents, event_type);
-    return matched.empty() ? std::string("index") : matched;
+    return matched;
 }
 
 } // namespace arbiter

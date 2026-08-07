@@ -10706,7 +10706,7 @@ void handle_event_ingest(int fd, HttpRequest req,
     std::string agent_id = agent;
     if (agent_id.empty()) {
         agent_id = route_event(opts.agents_dir, event_type);
-        if (agent_id == "index") {
+        if (agent_id.empty()) {
             // Full scan ordered by agent_id — not the newest-200 REST page.
             auto records = tenants.list_agent_records_for_routing(tenant.id);
             std::vector<std::pair<std::string, std::vector<std::string>>>
@@ -10726,7 +10726,7 @@ void handle_event_ingest(int fd, HttpRequest req,
                 }
             }
             std::string matched = route_event(tenant_agents, event_type);
-            if (!matched.empty()) agent_id = matched;
+            agent_id = matched.empty() ? std::string("index") : matched;
         }
     }
 

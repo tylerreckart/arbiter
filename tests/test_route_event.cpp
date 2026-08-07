@@ -46,7 +46,7 @@ TEST_CASE("route_event list match returns first hit") {
     CHECK(route_event(agents, "unrelated.event").empty());
 }
 
-TEST_CASE("route_event file scan falls back to index") {
+TEST_CASE("route_event file scan returns empty when no match") {
     const std::string dir = make_temp_agents_dir();
     write_agent(dir, "facilities", R"({
         "name": "facilities",
@@ -55,7 +55,7 @@ TEST_CASE("route_event file scan falls back to index") {
         "event_types": ["sensor.*"]
     })");
     CHECK(route_event(dir, "sensor.temp.high") == "facilities");
-    CHECK(route_event(dir, "deploy.failed") == "index");
+    CHECK(route_event(dir, "deploy.failed").empty());
     fs::remove_all(dir);
 }
 
@@ -66,6 +66,6 @@ TEST_CASE("route_event skips agents without event_types") {
         "model": "ollama/qwen",
         "goal": "write code"
     })");
-    CHECK(route_event(dir, "sensor.temp") == "index");
+    CHECK(route_event(dir, "sensor.temp").empty());
     fs::remove_all(dir);
 }

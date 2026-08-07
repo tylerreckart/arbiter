@@ -50,12 +50,14 @@ CorsPolicy cors_policy_from_csv(const std::string& csv) {
 CorsPolicy load_cors_policy_from_env() {
     const char* v = std::getenv("ARBITER_CORS_ORIGINS");
     if (!v || !*v) return CorsPolicy{};
-    return cors_policy_from_csv(v);
+    CorsPolicy p = cors_policy_from_csv(v);
+    p.allow_all = false;
+    return p;
 }
 
 bool cors_origin_allowed(const CorsPolicy& policy,
                          const std::string& origin) {
-    if (policy.allowed_origins.empty()) return true;  // permissive *
+    if (policy.allow_all) return true;
     if (origin.empty()) return false;
     for (const auto& o : policy.allowed_origins) {
         if (o == origin) return true;
@@ -66,7 +68,7 @@ bool cors_origin_allowed(const CorsPolicy& policy,
 std::string cors_headers_for(const CorsPolicy& policy,
                              const std::string& origin) {
     std::string h;
-    if (policy.allowed_origins.empty()) {
+    if (policy.allow_all) {
         h += "Access-Control-Allow-Origin: *\r\n";
     } else if (cors_origin_allowed(policy, origin)) {
         h += "Access-Control-Allow-Origin: " + origin + "\r\n";

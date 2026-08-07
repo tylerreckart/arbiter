@@ -13,8 +13,9 @@
 namespace arbiter {
 
 struct CorsPolicy {
-    // Empty ⇒ emit Access-Control-Allow-Origin: * (dev default).
-    // Non-empty ⇒ echo the request Origin only when it is an exact match.
+    // When true (unset ARBITER_CORS_ORIGINS), emit ACAO: *.
+    // When false (env set), only echo Origin for allowlist matches.
+    bool allow_all = true;
     std::vector<std::string> allowed_origins;
 };
 
