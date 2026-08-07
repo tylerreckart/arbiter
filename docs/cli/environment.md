@@ -32,6 +32,9 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 | `ARBITER_API_VERBOSE`     | When set to a non-empty, non-`0` value, mirrors every SSE event to stderr. Equivalent to passing `--verbose`. The CLI flag wins if both are present. |
 | `ARBITER_DRAIN_SECONDS`   | Wall-clock grace period on `SIGTERM` / `SIGINT` shutdown. The listen socket closes immediately and every in-flight orchestration is signalled to cancel; the server then waits up to this many seconds for connection threads to finish before tearing down sandbox containers. `0` skips the wait. Default `30`. See [Operations → Graceful shutdown](../concepts/operations.md#graceful-shutdown). |
 | `ARBITER_LOG_FORMAT`      | Output format for operational stderr events (startup, recovery sweep, drain, sandbox lifecycle). `human` (default) renders `[HH:MM:SS] [level] event key=value`. `json` emits one JSON object per line for log aggregators. The per-request SSE-mirror verbose mode keeps its existing human format regardless. See [Operations → Structured logging](../concepts/operations.md#structured-logging). |
+| `ARBITER_CORS_ORIGINS`    | Comma-separated Origin allowlist. Unset ⇒ `Access-Control-Allow-Origin: *`. When set, only matching `Origin` values are echoed (with `Vary: Origin`); mismatches omit the header. See [Operations → CORS](../concepts/operations.md#cors). |
+| `ARBITER_CIRCUIT_FAILURE_THRESHOLD` | Consecutive provider failures that open the circuit breaker. Default `5` (clamped ≥1). See [Operations → Circuit breaker](../concepts/operations.md#provider-circuit-breaker). |
+| `ARBITER_CIRCUIT_COOLDOWN_SECONDS`  | Cooldown in Open before a half-open probe. Default `30` (clamped ≥0). |
 
 ## TUI session durability
 
@@ -51,11 +54,11 @@ See [`docs/tui/sessions.md`](../tui/sessions.md).
 | `--allow-host-exec`          | Allow host `/exec` when running `arbiter --api` (unsafe; prefer the Docker sandbox). |
 | `ARBITER_ALLOW_HOST_EXEC`    | Same as `--allow-host-exec` when set to a non-empty, non-`0` value. |
 
-The API server keeps `/exec` **disabled** unless the per-tenant Docker sandbox is configured (below) or host exec is explicitly allowed.
+The API server keeps `/exec` **disabled** unless the per-tenant Docker sandbox is configured (below) or host exec is explicitly allowed. In the TUI, host `/exec` always shows a `HOST SHELL (unsandboxed)` permission card when a confirm callback is wired. Setting `ARBITER_SANDBOX_IMAGE` in the TUI opts into the same Docker sandbox path as `--api`.
 
 ## Per-tenant sandbox
 
-Arbiter's `/exec` writ is disabled by default in the API. Setting `ARBITER_SANDBOX_IMAGE` enables a per-tenant Docker sandbox that confines `/exec` to a workspace volume shared with `/write` and `/read`. The idle reaper (`ARBITER_SANDBOX_IDLE_SECONDS`) is implemented. There is **no** env var for the workspaces root path yet (`~/.arbiter/workspaces/`). The full walkthrough is in [`docs/concepts/sandbox.md`](../concepts/sandbox.md); the env-var surface:
+Arbiter's `/exec` writ is disabled by default in the API. Setting `ARBITER_SANDBOX_IMAGE` enables a per-tenant Docker sandbox that confines `/exec` to a workspace volume shared with `/write` and `/read`. The same env set is honoured by the interactive TUI (opt-in Docker `/exec`). The idle reaper (`ARBITER_SANDBOX_IDLE_SECONDS`) is implemented. The full walkthrough is in [`docs/concepts/sandbox.md`](../concepts/sandbox.md); the env-var surface:
 
 | Variable                                | Purpose                                                                                                | Default        |
 |-----------------------------------------|--------------------------------------------------------------------------------------------------------|----------------|
@@ -65,11 +68,12 @@ Arbiter's `/exec` writ is disabled by default in the API. Setting `ARBITER_SANDB
 | `ARBITER_SANDBOX_MEMORY_MB`             | Hard memory cap per container, MB. `0` = no cap.                                                       | `512`          |
 | `ARBITER_SANDBOX_CPUS`                  | CPU shares per container. `0` = no cap.                                                                | `1.0`          |
 | `ARBITER_SANDBOX_PIDS_LIMIT`            | Max processes per container. `0` = no cap.                                                             | `256`          |
-| `ARBITER_SANDBOX_EXEC_TIMEOUT`          | Wall-clock kill, seconds, per `/exec` call. `0` = no parent-side timeout.                              | `30`           |
+| `ARBITER_SANDBOX_EXEC_TIMEOUT`          | Wall-clock kill, seconds, per `/exec` call. `0` = no timeout.                                          | `30`           |
 | `ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`   | Per-tenant workspace disk quota, bytes. `/write` over the cap returns ERR; reads still work. `0` = no quota. | `1073741824` (1 GiB) |
 | `ARBITER_SANDBOX_IDLE_SECONDS`          | Idle threshold before a tenant container is stopped by the background reaper. `0` = no reaping.        | `1800` (30 min) |
+| `ARBITER_SANDBOX_WORKSPACES_ROOT`       | Host directory for per-tenant workspace bind mounts.                                                   | `~/.arbiter/workspaces` |
 
-A misconfigured sandbox (docker missing, image string empty, workspaces root unwritable) logs the reason at startup and keeps the server running with `/exec` disabled — the safe default for an exposed API server. Tenant workspaces land at `~/.arbiter/workspaces/t<tenant_id>/`.
+A misconfigured sandbox (docker missing, image string empty, workspaces root unwritable) logs the reason at startup and keeps the server running with `/exec` disabled — the safe default for an exposed API server. Tenant workspaces land at `<workspaces_root>/t<tenant_id>/`.
 
 ## Web search
 

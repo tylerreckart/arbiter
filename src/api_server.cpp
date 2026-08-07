@@ -25,6 +25,7 @@
 #include "schedule_parser.h"
 #include "scheduler.h"
 #include "circuit_breaker.h"
+#include "cors.h"
 #include "idempotency_cache.h"
 #include "logger.h"
 #include "metrics.h"
@@ -219,14 +220,16 @@ bool parse_http_request(int fd, HttpRequest& req) {
 //
 // Default permissive (`*`) so a frontend on any origin can hit the API in
 // dev with zero config.  Bearer auth carries in the Authorization header —
-// no cookies — so we don't need Allow-Credentials.  To harden in production,
-// put an origin allowlist in the reverse proxy OR extend these helpers to
-// read a CSV from ARBITER_CORS_ORIGINS and echo only matches.
-constexpr const char* kCorsHeaders =
-    "Access-Control-Allow-Origin: *\r\n"
-    "Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS\r\n"
-    "Access-Control-Allow-Headers: Authorization, Content-Type, Accept, Idempotency-Key, If-None-Match\r\n"
-    "Access-Control-Max-Age: 86400\r\n";
+// no cookies — so we don't need Allow-Credentials.  Set ARBITER_CORS_ORIGINS
+// (CSV) to echo only matching Origin values; mismatched / missing Origin
+// omits Access-Control-Allow-Origin.  A reverse-proxy allowlist remains a
+// valid alternative.
+CorsPolicy g_cors_policy{};
+thread_local std::string g_tls_request_origin;
+
+std::string current_cors_headers() {
+    return cors_headers_for(g_cors_policy, g_tls_request_origin);
+}
 
 } // namespace (anon paused for response writers below)
 
@@ -235,8 +238,8 @@ constexpr const char* kCorsHeaders =
 // These three are at arbiter-namespace scope (not the surrounding
 // anonymous namespace) so other TUs in arbiter — currently src/a2a/server.cpp
 // — can write directly without going through the route-dispatch loop.
-// The TU-local helpers they call (write_all, kCorsHeaders) live in the
-// anonymous namespace above; same-TU access is unaffected by the linkage
+// The TU-local helpers they call (write_all, current_cors_headers) live in
+// the anonymous namespace above; same-TU access is unaffected by the linkage
 // boundary.
 
 void write_plain_response(int fd, int code, const std::string& reason,
@@ -245,7 +248,7 @@ void write_plain_response(int fd, int code, const std::string& reason,
     ss << "HTTP/1.1 " << code << " " << reason << "\r\n"
        << "Content-Type: text/plain; charset=utf-8\r\n"
        << "Content-Length: " << body.size() << "\r\n"
-       << kCorsHeaders
+       << current_cors_headers()
        << "Connection: close\r\n\r\n"
        << body;
     write_all(fd, ss.str());
@@ -257,7 +260,7 @@ void write_json_response(int fd, int code, std::shared_ptr<JsonValue> body) {
     ss << "HTTP/1.1 " << code << " " << (code == 200 ? "OK" : "Error") << "\r\n"
        << "Content-Type: application/json; charset=utf-8\r\n"
        << "Content-Length: " << payload.size() << "\r\n"
-       << kCorsHeaders
+       << current_cors_headers()
        << "Connection: close\r\n\r\n"
        << payload;
     write_all(fd, ss.str());
@@ -277,7 +280,7 @@ void write_429_response(int fd, int retry_after_seconds, const char* reason,
        << "Content-Type: application/json; charset=utf-8\r\n"
        << "Content-Length: " << payload.size() << "\r\n"
        << "Retry-After: " << retry_after_seconds << "\r\n"
-       << kCorsHeaders
+       << current_cors_headers()
        << "Connection: close\r\n\r\n"
        << payload;
     write_all(fd, ss.str());
@@ -288,7 +291,7 @@ namespace {
 void write_preflight_response(int fd) {
     std::ostringstream ss;
     ss << "HTTP/1.1 204 No Content\r\n"
-       << kCorsHeaders
+       << current_cors_headers()
        << "Content-Length: 0\r\n"
        << "Connection: close\r\n\r\n";
     write_all(fd, ss.str());
@@ -311,16 +314,17 @@ public:
         // Standard SSE headers.  X-Accel-Buffering: no tells nginx and
         // similar proxies to not buffer the response — without it, events
         // stall until the buffer fills.  Connection: close is fine for
-        // our one-request-per-connection model.
-        static const std::string kHdr =
+        // our one-request-per-connection model.  CORS is rebuilt per
+        // request so ARBITER_CORS_ORIGINS / Origin echoing stays correct.
+        const std::string hdr =
             std::string("HTTP/1.1 200 OK\r\n"
                         "Content-Type: text/event-stream\r\n"
                         "Cache-Control: no-cache\r\n"
                         "X-Accel-Buffering: no\r\n") +
-            kCorsHeaders +
+            current_cors_headers() +
             "Connection: close\r\n\r\n";
         std::lock_guard<std::mutex> lk(mu_);
-        write_all(fd_, kHdr);
+        write_all(fd_, hdr);
         last_write_ = std::chrono::steady_clock::now();
         start_heartbeat_locked();
     }
@@ -4427,7 +4431,7 @@ void handle_artifact_get_raw(int fd, int64_t artifact_id,
         std::ostringstream ss;
         ss << "HTTP/1.1 304 Not Modified\r\n"
            << "ETag: " << etag << "\r\n"
-           << kCorsHeaders
+           << current_cors_headers()
            << "Content-Length: 0\r\n"
            << "Connection: close\r\n\r\n";
         write_all(fd, ss.str());
@@ -4442,7 +4446,7 @@ void handle_artifact_get_raw(int fd, int64_t artifact_id,
        << "Content-Type: " << rec->mime_type << "\r\n"
        << "Content-Length: " << blob->size() << "\r\n"
        << "ETag: " << etag << "\r\n"
-       << kCorsHeaders
+       << current_cors_headers()
        << "Connection: close\r\n\r\n";
     write_all(fd, ss.str());
     write_all(fd, *blob);
@@ -4671,7 +4675,7 @@ void handle_request_events(int fd, const std::string& request_id,
             << "Content-Type: text/event-stream\r\n"
             << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
             << "X-Accel-Buffering: no\r\n"
-            << kCorsHeaders
+            << current_cors_headers()
             << "Connection: close\r\n"
             << "\r\n";
         write_all(fd, hdr.str());
@@ -5735,7 +5739,7 @@ void handle_notifications_stream(int fd, TenantStore& tenants, Tenant tenant,
             << "Content-Type: text/event-stream\r\n"
             << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
             << "X-Accel-Buffering: no\r\n"
-            << kCorsHeaders
+            << current_cors_headers()
             << "Connection: close\r\n"
             << "\r\n";
         write_all(fd, hdr.str());
@@ -8837,7 +8841,7 @@ void handle_a2a_tasks_resubscribe(int fd,
             << "Content-Type: text/event-stream\r\n"
             << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
             << "X-Accel-Buffering: no\r\n"
-            << kCorsHeaders
+            << current_cors_headers()
             << "Connection: close\r\n"
             << "\r\n";
         write_all(fd, hdr.str());
@@ -10697,10 +10701,37 @@ void handle_event_ingest(int fd, HttpRequest req,
     const std::string agent   = body->get_string("agent", "");
     auto payload_val          = body->get("payload");
 
-    // Route: explicit override wins; otherwise scan agent constitutions.
-    std::string agent_id = agent.empty()
-        ? route_event(opts.agents_dir, event_type)
-        : agent;
+    // Route: explicit override wins; otherwise file-backed agents first,
+    // then tenant-stored agents (POST /v1/agents) by stable agent_id order.
+    std::string agent_id = agent;
+    if (agent_id.empty()) {
+        agent_id = route_event(opts.agents_dir, event_type);
+        if (agent_id == "index") {
+            auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+            std::sort(records.begin(), records.end(),
+                      [](const AgentRecord& a, const AgentRecord& b) {
+                          return a.agent_id < b.agent_id;
+                      });
+            std::vector<std::pair<std::string, std::vector<std::string>>>
+                tenant_agents;
+            tenant_agents.reserve(records.size());
+            for (const auto& rec : records) {
+                try {
+                    auto c = Constitution::from_json(rec.agent_def_json);
+                    if (c.event_types.empty()) continue;
+                    tenant_agents.emplace_back(rec.agent_id,
+                                               std::move(c.event_types));
+                } catch (const std::exception& e) {
+                    Logger::global().warn("route_event_skip_tenant_agent", {
+                        {"agent_id", rec.agent_id},
+                        {"error", e.what()},
+                    });
+                }
+            }
+            std::string matched = route_event(tenant_agents, event_type);
+            if (!matched.empty()) agent_id = matched;
+        }
+    }
 
     // Format event as a natural-language message the agent can reason about.
     std::string message = "Event: " + event_type;
@@ -10750,11 +10781,29 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     // Circuit breaker shared across all per-request ApiClients.
     // Defaults (5 consecutive failures → open, 30s cooldown) are
     // tuned to tolerate transient hiccups while catching sustained
-    // provider outages.  Operator-tunable env vars are a Phase 5
-    // follow-up; the defaults serve the v1 target deployments well.
-    circuit_breaker_ = std::make_unique<ProviderCircuitBreaker>();
-    circuit_breaker_->set_metrics(metrics_.get());
-    opts_.circuit_breaker = circuit_breaker_.get();
+    // provider outages.  Override with ARBITER_CIRCUIT_FAILURE_THRESHOLD
+    // / ARBITER_CIRCUIT_COOLDOWN_SECONDS.
+    {
+        CircuitBreakerConfig cbc = load_circuit_breaker_config_from_env();
+        circuit_breaker_ = std::make_unique<ProviderCircuitBreaker>(cbc);
+        circuit_breaker_->set_metrics(metrics_.get());
+        opts_.circuit_breaker = circuit_breaker_.get();
+        Logger::global().info("circuit_breaker_config", {
+            {"failure_threshold", std::to_string(cbc.failure_threshold)},
+            {"cooldown_seconds",  std::to_string(cbc.cooldown_seconds)},
+        });
+    }
+
+    // CORS policy: unset ARBITER_CORS_ORIGINS ⇒ `*`; CSV allowlist echoes
+    // matching Origin only.  Stored in a TU-local so response writers
+    // (which don't take the HttpRequest) can build per-request headers
+    // from the thread-local Origin set in handle_connection.
+    g_cors_policy = load_cors_policy_from_env();
+    if (!g_cors_policy.allowed_origins.empty()) {
+        Logger::global().info("cors_allowlist", {
+            {"origins", std::to_string(g_cors_policy.allowed_origins.size())},
+        });
+    }
 
     // Per-tenant /exec sandbox.  When configured but unusable (docker
     // missing, no image, etc.) we log the reason and continue with
@@ -11078,6 +11127,17 @@ void ApiServer::handle_connection(int fd) {
         write_plain_response(fd, 400, "Bad Request", "bad request\n");
         return;
     }
+    // Stash Origin for CORS header builders on this connection thread.
+    // Cleared at the end of the request so a recycled thread (we detach
+    // today, but keep the hygiene) doesn't leak a previous Origin.
+    {
+        auto it = req.headers.find("origin");
+        g_tls_request_origin =
+            (it != req.headers.end()) ? it->second : std::string{};
+    }
+    struct OriginTlsGuard {
+        ~OriginTlsGuard() { g_tls_request_origin.clear(); }
+    } origin_tls_guard;
     // Connection-level exception trap.  Without this, an uncaught throw
     // anywhere downstream propagates out of the connection thread and
     // calls std::terminate, killing the whole API server process —
@@ -11114,7 +11174,7 @@ void ApiServer::handle_connection(int fd) {
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
             "Content-Length: " + std::to_string(body.size()) + "\r\n" +
-            kCorsHeaders +
+            current_cors_headers() +
             "Connection: close\r\n\r\n";
         write_all(fd, headers);
         write_all(fd, body);

@@ -39,6 +39,7 @@ Either a bare constitution or wrapped under `agent_def`:
 | `temperature`   | number | no  | 0.0–2.0. Default 0.3. |
 | `rules`         | array<string> | no | Behavioural constraints appended to the system prompt. |
 | `capabilities`  | array<string> | no | Tools this agent uses. Used by master for routing. |
+| `event_types`   | array<string> | no | Glob patterns for [`POST /v1/events`](../events.md) automatic routing (`fnmatch`). Empty / omitted ⇒ not event-routed. |
 | `mode`          | string | no  | `""` / `"standard"` (default) or `"writer"`. |
 | `advisor`       | object \| string | no | Advisor configuration. Object form: `{model, prompt?, mode?, max_redirects?, malformed_halts?}`. String form is treated as `{model: <s>, mode: "consult"}` (back-compat). See [advisor concept](../../concepts/advisor.md). |
 | `advisor_model` | string | no  | **Legacy.** Higher-capability model for `/advise` consults. New configurations should use `advisor.model` instead. If both `advisor` and `advisor_model` are present, the structured `advisor` block wins. |

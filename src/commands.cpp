@@ -2594,10 +2594,19 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                          "files, or /agent to delegate analysis that doesn't "
                          "require the shell.\n";
                 cache_result = false;
-            } else if (confirm && is_destructive_exec(cmd.args)) {
+            } else if (confirm && (!exec_invoker || is_destructive_exec(cmd.args))) {
+                // Host /exec: always confirm with a clear unsandboxed danger
+                // label (Phase 2).  Sandboxed /exec only confirms destructive
+                // patterns — the container is the safety boundary.
                 ConfirmRequest req;
                 req.action = "exec";
-                req.summary = "destructive shell command";
+                if (!exec_invoker) {
+                    req.summary = is_destructive_exec(cmd.args)
+                        ? "HOST SHELL (unsandboxed) — destructive command"
+                        : "HOST SHELL (unsandboxed)";
+                } else {
+                    req.summary = "sandboxed shell — destructive command";
+                }
                 // Target carries the command; only spill into preview when
                 // the header would truncate (avoids duplicating the same line).
                 // Truncate by display width so multibyte UTF-8 isn't split.

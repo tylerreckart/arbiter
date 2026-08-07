@@ -15,9 +15,11 @@
 //            matches the path
 //
 // Resource caps (memory, cpus, pids, --network=none) are applied at
-// container start.  Per-exec wall-clock is enforced parent-side by
-// SIGKILLing the `docker exec` driver process when the deadline elapses;
-// best-effort container-side killing is a follow-up.
+// container start.  Per-exec wall-clock is enforced two ways: the command
+// is wrapped with GNU `timeout` when that binary is in the image, and the
+// parent SIGKILLs the `docker exec` driver process when the deadline
+// elapses.  On parent-side timeout a best-effort pass kills leftover
+// non-PID-1 processes inside the warm container.
 //
 // Containers are started lazily on first ensure_container() per tenant.
 // Idle reaping (ARBITER_SANDBOX_IDLE_SECONDS) stops warm containers after

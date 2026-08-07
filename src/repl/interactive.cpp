@@ -95,7 +95,7 @@ ReplSession::ReplSession(std::string config_dir,
         {"/mem",          "structured memory + scratchpad"},
         {"/todo",         "todo tracker"},
         {"/schedule",     "schedule recurring/one-shot tasks"},
-        {"/exec",         "shell command (confirm gate)"},
+        {"/exec",         "shell (host confirm / optional Docker sandbox)"},
         {"/diff",         "review/apply/reject/undo streamed ```diff patches"},
         {"/write",        "write a file"},
         {"/read",         "conversation artifacts"},
@@ -534,6 +534,38 @@ void ReplSession::run() {
         tool_conversation_id = std::make_shared<std::atomic<int64_t>>(
             parse_conversation_db_id(conversation_store.active_id()));
         api_opts = make_cli_api_options(dir, get_api_keys(), cfg.exec_allowed);
+        // Opt-in Docker sandbox for interactive /exec.  When the image is
+        // set and usable, /exec runs in a per-tenant container; host shell
+        // remains the default (confirm-gated) when the sandbox is unset.
+        // If the image was requested but unusable, refuse the host path —
+        // same honesty contract as `--api`.
+        if (api_opts.sandbox_enabled) {
+            SandboxConfig sc;
+            sc.runtime              = api_opts.sandbox_runtime;
+            sc.image                = api_opts.sandbox_image;
+            sc.workspaces_root      = api_opts.sandbox_workspaces_root;
+            sc.network              = api_opts.sandbox_network;
+            sc.memory_mb            = api_opts.sandbox_memory_mb;
+            sc.cpus                 = api_opts.sandbox_cpus;
+            sc.pids_limit           = api_opts.sandbox_pids_limit;
+            sc.exec_timeout_seconds = api_opts.sandbox_exec_timeout_seconds;
+            sc.workspace_max_bytes  = api_opts.sandbox_workspace_max_bytes;
+            sc.idle_seconds         = api_opts.sandbox_idle_seconds;
+            sandbox_manager = std::make_unique<SandboxManager>(std::move(sc));
+            if (sandbox_manager->usable()) {
+                api_opts.sandbox = sandbox_manager.get();
+                api_opts.exec_disabled = false;
+                api_opts.host_exec_enabled = false;
+            } else {
+                std::cerr << "WARN: TUI sandbox disabled — "
+                          << sandbox_manager->unusable_reason()
+                          << "\n      /exec returns ERR until fixed; unset "
+                             "ARBITER_SANDBOX_IMAGE to use host shell.\n";
+                // Keep sandbox_enabled so make_exec_invoker_callback does
+                // not silently fall back to host popen.
+                api_opts.sandbox = nullptr;
+            }
+        }
         wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
                                 tool_conversation_id);
         // API wiring installs a capture-only /write interceptor (no host cwd).

@@ -4,25 +4,19 @@
 #include "agent.h"
 #include "api_client.h"
 #include "commands.h"
+#include "event_routing.h"
 #include <atomic>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <memory>
-#include <mutex>
+#include <utility>
 #include <vector>
 
 namespace arbiter {
-
-// Scan *.json agent files in agents_dir for the first agent whose event_types
-// array contains a glob pattern matching event_type.  Returns that agent's id
-// (Constitution::name or filename stem), or "index" if no match.  Reads
-// constitution files on each call — intended for the infrequent /v1/events
-// dispatch path, not a hot loop.
-std::string route_event(const std::string& agents_dir,
-                        const std::string& event_type);
 
 class Orchestrator {
 public:

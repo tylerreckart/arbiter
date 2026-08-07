@@ -45,12 +45,19 @@ class Metrics;
 struct CircuitBreakerConfig {
     // How many consecutive failures trip the breaker.  Default 5 —
     // tolerates transient hiccups, catches sustained outages.
+    // Override with ARBITER_CIRCUIT_FAILURE_THRESHOLD.
     int failure_threshold = 5;
 
     // Cool-down once tripped, seconds.  After this many seconds in
     // Open, the next allow() probe transitions to HalfOpen.
+    // Override with ARBITER_CIRCUIT_COOLDOWN_SECONDS.
     int cooldown_seconds  = 30;
 };
+
+// Load CircuitBreakerConfig from ARBITER_CIRCUIT_* env vars.  Missing or
+// unparsable values keep the struct defaults.  failure_threshold is
+// clamped to ≥1; cooldown_seconds is clamped to ≥0.
+CircuitBreakerConfig load_circuit_breaker_config_from_env();
 
 class ProviderCircuitBreaker {
 public:

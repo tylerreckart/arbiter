@@ -7,6 +7,24 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Tunable provider circuit breaker.** `ARBITER_CIRCUIT_FAILURE_THRESHOLD`
+  (default 5) and `ARBITER_CIRCUIT_COOLDOWN_SECONDS` (default 30) configure the
+  process-wide breaker used by `--api`.
+- **CORS origin allowlist.** `ARBITER_CORS_ORIGINS` (CSV) echoes matching
+  `Origin` values (with `Vary: Origin`); unset keeps permissive `*`.
+- **Sandbox workspaces root env.** `ARBITER_SANDBOX_WORKSPACES_ROOT` overrides
+  `~/.arbiter/workspaces`.
+- **Container-side exec timeout.** Sandbox `/exec` wraps commands with GNU
+  `timeout` when present; on deadline, leftover non-PID-1 processes inside the
+  warm container are killed best-effort.
+- **TUI opt-in Docker `/exec`.** The interactive TUI honours `ARBITER_SANDBOX_*`
+  the same way `--api` does. Host `/exec` always confirms with a
+  `HOST SHELL (unsandboxed)` permission card.
+- **Event routing for tenant agents.** `POST /v1/events` matches
+  `event_types` on file-backed agents first, then tenant agents from
+  `POST /v1/agents` (stable `agent_id` order), then `index`.
+
 ### Changed
 - **HTTP API multi-tenant bearer auth restored.** Runtime `/v1/*` routes again
   require `Authorization: Bearer atr_…` resolved via `TenantStore::find_by_token`.
@@ -26,6 +44,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   and stops work at the next preflight. Sticky `hard_cancelled_` survives
   ephemeral cancel clears. Admin PATCH requires boolean `disabled`. A2A
   kill-switch stays JSON-RPC-shaped.
+- **Sandbox idle reaper logging.** Reaps emit structured
+  `sandbox_container_reaped` via `Logger` instead of raw `fprintf`.
+- **`POST /v1/events` status.** Documented as stable now that tenant-agent
+  routing is included.
 
 ## [0.11.0] — 2026-08-06
 

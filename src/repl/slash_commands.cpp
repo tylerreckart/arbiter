@@ -952,7 +952,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                     "  /todo list|add|start|done|…      — conversation-scoped task list\n"
                     "  /schedule list|<phrase>: <msg>   — schedule recurring/one-shot tasks\n"
                     "  /schedule cancel|pause|resume    — manage scheduled tasks by id\n"
-                    "  /exec <cmd>                      — host shell (confirm gate; on by default; --no-exec disables)\n"
+                    "  /exec <cmd>                      — host shell (HOST SHELL confirm) or Docker when ARBITER_SANDBOX_IMAGE set; --no-exec disables\n"
                     "  /diff [review]|list|apply|reject|undo — interactive a/r or apply streamed ```diff\n"
                     "  /write <path>                    — write file / --persist to artifact store\n"
                     "  /read <path> | /list             — conversation artifacts\n"

@@ -1,6 +1,7 @@
 // arbiter/src/sandbox.cpp
 
 #include "sandbox.h"
+#include "logger.h"
 #include "metrics.h"
 
 #include <algorithm>
@@ -29,6 +30,31 @@ namespace fs = std::filesystem;
 namespace arbiter {
 
 namespace {
+
+// Single-quote for embedding `s` inside an `sh -c` script.
+std::string shell_single_quote(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    out += "'";
+    return out;
+}
+
+// Wrap a user command so the container itself enforces the wall-clock
+// deadline when GNU `timeout` is on PATH inside the image.  Falls back
+// to a plain `sh -c` when `timeout` is missing — the parent-side
+// SIGKILL of `docker exec` + kill_exec_survivors remains the backstop.
+std::string wrap_exec_with_timeout(const std::string& command,
+                                   int timeout_seconds) {
+    if (timeout_seconds <= 0) return command;
+    const std::string q = shell_single_quote(command);
+    return "if command -v timeout >/dev/null 2>&1; then "
+           "exec timeout -s KILL " + std::to_string(timeout_seconds) +
+           "s sh -c " + q + "; "
+           "else exec sh -c " + q + "; fi";
+}
 
 // Run argv, capture stdout+stderr into `out`. SIGKILL on timeout; -1 on fork failure.
 int run_capture(const std::vector<std::string>& argv,
@@ -439,10 +465,10 @@ void SandboxManager::reaper_loop() {
             }
         }
         for (int64_t tid : to_stop) {
-            std::fprintf(stderr,
-                "[sandbox] reaping idle container for tenant %lld "
-                "(idle > %ds)\n",
-                static_cast<long long>(tid), cfg_.idle_seconds);
+            Logger::global().info("sandbox_container_reaped", {
+                {"tenant_id", std::to_string(tid)},
+                {"idle_seconds", std::to_string(cfg_.idle_seconds)},
+            });
             stop_container(tid);
             if (metrics_) metrics_->inc_sandbox_container_reaped();
             std::lock_guard<std::mutex> lk(mu_);
@@ -673,13 +699,21 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     }
 
     const std::string name = container_name_for(tenant_id);
+    // Container-side deadline (GNU timeout when present) + parent-side
+    // backstop.  Parent gets a small grace so the in-container timeout
+    // can exit with 124 before we SIGKILL the docker-exec driver.
+    const std::string wrapped =
+        wrap_exec_with_timeout(command, cfg_.exec_timeout_seconds);
     std::vector<std::string> argv{
         cfg_.runtime, "exec",
         "-i",
         "--workdir", "/workspace",
         name,
-        "sh", "-c", command
+        "sh", "-c", wrapped
     };
+    const int parent_timeout = (cfg_.exec_timeout_seconds > 0)
+        ? cfg_.exec_timeout_seconds + 2
+        : 0;
 
     // When a workspace quota is configured, hold the same per-tenant mutex
     // as write_to_workspace for the entire docker exec so a concurrent
@@ -695,11 +729,34 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
 
     bool timed_out = false;
     bool truncated = false;
-    int rc = run_capture(argv, cfg_.exec_timeout_seconds,
+    int rc = run_capture(argv, parent_timeout,
                           static_cast<size_t>(cfg_.output_max_bytes),
                           r.output, timed_out, &truncated);
+    // GNU timeout exits 124 on deadline; treat that as a clean timeout
+    // even when the parent backstop did not fire.
+    if (!timed_out && cfg_.exec_timeout_seconds > 0 && rc == 124) {
+        timed_out = true;
+    }
     r.timed_out  = timed_out;
     r.exit_status = rc;
+
+    if (timed_out) {
+        // Best-effort: kill leftover non-PID-1 processes so a timed-out
+        // workload cannot keep burning CPU/memory inside the warm
+        // container after docker-exec is gone.
+        std::string kill_out;
+        bool kill_to = false;
+        run_capture(
+            {cfg_.runtime, "exec", name, "sh", "-c",
+             "for p in /proc/[0-9]*; do "
+             "pid=${p#/proc/}; "
+             "[ \"$pid\" = \"1\" ] && continue; "
+             "kill -9 \"$pid\" 2>/dev/null || true; "
+             "done"},
+            /*timeout_seconds=*/5,
+            /*output_cap=*/4096,
+            kill_out, kill_to);
+    }
 
     if (quota_enforced) {
         if (cfg_.quota_exec_pause_ms > 0) {

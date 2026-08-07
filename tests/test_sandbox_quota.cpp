@@ -60,13 +60,17 @@ if [ "$1" = exec ]; then
     shift
   done
   if [ -n "$cmd" ]; then
-    if [ "$cmd" = "__ARB_TEST_OVERFLOW__" ]; then
-      # Use $0 dirname expansion — not `dirname(1)` — because tests
-      # put this stub's directory first on PATH and have no dirname there.
-      here=${0%/*}
-      /bin/cat "$here/overflow.dat"
-      exit $?
-    fi
+    # Exact match or wrapped by SandboxManager's timeout helper
+    # (`if command -v timeout … sh -c '__ARB_TEST_OVERFLOW__'`).
+    case "$cmd" in
+      *__ARB_TEST_OVERFLOW__*)
+        # Use $0 dirname expansion — not `dirname(1)` — because tests
+        # put this stub's directory first on PATH and have no dirname there.
+        here=${0%/*}
+        /bin/cat "$here/overflow.dat"
+        exit $?
+        ;;
+    esac
     if [ -n "$ARBITER_TEST_WORKSPACE" ]; then
       # Match real `docker exec … sh -c <cmd>` (not `eval`, which re-parses
       # quotes and broke nested generators on macOS CI). Absolute /bin/sh

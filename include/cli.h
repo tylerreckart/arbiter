@@ -56,9 +56,16 @@ void cmd_rotate_tenant_token(const std::string& key);
 void cmd_disable_tenant(const std::string& key);
 void cmd_enable_tenant(const std::string& key);
 
+// Apply ARBITER_SANDBOX_* env vars onto opts.  When ARBITER_SANDBOX_IMAGE
+// is set, enables the sandbox and fills runtime/network/caps.  Workspaces
+// root defaults to `default_workspaces_root` unless
+// ARBITER_SANDBOX_WORKSPACES_ROOT is set.  Shared by `--api` and the TUI.
+void apply_sandbox_env_to_options(ApiServerOptions& opts,
+                                  const std::string& default_workspaces_root);
+
 // Build ApiServerOptions for local (non-HTTP) orchestrator wiring — TUI,
 // one-shot, scheduler ticks.  Mirrors cmd_api's env-var resolution for
-// search keys, MCP/A2A registry paths, and host exec opt-in.
+// search keys, MCP/A2A registry paths, sandbox opt-in, and host exec.
 ApiServerOptions make_cli_api_options(const std::string& config_dir,
                                       const std::map<std::string, std::string>& api_keys,
                                       bool exec_allowed);

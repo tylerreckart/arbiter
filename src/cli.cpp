@@ -274,35 +274,7 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     }
     opts.search_api_key = get_search_api_key();
     // ── Per-tenant sandbox ───────────────────────────────────────────
-    if (const char* img = std::getenv("ARBITER_SANDBOX_IMAGE"); img && *img) {
-        opts.sandbox_enabled         = true;
-        opts.sandbox_image           = img;
-        opts.sandbox_workspaces_root = dir + "/workspaces";
-        if (const char* r = std::getenv("ARBITER_SANDBOX_RUNTIME"); r && *r)
-            opts.sandbox_runtime = r;
-        if (const char* n = std::getenv("ARBITER_SANDBOX_NETWORK"); n && *n)
-            opts.sandbox_network = n;
-        if (const char* m = std::getenv("ARBITER_SANDBOX_MEMORY_MB"); m && *m) {
-            try { opts.sandbox_memory_mb = std::stoi(m); } catch (...) {}
-        }
-        if (const char* c = std::getenv("ARBITER_SANDBOX_CPUS"); c && *c) {
-            try { opts.sandbox_cpus = std::stod(c); } catch (...) {}
-        }
-        if (const char* p = std::getenv("ARBITER_SANDBOX_PIDS_LIMIT"); p && *p) {
-            try { opts.sandbox_pids_limit = std::stoi(p); } catch (...) {}
-        }
-        if (const char* t = std::getenv("ARBITER_SANDBOX_EXEC_TIMEOUT"); t && *t) {
-            try { opts.sandbox_exec_timeout_seconds = std::stoi(t); } catch (...) {}
-        }
-        if (const char* q = std::getenv("ARBITER_SANDBOX_WORKSPACE_MAX_BYTES");
-                q && *q) {
-            try { opts.sandbox_workspace_max_bytes = std::stoll(q); } catch (...) {}
-        }
-        if (const char* i = std::getenv("ARBITER_SANDBOX_IDLE_SECONDS");
-                i && *i) {
-            try { opts.sandbox_idle_seconds = std::stoi(i); } catch (...) {}
-        }
-    }
+    apply_sandbox_env_to_options(opts, dir + "/workspaces");
 
     ApiServer server(std::move(opts), tenants);
 
@@ -381,6 +353,43 @@ void cmd_api(int port, const std::string& bind, bool verbose,
     server.stop();
 }
 
+void apply_sandbox_env_to_options(ApiServerOptions& opts,
+                                  const std::string& default_workspaces_root) {
+    const char* img = std::getenv("ARBITER_SANDBOX_IMAGE");
+    if (!img || !*img) return;
+    opts.sandbox_enabled         = true;
+    opts.sandbox_image           = img;
+    opts.sandbox_workspaces_root = default_workspaces_root;
+    if (const char* wr = std::getenv("ARBITER_SANDBOX_WORKSPACES_ROOT");
+            wr && *wr) {
+        opts.sandbox_workspaces_root = wr;
+    }
+    if (const char* r = std::getenv("ARBITER_SANDBOX_RUNTIME"); r && *r)
+        opts.sandbox_runtime = r;
+    if (const char* n = std::getenv("ARBITER_SANDBOX_NETWORK"); n && *n)
+        opts.sandbox_network = n;
+    if (const char* m = std::getenv("ARBITER_SANDBOX_MEMORY_MB"); m && *m) {
+        try { opts.sandbox_memory_mb = std::stoi(m); } catch (...) {}
+    }
+    if (const char* c = std::getenv("ARBITER_SANDBOX_CPUS"); c && *c) {
+        try { opts.sandbox_cpus = std::stod(c); } catch (...) {}
+    }
+    if (const char* p = std::getenv("ARBITER_SANDBOX_PIDS_LIMIT"); p && *p) {
+        try { opts.sandbox_pids_limit = std::stoi(p); } catch (...) {}
+    }
+    if (const char* t = std::getenv("ARBITER_SANDBOX_EXEC_TIMEOUT"); t && *t) {
+        try { opts.sandbox_exec_timeout_seconds = std::stoi(t); } catch (...) {}
+    }
+    if (const char* q = std::getenv("ARBITER_SANDBOX_WORKSPACE_MAX_BYTES");
+            q && *q) {
+        try { opts.sandbox_workspace_max_bytes = std::stoll(q); } catch (...) {}
+    }
+    if (const char* i = std::getenv("ARBITER_SANDBOX_IDLE_SECONDS");
+            i && *i) {
+        try { opts.sandbox_idle_seconds = std::stoi(i); } catch (...) {}
+    }
+}
+
 ApiServerOptions make_cli_api_options(const std::string& config_dir,
                                       const std::map<std::string, std::string>& api_keys,
                                       bool exec_allowed) {
@@ -406,6 +415,10 @@ ApiServerOptions make_cli_api_options(const std::string& config_dir,
         opts.search_provider = p;
     }
     opts.search_api_key = get_search_api_key();
+    // Opt-in Docker sandbox for interactive /exec (Phase 2).  When the
+    // image is set, callers construct a SandboxManager and stash it on
+    // opts.sandbox before wire_orchestrator_tools.
+    apply_sandbox_env_to_options(opts, config_dir + "/workspaces");
     return opts;
 }
 

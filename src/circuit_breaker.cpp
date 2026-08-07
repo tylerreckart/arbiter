@@ -3,7 +3,31 @@
 #include "circuit_breaker.h"
 #include "metrics.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 namespace arbiter {
+
+namespace {
+
+int env_int(const char* name, int def) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return def;
+    try { return std::stoi(v); } catch (...) { return def; }
+}
+
+} // namespace
+
+CircuitBreakerConfig load_circuit_breaker_config_from_env() {
+    CircuitBreakerConfig c;
+    c.failure_threshold = env_int("ARBITER_CIRCUIT_FAILURE_THRESHOLD",
+                                  c.failure_threshold);
+    c.cooldown_seconds  = env_int("ARBITER_CIRCUIT_COOLDOWN_SECONDS",
+                                  c.cooldown_seconds);
+    if (c.failure_threshold < 1) c.failure_threshold = 1;
+    if (c.cooldown_seconds  < 0) c.cooldown_seconds  = 0;
+    return c;
+}
 
 ProviderCircuitBreaker::Entry&
 ProviderCircuitBreaker::entry_locked(const std::string& provider) {

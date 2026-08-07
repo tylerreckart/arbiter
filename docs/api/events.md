@@ -1,6 +1,6 @@
 # `POST /v1/events`
 
-**Auth:** tenant — _Status:_ experimental
+**Auth:** tenant — _Status:_ stable
 
 Turns a structured hardware or software event into a full Arbiter run. The runtime routes the event to an agent, supplies that agent with its normal memory and tools, and streams the resulting reasoning and actions as Server-Sent Events.
 
@@ -37,7 +37,14 @@ curl -N http://127.0.0.1:8080/v1/events \
 
 ## Routing
 
-File-backed agents opt into events with `event_types` in their constitution. Each entry is a glob matched against the event type. Arbiter scans the JSON definitions in its configured agents directory; tenant agents created through `POST /v1/agents` are not part of automatic event routing in this experimental version. If no file-backed agent matches, Arbiter routes the event to `index`.
+Agents opt into events with `event_types` in their constitution. Each entry is a glob matched against the event type (`fnmatch`, so `sensor.*` matches `sensor.temp.high`).
+
+Routing order:
+
+1. Explicit `agent` in the request body (any file-backed or tenant-stored id).
+2. File-backed agents under the configured agents directory (`~/.arbiter/agents/*.json`).
+3. Tenant agents created through [`POST /v1/agents`](agents/create.md), scanned in ascending `agent_id` order.
+4. If nothing matches, Arbiter routes the event to `index`.
 
 ```json
 {
@@ -51,9 +58,7 @@ File-backed agents opt into events with `event_types` in their constitution. Eac
 }
 ```
 
-An explicit `agent` in the request body takes precedence over `event_types` routing.
-
-Keep routing patterns distinct. If multiple agents match an event in this experimental implementation, the first matching agent definition is selected.
+Keep routing patterns distinct. If multiple agents in the same tier match an event, the first match in scan order wins (directory iteration for files; sorted `agent_id` for tenant agents).
 
 ## What the agent receives
 

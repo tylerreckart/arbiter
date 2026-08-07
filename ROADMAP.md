@@ -4,12 +4,10 @@ Living document: where Arbiter stands today and a prioritized path toward a comp
 
 ### Known sharp edges
 
-- Circuit breaker thresholds hard-coded
-- Sandbox: Docker-only; idle reaper documented but not implemented; no workspace-root env
+- Sandbox: Docker-only (`ARBITER_SANDBOX_RUNTIME` accepts other values but only docker is supported)
 - Hard kill can still lose an unfinished model stream; loops die on exit; queue depth is dropped
-- A2A push notifications unsupported; event routing still experimental
-- Documentation drift
-- TUI `/exec` is host shell, not sandboxed by default
+- A2A push notifications unsupported
+- Documentation drift (narrower than before Phase 2; keep watching ops/sandbox docs)
 
 ---
 
@@ -30,14 +28,14 @@ calendar commitments.
 
 ### Phase 2 — Production-grade local server
 - [x] **Durable idempotency-** Persist `(tenant, key) → request_id` across restarts
-- [ ] **Tunable circuit breaker-** `ARBITER_CIRCUIT_*` env
-- [ ] **Sandbox completion-** Idle reaper; exec-timeout kill inside container
-- [ ] **TUI sandbox path-** Opt-in Docker for interactive `/exec`. default remains confirm-gated host with clearer danger UX
-- [ ] **CORS allowlist env** `ARBITER_CORS_ORIGINS` as a documented alternative to the proxy
-- [ ] **Event routing for API-created agents-** Complete buildout of currrent experimental implementation
+- [x] **Tunable circuit breaker-** `ARBITER_CIRCUIT_FAILURE_THRESHOLD` / `ARBITER_CIRCUIT_COOLDOWN_SECONDS`
+- [x] **Sandbox completion-** Idle reaper (structured log); in-container `timeout` + survivor kill; `ARBITER_SANDBOX_WORKSPACES_ROOT`
+- [x] **TUI sandbox path-** Opt-in Docker for interactive `/exec` via `ARBITER_SANDBOX_IMAGE`; default remains confirm-gated host with `HOST SHELL (unsandboxed)` danger UX
+- [x] **CORS allowlist env** `ARBITER_CORS_ORIGINS` as a documented alternative to the proxy
+- [x] **Event routing for API-created agents-** File-backed then tenant-stored agents (`event_types`); explicit `agent` override unchanged
 
 **Acceptance criteria:** 
-- [ ] `--api` is honest for unattended use: reconnect, retry, sandbox, and metrics behave as docs claim.
+- [x] `--api` is honest for unattended use: reconnect, retry, sandbox, and metrics behave as docs claim.
 
 ### Phase 3 — Project-aware agents
 - [ ] **Workspace / repo map writ-** Cheap structural index (tree + symbols/outline) injected or fetchable; not a full LSP server in-process if avoidable

@@ -55,11 +55,12 @@ Setting `ARBITER_SANDBOX_IMAGE` is the only required step. Everything else has a
 | `ARBITER_SANDBOX_MEMORY_MB`             | Hard memory cap per container, MB. `0` = no cap.                                                       | `512`          |
 | `ARBITER_SANDBOX_CPUS`                  | CPU shares per container. `0` = no cap.                                                                | `1.0`          |
 | `ARBITER_SANDBOX_PIDS_LIMIT`            | Max processes per container. `0` = no cap.                                                             | `256`          |
-| `ARBITER_SANDBOX_EXEC_TIMEOUT`          | Wall-clock kill, seconds, per `/exec` call. `0` = no parent-side timeout.                              | `30`           |
+| `ARBITER_SANDBOX_EXEC_TIMEOUT`          | Wall-clock kill, seconds, per `/exec` call. `0` = no timeout. Enforced in-container via GNU `timeout` when present, with a parent-side `docker exec` SIGKILL backstop and a best-effort kill of leftover non-PID-1 processes. | `30`           |
 | `ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`   | Per-tenant workspace disk quota, bytes. `/write` over the cap returns ERR; reads still work. `0` = no quota. | `1073741824` (1 GiB) |
 | `ARBITER_SANDBOX_IDLE_SECONDS`          | Idle threshold before a tenant container is stopped by the background reaper. Workspace files survive. `0` = no reaping. | `1800` (30 min) |
+| `ARBITER_SANDBOX_WORKSPACES_ROOT`       | Host directory for per-tenant workspace bind mounts (`<root>/t<tenant_id>/`).                          | `~/.arbiter/workspaces` |
 
-Workspaces land at `~/.arbiter/workspaces/t<tenant_id>/` (one directory per tenant, mode `0700`). Override by editing `ApiServerOptions::sandbox_workspaces_root`; there's no env var for the path yet — open an issue if you need one.
+Workspaces land at `~/.arbiter/workspaces/t<tenant_id>/` (one directory per tenant, mode `0700`) unless `ARBITER_SANDBOX_WORKSPACES_ROOT` overrides the root.
 
 ### Image recommendations
 
@@ -142,7 +143,7 @@ The defaults are conservative for general-purpose `/exec`:
 | `--memory`          | 512m    | Hard cgroup memory ceiling. Container OOM-kills past this; agent sees `[exit 137]`. |
 | `--cpus`            | 1.0     | CPU shares. One full core, fractional values OK (`0.5`, `2.5`).                    |
 | `--pids-limit`      | 256     | Max processes inside the container. Catches fork bombs.                             |
-| Wall-clock timeout  | 30s     | Per-`/exec`. Parent-side SIGKILL; surfaces as `[timed out after 30s]`.              |
+| Wall-clock timeout  | 30s     | Per-`/exec`. In-container `timeout` when available, plus parent-side `docker exec` SIGKILL and survivor cleanup; surfaces as `[timed out after 30s]`. |
 | Output cap          | 32 KB   | Combined stdout+stderr per `/exec`. Trailing bytes truncated.                       |
 | Workspace tmpfs     | 64 MB   | `/tmp` inside the container. Persists only for the container's lifetime.            |
 
@@ -196,7 +197,7 @@ drwx------ 3 1000 1000 4096 May 11 22:01 ..
 | `[exit 137]` on an `/exec` that allocated a lot                | OOM-killed by the memory cap. Bump `ARBITER_SANDBOX_MEMORY_MB` or shrink the workload.| Tool-result block marked as failed.                                                            |
 | `ERR: invalid path: …` from `/write` or `/read`                | Absolute path, traversal, or control byte in the request.                             | Agent's standard sanitiser error.                                                              |
 | `ERR: workspace quota exceeded (…); used …, attempted …`       | `/write` would push the workspace past `ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`.         | Agent adapts (clean up + retry, or split the write). Reads still work.                         |
-| `[sandbox] reaping idle container for tenant <tid>` in logs    | Background reaper stopped a container idle past `ARBITER_SANDBOX_IDLE_SECONDS`.       | Informational only. Next sandbox op for that tenant cold-starts.                               |
+| `sandbox_container_reaped` in structured logs                  | Background reaper stopped a container idle past `ARBITER_SANDBOX_IDLE_SECONDS`.       | Informational only. Next sandbox op for that tenant cold-starts.                               |
 | `[sandbox] survivor container … exec-probe failed; rebuilding` | Re-attach path found a "running" container that didn't respond to `docker exec true`. | Container is force-removed and a fresh one starts. Workspace bytes remain.                     |
 | Container vanished out of band (`docker rm -f`)                | Operator force-removed the container.                                                 | Next `/exec` notices the stale row, restarts cleanly.                                          |
 
