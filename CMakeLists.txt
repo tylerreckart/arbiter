@@ -1197,11 +1197,20 @@ if(INDEX_BUILD_TESTS)
         tests/test_route_event.cpp
         src/event_routing.cpp
         src/constitution.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
         src/json.cpp
     )
     target_include_directories(unit_route_event PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_route_event PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
     )
     add_test(NAME unit_route_event COMMAND unit_route_event)
 
@@ -1326,6 +1335,7 @@ if(INDEX_BUILD_TESTS)
         src/sandbox.cpp
         src/ssrf_guard.cpp
         src/metrics.cpp
+        src/logger.cpp
     )
     target_include_directories(unit_sandbox_ssrf PRIVATE
         ${CMAKE_SOURCE_DIR}/include
@@ -1342,6 +1352,7 @@ if(INDEX_BUILD_TESTS)
         src/sandbox.cpp
         src/ssrf_guard.cpp
         src/metrics.cpp
+        src/logger.cpp
     )
     target_include_directories(unit_sandbox_quota PRIVATE
         ${CMAKE_SOURCE_DIR}/include
