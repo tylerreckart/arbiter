@@ -8617,6 +8617,15 @@ void handle_a2a_message_stream(int fd,
     // accumulating chunks can finalise its rendering.
     writer.emit_text_chunk("", /*last_chunk=*/true);
 
+    if (auto prior = tenants.get_a2a_task(tenant.id, task_id);
+        prior && prior->state ==
+                     a2a::task_state_to_string(a2a::TaskState::canceled)) {
+        // tasks/cancel may have persisted canceled while send_streaming
+        // was still unwinding — do not overwrite with completed/failed.
+        sse.close();
+        return;
+    }
+
     const a2a::TaskState terminal = resp.ok ? a2a::TaskState::completed
                                              : a2a::TaskState::failed;
     writer.emit_status(terminal, /*final=*/true, reply);
@@ -9597,6 +9606,17 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     }
 
+    // Persistence is required for durable orchestrate when the event bus
+    // is wired.  Do not start a run without a status row (or join replay)
+    // — otherwise Idempotency-Key dedup cannot claim and duplicates race.
+    if (persist_events_pre && !request_status_created) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("request persistence temporarily unavailable");
+        write_json_response(fd, 503, err);
+        return;
+    }
+
     // Kill-switch re-check before committing SSE headers.  Must stay ahead
     // of write_headers() so a disable that landed after the entry refresh
     // still returns a clean HTTP 401 (not a corrupted half-SSE + plain body).
@@ -10476,12 +10496,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count());
             const bool ok_final = !tenant_revoked && resp.ok;
+            std::string terminal_state = ok_final ? "completed" : "failed";
+            std::optional<std::string> status_error;
+            if (!tenant_revoked && resp.error_type == "cancelled") {
+                terminal_state = "canceled";
+                status_error   = std::optional<std::string>("cancelled");
+            } else if (!ok_final) {
+                status_error = std::optional<std::string>(
+                    tenant_revoked ? "tenant disabled" : resp.error);
+            }
             tenants.update_request_status(request_id,
-                std::optional<std::string>(ok_final ? "completed" : "failed"),
+                std::optional<std::string>(terminal_state),
                 completed,
-                ok_final ? std::nullopt
-                         : std::optional<std::string>(
-                               tenant_revoked ? "tenant disabled" : resp.error),
+                status_error,
                 std::nullopt);
         }
 
@@ -10747,6 +10774,7 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
                 opts_.file_max_bytes,
                 static_cast<size_t>(std::numeric_limits<int>::max()));
             sc.read_max_bytes = static_cast<int>(cap);
+            sc.list_max_bytes = static_cast<int>(cap);
         }
         // Always keep the manager, even on usability failure — cli.cpp
         // queries it post-banner-clear to render the startup status
