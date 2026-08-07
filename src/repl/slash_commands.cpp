@@ -7,6 +7,8 @@
 #include "commands.h"
 #include "constitution.h"
 #include "markdown.h"
+#include "model_catalog.h"
+#include "model_context.h"
 #include "stream_renderer.h"
 #include "render_policy.h"
 #include "styled_text.h"
@@ -624,14 +626,43 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             if (cmd == "model") {
                 std::string id, model;
                 iss >> id >> model;
-                if (id.empty() || model.empty()) {
-                    push_status("Usage: /model <agent-id> <model-id>\n"
-                                      "  e.g. /model research claude-haiku-4-5-20251001");
+                if (id.empty()) {
+                    push_status(format_model_catalog_list());
+                    return;
+                }
+                if (model.empty()) {
+                    try {
+                        const auto& agent = orch.get_agent(id);
+                        const std::string& cur = agent.config().model;
+                        const int window = context_window_for_model(cur);
+                        std::string msg = id + " model: " + cur
+                            + "  ctx=" + format_context_window(window);
+                        if (const auto* e = find_model_catalog_entry(cur)) {
+                            msg += "  [";
+                            msg += e->provider;
+                            msg += "]";
+                        } else {
+                            msg += "  (not in catalogue — heuristic window)";
+                        }
+                        msg += "\n  /model                    — list catalogue\n"
+                               "  /model " + id + " <model-id> — change model";
+                        push_status(msg);
+                    } catch (const std::exception& ex) {
+                        push_status("ERR: " + std::string(ex.what()));
+                    }
                     return;
                 }
                 try {
                     orch.get_agent(id).config_mut().model = model;
-                    push_status(id + " model -> " + model);
+                    const int window = context_window_for_model(model);
+                    std::string msg = id + " model -> " + model
+                        + "  ctx=" + format_context_window(window);
+                    if (!find_model_catalog_entry(model)) {
+                        msg += "\n  note: id not in catalogue; routing still "
+                               "works for known providers "
+                               "(openrouter/…, ollama/…)";
+                    }
+                    push_status(msg);
                 } catch (const std::exception& ex) {
                     push_status("ERR: " + std::string(ex.what()));
                 }
@@ -917,7 +948,8 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                     "  /remove <id>                     — remove agent\n"
                     "  /reset [id]                      — clear an agent's history (default: focused)\n"
                     "  /compact [id]                    — summarize older turns to free context\n"
-                    "  /model <agent> <model-id>        — change agent model at runtime\n"
+                    "  /model                           — list model catalogue + context windows\n"
+                    "  /model <agent> [model-id]        — show or change agent model at runtime\n"
                     "\n"
                     "Panes  (each pane is an independent conversation view)\n"
                     "  /pane <agent> <msg>              — spawn a parallel pane running the agent;\n"

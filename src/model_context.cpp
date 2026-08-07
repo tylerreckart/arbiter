@@ -1,5 +1,7 @@
 #include "model_context.h"
 
+#include "model_catalog.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -54,6 +56,12 @@ int context_window_for_model(std::string_view model) {
     if (starts_with_ci(model, "ollama/") || starts_with_ci(model, "local/"))
         return 0;
 
+    // Catalogue is authoritative for listed ids (GET /v1/models, /model).
+    if (const auto* entry = find_model_catalog_entry(model))
+        return entry->context_window;
+
+    // Heuristic fallback for unlisted OpenRouter / custom ids so sidebar
+    // fill and auto-compaction still estimate a window.
     // Current OpenRouter Claude / GPT-5.x / Gemini 3.x windows are 1M-class;
     // keep a conservative 200k for older Claude ids (haiku, pre-4.6 sonnet).
     if (model.find("claude") != std::string_view::npos) {

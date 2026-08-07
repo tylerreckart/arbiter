@@ -3,6 +3,7 @@
 #include "cli_helpers.h"
 #include "commands.h"
 #include "mcp/manager.h"
+#include "model_catalog.h"
 #include "starters.h"
 #include "theme.h"
 #include "tui/opentui/engine.h"
@@ -166,22 +167,33 @@ constexpr ProviderSetup kProviderSetups[] = {
 };
 constexpr size_t kNumProviders = sizeof(kProviderSetups) / sizeof(kProviderSetups[0]);
 
-// Recommended models shown on the "pick a default" step.  The wizard filters
-// these by which providers the user configured.  The first entry of a given
-// provider acts as its recommended default if the user presses Enter.
+// Recommended models shown on the "pick a default" step come from the
+// shared model catalogue.  Order here is the wizard menu order; the first
+// entry of a given provider acts as its default if the user presses Enter.
 struct ModelOption {
     const char* provider;   // "openrouter"
     const char* id;         // model id passed to the API router
     const char* blurb;      // one-liner shown to the user
 };
 
-constexpr ModelOption kModelOptions[] = {
-    { "openrouter", "~openai/gpt-latest",            "OpenAI latest — via OpenRouter (recommended)" },
-    { "openrouter", "anthropic/claude-sonnet-5",     "Claude Sonnet 5 — via OpenRouter" },
-    { "openrouter", "openai/gpt-5.5",                "GPT-5.5 — via OpenRouter" },
-    { "openrouter", "google/gemini-3.6-flash",       "Gemini 3.6 Flash — via OpenRouter" },
-    { "openrouter", "google/gemini-3.1-flash-lite",  "Gemini Flash Lite — via OpenRouter" },
-};
+std::vector<ModelOption> wizard_model_options() {
+    // Stable wizard order (not full catalogue order).
+    static constexpr const char* kRecommendedIds[] = {
+        "~openai/gpt-latest",
+        "anthropic/claude-sonnet-5",
+        "openai/gpt-5.5",
+        "google/gemini-3.6-flash",
+        "google/gemini-3.1-flash-lite",
+    };
+    std::vector<ModelOption> out;
+    for (const char* id : kRecommendedIds) {
+        const auto* e = find_model_catalog_entry(id);
+        if (!e) continue;
+        const char* blurb = (e->blurb && e->blurb[0] != '\0') ? e->blurb : e->id;
+        out.push_back({e->provider, e->id, blurb});
+    }
+    return out;
+}
 
 constexpr std::uint32_t kAttrBold = 1u << 0;
 
@@ -757,7 +769,8 @@ std::string wizard_step_default_model(
     SetupTui& ui,
     const std::map<std::string, std::string>& keys) {
     std::vector<const ModelOption*> available;
-    for (const auto& m : kModelOptions) {
+    const auto options_src = wizard_model_options();
+    for (const auto& m : options_src) {
         if (keys.count(m.provider)) available.push_back(&m);
     }
     if (available.empty()) return {};  // shouldn't happen — step 1 guarantees a key

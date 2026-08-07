@@ -24,7 +24,9 @@ Plain text (no leading `/`) is treated as a message to the focused pane's curren
 | `/remove <id>`                 | Remove an agent (deletes the JSON; history in memory is dropped).   |
 | `/reset [id]`                  | Clear an agent's conversation history and compaction state. Default target is the focused pane's agent. |
 | `/compact [id]`                | Force context compaction: summarize older turns, keep a recent window for the next model request. Full history stays on disk. |
-| `/model <agent> <model-id>`    | Change an agent's model at runtime without editing the JSON.        |
+| `/model`                           | List the model catalogue (id, provider, context window). |
+| `/model <agent>`                   | Show an agent's current model and context window. |
+| `/model <agent> <model-id>`        | Change an agent's model at runtime without editing the JSON. Unlisted ids are allowed; compaction uses a heuristic window when the id is not in the catalogue. |
 
 ## Panes
 
