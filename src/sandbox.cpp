@@ -958,10 +958,12 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
     const int entry_cap = cfg_.list_max_files;
     size_t      listed_bytes = 0;
     size_t      listed_files = 0;
-    bool        truncated    = false;
+    bool        truncated           = false;
+    bool        truncated_by_entries = false;
     for (auto& p : files) {
         if (entry_cap > 0 && listed_files >= static_cast<size_t>(entry_cap)) {
-            truncated = true;
+            truncated            = true;
+            truncated_by_entries = true;
             break;
         }
         std::error_code sec;
@@ -982,14 +984,14 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
         ++listed_files;
     }
     if (truncated) {
-        if (byte_cap > 0) {
-            if (byte_cap >= 1024) {
-                out << "... [truncated at " << (byte_cap / 1024) << " KB]\n";
-            } else {
-                out << "... [truncated at " << byte_cap << " bytes]\n";
-            }
-        } else {
+        // Report the cap that actually stopped the listing — entry-count
+        // vs byte-budget — so operators/agents don't misread the trailer.
+        if (truncated_by_entries) {
             out << "... [truncated — listing entry cap reached]\n";
+        } else if (byte_cap >= 1024) {
+            out << "... [truncated at " << (byte_cap / 1024) << " KB]\n";
+        } else {
+            out << "... [truncated at " << byte_cap << " bytes]\n";
         }
     }
     touch_access(tenant_id);

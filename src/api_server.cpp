@@ -8622,6 +8622,9 @@ void handle_a2a_message_stream(int fd,
                      a2a::task_state_to_string(a2a::TaskState::canceled)) {
         // tasks/cancel may have persisted canceled while send_streaming
         // was still unwinding — do not overwrite with completed/failed.
+        // Still emit a final TaskStatusUpdateEvent so the SSE stream
+        // ends with final=true (clients rely on that terminal signal).
+        writer.emit_status(a2a::TaskState::canceled, /*final=*/true);
         sse.close();
         return;
     }
