@@ -34,6 +34,7 @@ constexpr const char* kCorsMaxAge =
 CorsPolicy cors_policy_from_csv(const std::string& csv) {
     CorsPolicy p;
     if (csv.empty()) return p;
+    p.allow_all = false;
     size_t i = 0;
     while (i < csv.size()) {
         size_t comma = csv.find(',', i);
