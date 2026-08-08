@@ -19,6 +19,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   SIGKILL a sibling exec when workspace quota is disabled.
 
 ### Added
+- **Model catalog UX.** Shared `model_catalog` (id, provider, `context_window`)
+  powers `GET /v1/models`, the interactive `/model` catalogue, the first-run
+  wizard picks, and `context_window_for_model` used by auto-compaction and the
+  TUI sidebar. `/model` with no args lists the catalogue; `/model <agent>`
+  shows the current model + window; setting a model reports the window.
 - **Tunable provider circuit breaker.** `ARBITER_CIRCUIT_FAILURE_THRESHOLD`
   (default 5) and `ARBITER_CIRCUIT_COOLDOWN_SECONDS` (default 30) configure the
   process-wide breaker used by `--api`.

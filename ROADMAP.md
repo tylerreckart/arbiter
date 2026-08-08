@@ -48,7 +48,7 @@ calendar commitments.
 - [ ] Reviewer/backend starters can navigate a mid-size repo without rediscovering layout every turn; users can accept agent patches without raw `/write` fear.
 
 ### Phase 4 — Provider & tool ergonomics
-- [ ] **Model catalog UX-** Richer `/model` / `GET /v1/models` with context limits used by compaction
+- [x] **Model catalog UX-** Richer `/model` / `GET /v1/models` with context limits used by compaction
 - [ ] **MCP setup UX-** Improve `--setup-tools`; TUI browser for enable/disable servers; clearer tool error cards and statuses
 - [ ] **A2A pushNotificationConfig-** Scheduling bus for agent notifications
 

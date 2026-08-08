@@ -15,6 +15,7 @@
 #include "context_compaction.h"
 #include "file_cap.h"
 #include "json.h"
+#include "model_catalog.h"
 #include "a2a/event_translator.h"
 #include "a2a/manager.h"
 #include "a2a/server.h"
@@ -2393,51 +2394,22 @@ void handle_conversation_messages(int fd, int64_t id, const HttpRequest& req,
 }
 
 void handle_models_list(int fd) {
-    // Static catalog of model ids the orchestrator can route to, paired
-    // with the provider that handles them.  Pricing is not included;
-    // the runtime only needs to know what routes to what provider.
-    struct ModelEntry { const char* id; const char* provider; };
-    // Ids are OpenRouter slugs (hosted traffic routes through OpenRouter).
-    // Keep short Claude aliases for back-compat with older agent JSON.
-    static constexpr ModelEntry kModels[] = {
-        // Anthropic Claude (OpenRouter)
-        {"anthropic/claude-opus-5",          "openrouter"},
-        {"anthropic/claude-sonnet-5",        "openrouter"},
-        {"anthropic/claude-opus-4.8",        "openrouter"},
-        {"anthropic/claude-opus-4.7",        "openrouter"},
-        {"anthropic/claude-sonnet-4.6",      "openrouter"},
-        {"anthropic/claude-haiku-4.5",       "openrouter"},
-        {"~anthropic/claude-opus-latest",    "openrouter"},
-        {"~anthropic/claude-sonnet-latest",  "openrouter"},
-        {"~anthropic/claude-haiku-latest",   "openrouter"},
-        // Short Anthropic aliases (rewritten to dotted OpenRouter slugs)
-        {"claude-opus-4-7",                  "openrouter"},
-        {"claude-sonnet-4-6",                "openrouter"},
-        {"claude-haiku-4-5",                 "openrouter"},
-        // OpenAI (OpenRouter)
-        {"openai/gpt-5.6-sol",               "openrouter"},
-        {"openai/gpt-5.5",                   "openrouter"},
-        {"openai/gpt-5.4",                   "openrouter"},
-        {"openai/gpt-5.4-mini",              "openrouter"},
-        {"~openai/gpt-latest",               "openrouter"},
-        {"~openai/gpt-mini-latest",          "openrouter"},
-        // Google Gemini (OpenRouter)
-        {"google/gemini-3.1-pro-preview",    "openrouter"},
-        {"google/gemini-3.6-flash",          "openrouter"},
-        {"google/gemini-3.5-flash",          "openrouter"},
-        {"google/gemini-3.1-flash-lite",     "openrouter"},
-        // Other strong OpenRouter options used by starter agents
-        {"x-ai/grok-4.5",                    "openrouter"},
-        {"deepseek/deepseek-v4-pro",         "openrouter"},
-    };
+    // Shared catalogue (model_catalog.h): id, provider, context_window.
+    // Pricing is not included.  context_window feeds client pickers and
+    // matches what compaction / the TUI sidebar use via
+    // context_window_for_model.
+    std::size_t n = 0;
+    const auto* models = model_catalog(n);
 
     auto arr = jarr();
     auto& a = arr->as_array_mut();
-    for (auto& m : kModels) {
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& m = models[i];
         auto entry = jobj();
         auto& o = entry->as_object_mut();
-        o["id"]       = jstr(m.id);
-        o["provider"] = jstr(m.provider);
+        o["id"]             = jstr(m.id);
+        o["provider"]       = jstr(m.provider);
+        o["context_window"] = jnum(static_cast<double>(m.context_window));
         a.push_back(std::move(entry));
     }
     auto body = jobj();
