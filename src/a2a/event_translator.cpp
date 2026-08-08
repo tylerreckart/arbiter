@@ -43,13 +43,15 @@ void A2aStreamWriter::write_jsonrpc_result(std::shared_ptr<JsonValue> result) {
 }
 
 void A2aStreamWriter::emit_status(TaskState state, bool final,
-                                   std::optional<Message> msg) {
+                                   std::optional<Message> msg,
+                                   std::shared_ptr<JsonValue> metadata) {
     TaskStatusUpdateEvent e;
     e.task_id    = task_id_;
     e.context_id = context_id_;
     e.status.state    = state;
     e.status.message  = std::move(msg);
     e.final           = final;
+    e.metadata        = std::move(metadata);
     write_jsonrpc_result(to_json(e));
 }
 

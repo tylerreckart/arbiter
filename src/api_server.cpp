@@ -9036,7 +9036,18 @@ void handle_a2a_tasks_resubscribe(int fd,
             }
         }
         if (mailbox_overflow.load()) {
-            writer.emit_status(a2a::TaskState::failed, /*final=*/true);
+            // Stream backpressure only — the underlying request can still
+            // be running.  Mirror the native resubscribe slow_consumer
+            // terminal so clients reconnect rather than treating a healthy
+            // task as failed.  state stays `working` (non-terminal);
+            // final=true just closes this SSE subscription.
+            auto md = jobj();
+            auto& m = md->as_object_mut();
+            m["x-arbiter.error_code"] = jstr("slow_consumer");
+            m["x-arbiter.error"] = jstr(
+                "SSE client too slow; reconnect via tasks/resubscribe to resume");
+            writer.emit_status(a2a::TaskState::working, /*final=*/true,
+                               /*msg=*/std::nullopt, md);
             break;
         }
         if (have) {

@@ -415,3 +415,33 @@ TEST_CASE("A2aStreamWriter emits status + artifact frames in JSON-RPC envelope")
         REQUIRE(status->get("message"));
     }
 }
+
+TEST_CASE("A2aStreamWriter slow_consumer closes stream without failed state") {
+    // Mailbox overflow on tasks/resubscribe must signal backpressure
+    // without claiming the underlying task failed.
+    std::vector<std::shared_ptr<JsonValue>> frames;
+    EventSink sink = [&](const std::string& /*ev*/,
+                          std::shared_ptr<JsonValue> p) {
+        frames.push_back(p);
+    };
+    A2aStreamWriter w(sink, jnum(1), "task-1", "ctx-1", "researcher");
+
+    auto md = jobj();
+    md->as_object_mut()["x-arbiter.error_code"] = jstr("slow_consumer");
+    md->as_object_mut()["x-arbiter.error"] =
+        jstr("SSE client too slow; reconnect via tasks/resubscribe to resume");
+    w.emit_status(TaskState::working, /*final=*/true, /*msg=*/std::nullopt, md);
+
+    REQUIRE(frames.size() == 1);
+    auto r = frames[0]->get("result");
+    REQUIRE(r);
+    CHECK(r->get_string("kind", "") == "status-update");
+    CHECK(r->get_bool("final", false) == true);
+    auto status = r->get("status");
+    REQUIRE(status);
+    CHECK(status->get_string("state", "") == "working");
+    CHECK_FALSE(task_state_is_terminal(TaskState::working));
+    auto meta = r->get("metadata");
+    REQUIRE(meta);
+    CHECK(meta->get_string("x-arbiter.error_code", "") == "slow_consumer");
+}

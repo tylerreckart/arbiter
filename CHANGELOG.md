@@ -10,7 +10,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ### Fixed
 - **SSE live-tail mailbox growth (#189).** Request-event, notification, and A2A
   resubscribe streams cap per-connection mailboxes at 2048 events; slow clients
-  get a `slow_consumer` terminal instead of unbounded memory growth.
+  get a `slow_consumer` terminal instead of unbounded memory growth. A2A
+  `tasks/resubscribe` overflow closes the stream with `state: working`,
+  `final: true`, and `x-arbiter.error_code: slow_consumer` — not
+  `TaskState::failed` — so a still-running task is not misreported.
 - **TUI broken-sandbox host fallback.** When `ARBITER_SANDBOX_IMAGE` is set but
   the sandbox fails usability, the TUI now disables `/exec` (returns `ERR`)
   instead of falling through to confirm-gated host `popen`.
