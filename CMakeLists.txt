@@ -1192,6 +1192,14 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_cors COMMAND unit_cors)
 
+    add_executable(unit_sse_mailbox tests/test_sse_mailbox.cpp)
+    target_include_directories(unit_sse_mailbox PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_sse_mailbox PRIVATE Threads::Threads)
+    add_test(NAME unit_sse_mailbox COMMAND unit_sse_mailbox)
+
     # --- Unit tests for /v1/events agent routing ---
     add_executable(unit_route_event
         tests/test_route_event.cpp

@@ -26,6 +26,7 @@
 #include "scheduler.h"
 #include "circuit_breaker.h"
 #include "cors.h"
+#include "sse_mailbox.h"
 #include "idempotency_cache.h"
 #include "logger.h"
 #include "metrics.h"
@@ -4701,6 +4702,15 @@ void handle_request_events(int fd, const std::string& request_id,
         write_envelope("done", seq, json_serialize(*term));
     };
 
+    auto write_slow_consumer_done = [&](int64_t seq) {
+        auto term = jobj();
+        term->as_object_mut()["ok"]         = jbool(false);
+        term->as_object_mut()["error"]      = jstr(
+            "SSE client too slow; reconnect with since_seq to resume");
+        term->as_object_mut()["error_code"] = jstr("slow_consumer");
+        write_envelope("done", seq, json_serialize(*term));
+    };
+
     // Replay backlog.  Page through in chunks of 1000 — for runs
     // longer than that we'd rather many small writes than one huge
     // SQL fetch holding the connection's CPU time.
@@ -4734,13 +4744,15 @@ void handle_request_events(int fd, const std::string& request_id,
     std::condition_variable         mb_cv;
     std::deque<RequestEventEnvelope> mailbox;
     std::atomic<bool>               saw_terminal{false};
+    std::atomic<bool>               mailbox_overflow{false};
 
     int64_t sub_id = bus->subscribe(request_id,
-        [&mb_mu, &mb_cv, &mailbox, &saw_terminal](const RequestEventEnvelope& env) {
-            std::lock_guard<std::mutex> lk(mb_mu);
-            mailbox.push_back(env);
-            if (env.terminal) saw_terminal = true;
-            mb_cv.notify_one();
+        [&mb_mu, &mb_cv, &mailbox, &saw_terminal, &mailbox_overflow](
+            const RequestEventEnvelope& env) {
+            if (sse_mailbox_push(mailbox, mb_mu, mb_cv, mailbox_overflow,
+                                 env, env.terminal)) {
+                if (env.terminal) saw_terminal = true;
+            }
         });
 
     // Drain — exit when we've delivered the terminal envelope.
@@ -4753,13 +4765,17 @@ void handle_request_events(int fd, const std::string& request_id,
         {
             std::unique_lock<std::mutex> lk(mb_mu);
             mb_cv.wait_until(lk, next_heartbeat,
-                [&]{ return !mailbox.empty(); });
+                [&]{ return !mailbox.empty() || mailbox_overflow.load(); });
             if (!mailbox.empty()) {
                 ev = mailbox.front();
                 mailbox.pop_front();
                 have = true;
                 was_terminal = ev.terminal;
             }
+        }
+        if (mailbox_overflow.load()) {
+            write_slow_consumer_done(cursor + 1);
+            break;
         }
         if (have) {
             // Kill-switch while the producer is still emitting — heartbeats
@@ -5749,12 +5765,11 @@ void handle_notifications_stream(int fd, TenantStore& tenants, Tenant tenant,
     std::condition_variable        mb_cv;
     std::deque<Notification>       mailbox;
     std::atomic<bool>              client_alive{true};
+    std::atomic<bool>              mailbox_overflow{false};
 
     int64_t sub_id = bus.subscribe(tenant.id,
-        [&mb_mu, &mb_cv, &mailbox](const Notification& n) {
-            std::lock_guard<std::mutex> lk(mb_mu);
-            mailbox.push_back(n);
-            mb_cv.notify_one();
+        [&mb_mu, &mb_cv, &mailbox, &mailbox_overflow](const Notification& n) {
+            (void)sse_mailbox_push(mailbox, mb_mu, mb_cv, mailbox_overflow, n);
         });
 
     // Helper: serialize a string as a JSON-quoted token.  We piggyback on
@@ -5796,12 +5811,21 @@ void handle_notifications_stream(int fd, TenantStore& tenants, Tenant tenant,
         bool have = false;
         {
             std::unique_lock<std::mutex> lk(mb_mu);
-            mb_cv.wait_until(lk, next_heartbeat, [&]{ return !mailbox.empty(); });
+            mb_cv.wait_until(lk, next_heartbeat, [&]{
+                return !mailbox.empty() || mailbox_overflow.load();
+            });
             if (!mailbox.empty()) {
                 ev = mailbox.front();
                 mailbox.pop_front();
                 have = true;
             }
+        }
+        if (mailbox_overflow.load()) {
+            std::string frame =
+                "event: error\ndata: {\"error\":\"notification stream backlog "
+                "exceeded; reconnect\",\"error_code\":\"slow_consumer\"}\n\n";
+            write_all(fd, frame);
+            break;
         }
         if (have) {
             // Kill-switch on every delivered notification — heartbeats alone
@@ -8983,13 +9007,15 @@ void handle_a2a_tasks_resubscribe(int fd,
     std::condition_variable          mb_cv;
     std::deque<RequestEventEnvelope> mailbox;
     std::atomic<bool>                saw_terminal{false};
+    std::atomic<bool>                mailbox_overflow{false};
 
     int64_t sub_id = bus->subscribe(task_id,
-        [&mb_mu, &mb_cv, &mailbox, &saw_terminal](const RequestEventEnvelope& env) {
-            std::lock_guard<std::mutex> lk(mb_mu);
-            mailbox.push_back(env);
-            if (env.terminal) saw_terminal = true;
-            mb_cv.notify_one();
+        [&mb_mu, &mb_cv, &mailbox, &saw_terminal, &mailbox_overflow](
+            const RequestEventEnvelope& env) {
+            if (sse_mailbox_push(mailbox, mb_mu, mb_cv, mailbox_overflow,
+                                 env, env.terminal)) {
+                if (env.terminal) saw_terminal = true;
+            }
         });
 
     using clock = std::chrono::steady_clock;
@@ -9001,13 +9027,17 @@ void handle_a2a_tasks_resubscribe(int fd,
         {
             std::unique_lock<std::mutex> lk(mb_mu);
             mb_cv.wait_until(lk, next_heartbeat,
-                [&]{ return !mailbox.empty(); });
+                [&]{ return !mailbox.empty() || mailbox_overflow.load(); });
             if (!mailbox.empty()) {
                 ev = mailbox.front();
                 mailbox.pop_front();
                 have = true;
                 was_terminal = ev.terminal;
             }
+        }
+        if (mailbox_overflow.load()) {
+            writer.emit_status(a2a::TaskState::failed, /*final=*/true);
+            break;
         }
         if (have) {
             if (!refresh_active_tenant(tenants, tenant)) {
