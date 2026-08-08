@@ -16,6 +16,15 @@ TEST_CASE("empty CSV is permissive") {
     CHECK(h.find("Vary:") == std::string::npos);
 }
 
+TEST_CASE("whitespace-only CSV locks down cross-origin access") {
+    auto p = cors_policy_from_csv("  , , ");
+    CHECK_FALSE(p.allow_all);
+    CHECK(p.allowed_origins.empty());
+    CHECK_FALSE(cors_origin_allowed(p, "https://example.com"));
+    auto h = cors_headers_for(p, "https://example.com");
+    CHECK(h.find("Access-Control-Allow-Origin:") == std::string::npos);
+}
+
 TEST_CASE("CSV allowlist trims whitespace and matches exactly") {
     auto p = cors_policy_from_csv(
         " https://app.example.com ,http://localhost:5173, ");

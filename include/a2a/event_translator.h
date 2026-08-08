@@ -58,9 +58,12 @@ public:
 
     // Emit a TaskStatusUpdateEvent.  `final=true` is the terminal
     // signal — callers must emit exactly one final status update per
-    // stream and emit nothing afterwards.
+    // stream and emit nothing afterwards.  Optional `metadata` rides
+    // on the event (x-arbiter.* keys) for stream-level signals that
+    // are not task failures (e.g. slow_consumer backpressure).
     void emit_status(TaskState state, bool final,
-                     std::optional<Message> msg = std::nullopt);
+                     std::optional<Message> msg = std::nullopt,
+                     std::shared_ptr<JsonValue> metadata = nullptr);
 
     // Append a text chunk to the streaming-text artifact.  The first
     // call lazily allocates the artifact id; subsequent calls reuse
