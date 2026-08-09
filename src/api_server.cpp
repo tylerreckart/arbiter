@@ -4441,19 +4441,6 @@ std::string new_request_id() {
     return out;
 }
 
-void InFlightRegistry::cancel_for_tenant(int64_t tenant_id) {
-    // Must hold mu across cancel(): releasing before the Orchestrator*
-    // deref races ~InFlightScope (same rule as handle_cancel).
-    // Orchestrator::cancel only flips an atomic and shuts down sockets
-    // under its own mutex, so holding mu through it is cheap.
-    std::lock_guard<std::mutex> lk(mu);
-    for (auto& [_, entry] : by_id) {
-        if (entry.tenant_id == tenant_id && entry.orch) {
-            entry.orch->cancel();
-        }
-    }
-}
-
 // RAII add/remove for the in-flight map.  Lifetime must match the
 // Orchestrator's so a cancel arriving after completion misses cleanly.
 class InFlightScope {
@@ -10630,6 +10617,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 }
 
 } // namespace
+
+void InFlightRegistry::cancel_for_tenant(int64_t tenant_id) {
+    // Must hold mu across cancel(): releasing before the Orchestrator*
+    // deref races ~InFlightScope (same rule as handle_cancel).
+    // Orchestrator::cancel only flips an atomic and shuts down sockets
+    // under its own mutex, so holding mu through it is cheap.
+    std::lock_guard<std::mutex> lk(mu);
+    for (auto& [_, entry] : by_id) {
+        if (entry.tenant_id == tenant_id && entry.orch) {
+            entry.orch->cancel();
+        }
+    }
+}
 
 void set_tool_conversation_tls(int64_t conversation_id) {
     g_tls_tool_conversation_id = conversation_id;
