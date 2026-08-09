@@ -57,7 +57,8 @@ Rotated API key for tenant #2 (acme)
   NOTE: This CLI command updates the database only.  It cannot cancel()
   in-flight streams inside a running `arbiter --api` process.  For a hot
   revoke that stops outstanding work immediately, use
-  POST /v1/admin/tenants/:id/rotate-token (or disable the tenant first).
+  POST /v1/admin/tenants/:id/rotate-token or
+  PATCH /v1/admin/tenants/:id with {"disabled":true}.
 ```
 
 HTTP equivalent: `POST /v1/admin/tenants/:id/rotate-token` (admin bearer). That path also cancels in-flight orchestrations for the tenant.
@@ -69,6 +70,11 @@ Revoke a tenant's access.
 ```
 $ arbiter --disable-tenant acme
 Disabled tenant 'acme'.
+
+  NOTE: This CLI command updates the database only.  It cannot cancel()
+  in-flight streams inside a running `arbiter --api` process.  For a hot
+  revoke that stops outstanding work immediately, use
+  PATCH /v1/admin/tenants/:id with {"disabled":true}.
 ```
 
 Either the numeric id or the name works. Disabled tenants:
@@ -76,8 +82,12 @@ Either the numeric id or the name works. Disabled tenants:
 - Fail authentication on every endpoint (401).
 - Keep their conversations, artifacts, memory entries, and scratchpads intact in the store.
 - Do not have their tokens revoked at the cryptographic level — the digest is still in the DB. Re-enabling restores access with the same token.
+- Stop mid-request work at the next `TenantGate` preflight (provider I/O boundary). Unlike admin HTTP disable, this path does **not** call `Orchestrator::cancel()` on in-flight streams — the CLI and `--api` are separate processes.
+
+HTTP equivalent: `PATCH /v1/admin/tenants/:id` with `{"disabled":true}` (admin bearer). That path also cancels in-flight orchestrations for the tenant.
 
 If you need to *invalidate* the token (irrecoverably) without creating a new tenant row, use `--rotate-tenant-token`.
+
 ## `--enable-tenant <id|name>`
 
 Restore a previously-disabled tenant.

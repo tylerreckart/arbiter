@@ -558,9 +558,10 @@ void cmd_rotate_tenant_token(const std::string& key) {
               << "  cannot cancel() in-flight streams inside a running\n"
               << "  `arbiter --api` process.  For a hot revoke that stops\n"
               << "  outstanding work immediately, use\n"
-              << "  POST /v1/admin/tenants/:id/rotate-token (or disable the\n"
-              << "  tenant first).  Mid-request handlers still reject the\n"
-              << "  old digest on their next kill-switch refresh.\n";
+              << "  POST /v1/admin/tenants/:id/rotate-token or\n"
+              << "  PATCH /v1/admin/tenants/:id with {\"disabled\":true}.\n"
+              << "  Mid-request handlers still reject the old digest on\n"
+              << "  their next kill-switch refresh.\n";
 }
 
 void cmd_disable_tenant(const std::string& key) {
@@ -570,10 +571,18 @@ void cmd_disable_tenant(const std::string& key) {
     }
     TenantStore store;
     store.open(tenants_db_path());
-    if (store.set_disabled(key, true))
-        std::cout << "Disabled tenant '" << key << "'.\n";
-    else
-        std::cerr << "No tenant matched '" << key << "'.\n", std::exit(1);
+    if (!store.set_disabled(key, true)) {
+        std::cerr << "No tenant matched '" << key << "'.\n";
+        std::exit(1);
+    }
+    std::cout << "Disabled tenant '" << key << "'.\n"
+              << "\n  NOTE: This CLI command updates the database only.  It\n"
+              << "  cannot cancel() in-flight streams inside a running\n"
+              << "  `arbiter --api` process.  For a hot revoke that stops\n"
+              << "  outstanding work immediately, use\n"
+              << "  PATCH /v1/admin/tenants/:id with {\"disabled\":true}.\n"
+              << "  Mid-request handlers still stop at the next TenantGate\n"
+              << "  preflight (provider I/O boundary).\n";
 }
 
 void cmd_enable_tenant(const std::string& key) {

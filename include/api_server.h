@@ -83,6 +83,14 @@ struct InFlightRegistry {
     };
     std::mutex                           mu;
     std::unordered_map<std::string, Entry> by_id;
+
+    // Cancel every registered orchestration for `tenant_id`.  Holds `mu`
+    // across Orchestrator::cancel() (same race rule as handle_cancel —
+    // releasing before the deref races ~InFlightScope).  No-op when none
+    // match.  Shared by admin PATCH disable and rotate-token so the hot
+    // kill-switch stays one implementation; CLI disable/rotate cannot
+    // reach this registry (separate process) and remain DB-only.
+    void cancel_for_tenant(int64_t tenant_id);
 };
 
 struct ApiServerOptions {

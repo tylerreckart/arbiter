@@ -1193,16 +1193,9 @@ void handle_admin(int fd, const HttpRequest& req,
                 // Without this, an authenticated tenant's existing
                 // SSE stream keeps running until the model finishes —
                 // the operator believes the kill-switch is hot when
-                // it isn't.  Holding reg.mu across cancel() is safe:
-                // Orchestrator::cancel only flips an atomic and
-                // shuts down sockets under its own mutex.
+                // it isn't.  Shared helper with rotate-token.
                 if (now_disabled) {
-                    std::lock_guard<std::mutex> lk(in_flight.mu);
-                    for (auto& [_, entry] : in_flight.by_id) {
-                        if (entry.tenant_id == id && entry.orch) {
-                            entry.orch->cancel();
-                        }
-                    }
+                    in_flight.cancel_for_tenant(id);
                 }
                 {
                     auto bj = jobj(); auto aj = jobj();
@@ -1241,14 +1234,7 @@ void handle_admin(int fd, const HttpRequest& req,
             }
             // Same hot kill-switch as disable: outstanding streams
             // authenticated with the old digest must stop immediately.
-            {
-                std::lock_guard<std::mutex> lk(in_flight.mu);
-                for (auto& [_, entry] : in_flight.by_id) {
-                    if (entry.tenant_id == id && entry.orch) {
-                        entry.orch->cancel();
-                    }
-                }
-            }
+            in_flight.cancel_for_tenant(id);
             try {
                 auto after = jobj();
                 after->as_object_mut()["id"] = jnum(static_cast<double>(id));
@@ -10631,6 +10617,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
 }
 
 } // namespace
+
+void InFlightRegistry::cancel_for_tenant(int64_t tenant_id) {
+    // Must hold mu across cancel(): releasing before the Orchestrator*
+    // deref races ~InFlightScope (same rule as handle_cancel).
+    // Orchestrator::cancel only flips an atomic and shuts down sockets
+    // under its own mutex, so holding mu through it is cheap.
+    std::lock_guard<std::mutex> lk(mu);
+    for (auto& [_, entry] : by_id) {
+        if (entry.tenant_id == tenant_id && entry.orch) {
+            entry.orch->cancel();
+        }
+    }
+}
 
 void set_tool_conversation_tls(int64_t conversation_id) {
     g_tls_tool_conversation_id = conversation_id;

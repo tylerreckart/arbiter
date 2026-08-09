@@ -106,8 +106,11 @@ If you run `arbiter --api` in a multi-tenant context, please:
    restrict the public bind via firewall rules.
 3. Set the runtime's admin token (and any tokens your billing service
    needs) via environment variables, never via tracked config files.
-4. Rotate tenant tokens promptly when staff turnover happens — the
-   `--disable-tenant` CLI flag flips a kill-switch immediately.
+4. Rotate tenant tokens promptly when staff turnover happens. Prefer
+   admin HTTP `PATCH /v1/admin/tenants/:id` (`disabled=true`) or
+   `POST …/rotate-token` for a hot kill-switch that cancels in-flight
+   streams; CLI `--disable-tenant` / `--rotate-tenant-token` update
+   SQLite only and stop provider I/O at the next preflight.
 5. Run the process under a dedicated unprivileged user. The default
    `/exec` policy on the API path is "disabled," but defense in depth
    matters — a future bug shouldn't compromise the host.
