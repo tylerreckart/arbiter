@@ -1,0 +1,16 @@
+#pragma once
+// Shared host-filesystem workspace root resolution for /write and /diff apply.
+
+#include <string>
+#include <string_view>
+
+namespace arbiter {
+
+// Canonical absolute directory for host filesystem ops.
+// - empty `root` → process cwd (legacy / CLI)
+// - non-empty → must exist as a directory; otherwise returns "" and sets err
+//   (no process-cwd fallback).  Rejects `session:` migration placeholders.
+std::string canonical_workspace_root(std::string_view root,
+                                     std::string* err = nullptr);
+
+} // namespace arbiter

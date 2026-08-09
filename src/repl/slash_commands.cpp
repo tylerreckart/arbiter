@@ -736,8 +736,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                             prop->status != arbiter::DiffProposalStatus::Failed) {
                             continue;
                         }
-                        std::string summary =
-                            "Apply under process cwd. Missing files are created.";
+                        std::string summary = diff_apply_summary_for(pane);
                         if (!prop->error.empty()) {
                             summary = "Previously failed: " + prop->error;
                         }
@@ -844,8 +843,9 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                     if (!id) {
                         push_status("Usage: /diff apply [N]\n"
                                     "  N defaults to the latest pending proposal.\n"
-                                    "  Applies under the process cwd (creates missing "
-                                    "files; no write confirm); /diff undo N to revert.");
+                                    "  Applies under this conversation's workspace "
+                                    "directory (creates missing files; no write "
+                                    "confirm); /diff undo N to revert.");
                         return;
                     }
                     apply_proposal(*id);
@@ -884,8 +884,9 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
 
                 push_status("Usage: /diff [review] [N]|list|apply [N]|reject [N]|undo [N]\n"
                             "  /diff or /diff review — interactive [a]pply / [r]eject.\n"
-                            "  Apply writes under the process cwd; missing files are created\n"
-                            "  (apply is the permission grant — no write confirm).\n"
+                            "  Apply writes under this conversation's workspace directory;\n"
+                            "  missing files are created (apply is the permission grant —\n"
+                            "  no write confirm). Never falls back to process cwd.\n"
                             "  Omit N to target the latest pending (apply/reject) or applied (undo).");
                 return;
             }

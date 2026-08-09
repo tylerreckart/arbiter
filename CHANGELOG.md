@@ -25,6 +25,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   SIGKILL a sibling exec when workspace quota is disabled.
 
 ### Added
+- **Conversation-scoped workspace roots (TUI).** Each conversation's stored
+  `cwd` is the host root for `/write` and `/diff apply`. Switching chats
+  switches the project directory with them; missing/unknown roots refuse the
+  write (no process-cwd fallback). Sidebar subtitles show the bound project
+  dirname. CLI `--send` still uses process cwd.
 - **Model catalog UX.** Shared `model_catalog` (id, provider, `context_window`)
   powers `GET /v1/models`, the interactive `/model` catalogue, the first-run
   wizard picks, and `context_window_for_model` used by auto-compaction and the

@@ -4,6 +4,7 @@
 #include "atomic_file.h"
 #include "json.h"
 #include "orchestrator.h"
+#include "workspace_root.h"
 #include "repl/conversation_titling.h"
 #include "repl/layout_snapshot.h"
 #include "tenant_store.h"
@@ -800,6 +801,33 @@ ConversationStore::search(const std::string& term, size_t max_hits) const {
     return out;
 }
 
+std::optional<std::string> ConversationStore::cwd_of(const std::string& id) const {
+    if (id.empty()) return std::nullopt;
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& e : entries_) {
+        if (e.deleted_at != 0) continue;
+        if (e.id == id) return e.cwd;
+    }
+    return std::nullopt;
+}
+
+std::string ConversationStore::resolved_workspace_root(const std::string& id,
+                                                       std::string* err) const {
+    auto fail = [&](std::string msg) {
+        if (err) *err = std::move(msg);
+        return std::string();
+    };
+    auto stored = cwd_of(id);
+    if (!stored) {
+        return fail("conversation not found");
+    }
+    if (stored->empty()) {
+        return fail("conversation has no workspace directory");
+    }
+    // commands.h — shared with /write and /diff apply.
+    return canonical_workspace_root(*stored, err);
+}
+
 std::string ConversationStore::active_id() const {
     std::lock_guard<std::mutex> lk(mu_);
     return active_id_;
@@ -847,6 +875,15 @@ bool ConversationStore::session_is_empty_unlocked(const std::string& id) const {
 std::string ConversationStore::create_or_reuse(const std::string& cwd,
                                                const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
+    auto bind_cwd = [&](const std::string& id) {
+        if (id.empty() || cwd.empty()) return;
+        if (!tenants_.update_tui_conversation(
+                tenant_id_, parse_id(id), "", cwd, -1, -1, -1))
+            return;
+        for (auto& e : entries_) {
+            if (e.id == id) e.cwd = cwd;
+        }
+    };
     if (session_is_empty_unlocked(active_id_)) {
         // Match create(): empty folder_id means unfiled, even when reusing.
         const int64_t fid = folder_id.empty() ? 0 : parse_id(folder_id);
@@ -861,6 +898,7 @@ std::string ConversationStore::create_or_reuse(const std::string& cwd,
                 }
             }
         }
+        bind_cwd(active_id_);
         return active_id_;
     }
     return create_unlocked(cwd, folder_id);
@@ -870,6 +908,15 @@ std::string ConversationStore::create_or_reuse_for(
     const std::string& cwd, const std::string& prefer_id,
     const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
+    auto bind_cwd = [&](const std::string& id) {
+        if (id.empty() || cwd.empty()) return;
+        if (!tenants_.update_tui_conversation(
+                tenant_id_, parse_id(id), "", cwd, -1, -1, -1))
+            return;
+        for (auto& e : entries_) {
+            if (e.id == id) e.cwd = cwd;
+        }
+    };
     auto apply_folder = [&](const std::string& id) {
         if (id.empty()) return;
         // Empty folder_id clears membership (unfiled); non-empty must parse.
@@ -888,6 +935,7 @@ std::string ConversationStore::create_or_reuse_for(
     if (!prefer_id.empty() && session_is_empty_unlocked(prefer_id)) {
         set_active_unlocked(prefer_id);
         apply_folder(prefer_id);
+        bind_cwd(prefer_id);
         return prefer_id;
     }
     // Only when the caller has no prefer_id (no focused conversation) —
@@ -897,6 +945,7 @@ std::string ConversationStore::create_or_reuse_for(
         && !active_id_.empty()
         && session_is_empty_unlocked(active_id_)) {
         apply_folder(active_id_);
+        bind_cwd(active_id_);
         return active_id_;
     }
     return create_unlocked(cwd, folder_id);

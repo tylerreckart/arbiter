@@ -471,6 +471,16 @@ void draw_history_sidebar(OpenTuiHandle frame,
                 subtitle += " · " + format_token_count(row.total_tokens)
                     + (row.total_tokens == 1 ? " tok" : " toks");
             }
+            // Show the bound project dirname so directory-scoped chats are
+            // obvious when switching across workspaces.
+            if (!row.cwd.empty() && row.cwd.rfind("session:", 0) != 0) {
+                std::string leaf = row.cwd;
+                while (!leaf.empty() && (leaf.back() == '/' || leaf.back() == '\\'))
+                    leaf.pop_back();
+                const auto slash = leaf.find_last_of("/\\");
+                if (slash != std::string::npos) leaf = leaf.substr(slash + 1);
+                if (!leaf.empty()) subtitle += " · " + leaf;
+            }
             if (row.indent > 0) subtitle = "  " + subtitle;
         }
 

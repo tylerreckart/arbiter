@@ -1299,22 +1299,27 @@ std::string cmd_exec(const std::string& command, bool confirmed) {
 // cmd_write
 // ---------------------------------------------------------------------------
 
-std::string cmd_write(const std::string& path, const std::string& content) {
+std::string cmd_write(const std::string& path, const std::string& content,
+                      std::string_view workspace_root) {
     if (path.empty()) return "ERR: empty path";
 
-    // Path safety: canonicalize and verify the resolved path stays within cwd.
-    // The cwd itself is canonicalised so symlinked ancestors (common on macOS,
-    // where /tmp → /private/tmp) don't cause a false mismatch.
-    std::error_code path_ec;
-    fs::path cwd_raw = fs::current_path(path_ec);
-    if (path_ec) return "ERR: cannot determine working directory";
-    fs::path cwd = fs::canonical(cwd_raw, path_ec);
-    if (path_ec) cwd = cwd_raw;  // fall back if cwd itself fails
+    // Path safety: canonicalize and verify the resolved path stays within the
+    // workspace root.  The root itself is canonicalised so symlinked ancestors
+    // (common on macOS, where /tmp → /private/tmp) don't cause a false mismatch.
+    std::string root_err;
+    const std::string root_str =
+        canonical_workspace_root(workspace_root, &root_err);
+    if (root_str.empty()) {
+        return "ERR: " + (root_err.empty() ? "conversation workspace unavailable"
+                                           : root_err);
+    }
+    fs::path cwd(root_str);
 
     // For the target path we canonicalise the deepest existing ancestor (so
     // symlink tricks like a symlinked parent dir are resolved) and append the
     // remaining tail.  This is the symlink-aware analog of weakly_canonical —
     // which only normalises `.`/`..` and leaves symlinks alone.
+    std::error_code path_ec;
     fs::path target(path);
     fs::path abs_target = target.is_absolute() ? target : (cwd / target);
     fs::path existing = abs_target;
@@ -1322,7 +1327,11 @@ std::string cmd_write(const std::string& path, const std::string& content) {
     while (!existing.empty()) {
         std::error_code ec;
         if (fs::exists(existing, ec)) break;
-        tail = existing.filename() / tail;
+        // Prefer concat over `filename() / empty` — the latter yields a
+        // trailing slash ("file.txt/") which create_directories then
+        // materialises as a directory.
+        if (tail.empty()) tail = existing.filename();
+        else              tail = existing.filename() / tail;
         if (!existing.has_parent_path() || existing.parent_path() == existing) {
             existing.clear();
             break;
@@ -1341,7 +1350,7 @@ std::string cmd_write(const std::string& path, const std::string& content) {
     }
     resolved = resolved.lexically_normal();
 
-    // Resolved path must be a prefix of (or equal to) cwd
+    // Resolved path must be a prefix of (or equal to) the workspace root.
     auto resolved_str = resolved.string();
     auto cwd_str = cwd.string();
     if (resolved_str.size() < cwd_str.size() ||
@@ -1349,26 +1358,27 @@ std::string cmd_write(const std::string& path, const std::string& content) {
         (resolved_str.size() > cwd_str.size() && resolved_str[cwd_str.size()] != '/'))
         return "ERR: path escapes project directory";
 
-    // Create parent directories
-    fs::path p(path);
-    if (p.has_parent_path()) {
+    // Create parent directories under the resolved absolute path so a
+    // conversation root that differs from process cwd still works.
+    if (resolved.has_parent_path()) {
         std::error_code ec;
-        fs::create_directories(p.parent_path(), ec);
+        fs::create_directories(resolved.parent_path(), ec);
         if (ec) return "ERR: cannot create directories: " + ec.message();
     }
 
     // Back up existing file before overwriting.
     bool overwrite = false;
     std::string bak_note;
-    if (fs::exists(p)) {
+    if (fs::exists(resolved)) {
         overwrite = true;
-        std::string bak = path + ".bak";
+        fs::path bak = resolved;
+        bak += ".bak";
         std::error_code ec;
-        fs::copy_file(p, bak, fs::copy_options::overwrite_existing, ec);
-        if (!ec) bak_note = " (previous saved to " + bak + ")";
+        fs::copy_file(resolved, bak, fs::copy_options::overwrite_existing, ec);
+        if (!ec) bak_note = " (previous saved to " + bak.string() + ")";
     }
 
-    std::ofstream f(path, std::ios::out | std::ios::trunc);
+    std::ofstream f(resolved, std::ios::out | std::ios::trunc);
     if (!f.is_open()) {
         int err = errno;
         return std::string("ERR: cannot open for writing: ") + path
@@ -1395,7 +1405,7 @@ std::string cmd_write(const std::string& path, const std::string& content) {
     size_t expected = content.size();
     if (!content.empty() && content.back() != '\n') ++expected;  // we added one
 
-    std::ifstream v(path, std::ios::binary | std::ios::ate);
+    std::ifstream v(resolved, std::ios::binary | std::ios::ate);
     if (!v.is_open())
         return "ERR: wrote " + std::to_string(content.size())
              + " bytes to " + path + " but cannot re-open to verify";
@@ -1707,7 +1717,8 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    LessonInvoker    lesson_invoker,
                                    ExecInvoker      exec_invoker,
                                    const std::vector<std::string>& capabilities,
-                                   std::vector<ContentPart>* out_image_parts) {
+                                   std::vector<ContentPart>* out_image_parts,
+                                   WorkspaceRootProvider workspace_root_provider) {
     std::ostringstream out;
     out << "\n";
 
@@ -2842,6 +2853,25 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                           false, tool_result_preview(block.str()));
                 continue;
             }
+            // Resolve the host workspace root once for confirm copy + write.
+            // When a provider is wired (TUI), an empty/missing root is a hard
+            // error — never fall through to process cwd.
+            std::string write_root;
+            if (!write_interceptor && workspace_root_provider) {
+                write_root = workspace_root_provider();
+                if (write_root.empty()) {
+                    block << "ERR: conversation workspace unavailable — "
+                             "this conversation's directory is missing or "
+                             "unset; refuse to write under process cwd\n";
+                    block << "[END WRITE]\n\n";
+                    cache_result = false;
+                    out << block.str();
+                    emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id,
+                              false, tool_result_preview(block.str()));
+                    continue;
+                }
+            }
+
             if (!write_interceptor && confirm) {
                 // Only prompt when the write will actually touch disk.
                 // Intercepted writes go to an in-memory sink that can't
@@ -2853,6 +2883,9 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 req.target = path;
                 req.summary = std::to_string(lines) + " lines, " +
                               std::to_string(cmd.content.size()) + " bytes";
+                if (!write_root.empty()) {
+                    req.summary += " → " + write_root;
+                }
                 // First ~8 lines of the write body as preview.
                 {
                     size_t start = 0;
@@ -2892,7 +2925,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             if (write_interceptor) {
                 block << write_interceptor(path, cmd.content) << "\n";
             } else {
-                block << cmd_write(path, cmd.content) << "\n";
+                block << cmd_write(path, cmd.content, write_root) << "\n";
             }
             // Persistent write — appends a second OK/ERR line for the
             // artifact-store outcome.  Falls back to a clear "ephemeral

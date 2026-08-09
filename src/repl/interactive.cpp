@@ -575,8 +575,16 @@ void ReplSession::run() {
         wire_orchestrator_tools(orch, api_opts, tenants, primary.id,
                                 tool_conversation_id);
         // API wiring installs a capture-only /write interceptor (no host cwd).
-        // The interactive TUI must persist to the process cwd after confirm.
+        // The interactive TUI persists to the active conversation's bound
+        // workspace directory after confirm — never the process launch cwd.
         orch.set_write_interceptor(nullptr);
+        orch.set_workspace_root_provider([this]() -> std::string {
+            // Pane exec threads enter ConversationScope(p.conversation_id)
+            // before handle_line; that key is the authoritative binding.
+            const std::string& id = arbiter::agent_conversation_key();
+            if (id.empty()) return {};
+            return conversation_store.resolved_workspace_root(id);
+        });
 
         scheduler = std::make_unique<Scheduler>(&api_opts, &tenants, &notifications);
         scheduler->start();

@@ -465,7 +465,7 @@ TEST_CASE("styled_permission_card includes action target preview and prompt") {
 
 TEST_CASE("styled_diff_review_card includes apply reject Allow all Esc prompt") {
     auto card = styled_diff_review_card(
-        3, "src/foo.cpp", "Apply under process cwd.",
+        3, "src/foo.cpp", "Apply under /tmp/proj. Missing files are created.",
         {"-old", "+new"});
     REQUIRE(card.size() >= 3);
     CHECK(card.front().text.find("review") != std::string::npos);

@@ -372,6 +372,49 @@ TEST_CASE("apply_unified_diff: pure-insert uses after-line offset (GNU patch)") 
     CHECK(read_text(dir.path / "bar.txt") == "a\nb\nc\nAPPEND\n");
 }
 
+TEST_CASE("apply_unified_diff: uses workspace_root not process cwd") {
+    TempDir proj;
+    TempDir decoy;
+    write_text(proj.path / "foo.txt", "a\nb\nc\n");
+
+    const fs::path prev = fs::current_path();
+    fs::current_path(decoy.path);
+
+    const char* patch =
+        "--- a/foo.txt\n"
+        "+++ b/foo.txt\n"
+        "@@ -1,3 +1,3 @@\n"
+        " a\n"
+        "-b\n"
+        "+B\n"
+        " c\n";
+    auto r = apply_unified_diff(patch, proj.path.string());
+    REQUIRE(r.ok);
+    CHECK(read_text(proj.path / "foo.txt") == "a\nB\nc\n");
+    CHECK_FALSE(fs::exists(decoy.path / "foo.txt"));
+
+    fs::current_path(prev);
+}
+
+TEST_CASE("apply_unified_diff: missing workspace_root does not fall back") {
+    TempDir decoy;
+    const fs::path missing = decoy.path / "does_not_exist";
+    const fs::path prev = fs::current_path();
+    fs::current_path(decoy.path);
+
+    const char* patch =
+        "--- a/foo.txt\n"
+        "+++ b/foo.txt\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+hello\n";
+    auto r = apply_unified_diff(patch, missing.string());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("missing") != std::string::npos);
+    CHECK_FALSE(fs::exists(decoy.path / "foo.txt"));
+
+    fs::current_path(prev);
+}
+
 TEST_CASE("DiffProposalStore: add / apply / reject / undo lifecycle") {
     DiffProposalStore store;
     const char* patch =

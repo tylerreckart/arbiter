@@ -212,6 +212,7 @@ set(ARBITER_SOURCES
     src/json.cpp
     src/message_codec.cpp
     src/commands.cpp
+    src/workspace_root.cpp
     src/mcp/types.cpp
     src/mcp/subprocess.cpp
     src/mcp/client.cpp
@@ -484,6 +485,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_commands
         tests/test_commands.cpp
         src/commands.cpp
+        src/workspace_root.cpp
         src/ssrf_guard.cpp
         src/styled_text.cpp
         src/theme.cpp
@@ -585,6 +587,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_diff_apply
         tests/test_diff_apply.cpp
         src/diff/apply.cpp
+        src/workspace_root.cpp
         src/repl/diff_proposals.cpp
     )
     target_include_directories(unit_diff_apply PRIVATE
@@ -760,6 +763,7 @@ if(INDEX_BUILD_TESTS)
         src/repl/queues.cpp
         src/repl/diff_proposals.cpp
         src/diff/apply.cpp
+        src/workspace_root.cpp
         src/atomic_file.cpp
         src/json.cpp
         src/api_client.cpp
@@ -852,6 +856,7 @@ if(INDEX_BUILD_TESTS)
         src/repl/layout_snapshot.cpp
         src/tenant_store.cpp
         src/atomic_file.cpp
+        src/workspace_root.cpp
         src/json.cpp
         src/api_client.cpp
         src/circuit_breaker.cpp
@@ -896,6 +901,7 @@ if(INDEX_BUILD_TESTS)
         src/repl/layout_snapshot.cpp
         src/tenant_store.cpp
         src/atomic_file.cpp
+        src/workspace_root.cpp
         src/json.cpp
         src/api_client.cpp
         src/circuit_breaker.cpp
@@ -928,6 +934,7 @@ if(INDEX_BUILD_TESTS)
         src/repl/layout_snapshot.cpp
         src/tenant_store.cpp
         src/atomic_file.cpp
+        src/workspace_root.cpp
         src/json.cpp
         src/api_client.cpp
         src/circuit_breaker.cpp
@@ -965,6 +972,7 @@ if(INDEX_BUILD_TESTS)
         src/repl/layout_snapshot.cpp
         src/tenant_store.cpp
         src/atomic_file.cpp
+        src/workspace_root.cpp
         src/json.cpp
         src/api_client.cpp
         src/circuit_breaker.cpp
@@ -1325,6 +1333,7 @@ if(INDEX_BUILD_TESTS)
         src/mcp/manager.cpp
         src/mcp/client.cpp
         src/commands.cpp
+        src/workspace_root.cpp
         src/ssrf_guard.cpp
         src/json.cpp
     )

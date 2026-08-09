@@ -381,8 +381,7 @@ void ReplSession::install_orch_callbacks() {
             req.target = prop.path;
             req.patch_id = id;
             req.path = prop.path;
-            req.summary =
-                "Apply under process cwd. Missing files are created.";
+            req.summary = diff_apply_summary_for(pane);
             req.preview_lines = patch_preview_lines(prop.patch);
             req.pane = pane_ptr;
             req.auto_review = true;

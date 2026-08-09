@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -69,6 +70,15 @@ public:
     [[nodiscard]] int64_t tenant_id() const { return tenant_id_; }
 
     [[nodiscard]] std::string active_id() const;
+
+    // Stored cwd for a non-deleted conversation, or nullopt if unknown.
+    [[nodiscard]] std::optional<std::string> cwd_of(const std::string& id) const;
+
+    // Canonical absolute workspace root for host FS ops on `id`.
+    // Empty/missing/legacy `session:` placeholders yield "" and set err —
+    // callers must not fall back to process cwd.
+    [[nodiscard]] std::string resolved_workspace_root(const std::string& id,
+                                                      std::string* err = nullptr) const;
 
     // Non-deleted TUI conversations, most-recently-updated first.
     [[nodiscard]] std::vector<ConversationEntry> list() const;

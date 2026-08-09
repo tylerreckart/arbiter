@@ -8,7 +8,7 @@ A session captures the *agents' memory of the conversation* — every message ex
 
 ## Global conversations
 
-The TUI stores **multiple conversations globally** (not per working directory). Each conversation has its own agent message histories and title. Use the left-hand **conversation sidebar** (`Ctrl-w b`) to switch threads or start a new one.
+The TUI stores **multiple conversations in a global index**, but each conversation is **bound to the workspace directory** where it was created (`conversations.cwd`). Host filesystem ops for that thread (`/write`, `/diff apply`) resolve under that bound root — not whatever directory you launched `arbiter` from. Switching chats switches the project root with them. Each conversation also has its own agent message histories and title. Use the left-hand **conversation sidebar** (`Ctrl-w b`) to switch threads or start a new one; the sidebar subtitle shows the bound project dirname.
 
 TUI threads live in **`~/.arbiter/tenants.db`** — the same SQLite database the HTTP API uses for conversations, memory, todos, and schedules. Sidebar rows are `origin = 'tui'` conversation rows; the multi-agent session document (index + agents + compaction) is stored as `session_json` on that row. Active conversation id and the multi-pane layout also live in `tui_prefs` in the same DB (with a file mirror of `layout.json` for convenience).
 

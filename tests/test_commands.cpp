@@ -4,11 +4,13 @@
 #include "commands.h"
 #include "styled_text.h"
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 using namespace arbiter;
@@ -171,6 +173,60 @@ TEST_CASE("cmd_write allows paths within cwd") {
 
     // Clean up
     fs::remove_all(test_dir);
+}
+
+TEST_CASE("cmd_write honors explicit workspace_root over process cwd") {
+    const auto pid = static_cast<long long>(::getpid());
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path base = fs::temp_directory_path() /
+        ("arbiter_write_root_" + std::to_string(pid) + "_" + std::to_string(stamp));
+    const fs::path root_a = base / "proj_a";
+    const fs::path root_b = base / "proj_b";
+    fs::create_directories(root_a);
+    fs::create_directories(root_b);
+
+    const fs::path prev = fs::current_path();
+    fs::current_path(root_b);
+
+    std::string result = cmd_write("note.txt", "from-a", root_a.string());
+    CHECK(result.find("OK:") == 0);
+    CHECK(fs::exists(root_a / "note.txt"));
+    CHECK_FALSE(fs::exists(root_b / "note.txt"));
+
+    std::ifstream f(root_a / "note.txt");
+    std::string content;
+    std::getline(f, content);
+    CHECK(content == "from-a");
+
+    fs::current_path(prev);
+    fs::remove_all(base);
+}
+
+TEST_CASE("cmd_write refuses missing workspace_root without process-cwd fallback") {
+    const auto pid = static_cast<long long>(::getpid());
+    const fs::path missing = fs::temp_directory_path() /
+        ("arbiter_missing_root_" + std::to_string(pid));
+    fs::remove_all(missing);  // ensure absent
+
+    const fs::path prev = fs::current_path();
+    const fs::path decoy = fs::temp_directory_path() /
+        ("arbiter_decoy_cwd_" + std::to_string(pid));
+    fs::create_directories(decoy);
+    fs::current_path(decoy);
+
+    std::string result = cmd_write("leak.txt", "nope", missing.string());
+    CHECK(result.find("ERR:") == 0);
+    CHECK_FALSE(fs::exists(decoy / "leak.txt"));
+    CHECK_FALSE(fs::exists(missing / "leak.txt"));
+
+    fs::current_path(prev);
+    fs::remove_all(decoy);
+}
+
+TEST_CASE("canonical_workspace_root rejects session placeholders") {
+    std::string err;
+    CHECK(canonical_workspace_root("session:deadbeef", &err).empty());
+    CHECK(err.find("legacy") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
