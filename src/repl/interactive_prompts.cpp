@@ -28,6 +28,7 @@
 #include "tui/theme_picker.h"
 #include "tui/clipboard.h"
 #include "tui/opentui/session.h"
+#include "workspace_root.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
 #include "tui/opentui/theme_picker_frame.h"
@@ -79,7 +80,10 @@ namespace arbiter {
 std::string ReplSession::diff_apply_summary_for(const Pane& pane) const {
         std::string err;
         const std::string root =
-            conversation_store.resolved_workspace_root(pane.conversation_id, &err);
+            is_remote()
+                ? canonical_workspace_root("", &err)
+                : conversation_store.resolved_workspace_root(pane.conversation_id,
+                                                             &err);
         if (root.empty()) {
             return "Conversation workspace unavailable"
                    + (err.empty() ? std::string{} : (": " + err))
@@ -103,8 +107,10 @@ std::string ReplSession::apply_diff_proposal(Pane& pane, int id) {
         }
         std::string root_err;
         const std::string root =
-            conversation_store.resolved_workspace_root(pane.conversation_id,
-                                                       &root_err);
+            is_remote()
+                ? canonical_workspace_root("", &root_err)
+                : conversation_store.resolved_workspace_root(pane.conversation_id,
+                                                             &root_err);
         if (root.empty()) {
             const std::string detail =
                 root_err.empty() ? "conversation workspace unavailable"

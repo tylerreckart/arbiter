@@ -875,6 +875,14 @@ bool ConversationStore::session_is_empty_unlocked(const std::string& id) const {
 std::string ConversationStore::create_or_reuse(const std::string& cwd,
                                                const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
+    auto bind_cwd = [&](const std::string& id) {
+        if (id.empty() || cwd.empty()) return;
+        tenants_.update_tui_conversation(
+            tenant_id_, parse_id(id), "", cwd, -1, -1, -1);
+        for (auto& e : entries_) {
+            if (e.id == id) e.cwd = cwd;
+        }
+    };
     if (session_is_empty_unlocked(active_id_)) {
         // Match create(): empty folder_id means unfiled, even when reusing.
         const int64_t fid = folder_id.empty() ? 0 : parse_id(folder_id);
@@ -889,6 +897,7 @@ std::string ConversationStore::create_or_reuse(const std::string& cwd,
                 }
             }
         }
+        bind_cwd(active_id_);
         return active_id_;
     }
     return create_unlocked(cwd, folder_id);
@@ -898,6 +907,14 @@ std::string ConversationStore::create_or_reuse_for(
     const std::string& cwd, const std::string& prefer_id,
     const std::string& folder_id) {
     std::lock_guard<std::mutex> lk(mu_);
+    auto bind_cwd = [&](const std::string& id) {
+        if (id.empty() || cwd.empty()) return;
+        tenants_.update_tui_conversation(
+            tenant_id_, parse_id(id), "", cwd, -1, -1, -1);
+        for (auto& e : entries_) {
+            if (e.id == id) e.cwd = cwd;
+        }
+    };
     auto apply_folder = [&](const std::string& id) {
         if (id.empty()) return;
         // Empty folder_id clears membership (unfiled); non-empty must parse.
@@ -916,6 +933,7 @@ std::string ConversationStore::create_or_reuse_for(
     if (!prefer_id.empty() && session_is_empty_unlocked(prefer_id)) {
         set_active_unlocked(prefer_id);
         apply_folder(prefer_id);
+        bind_cwd(prefer_id);
         return prefer_id;
     }
     // Only when the caller has no prefer_id (no focused conversation) —
@@ -925,6 +943,7 @@ std::string ConversationStore::create_or_reuse_for(
         && !active_id_.empty()
         && session_is_empty_unlocked(active_id_)) {
         apply_folder(active_id_);
+        bind_cwd(active_id_);
         return active_id_;
     }
     return create_unlocked(cwd, folder_id);
