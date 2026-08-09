@@ -116,7 +116,8 @@ bool under_workspace_root(const std::string& root_str, const fs::path& path,
     const auto cand = canon.string();
     if (cand.size() < root_str.size() ||
         cand.compare(0, root_str.size(), root_str) != 0 ||
-        (cand.size() > root_str.size() && cand[root_str.size()] != '/')) {
+        (cand.size() > root_str.size() && cand[root_str.size()] != '/' &&
+         cand[root_str.size()] != '\\')) {
         return false;
     }
     if (canon_out) *canon_out = std::move(canon);
