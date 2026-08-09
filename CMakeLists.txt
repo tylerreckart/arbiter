@@ -763,6 +763,7 @@ if(INDEX_BUILD_TESTS)
         src/repl/queues.cpp
         src/repl/diff_proposals.cpp
         src/diff/apply.cpp
+        src/workspace_root.cpp
         src/atomic_file.cpp
         src/json.cpp
         src/api_client.cpp
