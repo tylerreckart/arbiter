@@ -35,7 +35,7 @@ Revoking a tenant mid-request uses one durable mechanism — **`TenantGate`** �
 1. After bearer auth, expensive handlers build a `TenantGate` from the tenant id + `api_key_hash` snapshot and **`bind()` it to the per-request `ApiClient` preflight**.
 2. Every `stream()` / `complete()` (including retries, mid-body reads, and `/parallel` child clients that inherit the preflight) re-probes the DB via `TenantGate::alive()`. Disable or rotate makes `alive()` false → provider I/O stops with `cancelled`.
 3. **Admin HTTP** disable / `rotate-token` also cancels `InFlightRegistry` entries immediately (hot path).
-4. **CLI** `--disable-tenant` / `--rotate-tenant-token` update SQLite only; running `--api` workers stop at the next preflight (tool-loop / provider-read boundary). Prefer admin HTTP rotate for an immediate cancel().
+4. **CLI** `--disable-tenant` / `--rotate-tenant-token` update SQLite only; running `--api` workers stop at the next preflight (tool-loop / provider-read boundary). Prefer admin HTTP disable (`PATCH … {"disabled":true}`) or rotate for an immediate `cancel()`.
 5. Caller `POST /v1/requests/:id/cancel` stays the `cancelled` taxonomy; tenant revoke surfaces as `unauthorized` on terminal frames when the digest/disabled check fails.
 
 ## Failure modes

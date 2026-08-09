@@ -57,15 +57,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `POST /v1/admin/tenants/:id/rotate-token` issue a new `atr_…` key (upgrade
   recovery from single-tenant installs whose plaintext was never shown).
   Admin HTTP rotate also cancels in-flight streams; the CLI is DB-only and
-  warns that hot revoke needs the admin path (or disable-first).
+  warns that hot revoke needs the admin path.
 - **Kill-switch via `TenantGate`.** Durable revoke probe: after auth, handlers
   bind a thread-safe `TenantGate` to the per-request `ApiClient` preflight
   (inherited by `/parallel` children). `alive()` re-reads disabled /
   `api_key_hash` on every provider call and mid-stream read. Admin HTTP
-  disable/rotate also cancels `InFlightRegistry`; CLI rotate remains DB-only
-  and stops work at the next preflight. Sticky `hard_cancelled_` survives
-  ephemeral cancel clears. Admin PATCH requires boolean `disabled`. A2A
-  kill-switch stays JSON-RPC-shaped.
+  disable/rotate also cancels `InFlightRegistry` via shared
+  `cancel_for_tenant()`; CLI disable/rotate remain DB-only (soft revoke until
+  the next preflight) and print that operators need admin HTTP for an
+  immediate `cancel()`. Sticky `hard_cancelled_` survives ephemeral cancel
+  clears. Admin PATCH requires boolean `disabled`. A2A kill-switch stays
+  JSON-RPC-shaped.
 - **Sandbox idle reaper logging.** Reaps emit structured
   `sandbox_container_reaped` via `Logger` instead of raw `fprintf`.
 - **`POST /v1/events` status.** Documented as stable now that tenant-agent

@@ -45,3 +45,5 @@ A successful update appends an `update_tenant` row to the [admin audit log](audi
 
 - [`GET /v1/admin/tenants/:id`](tenants-get.md), [`POST /v1/admin/tenants`](tenants-create.md).
 - [`GET /v1/admin/audit`](audit.md) — read back the audit trail.
+- [Tenant admin CLI](../../cli/tenants.md) — `arbiter --disable-tenant` (DB-only; does not cancel in-flight streams on a running `--api` process).
+- [Authentication → Kill-switch model](../../concepts/authentication.md#kill-switch-model) — `TenantGate` preflight vs admin hot cancel.
