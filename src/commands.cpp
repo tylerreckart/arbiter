@@ -3099,6 +3099,16 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
             // process cwd (CLI / --send).  Same provider as /write.
             block << "[/map" << (cmd.args.empty() ? "" : " " + cmd.args) << "]\n";
             std::string map_root;
+            if (write_interceptor && !workspace_root_provider) {
+                block << "ERR: conversation workspace unavailable — "
+                         "refuse to map process cwd\n";
+                cache_result = false;
+                block << "[END MAP]\n\n";
+                out << block.str();
+                emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id,
+                          false, tool_result_preview(block.str()));
+                continue;
+            }
             if (workspace_root_provider) {
                 map_root = workspace_root_provider();
                 if (map_root.empty()) {
@@ -3113,7 +3123,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                     continue;
                 }
             }
-            // Empty map_root (no provider) → cmd_map uses process cwd.
+            // Empty map_root (no provider, no interceptor) → cmd_map uses process cwd.
             std::string body = cmd_map(map_root, cmd.args);
             block << body;
             if (body.empty() || body.back() != '\n') block << "\n";

@@ -107,8 +107,24 @@ bool append_line(std::ostringstream& out, WalkState& st,
     return true;
 }
 
-bool walk(const fs::path& dir, int depth, const std::string& prefix,
-          std::ostringstream& out, WalkState& st,
+bool under_workspace_root(const std::string& root_str, const fs::path& path,
+                          fs::path* canon_out = nullptr) {
+    std::error_code ec;
+    fs::path canon = fs::weakly_canonical(path, ec);
+    if (ec) return false;
+    canon = canon.lexically_normal();
+    const auto cand = canon.string();
+    if (cand.size() < root_str.size() ||
+        cand.compare(0, root_str.size(), root_str) != 0 ||
+        (cand.size() > root_str.size() && cand[root_str.size()] != '/')) {
+        return false;
+    }
+    if (canon_out) *canon_out = std::move(canon);
+    return true;
+}
+
+bool walk(const fs::path& dir, const std::string& root_str, int depth,
+          const std::string& prefix, std::ostringstream& out, WalkState& st,
           const WorkspaceMapOptions& opts) {
     if (opts.max_depth >= 0 && depth > opts.max_depth) {
         st.truncated_depth = true;
@@ -129,9 +145,15 @@ bool walk(const fs::path& dir, int depth, const std::string& prefix,
                 st.truncated_depth = true;
                 continue;
             }
+            fs::path canon_child;
+            if (!under_workspace_root(root_str, dir / child.name, &canon_child)) {
+                continue;
+            }
+            std::error_code ec;
+            if (!fs::is_directory(canon_child, ec) || ec) continue;
             const std::string child_prefix =
                 prefix + (last ? "    " : "│   ");
-            if (!walk(dir / child.name, depth + 1, child_prefix, out, st,
+            if (!walk(canon_child, root_str, depth + 1, child_prefix, out, st,
                       opts)) {
                 return false;
             }
@@ -201,7 +223,7 @@ std::string cmd_map(std::string_view workspace_root,
     WalkState st;
     // Count the root label toward the budget loosely via bytes already written.
     st.bytes = out.str().size();
-    walk(map_root, /*depth=*/1, /*prefix=*/"", out, st, opts);
+    walk(map_root, root_str, /*depth=*/1, /*prefix=*/"", out, st, opts);
 
     if (st.truncated_entries) {
         out << "... [truncated — entry cap reached]\n";
