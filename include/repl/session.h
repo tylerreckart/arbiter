@@ -221,6 +221,7 @@ struct ReplSession {
 
     // ── interactive_prompts.cpp ────────────────────────────────────────────
     // Applies under the pane conversation's bound workspace root (not process cwd).
+    // Remote (--connect) uses process cwd — never the local ConversationStore.
     std::string apply_diff_proposal(Pane& pane, int id);
     std::string diff_apply_summary_for(const Pane& pane) const;
     static std::vector<std::string> patch_preview_lines(const std::string& patch);

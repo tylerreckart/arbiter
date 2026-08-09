@@ -537,6 +537,39 @@ TEST_CASE("sessions/*.conv tool scope remaps onto active TUI thread") {
     fs::remove_all(dir);
 }
 
+TEST_CASE("create_or_reuse rebinds empty chat cwd to launch directory") {
+    const std::string dir = make_temp_dir();
+    const fs::path old_proj = fs::temp_directory_path() /
+        ("arbiter_reuse_old_" + std::to_string(::getpid()));
+    const fs::path new_proj = fs::temp_directory_path() /
+        ("arbiter_reuse_new_" + std::to_string(::getpid()));
+    fs::create_directories(old_proj);
+    fs::create_directories(new_proj);
+
+    ConversationStore store(dir);
+    const std::string id = store.create(old_proj.string());
+    REQUIRE_FALSE(id.empty());
+    REQUIRE(store.cwd_of(id).value_or("") == old_proj.string());
+
+    // Empty session → reuse, but cwd must move with the new launch dir.
+    const std::string reused = store.create_or_reuse(new_proj.string());
+    CHECK(reused == id);
+    CHECK(store.cwd_of(id).value_or("") == new_proj.string());
+
+    std::string err;
+    CHECK(fs::equivalent(store.resolved_workspace_root(id, &err), new_proj));
+    CHECK(err.empty());
+
+    const std::string reused_for =
+        store.create_or_reuse_for(old_proj.string(), id);
+    CHECK(reused_for == id);
+    CHECK(store.cwd_of(id).value_or("") == old_proj.string());
+
+    fs::remove_all(old_proj);
+    fs::remove_all(new_proj);
+    fs::remove_all(dir);
+}
+
 TEST_CASE("resolved_workspace_root uses conversation cwd not process cwd") {
     const std::string dir = make_temp_dir();
     const fs::path proj = fs::temp_directory_path() /
