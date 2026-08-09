@@ -877,8 +877,9 @@ std::string ConversationStore::create_or_reuse(const std::string& cwd,
     std::lock_guard<std::mutex> lk(mu_);
     auto bind_cwd = [&](const std::string& id) {
         if (id.empty() || cwd.empty()) return;
-        tenants_.update_tui_conversation(
-            tenant_id_, parse_id(id), "", cwd, -1, -1, -1);
+        if (!tenants_.update_tui_conversation(
+                tenant_id_, parse_id(id), "", cwd, -1, -1, -1))
+            return;
         for (auto& e : entries_) {
             if (e.id == id) e.cwd = cwd;
         }
@@ -909,8 +910,9 @@ std::string ConversationStore::create_or_reuse_for(
     std::lock_guard<std::mutex> lk(mu_);
     auto bind_cwd = [&](const std::string& id) {
         if (id.empty() || cwd.empty()) return;
-        tenants_.update_tui_conversation(
-            tenant_id_, parse_id(id), "", cwd, -1, -1, -1);
+        if (!tenants_.update_tui_conversation(
+                tenant_id_, parse_id(id), "", cwd, -1, -1, -1))
+            return;
         for (auto& e : entries_) {
             if (e.id == id) e.cwd = cwd;
         }
