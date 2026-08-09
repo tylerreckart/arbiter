@@ -53,6 +53,12 @@ public:
     // Intercept /write; without it, files land on the local filesystem.
     void set_write_interceptor(WriteInterceptor cb) { write_interceptor_cb_ = std::move(cb); }
 
+    // Host /write workspace root (TUI: conversation-bound directory).
+    // Without it, disk writes use process cwd (CLI / `--send`).
+    void set_workspace_root_provider(WorkspaceRootProvider cb) {
+        workspace_root_provider_cb_ = std::move(cb);
+    }
+
     // /mem entries|entry|search bridge. Without it, those subcommands return ERR.
     void set_structured_memory_reader(StructuredMemoryReader cb) {
         structured_memory_reader_cb_ = std::move(cb);
@@ -439,6 +445,7 @@ private:
     ToolStatusFn       tool_status_cb_;
     PaneSpawner        pane_spawner_cb_;
     WriteInterceptor   write_interceptor_cb_;
+    WorkspaceRootProvider workspace_root_provider_cb_;
     StructuredMemoryReader structured_memory_reader_cb_;
     StructuredMemoryWriter structured_memory_writer_cb_;
     MCPInvoker         mcp_invoker_cb_;

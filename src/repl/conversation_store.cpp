@@ -4,6 +4,7 @@
 #include "atomic_file.h"
 #include "json.h"
 #include "orchestrator.h"
+#include "workspace_root.h"
 #include "repl/conversation_titling.h"
 #include "repl/layout_snapshot.h"
 #include "tenant_store.h"
@@ -798,6 +799,33 @@ ConversationStore::search(const std::string& term, size_t max_hits) const {
         out.push_back(std::move(hit));
     }
     return out;
+}
+
+std::optional<std::string> ConversationStore::cwd_of(const std::string& id) const {
+    if (id.empty()) return std::nullopt;
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& e : entries_) {
+        if (e.deleted_at != 0) continue;
+        if (e.id == id) return e.cwd;
+    }
+    return std::nullopt;
+}
+
+std::string ConversationStore::resolved_workspace_root(const std::string& id,
+                                                       std::string* err) const {
+    auto fail = [&](std::string msg) {
+        if (err) *err = std::move(msg);
+        return std::string();
+    };
+    auto stored = cwd_of(id);
+    if (!stored) {
+        return fail("conversation not found");
+    }
+    if (stored->empty()) {
+        return fail("conversation has no workspace directory");
+    }
+    // commands.h — shared with /write and /diff apply.
+    return canonical_workspace_root(*stored, err);
 }
 
 std::string ConversationStore::active_id() const {

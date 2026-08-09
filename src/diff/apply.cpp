@@ -1,6 +1,7 @@
 // arbiter/src/diff/apply.cpp — see include/diff/apply.h
 
 #include "diff/apply.h"
+#include "workspace_root.h"
 
 #include <algorithm>
 #include <cctype>
@@ -425,23 +426,19 @@ resolve_workspace_path(std::string_view rel_path,
         err = "path escapes workspace or is absolute: " + std::string(rel_path);
         return std::nullopt;
     }
-    std::error_code ec;
-    fs::path root;
-    if (workspace_root.empty()) {
-        root = fs::current_path(ec);
-        if (ec) {
-            err = "cannot determine working directory";
-            return std::nullopt;
-        }
-    } else {
-        root = fs::path(std::string(workspace_root));
-    }
-    fs::path canon_root = fs::canonical(root, ec);
-    if (ec) canon_root = fs::absolute(root, ec);
-    if (ec) {
-        err = "invalid workspace root: " + ec.message();
+    // Empty root → process cwd (CLI / unit-test default).  Non-empty must
+    // name an existing directory; never soft-fall back to a missing path
+    // (that would let apply create files under a deleted conversation root
+    // relative to whatever the process happened to chdir into).
+    std::string root_err;
+    const std::string root_str =
+        canonical_workspace_root(workspace_root, &root_err);
+    if (root_str.empty()) {
+        err = root_err.empty() ? "invalid workspace root" : root_err;
         return std::nullopt;
     }
+    std::error_code ec;
+    fs::path canon_root(root_str);
 
     fs::path abs_target = canon_root / std::string(rel_path);
     fs::path existing = abs_target;
@@ -483,7 +480,6 @@ resolve_workspace_path(std::string_view rel_path,
         resolved = s;
     }
     const auto resolved_str = resolved.string();
-    const auto root_str = canon_root.string();
     if (resolved_str.size() < root_str.size() ||
         resolved_str.compare(0, root_str.size(), root_str) != 0 ||
         (resolved_str.size() > root_str.size() &&

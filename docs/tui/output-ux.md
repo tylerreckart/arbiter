@@ -66,9 +66,10 @@ Host `/exec` (when enabled and not Docker-sandboxed) always prompts with a
 multi-line permission card labelled `HOST SHELL (unsandboxed)` before running
 the command. Sandboxed `/exec` (opt-in via `ARBITER_SANDBOX_IMAGE`) only
 confirms destructive patterns. Plain `/write` in the TUI confirms, then writes
-the process cwd (verified). The API server’s capture-only `/write` interceptor
-is cleared for the interactive TUI and `--send` CLI so host sessions persist
-files.
+under the **active conversation's workspace directory** (verified). The API
+server’s capture-only `/write` interceptor is cleared for the interactive TUI
+and `--send` CLI so host sessions persist files (`--send` still uses process
+cwd; the TUI binds each conversation's stored `cwd`).
 
 ```
 permission exec  git status

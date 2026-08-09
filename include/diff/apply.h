@@ -3,10 +3,11 @@
 //
 // First-class apply/undo for unified ```diff fences streamed into the TUI.
 // Parses one-file unified diffs, validates paths stay under a workspace
-// root (process cwd by default), applies with hunk-header matching and a
-// unique-context fallback when the header offset is stale, and returns an
-// undo snapshot so `/diff undo` can restore the pre-image when the file
-// has not changed since apply.
+// root (process cwd by default; TUI passes the conversation's bound
+// directory), applies with hunk-header matching and a unique-context
+// fallback when the header offset is stale, and returns an undo snapshot
+// so `/diff undo` can restore the pre-image when the file has not changed
+// since apply.
 
 #include <cstdint>
 #include <optional>
@@ -62,8 +63,9 @@ struct DiffUndoSnapshot {
 };
 
 // Apply `patch` under `workspace_root` (must be an existing directory).
-// Empty workspace_root ⇒ current_path().  Refuses absolute/escaping
-// paths, ambiguous/stale context (when the target already exists), and
+// Empty workspace_root ⇒ current_path().  Non-empty missing roots ERR
+// without falling back to process cwd.  Refuses absolute/escaping paths,
+// ambiguous/stale context (when the target already exists), and
 // unsupported patch shapes.  When the hunk header offset misses, applies
 // only if the old-side context matches exactly once elsewhere in the file.
 // If the target file does not exist, it is created from the patch's

@@ -1,10 +1,13 @@
 #pragma once
 // arbiter/include/commands.h — Agent-invocable command execution
 
-#include <string>
-#include <vector>
+#include "workspace_root.h"
+
 #include <functional>
 #include <map>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace arbiter {
 
@@ -58,7 +61,18 @@ using ExecInvoker = std::function<std::string(const std::string& command)>;
 
 // Write content to a file at path (creates parent directories).
 // Returns "OK: wrote N bytes to <path>" or "ERR: ...".
-std::string cmd_write(const std::string& path, const std::string& content);
+//
+// When `workspace_root` is non-empty it must name an existing directory;
+// the write is resolved under that root (never silently falling back to
+// process cwd).  Empty `workspace_root` keeps the legacy process-cwd bind
+// used by CLI / `--send`.
+std::string cmd_write(const std::string& path, const std::string& content,
+                      std::string_view workspace_root = {});
+
+// Optional per-turn workspace root for /write.  When set, the dispatcher
+// calls this before touching disk; an empty return is surfaced as
+// "ERR: conversation workspace unavailable" (no process-cwd fallback).
+using WorkspaceRootProvider = std::function<std::string()>;
 
 // Read the agent's persistent memory file. Returns "" if none.
 std::string cmd_mem_read(const std::string& agent_id, const std::string& memory_dir);
@@ -462,7 +476,12 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    // Null skips image-aware dispatch — the
                                    // /fetch and /read paths fall back to
                                    // their text-only behaviour.
-                                   std::vector<ContentPart>* out_image_parts = nullptr);
+                                   std::vector<ContentPart>* out_image_parts = nullptr,
+                                   // Host /write root.  When set, disk writes
+                                   // resolve under the returned directory
+                                   // (conversation-scoped in the TUI).  Null
+                                   // keeps process-cwd behaviour for CLI.
+                                   WorkspaceRootProvider workspace_root_provider = nullptr);
 
 // True if a tool-result block indicates the command failed.  Pattern-matches
 // the ERR:/UPSTREAM FAILED/SKIPPED framing used throughout execute_agent_commands.

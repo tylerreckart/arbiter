@@ -993,7 +993,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               todo_invoker_cb_,
                                               lesson_invoker_cb_,
                                               exec_invoker_cb_,
-                                              agent_ptr->config().capabilities);
+                                              agent_ptr->config().capabilities,
+                                              nullptr,
+                                              workspace_root_provider_cb_);
 
         // Loop detection.  For each cmd this iteration, find its result
         // block in current_msg and check whether the body contained
@@ -1544,7 +1546,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   lesson_invoker_cb_,
                                                   exec_invoker_cb_,
                                                   agent_ptr->config().capabilities,
-                                                  &image_parts);
+                                                  &image_parts,
+                                                  workspace_root_provider_cb_);
             last_cmds         = cmds;
             last_tool_results = tool_envelope;
             if (image_parts.empty()) {
@@ -2007,7 +2010,9 @@ std::string Orchestrator::execute_slash_command(const std::string& line,
                                   todo_invoker_cb_,
                                   lesson_invoker_cb_,
                                   exec_invoker_cb_,
-                                  agent_ptr->config().capabilities);
+                                  agent_ptr->config().capabilities,
+                                  nullptr,
+                                  workspace_root_provider_cb_);
 }
 
 void Orchestrator::fire_history_checkpoint() {

@@ -76,6 +76,18 @@ namespace fs = std::filesystem;
 
 namespace arbiter {
 
+std::string ReplSession::diff_apply_summary_for(const Pane& pane) const {
+        std::string err;
+        const std::string root =
+            conversation_store.resolved_workspace_root(pane.conversation_id, &err);
+        if (root.empty()) {
+            return "Conversation workspace unavailable"
+                   + (err.empty() ? std::string{} : (": " + err))
+                   + ". Apply refused (will not use process cwd).";
+        }
+        return "Apply under " + root + ". Missing files are created.";
+}
+
 std::string ReplSession::apply_diff_proposal(Pane& pane, int id) {
 
         auto& store = pane.diff_proposals;
@@ -89,7 +101,18 @@ std::string ReplSession::apply_diff_proposal(Pane& pane, int id) {
         if (prop->status == arbiter::DiffProposalStatus::Rejected) {
             return "ERR: patch #" + std::to_string(id) + " was rejected";
         }
-        auto applied = arbiter::apply_unified_diff(prop->patch);
+        std::string root_err;
+        const std::string root =
+            conversation_store.resolved_workspace_root(pane.conversation_id,
+                                                       &root_err);
+        if (root.empty()) {
+            const std::string detail =
+                root_err.empty() ? "conversation workspace unavailable"
+                                 : root_err;
+            store.mark_failed(id, detail);
+            return "ERR: apply #" + std::to_string(id) + " failed: " + detail;
+        }
+        auto applied = arbiter::apply_unified_diff(prop->patch, root);
         if (!applied.ok) {
             store.mark_failed(id, applied.error);
             return "ERR: apply #" + std::to_string(id) +

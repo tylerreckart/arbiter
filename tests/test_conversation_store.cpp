@@ -15,6 +15,7 @@
 #include <random>
 #include <sstream>
 #include <thread>
+#include <unistd.h>
 
 using namespace arbiter;
 namespace fs = std::filesystem;
@@ -533,5 +534,40 @@ TEST_CASE("sessions/*.conv tool scope remaps onto active TUI thread") {
         CHECK(again.list().size() == before);
     }
 
+    fs::remove_all(dir);
+}
+
+TEST_CASE("resolved_workspace_root uses conversation cwd not process cwd") {
+    const std::string dir = make_temp_dir();
+    const fs::path proj = fs::temp_directory_path() /
+        ("arbiter_conv_ws_" + std::to_string(::getpid()));
+    fs::create_directories(proj);
+
+    ConversationStore store(dir);
+    const std::string id = store.create(proj.string());
+    REQUIRE_FALSE(id.empty());
+
+    auto stored = store.cwd_of(id);
+    REQUIRE(stored.has_value());
+    CHECK(*stored == proj.string());
+
+    const fs::path prev = fs::current_path();
+    const fs::path decoy = fs::temp_directory_path() /
+        ("arbiter_conv_decoy_" + std::to_string(::getpid()));
+    fs::create_directories(decoy);
+    fs::current_path(decoy);
+
+    std::string err;
+    const std::string root = store.resolved_workspace_root(id, &err);
+    CHECK(err.empty());
+    CHECK(fs::equivalent(root, proj));
+
+    fs::remove_all(proj);
+    err.clear();
+    CHECK(store.resolved_workspace_root(id, &err).empty());
+    CHECK(err.find("missing") != std::string::npos);
+
+    fs::current_path(prev);
+    fs::remove_all(decoy);
     fs::remove_all(dir);
 }

@@ -242,7 +242,8 @@ static std::string compose_command_rules(const std::set<std::string>& b) {
         s +=
             "- File delivery — never leave content only in chat.  For edits to existing\n"
             "  code, emit a fenced ```diff (user reviews/applies).  For full new files or\n"
-            "  wholesale rewrites, use /write <path> … /endwrite (confirmed, written to cwd).\n"
+            "  wholesale rewrites, use /write <path> … /endwrite (confirmed, written under\n"
+            "  this conversation's workspace directory).\n"
             "  Use /write --persist when the user may revisit later via artifacts.\n";
 
     if (b.count("web"))
@@ -391,7 +392,7 @@ static const char* prompt_code_change_format() {
     return
         "\nCODE CHANGE FORMAT:\n"
         "The TUI renders fenced ```diff blocks as reviewable patches and applies them "
-        "under the process cwd after the user approves. Prefer ```diff for edits to "
+        "under this conversation's workspace directory after the user approves. Prefer ```diff for edits to "
         "existing files; use /write for brand-new full files or wholesale rewrites.\n"
         "- One fenced block per file, language tag `diff` (not `patch`, not unlabeled).\n"
         "- Unified diff syntax (context lines MUST start with a leading space):\n"
