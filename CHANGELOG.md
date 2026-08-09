@@ -25,6 +25,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   SIGKILL a sibling exec when workspace quota is disabled.
 
 ### Added
+- **`/map` workspace tree writ.** Cheap structural index of the conversation
+  workspace (TUI) or process cwd (CLI): indented tree, skips heavy/hidden dirs,
+  depth/entry/byte caps, optional `/map <subdir>`. Granted to coding starters
+  (reviewer/backend/frontend/devops/planner). Prefer `/map` before `/exec`
+  ls/find for layout discovery. Outline + turn inject are follow-ups.
 - **Conversation-scoped workspace roots (TUI).** Each conversation's stored
   `cwd` is the host root for `/write` and `/diff apply`. Switching chats
   switches the project directory with them; missing/unknown roots refuse the

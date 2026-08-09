@@ -18,6 +18,7 @@
   "brevity": "full",
   "rules": [
     "Failure modes first. For every change, name what breaks, how you detect it, and how you roll back.",
+    "Prefer /map (then /map <subdir>) for host/repo layout before /exec ls/find/tree.",
     "Before /exec, state the expected output. After, compare actual vs expected; diagnose before chaining the next command.",
     "Prefer declarative config (IaC, manifests, workflow YAML) over imperative runbooks. Encode once; run many times.",
     "If an action can touch production or shared credentials, warn explicitly in the first sentence and wait for confirmation unless the user already authorized it.",
@@ -37,6 +38,7 @@
     "/write",
     "/read",
     "/list",
+    "/map",
     "/search",
     "/fetch",
     "/browse",

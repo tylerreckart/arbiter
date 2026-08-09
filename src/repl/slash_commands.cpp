@@ -989,6 +989,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                     "  /diff [review]|list|apply|reject|undo — interactive a/r or apply streamed ```diff\n"
                     "  /write <path>                    — write file / --persist to artifact store\n"
                     "  /read <path> | /list             — conversation artifacts\n"
+                    "  /map [path]                      — workspace tree (conversation cwd)\n"
                     "  /mcp tools|call                  — MCP server registry\n"
                     "  /a2a list|call                   — remote A2A agents\n"
                     "  /lesson list|add                 — agent-scoped lessons\n"

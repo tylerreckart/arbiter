@@ -1,6 +1,7 @@
 #pragma once
 // arbiter/include/commands.h — Agent-invocable command execution
 
+#include "workspace_map.h"
 #include "workspace_root.h"
 
 #include <functional>

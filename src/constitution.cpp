@@ -27,7 +27,7 @@ static std::set<std::string> resolve_bundles(
             out.insert("exec");
         else if (cap.rfind("/write", 0) == 0)   // /write or /write --persist
             out.insert("write");
-        else if (cap == "/read" || cap == "/list")
+        else if (cap == "/read" || cap == "/list" || cap == "/map")
             out.insert("read");
         else if (cap.rfind("/mem", 0) == 0)     // /mem, /mem shared, etc.
             out.insert("mem");
@@ -155,7 +155,9 @@ static const char* bundle_read_inventory() {
         "  /read <path> | #<aid> [via=mem:<entry_id>] — read artifact; via=mem unlocks cross-conversation\n"
         "                                               (the entry id is the access capability;\n"
         "                                                /mem entry <id> prints the exact line to copy)\n"
-        "  /list                                      — list persisted artifacts in this conversation\n";
+        "  /list                                      — list persisted artifacts in this conversation\n"
+        "  /map [path]                                — cheap workspace tree (cwd-bound); prefer before\n"
+        "                                               /exec ls/find for layout discovery\n";
 }
 
 static const char* bundle_mem_inventory() {
@@ -237,6 +239,11 @@ static std::string compose_command_rules(const std::set<std::string>& b) {
 
     if (b.count("exec"))
         s += "- /exec — use for filesystem, process, git, or system info.\n";
+
+    if (b.count("read"))
+        s +=
+            "- /map before /exec ls/find/tree when you need project layout.  Call\n"
+            "  /map <subdir> to zoom; do not rediscover the tree every turn.\n";
 
     if (b.count("write"))
         s +=

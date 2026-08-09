@@ -19,7 +19,7 @@ Writs factor into a small number of orthogonal axes. Each axis has one primary v
 
 | Axis | Verbs | What's mediated |
 |---|---|---|
-| Perception | `/fetch`, `/search`, `/browse`, `/read`, `/list` | Pulling state from outside the conversation. |
+| Perception | `/fetch`, `/search`, `/browse`, `/read`, `/list`, `/map` | Pulling state from outside the conversation. |
 | Action | `/exec`, `/write` | Pushing state into the world. |
 | Delegation | `/agent`, `/parallel`, `/pane` | Other agents as subroutines. |
 | Consultation | `/advise` | A higher-capability model as second opinion. See [Advisor](advisor.md). |

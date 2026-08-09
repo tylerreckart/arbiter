@@ -124,7 +124,7 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
                                   "/kill","/suspend","/resume","/inject",
                                   "/fetch","/mem","/search","/browse",
                                   "/todo","/schedule","/exec","/diff","/write",
-                                  "/read","/list","/mcp","/a2a","/lesson",
+                                  "/read","/list","/map","/mcp","/a2a","/lesson",
                                   "/plan","/theme","/verbose","/chat","/quit","/help"});
                 }
                 if (cmd == "diff") {
