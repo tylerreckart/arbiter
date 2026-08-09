@@ -213,6 +213,7 @@ set(ARBITER_SOURCES
     src/message_codec.cpp
     src/commands.cpp
     src/workspace_root.cpp
+    src/workspace_map.cpp
     src/mcp/types.cpp
     src/mcp/subprocess.cpp
     src/mcp/client.cpp
@@ -486,6 +487,7 @@ if(INDEX_BUILD_TESTS)
         tests/test_commands.cpp
         src/commands.cpp
         src/workspace_root.cpp
+        src/workspace_map.cpp
         src/ssrf_guard.cpp
         src/styled_text.cpp
         src/theme.cpp
@@ -583,6 +585,17 @@ if(INDEX_BUILD_TESTS)
     target_compile_definitions(unit_markdown_diff PRIVATE
         ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
     add_test(NAME unit_markdown_diff COMMAND unit_markdown_diff)
+
+    add_executable(unit_workspace_map
+        tests/test_workspace_map.cpp
+        src/workspace_map.cpp
+        src/workspace_root.cpp
+    )
+    target_include_directories(unit_workspace_map PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_workspace_map COMMAND unit_workspace_map)
 
     add_executable(unit_diff_apply
         tests/test_diff_apply.cpp
@@ -1334,6 +1347,7 @@ if(INDEX_BUILD_TESTS)
         src/mcp/client.cpp
         src/commands.cpp
         src/workspace_root.cpp
+        src/workspace_map.cpp
         src/ssrf_guard.cpp
         src/json.cpp
     )

@@ -20,7 +20,7 @@ bool is_framing_marker(std::string_view s) {
     static const char* kOpens[] = {
         "[/fetch", "[/exec", "[/write", "[/agent", "[/mem", "[/advise",
         "[/read", "[/browse", "[/search", "[/todo", "[/schedule", "[/mcp",
-        "[/a2a", "[/list", "[/parallel", "[/pane", "[/lesson",
+        "[/a2a", "[/list", "[/map", "[/parallel", "[/pane", "[/lesson",
         "[END ", "[TOOL RESULTS", "[END TOOL RESULTS"
     };
     for (const char* p : kOpens) {
@@ -41,7 +41,7 @@ bool is_agent_writ_line(std::string_view s) {
     if (s.empty() || s[0] != '/') return false;
     static const char* kCmds[] = {
         "fetch", "exec", "agent", "pane", "write", "endwrite",
-        "mem", "endmem", "read", "list", "browse", "search",
+        "mem", "endmem", "read", "list", "map", "browse", "search",
         "todo", "endtodo", "schedule", "mcp", "a2a", "parallel",
         "endparallel", "advise", "lesson", "endlesson", "help",
         nullptr

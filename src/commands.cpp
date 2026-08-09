@@ -187,6 +187,10 @@ std::string tool_status_label(const AgentCommand& cmd) {
     }
     if (name == "read")   return "read:" + truncate_for_label(args);
     if (name == "list")   return "list";
+    if (name == "map") {
+        return args.empty() ? "map"
+                            : ("map:" + truncate_for_label(args));
+    }
     if (name == "help")   return "help:" + truncate_for_label(args.empty() ? "index" : args);
     if (name == "advise") return "advise:" + truncate_for_label(args);
 
@@ -351,6 +355,17 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.name = "list";
             result.push_back(std::move(cmd));
 
+        } else if (line == "/map" ||
+                   (line.size() > 5 && line.substr(0, 5) == "/map ")) {
+            AgentCommand cmd;
+            cmd.name = "map";
+            if (line.size() > 5) cmd.args = line.substr(5);
+            // Trim leading whitespace from the optional path.
+            while (!cmd.args.empty() &&
+                   (cmd.args.front() == ' ' || cmd.args.front() == '\t'))
+                cmd.args.erase(cmd.args.begin());
+            result.push_back(std::move(cmd));
+
         } else if (line.size() > 5 && line.substr(0, 5) == "/mcp ") {
             AgentCommand cmd;
             cmd.name = "mcp";
@@ -399,7 +414,7 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
                     "/todo", "/endtodo",
                     "/agent ", "/parallel", "/endparallel", "/pane ",
                     "/write", "/endwrite",
-                    "/read ", "/list",
+                    "/read ", "/list", "/map",
                     "/search ", "/fetch ", "/browse ",
                     "/exec ",
                     "/mem", "/endmem",
@@ -674,6 +689,7 @@ static std::string help_index() {
         "  /help delegation — /agent vs /parallel vs /pane semantics\n"
         "  /help mem        — structured memory graph + scratchpad reference\n"
         "  /help artifacts  — /read, /list, cross-conversation via=mem:<id>\n"
+        "  /help map        — workspace tree (/map) for project layout\n"
         "  /help mcp        — MCP tool invocation\n"
         "  /help advise     — when and how to consult the advisor model\n";
 }
@@ -881,7 +897,23 @@ static std::string help_for_topic(const std::string& topic) {
             "  2. /mem add entry reference <title> --artifact #<id>   (in the\n"
             "     SAME turn)\n"
             "Future /mem search finds the entry; /mem entry <id> prints the\n"
-            "/read line to retrieve the file.\n";
+            "/read line to retrieve the file.\n"
+            "\n"
+            "For the host project tree (not artifacts), see /help map.\n";
+    }
+    if (topic == "map" || topic == "workspace") {
+        return
+            "/map\n"
+            "  Cheap structural index of this conversation's workspace directory\n"
+            "  (TUI) or process cwd (CLI / --send).  Indented tree; skips heavy\n"
+            "  dirs (node_modules, .git, build, …).  Caps depth/entries/bytes.\n"
+            "/map <rel-path>\n"
+            "  Same, scoped under a subdirectory.  Prefer this over /exec ls/find\n"
+            "  when discovering layout.  Missing/escaping paths return ERR — never\n"
+            "  falls back to a different root.\n"
+            "\n"
+            "Not a full LSP.  For file contents use /exec or open the path; for\n"
+            "conversation artifacts use /list + /read.\n";
     }
     if (topic == "mcp") {
         return
@@ -1756,7 +1788,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 allowed_bundles.insert("exec");
             else if (cap.rfind("/write", 0) == 0)
                 allowed_bundles.insert("write");
-            else if (cap == "/read" || cap == "/list")
+            else if (cap == "/read" || cap == "/list" || cap == "/map")
                 allowed_bundles.insert("read");
             else if (cap.rfind("/mem", 0) == 0)
                 allowed_bundles.insert("mem");
@@ -1781,7 +1813,7 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         if (name == "fetch" || name == "search" || name == "browse") return "web";
         if (name == "exec")                                          return "exec";
         if (name == "write")                                         return "write";
-        if (name == "read"  || name == "list")                       return "read";
+        if (name == "read"  || name == "list" || name == "map")      return "read";
         if (name == "mem")                                           return "mem";
         if (name == "agent" || name == "parallel" || name == "pane") return "delegation";
         if (name == "mcp")                                           return "mcp";
@@ -3061,6 +3093,33 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 if (body.back() != '\n') block << "\n";
             }
             block << "[END LIST]\n\n";
+
+        } else if (cmd.name == "map") {
+            // Host workspace tree under the conversation-bound root (TUI) or
+            // process cwd (CLI / --send).  Same provider as /write.
+            block << "[/map" << (cmd.args.empty() ? "" : " " + cmd.args) << "]\n";
+            std::string map_root;
+            if (workspace_root_provider) {
+                map_root = workspace_root_provider();
+                if (map_root.empty()) {
+                    block << "ERR: conversation workspace unavailable — "
+                             "this conversation's directory is missing or "
+                             "unset; refuse to map process cwd\n";
+                    cache_result = false;
+                    block << "[END MAP]\n\n";
+                    out << block.str();
+                    emit_tool(ToolActivityEvent::Phase::Finished, cmd, tool_id,
+                              false, tool_result_preview(block.str()));
+                    continue;
+                }
+            }
+            // Empty map_root (no provider) → cmd_map uses process cwd.
+            std::string body = cmd_map(map_root, cmd.args);
+            block << body;
+            if (body.empty() || body.back() != '\n') block << "\n";
+            if (body.size() >= 4 && body.compare(0, 4, "ERR:") == 0)
+                cache_result = false;
+            block << "[END MAP]\n\n";
         }
 
         // Flush per-command block into the aggregate and record it in the

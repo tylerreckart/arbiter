@@ -38,7 +38,7 @@ calendar commitments.
 - [x] `--api` is honest for unattended use: reconnect, retry, sandbox, and metrics behave as docs claim.
 
 ### Phase 3 — Project-aware agents
-- [ ] **Workspace / repo map writ-** Cheap structural index (tree + symbols/outline) injected or fetchable; not a full LSP server in-process if avoidable
+- [x] **Workspace / repo map writ-** Cheap structural index (`/map` tree; outline/inject follow-up); not a full LSP server in-process if avoidable
 - [x] **`/diff` + apply workflow-** First-class apply/reject for ` ```diff ` proposals; keep rendering; staged apply **with** undo; interactive `/diff` review (`[a]`/`[r]`); create missing files on apply without a separate write confirm
 - [ ] **Git status surface-** Git branch, dirty files, last agent touches surfaced in session sidebar
 - [ ] **PR helper agent pattern-** Agent constitution + MCP Github

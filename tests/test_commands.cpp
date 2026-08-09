@@ -675,6 +675,12 @@ TEST_CASE("tool_status_label emits accurate sidebar labels") {
     cmd.name = "write";
     cmd.args = "--persist src/main.cpp";
     CHECK(tool_status_label(cmd) == "write:src/main.cpp");
+
+    cmd.name = "map";
+    cmd.args = "";
+    CHECK(tool_status_label(cmd) == "map");
+    cmd.args = "src";
+    CHECK(tool_status_label(cmd) == "map:src");
 }
 
 TEST_CASE("tool_activity_detail truncates args for event rows") {
@@ -1140,4 +1146,102 @@ TEST_CASE("dedup hit still emits Started/Finished with cached ok flag") {
     CHECK(events[0].phase == ToolActivityEvent::Phase::Started);
     CHECK(events[1].phase == ToolActivityEvent::Phase::Finished);
     CHECK(events[1].ok);
+}
+
+// ---------------------------------------------------------------------------
+// /map dispatch (walker unit tests live in test_workspace_map.cpp)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("parse_agent_commands extracts /map") {
+    auto cmds = parse_agent_commands("looking around\n/map\n/map src\n");
+    REQUIRE(cmds.size() == 2);
+    CHECK(cmds[0].name == "map");
+    CHECK(cmds[0].args.empty());
+    CHECK(cmds[1].name == "map");
+    CHECK(cmds[1].args == "src");
+}
+
+TEST_CASE("execute_agent_commands /map uses workspace_root_provider") {
+    const auto pid = static_cast<long long>(::getpid());
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path root = fs::temp_directory_path() /
+        ("arbiter_map_dispatch_" + std::to_string(pid) + "_" +
+         std::to_string(stamp));
+    const fs::path decoy = fs::temp_directory_path() /
+        ("arbiter_map_decoy_" + std::to_string(pid) + "_" +
+         std::to_string(stamp));
+    fs::create_directories(root);
+    fs::create_directories(decoy);
+    {
+        std::ofstream out(root / "hello.txt");
+        out << "x\n";
+    }
+
+    const fs::path prev = fs::current_path();
+    fs::current_path(decoy);
+
+    auto cmds = parse_agent_commands("/map\n");
+    auto provider = [&]() { return root.string(); };
+    auto out = execute_agent_commands(
+        cmds, "test", /*memory_dir=*/"",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        false, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, {}, nullptr, provider);
+
+    CHECK(out.find("[/map]") != std::string::npos);
+    CHECK(out.find("hello.txt") != std::string::npos);
+    CHECK(out.find("[END MAP]") != std::string::npos);
+    CHECK_FALSE(fs::exists(decoy / "hello.txt"));
+
+    // Empty provider return → hard ERR (no process-cwd fallback).
+    auto empty_provider = []() { return std::string{}; };
+    auto err_out = execute_agent_commands(
+        cmds, "test", "",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        false, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, {}, nullptr, empty_provider);
+    CHECK(err_out.find("ERR: conversation workspace unavailable") !=
+          std::string::npos);
+
+    fs::current_path(prev);
+    fs::remove_all(root);
+    fs::remove_all(decoy);
+}
+
+TEST_CASE("execute_agent_commands gates /map on capabilities") {
+    const auto pid = static_cast<long long>(::getpid());
+    const fs::path root = fs::temp_directory_path() /
+        ("arbiter_map_caps_" + std::to_string(pid));
+    fs::create_directories(root);
+    {
+        std::ofstream out(root / "x.txt");
+        out << "x\n";
+    }
+
+    auto cmds = parse_agent_commands("/map\n");
+    auto provider = [&]() { return root.string(); };
+    std::vector<std::string> caps{"/exec"};  // no /map / read bundle
+    auto out = execute_agent_commands(
+        cmds, "test", "",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        false, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, caps, nullptr, provider);
+    CHECK(out.find("ERR:") != std::string::npos);
+    CHECK(out.find("x.txt") == std::string::npos);
+
+    // read bundle (via /read) allows /map
+    caps = {"/read"};
+    auto allowed = execute_agent_commands(
+        cmds, "test", "",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        false, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, caps, nullptr, provider);
+    CHECK(allowed.find("[/map]") != std::string::npos);
+    CHECK(allowed.find("x.txt") != std::string::npos);
+
+    fs::remove_all(root);
 }

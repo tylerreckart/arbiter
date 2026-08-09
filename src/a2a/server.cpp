@@ -36,6 +36,7 @@ const std::map<std::string, SkillSpec>& skill_catalog() {
         {"/write",    {"write-file",    "create or replace a file in the conversation's artifact store"}},
         {"/read",     {"read-file",     "read a file from the conversation's artifact store"}},
         {"/list",     {"list-files",    "list files in the conversation's artifact store"}},
+        {"/map",      {"workspace-map", "cheap structural index of the conversation workspace"}},
         {"/mem",      {"memory",        "read, write, and search the agent's persistent memory"}},
         {"/mcp",      {"mcp-tools",     "invoke tools exposed by configured MCP servers"}},
         {"/agent",    {"delegate",      "delegate a sub-task to another arbiter agent"}},

@@ -83,6 +83,7 @@ These commands use the same dispatch path as agent tool calls during `/v1/orches
 | `/diff list` \| `apply` \| `reject` \| `undo` `[N]` | List proposals, or non-interactively apply/reject/undo. Patches register as `Patch #N` when the agent emits a fence (also on transcript replay). Apply uses exact hunk-header matching and preserves the file’s final-newline convention; omit `N` to target the latest pending (apply/reject) or applied (undo) proposal. Undo refuses if the file changed after apply. |
 | `/write <path>`                | Write via the shared tool path (`/write --persist` stores in the conversation artifact store). |
 | `/read <path>` \| `/list`      | Read or list conversation artifacts.                                |
+| `/map` `[path]`                | Cheap workspace tree under this conversation's bound directory (skips `node_modules`/`.git`/…; capped). Prefer before `/exec ls`. |
 | `/mcp tools\|call`             | MCP servers from `~/.arbiter/mcp_servers.json`.                     |
 | `/a2a list\|call`              | Remote A2A agents from `~/.arbiter/a2a_agents.json`.               |
 | `/lesson list\|add`            | Agent-scoped lessons persisted in `tenants.db`.                     |
