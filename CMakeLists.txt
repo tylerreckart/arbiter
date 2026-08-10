@@ -1380,6 +1380,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_sandbox_ssrf
         tests/test_sandbox_ssrf.cpp
         src/sandbox.cpp
+        src/workspace_root.cpp
         src/ssrf_guard.cpp
         src/metrics.cpp
         src/logger.cpp
@@ -1397,6 +1398,7 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_sandbox_quota
         tests/test_sandbox_quota.cpp
         src/sandbox.cpp
+        src/workspace_root.cpp
         src/ssrf_guard.cpp
         src/metrics.cpp
         src/logger.cpp

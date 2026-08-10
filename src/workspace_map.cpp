@@ -114,12 +114,7 @@ bool under_workspace_root(const std::string& root_str, const fs::path& path,
     if (ec) return false;
     canon = canon.lexically_normal();
     const auto cand = canon.string();
-    if (cand.size() < root_str.size() ||
-        cand.compare(0, root_str.size(), root_str) != 0 ||
-        (cand.size() > root_str.size() && cand[root_str.size()] != '/' &&
-         cand[root_str.size()] != '\\')) {
-        return false;
-    }
+    if (!path_within_canonical_root(root_str, cand)) return false;
     if (canon_out) *canon_out = std::move(canon);
     return true;
 }
@@ -201,9 +196,7 @@ std::string cmd_map(std::string_view workspace_root,
         }
         candidate = candidate.lexically_normal();
         const auto cand = candidate.string();
-        if (cand.size() < root_str.size() ||
-            cand.compare(0, root_str.size(), root_str) != 0 ||
-            (cand.size() > root_str.size() && cand[root_str.size()] != '/')) {
+        if (!path_within_canonical_root(root_str, cand)) {
             return "ERR: path escapes project directory";
         }
         if (!fs::exists(candidate, ec) || ec) {
