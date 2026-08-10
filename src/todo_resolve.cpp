@@ -42,7 +42,11 @@ int64_t resolve_impl(const std::string& args,
                      std::string& err_out) {
     err_out.clear();
     int64_t numeric = 0;
-    if (parse_numeric_id(args, numeric)) return numeric;
+    if (parse_numeric_id(args, numeric)) {
+        for (size_t i = 0; i < n; ++i) {
+            if (get_id(i) == numeric) return numeric;
+        }
+    }
 
     const std::string needle = trim_ws(args);
     if (needle.empty()) {
