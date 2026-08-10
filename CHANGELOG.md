@@ -11,7 +11,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 Minor release: multi-tenant bearer auth and `TenantGate` kill-switch restored,
 Phase 2 production `--api` hardening (circuit breaker, CORS, sandbox),
-conversation-scoped workspace roots with `/map`, and shared model catalog UX.
+conversation-scoped workspace roots with `/map`, shared model catalog UX, and
+TUI overlay menus / history-sidebar polish.
 
 ### Added
 - **`/map` workspace tree writ.** Cheap structural index of the conversation
@@ -24,11 +25,15 @@ conversation-scoped workspace roots with `/map`, and shared model catalog UX.
   switches the project directory with them; missing/unknown roots refuse the
   write (no process-cwd fallback). Sidebar subtitles show the bound project
   dirname. CLI `--send` still uses process cwd.
+- **Shared TUI overlay menu.** `/theme`, `/model`, and `/help` share one
+  scrim + caret menu (↑↓ browse; Enter selects / opens detail; Esc cancels).
+  `/theme` still live-previews; `/model` applies the focused agent; `/help`
+  opens an interactive command browser.
 - **Model catalog UX.** Shared `model_catalog` (id, provider, `context_window`)
   powers `GET /v1/models`, the interactive `/model` catalogue, the first-run
   wizard picks, and `context_window_for_model` used by auto-compaction and the
-  TUI sidebar. `/model` with no args lists the catalogue; `/model <agent>`
-  shows the current model + window; setting a model reports the window.
+  TUI sidebar. `/model` with no args opens the menu; `/model <agent>` shows
+  the current model + window; setting a model reports the window.
 - **Tunable provider circuit breaker.** `ARBITER_CIRCUIT_FAILURE_THRESHOLD`
   (default 5) and `ARBITER_CIRCUIT_COOLDOWN_SECONDS` (default 30) configure the
   process-wide breaker used by `--api`.
@@ -67,6 +72,16 @@ conversation-scoped workspace roots with `/map`, and shared model catalog UX.
   immediate `cancel()`. Sticky `hard_cancelled_` survives ephemeral cancel
   clears. Admin PATCH requires boolean `disabled`. A2A kill-switch stays
   JSON-RPC-shaped.
+- **History sidebar UX.** Docked chat menus, `›` selection caret, modal new-
+  folder prompt, active-title marquee, and first-prompt titling that sets an
+  instant deterministic title then refines it with a parallel model call
+  (without waiting for the turn to finish).
+- **Session todos in the sidebar.** `/todo start|done` accept a unique open
+  subject (or prefix) in addition to numeric ids; completed rows stay visible
+  with `✓` and subject-only labels; conversation switch clears and replays
+  todos from `tool_trace`.
+- **Themed native diffs.** Add/remove backgrounds derive from the active
+  theme accent instead of fixed stock green/red.
 - **Sandbox idle reaper logging.** Reaps emit structured
   `sandbox_container_reaped` via `Logger` instead of raw `fprintf`.
 - **`POST /v1/events` status.** Documented as stable now that tenant-agent
@@ -88,6 +103,10 @@ conversation-scoped workspace roots with `/map`, and shared model catalog UX.
 - **Sandbox timeout survivor kill vs concurrent exec.** Same-tenant `/exec`
   is always serialized on the per-tenant mutex so timeout cleanup cannot
   SIGKILL a sibling exec when workspace quota is disabled.
+- **Todo resolve / sidebar replay.** Numeric id targets must appear in the
+  candidate list; subject/describe `tool_trace` labels keep the pre-update
+  subject so multi-todo replay hits the right row; unfocused pane rebinds no
+  longer clobber the visible todo list.
 
 ## [0.11.0] — 2026-08-06
 
