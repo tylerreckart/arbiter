@@ -109,7 +109,8 @@ bool ReplSession::conversation_turn_in_flight(const std::string& id) {
 void ReplSession::apply_conversation_to_pane(Pane& pane, const std::string& id, bool replay) {
 
         clear_mouse_drag();
-        sidebar.clear_todos();
+        const bool updates_sidebar = (&pane == &layout_ptr->focused());
+        if (updates_sidebar) sidebar.clear_todos();
         pane.conversation_id = id;
         pane.current_agent = "index";
         pane.current_model = is_remote() ? std::string("remote")
@@ -157,7 +158,7 @@ void ReplSession::apply_conversation_to_pane(Pane& pane, const std::string& id, 
             const auto history = orch.get_agent_history("index");
             const size_t total = history.size();
             arbiter::replay_transcript(pane, history, arbiter::replay_tail_begin(total), total);
-            replay_sidebar_todos(sidebar, history);
+            if (updates_sidebar) replay_sidebar_todos(sidebar, history);
         }
 
         conversation_store.set_active(id);

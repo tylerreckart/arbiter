@@ -213,7 +213,34 @@ void SidebarState::apply_todo_activity(const std::string& label, bool ok,
                      todos_.end());
     } else if (verb == "subject" || verb == "describe") {
         const auto colon = args.find(':');
-        if (colon == std::string::npos) return;
+        if (colon == std::string::npos) {
+            // Persisted tool_trace stores friendly labels (`todo:subject <title>`).
+            if (args.empty()) return;
+            int id = 0;
+            auto pick = [&](auto pred) {
+                for (const auto& t : todos_) {
+                    if (!pred(t)) continue;
+                    if (id != 0) {
+                        id = -1;
+                        return;
+                    }
+                    id = t.id;
+                }
+            };
+            pick([](const SidebarTodoEntry& t) {
+                return t.status == "in_progress";
+            });
+            if (id <= 0) {
+                id = 0;
+                pick([](const SidebarTodoEntry& t) {
+                    return t.status != "completed";
+                });
+            }
+            if (id <= 0) return;
+            for (auto& t : todos_)
+                if (t.id == id) t.subject = args;
+            return;
+        }
         const int id = resolve_local(args.substr(0, colon));
         if (id <= 0) return;
         const std::string text = trim_ws(args.substr(colon + 1));
