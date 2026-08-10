@@ -7,22 +7,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-### Fixed
-- **SSE live-tail mailbox growth (#189).** Request-event, notification, and A2A
-  resubscribe streams cap per-connection mailboxes at 2048 events; slow clients
-  get a `slow_consumer` terminal instead of unbounded memory growth. A2A
-  `tasks/resubscribe` overflow closes the stream with `state: working`,
-  `final: true`, and `x-arbiter.error_code: slow_consumer` — not
-  `TaskState::failed` — so a still-running task is not misreported.
-- **TUI broken-sandbox host fallback.** When `ARBITER_SANDBOX_IMAGE` is set but
-  the sandbox fails usability, the TUI now disables `/exec` (returns `ERR`)
-  instead of falling through to confirm-gated host `popen`.
-- **Event routing past the newest-200 agent page.** `POST /v1/events` scans
-  tenant agents via `list_agent_records_for_routing` (ascending `agent_id`,
-  soft-capped at 10000) rather than the REST list page.
-- **Sandbox timeout survivor kill vs concurrent exec.** Same-tenant `/exec`
-  is always serialized on the per-tenant mutex so timeout cleanup cannot
-  SIGKILL a sibling exec when workspace quota is disabled.
+## [0.12.0] — 2026-08-10
+
+Minor release: multi-tenant bearer auth and `TenantGate` kill-switch restored,
+Phase 2 production `--api` hardening (circuit breaker, CORS, sandbox),
+conversation-scoped workspace roots with `/map`, and shared model catalog UX.
 
 ### Added
 - **`/map` workspace tree writ.** Cheap structural index of the conversation
@@ -82,6 +71,23 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `sandbox_container_reaped` via `Logger` instead of raw `fprintf`.
 - **`POST /v1/events` status.** Documented as stable now that tenant-agent
   routing is included.
+
+### Fixed
+- **SSE live-tail mailbox growth (#189).** Request-event, notification, and A2A
+  resubscribe streams cap per-connection mailboxes at 2048 events; slow clients
+  get a `slow_consumer` terminal instead of unbounded memory growth. A2A
+  `tasks/resubscribe` overflow closes the stream with `state: working`,
+  `final: true`, and `x-arbiter.error_code: slow_consumer` — not
+  `TaskState::failed` — so a still-running task is not misreported.
+- **TUI broken-sandbox host fallback.** When `ARBITER_SANDBOX_IMAGE` is set but
+  the sandbox fails usability, the TUI now disables `/exec` (returns `ERR`)
+  instead of falling through to confirm-gated host `popen`.
+- **Event routing past the newest-200 agent page.** `POST /v1/events` scans
+  tenant agents via `list_agent_records_for_routing` (ascending `agent_id`,
+  soft-capped at 10000) rather than the REST list page.
+- **Sandbox timeout survivor kill vs concurrent exec.** Same-tenant `/exec`
+  is always serialized on the per-tenant mutex so timeout cleanup cannot
+  SIGKILL a sibling exec when workspace quota is disabled.
 
 ## [0.11.0] — 2026-08-06
 
