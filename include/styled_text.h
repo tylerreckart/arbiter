@@ -62,6 +62,12 @@ struct StyledLine {
 // and never leaves a trailing continuation byte.
 [[nodiscard]] std::string trim_to_display_cols(std::string s, int max_cols);
 
+// Skip `start_col` display columns, then take up to `max_cols`.  Never splits
+// a grapheme cluster / UTF-8 sequence.  Empty when start is past the end.
+[[nodiscard]] std::string slice_display_cols(std::string_view text,
+                                             int start_col,
+                                             int max_cols);
+
 void styled_append(StyledLine& line, StyleId id, std::string_view text);
 void styled_append_char(StyledLine& line, StyleId id, char c);
 

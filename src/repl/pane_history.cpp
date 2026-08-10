@@ -283,6 +283,16 @@ void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks) {
     if (!ctx.session || !ctx.session->active()) return;
     ctx.session->with_frame([&](OpenTuiHandle frame) {
         if (frame == 0) return;
+
+        // Dim the published design before painting so panes + sidebars share
+        // one recessed look; floating menus read tui_menu_design() instead.
+        if (hooks.sync_modal_dim && hooks.sync_modal_dim()) {
+            if (hooks.for_each_pane) {
+                hooks.for_each_pane([](Pane& p) { pane_history_retheme(p); });
+            }
+            ctx.session->apply_design();
+        }
+
         bufferClear(frame, tui_design().bg.base.data());
 
         if (hooks.for_each_pane) {

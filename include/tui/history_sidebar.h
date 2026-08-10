@@ -17,12 +17,12 @@ enum class HistorySidebarKey {
     Enter,
     Escape,
     New,
-    // Enter rename mode for the selected entry (not "+ New"), or name-entry
-    // for a new folder (`f` / New-row menu). Character input, backspace,
-    // commit (Enter), and cancel (Esc) while renaming are handled
-    // internally — callers only see RenameCommit, at which point
-    // take_rename_buffer() returns the text and is_creating_folder()
-    // distinguishes create vs rename.
+    // Enter rename mode for the selected entry (not "+ New"), or open
+    // new-folder name entry (`f` / New-row menu; drawn as a modal).
+    // Character input, backspace, commit (Enter), and cancel (Esc) while
+    // renaming are handled internally — callers only see RenameCommit, at
+    // which point take_rename_buffer() returns the text and
+    // is_creating_folder() distinguishes create vs rename.
     RenameStart,
     RenameCommit,
     // Enter soft-delete confirm mode for the selected entry. 'y'/'Y' while

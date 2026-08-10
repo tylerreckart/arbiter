@@ -329,6 +329,28 @@ TEST_CASE("trim_to_display_cols does not split UTF-8 clusters") {
     CHECK(trimmed == "x");
 }
 
+TEST_CASE("trim_to_display_cols does not leave orphan UTF-8 lead as Â") {
+    // Middle dot `·` is C2 B7 — the sidebar subtitle separator. Truncating
+    // away its continuation must not leave a lone C2 (Latin-1 "Â").
+    const std::string mid = "ago \xC2\xB7 12k";
+    const int full = static_cast<int>(display_width(mid));
+    REQUIRE(full >= 5);
+    const std::string cut = trim_to_display_cols(mid, 4);  // "ago "
+    CHECK(cut == "ago ");
+    CHECK(cut.find('\xC2') == std::string::npos);
+    // Exact fit through the dot keeps the full two-byte sequence.
+    const std::string onto_dot = trim_to_display_cols(mid, 5);  // "ago ·"
+    CHECK(onto_dot == "ago \xC2\xB7");
+}
+
+TEST_CASE("slice_display_cols skips and takes by display columns") {
+    CHECK(slice_display_cols("abcdef", 2, 3) == "cde");
+    CHECK(slice_display_cols("abcdef", 0, 2) == "ab");
+    CHECK(slice_display_cols("abcdef", 5, 10) == "f");
+    CHECK(slice_display_cols("abcdef", 6, 3).empty());
+    CHECK(slice_display_cols("hello world", 6, 5) == "world");
+}
+
 TEST_CASE("tool_call_summary_lines uses System for the count text") {
     const auto lines = tool_call_summary_lines(3, 0);
     REQUIRE(lines.size() == 1);

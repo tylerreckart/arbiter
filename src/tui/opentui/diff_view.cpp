@@ -16,10 +16,10 @@ OpenTuiDiffOptions make_default_options(const DiffView::Options& opts) {
     out.view_mode = opts.view_mode;
     out.wrap_mode = opts.wrap_mode;
     out.show_line_numbers = opts.show_line_numbers;
-    copy_rgba(tui_rgba(0x1a, 0x4d, 0x1a), out.added_bg);
-    copy_rgba(tui_rgba(0x4d, 0x1a, 0x1a), out.removed_bg);
-    copy_rgba(d.bg.scroll, out.context_bg);
-    copy_rgba(tui_rgba(0x88, 0x88, 0x88), out.line_number_fg);
+    copy_rgba(d.content.diff_bg_add, out.added_bg);
+    copy_rgba(d.content.diff_bg_remove, out.removed_bg);
+    copy_rgba(d.content.diff_bg_context, out.context_bg);
+    copy_rgba(d.content.code_gutter, out.line_number_fg);
     copy_rgba(d.accent.success, out.added_sign_color);
     copy_rgba(d.accent.error, out.removed_sign_color);
     return out;

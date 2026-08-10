@@ -1,6 +1,6 @@
 # Todos
 
-A persistent work tracker. Agents emit `/todo add …`, `/todo start <id>`, `/todo done <id>` to capture and mark progress on the steps they're working through; the tenant's todo store outlives any single conversation, so a `/schedule`-fired run can pick up the same todos a human-driven turn left behind.
+A persistent work tracker. Agents emit `/todo add …`, `/todo start <id|subject>`, `/todo done <id|subject>` to capture and mark progress on the steps they're working through; the tenant's todo store outlives any single conversation, so a `/schedule`-fired run can pick up the same todos a human-driven turn left behind. Numeric ids from `OK: added #N` are preferred; a unique open-todo subject (or unique prefix) is also accepted.
 
 The two natural homes for a todo:
 
@@ -34,6 +34,8 @@ Agents emit slash commands; the dispatcher wraps results in `[/todo …]` / `[EN
 /todo start 14
 /todo done 14
 /todo cancel 15
+/todo start review the deploy status
+/todo done write the post-mortem
 /todo describe 14: bumped to follow up next sprint
 /todo subject 14: review the canary deploy status
 ```
@@ -76,7 +78,7 @@ Delegated by: index
 Pipeline depth: 1/2
 Pipeline memory (entries written by prior agents this conversation — …):
   - #281  [project]  Q3 observability rollout — initial brief
-Open todos (mark progress as you go — /todo start <id>, /todo done <id>):
+Open todos (mark progress as you go — /todo start <id|subject>, /todo done <id|subject>):
 3 open (1 in progress, 2 pending):
 ▶ #14  [in_progress]  review the canary deploy status
   #15  [pending]      write the post-mortem

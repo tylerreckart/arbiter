@@ -171,11 +171,26 @@ TuiRgba tui_rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b,
 // sidebars read as recessed relative to the main pane, regardless of theme.
 [[nodiscard]] TuiRgba tui_sidebar_bg(const TuiDesign& d);
 
+// Darken an RGBA color (`factor` in (0,1]; channels scale toward black).
+[[nodiscard]] TuiRgba tui_darken(const TuiRgba& c, double factor = 0.55);
+
 // Stable per-agent accent from the active theme (`agent_master` for "index"
 // / empty; otherwise hash into `content.agent_palette`).
 [[nodiscard]] TuiRgba tui_agent_accent(const std::string& agent_id);
 
 const TuiDesign& tui_design();
+
+// Bright (undimmed) design for floating menus while the rest of the TUI
+// is under modal dim.  Equals tui_design() when dim is inactive.
+[[nodiscard]] const TuiDesign& tui_menu_design();
+
+// Dim / restore the published design so chrome + rethemed scrollback read
+// as recessed behind a modal.  No-op when already in the requested state.
+// Returns true if the published design changed (bumping generation).
+bool tui_begin_modal_dim();
+bool tui_end_modal_dim();
+[[nodiscard]] bool tui_modal_dim_active();
+
 // `cli_preset` overrides `"preset"` in tui.json for this session; other
 // tui.json tokens still apply on top.
 void load_tui_design(const std::string& config_dir,

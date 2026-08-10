@@ -74,6 +74,10 @@ public:
 
     void draw(OpenTuiHandle frame, const TUI& tui, bool focused) const;
 
+    // Ctrl-P palette — painted from draw_overlays after the modal scrim.
+    [[nodiscard]] bool palette_active() const;
+    void draw_palette(OpenTuiHandle frame, const TUI& tui) const;
+
 private:
     int  read_byte();
     bool read_byte_timed(int& out, int ms);
@@ -117,7 +121,6 @@ private:
     void palette_open();
     void palette_close(bool accept);
     void palette_refresh();   // re-filter matches, clamp selection
-    void draw_palette(OpenTuiHandle frame, const TUI& tui) const;
 
     int  read_key_event();
     bool read_bracketed_paste(std::string& out);

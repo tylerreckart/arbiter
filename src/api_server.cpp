@@ -35,6 +35,7 @@
 #include "tenant_limiter.h"
 #include "tenant_store.h"
 #include "tenant_gate.h"
+#include "todo_resolve.h"
 #include "tui/stream_filter.h"
 #include "api_client.h"
 
@@ -6355,8 +6356,24 @@ TodoInvoker make_todo_invoker_callback(
         }
 
         if (kind == "start" || kind == "done" || kind == "cancel") {
-            int64_t id = 0;
-            if (!parse_id(args, id)) return "ERR: usage: /todo " + kind + " <id>";
+            // Prefer numeric id; also accept a unique open-todo subject so
+            // agents that echo the subject (instead of #id) still succeed.
+            TenantStore::TodoFilter f;
+            f.conversation_id = conversation_id;
+            f.limit = 200;
+            auto rows = tenants.list_todos(tenant_id, f);
+            std::vector<TenantStore::Todo> open;
+            open.reserve(rows.size());
+            for (auto& r : rows) {
+                if (r.status == "completed" || r.status == "canceled") continue;
+                open.push_back(std::move(r));
+            }
+            std::string resolve_err;
+            const int64_t id = resolve_todo_target(args, open, resolve_err);
+            if (id <= 0) {
+                return "ERR: usage: /todo " + kind + " <id|subject>"
+                       + (resolve_err.empty() ? "" : (" — " + resolve_err));
+            }
             std::string new_status =
                 kind == "start"  ? "in_progress" :
                 kind == "done"   ? "completed"   :
@@ -6365,16 +6382,46 @@ TodoInvoker make_todo_invoker_callback(
                 std::nullopt, std::nullopt,
                 std::optional<std::string>(new_status),
                 std::nullopt, std::nullopt);
-            if (!ok) return "ERR: todo #" + std::to_string(id) + " not found";
-            return "OK: " + new_status + " #" + std::to_string(id);
+            if (!ok) return "ERR: todo not found";
+            // Title-only for user-visible tool chrome; agents still see #id
+            // on /todo add and in [OPEN TODOS] / /todo list.
+            std::string subject;
+            for (const auto& r : open) {
+                if (r.id == id) { subject = r.subject; break; }
+            }
+            if (subject.empty()) {
+                if (auto row = tenants.get_todo(tenant_id, id))
+                    subject = row->subject;
+            }
+            if (subject.empty()) subject = "todo";
+            return "OK: " + new_status + " — " + subject;
         }
 
         if (kind == "delete") {
             int64_t id = 0;
-            if (!parse_id(args, id)) return "ERR: usage: /todo delete <id>";
+            std::string subject;
+            if (!parse_id(args, id)) {
+                // Subject resolve against all non-deleted rows in scope.
+                TenantStore::TodoFilter f;
+                f.conversation_id = conversation_id;
+                f.limit = 200;
+                auto rows = tenants.list_todos(tenant_id, f);
+                std::string resolve_err;
+                id = resolve_todo_target(args, rows, resolve_err);
+                if (id <= 0) {
+                    return "ERR: usage: /todo delete <id|subject>"
+                           + (resolve_err.empty() ? "" : (" — " + resolve_err));
+                }
+                for (const auto& r : rows) {
+                    if (r.id == id) { subject = r.subject; break; }
+                }
+            } else if (auto row = tenants.get_todo(tenant_id, id)) {
+                subject = row->subject;
+            }
             if (!tenants.delete_todo(tenant_id, id))
-                return "ERR: todo #" + std::to_string(id) + " not found";
-            return "OK: deleted #" + std::to_string(id);
+                return "ERR: todo not found";
+            if (subject.empty()) subject = "todo";
+            return "OK: deleted — " + subject;
         }
 
         if (kind == "describe" || kind == "subject") {
@@ -6393,8 +6440,8 @@ TodoInvoker make_todo_invoker_callback(
             if (kind == "describe") desc_opt = text;
             bool ok = tenants.update_todo(tenant_id, id,
                 subj_opt, desc_opt, std::nullopt, std::nullopt, std::nullopt);
-            if (!ok) return "ERR: todo #" + std::to_string(id) + " not found";
-            return "OK: updated #" + std::to_string(id);
+            if (!ok) return "ERR: todo not found";
+            return "OK: updated — " + (text.empty() ? std::string("todo") : text);
         }
 
         return "ERR: unknown /todo subcommand '" + kind + "'";

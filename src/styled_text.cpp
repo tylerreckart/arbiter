@@ -110,13 +110,41 @@ std::size_t display_width(std::string_view text) {
 
 std::string trim_to_display_cols(std::string s, int max_cols) {
     if (max_cols <= 0) return {};
+    // Remove one whole UTF-8 codepoint per iteration.  Popping a single
+    // byte then stripping "trailing continuations" is wrong: after removing
+    // the ASCII space in "ago · 12k", the middle-dot's B7 looks like an
+    // orphan continuation and the lead C2 is left behind — terminals show
+    // that lone C2 as Latin-1 "Â".
     while (!s.empty() && static_cast<int>(display_width(s)) > max_cols) {
-        s.pop_back();
-        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
-            s.pop_back();
-        }
+        size_t i = s.size() - 1;
+        while (i > 0 && (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80)
+            --i;
+        s.resize(i);
     }
     return s;
+}
+
+std::string slice_display_cols(std::string_view text, int start_col, int max_cols) {
+    if (max_cols <= 0 || text.empty()) return {};
+    if (start_col < 0) start_col = 0;
+
+    size_t i = 0;
+    int cols = 0;
+    while (i < text.size() && cols < start_col) {
+        const size_t before = i;
+        const int cp = utf8_decode(text, i);
+        if (cp < 0) break;
+        wchar_t wc = static_cast<wchar_t>(cp);
+        int w = ::wcwidth(wc);
+        if (w < 0) w = 1;
+        if (cols + w > start_col) {
+            // Wide glyph straddles the start — begin at this glyph.
+            i = before;
+            break;
+        }
+        cols += w;
+    }
+    return trim_to_display_cols(std::string(text.substr(i)), max_cols);
 }
 
 void styled_append(StyledLine& line, StyleId id, std::string_view text) {

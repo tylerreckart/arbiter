@@ -1,6 +1,7 @@
 #include "repl/transcript_replay.h"
 
 #include "render_policy.h"
+#include "tui/sidebar.h"
 #include "repl/diff_proposals.h"
 #include "repl/pane.h"
 #include "repl/pane_history.h"
@@ -66,6 +67,9 @@ void render_messages(opentui::PaneScrollView& view,
                      std::size_t end,
                      const std::string& agent_id,
                      DiffProposalStore* proposals) {
+    // Hydrate todos across the replay window so id→subject mapping matches
+    // live chrome (same record_tool cadence as replay_sidebar_todos).
+    SidebarState sidebar_labels;
     for (std::size_t i = begin; i < end; ++i) {
         const Message& m = history[i];
         if (is_replay_noise(m)) continue;
@@ -89,6 +93,10 @@ void render_messages(opentui::PaneScrollView& view,
             ev.phase = ToolActivityEvent::Phase::Finished;
             ev.id = t.id;
             ev.label = t.label;
+            if (ev.label.rfind("todo:", 0) == 0) {
+                sidebar_labels.record_tool(t.label, t.ok, t.result_preview);
+                ev.label = sidebar_labels.friendly_todo_label(t.label);
+            }
             ev.kind = t.kind;
             ev.detail = t.detail;
             ev.ok = t.ok;

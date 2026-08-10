@@ -25,12 +25,12 @@
 #include "tui/prompt_bridge.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
-#include "tui/theme_picker.h"
+#include "tui/menu.h"
 #include "tui/clipboard.h"
 #include "tui/opentui/session.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
-#include "tui/opentui/theme_picker_frame.h"
+#include "tui/opentui/menu_frame.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
 #include "repl/pane.h"
@@ -76,6 +76,20 @@ namespace fs = std::filesystem;
 
 namespace arbiter {
 
+namespace {
+
+void replay_sidebar_todos(SidebarState& sidebar,
+                          const std::vector<Message>& history) {
+    for (const auto& m : history) {
+        for (const auto& t : m.tool_trace) {
+            if (t.label.rfind("todo:", 0) != 0) continue;
+            sidebar.record_tool(t.label, t.ok, t.result_preview);
+        }
+    }
+}
+
+} // namespace
+
 bool ReplSession::focused_turn_in_flight() {
 
         return layout_ptr->focused().cmd_queue.is_busy();
@@ -95,6 +109,8 @@ bool ReplSession::conversation_turn_in_flight(const std::string& id) {
 void ReplSession::apply_conversation_to_pane(Pane& pane, const std::string& id, bool replay) {
 
         clear_mouse_drag();
+        const bool updates_sidebar = (&pane == &layout_ptr->focused());
+        if (updates_sidebar) sidebar.clear_todos();
         pane.conversation_id = id;
         pane.current_agent = "index";
         pane.current_model = is_remote() ? std::string("remote")
@@ -142,6 +158,7 @@ void ReplSession::apply_conversation_to_pane(Pane& pane, const std::string& id, 
             const auto history = orch.get_agent_history("index");
             const size_t total = history.size();
             arbiter::replay_transcript(pane, history, arbiter::replay_tail_begin(total), total);
+            if (updates_sidebar) replay_sidebar_todos(sidebar, history);
         }
 
         conversation_store.set_active(id);

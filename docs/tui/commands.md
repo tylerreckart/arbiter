@@ -24,7 +24,7 @@ Plain text (no leading `/`) is treated as a message to the focused pane's curren
 | `/remove <id>`                 | Remove an agent (deletes the JSON; history in memory is dropped).   |
 | `/reset [id]`                  | Clear an agent's conversation history and compaction state. Default target is the focused pane's agent. |
 | `/compact [id]`                | Force context compaction: summarize older turns, keep a recent window for the next model request. Full history stays on disk. |
-| `/model`                           | List the model catalogue (id, provider, context window). |
+| `/model`                           | Open an interactive model menu; Enter applies to the focused agent. |
 | `/model <agent>`                   | Show an agent's current model and context window. |
 | `/model <agent> <model-id>`        | Change an agent's model at runtime without editing the JSON. Unlisted ids are allowed; compaction uses a heuristic window when the id is not in the catalogue. |
 
@@ -99,11 +99,11 @@ These commands use the same dispatch path as agent tool calls during `/v1/orches
 
 | Command                        | Effect                                                              |
 |--------------------------------|---------------------------------------------------------------------|
-| `/theme` | Browse themes with ↑↓ live preview; Enter selects, Esc cancels. `/theme list`, `/theme <name>`, `/theme save <name>`, `/theme file <path>` also supported. See [themes.md](themes.md). |
+| `/theme` | Browse themes (↑↓ live preview; Enter selects, Esc cancels). `/theme list`, `/theme <name>`, `/theme save <name>`, `/theme file <path>` also supported. See [themes.md](themes.md). |
 | `/verbose [on\|off]`           | Toggle raw `/cmd` line streaming. Off (default): tool-call lines are swallowed and replaced by the spinner on the mid-separator. On: every `/fetch`, `/exec`, `/agent`, `/mem` line lands in the scroll region as the agent emits it. |
 | `/chat list\|new\|switch\|title\|search\|delete\|purge\|folder …` | Manage global conversations from the REPL (sidebar is the visual twin). `/chat folder list\|new\|rename\|delete\|move` for folders on narrow terminals. |
 | `/find <text>` \| `next` \| `prev` | Search the focused pane's scrollback.                            |
-| `/help`                        | Print this command reference.                                       |
+| `/help`                        | Open an interactive command menu (↑↓ browse, Enter for detail).     |
 | `/help <topic>`                | Detailed reference for one slash command (same text agents see).    |
 | `/quit` / `/exit` / `/q`       | Drain autosave, save open conversations, and exit.                  |
 

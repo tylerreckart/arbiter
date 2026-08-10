@@ -22,7 +22,7 @@ Conversations can be filed into **folders** (`conversation_folders` in `tenants.
 
 Category headers are not selectable (↑/↓ skips them). Collapse state persists in `tui_prefs.folder_collapse_json` (JSON array of folder ids). Enter on a folder header toggles collapse; Enter on a conversation switches. `n` / `+ New` creates in the focused folder when the selection is a folder header or a child of a folder; otherwise unfiled.
 
-Per-row menu (`m`): conversations get Open / Rename / Move to… / Delete; folders get Rename / New chat here / Delete folder (children are unfiled); `+ New` gets New folder. Press `f` anywhere in the sidebar to name a new folder. On narrow terminals use `/chat folder list|new|rename|delete|move` instead of the sidebar.
+Per-row menu (`m`): conversations get Open / Rename / Move to… / Delete; folders get Rename / New chat here / Delete folder (children are unfiled); `+ New` gets New folder. Press `f` anywhere in the sidebar (or choose New folder from the `+ New` menu) to open a modal name prompt — the nav list stays put. On narrow terminals use `/chat folder list|new|rename|delete|move` instead of the sidebar.
 
 ```
 ~/.arbiter/tenants.db
@@ -61,7 +61,7 @@ Each TUI conversation's `session_json` is a snapshot of the orchestrator's agent
 
 Per-agent scratchpads (`/mem write`) and the structured memory graph (`/mem search|entries|entry|add …`) live in the same `tenants.db`, and are now scoped to the **active sidebar conversation** (same integer id as the TUI thread).
 
-Conversation **titles** are auto-generated from the first exchange (visible in the header and sidebar). Titles, token totals, and the titled-lock flag are columns on the conversation row.
+Conversation **titles** are set as soon as the first user prompt is sent: an instant deterministic title from that prompt, then a small model call in parallel that may refine it. Titles, token totals, and the titled-lock flag are columns on the conversation row.
 ## What's not persisted
 
 - **Scrollback pixels.** On relaunch the painted history is rebuilt from a transcript tail replay (same as conversation switch), not from a pixel buffer.

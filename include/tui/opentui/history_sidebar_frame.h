@@ -21,4 +21,18 @@ void draw_history_sidebar(OpenTuiHandle frame,
                           int pane_input_rows,
                           int pane_bottom_pad_rows = TUI::kBottomPadRows);
 
+// Floating action / move menu — paint after the modal scrim so the list
+// behind it is dimmed with the rest of the TUI.
+void draw_history_sidebar_menu(OpenTuiHandle frame,
+                               const HistorySidebarSnapshot& snap,
+                               const Rect& sidebar_rect,
+                               const Rect& pane_rect,
+                               int pane_input_rows,
+                               int pane_bottom_pad_rows = TUI::kBottomPadRows);
+
+// Name a new folder without replacing the "+ New" (or other) nav row.
+void draw_history_new_folder_modal(OpenTuiHandle frame,
+                                   const HistorySidebarSnapshot& snap,
+                                   const TUI& tui);
+
 } // namespace arbiter::opentui

@@ -95,7 +95,17 @@ public:
     void record_turn(const std::string& agent_id,
                      const std::string& model,
                      const ApiResponse& resp);
-    void record_tool(const std::string& label, bool ok);
+    // `result_preview` carries Finished tool body text (e.g. "OK: added #12")
+    // so todo rows can adopt the real DB id instead of a local counter.
+    void clear_todos();
+    void record_tool(const std::string& label, bool ok,
+                     const std::string& result_preview = {});
+    // Rewrite `todo:start 14` → `todo:start <title>` for user-visible chrome.
+    // Numeric ids stay available for command execution; they are not shown.
+    [[nodiscard]] std::string friendly_todo_label(const std::string& label) const;
+    // Tool-trace persistence for todo:* commands. Call before record_tool so
+    // subject/describe rows keep a replayable subject ref (no bare numeric ids).
+    [[nodiscard]] std::string persist_todo_label(const std::string& label) const;
     void set_active_tool_calls(int count);
     void set_focus_context(const std::string& agent,
                            const std::string& model);
@@ -108,7 +118,8 @@ public:
 private:
     static constexpr int kMaxRecent = 8;
 
-    void apply_todo_activity(const std::string& label, bool ok);
+    void apply_todo_activity(const std::string& label, bool ok,
+                             const std::string& result_preview);
     void apply_schedule_activity(const std::string& label, bool ok);
 
     mutable std::mutex mu_;

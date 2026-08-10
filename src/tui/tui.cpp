@@ -272,13 +272,24 @@ void ToolCallIndicator::begin() {
     active_ = false;
     total_.store(0);
     failed_.store(0);
+    inflight_.store(0);
     if (tui_) tui_->clear_pre_input_status();
+}
+
+void ToolCallIndicator::on_started() {
+    if (!armed_.load()) return;
+    inflight_.fetch_add(1);
+    active_ = true;
+    update_status();
 }
 
 void ToolCallIndicator::bump(const std::string& /*kind*/, bool ok) {
     if (!armed_.load()) return;
     total_.fetch_add(1);
     if (!ok) failed_.fetch_add(1);
+    // Clamp — Started/Finished can race or skip on some paths.
+    int cur = inflight_.load();
+    while (cur > 0 && !inflight_.compare_exchange_weak(cur, cur - 1)) {}
     active_ = true;
     update_status();
 }
@@ -310,6 +321,7 @@ std::string ToolCallIndicator::finalize() {
     if (!armed_.load()) return "";
     armed_  = false;
     active_ = false;
+    inflight_.store(0);
     if (tui_) tui_->clear_pre_input_status();
 
     const int n = total_.load();

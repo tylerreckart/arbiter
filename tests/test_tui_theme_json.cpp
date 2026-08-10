@@ -283,6 +283,19 @@ TEST_CASE("light preset gets light diff backgrounds") {
     CHECK(d.content.diff_bg_add[1] > 0x80);
 }
 
+TEST_CASE("diff backgrounds tint from theme accent and base") {
+    const TuiDesign d = tui_design_for_preset("shades-of-purple");
+    // Stock export green/red must not win over accent-blended surfaces.
+    CHECK(!(d.content.diff_bg_add[0] == 0x0d && d.content.diff_bg_add[1] == 0x33
+            && d.content.diff_bg_add[2] == 0x16));
+    CHECK(!(d.content.diff_bg_remove[0] == 0x4a && d.content.diff_bg_remove[1] == 0x12
+            && d.content.diff_bg_remove[2] == 0x12));
+    // Purple base keeps a blue channel in the add tint (not pure green).
+    CHECK(d.content.diff_bg_add[2] > 0x20);
+    // Context stays in the base family rather than neutral #181818.
+    CHECK(d.content.diff_bg_context[2] > 0x40);
+}
+
 TEST_CASE("chrome_compact_rows reclaims bottom pad when footer hidden") {
     TuiDesign d = tui_design_for_preset("onedark");
     d.layout.chrome_compact_rows = true;
