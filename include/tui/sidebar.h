@@ -97,6 +97,7 @@ public:
                      const ApiResponse& resp);
     // `result_preview` carries Finished tool body text (e.g. "OK: added #12")
     // so todo rows can adopt the real DB id instead of a local counter.
+    void clear_todos();
     void record_tool(const std::string& label, bool ok,
                      const std::string& result_preview = {});
     // Rewrite `todo:start 14` → `todo:start <title>` for user-visible chrome.

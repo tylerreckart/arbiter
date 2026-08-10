@@ -301,6 +301,12 @@ std::string SidebarState::friendly_todo_label(const std::string& label) const {
     return label;
 }
 
+void SidebarState::clear_todos() {
+    std::lock_guard<std::mutex> lk(mu_);
+    todos_.clear();
+    next_local_todo_id_ = 1;
+}
+
 void SidebarState::record_tool(const std::string& label, bool ok,
                                const std::string& result_preview) {
     if (label.empty()) return;
