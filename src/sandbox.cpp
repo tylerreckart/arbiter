@@ -3,6 +3,7 @@
 #include "sandbox.h"
 #include "logger.h"
 #include "metrics.h"
+#include "workspace_root.h"
 
 #include <algorithm>
 #include <array>
@@ -342,10 +343,7 @@ bool resolve_within_workspace(const fs::path& ws_root,
     resolved = fs::path(normalized);
 
     const std::string final_str = resolved.string();
-    if (final_str.size() < ws_str.size() ||
-        final_str.compare(0, ws_str.size(), ws_str) != 0 ||
-        (final_str.size() > ws_str.size() &&
-         final_str[ws_str.size()] != '/')) {
+    if (!path_within_canonical_root(ws_str, final_str)) {
         err_out = "path escapes workspace";
         return false;
     }

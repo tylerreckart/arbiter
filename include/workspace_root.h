@@ -13,4 +13,8 @@ namespace arbiter {
 std::string canonical_workspace_root(std::string_view root,
                                      std::string* err = nullptr);
 
+// True when `resolved` is exactly `root` or a strict child (accepts / and \).
+bool path_within_canonical_root(std::string_view root,
+                                std::string_view resolved);
+
 } // namespace arbiter

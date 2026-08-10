@@ -50,4 +50,15 @@ std::string canonical_workspace_root(std::string_view root, std::string* err) {
     return canon.string();
 }
 
+bool path_within_canonical_root(std::string_view root,
+                                std::string_view resolved) {
+    if (resolved.size() < root.size()) return false;
+    if (resolved.compare(0, root.size(), root) != 0) return false;
+    if (resolved.size() > root.size()) {
+        const char sep = resolved[root.size()];
+        if (sep != '/' && sep != '\\') return false;
+    }
+    return true;
+}
+
 } // namespace arbiter
