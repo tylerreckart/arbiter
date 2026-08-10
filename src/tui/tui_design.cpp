@@ -43,6 +43,9 @@ std::atomic<const TuiDesign*> g_design_current{nullptr};
 std::atomic<std::uint32_t> g_design_generation{0};
 std::string g_active_preset = kDefaultTuiPreset;   // under g_design_mu
 std::string g_active_theme_file;                   // under g_design_mu
+// When modal dim is active, g_design_current is a darkened copy and
+// g_design_undimmed points at the bright snapshot to restore / feed menus.
+const TuiDesign* g_design_undimmed = nullptr;      // under g_design_mu
 
 // Publish `d` as the new active design.  Caller must hold g_design_mu.
 void publish_design_locked(TuiDesign d) {
@@ -50,6 +53,9 @@ void publish_design_locked(TuiDesign d) {
     g_design_current.store(snap.get(), std::memory_order_release);
     g_design_history.push_back(std::move(snap));
 }
+
+TuiRgba darken(const TuiRgba& c, double factor);  // defined below
+TuiDesign dimmed_design_copy(const TuiDesign& src);
 
 int clamp_byte(int v) {
     return std::max(0, std::min(255, v));
@@ -82,6 +88,83 @@ TuiRgba darken(const TuiRgba& c, double factor) {
     }
     out[3] = 255;
     return out;
+}
+
+TuiDesign dimmed_design_copy(const TuiDesign& src) {
+    TuiDesign d = src;
+    // Aggressive enough to read clearly on already-dark presets.
+    constexpr double kBg = 0.32;
+    constexpr double kFg = 0.42;
+    auto dim_bg = [&](TuiRgba& c) { c = darken(c, kBg); };
+    auto dim_fg = [&](TuiRgba& c) { c = darken(c, kFg); };
+
+    dim_bg(d.bg.base);
+    dim_bg(d.bg.panel);
+    dim_bg(d.bg.header);
+    dim_bg(d.bg.scroll);
+    dim_bg(d.bg.status);
+    dim_bg(d.bg.input);
+    dim_bg(d.bg.footer);
+    dim_bg(d.bg.gutter);
+
+    dim_fg(d.text.primary);
+    dim_fg(d.text.muted);
+    dim_fg(d.text.subtle);
+    dim_fg(d.accent.primary);
+    dim_fg(d.accent.secondary);
+    dim_fg(d.accent.success);
+    dim_fg(d.accent.warning);
+    dim_fg(d.accent.error);
+    dim_fg(d.accent.info);
+
+    dim_fg(d.border.subtle);
+    dim_fg(d.border.focus);
+    dim_fg(d.border.gutter);
+
+    dim_fg(d.content.heading[0]);
+    dim_fg(d.content.heading[1]);
+    dim_fg(d.content.heading[2]);
+    dim_fg(d.content.heading[3]);
+    dim_fg(d.content.code);
+    dim_fg(d.content.link);
+    dim_fg(d.content.bullet);
+    dim_fg(d.content.blockquote);
+    dim_fg(d.content.rule);
+    dim_fg(d.content.writ_line);
+    dim_fg(d.content.diff_add);
+    dim_fg(d.content.diff_remove);
+    dim_fg(d.content.diff_hunk);
+    dim_fg(d.content.diff_file);
+    dim_fg(d.content.success);
+    dim_fg(d.content.error);
+    dim_fg(d.content.warning);
+    dim_fg(d.content.info);
+    dim_fg(d.content.code_keyword);
+    dim_fg(d.content.code_string);
+    dim_fg(d.content.code_comment);
+    dim_fg(d.content.code_number);
+    dim_fg(d.content.code_type);
+    dim_fg(d.content.code_function);
+    dim_bg(d.content.code_bg);
+    dim_bg(d.content.code_header_bg);
+    dim_fg(d.content.code_gutter);
+    dim_bg(d.content.diff_bg_context);
+    dim_bg(d.content.diff_bg_add);
+    dim_bg(d.content.diff_bg_remove);
+    dim_bg(d.content.diff_bg_empty);
+    dim_fg(d.content.system_fg);
+    dim_fg(d.content.text_dim);
+    dim_fg(d.content.text_dimmer);
+    dim_fg(d.content.accent_focused);
+    dim_fg(d.content.accent_prompt);
+    dim_fg(d.content.prompt_color);
+    dim_fg(d.content.user_echo_arrow);
+    dim_fg(d.content.user_echo_text);
+    dim_bg(d.content.user_echo_bg);
+    dim_fg(d.content.border_inactive);
+    dim_fg(d.content.agent_master);
+    for (auto& c : d.content.agent_palette) dim_fg(c);
+    return d;
 }
 
 TuiRgba blend_rgb(const TuiRgba& a, const TuiRgba& b, double t) {
@@ -190,7 +273,9 @@ struct DiffBgSet {
     TuiRgba empty{};
 };
 
-DiffBgSet diff_bg_for_base(const TuiRgba& base) {
+// Pre-accent stock fills that theme exports used to bake in. Treated as
+// "still tracking" so derivation can replace them with accent-tinted surfaces.
+DiffBgSet legacy_stock_diff_bg(const TuiRgba& base) {
     const bool light = relative_luminance(base) > 0.45;
     DiffBgSet out;
     out.context = light ? tui_rgba(0xf0, 0xf2, 0xf4) : tui_rgba(0x18, 0x18, 0x18);
@@ -200,12 +285,39 @@ DiffBgSet diff_bg_for_base(const TuiRgba& base) {
     return out;
 }
 
+DiffBgSet diff_bg_for_chrome(const TuiRgba& base,
+                             const TuiRgba& success,
+                             const TuiRgba& error) {
+    const bool light = relative_luminance(base) > 0.45;
+    DiffBgSet out;
+    // Keep context/empty in the base family so purple/warm themes do not
+    // flash neutral gray gutters beside tinted add/remove rows.
+    out.context = light ? blend_rgb(base, tui_rgba(0x00, 0x00, 0x00), 0.05)
+                        : blend_rgb(base, tui_rgba(0xff, 0xff, 0xff), 0.06);
+    out.empty   = light ? blend_rgb(base, tui_rgba(0x00, 0x00, 0x00), 0.10)
+                        : blend_rgb(base, tui_rgba(0x00, 0x00, 0x00), 0.28);
+    const double tint = light ? 0.20 : 0.30;
+    out.add    = blend_rgb(base, success, tint);
+    out.remove = blend_rgb(base, error, tint);
+    return out;
+}
+
+DiffBgSet diff_bg_for_design(const TuiDesign& d) {
+    return diff_bg_for_chrome(d.bg.base, d.accent.success, d.accent.error);
+}
+
 void fill_diff_bg_from_base(TuiDesign& d) {
-    const DiffBgSet fill = diff_bg_for_base(d.bg.base);
+    const DiffBgSet fill = diff_bg_for_design(d);
     d.content.diff_bg_context = fill.context;
     d.content.diff_bg_add = fill.add;
     d.content.diff_bg_remove = fill.remove;
     d.content.diff_bg_empty = fill.empty;
+}
+
+bool diff_slot_tracks(const TuiRgba& current,
+                      const TuiRgba& derived,
+                      const TuiRgba& legacy) {
+    return rgba_unset(current) || current == derived || current == legacy;
 }
 
 // Fill only still-unset surface slots from chrome.  Never overwrites values
@@ -219,11 +331,20 @@ void derive_unset_panel_surfaces(TuiDesign& d) {
     // Match the live readline input block (pane_frame fills with bg.header).
     if (rgba_unset(c.user_echo_bg)) c.user_echo_bg = d.bg.header;
 
-    const DiffBgSet fill = diff_bg_for_base(d.bg.base);
-    if (rgba_unset(c.diff_bg_context)) c.diff_bg_context = fill.context;
-    if (rgba_unset(c.diff_bg_add)) c.diff_bg_add = fill.add;
-    if (rgba_unset(c.diff_bg_remove)) c.diff_bg_remove = fill.remove;
-    if (rgba_unset(c.diff_bg_empty)) c.diff_bg_empty = fill.empty;
+    const DiffBgSet fill = diff_bg_for_design(d);
+    const DiffBgSet legacy = legacy_stock_diff_bg(d.bg.base);
+    if (diff_slot_tracks(c.diff_bg_context, fill.context, legacy.context)) {
+        c.diff_bg_context = fill.context;
+    }
+    if (diff_slot_tracks(c.diff_bg_add, fill.add, legacy.add)) {
+        c.diff_bg_add = fill.add;
+    }
+    if (diff_slot_tracks(c.diff_bg_remove, fill.remove, legacy.remove)) {
+        c.diff_bg_remove = fill.remove;
+    }
+    if (diff_slot_tracks(c.diff_bg_empty, fill.empty, legacy.empty)) {
+        c.diff_bg_empty = fill.empty;
+    }
 }
 
 struct ChromeSnapshot {
@@ -232,10 +353,18 @@ struct ChromeSnapshot {
     TuiRgba muted{};
     TuiRgba text_dim{};
     TuiRgba base{};
+    TuiRgba success{};
+    TuiRgba error{};
 };
 
 ChromeSnapshot capture_chrome(const TuiDesign& d) {
-    return {d.bg.panel, d.bg.header, d.text.muted, d.content.text_dim, d.bg.base};
+    return {d.bg.panel,
+            d.bg.header,
+            d.text.muted,
+            d.content.text_dim,
+            d.bg.base,
+            d.accent.success,
+            d.accent.error};
 }
 
 // Sticky follow: when this document changes chrome without restating a surface
@@ -271,23 +400,28 @@ void sync_surfaces_for_chrome_overrides(TuiDesign& d,
             c.system_fg = c.text_dim;
         }
     }
-    if (child(doc, "bg", "base")) {
-        const DiffBgSet old_fill = diff_bg_for_base(before.base);
-        const DiffBgSet new_fill = diff_bg_for_base(d.bg.base);
+    const bool chrome_changed = child(doc, "bg", "base")
+        || child(doc, "accent", "success")
+        || child(doc, "accent", "error");
+    if (chrome_changed) {
+        const DiffBgSet old_fill =
+            diff_bg_for_chrome(before.base, before.success, before.error);
+        const DiffBgSet legacy_old = legacy_stock_diff_bg(before.base);
+        const DiffBgSet new_fill = diff_bg_for_design(d);
         if (!child(doc, "content", "diff_bg_context")
-            && (rgba_unset(c.diff_bg_context) || c.diff_bg_context == old_fill.context)) {
+            && diff_slot_tracks(c.diff_bg_context, old_fill.context, legacy_old.context)) {
             c.diff_bg_context = new_fill.context;
         }
         if (!child(doc, "content", "diff_bg_add")
-            && (rgba_unset(c.diff_bg_add) || c.diff_bg_add == old_fill.add)) {
+            && diff_slot_tracks(c.diff_bg_add, old_fill.add, legacy_old.add)) {
             c.diff_bg_add = new_fill.add;
         }
         if (!child(doc, "content", "diff_bg_remove")
-            && (rgba_unset(c.diff_bg_remove) || c.diff_bg_remove == old_fill.remove)) {
+            && diff_slot_tracks(c.diff_bg_remove, old_fill.remove, legacy_old.remove)) {
             c.diff_bg_remove = new_fill.remove;
         }
         if (!child(doc, "content", "diff_bg_empty")
-            && (rgba_unset(c.diff_bg_empty) || c.diff_bg_empty == old_fill.empty)) {
+            && diff_slot_tracks(c.diff_bg_empty, old_fill.empty, legacy_old.empty)) {
             c.diff_bg_empty = new_fill.empty;
         }
     }
@@ -874,6 +1008,10 @@ TuiRgba tui_sidebar_bg(const TuiDesign& d) {
     return darken(d.bg.base, 0.85);
 }
 
+TuiRgba tui_darken(const TuiRgba& c, double factor) {
+    return darken(c, factor);
+}
+
 SidebarColors tui_sidebar_colors(const TuiDesign& d) {
     const TuiRgba sbg = tui_sidebar_bg(d);
     const bool light_bg = relative_luminance(sbg) > 0.5;
@@ -920,8 +1058,47 @@ const TuiDesign& tui_design() {
     return *cur;
 }
 
+const TuiDesign& tui_menu_design() {
+    std::lock_guard<std::mutex> lk(g_design_mu);
+    if (g_design_undimmed) return *g_design_undimmed;
+    const TuiDesign* cur = g_design_current.load(std::memory_order_acquire);
+    if (cur) return *cur;
+    publish_design_locked(default_design());
+    return *g_design_current.load(std::memory_order_acquire);
+}
+
+bool tui_modal_dim_active() {
+    std::lock_guard<std::mutex> lk(g_design_mu);
+    return g_design_undimmed != nullptr;
+}
+
+bool tui_begin_modal_dim() {
+    std::lock_guard<std::mutex> lk(g_design_mu);
+    if (g_design_undimmed) return false;
+    const TuiDesign* cur = g_design_current.load(std::memory_order_acquire);
+    if (!cur) {
+        publish_design_locked(default_design());
+        cur = g_design_current.load(std::memory_order_acquire);
+    }
+    g_design_undimmed = cur;
+    publish_design_locked(dimmed_design_copy(*cur));
+    g_design_generation.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
+bool tui_end_modal_dim() {
+    std::lock_guard<std::mutex> lk(g_design_mu);
+    if (!g_design_undimmed) return false;
+    g_design_current.store(g_design_undimmed, std::memory_order_release);
+    g_design_undimmed = nullptr;
+    g_design_generation.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
 void load_tui_design(const std::string& config_dir, std::string_view cli_preset) {
     std::lock_guard<std::mutex> lk(g_design_mu);
+    // Theme loads replace the bright design; drop any modal dim veil.
+    g_design_undimmed = nullptr;
     TuiDesign design = default_design();
     g_active_preset = kDefaultTuiPreset;
     g_active_theme_file.clear();

@@ -25,12 +25,14 @@
 #include "tui/prompt_bridge.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
-#include "tui/theme_picker.h"
+#include "tui/menu.h"
 #include "tui/clipboard.h"
 #include "tui/opentui/session.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
-#include "tui/opentui/theme_picker_frame.h"
+#include "tui/opentui/menu_frame.h"
+#include "model_catalog.h"
+#include "model_context.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
 #include "repl/pane.h"
@@ -91,69 +93,128 @@ void ReplSession::run_input_loop() {
             continue;
         }
 
-        if (theme_picker.active()) {
+        if (overlay_menu.active()) {
             if (pump_notify) pump_notify();
-            const int visible_rows =
-                arbiter::opentui::theme_picker_visible_rows(layout_ptr->focused().tui);
+            const auto menu_snap = overlay_menu.snapshot();
+            const int visible_rows = arbiter::opentui::menu_visible_rows(
+                layout_ptr->focused().tui,
+                static_cast<int>(menu_snap.items.size()));
+            const MenuPurpose purpose = menu_snap.purpose;
 
             char csi = 0;
             std::string csi_params;
             const int key = read_history_sidebar_key(csi, csi_params);
             if (key < 0) break;
 
-            // Swallow mouse reports while the picker owns stdin.
+            // Swallow mouse reports while the menu owns stdin.
             if (key == 0x1B && (csi == 'M' || csi == 'm')
                 && !csi_params.empty() && csi_params[0] == '<') {
                 continue;
             }
 
-            auto preview_selected = [&]() {
-                const std::string name = theme_picker.selected_theme();
-                if (name.empty()) return;
-                arbiter::load_tui_design(dir, name);
+            auto preview_theme = [&]() {
+                if (purpose != MenuPurpose::Theme) return;
+                const auto item = overlay_menu.selected_item();
+                if (item.id.empty() || item.section) return;
+                // load_tui_design clears modal dim; re-apply so the menu
+                // stays lifted over a recessed preview.
+                arbiter::load_tui_design(dir, item.id);
+                arbiter::tui_begin_modal_dim();
                 refresh_chrome();
             };
 
-            // Up / Down / Left / Right cycle with live preview.
+            // Up / Down / Left / Right cycle (theme previews on move).
             if (key == 0x1B && (csi == 'A' || csi == 'D')) {
-                theme_picker.move_selection(-1, visible_rows);
-                preview_selected();
+                overlay_menu.move_selection(-1, visible_rows);
+                preview_theme();
                 continue;
             }
             if (key == 0x1B && (csi == 'B' || csi == 'C')) {
-                theme_picker.move_selection(1, visible_rows);
-                preview_selected();
+                overlay_menu.move_selection(1, visible_rows);
+                preview_theme();
                 continue;
             }
             // PgUp / PgDn (CSI 5~ / 6~)
             if (key == 0x1B && csi == '~' && csi_params == "5") {
-                theme_picker.page_selection(-1, visible_rows);
-                preview_selected();
+                overlay_menu.page_selection(-1, visible_rows);
+                preview_theme();
                 continue;
             }
             if (key == 0x1B && csi == '~' && csi_params == "6") {
-                theme_picker.page_selection(1, visible_rows);
-                preview_selected();
+                overlay_menu.page_selection(1, visible_rows);
+                preview_theme();
                 continue;
             }
             if (key == '\r' || key == '\n') {
-                const std::string name = theme_picker.selected_theme();
-                theme_picker.close();
-                if (!name.empty()) {
-                    arbiter::set_tui_preset(dir, name);
+                const auto item = overlay_menu.selected_item();
+                const std::string ctx = overlay_menu.context();
+                overlay_menu.close();
+                tui_end_modal_dim();
+                if (!item.id.empty() && !item.section) {
+                    if (purpose == MenuPurpose::Theme) {
+                        arbiter::set_tui_preset(dir, item.id);
+                        refresh_chrome();
+                        layout_ptr->focused().output_queue.push_prose_msg(
+                            "theme: " + item.id, StyleId::System);
+                    } else if (purpose == MenuPurpose::Model) {
+                        const std::string agent_id =
+                            ctx.empty() ? layout_ptr->focused().current_agent
+                                        : ctx;
+                        try {
+                            orch.get_agent(agent_id).config_mut().model = item.id;
+                            const int window = context_window_for_model(item.id);
+                            std::string msg = agent_id + " model -> " + item.id
+                                + "  ctx=" + format_context_window(window);
+                            if (!find_model_catalog_entry(item.id)) {
+                                msg += "\n  note: id not in catalogue";
+                            }
+                            layout_ptr->focused().output_queue.push_prose_msg(
+                                msg, StyleId::System);
+                        } catch (const std::exception& ex) {
+                            layout_ptr->focused().output_queue.push_prose_msg(
+                                "ERR: " + std::string(ex.what()), StyleId::Error);
+                        }
+                        refresh_chrome();
+                    } else if (purpose == MenuPurpose::Help) {
+                        // Prefer the agent /help corpus when a topic exists;
+                        // otherwise echo the menu row's one-liner.
+                        std::string detail =
+                            orch.execute_slash_command("/help " + item.id,
+                                                       layout_ptr->focused().current_agent);
+                        if (detail.empty()
+                            || detail.find("Unknown help topic") != std::string::npos) {
+                            detail = item.label;
+                            if (!item.detail.empty()) {
+                                detail += "  — ";
+                                detail += item.detail;
+                            }
+                            detail += "\n  Tip: type the command, or /help "
+                                      + item.id + " for agent reference.";
+                        }
+                        layout_ptr->focused().output_queue.push_prose_msg(
+                            detail, StyleId::System);
+                        refresh_chrome();
+                    }
+                } else {
                     refresh_chrome();
-                    layout_ptr->focused().output_queue.push_prose_msg(
-                        "theme: " + name, StyleId::System);
                 }
-                if (pump_notify) pump_notify();
                 continue;
             }
             if (key == 0x1B && csi == 0) {
-                // Bare Esc — restore disk theme (previews never wrote tui.json).
-                theme_picker.close();
-                arbiter::load_tui_design(dir);
+                // Bare Esc — theme previews never wrote tui.json; restore disk.
+                const bool was_theme = purpose == MenuPurpose::Theme;
+                overlay_menu.close();
+                tui_end_modal_dim();
+                if (was_theme) arbiter::load_tui_design(dir);
                 refresh_chrome();
-                if (pump_notify) pump_notify();
+                continue;
+            }
+            // Single-letter shortcuts (conversation-style menus).
+            if (key >= 32 && key < 127) {
+                if (overlay_menu.select_shortcut(static_cast<char>(key),
+                                                 visible_rows)) {
+                    preview_theme();
+                }
                 continue;
             }
             continue;
@@ -199,7 +260,8 @@ void ReplSession::run_input_loop() {
             }
             if (action == HistorySidebarKey::Escape) {
                 history_sidebar.exit_focus();
-                if (pump_notify) pump_notify();
+                tui_end_modal_dim();
+                refresh_chrome();
                 continue;
             }
             if (action == HistorySidebarKey::Enter) {
@@ -221,7 +283,8 @@ void ReplSession::run_input_loop() {
                 continue;
             }
             if (action == HistorySidebarKey::MoveStart) {
-                if (pump_notify) pump_notify();
+                tui_begin_modal_dim();
+                refresh_chrome();
                 continue;
             }
             if (action == HistorySidebarKey::MoveCommit) {
@@ -248,11 +311,17 @@ void ReplSession::run_input_loop() {
                 continue;
             }
             if (action == HistorySidebarKey::RenameStart) {
-                if (pump_notify) pump_notify();
+                if (history_sidebar.is_creating_folder()) {
+                    tui_begin_modal_dim();
+                    refresh_chrome();
+                } else if (pump_notify) {
+                    pump_notify();
+                }
                 continue;
             }
             if (action == HistorySidebarKey::MenuOpen) {
-                if (pump_notify) pump_notify();
+                tui_begin_modal_dim();
+                refresh_chrome();
                 continue;
             }
             if (action == HistorySidebarKey::RenameCommit) {
@@ -360,7 +429,7 @@ void ReplSession::run_input_loop() {
             if (service_pending_conv_ops()) continue;
             if (service_mouse_switch()) continue;
             if (service_pending_after_cancel()) continue;
-            if (theme_picker.active()) continue;
+            if (overlay_menu.active()) continue;
             // Layout mutation woke us up just to repaint the focused
             // pane's prompt — loop back so begin_input paints a fresh
             // one.  Without this, read_line returning false here would

@@ -33,6 +33,9 @@ struct UiContext {
 struct PaneFrameHooks {
     std::function<void(const std::function<void(Pane&)>&)> for_each_pane;
     std::function<void(OpenTuiHandle frame, int cols, int rows)> draw_overlays;
+    // Sync modal dim (design darken) before chrome is painted.  Returns true
+    // when the published design changed so the present path can retheme.
+    std::function<bool()> sync_modal_dim;
 };
 
 void pane_history_present(UiContext& ctx, const PaneFrameHooks& hooks);

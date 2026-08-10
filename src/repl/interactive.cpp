@@ -22,7 +22,8 @@
 #include "tui/opentui/session.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
-#include "tui/opentui/theme_picker_frame.h"
+#include "tui/opentui/menu_frame.h"
+#include "tui/opentui/overlay_scrim.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
 #include "theme.h"
@@ -242,6 +243,17 @@ void ReplSession::setup_pane_hooks() {
     pane_hooks.for_each_pane = [this](const std::function<void(Pane&)>& fn) {
         layout_ptr->for_each_pane(fn);
     };
+    pane_hooks.sync_modal_dim = [this]() -> bool {
+        const auto hs = history_sidebar.snapshot();
+        const bool hist_menu = hs.focused
+            && (hs.menu_open || hs.moving || hs.creating_folder);
+        const bool palette = layout_ptr
+            && layout_ptr->focused().editor.palette_active();
+        // Dim behind every modal, including /theme (preview loads a bright
+        // design, then this re-dims it so the menu still lifts).
+        return opentui::sync_modal_dim(
+            overlay_menu.active() || hist_menu || palette);
+    };
     pane_hooks.draw_overlays = [this](OpenTuiHandle frame, int cols, int rows) {
         if (frame == 0 || cols <= 0 || rows <= 0) return;
 
@@ -253,12 +265,13 @@ void ReplSession::setup_pane_hooks() {
             tui_outer_bottom_pad_rows(tui_design());
         const int sidebar_input_rows = outer_bottom_input_rows();
 
+        HistorySidebarSnapshot hs{};
         const Rect hb = HistorySidebarState::rect_for_terminal(
             cols, rows, history_sidebar.enabled());
         if (hb.w > 0) {
             // Avoid reloading the store mid-edit — refresh is unnecessary
             // while the user types a rename / navigates an overlay.
-            HistorySidebarSnapshot hs = history_sidebar.snapshot();
+            hs = history_sidebar.snapshot();
             if (!hs.renaming && !hs.moving
                 && !hs.menu_open && !hs.confirming_delete) {
                 refresh_history_sidebar_entries();
@@ -271,41 +284,52 @@ void ReplSession::setup_pane_hooks() {
 
         if (layout_ptr->pane_count() > 1) layout_ptr->draw_borders(frame);
 
-        if (theme_picker.active()) {
-            opentui::draw_theme_picker(
-                frame, theme_picker.snapshot(), layout_ptr->focused().tui);
-        }
-
         const int panes = static_cast<int>(layout_ptr->pane_count());
         const int leading = HistorySidebarState::width_for_terminal(
             cols, history_sidebar.enabled());
         int sw = sidebar.effective_width(cols, panes, leading);
-        if (sw <= 0) return;
-
-        int pane_x = outer.x;
-        int pane_w = outer.w;
-        int gap = cols - pane_x - pane_w;
-        // Trailing gutter is reserved in layout_bounds; keep the box width at sw.
-        if (sw <= 0 || gap < sw) return;
-
-        const Rect sb = {pane_x + pane_w, 0, sw, std::max(1, rows)};
-        Pane& focused = layout_ptr->focused();
-        sidebar.set_focus_context(focused.current_agent,
-                                  focused.current_model);
-        sidebar.set_active_tool_calls(focused.tool_indicator.total());
-        std::vector<SidebarLoopEntry> loop_rows;
-        for (const auto& b : loops.briefs()) {
-            SidebarLoopEntry row;
-            row.id       = b.id;
-            row.agent_id = b.agent_id;
-            row.state    = b.state;
-            row.iter     = b.iter;
-            loop_rows.push_back(std::move(row));
+        if (sw > 0) {
+            int pane_x = outer.x;
+            int pane_w = outer.w;
+            int gap = cols - pane_x - pane_w;
+            if (gap >= sw) {
+                const Rect sb = {pane_x + pane_w, 0, sw, std::max(1, rows)};
+                Pane& focused = layout_ptr->focused();
+                sidebar.set_focus_context(focused.current_agent,
+                                          focused.current_model);
+                sidebar.set_active_tool_calls(focused.tool_indicator.inflight());
+                std::vector<SidebarLoopEntry> loop_rows;
+                for (const auto& b : loops.briefs()) {
+                    SidebarLoopEntry row;
+                    row.id       = b.id;
+                    row.agent_id = b.agent_id;
+                    row.state    = b.state;
+                    row.iter     = b.iter;
+                    loop_rows.push_back(std::move(row));
+                }
+                sidebar.set_loops(std::move(loop_rows));
+                const SidebarSnapshot snap = sidebar.snapshot();
+                opentui::draw_sidebar(
+                    frame, snap, sb, outer, sidebar_input_rows, outer_bottom_pad);
+            }
         }
-        sidebar.set_loops(std::move(loop_rows));
-        const SidebarSnapshot snap = sidebar.snapshot();
-        opentui::draw_sidebar(
-            frame, snap, sb, outer, sidebar_input_rows, outer_bottom_pad);
+
+        // Floating menus use the undimmed design so they stay bright.
+        Pane& focused = layout_ptr->focused();
+        const bool hist_menu = hs.focused && (hs.menu_open || hs.moving);
+        if (overlay_menu.active()) {
+            opentui::draw_menu(frame, overlay_menu.snapshot(), focused.tui);
+        }
+        if (hist_menu && hb.w > 0) {
+            opentui::draw_history_sidebar_menu(
+                frame, hs, hb, outer, sidebar_input_rows, outer_bottom_pad);
+        }
+        if (hs.focused && hs.creating_folder) {
+            opentui::draw_history_new_folder_modal(frame, hs, focused.tui);
+        }
+        if (focused.editor.palette_active()) {
+            focused.editor.draw_palette(frame, focused.tui);
+        }
     };
 }
 

@@ -205,6 +205,7 @@ set(ARBITER_SOURCES
     src/logger.cpp
     src/tenant_limiter.cpp
     src/tenant_store.cpp
+    src/todo_resolve.cpp
     src/schedule_parser.cpp
     src/notification_bus.cpp
     src/request_event_bus.cpp
@@ -337,10 +338,10 @@ target_sources(arbiter PRIVATE
     src/tui/sidebar.cpp
     src/tui/sidebar_format.cpp
     src/tui/history_sidebar.cpp
-    src/tui/theme_picker.cpp
+    src/tui/menu.cpp
     src/tui/opentui/sidebar_frame.cpp
     src/tui/opentui/history_sidebar_frame.cpp
-    src/tui/opentui/theme_picker_frame.cpp
+    src/tui/opentui/menu_frame.cpp
     src/tui/opentui/pane_frame.cpp
 )
 target_link_libraries(arbiter PRIVATE OpenTUI::core)
@@ -846,6 +847,7 @@ if(INDEX_BUILD_TESTS)
         tests/test_sidebar.cpp
         src/tui/sidebar.cpp
         src/tui/sidebar_format.cpp
+        src/todo_resolve.cpp
         src/model_catalog.cpp
         src/model_context.cpp
     )
@@ -855,6 +857,16 @@ if(INDEX_BUILD_TESTS)
         ${OPENSSL_INCLUDE_DIR}
     )
     add_test(NAME unit_sidebar COMMAND unit_sidebar)
+
+    add_executable(unit_todo_resolve
+        tests/test_todo_resolve.cpp
+        src/todo_resolve.cpp
+    )
+    target_include_directories(unit_todo_resolve PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_todo_resolve COMMAND unit_todo_resolve)
 
     # --- Unit tests for the history sidebar (id-pinned selection across
     # reorder, key->action table including rename/delete/PgUp/PgDn). Same
@@ -894,14 +906,15 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_history_sidebar COMMAND unit_history_sidebar)
 
-    add_executable(unit_theme_picker
-        tests/test_theme_picker.cpp
-        src/tui/theme_picker.cpp
+    add_executable(unit_menu
+        tests/test_menu.cpp
+        src/tui/menu.cpp
+        src/model_catalog.cpp
     )
-    target_include_directories(unit_theme_picker PRIVATE
+    target_include_directories(unit_menu PRIVATE
         ${CMAKE_SOURCE_DIR}/include
     )
-    add_test(NAME unit_theme_picker COMMAND unit_theme_picker)
+    add_test(NAME unit_menu COMMAND unit_menu)
 
     # --- Unit tests for the conversation-history store (SQLite-backed TUI
     # threads, soft delete, titling, JSON→SQLite migration). Links a stub for

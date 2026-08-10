@@ -26,7 +26,7 @@
 #include "tui/opentui/shared_input_history.h"
 #include "tui/palette.h"
 #include "tui/sidebar.h"
-#include "tui/theme_picker.h"
+#include "tui/menu.h"
 #include "tui/tty_guard.h"
 #include "tui/tui.h"
 
@@ -118,7 +118,7 @@ struct ReplSession {
 
     ConversationStore conversation_store;
     HistorySidebarState history_sidebar;
-    ThemePickerState theme_picker;
+    MenuState overlay_menu;
     SidebarState sidebar;
 
     std::mutex                pending_closes_mu;

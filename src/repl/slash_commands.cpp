@@ -27,12 +27,12 @@
 #include "tui/prompt_bridge.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
-#include "tui/theme_picker.h"
+#include "tui/menu.h"
 #include "tui/clipboard.h"
 #include "tui/opentui/session.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
-#include "tui/opentui/theme_picker_frame.h"
+#include "tui/opentui/menu_frame.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
 #include "repl/pane.h"
@@ -627,7 +627,26 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                 std::string id, model;
                 iss >> id >> model;
                 if (id.empty()) {
-                    push_status(format_model_catalog_list());
+                    std::string current_model;
+                    try {
+                        current_model = orch.get_agent(current_agent).config().model;
+                    } catch (...) {}
+                    auto items = menu_items_models(current_model);
+                    if (items.empty()) {
+                        push_status(format_model_catalog_list());
+                        return;
+                    }
+                    overlay_menu.open(
+                        MenuPurpose::Model,
+                        "Models",
+                        "\u2191\u2193 browse  Enter apply to " + current_agent
+                            + "  Esc cancel",
+                        std::move(items),
+                        current_model,
+                        current_agent,
+                        /*max_width=*/72);
+                    tui_begin_modal_dim();
+                    refresh_chrome();
                     return;
                 }
                 if (model.empty()) {
@@ -934,85 +953,17 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                         : result);
                     return;
                 }
-                push_status(
-                    "Conversation\n"
-                    "  <text>                           — send to the focused pane's agent\n"
-                    "  /send <agent> <msg>              — send to a specific agent\n"
-                    "  /ask <query>                     — ask the index master\n"
-                    "  /use <agent>                     — switch the focused pane's current agent\n"
-                    "\n"
-                    "Agents\n"
-                    "  /agents                          — list loaded agents\n"
-                    "  /status                          — system status\n"
-                    "  /tokens                          — full token + cost breakdown\n"
-                    "  /create <id>                     — create agent with default config\n"
-                    "  /remove <id>                     — remove agent\n"
-                    "  /reset [id]                      — clear an agent's history (default: focused)\n"
-                    "  /compact [id]                    — summarize older turns to free context\n"
-                    "  /model                           — list model catalogue + context windows\n"
-                    "  /model <agent> [model-id]        — show or change agent model at runtime\n"
-                    "\n"
-                    "Panes  (each pane is an independent conversation view)\n"
-                    "  /pane <agent> <msg>              — spawn a parallel pane running the agent;\n"
-                    "                                     result flows back to the spawner when done\n"
-                    "  Ctrl-w v                         — split the focused pane vertically\n"
-                    "  Ctrl-w h                         — split the focused pane horizontally\n"
-                    "  Ctrl-w s                         — toggle the session sidebar\n"
-                    "  Ctrl-w w                         — cycle focus to the next pane\n"
-                    "  Ctrl-w c                         — close the focused pane\n"
-                    "  Ctrl-w t                         — toggle conversation history sidebar\n"
-                    "  Ctrl-w b                         — enter sidebar to pick a conversation\n"
-                    "\n"
-                    "Background loops\n"
-                    "  /loop <agent> <prompt>           — run agent in a background loop\n"
-                    "  /loops                           — list running / suspended loops\n"
-                    "  /log <loop-id> [last-N]          — show buffered loop output\n"
-                    "  /watch <loop-id>                 — tail loop output live (Enter to detach)\n"
-                    "  /kill <loop-id>                  — stop a loop\n"
-                    "  /suspend <loop-id>               — pause a loop\n"
-                    "  /resume <loop-id>                — resume a paused loop\n"
-                    "  /inject <loop-id> <msg>          — inject a message into a running loop\n"
-                    "\n"
-                    "Fetch + memory\n"
-                    "  /fetch <url>                     — fetch URL, send readable text to agent\n"
-                    "  /mem write|read|show|clear       — scratchpad (tenants.db, same as API)\n"
-                    "  /mem shared write|read|clear     — tenant shared scratchpad\n"
-                    "  /mem search|entries|entry|expand|density|add|invalidate — memory graph\n"
-                    "\n"
-                    "Tools  (same dispatch as API agent turns)\n"
-                    "  /search <query> [top=N]          — web search; injects results like /fetch\n"
-                    "  /browse <url>                    — fetch + extract readable text\n"
-                    "  /todo list|add|start|done|…      — conversation-scoped task list\n"
-                    "  /schedule list|<phrase>: <msg>   — schedule recurring/one-shot tasks\n"
-                    "  /schedule cancel|pause|resume    — manage scheduled tasks by id\n"
-                    "  /exec <cmd>                      — host shell (HOST SHELL confirm) or Docker when ARBITER_SANDBOX_IMAGE set; --no-exec disables\n"
-                    "  /diff [review]|list|apply|reject|undo — interactive a/r or apply streamed ```diff\n"
-                    "  /write <path>                    — write file / --persist to artifact store\n"
-                    "  /read <path> | /list             — conversation artifacts\n"
-                    "  /map [path]                      — workspace tree (conversation cwd)\n"
-                    "  /mcp tools|call                  — MCP server registry\n"
-                    "  /a2a list|call                   — remote A2A agents\n"
-                    "  /lesson list|add                 — agent-scoped lessons\n"
-                    "  /help <topic>                    — detailed reference for one command\n"
-                    "\n"
-                    "Plans\n"
-                    "  /plan execute <path>             — execute a planner-produced plan file\n"
-                    "\n"
-                    "Session\n"
-                    "  /theme                           — browse themes (↑↓ preview, Enter)\n"
-                    "  /theme list|<preset>             — list or switch TUI color theme\n"
-                    "  /verbose [on|off]                — toggle raw /cmd line streaming (default off)\n"
-                    "  /chat title <text>               — rename the active conversation (locks title)\n"
-                    "  /chat search <text>              — find text across saved conversations\n"
-                    "  /chat folder list|new|rename|delete|move — manage conversation folders\n"
-                    "  /find <text> | next | prev       — search the focused pane's scrollback\n"
-                    "  /help                            — this list\n"
-                    "  /quit                            — exit\n"
-                    "\n"
-                    "Scroll: PgUp / PgDn scroll the focused pane's history.  Esc cancels\n"
-                    "any in-flight agent turn.\n"
-                    "Keys: Ctrl-P command palette, Ctrl-R reverse history search,\n"
-                    "Ctrl-W pane chords (w/h/v/c/t/b).");
+                auto items = menu_items_help();
+                overlay_menu.open(
+                    MenuPurpose::Help,
+                    "Help",
+                    "\u2191\u2193 browse  Enter detail  Esc close",
+                    std::move(items),
+                    /*select_id=*/{},
+                    /*context=*/{},
+                    /*max_width=*/64);
+                tui_begin_modal_dim();
+                refresh_chrome();
                 return;
             }
             if (cmd == "chat") {
@@ -1387,11 +1338,19 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                             }
                         }
                     }
-                    theme_picker.open(std::move(themes), active);
-                    // Wake the main loop so it takes stdin for ↑↓/Enter/Esc.
-                    refresh_focused_input.store(true);
-                    wake_main_input();
-                    if (pump_notify) pump_notify();
+                    overlay_menu.open(
+                        MenuPurpose::Theme,
+                        "Themes",
+                        "\u2191\u2193 preview  Enter select  Esc cancel",
+                        menu_items_themes(themes, active),
+                        active,
+                        /*context=*/{},
+                        /*max_width=*/48);
+                    // Preview the landed-on theme, then dim so the menu lifts.
+                    const std::string preview = overlay_menu.selected_item().id;
+                    if (!preview.empty()) load_tui_design(dir, preview);
+                    tui_begin_modal_dim();
+                    refresh_chrome();
                     return;
                 }
                 if (arg == "list") {
@@ -1494,6 +1453,37 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             tool_indicator.begin();
             pane.last_interim_agent.clear();
 
+            // First prompt of an untitled chat: name it immediately from the
+            // user text, and kick a model title job in parallel with the turn
+            // so the sidebar does not sit on "Untitled" until the reply ends.
+            if (!is_remote()) {
+                const std::string conv_id = pane.conversation_id;
+                if (!conv_id.empty() && !conversation_store.is_titled(conv_id)) {
+                    bool untitled = false;
+                    for (const auto& e : conversation_store.list()) {
+                        if (e.id != conv_id) continue;
+                        untitled = (e.title == "Untitled");
+                        break;
+                    }
+                    if (untitled) {
+                        const std::string det =
+                            arbiter::deterministic_conversation_title(line);
+                        if (!det.empty()) {
+                            conversation_store.set_title(conv_id, det);
+                            if (pump_notify) pump_notify();
+                            std::string title_model =
+                                arbiter::load_title_model_override(dir);
+                            if (title_model.empty()) {
+                                title_model = orch.get_agent_model("index");
+                            }
+                            conversation_store.enqueue_title_job(
+                                conv_id, line, /*assistant_msg=*/{},
+                                title_model, orch);
+                        }
+                    }
+                }
+            }
+
             if (is_remote()) {
                 auto resp = run_remote_turn(pane, line);
                 tool_indicator.finalize();
@@ -1538,25 +1528,6 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             } catch (...) {}
             if (!resp.ok) {
                 output_queue.push_prose_msg("ERR: " + resp.error, StyleId::Error);
-            } else {
-                // First turn of a still-"Untitled" conversation: set an
-                // instant deterministic title from the user's message, then
-                // best-effort refine it with a small model call in the
-                // background. Both are no-ops once the conversation already
-                // has a real (or locked) title.
-                const std::string conv_id = pane.conversation_id;
-                for (auto& e : conversation_store.list()) {
-                    if (e.id != conv_id || e.title != "Untitled") continue;
-                    const std::string det = arbiter::deterministic_conversation_title(line);
-                    if (!det.empty()) {
-                        conversation_store.set_title(conv_id, det);
-                        std::string title_model = arbiter::load_title_model_override(dir);
-                        if (title_model.empty()) title_model = orch.get_agent_model("index");
-                        conversation_store.enqueue_title_job(conv_id, line, resp.content,
-                                                             title_model, orch);
-                    }
-                    break;
-                }
             }
             // Durable per-turn autosave: coalesces onto the store's
             // background thread so a crash never loses more than the

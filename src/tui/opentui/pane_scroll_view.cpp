@@ -1131,9 +1131,6 @@ std::string PaneScrollView::ToolSegment::header_text() const {
     std::string text = status_glyph();
     text += ' ';
     text += label_.empty() ? (kind_.empty() ? "tool" : kind_) : label_;
-    if (can_expand()) {
-        text += expanded_ ? "  \u25BE" : "  \u25B8"; // ▾ / ▸
-    }
     return text;
 }
 

@@ -68,3 +68,48 @@ TEST_CASE("mcp recent list stays empty until an mcp tool is recorded") {
     CHECK(snap.mcp[0].name == "filesystem/list");
     CHECK(snap.mcp[0].ok);
 }
+
+TEST_CASE("todo add adopts DB id from result preview; done marks completed") {
+    SidebarState sb;
+    sb.record_tool("todo:add Ship the landing page", true,
+                   "OK: added #42 — Ship the landing page");
+    {
+        const auto snap = sb.snapshot();
+        REQUIRE(snap.todos.size() == 1);
+        CHECK(snap.todos[0].id == 42);
+        CHECK(snap.todos[0].status == "pending");
+        CHECK(snap.todos[0].subject == "Ship the landing page");
+    }
+    sb.record_tool("todo:start 42", true, "OK: in_progress — Ship the landing page");
+    CHECK(sb.snapshot().todos[0].status == "in_progress");
+    sb.record_tool("todo:done 42", true, "OK: completed — Ship the landing page");
+    {
+        const auto snap = sb.snapshot();
+        REQUIRE(snap.todos.size() == 1);
+        CHECK(snap.todos[0].status == "completed");
+    }
+}
+
+TEST_CASE("todo start/done accept subject when agent omits the id") {
+    SidebarState sb;
+    sb.record_tool("todo:add Analyze Nabonidus Chronicle", true,
+                   "OK: added #7 — Analyze Nabonidus Chronicle");
+    sb.record_tool("todo:start Analyze Nabonidus Chronicle", true,
+                   "OK: in_progress — Analyze Nabonidus Chronicle");
+    CHECK(sb.snapshot().todos[0].status == "in_progress");
+    sb.record_tool("todo:done Analyze Nabonidus", true,
+                   "OK: completed — Analyze Nabonidus Chronicle");
+    CHECK(sb.snapshot().todos[0].status == "completed");
+}
+
+TEST_CASE("friendly_todo_label hides numeric ids from user-facing chrome") {
+    SidebarState sb;
+    sb.record_tool("todo:add Ship the landing page", true,
+                   "OK: added #42 — Ship the landing page");
+    CHECK(sb.friendly_todo_label("todo:start 42")
+          == "todo:start Ship the landing page");
+    CHECK(sb.friendly_todo_label("todo:done #42")
+          == "todo:done Ship the landing page");
+    CHECK(sb.friendly_todo_label("todo:add Ship the landing page")
+          == "todo:add Ship the landing page");
+}

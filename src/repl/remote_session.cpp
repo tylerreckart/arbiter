@@ -183,10 +183,18 @@ ApiResponse ReplSession::run_remote_turn(Pane& pane, const std::string& line) {
         }
     };
     hooks.on_tool = [&](const ToolActivityEvent& ev) {
-        pane.output_queue.push_tool(ev);
         if (ev.phase == ToolActivityEvent::Phase::Finished) {
-            pane.tool_indicator.bump(ev.label, ev.ok);
-            sidebar.record_tool(ev.label, ev.ok);
+            sidebar.record_tool(ev.label, ev.ok, ev.result_preview);
+        }
+        ToolActivityEvent view = ev;
+        if (view.label.rfind("todo:", 0) == 0) {
+            view.label = sidebar.friendly_todo_label(ev.label);
+        }
+        pane.output_queue.push_tool(view);
+        if (ev.phase == ToolActivityEvent::Phase::Started) {
+            pane.tool_indicator.on_started();
+        } else if (ev.phase == ToolActivityEvent::Phase::Finished) {
+            pane.tool_indicator.bump(view.label, ev.ok);
         }
     };
     hooks.on_sub_agent = [&](const std::string& agent, const std::string& content) {

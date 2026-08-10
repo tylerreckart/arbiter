@@ -17,7 +17,7 @@ thinking strip (agent accent + input bg + pad) ThinkingSegment (when provider em
 assistant prose / markdown / code / diffs  (writ lines swallowed)
                                   ← one blank row
 ○ fetch:https://…                          ToolSegment appears as dispatch starts
-✓ exec:git status  ▸                       resolves when the result returns
+✓ exec:git status                          resolves when the result returns
                                   ← one blank row
 · [interrupted]                            activity chrome (system lines)
 → delegating: /agent …                     bold/info routing status (not prose)

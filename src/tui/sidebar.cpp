@@ -1,6 +1,7 @@
 #include "tui/sidebar.h"
 
 #include "model_context.h"
+#include "todo_resolve.h"
 #include "tui/sidebar_format.h"
 
 #include <algorithm>
@@ -42,14 +43,45 @@ int parse_id_token(const std::string& args) {
 }
 
 void trim_todos(std::vector<SidebarTodoEntry>& todos, int max_entries) {
+    // Drop canceled rows; keep completed so the sidebar can show ✓.
     todos.erase(
         std::remove_if(todos.begin(), todos.end(),
                        [](const SidebarTodoEntry& t) {
-                           return t.status == "completed" || t.status == "canceled";
+                           return t.status == "canceled";
                        }),
         todos.end());
-    if (static_cast<int>(todos.size()) > max_entries)
-        todos.resize(static_cast<size_t>(max_entries));
+    if (static_cast<int>(todos.size()) <= max_entries) return;
+    // Prefer dropping oldest completed first, then oldest of anything.
+    while (static_cast<int>(todos.size()) > max_entries) {
+        auto it = std::find_if(todos.rbegin(), todos.rend(),
+                               [](const SidebarTodoEntry& t) {
+                                   return t.status == "completed";
+                               });
+        if (it != todos.rend()) {
+            todos.erase(std::next(it).base());
+        } else {
+            todos.pop_back();
+        }
+    }
+}
+
+int parse_added_todo_id(const std::string& result_preview) {
+    // "OK: added #12 — subject"
+    const auto hash = result_preview.find('#');
+    if (hash == std::string::npos) return 0;
+    size_t i = hash + 1;
+    if (i >= result_preview.size() || !std::isdigit(
+            static_cast<unsigned char>(result_preview[i]))) {
+        return 0;
+    }
+    int id = 0;
+    while (i < result_preview.size()
+           && std::isdigit(static_cast<unsigned char>(result_preview[i]))) {
+        id = id * 10 + (result_preview[i] - '0');
+        if (id > 1'000'000'000) return 0;
+        ++i;
+    }
+    return id;
 }
 
 } // namespace
@@ -124,7 +156,8 @@ void SidebarState::record_turn(const std::string& agent_id,
     }
 }
 
-void SidebarState::apply_todo_activity(const std::string& label, bool ok) {
+void SidebarState::apply_todo_activity(const std::string& label, bool ok,
+                                       const std::string& result_preview) {
     if (!ok) return;
     const std::string rest = label.size() > 5 ? label.substr(5) : std::string{};
     std::istringstream iss(rest);
@@ -136,7 +169,9 @@ void SidebarState::apply_todo_activity(const std::string& label, bool ok) {
 
     if (verb == "add") {
         SidebarTodoEntry e;
-        e.id = next_local_todo_id_++;
+        e.id = parse_added_todo_id(result_preview);
+        if (e.id <= 0) e.id = next_local_todo_id_++;
+        else if (e.id >= next_local_todo_id_) next_local_todo_id_ = e.id + 1;
         e.subject = args.empty() ? "(untitled)" : args;
         e.status = "pending";
         todos_.insert(todos_.begin(), e);
@@ -144,17 +179,33 @@ void SidebarState::apply_todo_activity(const std::string& label, bool ok) {
         return;
     }
 
-    const int id = parse_id_token(args);
-    if (id <= 0) return;
+    auto resolve_local = [&](const std::string& token) -> int {
+        std::vector<TodoSubjectRef> refs;
+        refs.reserve(todos_.size());
+        for (const auto& t : todos_) {
+            if (verb == "start" || verb == "done" || verb == "cancel") {
+                if (t.status == "completed") continue;
+            }
+            refs.push_back({t.id, t.subject});
+        }
+        std::string err;
+        return resolve_todo_subject_ref(token, refs, err);
+    };
 
     if (verb == "start") {
+        const int id = resolve_local(args);
+        if (id <= 0) return;
         for (auto& t : todos_)
             if (t.id == id) t.status = "in_progress";
     } else if (verb == "done") {
+        const int id = resolve_local(args);
+        if (id <= 0) return;
         for (auto& t : todos_)
             if (t.id == id) t.status = "completed";
         trim_todos(todos_, kMaxRecent);
     } else if (verb == "cancel" || verb == "delete") {
+        const int id = resolve_local(args);
+        if (id <= 0) return;
         todos_.erase(std::remove_if(todos_.begin(), todos_.end(),
                                     [id](const SidebarTodoEntry& t) {
                                         return t.id == id;
@@ -162,11 +213,12 @@ void SidebarState::apply_todo_activity(const std::string& label, bool ok) {
                      todos_.end());
     } else if (verb == "subject" || verb == "describe") {
         const auto colon = args.find(':');
-        if (colon != std::string::npos) {
-            const std::string text = trim_ws(args.substr(colon + 1));
-            for (auto& t : todos_)
-                if (t.id == id && !text.empty()) t.subject = text;
-        }
+        if (colon == std::string::npos) return;
+        const int id = resolve_local(args.substr(0, colon));
+        if (id <= 0) return;
+        const std::string text = trim_ws(args.substr(colon + 1));
+        for (auto& t : todos_)
+            if (t.id == id && !text.empty()) t.subject = text;
     }
 }
 
@@ -211,12 +263,51 @@ void SidebarState::apply_schedule_activity(const std::string& label, bool ok) {
     }
 }
 
-void SidebarState::record_tool(const std::string& label, bool ok) {
+std::string SidebarState::friendly_todo_label(const std::string& label) const {
+    if (label.rfind("todo:", 0) != 0) return label;
+    const std::string rest = label.size() > 5 ? label.substr(5) : std::string{};
+    std::istringstream iss(rest);
+    std::string verb;
+    iss >> verb;
+    std::string args;
+    std::getline(iss, args);
+    args = trim_ws(args);
+
+    if (verb.empty() || verb == "list" || verb == "add") return label;
+
+    std::lock_guard<std::mutex> lk(mu_);
+
+    if (verb == "describe" || verb == "subject") {
+        const auto colon = args.find(':');
+        if (colon != std::string::npos) {
+            const std::string text = trim_ws(args.substr(colon + 1));
+            if (!text.empty()) return "todo:" + verb + " " + text;
+            args = trim_ws(args.substr(0, colon));
+        }
+    }
+
+    std::vector<TodoSubjectRef> refs;
+    refs.reserve(todos_.size());
+    for (const auto& t : todos_) refs.push_back({t.id, t.subject});
+    std::string err;
+    const int id = resolve_todo_subject_ref(args, refs, err);
+    if (id > 0) {
+        for (const auto& t : todos_) {
+            if (t.id == id) return "todo:" + verb + " " + t.subject;
+        }
+    }
+    // Pure numeric id with no cached row — omit the number rather than show it.
+    if (parse_id_token(args) > 0) return "todo:" + verb;
+    return label;
+}
+
+void SidebarState::record_tool(const std::string& label, bool ok,
+                               const std::string& result_preview) {
     if (label.empty()) return;
     std::lock_guard<std::mutex> lk(mu_);
 
     if (label.rfind("todo:", 0) == 0) {
-        apply_todo_activity(label, ok);
+        apply_todo_activity(label, ok, result_preview);
         return;
     }
     if (label.rfind("schedule:", 0) == 0) {

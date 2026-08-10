@@ -74,29 +74,40 @@ TEST_CASE("ToolCallIndicator begin arms and bump counts Finished tools") {
     ToolCallIndicator ind(nullptr);
     CHECK(ind.total() == 0);
     CHECK(ind.failed() == 0);
+    CHECK(ind.inflight() == 0);
 
     // bump before begin is a no-op (turn not armed).
     ind.bump("fetch", true);
     CHECK(ind.total() == 0);
 
     ind.begin();
+    ind.on_started();
+    ind.on_started();
+    ind.on_started();
+    CHECK(ind.inflight() == 3);
     ind.bump("fetch", true);
     ind.bump("exec", false);
     ind.bump("help", true);
     CHECK(ind.total() == 3);
     CHECK(ind.failed() == 1);
+    CHECK(ind.inflight() == 0);
 
     // begin() resets for the next turn.
     ind.begin();
     CHECK(ind.total() == 0);
     CHECK(ind.failed() == 0);
+    CHECK(ind.inflight() == 0);
+    ind.on_started();
     ind.bump("write", true);
     CHECK(ind.total() == 1);
     CHECK(ind.failed() == 0);
+    CHECK(ind.inflight() == 0);
 
     const std::string summary = ind.finalize();
     CHECK(summary.find("1 tool") != std::string::npos);
     // finalize disarms — further bumps ignored until begin.
+    ind.on_started();
     ind.bump("fetch", true);
     CHECK(ind.total() == 1);
+    CHECK(ind.inflight() == 0);
 }

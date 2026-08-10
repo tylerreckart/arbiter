@@ -139,8 +139,8 @@ TEST_CASE("/find reports match position in the status line and cycles") {
     CHECK(wait_for_token(s, before_usage.size(), "cycle", 10000));
 
     // Seed ≥2 scrollback hits via hermetic offline turns (instant local
-    // auth failure — no TLS). /help alone mentions "scrollback" once; with
-    // a single hit, /find next leaves the hit index unchanged.
+    // auth failure — no TLS). With a single hit, /find next leaves the
+    // hit index unchanged.
     const std::size_t before_seed_a = s.output().size();
     s.send("seed-scrollback-aaa\r");
     REQUIRE(wait_for_token(s, before_seed_a, "seed-scrollback-aaa", 5000));
@@ -151,9 +151,14 @@ TEST_CASE("/find reports match position in the status line and cycles") {
     REQUIRE(wait_for_token(s, before_seed_b, "Authentication header", 5000));
 
     {
+        // /help opens the interactive overlay menu; dismiss before typing.
         const std::size_t before_help = s.output().size();
         s.send("/help\r");
         REQUIRE(wait_for_token(s, before_help, "/find", 15000));
+        s.send("\x1b");  // Esc — close menu, return stdin to the editor
+        // Let the modal tear down before the next slash command.
+        const std::size_t before_dismiss = s.output().size();
+        (void)wait_for_token(s, before_dismiss, "esc interrupt", 3000);
     }
 
     const std::size_t before = s.output().size();

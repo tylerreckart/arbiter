@@ -79,7 +79,7 @@ If the chord byte doesn't match any of the above, it's silently dropped — the 
 | `r`       | Rename the selected chat or folder. Type on the title line (caption on the line below). Enter saves (rejects empty); Esc cancels rename (Esc again leaves the sidebar). |
 | `d`       | Soft-delete the selected chat, or delete the selected folder (chats are unfiled, not removed), after a `Delete chat? y/n` / `Delete folder? y/n` confirm. |
 | `n`       | Start a new conversation on the focused pane.                                |
-| `f`       | Create a new folder: type a name (caption `New folder`), Enter saves, Esc cancels. Also available from the `+ New` row menu (`m` → New folder). |
+| `f`       | Create a new folder via a modal name prompt (Enter saves, Esc cancels). Also available from the `+ New` row menu (`m` → New folder). |
 | `Esc`     | Cancel an in-progress rename / menu / move; otherwise return focus to the pane input. |
 
 Choosing **Delete** from the menu (or pressing `d`) enters the same confirm step: type `y` to soft-delete, any other key cancels.

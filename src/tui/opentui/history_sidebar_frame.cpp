@@ -7,6 +7,7 @@
 #include "tui/tui_design.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <string>
@@ -54,6 +55,36 @@ void fill_rect(OpenTuiHandle frame,
 
 std::string trim_to_cells(std::string s, int max_cells) {
     return arbiter::trim_to_display_cols(std::move(s), max_cells);
+}
+
+// Hold at the start, crawl to the end, hold, repeat — so clipped active
+// titles eventually reveal the full name without a busy ticker.
+std::string marquee_title(std::string_view title, int max_cells) {
+    if (max_cells <= 0) return {};
+    const int full = static_cast<int>(arbiter::display_width(title));
+    if (full <= max_cells) return std::string(title);
+
+    using clock = std::chrono::steady_clock;
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        clock::now().time_since_epoch())
+                        .count();
+
+    constexpr int kHoldStartMs = 2800;
+    constexpr int kHoldEndMs = 1800;
+    constexpr int kStepMs = 160;
+    const int travel = full - max_cells;
+    const int scroll_ms = std::max(1, travel) * kStepMs;
+    const int cycle = kHoldStartMs + scroll_ms + kHoldEndMs;
+    const int t = static_cast<int>(ms % cycle);
+
+    int offset = 0;
+    if (t >= kHoldStartMs && t < kHoldStartMs + scroll_ms) {
+        offset = (t - kHoldStartMs) / kStepMs;
+        if (offset > travel) offset = travel;
+    } else if (t >= kHoldStartMs + scroll_ms) {
+        offset = travel;
+    }
+    return arbiter::slice_display_cols(title, offset, max_cells);
 }
 
 // "now" / "5m ago" / "2h ago" / "3d ago" / "Jun 12" (calendar date once it's
@@ -107,49 +138,26 @@ void draw_row(OpenTuiHandle frame,
               bool creating_folder,
               bool delete_is_folder,
               bool section,
+              int indent,
               const TuiRgba& bg) {
-    const TuiRgba& row_bg = selected ? d.accent.primary : bg;
-    // Active (open) conversation: accent text, not a background fill.
-    // Section headers match the Session sidebar (accent + bold).
-    const TuiRgba& title_fg = selected ? d.text.inverse
-                            : active   ? d.accent.primary
-                            : section  ? d.accent.primary
-                                       : sc.body;
-    const TuiRgba& sub_fg = selected ? d.text.inverse : sc.label;
-    const TuiRgba& sub_bg = selected ? row_bg : bg;
-
-    if (selected) {
-        fill_rect(frame,
-                  static_cast<std::uint32_t>(x),
-                  static_cast<std::uint32_t>(y),
-                  static_cast<std::uint32_t>(w),
-                  static_cast<std::uint32_t>(std::max(1, row_h)),
-                  row_bg);
-    }
-
-    if (editing) {
-        // Editable name + caret on the title line; caption on the subtitle.
-        const char* caption = creating_folder ? "New folder"
-                            : rename_is_folder ? "Rename folder"
-                                               : "Rename chat";
-        std::string line = std::string(edit_text) + "\u2588";
-        draw_text(frame,
-                  static_cast<std::uint32_t>(x),
-                  static_cast<std::uint32_t>(y),
-                  trim_to_cells(std::move(line), w),
-                  title_fg,
-                  row_bg,
-                  kAttrBold);
-        if (row_h >= 2) {
-            draw_text(frame,
-                      static_cast<std::uint32_t>(x),
-                      static_cast<std::uint32_t>(y + 1),
-                      trim_to_cells(caption, w),
-                      selected ? d.text.inverse : d.text.muted,
-                      sub_bg);
-        }
-        return;
-    }
+    // Selection › indents only the selected row. Nested rows keep the tree
+    // pipe fixed under folder `[-]`, with › after the pipe: `│ › title`.
+    // Active (open) conversation: accent text. Section headers match the
+    // Session sidebar (accent + bold).
+    const TuiRgba& title_fg = (selected || active) ? d.accent.primary
+                            : section              ? d.accent.primary
+                                                   : sc.body;
+    const TuiRgba& sub_fg = sc.label;
+    const TuiRgba& guide_fg = d.text.muted;
+    constexpr int kMarkW = 2;          // "› "
+    constexpr int kMinusCol = 1;       // '-' within "[-] " / pipe column
+    constexpr int kNestedTextCol = 3;  // one cell after the pipe
+    // Pipe stays at x+kMinusCol; caret/text begin at the nested text column
+    // (or at x for top-level rows).
+    const int base_x = indent > 0 ? x + kNestedTextCol : x;
+    const int mark_x = base_x;
+    const int text_x = selected ? base_x + kMarkW : base_x;
+    const int text_w = std::max(1, w - (text_x - x));
 
     if (section) {
         // Full box width with ├/┤ so the rule meets the vertical borders.
@@ -164,34 +172,87 @@ void draw_row(OpenTuiHandle frame,
         return;
     }
 
-    draw_text(frame,
-              static_cast<std::uint32_t>(x),
-              static_cast<std::uint32_t>(y),
-              trim_to_cells(std::string(title), w),
-              title_fg,
-              row_bg,
-              (selected || active) ? kAttrBold : 0);
+    auto paint_guide = [&](int dy) {
+        if (indent <= 0 || dy < 0 || dy >= row_h) return;
+        draw_text(frame,
+                  static_cast<std::uint32_t>(x + kMinusCol),
+                  static_cast<std::uint32_t>(y + dy),
+                  "\u2502",
+                  guide_fg,
+                  bg);
+    };
+
+    // Guide first so nested selection paints as `│ › …`, not `› │ …`.
+    paint_guide(0);
+    if (selected) {
+        draw_text(frame,
+                  static_cast<std::uint32_t>(mark_x),
+                  static_cast<std::uint32_t>(y),
+                  "\u203A ",
+                  d.accent.primary,
+                  bg,
+                  kAttrBold);
+    }
+
+    if (editing) {
+        // Editable name + caret on the title line; caption on the subtitle.
+        const char* caption = creating_folder ? "New folder"
+                            : rename_is_folder ? "Rename folder"
+                                               : "Rename chat";
+        std::string line = std::string(edit_text) + "\u2588";
+        draw_text(frame,
+                  static_cast<std::uint32_t>(text_x),
+                  static_cast<std::uint32_t>(y),
+                  trim_to_cells(std::move(line), text_w),
+                  title_fg,
+                  bg,
+                  kAttrBold);
+        if (row_h >= 2) {
+            paint_guide(1);
+            draw_text(frame,
+                      static_cast<std::uint32_t>(text_x),
+                      static_cast<std::uint32_t>(y + 1),
+                      trim_to_cells(caption, text_w),
+                      d.text.muted,
+                      bg);
+        }
+        return;
+    }
+
+    {
+        const std::string title_view = active
+            ? marquee_title(title, text_w)
+            : trim_to_cells(std::string(title), text_w);
+        draw_text(frame,
+                  static_cast<std::uint32_t>(text_x),
+                  static_cast<std::uint32_t>(y),
+                  title_view,
+                  title_fg,
+                  bg,
+                  (selected || active) ? kAttrBold : 0);
+    }
 
     if (row_h < 2) return;
 
+    paint_guide(1);
     if (confirming) {
         const std::string prompt = delete_is_folder
             ? "Delete folder? y/n"
             : "Delete chat? y/n";
         draw_text(frame,
-                  static_cast<std::uint32_t>(x),
+                  static_cast<std::uint32_t>(text_x),
                   static_cast<std::uint32_t>(y + 1),
-                  trim_to_cells(prompt, w),
-                  selected ? d.text.inverse : d.accent.error,
-                  sub_bg,
+                  trim_to_cells(prompt, text_w),
+                  d.accent.error,
+                  bg,
                   kAttrBold);
     } else if (!subtitle.empty()) {
         draw_text(frame,
-                  static_cast<std::uint32_t>(x),
+                  static_cast<std::uint32_t>(text_x),
                   static_cast<std::uint32_t>(y + 1),
-                  trim_to_cells(std::string(subtitle), w),
+                  trim_to_cells(std::string(subtitle), text_w),
                   sub_fg,
-                  sub_bg);
+                  bg);
     }
 }
 
@@ -259,35 +320,29 @@ void draw_overlay_panel(OpenTuiHandle frame,
     const int h = std::min(needed, std::max(0, max_bottom_y - y + 1));
     if (h <= 0) return;
 
+    const TuiRgba& surface = d.bg.header;
     fill_rect(frame,
               static_cast<std::uint32_t>(x),
               static_cast<std::uint32_t>(y),
               static_cast<std::uint32_t>(w),
               static_cast<std::uint32_t>(h),
-              d.bg.header);
+              surface);
 
-    // Left accent bar so the panel reads as a popover, not another list row.
-    fill_rect(frame,
-              static_cast<std::uint32_t>(x),
-              static_cast<std::uint32_t>(y),
-              1,
-              static_cast<std::uint32_t>(h),
-              d.accent.primary);
-
+    const int text_w = std::max(1, w - 1);
     int row = 0;
     auto paint = [&](std::string line, const TuiRgba& fg, bool bold) {
         if (row >= h) return;
         draw_text(frame,
                   static_cast<std::uint32_t>(x + 1),
                   static_cast<std::uint32_t>(y + row),
-                  trim_to_cells(std::move(line), std::max(1, w - 1)),
+                  trim_to_cells(std::move(line), text_w),
                   fg,
-                  d.bg.header,
+                  surface,
                   bold ? kAttrBold : 0);
         ++row;
     };
 
-    paint(" " + std::string(heading), d.text.muted, true);
+    paint(std::string(heading), d.text.muted, true);
 
     for (size_t i = 0; i < items.size(); ++i) {
         if (row >= h) break;
@@ -295,11 +350,12 @@ void draw_overlay_panel(OpenTuiHandle frame,
             && static_cast<int>(i) == destructive_start
             && sep_rows > 0) {
             // Dim rule before destructive actions.
-            paint(std::string(std::max(1, w - 2), '-'), d.text.muted, false);
+            paint(std::string(std::max(1, text_w), '-'), d.text.muted, false);
             if (row >= h) break;
         }
         const auto& it = items[i];
         const bool selected = static_cast<int>(i) == selected_index;
+        // Selection is a leading marker only — no row background fill.
         std::string line;
         line += selected ? "\u203A" : " ";
         line += " ";
@@ -310,25 +366,10 @@ void draw_overlay_panel(OpenTuiHandle frame,
         line += it.label;
         if (it.current) line += " \u2713";
 
-        if (selected) {
-            fill_rect(frame,
-                      static_cast<std::uint32_t>(x + 1),
-                      static_cast<std::uint32_t>(y + row),
-                      static_cast<std::uint32_t>(std::max(0, w - 1)),
-                      1,
-                      d.accent.primary);
-            draw_text(frame,
-                      static_cast<std::uint32_t>(x + 1),
-                      static_cast<std::uint32_t>(y + row),
-                      trim_to_cells(std::move(line), std::max(1, w - 1)),
-                      d.text.inverse,
-                      d.accent.primary,
-                      kAttrBold);
-            ++row;
-        } else {
-            const TuiRgba& fg = it.destructive ? d.accent.error : d.text.primary;
-            paint(std::move(line), fg, false);
-        }
+        const TuiRgba& fg = it.destructive ? d.accent.error
+                          : selected       ? d.accent.primary
+                                           : d.text.primary;
+        paint(std::move(line), fg, selected);
     }
 }
 
@@ -432,7 +473,6 @@ void draw_history_sidebar(OpenTuiHandle frame,
     const int total = static_cast<int>(snap.rows.size());
     const int scroll = std::max(0, std::min(snap.scroll_offset, std::max(0, total - 1)));
 
-    int selected_row_bottom = -1;
     int row_y = y;
     for (int i = scroll; i < total; ++i) {
         const auto& row = snap.rows[static_cast<size_t>(i)];
@@ -440,17 +480,22 @@ void draw_history_sidebar(OpenTuiHandle frame,
         const bool selected = snap.focused && (i == snap.selected) && !is_section;
         const bool active = row.kind == HistorySidebarRowKind::Conversation
             && row.id == snap.active_id;
-        const bool editing = selected && snap.renaming;
+        // New-folder naming uses a floating modal — keep the nav row intact.
+        const bool editing = selected && snap.renaming && !snap.creating_folder;
         const bool confirming = selected && snap.confirming_delete;
 
         const int gap = history_sidebar_gap_before(row.kind, i);
         row_y += gap;
 
+        // Keep subtitle while confirming (prompt replaces it). Collapse to
+        // the title line when a panel will paint below so selection does
+        // not leave an empty accent band under the title.
+        const bool panel_open = selected && (snap.menu_open || snap.moving);
+
         int row_h = history_sidebar_row_height(row.kind);
         if (editing || confirming) row_h = 2;
+        else if (panel_open) row_h = 1;
         if (row_y + row_h - 1 > sep_y) break;
-
-        if (selected) selected_row_bottom = row_y + row_h;
 
         std::string title;
         std::string subtitle;
@@ -464,8 +509,7 @@ void draw_history_sidebar(OpenTuiHandle frame,
         } else if (row.kind == HistorySidebarRowKind::New) {
             title = row.title;
         } else {
-            // Nested chats under an open folder: light vertical rule + gap.
-            title = (row.indent > 0 ? "\u2502 " : "") + row.title;
+            title = row.title;
             subtitle = relative_time(row.updated_at, now);
             if (row.total_tokens > 0) {
                 subtitle += " · " + format_token_count(row.total_tokens)
@@ -481,12 +525,8 @@ void draw_history_sidebar(OpenTuiHandle frame,
                 if (slash != std::string::npos) leaf = leaf.substr(slash + 1);
                 if (!leaf.empty()) subtitle += " · " + leaf;
             }
-            if (row.indent > 0) subtitle = "  " + subtitle;
         }
 
-        // Keep subtitle while confirming (prompt replaces it). Hide it when
-        // a panel will paint below the row so the title stays readable.
-        const bool panel_open = selected && (snap.menu_open || snap.moving);
         // Section dividers span the full box so ├/┤ meet the side borders;
         // other rows stay inset in the content column.
         const int paint_x = is_section ? block_x : content_x;
@@ -511,60 +551,152 @@ void draw_history_sidebar(OpenTuiHandle frame,
                  snap.creating_folder,
                  snap.delete_is_folder,
                  is_section,
+                 row.indent,
                  bg);
         row_y += row_h;
     }
+}
 
-    if (snap.focused && selected_row_bottom >= 0
-        && (snap.menu_open || snap.moving)) {
-        std::vector<OverlayItem> items;
-        std::string_view heading;
-        int selected_idx = 0;
-        if (snap.moving) {
-            heading = "Move to\u2026";
-            selected_idx = snap.move_index;
-            for (size_t i = 0; i < snap.move_labels.size(); ++i) {
-                OverlayItem it;
-                it.label = snap.move_labels[i];
-                if (i < snap.move_is_current.size())
-                    it.current = snap.move_is_current[i];
-                items.push_back(std::move(it));
-            }
-        } else if (snap.menu_is_folder) {
-            heading = "Folder";
-            selected_idx = snap.menu_index;
-            items = {
-                {"r", "Rename", false, false},
-                {"n", "New chat here", false, false},
-                {"d", "Delete folder", true, false},
-            };
-        } else if (snap.menu_is_new) {
-            heading = "New";
-            selected_idx = snap.menu_index;
-            items = {
-                {"f", "New folder", false, false},
-            };
-        } else {
-            heading = "Chat";
-            selected_idx = snap.menu_index;
-            items = {
-                {"o", "Open", false, false},
-                {"r", "Rename", false, false},
-                {"v", "Move to\u2026", false, false},
-                {"d", "Delete", true, false},
-            };
+void draw_history_new_folder_modal(OpenTuiHandle frame,
+                                   const HistorySidebarSnapshot& snap,
+                                   const TUI& tui) {
+    if (frame == 0 || !snap.creating_folder || !snap.renaming) return;
+
+    const TuiDesign& d = tui_menu_design();
+    const int cols = std::max(1, tui.cols());
+    const int px = tui.left_col() - 1;
+    const int input_top = tui.input_top_row_pub();
+
+    constexpr int kH = 3;  // title, input, hint
+    const int top = std::max(1, input_top - kH - 1);
+    const int w = std::min({cols - 2, 40, cols});
+    if (w < 12) return;
+    const int x = px + 1;
+
+    const TuiRgba& surface = d.bg.header;
+    fill_rect(frame,
+              static_cast<std::uint32_t>(x),
+              static_cast<std::uint32_t>(top),
+              static_cast<std::uint32_t>(w),
+              static_cast<std::uint32_t>(kH),
+              surface);
+
+    const int text_w = std::max(1, w - 2);
+    draw_text(frame,
+              static_cast<std::uint32_t>(x + 1),
+              static_cast<std::uint32_t>(top),
+              trim_to_cells("New folder", text_w),
+              d.accent.primary,
+              surface,
+              kAttrBold);
+
+    std::string field = snap.rename_buffer + "\u2588";
+    draw_text(frame,
+              static_cast<std::uint32_t>(x + 1),
+              static_cast<std::uint32_t>(top + 1),
+              trim_to_cells(std::move(field), text_w),
+              d.text.primary,
+              surface,
+              kAttrBold);
+
+    draw_hint_text(frame,
+                   static_cast<std::uint32_t>(x + 1),
+                   static_cast<std::uint32_t>(top + 2),
+                   text_w,
+                   "enter save  esc cancel",
+                   d,
+                   surface);
+}
+
+void draw_history_sidebar_menu(OpenTuiHandle frame,
+                               const HistorySidebarSnapshot& snap,
+                               const Rect& r,
+                               const Rect& pane_rect,
+                               int pane_input_rows,
+                               int pane_bottom_pad_rows) {
+    if (frame == 0 || r.w <= 0 || r.h <= 0) return;
+    if (!snap.focused || (!snap.menu_open && !snap.moving)) return;
+    const Rect& pr = pane_rect;
+    if (pr.h <= 0) return;
+
+    const TuiDesign& d = tui_menu_design();
+    const int bottom_pad = std::max(1, pane_bottom_pad_rows);
+    const int box_bottom = pr.y + pr.h - bottom_pad - pane_input_rows;
+    const int sep_y = box_bottom - 1;
+    const int y = list_top_y(r, snap.focused);
+    const int content_x = r.x + 1 + kBoxPad;
+    const int content_w = std::max(1, r.w - 2 - 2 * kBoxPad);
+
+    const int total = static_cast<int>(snap.rows.size());
+    const int scroll = std::max(0, std::min(snap.scroll_offset, std::max(0, total - 1)));
+    int selected_row_bottom = -1;
+    int row_y = y;
+    for (int i = scroll; i < total; ++i) {
+        const auto& row = snap.rows[static_cast<size_t>(i)];
+        const bool is_section = row.kind == HistorySidebarRowKind::Section;
+        const bool selected = (i == snap.selected) && !is_section;
+        const int gap = history_sidebar_gap_before(row.kind, i);
+        row_y += gap;
+        int row_h = history_sidebar_row_height(row.kind);
+        if (selected
+            && ((snap.renaming && !snap.creating_folder) || snap.confirming_delete)) {
+            row_h = 2;
+        } else if (selected && (snap.menu_open || snap.moving)) {
+            row_h = 1;  // title only; menu docks flush under it
         }
-
-        draw_overlay_panel(frame,
-                           d,
-                           content_x,
-                           selected_row_bottom,
-                           content_w,
-                           sep_y,
-                           heading,
-                           items,
-                           selected_idx);
+        if (row_y + row_h - 1 > sep_y) break;
+        if (selected) selected_row_bottom = row_y + row_h;
+        row_y += row_h;
     }
+    if (selected_row_bottom < 0) return;
+
+    std::vector<OverlayItem> items;
+    std::string_view heading;
+    int selected_idx = 0;
+    if (snap.moving) {
+        heading = "Move to\u2026";
+        selected_idx = snap.move_index;
+        for (size_t i = 0; i < snap.move_labels.size(); ++i) {
+            OverlayItem it;
+            it.label = snap.move_labels[i];
+            if (i < snap.move_is_current.size())
+                it.current = snap.move_is_current[i];
+            items.push_back(std::move(it));
+        }
+    } else if (snap.menu_is_folder) {
+        heading = "Folder";
+        selected_idx = snap.menu_index;
+        items = {
+            {"r", "Rename", false, false},
+            {"n", "New chat here", false, false},
+            {"d", "Delete folder", true, false},
+        };
+    } else if (snap.menu_is_new) {
+        heading = "New";
+        selected_idx = snap.menu_index;
+        items = {
+            {"f", "New folder", false, false},
+        };
+    } else {
+        heading = "Chat";
+        selected_idx = snap.menu_index;
+        items = {
+            {"o", "Open", false, false},
+            {"r", "Rename", false, false},
+            {"v", "Move to\u2026", false, false},
+            {"d", "Delete", true, false},
+        };
+    }
+
+    draw_overlay_panel(frame,
+                       d,
+                       content_x,
+                       selected_row_bottom,
+                       content_w,
+                       sep_y,
+                       heading,
+                       items,
+                       selected_idx);
 }
 
 } // namespace arbiter::opentui

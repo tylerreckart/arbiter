@@ -1189,7 +1189,12 @@ namespace {
 std::string build_title_prompt(const std::string& user_msg,
                                const std::string& assistant_msg) {
     constexpr size_t kMaxTotal = 2000;
-    std::string prompt = "User: " + user_msg + "\n\nAssistant: " + assistant_msg;
+    // Prefer user-only prompts (parallel with the first turn). Include the
+    // assistant reply when callers still have it (legacy / post-turn path).
+    std::string prompt = "User: " + user_msg;
+    if (!assistant_msg.empty()) {
+        prompt += "\n\nAssistant: " + assistant_msg;
+    }
     if (prompt.size() > kMaxTotal) prompt.resize(kMaxTotal);
     return prompt;
 }

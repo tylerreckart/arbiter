@@ -54,7 +54,7 @@ Or name the file `mine.json` and use `/theme mine` / `"preset": "mine"` (user th
 
 | Command | Effect |
 |---------|--------|
-| `/theme` | Browse themes with ↑↓ live preview; Enter selects, Esc cancels. |
+| `/theme` | Browse themes in the overlay menu (↑↓ live preview; Enter selects, Esc cancels). |
 | `/theme list` | Built-in presets + custom themes in `~/.arbiter/themes/` |
 | `/theme <name>` | Switch preset or custom theme; updates `tui.json` |
 | `/theme save <name>` | Write the current look to `~/.arbiter/themes/<name>.json` |

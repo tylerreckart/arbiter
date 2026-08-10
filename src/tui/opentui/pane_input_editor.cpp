@@ -484,7 +484,7 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
 
     // Command palette overlays the rows above the input strip; drawn last
     // so it paints over scroll content.
-    if (palette_active_) draw_palette(frame, tui);
+    // Palette is painted from draw_overlays after the modal scrim.
 }
 
 void PaneInputEditor::set_cursor_from_click(int term_x, int term_y) {
@@ -779,6 +779,8 @@ void PaneInputEditor::palette_open() {
     palette_query_.clear();
     palette_sel_ = 0;
     palette_refresh();
+    // Dim is applied on the next present via sync_modal_dim (begin returns
+    // true once → retheme).  Do not begin here or present would skip retheme.
 }
 
 void PaneInputEditor::palette_close(bool accept) {
@@ -795,21 +797,36 @@ void PaneInputEditor::palette_close(bool accept) {
     request_present();
 }
 
+bool PaneInputEditor::palette_active() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return palette_active_;
+}
+
 void PaneInputEditor::draw_palette(OpenTuiHandle frame, const TUI& tui) const {
     constexpr int kMaxRows = 8;
-    const TuiDesign& d = tui_design();
+    const TuiDesign& d = tui_menu_design();
     const int cols = std::max(1, tui.cols());
     const int px = tui.left_col() - 1;
     const int input_top = tui.input_top_row_pub();
 
     const int n = static_cast<int>(palette_matches_.size());
-    const int list_rows = std::min({kMaxRows, n, std::max(0, input_top - 2)});
     // +1 header row with the query.
-    const int top = input_top - list_rows - 1;
-    if (top < 1) return;
+    const int list_rows = std::min({kMaxRows, n, std::max(0, input_top - 2)});
+    const int h = list_rows + 1;
+    const int top = input_top - h;
+    if (top < 1 || h < 1) return;
 
-    const int w = std::min(cols, 64);
+    const int w = std::min({cols - 2, 64, cols});
+    if (w < 6) return;
     const int x = px + 1;
+    const TuiRgba& surface = d.bg.header;
+
+    bufferFillRect(frame,
+                   static_cast<std::uint32_t>(x),
+                   static_cast<std::uint32_t>(top),
+                   static_cast<std::uint32_t>(w),
+                   static_cast<std::uint32_t>(h),
+                   surface.data());
 
     // Keep the selection inside the window.
     int first = 0;
@@ -828,7 +845,7 @@ void PaneInputEditor::draw_palette(OpenTuiHandle frame, const TUI& tui) const {
                     static_cast<std::uint32_t>(top),
                     pad_to(header),
                     d.accent.primary,
-                    &d.bg.header,
+                    &surface,
                     kAttrBold);
 
     for (int i = 0; i < list_rows; ++i) {
@@ -843,7 +860,7 @@ void PaneInputEditor::draw_palette(OpenTuiHandle frame, const TUI& tui) const {
                         static_cast<std::uint32_t>(top + 1 + i),
                         pad_to(row),
                         selected ? d.text.inverse : d.text.primary,
-                        selected ? &d.accent.primary : &d.bg.header,
+                        selected ? &d.accent.primary : &surface,
                         selected ? kAttrBold : 0);
     }
 }

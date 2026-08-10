@@ -43,7 +43,7 @@ When the terminal is at least 96 columns wide **and only one pane is open**, a f
 - **Context** — context window fill (`used` % and token fraction from the last turn; session `peak` %), plus cumulative in/out tokens, cost, and turn count.
 - **Agent** — focused pane's current agent and model; last turn model when different.
 - **Task** — focused pane's pinned original task (advisor-gated work).
-- **Todos** — open `/todo` items tracked this session (when present).
+- **Todos** — `/todo` items tracked this session (`•` pending, `▶` in progress, `✓` done).
 - **Scheduled** — `/schedule` entries and active `/loop` background tasks (when present).
 - **Tools** — recent tool calls with descriptive labels (`exec: git status`, `write: path`, …) and ✓/✗ status; live count while a turn runs tools.
 - **MCP** — recent MCP invocations as `server.tool`, listed separately.
@@ -85,7 +85,7 @@ Summary:
 - **`themes/*.json`** (in the repo; **embedded into the binary** at build time) — all built-in presets; also written to `~/.arbiter/themes/` on `arbiter --init`.
 - **`~/.arbiter/themes/*.json`** — your custom themes or edited copies of built-ins.
 - **`arbiter --export-theme PRESET`** — dump a complete theme JSON to stdout (starter for editing).
-- **`/theme`**, **`/theme save`**, **`/theme file`** — browse with ↑↓ preview, export, or load themes in-session.
+- **`/theme`**, **`/theme save`**, **`/theme file`** — browse themes (↑↓ preview), export, or load in-session. `/help` and `/model` use the same overlay menu.
 
 Built-in presets:
 

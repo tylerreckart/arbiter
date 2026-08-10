@@ -160,22 +160,26 @@ int draw_todo_list(OpenTuiHandle frame,
     const int shown = std::min(max_rows, static_cast<int>(entries.size()));
     for (int i = 0; i < shown; ++i) {
         const auto& t = entries[static_cast<size_t>(i)];
-        const TuiRgba& mark_fg = (t.status == "in_progress")
-                                     ? d.accent.warning
-                                     : sc.label;
-        const char* mark = (t.status == "in_progress") ? "\u25b6" : "\u2022";
+        const bool done = (t.status == "completed");
+        const bool active = (t.status == "in_progress");
+        const TuiRgba& mark_fg = done   ? d.accent.success
+                               : active ? d.accent.warning
+                                        : sc.label;
+        const char* mark = done   ? "\u2713"   // ✓
+                         : active ? "\u25b6"   // ▶
+                                  : "\u2022";  // •
         draw_text(frame,
                   static_cast<std::uint32_t>(content_x),
                   static_cast<std::uint32_t>(row),
                   mark,
                   mark_fg,
                   bg);
-        std::string line = "#" + std::to_string(t.id) + " " + t.subject;
+        // Ids stay internal for /todo commands — end-users only see the title.
         draw_text(frame,
                   static_cast<std::uint32_t>(content_x + 2),
                   static_cast<std::uint32_t>(row),
-                  trim_to_cells(line, std::max(0, content_w - 2)),
-                  sc.body,
+                  trim_to_cells(t.subject, std::max(0, content_w - 2)),
+                  done ? sc.label : sc.body,
                   bg);
         ++row;
     }

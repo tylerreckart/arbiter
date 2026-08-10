@@ -4,9 +4,9 @@
 
 namespace arbiter {
 
-// First user message -> an instant, free, deterministic title so a
-// conversation is never stuck at "Untitled". Strips writ-style lines
-// (lines starting with '/') and common markdown markers, collapses
+// First user message -> an instant, free, deterministic title applied when
+// that prompt is fired (before the agent turn finishes). Strips writ-style
+// lines (lines starting with '/') and common markdown markers, collapses
 // whitespace, and cuts at a word boundary at or under 40 display columns
 // (display_width, not byte length), appending "…" when cut. Returns "" if
 // nothing meaningful survives stripping — callers should leave the title

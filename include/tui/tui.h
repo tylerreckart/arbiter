@@ -228,12 +228,19 @@ public:
     explicit ToolCallIndicator(TUI* tui = nullptr) : tui_(tui) {}
 
     void begin();
+    // Pair with bump() on Finished so the sidebar "live" count tracks
+    // in-flight tools rather than cumulative finished ones.
+    void on_started();
     void bump(const std::string& kind, bool ok);
     std::string finalize();
     void tick();
 
-    int total()  const { return total_.load(); }
-    int failed() const { return failed_.load(); }
+    int total()    const { return total_.load(); }
+    int failed()   const { return failed_.load(); }
+    int inflight() const {
+        const int n = inflight_.load();
+        return n > 0 ? n : 0;
+    }
 
 private:
     void update_status();
@@ -243,6 +250,7 @@ private:
     std::atomic<bool> active_{false};
     std::atomic<int>  total_{0};
     std::atomic<int>  failed_{0};
+    std::atomic<int>  inflight_{0};
 };
 
 } // namespace arbiter

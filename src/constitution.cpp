@@ -198,12 +198,12 @@ static const char* bundle_todos_inventory() {
         "  /endtodo\n"
         "  /todo list                                 — render open todos (in_progress + pending)\n"
         "  /todo list all                             — include completed + canceled history\n"
-        "  /todo start <id>                           — mark in_progress before doing the work\n"
-        "  /todo done <id>                            — mark completed when finished\n"
-        "  /todo cancel <id>                          — mark canceled (won't be done)\n"
+        "  /todo start <id|subject>                   — mark in_progress before doing the work\n"
+        "  /todo done <id|subject>                    — mark completed when finished\n"
+        "  /todo cancel <id|subject>                  — mark canceled (won't be done)\n"
         "  /todo describe <id>: <text>                — set/replace description\n"
         "  /todo subject <id>: <text>                 — rename\n"
-        "  /todo delete <id>                          — hard remove (no undo)\n";
+        "  /todo delete <id|subject>                  — hard remove (no undo)\n";
 }
 
 static const char* bundle_schedule_inventory() {
@@ -275,7 +275,8 @@ static std::string compose_command_rules(const std::set<std::string>& b) {
         s +=
             "- /todo is your visible progress tracker.  Capture each concrete step as it\n"
             "  crystallizes — todos ARE the plan, no separate preamble needed.  /todo start\n"
-            "  <id> BEFORE doing the work; /todo done <id> when finished.  The marker is\n"
+            "  <id> (or the todo's subject) BEFORE doing the work; /todo done <id|subject>\n"
+            "  when finished. Prefer the numeric id from `OK: added #N`.  The marker is\n"
             "  what makes progress legible across turns and to anyone reading later.\n"
             "- Open todos auto-prepend to your turn as [OPEN TODOS]; if no such block\n"
             "  appears, you have no open work.  Do NOT call /todo list as a habit — only\n"

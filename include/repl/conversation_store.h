@@ -131,6 +131,8 @@ public:
     void lock_title(const std::string& id);
     [[nodiscard]] bool is_titled(const std::string& id) const;
 
+    // Background model title. `assistant_msg` may be empty when titling from
+    // the first user prompt alone (fired in parallel with the first turn).
     void enqueue_title_job(const std::string& id,
                            const std::string& user_msg,
                            const std::string& assistant_msg,

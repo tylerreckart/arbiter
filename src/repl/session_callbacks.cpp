@@ -25,12 +25,12 @@
 #include "tui/prompt_bridge.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
-#include "tui/theme_picker.h"
+#include "tui/menu.h"
 #include "tui/clipboard.h"
 #include "tui/opentui/session.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
-#include "tui/opentui/theme_picker_frame.h"
+#include "tui/opentui/menu_frame.h"
 #include "tui/opentui/mouse_decode.h"
 #include "tui/opentui/mouse_hit.h"
 #include "repl/pane.h"
@@ -278,31 +278,43 @@ void ReplSession::install_orch_callbacks() {
         renderer.flush();
     });
     orch.set_tool_status_callback([&](const arbiter::ToolActivityEvent& ev) {
+        // Apply todo state before rewriting the user-visible label so
+        // `todo:start 14` can resolve to the title for the timeline row.
+        if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
+            sidebar.record_tool(ev.label, ev.ok, ev.result_preview);
+        }
+        arbiter::ToolActivityEvent view = ev;
+        if (view.label.rfind("todo:", 0) == 0) {
+            view.label = sidebar.friendly_todo_label(ev.label);
+        }
+
         Pane* p = g_active_pane;
         if (p) {
             // In-scroll timeline row (Started creates, Finished updates).
-            p->output_queue.push_tool(ev);
+            p->output_queue.push_tool(view);
             // Do NOT call begin() here — turn entry already arms the spinner.
             // begin() zeroes counters, so N tools would always display as "1".
-            if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
-                p->tool_indicator.bump(ev.label, ev.ok);
+            if (ev.phase == arbiter::ToolActivityEvent::Phase::Started) {
+                p->tool_indicator.on_started();
+            } else if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
+                p->tool_indicator.bump(view.label, ev.ok);
             }
         }
         if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
-            sidebar.record_tool(ev.label, ev.ok);
             // Persist for conversation-switch replay.  Pane history is what
             // apply_conversation_to_pane rebuilds (usually "index"), so the
             // pane agent always gets the row.  When a nested /agent dispatched
             // the tool, also mirror onto that child so its own history stays
-            // accurate if inspected later.
+            // accurate if inspected later.  Store the friendly label so
+            // replayed chrome never surfaces bare todo ids.
             if (p) {
                 arbiter::ToolTraceEntry te;
-                te.id = ev.id;
-                te.label = ev.label;
-                te.kind = ev.kind;
-                te.detail = ev.detail;
-                te.ok = ev.ok;
-                te.result_preview = ev.result_preview;
+                te.id = view.id;
+                te.label = view.label;
+                te.kind = view.kind;
+                te.detail = view.detail;
+                te.ok = view.ok;
+                te.result_preview = view.result_preview;
                 orch.append_tool_trace(p->current_agent, te);
                 if (!ev.agent_id.empty() && ev.agent_id != p->current_agent) {
                     orch.append_tool_trace(ev.agent_id, std::move(te));
