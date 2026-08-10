@@ -67,6 +67,9 @@ void render_messages(opentui::PaneScrollView& view,
                      std::size_t end,
                      const std::string& agent_id,
                      DiffProposalStore* proposals) {
+    // Hydrate todos across the replay window so id→subject mapping matches
+    // live chrome (same record_tool cadence as replay_sidebar_todos).
+    SidebarState sidebar_labels;
     for (std::size_t i = begin; i < end; ++i) {
         const Message& m = history[i];
         if (is_replay_noise(m)) continue;
@@ -85,14 +88,15 @@ void render_messages(opentui::PaneScrollView& view,
         renderer.feed(m.content);
         renderer.flush();
         // Rebuild finished tool rows that followed this assistant turn.
-        SidebarState sidebar_labels;
         for (const auto& t : m.tool_trace) {
             ToolActivityEvent ev;
             ev.phase = ToolActivityEvent::Phase::Finished;
             ev.id = t.id;
             ev.label = t.label;
-            if (ev.label.rfind("todo:", 0) == 0)
+            if (ev.label.rfind("todo:", 0) == 0) {
+                sidebar_labels.record_tool(t.label, t.ok, t.result_preview);
                 ev.label = sidebar_labels.friendly_todo_label(t.label);
+            }
             ev.kind = t.kind;
             ev.detail = t.detail;
             ev.ok = t.ok;

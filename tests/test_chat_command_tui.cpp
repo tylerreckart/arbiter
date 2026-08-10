@@ -152,9 +152,11 @@ TEST_CASE("/find reports match position in the status line and cycles") {
 
     {
         // /help opens the interactive overlay menu; dismiss before typing.
+        // Only the first page of rows is painted — wait for a top-of-list
+        // token (not /find, which sits below the viewport).
         const std::size_t before_help = s.output().size();
         s.send("/help\r");
-        REQUIRE(wait_for_token(s, before_help, "/find", 15000));
+        REQUIRE(wait_for_token(s, before_help, "/send", 15000));
         s.send("\x1b");  // Esc — close menu, return stdin to the editor
         // Let the modal tear down before the next slash command.
         const std::size_t before_dismiss = s.output().size();
