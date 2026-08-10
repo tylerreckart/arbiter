@@ -476,14 +476,12 @@ resolve_workspace_path(std::string_view rel_path,
     // target on create.
     {
         auto s = resolved.string();
-        while (s.size() > 1 && s.back() == '/') s.pop_back();
+        while (s.size() > 1 && (s.back() == '/' || s.back() == '\\'))
+            s.pop_back();
         resolved = s;
     }
     const auto resolved_str = resolved.string();
-    if (resolved_str.size() < root_str.size() ||
-        resolved_str.compare(0, root_str.size(), root_str) != 0 ||
-        (resolved_str.size() > root_str.size() &&
-         resolved_str[root_str.size()] != '/')) {
+    if (!path_within_canonical_root(root_str, resolved_str)) {
         err = "path escapes project directory";
         return std::nullopt;
     }

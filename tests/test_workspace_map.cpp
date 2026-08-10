@@ -4,6 +4,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "workspace_map.h"
+#include "workspace_root.h"
 
 #include <chrono>
 #include <filesystem>
@@ -87,6 +88,14 @@ TEST_CASE("cmd_map honors entry cap truncation") {
     auto out = cmd_map(dir.path.string(), {}, opts);
     CHECK(out.find("truncated") != std::string::npos);
     CHECK(out.find("entry cap") != std::string::npos);
+}
+
+TEST_CASE("path_within_canonical_root accepts native separators") {
+    CHECK(path_within_canonical_root("/proj", "/proj"));
+    CHECK(path_within_canonical_root("/proj", "/proj/src/a.cpp"));
+    CHECK(path_within_canonical_root("C:\\proj", "C:\\proj\\src\\a.cpp"));
+    CHECK_FALSE(path_within_canonical_root("/proj", "/project"));
+    CHECK_FALSE(path_within_canonical_root("/proj", "/proj-evil"));
 }
 
 TEST_CASE("cmd_map refuses missing workspace root") {

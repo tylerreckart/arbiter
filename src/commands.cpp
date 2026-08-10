@@ -1385,9 +1385,7 @@ std::string cmd_write(const std::string& path, const std::string& content,
     // Resolved path must be a prefix of (or equal to) the workspace root.
     auto resolved_str = resolved.string();
     auto cwd_str = cwd.string();
-    if (resolved_str.size() < cwd_str.size() ||
-        resolved_str.compare(0, cwd_str.size(), cwd_str) != 0 ||
-        (resolved_str.size() > cwd_str.size() && resolved_str[cwd_str.size()] != '/'))
+    if (!path_within_canonical_root(cwd_str, resolved_str))
         return "ERR: path escapes project directory";
 
     // Create parent directories under the resolved absolute path so a
