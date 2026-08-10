@@ -290,6 +290,41 @@ void SidebarState::apply_schedule_activity(const std::string& label, bool ok) {
     }
 }
 
+std::string SidebarState::persist_todo_label(const std::string& label) const {
+    if (label.rfind("todo:", 0) != 0) return label;
+    const std::string rest = label.size() > 5 ? label.substr(5) : std::string{};
+    std::istringstream iss(rest);
+    std::string verb;
+    iss >> verb;
+    std::string args;
+    std::getline(iss, args);
+    args = trim_ws(args);
+
+    if (verb == "describe" || verb == "subject") {
+        const auto colon = args.find(':');
+        if (colon != std::string::npos) {
+            const std::string id_part = trim_ws(args.substr(0, colon));
+            const std::string text = trim_ws(args.substr(colon + 1));
+            if (!text.empty()) {
+                std::lock_guard<std::mutex> lk(mu_);
+                std::vector<TodoSubjectRef> refs;
+                refs.reserve(todos_.size());
+                for (const auto& t : todos_) refs.push_back({t.id, t.subject});
+                std::string err;
+                const int id = resolve_todo_subject_ref(id_part, refs, err);
+                if (id > 0) {
+                    for (const auto& t : todos_) {
+                        if (t.id == id)
+                            return "todo:" + verb + " " + t.subject + ": " + text;
+                    }
+                }
+            }
+        }
+    }
+
+    return friendly_todo_label(label);
+}
+
 std::string SidebarState::friendly_todo_label(const std::string& label) const {
     if (label.rfind("todo:", 0) != 0) return label;
     const std::string rest = label.size() > 5 ? label.substr(5) : std::string{};

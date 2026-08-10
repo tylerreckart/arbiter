@@ -1,6 +1,7 @@
 #include "repl/transcript_replay.h"
 
 #include "render_policy.h"
+#include "tui/sidebar.h"
 #include "repl/diff_proposals.h"
 #include "repl/pane.h"
 #include "repl/pane_history.h"
@@ -84,11 +85,14 @@ void render_messages(opentui::PaneScrollView& view,
         renderer.feed(m.content);
         renderer.flush();
         // Rebuild finished tool rows that followed this assistant turn.
+        SidebarState sidebar_labels;
         for (const auto& t : m.tool_trace) {
             ToolActivityEvent ev;
             ev.phase = ToolActivityEvent::Phase::Finished;
             ev.id = t.id;
             ev.label = t.label;
+            if (ev.label.rfind("todo:", 0) == 0)
+                ev.label = sidebar_labels.friendly_todo_label(t.label);
             ev.kind = t.kind;
             ev.detail = t.detail;
             ev.ok = t.ok;

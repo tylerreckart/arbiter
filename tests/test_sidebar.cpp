@@ -102,6 +102,30 @@ TEST_CASE("todo start/done accept subject when agent omits the id") {
     CHECK(sb.snapshot().todos[0].status == "completed");
 }
 
+TEST_CASE("todo subject replay resolves target by persisted subject ref") {
+    SidebarState sb;
+    sb.record_tool("todo:add Task A", true, "OK: added #1 — Task A");
+    sb.record_tool("todo:add Task B", true, "OK: added #2 — Task B");
+    sb.record_tool("todo:start 1", true, "OK: in_progress — Task A");
+    CHECK(sb.persist_todo_label("todo:subject 2: Renamed B")
+          == "todo:subject Task B: Renamed B");
+    sb.record_tool("todo:subject Task B: Renamed B", true);
+    const auto snap = sb.snapshot();
+    REQUIRE(snap.todos.size() == 2);
+    const SidebarTodoEntry* a = nullptr;
+    const SidebarTodoEntry* b = nullptr;
+    for (const auto& t : snap.todos) {
+        if (t.id == 1) a = &t;
+        if (t.id == 2) b = &t;
+    }
+    REQUIRE(a);
+    REQUIRE(b);
+    CHECK(a->subject == "Task A");
+    CHECK(a->status == "in_progress");
+    CHECK(b->subject == "Renamed B");
+    CHECK(b->status == "pending");
+}
+
 TEST_CASE("friendly_todo_label hides numeric ids from user-facing chrome") {
     SidebarState sb;
     sb.record_tool("todo:add Ship the landing page", true,

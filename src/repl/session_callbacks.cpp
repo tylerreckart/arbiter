@@ -280,11 +280,17 @@ void ReplSession::install_orch_callbacks() {
     orch.set_tool_status_callback([&](const arbiter::ToolActivityEvent& ev) {
         // Apply todo state before rewriting the user-visible label so
         // `todo:start 14` can resolve to the title for the timeline row.
-        if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
-            sidebar.record_tool(ev.label, ev.ok, ev.result_preview);
-        }
         arbiter::ToolActivityEvent view = ev;
-        if (view.label.rfind("todo:", 0) == 0) {
+        std::string trace_label = ev.label;
+        if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
+            if (ev.label.rfind("todo:", 0) == 0) {
+                trace_label = sidebar.persist_todo_label(ev.label);
+                sidebar.record_tool(ev.label, ev.ok, ev.result_preview);
+                view.label = sidebar.friendly_todo_label(ev.label);
+            } else {
+                sidebar.record_tool(ev.label, ev.ok, ev.result_preview);
+            }
+        } else if (view.label.rfind("todo:", 0) == 0) {
             view.label = sidebar.friendly_todo_label(ev.label);
         }
 
@@ -310,7 +316,7 @@ void ReplSession::install_orch_callbacks() {
             if (p) {
                 arbiter::ToolTraceEntry te;
                 te.id = view.id;
-                te.label = view.label;
+                te.label = trace_label;
                 te.kind = view.kind;
                 te.detail = view.detail;
                 te.ok = view.ok;

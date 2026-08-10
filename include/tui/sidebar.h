@@ -103,6 +103,9 @@ public:
     // Rewrite `todo:start 14` → `todo:start <title>` for user-visible chrome.
     // Numeric ids stay available for command execution; they are not shown.
     [[nodiscard]] std::string friendly_todo_label(const std::string& label) const;
+    // Tool-trace persistence for todo:* commands. Call before record_tool so
+    // subject/describe rows keep a replayable subject ref (no bare numeric ids).
+    [[nodiscard]] std::string persist_todo_label(const std::string& label) const;
     void set_active_tool_calls(int count);
     void set_focus_context(const std::string& agent,
                            const std::string& model);
