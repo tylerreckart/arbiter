@@ -278,7 +278,7 @@ inline const InteractivePromptOption* permission_prompt_options(int& count) {
 inline const InteractivePromptOption* diff_review_prompt_options(int& count) {
     static constexpr InteractivePromptOption kOpts[] = {
         {InteractiveDecision::Allow,    'a', "Apply",     "write this patch"},
-        {InteractiveDecision::Deny,     'r', "Reject",    "keep pending off"},
+        {InteractiveDecision::Deny,     'r', "Reject",    "leave it rejected"},
         {InteractiveDecision::AllowAll, 'A', "Allow all", "apply this + remaining diffs"},
         {InteractiveDecision::Cancel,   0,   "Cancel",    "leave pending · Esc"},
     };
