@@ -33,6 +33,7 @@ std::string strip_path_prefix(std::string_view raw) {
     // Keep other absolute paths intact so path_has_traversal rejects them
     // (do not collapse "/etc/passwd" into a relative "etc/passwd").
     if (!raw.empty() && raw.front() == '/') return std::string(raw);
+    if (!raw.empty() && raw.front() == '\\') return std::string(raw);
     if (raw.size() >= 2 && raw[1] == '/' &&
         (raw[0] == 'a' || raw[0] == 'b')) {
         raw.remove_prefix(2);
@@ -45,39 +46,42 @@ std::string strip_path_prefix(std::string_view raw) {
     // Collapse "." segments and empty mid-path parts (LLM/git noise).
     // Still reject ".." via path_has_traversal.
     std::string out;
-    std::size_t i = 0;
-    while (i < raw.size()) {
-        const auto slash = raw.find('/', i);
-        const auto part = (slash == std::string_view::npos)
-            ? raw.substr(i) : raw.substr(i, slash - i);
-        if (!part.empty() && part != ".") {
-            if (!out.empty()) out.push_back('/');
-            out.append(part);
+    std::string cur;
+    for (char c : raw) {
+        if (c == '/' || c == '\\') {
+            if (!cur.empty() && cur != ".") {
+                if (!out.empty()) out.push_back('/');
+                out.append(cur);
+            }
+            cur.clear();
+        } else {
+            cur.push_back(c);
         }
-        if (slash == std::string_view::npos) break;
-        i = slash + 1;
+    }
+    if (!cur.empty() && cur != ".") {
+        if (!out.empty()) out.push_back('/');
+        out.append(cur);
     }
     return out;
 }
 
 bool path_has_traversal(std::string_view p) {
     if (p.empty()) return true;
-    if (!p.empty() && p.front() == '/') return true;
+    if (p.front() == '/' || p.front() == '\\') return true;
     // Reject Windows drive / UNC styles early.
     if (p.size() >= 2 && std::isalpha(static_cast<unsigned char>(p[0])) &&
         p[1] == ':')
         return true;
-    std::size_t i = 0;
-    while (i < p.size()) {
-        const auto slash = p.find('/', i);
-        const auto part = (slash == std::string_view::npos)
-            ? p.substr(i) : p.substr(i, slash - i);
-        // "." is normalized away in strip_path_prefix; reject ".." only.
-        if (part == "..") return true;
-        if (slash == std::string_view::npos) break;
-        i = slash + 1;
+    std::string cur;
+    for (char c : p) {
+        if (c == '/' || c == '\\') {
+            if (cur == "..") return true;
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
     }
-    return false;
+    return cur == "..";
 }
 
 int parse_hunk_count(std::string_view part, int fallback_start) {
