@@ -7,22 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-### Fixed
-- **SSE live-tail mailbox growth (#189).** Request-event, notification, and A2A
-  resubscribe streams cap per-connection mailboxes at 2048 events; slow clients
-  get a `slow_consumer` terminal instead of unbounded memory growth. A2A
-  `tasks/resubscribe` overflow closes the stream with `state: working`,
-  `final: true`, and `x-arbiter.error_code: slow_consumer` — not
-  `TaskState::failed` — so a still-running task is not misreported.
-- **TUI broken-sandbox host fallback.** When `ARBITER_SANDBOX_IMAGE` is set but
-  the sandbox fails usability, the TUI now disables `/exec` (returns `ERR`)
-  instead of falling through to confirm-gated host `popen`.
-- **Event routing past the newest-200 agent page.** `POST /v1/events` scans
-  tenant agents via `list_agent_records_for_routing` (ascending `agent_id`,
-  soft-capped at 10000) rather than the REST list page.
-- **Sandbox timeout survivor kill vs concurrent exec.** Same-tenant `/exec`
-  is always serialized on the per-tenant mutex so timeout cleanup cannot
-  SIGKILL a sibling exec when workspace quota is disabled.
+## [0.12.0] — 2026-08-11
+
+Minor release: multi-tenant bearer auth and `TenantGate` kill-switch restored,
+Phase 2 production `--api` hardening (circuit breaker, CORS, sandbox),
+conversation-scoped workspace roots with `/map`, shared model catalog UX, and
+TUI overlay menus / history-sidebar polish.
 
 ### Added
 - **`/map` workspace tree writ.** Cheap structural index of the conversation
@@ -35,11 +25,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   switches the project directory with them; missing/unknown roots refuse the
   write (no process-cwd fallback). Sidebar subtitles show the bound project
   dirname. CLI `--send` still uses process cwd.
+- **Shared TUI overlay menu.** `/theme`, `/model`, and `/help` share one
+  scrim + caret menu (↑↓ browse; Enter selects / opens detail; Esc cancels).
+  `/theme` still live-previews; `/model` applies the focused agent; `/help`
+  opens an interactive command browser.
 - **Model catalog UX.** Shared `model_catalog` (id, provider, `context_window`)
   powers `GET /v1/models`, the interactive `/model` catalogue, the first-run
   wizard picks, and `context_window_for_model` used by auto-compaction and the
-  TUI sidebar. `/model` with no args lists the catalogue; `/model <agent>`
-  shows the current model + window; setting a model reports the window.
+  TUI sidebar. `/model` with no args opens the menu; `/model <agent>` shows
+  the current model + window; setting a model reports the window.
 - **Tunable provider circuit breaker.** `ARBITER_CIRCUIT_FAILURE_THRESHOLD`
   (default 5) and `ARBITER_CIRCUIT_COOLDOWN_SECONDS` (default 30) configure the
   process-wide breaker used by `--api`.
@@ -78,10 +72,52 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   immediate `cancel()`. Sticky `hard_cancelled_` survives ephemeral cancel
   clears. Admin PATCH requires boolean `disabled`. A2A kill-switch stays
   JSON-RPC-shaped.
+- **History sidebar UX.** Docked chat menus, `›` selection caret, modal new-
+  folder prompt, active-title marquee, and first-prompt titling that sets an
+  instant deterministic title then refines it with a parallel model call
+  (without waiting for the turn to finish).
+- **Session todos in the sidebar.** `/todo start|done` accept a unique open
+  subject (or prefix) in addition to numeric ids; completed rows stay visible
+  with `✓` and subject-only labels; conversation switch clears and replays
+  todos from `tool_trace`.
+- **Themed native diffs.** Add/remove backgrounds derive from the active
+  theme accent instead of fixed stock green/red.
 - **Sandbox idle reaper logging.** Reaps emit structured
   `sandbox_container_reaped` via `Logger` instead of raw `fprintf`.
 - **`POST /v1/events` status.** Documented as stable now that tenant-agent
   routing is included.
+
+### Fixed
+- **SSE live-tail mailbox growth (#189).** Request-event, notification, and A2A
+  resubscribe streams cap per-connection mailboxes at 2048 events; slow clients
+  get a `slow_consumer` terminal instead of unbounded memory growth. A2A
+  `tasks/resubscribe` overflow closes the stream with `state: working`,
+  `final: true`, and `x-arbiter.error_code: slow_consumer` — not
+  `TaskState::failed` — so a still-running task is not misreported.
+- **TUI broken-sandbox host fallback.** When `ARBITER_SANDBOX_IMAGE` is set but
+  the sandbox fails usability, the TUI now disables `/exec` (returns `ERR`)
+  instead of falling through to confirm-gated host `popen`.
+- **Event routing past the newest-200 agent page.** `POST /v1/events` scans
+  tenant agents via `list_agent_records_for_routing` (ascending `agent_id`,
+  soft-capped at 10000) rather than the REST list page.
+- **Sandbox timeout survivor kill vs concurrent exec.** Same-tenant `/exec`
+  is always serialized on the per-tenant mutex so timeout cleanup cannot
+  SIGKILL a sibling exec when workspace quota is disabled.
+- **Todo resolve / sidebar replay.** Numeric id targets must appear in the
+  open candidate list (no fallthrough to subject prefixes like `"99 bottles"`);
+  subject/describe `tool_trace` labels keep the pre-update subject so
+  multi-todo replay hits the right row; unfocused pane rebinds no longer
+  clobber the visible todo list.
+- **Diff apply backslash traversal (#198).** `path_has_traversal` and
+  `strip_path_prefix` treat `\` as a separator and reject leading backslashes,
+  so unified-diff targets like `foo\..\etc\passwd` cannot bypass workspace
+  checks.
+- **Sandbox symlink enumeration.** `list_workspace` and
+  `measure_workspace_bytes` skip symlinks during recursive walks so directory
+  symlinks cannot leak external names or inflate quota.
+- **`list_workspace` memory caps (#202).** Entry/byte limits apply while
+  streaming the walk instead of collecting the full tree first, so huge
+  sandboxes cannot force an unbounded path vector before truncation.
 
 ## [0.11.0] — 2026-08-06
 
