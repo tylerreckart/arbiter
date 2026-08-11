@@ -54,17 +54,31 @@ void apply_base_style(StyledLine& line, StyleId base);
 [[nodiscard]] StyledLine styled_delegation_line(std::string_view detail);
 
 // Multi-line permission card for destructive confirms (write/exec).
+// Option rows use a › caret on `selected`; Enter commits that row.
+// `pending_after` annotates how many prompts remain behind this card.
 [[nodiscard]] std::vector<StyledLine> styled_permission_card(
     const std::string& action,
     const std::string& target,
-    const std::vector<std::string>& preview_lines);
+    const std::vector<std::string>& preview_lines,
+    int pending_after = 0,
+    bool accept_edits_on = false,
+    int selected = 0);
 
-// Interactive `/diff` review card: apply / reject / allow-all a streamed patch.
-// Prompt line is `[a]pply  [r]eject  [A]llow all  Esc cancel`.
+// Interactive `/diff` review card with selectable apply / reject / allow-all.
 [[nodiscard]] std::vector<StyledLine> styled_diff_review_card(
     int patch_id,
     const std::string& path,
     const std::string& summary,
-    const std::vector<std::string>& preview_lines);
+    const std::vector<std::string>& preview_lines,
+    int pending_after = 0,
+    bool accept_edits_on = false,
+    int selected = 0);
+
+// Yes/No choice card (pane close, switch-anyway) — same › caret picker chrome.
+[[nodiscard]] std::vector<StyledLine> styled_yes_no_card(
+    const std::string& action,
+    const std::string& target,
+    const std::vector<std::string>& preview_lines,
+    int selected = 1);
 
 } // namespace arbiter

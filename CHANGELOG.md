@@ -7,6 +7,20 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Interactive prompt navigation (TUI).** Permission and diff-review cards
+  are ↑↓/Enter option pickers (› caret; letter shortcuts still commit). Cards
+  show `(+N more waiting)`, switch the footer to picker hints, and name the
+  active prompt on the status line. `/accept-edits [on|off]` toggles session
+  accept-edits; `/prompts` and `/status` surface the flag and waiting cards.
+  Pane-close and conversation “switch anyway?” confirms share the same Yes/No
+  picker chrome (default No).
+- **Stream pause on ```diff review.** Streamed patches register on the
+  producer thread and **block the model stream** until you answer (same
+  contract as permission confirms). Esc leaves the patch pending for `/diff`.
+  See [`docs/tui/output-ux.md`](docs/tui/output-ux.md) and
+  [`docs/tui/keybindings.md`](docs/tui/keybindings.md).
+
 ## [0.12.0] — 2026-08-11
 
 Minor release: multi-tenant bearer auth and `TenantGate` kill-switch restored,

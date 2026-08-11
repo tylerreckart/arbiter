@@ -478,24 +478,85 @@ TEST_CASE("styled_permission_card includes action target preview and prompt") {
     auto card = styled_permission_card(
         "write", "src/main.cpp",
         {"12 lines, 40 bytes", "#include <iostream>"});
-    REQUIRE(card.size() >= 3);
+    REQUIRE(card.size() >= 4);
     CHECK(card.front().text.find("permission") != std::string::npos);
     CHECK(card.front().text.find("write") != std::string::npos);
     CHECK(card.front().text.find("src/main.cpp") != std::string::npos);
-    CHECK(card.back().text.find("[y/N]") != std::string::npos);
+    bool saw_allow = false;
+    bool saw_caret = false;
+    bool saw_move_hint = false;
+    for (const auto& line : card) {
+        if (line.text.find("Allow") != std::string::npos) saw_allow = true;
+        if (line.text.find("›") != std::string::npos) saw_caret = true;
+        if (line.text.find("Enter confirm") != std::string::npos) saw_move_hint = true;
+    }
+    CHECK(saw_allow);
+    CHECK(saw_caret);
+    CHECK(saw_move_hint);
+}
+
+TEST_CASE("styled_permission_card annotates queue depth and accept-edits") {
+    auto card = styled_permission_card(
+        "exec", "git status", {"HOST SHELL (unsandboxed)"},
+        /*pending_after=*/2, /*accept_edits_on=*/true, /*selected=*/1);
+    REQUIRE(card.size() >= 3);
+    bool saw_waiting = false;
+    bool saw_accept = false;
+    bool saw_deny_selected = false;
+    for (const auto& line : card) {
+        if (line.text.find("+2 more waiting") != std::string::npos)
+            saw_waiting = true;
+        if (line.text.find("accept-edits on") != std::string::npos)
+            saw_accept = true;
+        if (line.text.find("›") != std::string::npos &&
+            line.text.find("Deny") != std::string::npos)
+            saw_deny_selected = true;
+    }
+    CHECK(saw_waiting);
+    CHECK(saw_accept);
+    CHECK(saw_deny_selected);
 }
 
 TEST_CASE("styled_diff_review_card includes apply reject Allow all Esc prompt") {
     auto card = styled_diff_review_card(
         3, "src/foo.cpp", "Apply under /tmp/proj. Missing files are created.",
         {"-old", "+new"});
-    REQUIRE(card.size() >= 3);
+    REQUIRE(card.size() >= 4);
     CHECK(card.front().text.find("review") != std::string::npos);
     CHECK(card.front().text.find("#3") != std::string::npos);
     CHECK(card.front().text.find("src/foo.cpp") != std::string::npos);
-    CHECK(card.back().text.find("[a]pply") != std::string::npos);
-    CHECK(card.back().text.find("[r]eject") != std::string::npos);
-    CHECK(card.back().text.find("[A]llow all") != std::string::npos);
+    bool saw_apply = false;
+    bool saw_reject = false;
+    bool saw_allow_all = false;
+    for (const auto& line : card) {
+        if (line.text.find("Apply") != std::string::npos) saw_apply = true;
+        if (line.text.find("Reject") != std::string::npos) saw_reject = true;
+        if (line.text.find("Allow all") != std::string::npos) saw_allow_all = true;
+    }
+    CHECK(saw_apply);
+    CHECK(saw_reject);
+    CHECK(saw_allow_all);
+}
+
+TEST_CASE("styled_yes_no_card uses › caret picker chrome") {
+    auto card = styled_yes_no_card(
+        "close", "research", {"pane finished — close it?"}, /*selected=*/1);
+    REQUIRE(card.size() >= 3);
+    CHECK(card.front().text.find("confirm") != std::string::npos);
+    CHECK(card.front().text.find("close") != std::string::npos);
+    bool saw_yes = false;
+    bool saw_no_selected = false;
+    bool saw_hint = false;
+    for (const auto& line : card) {
+        if (line.text.find("Yes") != std::string::npos) saw_yes = true;
+        if (line.text.find("›") != std::string::npos &&
+            line.text.find("No") != std::string::npos)
+            saw_no_selected = true;
+        if (line.text.find("Enter confirm") != std::string::npos) saw_hint = true;
+    }
+    CHECK(saw_yes);
+    CHECK(saw_no_selected);
+    CHECK(saw_hint);
 }
 
 TEST_CASE("indented code block routes to code sink when wired") {

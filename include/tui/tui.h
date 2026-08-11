@@ -73,6 +73,11 @@ struct TuiChromeSnapshot {
     std::string pre_input_status;
     // Unfocused activity badge drawn on the mid-separator when set.
     std::string activity_badge;
+    // When set, pane chrome uses these instead of theme footer strings
+    // (interactive permission / diff-review cards).
+    bool footer_override = false;
+    std::string footer_left_override;
+    std::string footer_right_override;
 };
 
 class TUI {
@@ -150,6 +155,11 @@ public:
     // chrome_compact_rows only reclaims pad when show_footer is off.
     void set_footer_hint_mode(FooterHintMode mode);
 
+    // Temporary footer copy while an interactive prompt card is active.
+    // Cleared after the decision; Compact/Full layout still applies.
+    void set_footer_override(std::string left, std::string right = {});
+    void clear_footer_override();
+
     // Whether this pane sits on the layout's outer bottom edge.  LayoutTree
     // updates this after every resize / split / focus change.
     void set_outer_bottom(bool on_bottom);
@@ -184,6 +194,9 @@ private:
     int  input_rows_ = 0;              // 0 until focused / begin_input
     bool status_active_ = false;
     FooterHintMode footer_hint_mode_ = FooterHintMode::Full;
+    bool footer_override_ = false;
+    std::string footer_left_override_;
+    std::string footer_right_override_;
     bool outer_bottom_ = true;         // touches layout outer bottom edge
     bool outer_top_ = true;            // touches layout outer top edge
     bool focus_accent_ = false;        // reserved for multi-pane chrome accents

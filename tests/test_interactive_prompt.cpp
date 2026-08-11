@@ -203,6 +203,51 @@ TEST_CASE("fail_all cancels waiters") {
     CHECK(result.load() == arbiter::InteractiveDecision::Cancel);
 }
 
+TEST_CASE("size peek and snapshot track FIFO backlog") {
+    arbiter::InteractivePromptQueue q;
+    CHECK(q.size() == 0);
+    CHECK_FALSE(q.peek_front().has_value());
+    CHECK(q.snapshot().empty());
+
+    arbiter::InteractiveRequest d;
+    d.kind = arbiter::InteractiveKind::DiffReview;
+    d.patch_id = 7;
+    d.path = "x.cpp";
+    q.enqueue_auto(std::move(d));
+
+    arbiter::InteractiveRequest c;
+    c.kind = arbiter::InteractiveKind::Confirm;
+    c.action = "exec";
+    c.target = "ls";
+    std::thread t([&] { (void)q.request(std::move(c)); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    CHECK(q.size() == 2);
+    auto peek = q.peek_front();
+    REQUIRE(peek.has_value());
+    CHECK(peek->kind == arbiter::InteractiveKind::DiffReview);
+    CHECK(peek->patch_id == 7);
+    CHECK(q.size() == 2);  // peek is non-destructive
+
+    auto snap = q.snapshot();
+    REQUIRE(snap.size() == 2);
+    CHECK(snap[0].patch_id == 7);
+    CHECK(snap[1].action == "exec");
+    CHECK(arbiter::interactive_request_label(snap[0]).find("diff #7")
+          != std::string::npos);
+    CHECK(arbiter::interactive_request_label(snap[1]).find("exec")
+          != std::string::npos);
+
+    auto front = q.take_front();
+    REQUIRE(front.has_value());
+    CHECK(q.size() == 1);
+    auto left = q.take_front();
+    REQUIRE(left.has_value());
+    arbiter::complete_prompt_promise(left->promise,
+                                     arbiter::InteractiveDecision::Allow);
+    t.join();
+}
+
 TEST_CASE("request_confirm maps AllowAll to true") {
     CHECK(arbiter::decision_is_affirmative(arbiter::InteractiveDecision::Allow));
     CHECK(arbiter::decision_is_affirmative(arbiter::InteractiveDecision::AllowAll));

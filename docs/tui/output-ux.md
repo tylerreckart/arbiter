@@ -74,17 +74,35 @@ cwd; the TUI binds each conversation's stored `cwd`).
 ```
 permission exec  git status
   HOST SHELL (unsandboxed)
-  allow? [y/N]
+  (+2 more waiting)
+  › [y] Allow         —  run this once
+    [n] Deny          —  return decline to the agent
+    [A] Accept edits  —  allow + auto-apply future file diffs
+      Cancel          —  Esc / Ctrl-C
+  ↑↓ move  Enter confirm  Esc cancel
 ```
 
-Keys remain `y` / `n` (and `A` to allow the command and turn on accept-edits
-for subsequent file diffs). Declines still return `ERR: user declined` to the
-agent.
+**Navigation:** ↑↓ (or `j`/`k`) moves the › caret · **Enter** commits the
+highlighted option · letter shortcuts (`y`/`n`/`A`, or `a`/`r`/`A` on diffs)
+still commit immediately · **Esc** / Ctrl-C cancels. Declines return
+`ERR: user declined` to the agent.
 
-Confirms and diff reviews share one FIFO interactive prompt queue: a second
-prompt never silently fails an earlier waiter. Streamed ```diff patches
-auto-enqueue a review card (`[a]` / `[r]` / `[A]` allow all / Esc).
+Confirms and diff reviews share one FIFO interactive prompt queue. While a
+card is active the footer switches to the decision keys, the status line names
+the prompt, and `(+N more waiting)` appears when the backlog is deeper than
+one. Pane-close and “switch anyway?” confirms use the same › caret picker
+(Yes/No, defaulting to No).
 
+**Stream pause:** streamed ```diff fences **block the model stream** until you
+answer the review card (same contract as permission confirms pausing tool
+dispatch). Further tokens wait on the producer thread; the DiffSegment paints
+first so you can scroll with PgUp/PgDn while deciding.
+
+Session **accept-edits** (set by permission/`diff` **Accept edits / Allow all**,
+or `/accept-edits on`) auto-applies later streamed diffs with
+`[diff auto-applied — accept edits on]`. Exec/write confirms still prompt.
+Toggle off with `/accept-edits off`. `/prompts` and `/status` show the flag
+and any waiting cards.
 ## Reasoning
 
 When Anthropic emits `thinking_delta`, OpenAI-compat emits

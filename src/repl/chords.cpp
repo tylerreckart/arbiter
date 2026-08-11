@@ -105,18 +105,25 @@ bool ReplSession::service_pending_closes() {
             }
             if (!still_alive) continue;
 
-            // Render the confirm prompt in the focused pane's scrollback.
+            // Same ↑↓/Enter picker as agent permission confirms.
+            int opt_count = 0;
+            const auto* opts = yes_no_prompt_options(opt_count);
+            Pane* focused = nullptr;
             {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                StyledLine prompt_line;
-                styled_append(prompt_line, StyleId::Warning,
-                              "pane '" + pc.agent_id + "' finished — close it? [y/N]");
-                pane_history_push_prose(layout_ptr->focused(), {prompt_line}, true);
-                present_holding_lock();
+                focused = &layout_ptr->focused();
             }
-
-            const int key = arbiter::read_confirm_key();
-            bool yes = (key == 'y' || key == 'Y');
+            const auto decision = run_prompt_picker(
+                *focused, opts, opt_count,
+                /*initial_selected=*/1,  // default No
+                /*permission_chrome=*/true,
+                [&](int selected) {
+                    return arbiter::styled_yes_no_card(
+                        "close", pc.agent_id,
+                        {"pane finished — close it?"}, selected);
+                },
+                "close " + pc.agent_id);
+            const bool yes = decision_is_affirmative(decision);
 
             {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
@@ -125,7 +132,7 @@ bool ReplSession::service_pending_closes() {
                     styled_append(answer, StyleId::Success,
                                   "[closing '" + pc.agent_id + "']");
                 } else {
-                    styled_append(answer, StyleId::Error,
+                    styled_append(answer, StyleId::Dim,
                                   "[keeping '" + pc.agent_id + "' open]");
                 }
                 pane_history_push_prose(layout_ptr->focused(), {answer}, true);

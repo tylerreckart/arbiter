@@ -164,10 +164,66 @@ StyledLine styled_delegation_line(std::string_view detail) {
     return line;
 }
 
+namespace {
+
+void append_queue_hint(std::vector<StyledLine>& lines,
+                       int pending_after,
+                       bool accept_edits_on) {
+    if (pending_after <= 0 && !accept_edits_on) return;
+    StyledLine hint;
+    styled_append(hint, StyleId::Dim, "  ");
+    if (pending_after > 0) {
+        styled_append(hint, StyleId::Info,
+                      "(+" + std::to_string(pending_after) + " more waiting)");
+        if (accept_edits_on) styled_append(hint, StyleId::Dim, "  ");
+    }
+    if (accept_edits_on) {
+        styled_append(hint, StyleId::Success, "accept-edits on");
+    }
+    lines.push_back(std::move(hint));
+}
+
+void append_option_rows(std::vector<StyledLine>& lines,
+                        const char* const* labels,
+                        const char* const* details,
+                        const char* shortcuts,
+                        int count,
+                        int selected) {
+    if (count <= 0) return;
+    if (selected < 0) selected = 0;
+    if (selected >= count) selected = count - 1;
+    for (int i = 0; i < count; ++i) {
+        const bool on = (i == selected);
+        StyledLine row;
+        styled_append(row, on ? StyleId::Bold : StyleId::Dim, on ? "  › " : "    ");
+        if (shortcuts && shortcuts[i]) {
+            std::string key = "[";
+            key += shortcuts[i];
+            key += "] ";
+            styled_append(row, on ? StyleId::Warning : StyleId::Dim, key);
+        }
+        styled_append(row, on ? StyleId::Bold : StyleId::System,
+                      labels[i] ? labels[i] : "");
+        if (details && details[i] && details[i][0]) {
+            styled_append(row, StyleId::Dim, "  —  ");
+            styled_append(row, StyleId::Dim, details[i]);
+        }
+        lines.push_back(std::move(row));
+    }
+    StyledLine hint;
+    styled_append(hint, StyleId::Dim, "  ↑↓ move  Enter confirm  Esc cancel");
+    lines.push_back(std::move(hint));
+}
+
+}  // namespace
+
 std::vector<StyledLine> styled_permission_card(
     const std::string& action,
     const std::string& target,
-    const std::vector<std::string>& preview_lines) {
+    const std::vector<std::string>& preview_lines,
+    int pending_after,
+    bool accept_edits_on,
+    int selected) {
     std::vector<StyledLine> lines;
     StyledLine header;
     styled_append(header, StyleId::Warning, "permission ");
@@ -186,9 +242,17 @@ std::vector<StyledLine> styled_permission_card(
         lines.push_back(std::move(row));
     }
 
-    StyledLine prompt;
-    styled_append(prompt, StyleId::Warning, "  allow? [y/N]");
-    lines.push_back(std::move(prompt));
+    append_queue_hint(lines, pending_after, accept_edits_on);
+
+    static constexpr const char* kLabels[] = {
+        "Allow", "Deny", "Accept edits", "Cancel"};
+    static constexpr const char* kDetails[] = {
+        "run this once",
+        "return decline to the agent",
+        "allow + auto-apply future file diffs",
+        "Esc / Ctrl-C"};
+    static constexpr char kKeys[] = {'y', 'n', 'A', 0};
+    append_option_rows(lines, kLabels, kDetails, kKeys, 4, selected);
     return lines;
 }
 
@@ -196,7 +260,10 @@ std::vector<StyledLine> styled_diff_review_card(
     int patch_id,
     const std::string& path,
     const std::string& summary,
-    const std::vector<std::string>& preview_lines) {
+    const std::vector<std::string>& preview_lines,
+    int pending_after,
+    bool accept_edits_on,
+    int selected) {
     std::vector<StyledLine> lines;
     StyledLine header;
     styled_append(header, StyleId::Warning, "diff ");
@@ -223,10 +290,48 @@ std::vector<StyledLine> styled_diff_review_card(
         lines.push_back(std::move(row));
     }
 
-    StyledLine prompt;
-    styled_append(prompt, StyleId::Warning,
-                  "  [a]pply  [r]eject  [A]llow all  Esc cancel");
-    lines.push_back(std::move(prompt));
+    append_queue_hint(lines, pending_after, accept_edits_on);
+
+    static constexpr const char* kLabels[] = {
+        "Apply", "Reject", "Allow all", "Cancel"};
+    static constexpr const char* kDetails[] = {
+        "write this patch",
+        "leave it rejected",
+        "apply this + remaining diffs",
+        "leave pending · Esc"};
+    static constexpr char kKeys[] = {'a', 'r', 'A', 0};
+    append_option_rows(lines, kLabels, kDetails, kKeys, 4, selected);
+    return lines;
+}
+
+std::vector<StyledLine> styled_yes_no_card(
+    const std::string& action,
+    const std::string& target,
+    const std::vector<std::string>& preview_lines,
+    int selected) {
+    std::vector<StyledLine> lines;
+    StyledLine header;
+    styled_append(header, StyleId::Warning, "confirm ");
+    styled_append(header, StyleId::Bold, action.empty() ? "choice" : action);
+    if (!target.empty()) {
+        styled_append(header, StyleId::System, "  ");
+        styled_append(header, StyleId::Code, target);
+    }
+    lines.push_back(std::move(header));
+
+    for (const auto& prev : preview_lines) {
+        if (prev.empty()) continue;
+        StyledLine row;
+        styled_append(row, StyleId::Dim, "  ");
+        styled_append(row, StyleId::System, prev);
+        lines.push_back(std::move(row));
+    }
+
+    static constexpr const char* kLabels[] = {"Yes", "No"};
+    static constexpr const char* kDetails[] = {
+        "confirm", "keep current state"};
+    static constexpr char kKeys[] = {'y', 'n'};
+    append_option_rows(lines, kLabels, kDetails, kKeys, 2, selected);
     return lines;
 }
 

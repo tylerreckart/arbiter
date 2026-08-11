@@ -52,19 +52,20 @@ void pane_history_clear(Pane& pane);
 void pane_history_retheme(Pane& pane);
 void pane_history_push(Pane& pane, std::string_view text, bool new_block = false);
 void pane_history_push_diff(Pane& pane, std::string_view patch);
+// When proposal_id > 0 the patch was registered on the exec thread (stream
+// pause); only render the panel / action line.
+void pane_history_push_diff(Pane& pane, std::string_view patch, int proposal_id);
 
 // Register `patch` in `store` (action line + DiffSegment) onto an arbitrary
-// scroll view.  Used by live drain and transcript replay so relaunched /
-// switched conversations keep `/diff apply` targets.  Returns the registered
-// proposal when one was created.
+// scroll view.  Used by transcript replay so relaunched / switched
+// conversations keep `/diff apply` targets.  Returns the registered proposal
+// when one was created.
 std::optional<DiffProposal> pane_history_append_diff_proposal(
     opentui::PaneScrollView& view,
     DiffProposalStore& store,
     std::string_view patch);
 
-// Live TUI: when set, called after a Pending proposal is registered via
-// pane_history_push_diff (not transcript replay).  Used to auto-enqueue
-// interactive review.
+// Legacy no-op — live pause is OutputQueue::set_diff_review_hooks.
 using DiffAutoReviewFn =
     std::function<void(Pane& pane, const DiffProposal& proposal)>;
 void pane_history_set_diff_auto_review(DiffAutoReviewFn fn);
@@ -72,6 +73,9 @@ void pane_history_set_diff_auto_review(DiffAutoReviewFn fn);
 void pane_history_push_prose(Pane& pane,
                              const std::vector<StyledLine>& lines,
                              bool new_block);
+// Replace the most recent prose block (interactive prompt card repaint).
+bool pane_history_replace_last_prose(Pane& pane,
+                                     const std::vector<StyledLine>& lines);
 void pane_history_push_code_open(Pane& pane,
                                  std::string_view open_fence,
                                  std::string_view lang,

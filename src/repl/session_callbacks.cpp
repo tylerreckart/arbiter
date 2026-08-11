@@ -84,6 +84,48 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
         p->output_queue.set_notify_fn([this](){
             if (pump_notify) pump_notify();
         });
+        // Streamed ```diff pauses the producer until the user answers —
+        // same blocking contract as permission confirms.
+        Pane* raw = p.get();
+        p->output_queue.set_diff_review_hooks(
+            [raw](const std::string& patch) -> int {
+                if (!raw) return 0;
+                auto prop = raw->diff_proposals.add_patch(patch);
+                if (!prop) return 0;
+                if (prop->status != arbiter::DiffProposalStatus::Pending &&
+                    prop->status != arbiter::DiffProposalStatus::Failed) {
+                    return 0;
+                }
+                return prop->id;
+            },
+            [this, raw](int id, const std::string& patch) {
+                if (!raw || !layout_ptr) return;
+                auto prop = raw->diff_proposals.get(id);
+                if (!prop) return;
+                if (prop->status != arbiter::DiffProposalStatus::Pending &&
+                    prop->status != arbiter::DiffProposalStatus::Failed) {
+                    return;
+                }
+                std::string summary = diff_apply_summary_for(*raw);
+                if (!prop->error.empty()) {
+                    summary = "Previously failed: " + prop->error;
+                }
+                const auto decision = interactive_prompts.request_diff_review(
+                    id, prop->path, summary, patch_preview_lines(patch), raw);
+                // AllowAll may already have applied on the main thread.
+                auto cur = raw->diff_proposals.get(id);
+                if (!cur) return;
+                if (decision == InteractiveDecision::Allow ||
+                    decision == InteractiveDecision::AllowAll) {
+                    if (cur->status == arbiter::DiffProposalStatus::Pending ||
+                        cur->status == arbiter::DiffProposalStatus::Failed) {
+                        handle_diff_decision(*raw, id, decision);
+                    }
+                } else if (decision == InteractiveDecision::Deny) {
+                    handle_diff_decision(*raw, id, decision);
+                }
+                // Cancel: leave pending so /diff can resume later.
+            });
         p->current_agent = "index";
         p->current_model = orch.get_agent_model(p->current_agent);
         // New splits inherit the focused pane's conversation (same buffer in
@@ -125,10 +167,14 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
                                   "/fetch","/mem","/search","/browse",
                                   "/todo","/schedule","/exec","/diff","/write",
                                   "/read","/list","/map","/mcp","/a2a","/lesson",
-                                  "/plan","/theme","/verbose","/chat","/quit","/help"});
+                                  "/plan","/theme","/verbose","/accept-edits","/prompts",
+                                  "/chat","/quit","/help"});
                 }
                 if (cmd == "diff") {
                     return match({"review","list","apply","reject","undo"});
+                }
+                if (cmd == "accept-edits") {
+                    return match({"on","off"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
                     cmd == "reset" || cmd == "compact" || cmd == "pane") {
@@ -151,7 +197,6 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
                 return {};
             });
 
-        Pane* raw = p.get();
         p->editor.set_scroll_handler([this, raw](int direction, int step) {
             // Must serialize against the output pump's drain/draw under
             // layout_mu — replay_load_previous_chunk mutates segments_.
@@ -388,32 +433,8 @@ void ReplSession::install_orch_callbacks() {
         return interactive_prompts.request_confirm(req);
     });
 
-    // Auto-enqueue interactive diff review when ```diff fences register.
-    arbiter::pane_history_set_diff_auto_review(
-        [&](Pane& pane, const arbiter::DiffProposal& prop) {
-            Pane* pane_ptr = &pane;
-            const int id = prop.id;
-            arbiter::InteractiveRequest req;
-            req.kind = arbiter::InteractiveKind::DiffReview;
-            req.action = "diff";
-            req.target = prop.path;
-            req.patch_id = id;
-            req.path = prop.path;
-            req.summary = diff_apply_summary_for(pane);
-            req.preview_lines = patch_preview_lines(prop.patch);
-            req.pane = pane_ptr;
-            req.auto_review = true;
-            req.on_complete = [this, pane_ptr, id](InteractiveDecision d) {
-                if (!layout_ptr || !pane_ptr) return;
-                bool alive = false;
-                layout_ptr->for_each_pane([&](Pane& p) {
-                    if (&p == pane_ptr) alive = true;
-                });
-                if (!alive) return;
-                handle_diff_decision(*pane_ptr, id, d);
-            };
-            interactive_prompts.enqueue_auto(std::move(req));
-        });
+    // Streamed ```diff pause is wired per-pane in make_pane() via
+    // OutputQueue::set_diff_review_hooks (blocks the producer until answered).
 
 }
 

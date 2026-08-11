@@ -31,6 +31,12 @@ enum class InteractiveKind : std::uint8_t {
     DiffReview,
 };
 
+// Which ↑↓/Enter option table to show for a Confirm (DiffReview ignores this).
+enum class InteractiveOptionSet : std::uint8_t {
+    Permission,  // Allow / Deny / Accept edits / Cancel
+    YesNo,       // Yes / No (pane close, switch-anyway, …)
+};
+
 enum class InteractiveDecision : std::uint8_t {
     Allow,
     Deny,
@@ -44,9 +50,12 @@ inline bool decision_is_affirmative(InteractiveDecision d) {
 
 struct InteractiveRequest {
     InteractiveKind kind = InteractiveKind::Confirm;
+    InteractiveOptionSet option_set = InteractiveOptionSet::Permission;
+    // Initial › caret row for the option picker (clamped to option count).
+    int default_selected = 0;
 
     // Confirm fields (also reused for action chrome on diffs).
-    std::string action;   // "write" | "exec" | "diff"
+    std::string action;   // "write" | "exec" | "diff" | "close" | …
     std::string target;
     std::string summary;
     std::vector<std::string> preview_lines;
@@ -127,12 +136,19 @@ public:
     bool request_confirm(const ConfirmRequest& creq) {
         InteractiveRequest req;
         req.kind = InteractiveKind::Confirm;
+        req.option_set = InteractiveOptionSet::Permission;
+        req.default_selected = 1;  // Deny — matches legacy [y/N] (Enter declines)
         req.action = creq.action;
         req.target = creq.target;
         req.summary = creq.summary;
         req.preview_lines = creq.preview_lines;
         return decision_is_affirmative(request(std::move(req)));
     }
+
+    // Main-thread-safe yes/no via the same picker chrome (does NOT use the
+    // FIFO — caller must already be on the main thread).  Prefer this for
+    // pane-close / conversation-switch confirms.  Default caret on No.
+    // (Implementation lives on ReplSession::run_prompt_picker.)
 
     // Blocking diff review (used by /diff review on the pane exec thread).
     InteractiveDecision request_diff_review(int patch_id,
@@ -142,6 +158,7 @@ public:
                                             void* pane = nullptr) {
         InteractiveRequest req;
         req.kind = InteractiveKind::DiffReview;
+        req.option_set = InteractiveOptionSet::Permission;  // unused
         req.action = "diff";
         req.target = path;
         req.patch_id = patch_id;
@@ -164,6 +181,29 @@ public:
     [[nodiscard]] bool pending() const {
         std::lock_guard<std::mutex> lk(mu_);
         return !q_.empty();
+    }
+
+    // Entries still waiting (after the active card has been take_front()'d,
+    // this is the "+N more" count).
+    [[nodiscard]] std::size_t size() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return q_.size();
+    }
+
+    // Non-destructive peek at the next entry's request (if any).
+    [[nodiscard]] std::optional<InteractiveRequest> peek_front() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (q_.empty()) return std::nullopt;
+        return q_.front().request;
+    }
+
+    // Snapshot of every waiting request (FIFO order) for /prompts status.
+    [[nodiscard]] std::vector<InteractiveRequest> snapshot() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        std::vector<InteractiveRequest> out;
+        out.reserve(q_.size());
+        for (const auto& e : q_) out.push_back(e.request);
+        return out;
     }
 
     // Esc / teardown / pane close: cancel every waiter and drop auto entries
@@ -213,5 +253,72 @@ private:
     std::atomic<bool> accept_edits_{false};
     std::function<void()> notify_;
 };
+
+// Short label for status / /prompts listings.
+inline std::string interactive_request_label(const InteractiveRequest& r) {
+    if (r.kind == InteractiveKind::DiffReview) {
+        std::string s = "diff #" + std::to_string(r.patch_id);
+        if (!r.path.empty()) {
+            s += " ";
+            s += r.path;
+        }
+        return s;
+    }
+    std::string s = r.action.empty() ? "confirm" : r.action;
+    if (!r.target.empty()) {
+        s += " ";
+        s += r.target;
+    }
+    return s;
+}
+
+// ↑↓/Enter option rows for permission / diff cards (letter shortcuts still
+// commit immediately, matching the history-sidebar menu contract).
+struct InteractivePromptOption {
+    InteractiveDecision decision = InteractiveDecision::Cancel;
+    char shortcut = 0;
+    const char* label = "";
+    const char* detail = "";
+};
+
+inline const InteractivePromptOption* permission_prompt_options(int& count) {
+    static constexpr InteractivePromptOption kOpts[] = {
+        {InteractiveDecision::Allow,    'y', "Allow",        "run this once"},
+        {InteractiveDecision::Deny,     'n', "Deny",         "return decline to the agent"},
+        {InteractiveDecision::AllowAll, 'A', "Accept edits", "allow + auto-apply future file diffs"},
+        {InteractiveDecision::Cancel,   0,   "Cancel",       "Esc / Ctrl-C"},
+    };
+    count = static_cast<int>(sizeof(kOpts) / sizeof(kOpts[0]));
+    return kOpts;
+}
+
+inline const InteractivePromptOption* diff_review_prompt_options(int& count) {
+    static constexpr InteractivePromptOption kOpts[] = {
+        {InteractiveDecision::Allow,    'a', "Apply",     "write this patch"},
+        {InteractiveDecision::Deny,     'r', "Reject",    "leave it rejected"},
+        {InteractiveDecision::AllowAll, 'A', "Allow all", "apply this + remaining diffs"},
+        {InteractiveDecision::Cancel,   0,   "Cancel",    "leave pending · Esc"},
+    };
+    count = static_cast<int>(sizeof(kOpts) / sizeof(kOpts[0]));
+    return kOpts;
+}
+
+inline const InteractivePromptOption* yes_no_prompt_options(int& count) {
+    static constexpr InteractivePromptOption kOpts[] = {
+        {InteractiveDecision::Allow, 'y', "Yes", "confirm"},
+        {InteractiveDecision::Deny,  'n', "No",  "keep current state"},
+    };
+    count = static_cast<int>(sizeof(kOpts) / sizeof(kOpts[0]));
+    return kOpts;
+}
+
+inline const InteractivePromptOption*
+options_for_request(const InteractiveRequest& req, int& count) {
+    if (req.kind == InteractiveKind::DiffReview)
+        return diff_review_prompt_options(count);
+    if (req.option_set == InteractiveOptionSet::YesNo)
+        return yes_no_prompt_options(count);
+    return permission_prompt_options(count);
+}
 
 }  // namespace arbiter
