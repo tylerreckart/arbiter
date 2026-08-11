@@ -54,10 +54,14 @@ void apply_base_style(StyledLine& line, StyleId base);
 [[nodiscard]] StyledLine styled_delegation_line(std::string_view detail);
 
 // Multi-line permission card for destructive confirms (write/exec).
+// Prompt line is `[y]es  [n]o  [A]ccept edits  Esc cancel`.
+// `pending_after` annotates how many prompts remain behind this card.
 [[nodiscard]] std::vector<StyledLine> styled_permission_card(
     const std::string& action,
     const std::string& target,
-    const std::vector<std::string>& preview_lines);
+    const std::vector<std::string>& preview_lines,
+    int pending_after = 0,
+    bool accept_edits_on = false);
 
 // Interactive `/diff` review card: apply / reject / allow-all a streamed patch.
 // Prompt line is `[a]pply  [r]eject  [A]llow all  Esc cancel`.
@@ -65,6 +69,8 @@ void apply_base_style(StyledLine& line, StyleId base);
     int patch_id,
     const std::string& path,
     const std::string& summary,
-    const std::vector<std::string>& preview_lines);
+    const std::vector<std::string>& preview_lines,
+    int pending_after = 0,
+    bool accept_edits_on = false);
 
 } // namespace arbiter

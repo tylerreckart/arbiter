@@ -166,6 +166,29 @@ public:
         return !q_.empty();
     }
 
+    // Entries still waiting (after the active card has been take_front()'d,
+    // this is the "+N more" count).
+    [[nodiscard]] std::size_t size() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return q_.size();
+    }
+
+    // Non-destructive peek at the next entry's request (if any).
+    [[nodiscard]] std::optional<InteractiveRequest> peek_front() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (q_.empty()) return std::nullopt;
+        return q_.front().request;
+    }
+
+    // Snapshot of every waiting request (FIFO order) for /prompts status.
+    [[nodiscard]] std::vector<InteractiveRequest> snapshot() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        std::vector<InteractiveRequest> out;
+        out.reserve(q_.size());
+        for (const auto& e : q_) out.push_back(e.request);
+        return out;
+    }
+
     // Esc / teardown / pane close: cancel every waiter and drop auto entries
     // after running on_complete(Cancel) when present.
     void fail_all(InteractiveDecision d = InteractiveDecision::Cancel) {
@@ -213,5 +236,23 @@ private:
     std::atomic<bool> accept_edits_{false};
     std::function<void()> notify_;
 };
+
+// Short label for status / /prompts listings.
+inline std::string interactive_request_label(const InteractiveRequest& r) {
+    if (r.kind == InteractiveKind::DiffReview) {
+        std::string s = "diff #" + std::to_string(r.patch_id);
+        if (!r.path.empty()) {
+            s += " ";
+            s += r.path;
+        }
+        return s;
+    }
+    std::string s = r.action.empty() ? "confirm" : r.action;
+    if (!r.target.empty()) {
+        s += " ";
+        s += r.target;
+    }
+    return s;
+}
 
 }  // namespace arbiter

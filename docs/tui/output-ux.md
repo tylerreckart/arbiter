@@ -74,17 +74,28 @@ cwd; the TUI binds each conversation's stored `cwd`).
 ```
 permission exec  git status
   HOST SHELL (unsandboxed)
-  allow? [y/N]
+  (+2 more waiting)
+  [y]es  [n]o  [A]ccept edits  Esc cancel
 ```
 
-Keys remain `y` / `n` (and `A` to allow the command and turn on accept-edits
-for subsequent file diffs). Declines still return `ERR: user declined` to the
-agent.
+Keys: **`y`** allow · **`n`** deny · **`A`** allow and turn on session
+accept-edits for subsequent file diffs · **Esc** / Ctrl-C cancel (agent still
+sees a decline). Stray keys are ignored until you choose. Declines return
+`ERR: user declined` to the agent.
 
 Confirms and diff reviews share one FIFO interactive prompt queue: a second
-prompt never silently fails an earlier waiter. Streamed ```diff patches
-auto-enqueue a review card (`[a]` / `[r]` / `[A]` allow all / Esc).
+prompt never silently fails an earlier waiter. While a card is active the
+footer switches to the decision keys, the status line names the prompt, and
+`(+N more waiting)` appears when the backlog is deeper than one. Streamed
+```diff patches auto-enqueue a review card (`[a]` / `[r]` / `[A]` allow all /
+Esc); **PgUp/PgDn** scrolls the pane so you can re-read the full DiffSegment
+above the truncated preview.
 
+Session **accept-edits** (set by permission/`diff` **`A`**, or
+`/accept-edits on`) auto-applies later streamed diffs with
+`[diff auto-applied — accept edits on]`. Exec/write confirms still prompt.
+Toggle off with `/accept-edits off`. `/prompts` and `/status` show the flag
+and any waiting cards.
 ## Reasoning
 
 When Anthropic emits `thinking_delta`, OpenAI-compat emits

@@ -249,6 +249,60 @@ bool ReplSession::service_interactive() {
             }
         }
 
+        const int pending_after =
+            static_cast<int>(interactive_prompts.size());
+        const bool accept_on = interactive_prompts.accept_edits();
+
+        auto paint_prompt_chrome = [&](bool confirm_card) {
+            std::string status = confirm_card ? "permission" : "diff review";
+            status += " · ";
+            status += interactive_request_label(req);
+            if (pending_after > 0) {
+                status += " · +";
+                status += std::to_string(pending_after);
+                status += " waiting";
+            }
+            if (accept_on) status += " · accept-edits on";
+            pane.tui.set_status(status);
+
+            std::string right;
+            if (pending_after > 0) {
+                right = "+" + std::to_string(pending_after) + " waiting";
+            } else if (accept_on) {
+                right = "accept-edits on";
+            }
+            if (confirm_card) {
+                pane.tui.set_footer_override(
+                    "y allow  n deny  A accept-edits  esc cancel",
+                    std::move(right));
+            } else {
+                pane.tui.set_footer_override(
+                    "a apply  r reject  A allow-all  esc cancel  pg scroll",
+                    std::move(right));
+            }
+        };
+
+        auto clear_prompt_chrome = [&]() {
+            pane.tui.clear_footer_override();
+            pane.tui.clear_status();
+        };
+
+        // PgUp/PgDn while a card is armed — peek the full DiffSegment /
+        // permission context above the truncated preview.
+        auto try_scroll_prompt = [&](char csi, const std::string& params) -> bool {
+            if (!(csi == '~' && (params == "5" || params == "6"))) return false;
+            const int step = std::max(1, pane.tui.scroll_region_rows() / 2);
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            const int max_off = pane_history_max_scroll(pane);
+            if (params == "5") {
+                pane.scroll_offset = std::min(pane.scroll_offset + step, max_off);
+            } else {
+                pane.scroll_offset = std::max(0, pane.scroll_offset - step);
+            }
+            present_holding_lock();
+            return true;
+        };
+
         arbiter::InteractiveDecision decision =
             arbiter::InteractiveDecision::Cancel;
 
@@ -258,35 +312,68 @@ bool ReplSession::service_interactive() {
                 preview.insert(preview.begin(), req.summary);
             }
             auto card = arbiter::styled_permission_card(
-                req.action, req.target, preview);
+                req.action, req.target, preview, pending_after, accept_on);
             // Scroll mutations must hold layout_mu — the output pump draws
             // PaneScrollView under the same lock (UAF → DiffPanel::set_patch abort).
             {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
                 pane_history_push_prose(pane, card, true);
+                paint_prompt_chrome(true);
                 present_holding_lock();
             }
 
-            const int key = arbiter::read_confirm_key();
-            if (key == 'y' || key == 'Y') {
-                decision = arbiter::InteractiveDecision::Allow;
-            } else if (key == 'A') {
-                // Allow this confirm; also accept remaining file edits.
-                decision = arbiter::InteractiveDecision::AllowAll;
-            } else {
-                decision = arbiter::InteractiveDecision::Deny;
+            while (true) {
+                char csi = 0;
+                std::string csi_params;
+                const int key = arbiter::read_history_sidebar_key(csi, csi_params);
+                if (key < 0) {
+                    decision = arbiter::InteractiveDecision::Cancel;
+                    break;
+                }
+                if (key == 0x1B && (csi == 'M' || csi == 'm')
+                    && !csi_params.empty() && csi_params[0] == '<') {
+                    continue;
+                }
+                if (try_scroll_prompt(csi, csi_params)) continue;
+                if (arbiter::is_abandon_key(key, csi, csi_params)) {
+                    decision = arbiter::InteractiveDecision::Cancel;
+                    break;
+                }
+                if (key == 'y' || key == 'Y') {
+                    decision = arbiter::InteractiveDecision::Allow;
+                    break;
+                }
+                if (key == 'A') {
+                    // Allow this confirm; also accept remaining file edits.
+                    decision = arbiter::InteractiveDecision::AllowAll;
+                    break;
+                }
+                if (key == 'n' || key == 'N') {
+                    decision = arbiter::InteractiveDecision::Deny;
+                    break;
+                }
+                // Ignore stray keys — same wait loop as DiffReview.
             }
+
+            clear_prompt_chrome();
+            const char* confirm_label =
+                (decision == arbiter::InteractiveDecision::AllowAll)
+                    ? "[user accepted input — accept edits on]"
+                : (decision == arbiter::InteractiveDecision::Allow)
+                    ? "[user accepted input]"
+                : (decision == arbiter::InteractiveDecision::Cancel)
+                    ? "[user cancelled input]"
+                    : "[user denied input]";
+            const StyleId confirm_style =
+                decision_is_affirmative(decision) ? StyleId::Success
+                : (decision == arbiter::InteractiveDecision::Cancel)
+                    ? StyleId::Dim
+                    : StyleId::Error;
             {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
                 pane_history_push_prose(
                     pane,
-                    {arbiter::styled_activity_line(
-                        decision_is_affirmative(decision)
-                            ? "[user accepted input]"
-                            : "[user denied input]",
-                        decision_is_affirmative(decision)
-                            ? StyleId::Success
-                            : StyleId::Error)},
+                    {arbiter::styled_activity_line(confirm_label, confirm_style)},
                     true);
                 present_holding_lock();
             }
@@ -306,10 +393,12 @@ bool ReplSession::service_interactive() {
         } else {
             // DiffReview card
             auto card = arbiter::styled_diff_review_card(
-                req.patch_id, req.path, req.summary, req.preview_lines);
+                req.patch_id, req.path, req.summary, req.preview_lines,
+                pending_after, accept_on);
             {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
                 pane_history_push_prose(pane, card, true);
+                paint_prompt_chrome(false);
                 present_holding_lock();
             }
 
@@ -325,6 +414,11 @@ bool ReplSession::service_interactive() {
                     && !csi_params.empty() && csi_params[0] == '<') {
                     continue;
                 }
+                if (try_scroll_prompt(csi, csi_params)) continue;
+                if (arbiter::is_abandon_key(key, csi, csi_params)) {
+                    decision = arbiter::InteractiveDecision::Cancel;
+                    break;
+                }
                 if (key == 'a') {
                     decision = arbiter::InteractiveDecision::Allow;
                     break;
@@ -337,17 +431,14 @@ bool ReplSession::service_interactive() {
                     decision = arbiter::InteractiveDecision::Deny;
                     break;
                 }
-                if (key == 0x1B && csi == 0) {
-                    decision = arbiter::InteractiveDecision::Cancel;
-                    break;
-                }
             }
 
+            clear_prompt_chrome();
             const char* label =
                 (decision == arbiter::InteractiveDecision::Allow)
                     ? "[diff apply]"
                 : (decision == arbiter::InteractiveDecision::AllowAll)
-                    ? "[diff allow all]"
+                    ? "[diff allow all — accept edits on]"
                 : (decision == arbiter::InteractiveDecision::Deny)
                     ? "[diff reject]"
                     : "[diff review cancelled]";

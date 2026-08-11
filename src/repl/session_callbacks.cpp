@@ -125,10 +125,14 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
                                   "/fetch","/mem","/search","/browse",
                                   "/todo","/schedule","/exec","/diff","/write",
                                   "/read","/list","/map","/mcp","/a2a","/lesson",
-                                  "/plan","/theme","/verbose","/chat","/quit","/help"});
+                                  "/plan","/theme","/verbose","/accept-edits","/prompts",
+                                  "/chat","/quit","/help"});
                 }
                 if (cmd == "diff") {
                     return match({"review","list","apply","reject","undo"});
+                }
+                if (cmd == "accept-edits") {
+                    return match({"on","off"});
                 }
                 if (cmd == "send" || cmd == "use" || cmd == "loop" || cmd == "model" ||
                     cmd == "reset" || cmd == "compact" || cmd == "pane") {

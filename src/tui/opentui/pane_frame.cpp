@@ -210,7 +210,15 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
     const bool narrow = r.w <= d.layout.compact_cols;
     std::string left;
     std::string footer_right;
-    if (chrome.footer_hint_mode == FooterHintMode::Compact) {
+    if (chrome.footer_override) {
+        left = chrome.footer_left_override;
+        footer_right = chrome.footer_right_override;
+        if (narrow && left.size() > 28) {
+            // Prefer the decision keys over the queue-depth pill when tight.
+            left = trim_to_cells(left, content_w);
+            footer_right.clear();
+        }
+    } else if (chrome.footer_hint_mode == FooterHintMode::Compact) {
         // Multi-pane focused: degrade to chord-only hints (#47) instead of
         // hiding the row entirely.
         left = narrow ? "^W w/z/c" : "^W w focus  ^W z zoom  ^W c close";

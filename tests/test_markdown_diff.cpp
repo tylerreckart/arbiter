@@ -482,7 +482,26 @@ TEST_CASE("styled_permission_card includes action target preview and prompt") {
     CHECK(card.front().text.find("permission") != std::string::npos);
     CHECK(card.front().text.find("write") != std::string::npos);
     CHECK(card.front().text.find("src/main.cpp") != std::string::npos);
-    CHECK(card.back().text.find("[y/N]") != std::string::npos);
+    CHECK(card.back().text.find("[y]es") != std::string::npos);
+    CHECK(card.back().text.find("[n]o") != std::string::npos);
+    CHECK(card.back().text.find("[A]ccept edits") != std::string::npos);
+}
+
+TEST_CASE("styled_permission_card annotates queue depth and accept-edits") {
+    auto card = styled_permission_card(
+        "exec", "git status", {"HOST SHELL (unsandboxed)"},
+        /*pending_after=*/2, /*accept_edits_on=*/true);
+    REQUIRE(card.size() >= 3);
+    bool saw_waiting = false;
+    bool saw_accept = false;
+    for (const auto& line : card) {
+        if (line.text.find("+2 more waiting") != std::string::npos)
+            saw_waiting = true;
+        if (line.text.find("accept-edits on") != std::string::npos)
+            saw_accept = true;
+    }
+    CHECK(saw_waiting);
+    CHECK(saw_accept);
 }
 
 TEST_CASE("styled_diff_review_card includes apply reject Allow all Esc prompt") {

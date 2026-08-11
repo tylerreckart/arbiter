@@ -7,6 +7,16 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Interactive prompt navigation (TUI).** Permission and diff-review cards
+  show `(+N more waiting)`, switch the footer to decision keys, and name the
+  active prompt on the status line. Confirm keys align with docs (`[y]`/`[n]`/
+  `[A]`ccept edits / Esc; stray keys ignored). Diff review accepts **PgUp/PgDn**
+  to re-read the full DiffSegment. `/accept-edits [on|off]` toggles session
+  accept-edits; `/prompts` and `/status` surface the flag and waiting cards.
+  See [`docs/tui/output-ux.md`](docs/tui/output-ux.md) and
+  [`docs/tui/keybindings.md`](docs/tui/keybindings.md).
+
 ## [0.12.0] — 2026-08-11
 
 Minor release: multi-tenant bearer auth and `TenantGate` kill-switch restored,

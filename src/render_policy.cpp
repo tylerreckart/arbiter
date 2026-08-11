@@ -164,10 +164,33 @@ StyledLine styled_delegation_line(std::string_view detail) {
     return line;
 }
 
+namespace {
+
+void append_queue_hint(std::vector<StyledLine>& lines,
+                       int pending_after,
+                       bool accept_edits_on) {
+    if (pending_after <= 0 && !accept_edits_on) return;
+    StyledLine hint;
+    styled_append(hint, StyleId::Dim, "  ");
+    if (pending_after > 0) {
+        styled_append(hint, StyleId::Info,
+                      "(+" + std::to_string(pending_after) + " more waiting)");
+        if (accept_edits_on) styled_append(hint, StyleId::Dim, "  ");
+    }
+    if (accept_edits_on) {
+        styled_append(hint, StyleId::Success, "accept-edits on");
+    }
+    lines.push_back(std::move(hint));
+}
+
+}  // namespace
+
 std::vector<StyledLine> styled_permission_card(
     const std::string& action,
     const std::string& target,
-    const std::vector<std::string>& preview_lines) {
+    const std::vector<std::string>& preview_lines,
+    int pending_after,
+    bool accept_edits_on) {
     std::vector<StyledLine> lines;
     StyledLine header;
     styled_append(header, StyleId::Warning, "permission ");
@@ -186,8 +209,11 @@ std::vector<StyledLine> styled_permission_card(
         lines.push_back(std::move(row));
     }
 
+    append_queue_hint(lines, pending_after, accept_edits_on);
+
     StyledLine prompt;
-    styled_append(prompt, StyleId::Warning, "  allow? [y/N]");
+    styled_append(prompt, StyleId::Warning,
+                  "  [y]es  [n]o  [A]ccept edits  Esc cancel");
     lines.push_back(std::move(prompt));
     return lines;
 }
@@ -196,7 +222,9 @@ std::vector<StyledLine> styled_diff_review_card(
     int patch_id,
     const std::string& path,
     const std::string& summary,
-    const std::vector<std::string>& preview_lines) {
+    const std::vector<std::string>& preview_lines,
+    int pending_after,
+    bool accept_edits_on) {
     std::vector<StyledLine> lines;
     StyledLine header;
     styled_append(header, StyleId::Warning, "diff ");
@@ -222,6 +250,8 @@ std::vector<StyledLine> styled_diff_review_card(
         styled_append(row, StyleId::System, prev);
         lines.push_back(std::move(row));
     }
+
+    append_queue_hint(lines, pending_after, accept_edits_on);
 
     StyledLine prompt;
     styled_append(prompt, StyleId::Warning,
