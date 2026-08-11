@@ -1559,7 +1559,7 @@ bool PaneScrollView::replace_last_prose(const std::vector<StyledLine>& lines) {
     for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
         if (dynamic_cast<BlankSegment*>(it->get())) continue;
         prose = dynamic_cast<ProseSegment*>(it->get());
-        break;
+        if (prose) break;
     }
     if (!prose) return false;
     prose->clear();

@@ -141,9 +141,11 @@ void OutputQueue::push_diff(const std::string& patch) {
         split_after_diff_ = true;
         fn = notify_fn_;
     }
-    if (fn) fn();
     // Pause the producer until the user answers — same contract as confirms.
+    // Wake the pump only after review so Patch #N prose is not drained on top
+    // of the interactive card while arrow keys repaint via replace_last_prose.
     if (review && proposal_id > 0) review(proposal_id, patch);
+    if (fn) fn();
 }
 
 void OutputQueue::push_prose(const std::vector<StyledLine>& lines) {

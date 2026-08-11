@@ -137,7 +137,7 @@ public:
         InteractiveRequest req;
         req.kind = InteractiveKind::Confirm;
         req.option_set = InteractiveOptionSet::Permission;
-        req.default_selected = 0;
+        req.default_selected = 1;  // Deny — matches legacy [y/N] (Enter declines)
         req.action = creq.action;
         req.target = creq.target;
         req.summary = creq.summary;
