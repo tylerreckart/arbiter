@@ -81,6 +81,14 @@ TEST_CASE("parse_unified_diff: rejects absolute / traversal / multi-file") {
     CHECK_FALSE(parse_unified_diff(
         "--- a/.//etc/passwd\n+++ b/.//etc/passwd\n@@ -1 +1 @@\n-x\n+y\n")
                     .error.empty());
+    // Backslash-separated .. must not bypass traversal checks on Windows.
+    CHECK_FALSE(parse_unified_diff(
+        "--- a/foo\\..\\etc\\passwd\n+++ b/foo\\..\\etc\\passwd\n"
+        "@@ -1 +1 @@\n-x\n+y\n")
+                    .error.empty());
+    CHECK_FALSE(parse_unified_diff(
+        "--- \\etc\\passwd\n+++ \\etc\\passwd\n@@ -1 +1 @@\n-x\n+y\n")
+                    .error.empty());
 }
 
 TEST_CASE("parse_unified_diff: collapses ./ path segments") {

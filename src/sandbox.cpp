@@ -907,11 +907,16 @@ int64_t SandboxManager::measure_workspace_bytes(int64_t tenant_id) const {
     const int64_t kSaturation = cfg_.workspace_max_bytes > 0
         ? cfg_.workspace_max_bytes + 1
         : std::numeric_limits<int64_t>::max();
-    for (auto& entry : fs::recursive_directory_iterator(ws, ec)) {
-        if (ec) break;
+    for (auto it = fs::recursive_directory_iterator(ws, ec);
+         !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
         std::error_code sec;
-        if (entry.is_regular_file(sec)) {
-            auto sz = fs::file_size(entry.path(), sec);
+        if (it->is_symlink(sec)) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (it->is_regular_file(sec)) {
+            auto sz = fs::file_size(it->path(), sec);
             if (!sec) {
                 const int64_t file_sz = static_cast<int64_t>(sz);
                 if (total > kSaturation - file_sz) {
@@ -1004,9 +1009,15 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
     std::ostringstream out;
     // Stable order: lexicographic.  Recurse so subdirectories surface.
     std::vector<fs::path> files;
-    for (auto& entry : fs::recursive_directory_iterator(ws, ec)) {
-        if (ec) break;
-        if (entry.is_regular_file(ec)) files.push_back(entry.path());
+    for (auto it = fs::recursive_directory_iterator(ws, ec);
+         !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        std::error_code sec;
+        if (it->is_symlink(sec)) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (it->is_regular_file(sec)) files.push_back(it->path());
     }
     std::sort(files.begin(), files.end());
     const int byte_cap  = cfg_.list_max_bytes;

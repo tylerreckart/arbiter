@@ -55,6 +55,20 @@ TEST_CASE("resolve_todo_target rejects missing and ambiguous subjects") {
     CHECK(err.find("ambiguous") != std::string::npos);
 }
 
+TEST_CASE("resolve_todo_target rejects numeric id absent from open list") {
+    const std::vector<TenantStore::Todo> open = {
+        make_todo(14, "14 step checklist"),
+        make_todo(15, "write postmortem"),
+    };
+    std::string err;
+    CHECK(resolve_todo_target("99", open, err) == 0);
+    CHECK(err.find("no open todo with that id") != std::string::npos);
+    err.clear();
+    // Must not fall through to subject prefix match on "14".
+    CHECK(resolve_todo_target("14", std::vector<TenantStore::Todo>{}, err) == 0);
+    CHECK(err.find("no open todo with that id") != std::string::npos);
+}
+
 TEST_CASE("sidebar subject start/done via record_tool") {
     // Covered more fully in unit_sidebar; keep resolve_todo_subject_ref here.
     const std::vector<TodoSubjectRef> refs = {
