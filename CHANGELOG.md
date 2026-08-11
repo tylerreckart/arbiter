@@ -7,7 +7,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-## [0.12.0] — 2026-08-10
+## [0.12.0] — 2026-08-11
 
 Minor release: multi-tenant bearer auth and `TenantGate` kill-switch restored,
 Phase 2 production `--api` hardening (circuit breaker, CORS, sandbox),
@@ -104,9 +104,20 @@ TUI overlay menus / history-sidebar polish.
   is always serialized on the per-tenant mutex so timeout cleanup cannot
   SIGKILL a sibling exec when workspace quota is disabled.
 - **Todo resolve / sidebar replay.** Numeric id targets must appear in the
-  candidate list; subject/describe `tool_trace` labels keep the pre-update
-  subject so multi-todo replay hits the right row; unfocused pane rebinds no
-  longer clobber the visible todo list.
+  open candidate list (no fallthrough to subject prefixes like `"99 bottles"`);
+  subject/describe `tool_trace` labels keep the pre-update subject so
+  multi-todo replay hits the right row; unfocused pane rebinds no longer
+  clobber the visible todo list.
+- **Diff apply backslash traversal (#198).** `path_has_traversal` and
+  `strip_path_prefix` treat `\` as a separator and reject leading backslashes,
+  so unified-diff targets like `foo\..\etc\passwd` cannot bypass workspace
+  checks.
+- **Sandbox symlink enumeration.** `list_workspace` and
+  `measure_workspace_bytes` skip symlinks during recursive walks so directory
+  symlinks cannot leak external names or inflate quota.
+- **`list_workspace` memory caps (#202).** Entry/byte limits apply while
+  streaming the walk instead of collecting the full tree first, so huge
+  sandboxes cannot force an unbounded path vector before truncation.
 
 ## [0.11.0] — 2026-08-06
 
