@@ -39,6 +39,7 @@
 #include "repl/layout.h"
 #include "repl/layout_snapshot.h"
 #include "repl/pane_history.h"
+#include "repl/prompt_attachments.h"
 #include "repl/repl_argv.h"
 #include "repl/conversation_store.h"
 #include "repl/conversation_titling.h"
@@ -464,7 +465,10 @@ void ReplSession::run_input_loop() {
         line = focused.multiline_accum + line;
         focused.multiline_accum.clear();
 
-        if (line.empty()) continue;
+        // Image-only submit: allow Enter with empty text when attachments
+        // are staged (drop then Enter, or /attach then Enter).
+        const bool has_attachments = !focused.pending_attachments.empty();
+        if (line.empty() && !has_attachments) continue;
 
         {
             std::string lower = line;
@@ -480,10 +484,26 @@ void ReplSession::run_input_loop() {
             }
         }
 
-        focused.output_queue.push_prose(arbiter::styled_user_echo_lines(line));
+        QueuedCommand queued;
+        queued.text = line;
+        // Slash commands keep staged images on the pane (/attach, /agents, …).
+        // Only plain-text (and image-only) submits consume them into the turn.
+        const bool slash = !line.empty() && line[0] == '/';
+        if (!slash) {
+            queued.attachments = std::move(focused.pending_attachments);
+            focused.pending_attachments.clear();
+            focused.tui.clear_status();
+        }
+
+        std::string echo = line;
+        if (!queued.attachments.empty()) {
+            if (!echo.empty()) echo += "\n";
+            echo += "[" + attachment_status_label(queued.attachments) + "]";
+        }
+        focused.output_queue.push_prose(arbiter::styled_user_echo_lines(echo));
         focused.output_queue.end_message();
 
-        focused.cmd_queue.push(line);
+        focused.cmd_queue.push(std::move(queued));
         if (focused.cmd_queue.is_busy()) {
             focused.tui.show_queue_depth(focused.cmd_queue.pending());
             if (pump_notify) pump_notify();

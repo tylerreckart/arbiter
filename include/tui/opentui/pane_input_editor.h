@@ -61,6 +61,14 @@ public:
     using MouseHandler = std::function<bool(const MouseEvent& ev)>;
     void set_mouse_handler(MouseHandler fn) { mouse_handler_ = std::move(fn); }
 
+    // Bracketed-paste transform.  Receives the raw paste payload; returns
+    // the text to insert (may be empty when the paste was consumed as
+    // image attachments).  Called without mu_ held.
+    using PasteTransformFn = std::function<std::string(std::string paste)>;
+    void set_paste_transform(PasteTransformFn fn) {
+        paste_transform_ = std::move(fn);
+    }
+
     void set_present_fn(std::function<void()> fn) { present_fn_ = std::move(fn); }
 
     bool take_chord(char& out);
@@ -139,6 +147,7 @@ private:
     CancelHandler   cancel_handler_;
     ChordHandler    chord_handler_;
     MouseHandler    mouse_handler_;
+    PasteTransformFn paste_transform_;
     std::function<void()> present_fn_;
 
     char pending_chord_ = 0;

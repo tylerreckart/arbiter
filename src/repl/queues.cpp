@@ -16,12 +16,18 @@ void trim_trailing_newlines(std::string& s) {
 // ─── CommandQueue ────────────────────────────────────────────────────────────
 
 void CommandQueue::push(std::string cmd) {
+    QueuedCommand q;
+    q.text = std::move(cmd);
+    push(std::move(q));
+}
+
+void CommandQueue::push(QueuedCommand cmd) {
     std::lock_guard<std::mutex> lk(mu_);
     items_.push(std::move(cmd));
     cv_.notify_one();
 }
 
-bool CommandQueue::pop(std::string& out) {
+bool CommandQueue::pop(QueuedCommand& out) {
     std::unique_lock<std::mutex> lk(mu_);
     cv_.wait(lk, [this]{ return !items_.empty() || stopped_; });
     if (items_.empty()) return false;
@@ -30,11 +36,25 @@ bool CommandQueue::pop(std::string& out) {
     return true;
 }
 
-bool CommandQueue::try_pop(std::string& out) {
+bool CommandQueue::pop(std::string& out) {
+    QueuedCommand q;
+    if (!pop(q)) return false;
+    out = std::move(q.text);
+    return true;
+}
+
+bool CommandQueue::try_pop(QueuedCommand& out) {
     std::lock_guard<std::mutex> lk(mu_);
     if (items_.empty()) return false;
     out = std::move(items_.front());
     items_.pop();
+    return true;
+}
+
+bool CommandQueue::try_pop(std::string& out) {
+    QueuedCommand q;
+    if (!try_pop(q)) return false;
+    out = std::move(q.text);
     return true;
 }
 

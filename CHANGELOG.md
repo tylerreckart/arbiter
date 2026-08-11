@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **TUI image drop / `/attach`.** Drag-dropping an image onto the prompt
+  (terminals paste the file path) stages it for the next send; `/attach
+  <path>`, `/attach list`, and `/attach clear` manage the same queue.
+  Submit sends multipart vision input through local `send_streaming` and
+  remote `POST /v1/conversations/:id/messages` (png/jpeg/gif/webp, ≤ 20 MB).
+
 ## [0.12.0] — 2026-08-11
 
 Minor release: multi-tenant bearer auth and `TenantGate` kill-switch restored,

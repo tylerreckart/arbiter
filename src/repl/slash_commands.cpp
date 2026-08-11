@@ -38,6 +38,7 @@
 #include "repl/pane.h"
 #include "repl/layout.h"
 #include "repl/layout_snapshot.h"
+#include "repl/prompt_attachments.h"
 #include "repl/pane_history.h"
 #include "repl/repl_argv.h"
 #include "repl/conversation_store.h"
@@ -78,7 +79,8 @@ namespace fs = std::filesystem;
 
 namespace arbiter {
 
-void ReplSession::handle_line(Pane& pane, const std::string& line) {
+void ReplSession::handle_line(Pane& pane, const std::string& line,
+                              std::vector<PromptAttachment> attachments) {
 
         auto& tui             = pane.tui;
         auto& output_queue    = pane.output_queue;
@@ -113,7 +115,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             }
         };
 
-        if (line[0] == '/') {
+        if (!line.empty() && line[0] == '/') {
             // Parse command
             std::istringstream iss(line.substr(1));
             std::string cmd;
@@ -561,6 +563,60 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
                     thinking.stop();
                     push_err("ERR: " + std::string(ex.what()));
                 }
+                return;
+            }
+            if (cmd == "attach") {
+                // /attach <path>     — stage an image for the next submit
+                // /attach list       — show staged images
+                // /attach clear      — drop staged images
+                std::string rest;
+                std::getline(iss, rest);
+                size_t a = 0;
+                while (a < rest.size()
+                       && std::isspace(static_cast<unsigned char>(rest[a]))) ++a;
+                rest = rest.substr(a);
+                while (!rest.empty()
+                       && std::isspace(static_cast<unsigned char>(rest.back())))
+                    rest.pop_back();
+
+                if (rest.empty() || rest == "list") {
+                    if (pane.pending_attachments.empty()) {
+                        push_status("No images attached. Drop an image onto the "
+                                    "prompt, or /attach <path>.");
+                    } else {
+                        std::ostringstream os;
+                        os << "Attached (" << pane.pending_attachments.size()
+                           << "):\n";
+                        for (const auto& att : pane.pending_attachments) {
+                            os << "  " << att.label
+                               << "  (" << att.media_type << ")\n";
+                        }
+                        push_sys(os.str());
+                    }
+                    return;
+                }
+                if (rest == "clear") {
+                    const size_t n = pane.pending_attachments.size();
+                    pane.pending_attachments.clear();
+                    pane.tui.clear_status();
+                    push_status(n == 0 ? "No images to clear."
+                                       : ("Cleared " + std::to_string(n)
+                                          + " attached image"
+                                          + (n == 1 ? "." : "s.")));
+                    return;
+                }
+                PromptAttachment att;
+                std::string err;
+                if (!load_image_attachment(rest, att, err)) {
+                    push_err("ERR: " + err);
+                    return;
+                }
+                pane.pending_attachments.push_back(std::move(att));
+                pane.tui.set_status(
+                    "attached " + attachment_status_label(pane.pending_attachments));
+                push_status("Attached " + pane.pending_attachments.back().label
+                            + " — type a message and Enter to send, or "
+                              "/attach clear to drop.");
                 return;
             }
             if (cmd == "search") {
@@ -1485,7 +1541,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             }
 
             if (is_remote()) {
-                auto resp = run_remote_turn(pane, line);
+                auto resp = run_remote_turn(pane, line, std::move(attachments));
                 tool_indicator.finalize();
                 output_queue.end_message();
                 pane.last_response = resp.ok ? resp.content
@@ -1505,9 +1561,37 @@ void ReplSession::handle_line(Pane& pane, const std::string& line) {
             }
 
             arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
-            auto resp = orch.send_streaming(current_agent, line,
-                [&](const std::string& chunk) { renderer.feed(chunk); },
-                pane.original_task);
+            ApiResponse resp;
+            if (attachments.empty()) {
+                resp = orch.send_streaming(current_agent, line,
+                    [&](const std::string& chunk) { renderer.feed(chunk); },
+                    pane.original_task);
+            } else {
+                std::vector<ContentPart> parts;
+                if (!line.empty()) {
+                    ContentPart text;
+                    text.kind = ContentPart::TEXT;
+                    text.text = line;
+                    parts.push_back(std::move(text));
+                }
+                for (auto& att : attachments) {
+                    ContentPart img;
+                    img.kind = ContentPart::IMAGE;
+                    img.media_type = att.media_type;
+                    img.image_data = std::move(att.image_data);
+                    parts.push_back(std::move(img));
+                }
+                if (parts.empty()) {
+                    // Should not happen — image-only still has IMAGE parts.
+                    ContentPart text;
+                    text.kind = ContentPart::TEXT;
+                    text.text = "(image input)";
+                    parts.push_back(std::move(text));
+                }
+                resp = orch.send_streaming(current_agent, std::move(parts),
+                    [&](const std::string& chunk) { renderer.feed(chunk); },
+                    pane.original_task);
+            }
             renderer.flush();
             // Per-tool ToolSegment rows already reflect the turn; finalize
             // only clears the mid-separator spinner.

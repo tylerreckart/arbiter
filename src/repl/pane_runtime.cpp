@@ -92,7 +92,9 @@ void ReplSession::start_pane_thread(Pane& p_ref) {
                 });
             }
             std::string line;
-            while (p.cmd_queue.pop(line)) {
+            QueuedCommand queued;
+            while (p.cmd_queue.pop(queued)) {
+                line = queued.text;
                 auto turn_token = std::make_shared<arbiter::CancelToken>();
                 std::atomic_store(&p.turn_cancel, turn_token);
                 arbiter::RequestCancelScope cancel_scope(orch.client(), turn_token);
@@ -116,7 +118,7 @@ void ReplSession::start_pane_thread(Pane& p_ref) {
                 {
                     ConversationScope scope(p.conversation_id);
                     bind_tools_conversation(p.conversation_id);
-                    handle_line(p, line);
+                    handle_line(p, line, std::move(queued.attachments));
                 }
                 p.turn_running.store(false);
                 // Only latch a completion badge when this turn actually ran an

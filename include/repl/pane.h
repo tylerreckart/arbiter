@@ -2,6 +2,7 @@
 
 #include "repl/queues.h"
 #include "repl/diff_proposals.h"
+#include "repl/prompt_attachments.h"
 #include "tui/opentui/pane_input_editor.h"
 #include "tui/opentui/pane_scroll_view.h"
 #include "tui/tui.h"
@@ -59,6 +60,9 @@ struct Pane {
     std::string       conversation_id;
     std::string       original_task;
     std::string       multiline_accum;
+    // Images staged for the next submit (drag-drop paste or /attach).
+    // Main-thread only until moved into QueuedCommand on Enter.
+    std::vector<PromptAttachment> pending_attachments;
     int               scroll_offset       = 0;
     int               new_while_scrolled  = 0;
 

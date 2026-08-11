@@ -143,6 +143,7 @@ set(ARBITER_SOURCES
     src/main.cpp
     src/cli_helpers.cpp
     src/repl/queues.cpp
+    src/repl/prompt_attachments.cpp
     src/repl/layout.cpp
     src/repl/layout_snapshot.cpp
     src/repl/pane.cpp
@@ -508,6 +509,33 @@ if(INDEX_BUILD_TESTS)
         OpenSSL::Crypto
     )
     add_test(NAME unit_commands COMMAND unit_commands)
+
+    # --- Unit tests for TUI prompt image-drop /attach helpers ---
+    add_executable(unit_prompt_attachments
+        tests/test_prompt_attachments.cpp
+        src/repl/prompt_attachments.cpp
+        src/commands.cpp
+        src/workspace_root.cpp
+        src/workspace_map.cpp
+        src/ssrf_guard.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_prompt_attachments PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_compile_definitions(unit_prompt_attachments PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    target_link_libraries(unit_prompt_attachments PRIVATE
+        CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    add_test(NAME unit_prompt_attachments COMMAND unit_prompt_attachments)
 
     # --- Unit tests for API client parsing logic ---
     # Links the real ApiClient + json so the new vision-related tests exercise
@@ -1584,6 +1612,7 @@ if(INDEX_BUILD_TESTS)
     # compiles it to the embed generator (same header as the main binary).
     foreach(_t
         unit_commands
+        unit_prompt_attachments
         unit_markdown_diff
         unit_code_highlighter
         unit_tui_theme_json

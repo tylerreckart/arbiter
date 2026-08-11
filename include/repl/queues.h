@@ -2,6 +2,7 @@
 // arbiter/include/repl/queues.h
 
 #include "commands.h"
+#include "repl/prompt_attachments.h"
 #include "styled_text.h"
 
 #include <atomic>
@@ -15,18 +16,29 @@
 
 namespace arbiter {
 
+// One readline submission (or programmatic inject).  Text-only turns leave
+// `attachments` empty; image drops / `/attach` populate it so the exec
+// thread can call the multipart send_streaming overload.
+struct QueuedCommand {
+    std::string text;
+    std::vector<PromptAttachment> attachments;
+};
+
 class CommandQueue {
 public:
     void push(std::string cmd);
+    void push(QueuedCommand cmd);
 
     // Blocks until an item is available or the queue is stopped.
     // Returns false when stopped and empty.
     bool pop(std::string& out);
+    bool pop(QueuedCommand& out);
 
     // Non-blocking — returns false if the queue is empty.  Used by a single
     // exec thread multiplexing multiple panes' queues (it polls them all
     // each tick instead of blocking on one).
     bool try_pop(std::string& out);
+    bool try_pop(QueuedCommand& out);
 
     void stop();
 
@@ -41,11 +53,11 @@ public:
     void set_busy(bool b) { busy_ = b; }
 
 private:
-    mutable std::mutex      mu_;
-    std::condition_variable cv_;
-    std::queue<std::string> items_;
-    bool                    stopped_ = false;
-    std::atomic<bool>       busy_{false};
+    mutable std::mutex           mu_;
+    std::condition_variable      cv_;
+    std::queue<QueuedCommand>    items_;
+    bool                         stopped_ = false;
+    std::atomic<bool>            busy_{false};
 };
 
 struct OutputItem {

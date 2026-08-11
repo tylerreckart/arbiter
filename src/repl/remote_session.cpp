@@ -41,6 +41,7 @@ ReplSession::ReplSession(std::string config_dir,
         {"/find",         "search the focused pane's scrollback"},
         {"/theme",        "change TUI theme"},
         {"/chat",         "list / new / switch remote conversations"},
+        {"/attach",       "attach an image for the next message"},
         {"/quit",         "exit"},
         {"/help",         "help"},
     };
@@ -155,7 +156,8 @@ void ReplSession::cancel_pane_turn(Pane& pane) {
     if (token) orch.cancel_token(token);
 }
 
-ApiResponse ReplSession::run_remote_turn(Pane& pane, const std::string& line) {
+ApiResponse ReplSession::run_remote_turn(Pane& pane, const std::string& line,
+                                         std::vector<PromptAttachment> attachments) {
     ApiResponse fail;
     fail.ok = false;
     if (!remote) {
@@ -218,6 +220,7 @@ ApiResponse ReplSession::run_remote_turn(Pane& pane, const std::string& line) {
     auto http = remote->post_message_stream(
         pane.conversation_id,
         line,
+        std::move(attachments),
         [&](const std::string& ev, const std::string& data) {
             consumer.on_event(ev, data);
         },

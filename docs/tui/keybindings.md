@@ -31,6 +31,7 @@ Disable with `"mouse": false` under `layout` in `~/.arbiter/tui.json`.
 | `^W`            | Kill the previous word — but **only** if no chord handler is bound. The default REPL binds `^W` as a pane chord (see below); in that mode the previous-word kill is unavailable. |
 | `Tab`           | Tab-completion on the leading word (slash commands). Inserts a literal space if no completer is registered. |
 | `Enter`         | Submit the line.                                                    |
+| Paste / drop    | Bracketed paste inserts text. Dropping an image file onto the terminal stages it for the next send (path paste → `/attach`); see [commands.md](commands.md). |
 | `^D`            | EOF if the buffer is empty (exits the REPL), else delete-forward.   |
 | `^C`            | Abort the current line. Does not exit the process; just discards the buffer and redraws the prompt. |
 | `↑` / `↓`       | History navigation. Per-pane history persisted across sessions (see [sessions.md](sessions.md)). |

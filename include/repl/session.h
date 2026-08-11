@@ -186,7 +186,9 @@ struct ReplSession {
     bool conversation_delete_remote(const std::string& id, std::string* err);
     void refresh_history_sidebar_entries();
     void enter_history_sidebar_focus();
-    ApiResponse run_remote_turn(Pane& pane, const std::string& line);
+    ApiResponse run_remote_turn(Pane& pane, const std::string& line,
+                                std::vector<PromptAttachment> attachments = {});
+
     // Cancel in-flight turn on a pane (local CancelToken or remote SSE gate).
     void cancel_pane_turn(Pane& pane);
 
@@ -214,7 +216,9 @@ struct ReplSession {
     std::string spawn_pane(const std::string& req_agent, const std::string& message);
 
     // ── slash_commands.cpp ─────────────────────────────────────────────────
-    void handle_line(Pane& pane, const std::string& line);
+    void handle_line(Pane& pane, const std::string& line,
+                     std::vector<PromptAttachment> attachments = {});
+
 
     // ── pane_runtime.cpp ───────────────────────────────────────────────────
     void start_pane_thread(Pane& p_ref);

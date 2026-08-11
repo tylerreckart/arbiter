@@ -63,6 +63,7 @@ A loop runs an agent repeatedly with its own buffered output, decoupled from any
 | Command                        | Effect                                                              |
 |--------------------------------|---------------------------------------------------------------------|
 | `/fetch <url>`                 | TUI shortcut: fetch the URL, strip to readable text, and send the result to the focused agent as context. |
+| `/attach <path>` \| `list` \| `clear` | Stage a local image (png/jpeg/gif/webp, ≤ 20 MB) for the next message. Drag-dropping an image onto the prompt also stages it (terminals paste the path). Enter sends text + images together. |
 | `/mem write\|read\|show\|clear` | Per-agent scratchpad in `tenants.db` (same store the API uses).     |
 | `/mem shared write\|read\|clear` | Tenant-wide shared scratchpad.                                    |
 | `/mem search\|entries\|entry\|expand\|density\|add entry\|add link\|invalidate` | Structured memory graph — FTS-ranked search, typed entries, relations. Block form: `/mem add entry …` then body then `/endmem`. See [`docs/concepts/structured-memory.md`](../concepts/structured-memory.md). |
