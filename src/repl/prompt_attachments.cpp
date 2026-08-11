@@ -238,7 +238,8 @@ PasteImageResult extract_images_from_paste(std::string_view paste) {
         if (!load_image_attachment(path, att, err)) {
             // Trailing .png/.jpeg on prose or URLs is not an image drop.
             if (tok.find_first_of(" \t") != std::string::npos
-                || tok.find("://") != std::string::npos) {
+                || (tok.find("://") != std::string::npos
+                    && tok.rfind("file://", 0) != 0)) {
                 result.remaining_text = std::string(paste);
                 return result;
             }

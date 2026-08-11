@@ -465,15 +465,6 @@ void ReplSession::run_input_loop() {
         line = focused.multiline_accum + line;
         focused.multiline_accum.clear();
 
-        // Image-only submit: allow Enter with empty text when attachments
-        // are staged (drop then Enter, or /attach then Enter).
-        bool has_attachments = false;
-        {
-            std::lock_guard<std::mutex> lk(focused.pending_attachments_mu);
-            has_attachments = !focused.pending_attachments.empty();
-        }
-        if (line.empty() && !has_attachments) continue;
-
         {
             std::string lower = line;
             for (auto& c : lower) c = static_cast<char>(std::tolower((unsigned char)c));
@@ -499,6 +490,9 @@ void ReplSession::run_input_loop() {
             focused.pending_attachments.clear();
             focused.tui.clear_status();
         }
+        // Image-only submit: allow Enter with empty text when attachments
+        // are staged; skip if another thread cleared them first.
+        if (line.empty() && queued.attachments.empty()) continue;
 
         std::string echo = line;
         if (!queued.attachments.empty()) {
