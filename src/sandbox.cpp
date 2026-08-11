@@ -907,11 +907,16 @@ int64_t SandboxManager::measure_workspace_bytes(int64_t tenant_id) const {
     const int64_t kSaturation = cfg_.workspace_max_bytes > 0
         ? cfg_.workspace_max_bytes + 1
         : std::numeric_limits<int64_t>::max();
-    for (auto& entry : fs::recursive_directory_iterator(ws, ec)) {
-        if (ec) break;
+    for (auto it = fs::recursive_directory_iterator(ws, ec);
+         !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
         std::error_code sec;
-        if (entry.is_regular_file(sec)) {
-            auto sz = fs::file_size(entry.path(), sec);
+        if (it->is_symlink(sec)) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (it->is_regular_file(sec)) {
+            auto sz = fs::file_size(it->path(), sec);
             if (!sec) {
                 const int64_t file_sz = static_cast<int64_t>(sz);
                 if (total > kSaturation - file_sz) {
@@ -1005,8 +1010,8 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
     // Stream the walk and apply caps in-loop so pathological trees cannot
     // force an unbounded path vector into memory before truncation (#202).
     // Order is directory-iterator order (not lexicographic) — sorting the
-    // full tree first is what caused the memory DoS.
-    // Default recursive_directory_iterator options skip directory symlinks.
+    // full tree first is what caused the memory DoS.  Symlinks are skipped
+    // and directory-symlink recursion is disabled (see #201).
     const int byte_cap  = cfg_.list_max_bytes;
     const int entry_cap = cfg_.list_max_files;
     size_t listed_bytes          = 0;
@@ -1017,6 +1022,10 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
          !ec && it != fs::recursive_directory_iterator();
          it.increment(ec)) {
         std::error_code sec;
+        if (it->is_symlink(sec)) {
+            it.disable_recursion_pending();
+            continue;
+        }
         if (!it->is_regular_file(sec)) continue;
         if (entry_cap > 0 && listed_files >= static_cast<size_t>(entry_cap)) {
             truncated            = true;
