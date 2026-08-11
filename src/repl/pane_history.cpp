@@ -15,12 +15,10 @@
 
 namespace arbiter {
 
-namespace {
-DiffAutoReviewFn g_diff_auto_review;
-}  // namespace
-
-void pane_history_set_diff_auto_review(DiffAutoReviewFn fn) {
-    g_diff_auto_review = std::move(fn);
+void pane_history_set_diff_auto_review(DiffAutoReviewFn /*fn*/) {
+    // No-op: streamed ```diff reviews now block the producer via
+    // OutputQueue::set_diff_review_hooks (pause-the-stream).  Kept so older
+    // call sites still link.
 }
 
 void pane_history_drain_queue(Pane& pane) {
@@ -51,7 +49,7 @@ void pane_history_drain_queue(Pane& pane) {
             }
             break;
         case OutputItem::Kind::Diff:
-            pane_history_push_diff(pane, item.data);
+            pane_history_push_diff(pane, item.data, item.diff_proposal_id);
             break;
         case OutputItem::Kind::Tool:
             pane_history_upsert_tool(pane, item.tool, item.new_block);
@@ -94,13 +92,29 @@ void pane_history_push(Pane& pane, std::string_view text, bool new_block) {
 }
 
 void pane_history_push_diff(Pane& pane, std::string_view patch) {
+    pane_history_push_diff(pane, patch, /*proposal_id=*/0);
+}
+
+void pane_history_push_diff(Pane& pane, std::string_view patch, int proposal_id) {
     if (!pane.scroll) return;
-    auto prop = pane_history_append_diff_proposal(
-        *pane.scroll, pane.diff_proposals, patch);
-    if (prop && prop->status == DiffProposalStatus::Pending &&
-        g_diff_auto_review) {
-        g_diff_auto_review(pane, *prop);
+    if (proposal_id > 0) {
+        auto prop = pane.diff_proposals.get(proposal_id);
+        if (prop) {
+            std::string line = "Patch #" + std::to_string(prop->id) + " " +
+                diff_proposal_status_label(prop->status) + ": " + prop->path;
+            if (prop->status == DiffProposalStatus::Pending) {
+                line += "  |  review card pauses the stream  —  /diff apply "
+                        + std::to_string(prop->id);
+            }
+            pane.scroll->append_prose(
+                {styled_plain_line(std::move(line), StyleId::System)}, true);
+        }
+        pane.scroll->append_diff(patch);
+        return;
     }
+    // Replay / ungated path: register + render; no interactive pause.
+    (void)pane_history_append_diff_proposal(
+        *pane.scroll, pane.diff_proposals, patch);
 }
 
 std::optional<DiffProposal> pane_history_append_diff_proposal(
@@ -127,6 +141,12 @@ void pane_history_push_prose(Pane& pane,
                              const std::vector<StyledLine>& lines,
                              bool new_block) {
     if (pane.scroll) pane.scroll->append_prose(lines, new_block);
+}
+
+bool pane_history_replace_last_prose(Pane& pane,
+                                     const std::vector<StyledLine>& lines) {
+    if (!pane.scroll) return false;
+    return pane.scroll->replace_last_prose(lines);
 }
 
 void pane_history_push_code_open(Pane& pane,

@@ -106,20 +106,44 @@ void OutputQueue::push_msg(const std::string& s) {
     end_message();
 }
 
+void OutputQueue::set_diff_review_hooks(DiffRegisterFn reg, DiffReviewFn review) {
+    std::lock_guard<std::mutex> lk(mu_);
+    diff_register_ = std::move(reg);
+    diff_review_ = std::move(review);
+}
+
 void OutputQueue::push_diff(const std::string& patch) {
     if (patch.empty()) return;
+
+    DiffRegisterFn reg;
+    DiffReviewFn review;
     std::function<void()> fn;
+    int proposal_id = 0;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        reg = diff_register_;
+        review = diff_review_;
+    }
+    // Register on the producer thread so the review gate can block the
+    // model stream with a stable patch id (pump only renders).
+    if (reg) proposal_id = reg(patch);
+
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (!items_.empty() && items_.back().kind == OutputItem::Kind::Text) {
             trim_trailing_newlines(items_.back().data);
         }
-        items_.push_back(
-            {OutputItem::Kind::Diff, patch, {}, OutputItem::CodeOp::Open, 0, {}, false});
+        OutputItem item;
+        item.kind = OutputItem::Kind::Diff;
+        item.data = patch;
+        item.diff_proposal_id = proposal_id;
+        items_.push_back(std::move(item));
         split_after_diff_ = true;
         fn = notify_fn_;
     }
     if (fn) fn();
+    // Pause the producer until the user answers — same contract as confirms.
+    if (review && proposal_id > 0) review(proposal_id, patch);
 }
 
 void OutputQueue::push_prose(const std::vector<StyledLine>& lines) {

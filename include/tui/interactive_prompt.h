@@ -255,4 +255,35 @@ inline std::string interactive_request_label(const InteractiveRequest& r) {
     return s;
 }
 
+// ↑↓/Enter option rows for permission / diff cards (letter shortcuts still
+// commit immediately, matching the history-sidebar menu contract).
+struct InteractivePromptOption {
+    InteractiveDecision decision = InteractiveDecision::Cancel;
+    char shortcut = 0;
+    const char* label = "";
+    const char* detail = "";
+};
+
+inline const InteractivePromptOption* permission_prompt_options(int& count) {
+    static constexpr InteractivePromptOption kOpts[] = {
+        {InteractiveDecision::Allow,    'y', "Allow",        "run this once"},
+        {InteractiveDecision::Deny,     'n', "Deny",         "return decline to the agent"},
+        {InteractiveDecision::AllowAll, 'A', "Accept edits", "allow + auto-apply future file diffs"},
+        {InteractiveDecision::Cancel,   0,   "Cancel",       "Esc / Ctrl-C"},
+    };
+    count = static_cast<int>(sizeof(kOpts) / sizeof(kOpts[0]));
+    return kOpts;
+}
+
+inline const InteractivePromptOption* diff_review_prompt_options(int& count) {
+    static constexpr InteractivePromptOption kOpts[] = {
+        {InteractiveDecision::Allow,    'a', "Apply",     "write this patch"},
+        {InteractiveDecision::Deny,     'r', "Reject",    "keep pending off"},
+        {InteractiveDecision::AllowAll, 'A', "Allow all", "apply this + remaining diffs"},
+        {InteractiveDecision::Cancel,   0,   "Cancel",    "leave pending · Esc"},
+    };
+    count = static_cast<int>(sizeof(kOpts) / sizeof(kOpts[0]));
+    return kOpts;
+}
+
 }  // namespace arbiter

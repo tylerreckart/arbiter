@@ -69,6 +69,9 @@ public:
 
     void append(std::string_view text, bool new_block = false);
     void append_prose(const std::vector<StyledLine>& lines, bool new_block = false);
+    // Clear + rewrite the most recent ProseSegment (interactive card refresh).
+    // Returns false when the last content segment is not prose.
+    bool replace_last_prose(const std::vector<StyledLine>& lines);
     void append_code_open(std::string_view open_fence,
                           std::string_view lang,
                           size_t preview_rows,

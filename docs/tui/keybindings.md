@@ -53,22 +53,22 @@ Scrollback is **visual-row aware**: a wrapped paragraph counts as multiple rows 
 
 ## Interactive prompts (permission / diff review)
 
-Confirms and streamed ```diff reviews share one FIFO queue. While a card is
-armed, the footer shows the decision keys (not the usual `esc interrupt` hint)
-and the status line names the prompt plus any backlog (`+N waiting`).
+Confirms and streamed ```diff reviews share one FIFO queue. A streamed diff
+**pauses the model stream** until you answer. While a card is armed, the
+footer shows picker hints and the status line names the prompt plus any
+backlog (`+N waiting`).
 
-| Key | Permission card | Diff review card |
-|-----|-----------------|------------------|
-| `y` / `Y` | Allow | — |
-| `n` / `N` | Deny | — |
-| `a` | — | Apply this patch |
-| `r` / `R` | — | Reject this patch |
-| `A` | Allow + turn on accept-edits | Apply this + remaining diffs (accept-edits on) |
-| `Esc` / Ctrl-C | Cancel (agent sees decline) | Cancel (patch stays pending) |
-| `PgUp` / `PgDn` | Scroll the pane | Scroll the pane (re-read the full DiffSegment) |
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` (or `k` / `j`) | Move the › caret |
+| `Enter` | Commit the highlighted option |
+| `y` / `n` / `A` | Permission shortcuts (Allow / Deny / Accept edits) |
+| `a` / `r` / `A` | Diff shortcuts (Apply / Reject / Allow all) |
+| `Esc` / Ctrl-C | Cancel |
+| `PgUp` / `PgDn` | Scroll the pane (re-read DiffSegment / context) |
 
-Stray keys are ignored until you choose. `/accept-edits [on\|off]` toggles the
-session flag; `/prompts` lists waiting cards. See [output-ux.md](output-ux.md).
+`/accept-edits [on|off]` toggles the session flag; `/prompts` lists waiting
+cards. See [output-ux.md](output-ux.md).
 
 ## Pane chords (`Ctrl-w` prefix)
 

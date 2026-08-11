@@ -9,11 +9,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ### Added
 - **Interactive prompt navigation (TUI).** Permission and diff-review cards
-  show `(+N more waiting)`, switch the footer to decision keys, and name the
-  active prompt on the status line. Confirm keys align with docs (`[y]`/`[n]`/
-  `[A]`ccept edits / Esc; stray keys ignored). Diff review accepts **PgUp/PgDn**
-  to re-read the full DiffSegment. `/accept-edits [on|off]` toggles session
+  are ↑↓/Enter option pickers (› caret; letter shortcuts still commit). Cards
+  show `(+N more waiting)`, switch the footer to picker hints, and name the
+  active prompt on the status line. `/accept-edits [on|off]` toggles session
   accept-edits; `/prompts` and `/status` surface the flag and waiting cards.
+- **Stream pause on ```diff review.** Streamed patches register on the
+  producer thread and **block the model stream** until you answer (same
+  contract as permission confirms). Esc leaves the patch pending for `/diff`.
   See [`docs/tui/output-ux.md`](docs/tui/output-ux.md) and
   [`docs/tui/keybindings.md`](docs/tui/keybindings.md).
 

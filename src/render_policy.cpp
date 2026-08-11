@@ -183,6 +183,38 @@ void append_queue_hint(std::vector<StyledLine>& lines,
     lines.push_back(std::move(hint));
 }
 
+void append_option_rows(std::vector<StyledLine>& lines,
+                        const char* const* labels,
+                        const char* const* details,
+                        const char* shortcuts,
+                        int count,
+                        int selected) {
+    if (count <= 0) return;
+    if (selected < 0) selected = 0;
+    if (selected >= count) selected = count - 1;
+    for (int i = 0; i < count; ++i) {
+        const bool on = (i == selected);
+        StyledLine row;
+        styled_append(row, on ? StyleId::Bold : StyleId::Dim, on ? "  › " : "    ");
+        if (shortcuts && shortcuts[i]) {
+            std::string key = "[";
+            key += shortcuts[i];
+            key += "] ";
+            styled_append(row, on ? StyleId::Warning : StyleId::Dim, key);
+        }
+        styled_append(row, on ? StyleId::Bold : StyleId::System,
+                      labels[i] ? labels[i] : "");
+        if (details && details[i] && details[i][0]) {
+            styled_append(row, StyleId::Dim, "  —  ");
+            styled_append(row, StyleId::Dim, details[i]);
+        }
+        lines.push_back(std::move(row));
+    }
+    StyledLine hint;
+    styled_append(hint, StyleId::Dim, "  ↑↓ move  Enter confirm  Esc cancel");
+    lines.push_back(std::move(hint));
+}
+
 }  // namespace
 
 std::vector<StyledLine> styled_permission_card(
@@ -190,7 +222,8 @@ std::vector<StyledLine> styled_permission_card(
     const std::string& target,
     const std::vector<std::string>& preview_lines,
     int pending_after,
-    bool accept_edits_on) {
+    bool accept_edits_on,
+    int selected) {
     std::vector<StyledLine> lines;
     StyledLine header;
     styled_append(header, StyleId::Warning, "permission ");
@@ -211,10 +244,15 @@ std::vector<StyledLine> styled_permission_card(
 
     append_queue_hint(lines, pending_after, accept_edits_on);
 
-    StyledLine prompt;
-    styled_append(prompt, StyleId::Warning,
-                  "  [y]es  [n]o  [A]ccept edits  Esc cancel");
-    lines.push_back(std::move(prompt));
+    static constexpr const char* kLabels[] = {
+        "Allow", "Deny", "Accept edits", "Cancel"};
+    static constexpr const char* kDetails[] = {
+        "run this once",
+        "return decline to the agent",
+        "allow + auto-apply future file diffs",
+        "Esc / Ctrl-C"};
+    static constexpr char kKeys[] = {'y', 'n', 'A', 0};
+    append_option_rows(lines, kLabels, kDetails, kKeys, 4, selected);
     return lines;
 }
 
@@ -224,7 +262,8 @@ std::vector<StyledLine> styled_diff_review_card(
     const std::string& summary,
     const std::vector<std::string>& preview_lines,
     int pending_after,
-    bool accept_edits_on) {
+    bool accept_edits_on,
+    int selected) {
     std::vector<StyledLine> lines;
     StyledLine header;
     styled_append(header, StyleId::Warning, "diff ");
@@ -253,10 +292,15 @@ std::vector<StyledLine> styled_diff_review_card(
 
     append_queue_hint(lines, pending_after, accept_edits_on);
 
-    StyledLine prompt;
-    styled_append(prompt, StyleId::Warning,
-                  "  [a]pply  [r]eject  [A]llow all  Esc cancel");
-    lines.push_back(std::move(prompt));
+    static constexpr const char* kLabels[] = {
+        "Apply", "Reject", "Allow all", "Cancel"};
+    static constexpr const char* kDetails[] = {
+        "write this patch",
+        "leave it rejected",
+        "apply this + remaining diffs",
+        "leave pending · Esc"};
+    static constexpr char kKeys[] = {'a', 'r', 'A', 0};
+    append_option_rows(lines, kLabels, kDetails, kKeys, 4, selected);
     return lines;
 }
 
