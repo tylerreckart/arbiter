@@ -46,6 +46,8 @@ int64_t resolve_impl(const std::string& args,
         for (size_t i = 0; i < n; ++i) {
             if (get_id(i) == numeric) return numeric;
         }
+        err_out = "no open todo with that id";
+        return 0;
     }
 
     const std::string needle = trim_ws(args);

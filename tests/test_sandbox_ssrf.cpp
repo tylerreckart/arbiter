@@ -149,6 +149,56 @@ TEST_CASE("sandbox write/read reject symlink escape outside workspace") {
     fs::remove_all(root);
 }
 
+TEST_CASE("sandbox list/measure skip directory symlinks outside workspace") {
+    const std::string root = make_temp_root("listsym");
+    const std::string outside = root + "/outside";
+    fs::create_directories(outside);
+    {
+        std::ofstream f(outside + "/secret.txt");
+        f << "leaked";
+    }
+
+    SandboxConfig cfg;
+    cfg.image = "unused";
+    cfg.workspaces_root = root + "/workspaces";
+    cfg.runtime = "docker";
+    cfg.idle_seconds = 0;
+
+    const std::string bin = root + "/bin";
+    fs::create_directories(bin);
+    const std::string stub = bin + "/docker";
+    {
+        std::ofstream f(stub);
+        f << "#!/bin/sh\nexit 0\n";
+    }
+    ::chmod(stub.c_str(), 0755);
+    const char* old_path = std::getenv("PATH");
+    std::string new_path = bin + ":" + (old_path ? old_path : "");
+    ::setenv("PATH", new_path.c_str(), 1);
+
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+
+    const int64_t tid = 20;
+    std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "ok.txt", "safe", err));
+
+    const std::string link = ws + "/escape";
+    REQUIRE(::symlink(outside.c_str(), link.c_str()) == 0);
+
+    const std::string listing = mgr.list_workspace(tid);
+    CHECK(listing.find("secret.txt") == std::string::npos);
+    CHECK(listing.find("ok.txt") != std::string::npos);
+    CHECK(mgr.measure_workspace_bytes(tid) == static_cast<int64_t>(4));
+
+    if (old_path) ::setenv("PATH", old_path, 1);
+    else ::unsetenv("PATH");
+    fs::remove_all(root);
+}
+
 TEST_CASE("sandbox read: rejects workspace files over read_max_bytes") {
     const std::string root = make_temp_root("readcap");
     SandboxConfig cfg;
