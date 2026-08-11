@@ -239,6 +239,7 @@ std::vector<MenuItem> menu_items_help() {
         {nullptr, "watch", "/watch <loop-id>", "tail loop output live"},
         {nullptr, "kill", "/kill <loop-id>", "stop a loop"},
         {"Fetch + memory", "fetch", "/fetch <url>", "fetch URL into the agent"},
+        {nullptr, "attach", "/attach <path>|list|clear", "stage image for next send"},
         {nullptr, "mem", "/mem …", "scratchpad + memory graph"},
         {"Tools", "search", "/search <query>", "web search"},
         {nullptr, "browse", "/browse <url>", "JS-rendered fetch"},

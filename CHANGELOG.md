@@ -8,6 +8,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **TUI image drop / `/attach`.** Drag-dropping an image onto the prompt
+  (terminals paste the file path) stages it for the next send; `/attach
+  <path>`, `/attach list`, and `/attach clear` manage the same queue.
+  Submit sends multipart vision input through local `send_streaming` and
+  remote `POST /v1/conversations/:id/messages` (png/jpeg/gif/webp, ≤ 20 MB).
 - **Interactive prompt navigation (TUI).** Permission and diff-review cards
   are ↑↓/Enter option pickers (› caret; letter shortcuts still commit). Cards
   show `(+N more waiting)`, switch the footer to picker hints, and name the

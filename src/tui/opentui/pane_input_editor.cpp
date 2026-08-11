@@ -974,19 +974,30 @@ bool PaneInputEditor::read_line(const std::string& prompt, std::string& out) {
         }
 
         if (b == kBracketedPasteEvent) {
-            std::lock_guard<std::mutex> lk(mu_);
-            if (palette_active_) {
-                for (char c : pending_paste_) {
+            std::string paste;
+            bool palette = false;
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                paste = std::move(pending_paste_);
+                pending_paste_.clear();
+                palette = palette_active_;
+            }
+            if (palette) {
+                std::lock_guard<std::mutex> lk(mu_);
+                for (char c : paste) {
                     palette_query_ += (c == '\n' || c == '\t') ? ' ' : c;
                 }
                 palette_refresh();
             } else {
+                if (paste_transform_) {
+                    paste = paste_transform_(std::move(paste));
+                }
+                std::lock_guard<std::mutex> lk(mu_);
                 if (rsearch_active_) rsearch_end(/*accept=*/false);
-                if (!pending_paste_.empty()) {
-                    insert_bytes(pending_paste_.data(), pending_paste_.size());
+                if (!paste.empty()) {
+                    insert_bytes(paste.data(), paste.size());
                 }
             }
-            pending_paste_.clear();
             continue;
         }
 

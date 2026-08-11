@@ -37,6 +37,7 @@
 #include "repl/layout.h"
 #include "repl/layout_snapshot.h"
 #include "repl/pane_history.h"
+#include "repl/prompt_attachments.h"
 #include "repl/repl_argv.h"
 #include "repl/conversation_store.h"
 #include "repl/conversation_titling.h"
@@ -164,7 +165,7 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
                                   "/pane","/find",
                                   "/loop","/loops","/log","/watch",
                                   "/kill","/suspend","/resume","/inject",
-                                  "/fetch","/mem","/search","/browse",
+                                  "/fetch","/attach","/mem","/search","/browse",
                                   "/todo","/schedule","/exec","/diff","/write",
                                   "/read","/list","/map","/mcp","/a2a","/lesson",
                                   "/plan","/theme","/verbose","/accept-edits","/prompts",
@@ -172,6 +173,9 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
                 }
                 if (cmd == "diff") {
                     return match({"review","list","apply","reject","undo"});
+                }
+                if (cmd == "attach") {
+                    return match({"clear","list"});
                 }
                 if (cmd == "accept-edits") {
                     return match({"on","off"});
@@ -288,6 +292,33 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
         });
         p->editor.set_mouse_handler([this](const opentui::MouseEvent& ev) {
             return route_mouse(ev);
+        });
+        // Drag-drop / path paste → pending image attachments on this pane.
+        p->editor.set_paste_transform([this, raw](std::string paste) {
+            auto result = extract_images_from_paste(paste);
+            if (result.attachments.empty() && result.errors.empty()) {
+                return paste;  // ordinary text paste
+            }
+            {
+                std::lock_guard<std::mutex> lk(raw->pending_attachments_mu);
+                for (auto& a : result.attachments) {
+                    raw->pending_attachments.push_back(std::move(a));
+                }
+                if (!result.errors.empty()) {
+                    std::string msg = "attach: " + result.errors.front();
+                    if (result.errors.size() > 1) {
+                        msg += " (+" + std::to_string(result.errors.size() - 1)
+                            + " more)";
+                    }
+                    raw->tui.set_status(msg);
+                } else if (!raw->pending_attachments.empty()) {
+                    raw->tui.set_status(
+                        "attached "
+                        + attachment_status_label(raw->pending_attachments));
+                }
+            }
+            if (pump_notify) pump_notify();
+            return result.remaining_text;
         });
         return p;
 }

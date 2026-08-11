@@ -39,6 +39,7 @@
 #include "repl/layout.h"
 #include "repl/layout_snapshot.h"
 #include "repl/pane_history.h"
+#include "repl/prompt_attachments.h"
 #include "repl/repl_argv.h"
 #include "repl/conversation_store.h"
 #include "repl/conversation_titling.h"
@@ -464,8 +465,6 @@ void ReplSession::run_input_loop() {
         line = focused.multiline_accum + line;
         focused.multiline_accum.clear();
 
-        if (line.empty()) continue;
-
         {
             std::string lower = line;
             for (auto& c : lower) c = static_cast<char>(std::tolower((unsigned char)c));
@@ -480,10 +479,31 @@ void ReplSession::run_input_loop() {
             }
         }
 
-        focused.output_queue.push_prose(arbiter::styled_user_echo_lines(line));
+        QueuedCommand queued;
+        queued.text = line;
+        // Slash commands keep staged images on the pane (/attach, /agents, …).
+        // Only plain-text (and image-only) submits consume them into the turn.
+        const bool slash = !line.empty() && line[0] == '/';
+        if (!slash) {
+            std::lock_guard<std::mutex> lk(focused.pending_attachments_mu);
+            if (line.empty() && focused.pending_attachments.empty()) continue;
+            queued.attachments = std::move(focused.pending_attachments);
+            focused.pending_attachments.clear();
+            focused.tui.clear_status();
+        }
+        // Image-only submit: allow Enter with empty text when attachments
+        // are staged; skip if another thread cleared them first.
+        if (line.empty() && queued.attachments.empty()) continue;
+
+        std::string echo = line;
+        if (!queued.attachments.empty()) {
+            if (!echo.empty()) echo += "\n";
+            echo += "[" + attachment_status_label(queued.attachments) + "]";
+        }
+        focused.output_queue.push_prose(arbiter::styled_user_echo_lines(echo));
         focused.output_queue.end_message();
 
-        focused.cmd_queue.push(line);
+        focused.cmd_queue.push(std::move(queued));
         if (focused.cmd_queue.is_busy()) {
             focused.tui.show_queue_depth(focused.cmd_queue.pending());
             if (pump_notify) pump_notify();

@@ -8,6 +8,7 @@
 #include "json.h"
 #include "remote/connect_config.h"
 #include "repl/conversation_store.h"
+#include "repl/prompt_attachments.h"
 
 #include <atomic>
 #include <functional>
@@ -83,9 +84,21 @@ public:
     // `on_event(name, data_json)` fires for each event.  Sets cancel to
     // abort the curl stream; also call cancel_request() with the id from
     // request_received for server-side cancel.
+    // When `attachments` is non-empty, `message` is sent as a vision parts
+    // array (same shape as POST /v1/orchestrate) instead of a bare string.
     a2a::HttpResponse post_message_stream(
         const std::string& conversation_id,
         const std::string& message,
+        a2a::SseReader::EventCallback on_event,
+        std::atomic<bool>& cancel,
+        long timeout_secs = 600) const {
+        return post_message_stream(conversation_id, message, {},
+                                   std::move(on_event), cancel, timeout_secs);
+    }
+    a2a::HttpResponse post_message_stream(
+        const std::string& conversation_id,
+        const std::string& message,
+        std::vector<PromptAttachment> attachments,
         a2a::SseReader::EventCallback on_event,
         std::atomic<bool>& cancel,
         long timeout_secs = 600) const;

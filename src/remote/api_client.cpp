@@ -418,11 +418,41 @@ RemoteApiClient::list_agents(std::string* error_out) const {
 a2a::HttpResponse RemoteApiClient::post_message_stream(
     const std::string& conversation_id,
     const std::string& message,
+    std::vector<PromptAttachment> attachments,
     a2a::SseReader::EventCallback on_event,
     std::atomic<bool>& cancel,
     long timeout_secs) const {
     auto body = jobj();
-    body->as_object_mut()["message"] = jstr(message);
+    if (attachments.empty()) {
+        body->as_object_mut()["message"] = jstr(message);
+    } else {
+        // Vision parts array — mirrors POST /v1/orchestrate.
+        auto parts = jarr();
+        auto& arr = parts->as_array_mut();
+        if (!message.empty()) {
+            auto text = jobj();
+            text->as_object_mut()["type"] = jstr("text");
+            text->as_object_mut()["text"] = jstr(message);
+            arr.push_back(std::move(text));
+        }
+        for (const auto& att : attachments) {
+            auto img = jobj();
+            img->as_object_mut()["type"] = jstr("image");
+            auto src = jobj();
+            src->as_object_mut()["type"] = jstr("base64");
+            src->as_object_mut()["media_type"] = jstr(att.media_type);
+            src->as_object_mut()["data"] = jstr(att.image_data);
+            img->as_object_mut()["source"] = std::move(src);
+            arr.push_back(std::move(img));
+        }
+        if (arr.empty()) {
+            auto text = jobj();
+            text->as_object_mut()["type"] = jstr("text");
+            text->as_object_mut()["text"] = jstr("(image input)");
+            arr.push_back(std::move(text));
+        }
+        body->as_object_mut()["message"] = std::move(parts);
+    }
     a2a::HttpCallOpts opts;
     opts.timeout_secs = timeout_secs;
     opts.ssrf_guard = false;
