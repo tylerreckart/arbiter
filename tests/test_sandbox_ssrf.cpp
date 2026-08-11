@@ -338,3 +338,65 @@ TEST_CASE("sandbox list: entry cap trailer reports file count, not bytes") {
     else ::unsetenv("PATH");
     fs::remove_all(root);
 }
+
+TEST_CASE("sandbox list: caps apply during walk, not after full collect") {
+    // Regression for #202: listing must early-exit once list_max_files
+    // is reached, even when many more files remain deeper in the tree.
+    const std::string root = make_temp_root("listearly");
+    SandboxConfig cfg;
+    cfg.image = "unused";
+    cfg.workspaces_root = root + "/workspaces";
+    cfg.runtime = "docker";
+    cfg.idle_seconds = 0;
+    cfg.list_max_bytes = 10 * 1024 * 1024;
+    cfg.list_max_files = 2;
+
+    const std::string bin = root + "/bin";
+    fs::create_directories(bin);
+    const std::string stub = bin + "/docker";
+    {
+        std::ofstream f(stub);
+        f << "#!/bin/sh\nexit 0\n";
+    }
+    ::chmod(stub.c_str(), 0755);
+    const char* old_path = std::getenv("PATH");
+    std::string new_path = bin + ":" + (old_path ? old_path : "");
+    ::setenv("PATH", new_path.c_str(), 1);
+
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+
+    const int64_t tid = 14;
+    std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+
+    // Nested trees so a pre-cap full collect would still walk everything.
+    for (int d = 0; d < 4; ++d) {
+        for (int i = 0; i < 25; ++i) {
+            std::string err;
+            REQUIRE(mgr.write_to_workspace(
+                tid,
+                "d" + std::to_string(d) + "/f" + std::to_string(i) + ".txt",
+                "x", err));
+        }
+    }
+
+    const std::string listing = mgr.list_workspace(tid);
+    CHECK(listing.find("... [truncated — listing entry cap reached]") !=
+          std::string::npos);
+
+    size_t file_lines = 0;
+    for (size_t i = 0; i < listing.size(); ) {
+        const size_t nl = listing.find('\n', i);
+        if (nl == std::string::npos) break;
+        const std::string line = listing.substr(i, nl - i);
+        i = nl + 1;
+        if (line.rfind("... [truncated", 0) == 0) continue;
+        if (line.find(" bytes") != std::string::npos) ++file_lines;
+    }
+    CHECK(file_lines == static_cast<size_t>(cfg.list_max_files));
+
+    if (old_path) ::setenv("PATH", old_path, 1);
+    else ::unsetenv("PATH");
+    fs::remove_all(root);
+}

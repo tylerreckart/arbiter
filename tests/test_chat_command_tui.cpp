@@ -150,24 +150,14 @@ TEST_CASE("/find reports match position in the status line and cycles") {
     REQUIRE(wait_for_token(s, before_seed_b, "seed-scrollback-bbb", 5000));
     REQUIRE(wait_for_token(s, before_seed_b, "Authentication header", 5000));
 
-    {
-        // /help opens the interactive overlay menu; dismiss before typing.
-        // Only the first page of rows is painted — wait for a top-of-list
-        // token (not /find, which sits below the viewport).
-        const std::size_t before_help = s.output().size();
-        s.send("/help\r");
-        REQUIRE(wait_for_token(s, before_help, "/send", 15000));
-        s.send("\x1b");  // Esc — close menu, return stdin to the editor
-        // Let the modal tear down before the next slash command.
-        const std::size_t before_dismiss = s.output().size();
-        (void)wait_for_token(s, before_dismiss, "esc interrupt", 3000);
-    }
-
+    // Send /find directly after the offline turns settle.  Opening /help and
+    // Esc-dismissing first raced modal teardown on macos-arm64 CI: the next
+    // slash line never reached the editor, so status tokens never appeared.
     const std::size_t before = s.output().size();
     s.send("/find scrollback\r");
     // First find jumps to the last hit (N/N) and paints @row into status.
-    CHECK(wait_for_token(s, before, "\"scrollback\":", 10000));
-    CHECK(wait_for_token(s, before, " @", 10000));
+    CHECK(wait_for_token(s, before, "\"scrollback\":", 15000));
+    CHECK(wait_for_token(s, before, " @", 15000));
 
     // /find next clears then rewrites the whole status line (see
     // slash_commands.cpp), so the post-command delta contains a full

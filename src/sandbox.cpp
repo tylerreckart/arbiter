@@ -1007,8 +1007,17 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
     if (!fs::exists(ws, ec) || !fs::is_directory(ws, ec)) return "";
 
     std::ostringstream out;
-    // Stable order: lexicographic.  Recurse so subdirectories surface.
-    std::vector<fs::path> files;
+    // Stream the walk and apply caps in-loop so pathological trees cannot
+    // force an unbounded path vector into memory before truncation (#202).
+    // Order is directory-iterator order (not lexicographic) — sorting the
+    // full tree first is what caused the memory DoS.  Symlinks are skipped
+    // and directory-symlink recursion is disabled (see #201).
+    const int byte_cap  = cfg_.list_max_bytes;
+    const int entry_cap = cfg_.list_max_files;
+    size_t listed_bytes          = 0;
+    size_t listed_files          = 0;
+    bool   truncated             = false;
+    bool   truncated_by_entries  = false;
     for (auto it = fs::recursive_directory_iterator(ws, ec);
          !ec && it != fs::recursive_directory_iterator();
          it.increment(ec)) {
@@ -1017,22 +1026,13 @@ std::string SandboxManager::list_workspace(int64_t tenant_id) {
             it.disable_recursion_pending();
             continue;
         }
-        if (it->is_regular_file(sec)) files.push_back(it->path());
-    }
-    std::sort(files.begin(), files.end());
-    const int byte_cap  = cfg_.list_max_bytes;
-    const int entry_cap = cfg_.list_max_files;
-    size_t      listed_bytes = 0;
-    size_t      listed_files = 0;
-    bool        truncated           = false;
-    bool        truncated_by_entries = false;
-    for (auto& p : files) {
+        if (!it->is_regular_file(sec)) continue;
         if (entry_cap > 0 && listed_files >= static_cast<size_t>(entry_cap)) {
             truncated            = true;
             truncated_by_entries = true;
             break;
         }
-        std::error_code sec;
+        const fs::path& p = it->path();
         auto sz = fs::file_size(p, sec);
         if (sec) continue;
         std::error_code rec;
