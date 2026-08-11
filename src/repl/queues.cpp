@@ -117,7 +117,6 @@ void OutputQueue::push_diff(const std::string& patch) {
 
     DiffRegisterFn reg;
     DiffReviewFn review;
-    std::function<void()> fn;
     int proposal_id = 0;
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -128,6 +127,16 @@ void OutputQueue::push_diff(const std::string& patch) {
     // model stream with a stable patch id (pump only renders).
     if (reg) proposal_id = reg(patch);
 
+    const bool gated = review && proposal_id > 0;
+    if (gated) {
+        // Pause the producer until the user answers — same contract as confirms.
+        // Enqueue and wake the pump only after review so Patch #N prose is not
+        // drained on top of the interactive card while arrow keys repaint via
+        // replace_last_prose.
+        review(proposal_id, patch);
+    }
+
+    std::function<void()> fn;
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (!items_.empty() && items_.back().kind == OutputItem::Kind::Text) {
@@ -141,10 +150,6 @@ void OutputQueue::push_diff(const std::string& patch) {
         split_after_diff_ = true;
         fn = notify_fn_;
     }
-    // Pause the producer until the user answers — same contract as confirms.
-    // Wake the pump only after review so Patch #N prose is not drained on top
-    // of the interactive card while arrow keys repaint via replace_last_prose.
-    if (review && proposal_id > 0) review(proposal_id, patch);
     if (fn) fn();
 }
 
