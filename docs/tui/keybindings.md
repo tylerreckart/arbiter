@@ -52,6 +52,25 @@ Scrollback is **visual-row aware**: a wrapped paragraph counts as multiple rows 
 |-------------|------------------------------------------------------------------------------|
 | `Esc`       | Cancel any in-flight agent turn. The pane's input clears, the cancel handler pushes `[interrupted]` into scrollback, and the agent's pending HTTP request is aborted. A lone `Esc` with no follow-on within 50 ms triggers cancel; longer sequences (CSI escape codes from arrows / PgUp / etc.) are routed to the editor instead. |
 
+## Interactive prompts (permission / diff review)
+
+Confirms and streamed ```diff reviews share one FIFO queue. A streamed diff
+**pauses the model stream** until you answer. While a card is armed, the
+footer shows picker hints and the status line names the prompt plus any
+backlog (`+N waiting`).
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` (or `k` / `j`) | Move the › caret |
+| `Enter` | Commit the highlighted option |
+| `y` / `n` / `A` | Permission shortcuts (Allow / Deny / Accept edits) |
+| `a` / `r` / `A` | Diff shortcuts (Apply / Reject / Allow all) |
+| `Esc` / Ctrl-C | Cancel |
+| `PgUp` / `PgDn` | Scroll the pane (re-read DiffSegment / context) |
+
+`/accept-edits [on|off]` toggles the session flag; `/prompts` lists waiting
+cards. See [output-ux.md](output-ux.md).
+
 ## Pane chords (`Ctrl-w` prefix)
 
 `^W` opens a 2-second window for a single follow-up byte. Inside that window:

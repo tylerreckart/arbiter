@@ -75,6 +75,9 @@ struct OutputItem {
     ToolActivityEvent tool{};
     // Kind::Thinking — agent id for per-agent accent chrome (theme palette).
     std::string agent_id;
+    // Kind::Diff — when >0 the proposal was registered on the producer
+    // thread (stream pause path); the pump only renders it.
+    int diff_proposal_id = 0;
 };
 
 class OutputQueue {
@@ -90,7 +93,17 @@ public:
     void push_msg(const std::string& s);
 
     // Queue a diff patch.  Preserves stream order relative to text chunks.
+    // When a review gate is set, registers the proposal, wakes the pump to
+    // paint it, then blocks the caller until the user decides — pausing the
+    // model stream the same way confirms pause tool dispatch.
     void push_diff(const std::string& patch);
+
+    // Live TUI: register proposal → return id (0 to skip review).  Called on
+    // the producer (exec) thread inside push_diff before the item is queued.
+    using DiffRegisterFn = std::function<int(const std::string& patch)>;
+    // Live TUI: block until the user reviews `id` (and apply the decision).
+    using DiffReviewFn = std::function<void(int id, const std::string& patch)>;
+    void set_diff_review_hooks(DiffRegisterFn reg, DiffReviewFn review);
 
     // Queue styled markdown lines (ProseSegment path — no ANSI round trip).
     void push_prose(const std::vector<StyledLine>& lines);
@@ -122,6 +135,8 @@ private:
     bool                     need_sep_ = false;
     bool                     split_after_diff_ = false;
     std::function<void()>    notify_fn_;
+    DiffRegisterFn           diff_register_;
+    DiffReviewFn             diff_review_;
 };
 
 } // namespace arbiter

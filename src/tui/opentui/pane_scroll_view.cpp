@@ -1554,6 +1554,25 @@ void PaneScrollView::append_prose(const std::vector<StyledLine>& lines, bool new
     prose.append(prepared);
 }
 
+bool PaneScrollView::replace_last_prose(const std::vector<StyledLine>& lines) {
+    ProseSegment* prose = nullptr;
+    for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
+        if (dynamic_cast<BlankSegment*>(it->get())) continue;
+        prose = dynamic_cast<ProseSegment*>(it->get());
+        if (prose) break;
+    }
+    if (!prose) return false;
+    prose->clear();
+    if (lines.empty()) return true;
+    const TuiDesign& d = tui_design();
+    auto prepared = prepare_prose_lines(lines,
+                                        wrap_cols_,
+                                        d.layout.prose_paragraph_gap,
+                                        /*trailing_empty=*/0);
+    if (!prepared.empty()) prose->append(prepared);
+    return true;
+}
+
 void PaneScrollView::append_code_open(std::string_view open_fence,
                                       std::string_view lang,
                                       size_t preview_rows,

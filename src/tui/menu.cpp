@@ -247,6 +247,8 @@ std::vector<MenuItem> menu_items_help() {
         {nullptr, "schedule", "/schedule …", "recurring / one-shot tasks"},
         {nullptr, "exec", "/exec <cmd>", "host shell or sandbox"},
         {nullptr, "diff", "/diff …", "review / apply streamed diffs"},
+        {nullptr, "accept-edits", "/accept-edits [on|off]", "auto-apply future file diffs"},
+        {nullptr, "prompts", "/prompts", "list pending permission / diff cards"},
         {nullptr, "write", "/write <path>", "write file / artifact"},
         {nullptr, "read", "/read <path>", "read conversation artifact"},
         {nullptr, "list", "/list", "list conversation artifacts"},

@@ -161,10 +161,33 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                         os << "  tenant: " << remote_tenant_name << "\n";
                     os << "  auth:   bearer token\n"
                        << "  conv:   " << pane.conversation_id << "\n";
+                    os << "  accept-edits: "
+                       << (interactive_prompts.accept_edits() ? "on" : "off")
+                       << "\n";
+                    const auto waiting = interactive_prompts.snapshot();
+                    if (!waiting.empty()) {
+                        os << "  prompts: " << waiting.size() << " waiting\n";
+                    }
                     push_status(os.str());
                     return;
                 }
-                push_status(orch.global_status());
+                std::string msg = orch.global_status();
+                msg += "\naccept-edits: ";
+                msg += interactive_prompts.accept_edits() ? "on" : "off";
+                const auto waiting = interactive_prompts.snapshot();
+                if (!waiting.empty()) {
+                    msg += "\nprompts: " + std::to_string(waiting.size())
+                        + " waiting";
+                    for (std::size_t i = 0; i < waiting.size() && i < 5; ++i) {
+                        msg += "\n  " + std::to_string(i + 1) + ". "
+                            + interactive_request_label(waiting[i]);
+                    }
+                    if (waiting.size() > 5) {
+                        msg += "\n  … +" + std::to_string(waiting.size() - 5)
+                            + " more (/prompts)";
+                    }
+                }
+                push_status(msg);
                 return;
             }
             if (cmd == "find") {
@@ -1369,6 +1392,53 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                 }
                 push_status(std::string("verbose: ") +
                                       (cfg.verbose ? "on" : "off"));
+                return;
+            }
+            if (cmd == "accept-edits") {
+                std::string arg;
+                iss >> arg;
+                if (arg == "on") {
+                    interactive_prompts.set_accept_edits(true);
+                } else if (arg == "off") {
+                    interactive_prompts.set_accept_edits(false);
+                } else if (arg.empty()) {
+                    interactive_prompts.set_accept_edits(
+                        !interactive_prompts.accept_edits());
+                } else {
+                    push_status("Usage: /accept-edits [on|off]\n"
+                                "  When on, new streamed ```diff reviews "
+                                "auto-apply (exec/write still confirm).\n"
+                                "  Toggle from a permission card with [A], "
+                                "or from a diff card with [A]llow all.");
+                    return;
+                }
+                const bool on = interactive_prompts.accept_edits();
+                push_status(std::string("accept-edits: ") +
+                            (on ? "on" : "off") +
+                            (on ? " — future file diffs auto-apply"
+                                : " — file diffs prompt again"));
+                return;
+            }
+            if (cmd == "prompts") {
+                const auto waiting = interactive_prompts.snapshot();
+                std::ostringstream out;
+                out << "interactive prompts: " << waiting.size()
+                    << " waiting";
+                if (interactive_prompts.accept_edits()) {
+                    out << " · accept-edits on";
+                }
+                if (waiting.empty()) {
+                    out << "\n  (none — permission and diff cards share "
+                           "one FIFO queue)";
+                } else {
+                    for (std::size_t i = 0; i < waiting.size(); ++i) {
+                        out << "\n  " << (i + 1) << ". "
+                            << interactive_request_label(waiting[i]);
+                    }
+                    out << "\n  Keys: permission [y]/[n]/[A]/Esc · "
+                           "diff [a]/[r]/[A]/Esc · /accept-edits off";
+                }
+                push_status(out.str());
                 return;
             }
                 if (cmd == "theme") {

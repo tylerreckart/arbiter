@@ -194,12 +194,29 @@ TuiChromeSnapshot TUI::chrome_snapshot() const {
     s.status = current_status_;
     s.pre_input_status = current_pre_input_status_;
     s.activity_badge = activity_badge_;
+    s.footer_override = footer_override_;
+    s.footer_left_override = footer_left_override_;
+    s.footer_right_override = footer_right_override_;
     return s;
 }
 
 void TUI::set_footer_hint_mode(FooterHintMode mode) {
     std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
     footer_hint_mode_ = mode;
+}
+
+void TUI::set_footer_override(std::string left, std::string right) {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    footer_override_ = true;
+    footer_left_override_ = std::move(left);
+    footer_right_override_ = std::move(right);
+}
+
+void TUI::clear_footer_override() {
+    std::lock_guard<std::recursive_mutex> tlk(tty_mu_);
+    footer_override_ = false;
+    footer_left_override_.clear();
+    footer_right_override_.clear();
 }
 
 void TUI::set_outer_bottom(bool on_bottom) {
