@@ -114,6 +114,14 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                 output_queue.end_message();
             }
         };
+        auto take_pending_attachments = [&]() -> std::vector<PromptAttachment> {
+            std::lock_guard<std::mutex> lk(pane.pending_attachments_mu);
+            std::vector<PromptAttachment> out =
+                std::move(pane.pending_attachments);
+            pane.pending_attachments.clear();
+            if (!out.empty()) pane.tui.clear_status();
+            return out;
+        };
 
         if (!line.empty() && line[0] == '/') {
             // Parse command
@@ -293,6 +301,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                 std::string msg;
                 std::getline(iss, msg);
                 if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
+                auto attachments = take_pending_attachments();
                 reveal_sidebar();
                 try {
                     if (!cfg.verbose) tool_indicator.begin();
@@ -301,7 +310,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                         // Remote conversations pin agent at create time;
                         // /send still posts to the bound conversation.
                         (void)id;
-                        auto resp = run_remote_turn(pane, msg);
+                        auto resp = run_remote_turn(pane, msg, std::move(attachments));
                         tool_indicator.finalize();
                         output_queue.end_message();
                         if (!resp.ok) {
@@ -309,9 +318,37 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                         }
                     } else {
                         arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
-                        auto resp = orch.send_streaming(id, msg, [&](const std::string& chunk) {
-                            renderer.feed(chunk);
-                        });
+                        ApiResponse resp;
+                        if (attachments.empty()) {
+                            resp = orch.send_streaming(id, msg, [&](const std::string& chunk) {
+                                renderer.feed(chunk);
+                            });
+                        } else {
+                            std::vector<ContentPart> parts;
+                            if (!msg.empty()) {
+                                ContentPart text;
+                                text.kind = ContentPart::TEXT;
+                                text.text = msg;
+                                parts.push_back(std::move(text));
+                            }
+                            for (auto& att : attachments) {
+                                ContentPart img;
+                                img.kind = ContentPart::IMAGE;
+                                img.media_type = att.media_type;
+                                img.image_data = std::move(att.image_data);
+                                parts.push_back(std::move(img));
+                            }
+                            if (parts.empty()) {
+                                ContentPart text;
+                                text.kind = ContentPart::TEXT;
+                                text.text = "(image input)";
+                                parts.push_back(std::move(text));
+                            }
+                            resp = orch.send_streaming(id, std::move(parts),
+                                [&](const std::string& chunk) {
+                                    renderer.feed(chunk);
+                                });
+                        }
                         renderer.flush();
                         // Per-tool rows already landed via ToolActivityEvent; just
                         // clear the mid-separator spinner.
@@ -354,12 +391,13 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                 std::string query;
                 std::getline(iss, query);
                 if (!query.empty() && query[0] == ' ') query.erase(0, 1);
+                auto attachments = take_pending_attachments();
                 reveal_sidebar();
                 try {
                     if (!cfg.verbose) tool_indicator.begin();
                     pane.last_interim_agent.clear();
                     if (is_remote()) {
-                        auto resp = run_remote_turn(pane, query);
+                        auto resp = run_remote_turn(pane, query, std::move(attachments));
                         tool_indicator.finalize();
                         output_queue.end_message();
                         if (!resp.ok) {
@@ -367,9 +405,38 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                         }
                     } else {
                         arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
-                        auto resp = orch.send_streaming("index", query, [&](const std::string& chunk) {
-                            renderer.feed(chunk);
-                        });
+                        ApiResponse resp;
+                        if (attachments.empty()) {
+                            resp = orch.send_streaming("index", query,
+                                [&](const std::string& chunk) {
+                                    renderer.feed(chunk);
+                                });
+                        } else {
+                            std::vector<ContentPart> parts;
+                            if (!query.empty()) {
+                                ContentPart text;
+                                text.kind = ContentPart::TEXT;
+                                text.text = query;
+                                parts.push_back(std::move(text));
+                            }
+                            for (auto& att : attachments) {
+                                ContentPart img;
+                                img.kind = ContentPart::IMAGE;
+                                img.media_type = att.media_type;
+                                img.image_data = std::move(att.image_data);
+                                parts.push_back(std::move(img));
+                            }
+                            if (parts.empty()) {
+                                ContentPart text;
+                                text.kind = ContentPart::TEXT;
+                                text.text = "(image input)";
+                                parts.push_back(std::move(text));
+                            }
+                            resp = orch.send_streaming("index", std::move(parts),
+                                [&](const std::string& chunk) {
+                                    renderer.feed(chunk);
+                                });
+                        }
                         renderer.flush();
                         tool_indicator.finalize();
                         output_queue.end_message();
@@ -603,6 +670,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                     rest.pop_back();
 
                 if (rest.empty() || rest == "list") {
+                    std::lock_guard<std::mutex> lk(pane.pending_attachments_mu);
                     if (pane.pending_attachments.empty()) {
                         push_status("No images attached. Drop an image onto the "
                                     "prompt, or /attach <path>.");
@@ -619,6 +687,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                     return;
                 }
                 if (rest == "clear") {
+                    std::lock_guard<std::mutex> lk(pane.pending_attachments_mu);
                     const size_t n = pane.pending_attachments.size();
                     pane.pending_attachments.clear();
                     pane.tui.clear_status();
@@ -634,12 +703,16 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                     push_err("ERR: " + err);
                     return;
                 }
-                pane.pending_attachments.push_back(std::move(att));
-                pane.tui.set_status(
-                    "attached " + attachment_status_label(pane.pending_attachments));
-                push_status("Attached " + pane.pending_attachments.back().label
-                            + " — type a message and Enter to send, or "
-                              "/attach clear to drop.");
+                {
+                    std::lock_guard<std::mutex> lk(pane.pending_attachments_mu);
+                    pane.pending_attachments.push_back(std::move(att));
+                    pane.tui.set_status(
+                        "attached "
+                        + attachment_status_label(pane.pending_attachments));
+                    push_status("Attached " + pane.pending_attachments.back().label
+                                + " — type a message and Enter to send, or "
+                                  "/attach clear to drop.");
+                }
                 return;
             }
             if (cmd == "search") {

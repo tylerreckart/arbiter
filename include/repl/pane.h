@@ -61,7 +61,9 @@ struct Pane {
     std::string       original_task;
     std::string       multiline_accum;
     // Images staged for the next submit (drag-drop paste or /attach).
-    // Main-thread only until moved into QueuedCommand on Enter.
+    // Guarded by pending_attachments_mu; moved into QueuedCommand on Enter
+    // or consumed by /send and /ask.
+    std::mutex pending_attachments_mu;
     std::vector<PromptAttachment> pending_attachments;
     int               scroll_offset       = 0;
     int               new_while_scrolled  = 0;

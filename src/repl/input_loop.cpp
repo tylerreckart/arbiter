@@ -467,7 +467,11 @@ void ReplSession::run_input_loop() {
 
         // Image-only submit: allow Enter with empty text when attachments
         // are staged (drop then Enter, or /attach then Enter).
-        const bool has_attachments = !focused.pending_attachments.empty();
+        bool has_attachments = false;
+        {
+            std::lock_guard<std::mutex> lk(focused.pending_attachments_mu);
+            has_attachments = !focused.pending_attachments.empty();
+        }
         if (line.empty() && !has_attachments) continue;
 
         {
@@ -490,6 +494,7 @@ void ReplSession::run_input_loop() {
         // Only plain-text (and image-only) submits consume them into the turn.
         const bool slash = !line.empty() && line[0] == '/';
         if (!slash) {
+            std::lock_guard<std::mutex> lk(focused.pending_attachments_mu);
             queued.attachments = std::move(focused.pending_attachments);
             focused.pending_attachments.clear();
             focused.tui.clear_status();

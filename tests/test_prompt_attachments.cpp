@@ -111,6 +111,13 @@ TEST_CASE("extract_images_from_paste leaves ordinary prose alone") {
     CHECK(result.remaining_text == "please look at shot.png carefully");
 }
 
+TEST_CASE("extract_images_from_paste leaves prose with trailing image URL alone") {
+    auto result = extract_images_from_paste("see https://example.com/foo.png");
+    CHECK(result.attachments.empty());
+    CHECK(result.errors.empty());
+    CHECK(result.remaining_text == "see https://example.com/foo.png");
+}
+
 TEST_CASE("extract_images_from_paste loads multiline multi-file drops") {
     TempPng a("arbiter_multi_a.png");
     TempPng b("arbiter_multi_b.png");

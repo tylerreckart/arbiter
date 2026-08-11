@@ -236,6 +236,12 @@ PasteImageResult extract_images_from_paste(std::string_view paste) {
         PromptAttachment att;
         std::string err;
         if (!load_image_attachment(path, att, err)) {
+            // Trailing .png/.jpeg on prose or URLs is not an image drop.
+            if (tok.find_first_of(" \t") != std::string::npos
+                || tok.find("://") != std::string::npos) {
+                result.remaining_text = std::string(paste);
+                return result;
+            }
             // Path looks like an image but failed to load — still treat as
             // an image drop (don't dump the path into the buffer), surface
             // the error, and skip the bad file.

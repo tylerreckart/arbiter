@@ -299,19 +299,23 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
             if (result.attachments.empty() && result.errors.empty()) {
                 return paste;  // ordinary text paste
             }
-            for (auto& a : result.attachments) {
-                raw->pending_attachments.push_back(std::move(a));
-            }
-            if (!result.errors.empty()) {
-                std::string msg = "attach: " + result.errors.front();
-                if (result.errors.size() > 1) {
-                    msg += " (+" + std::to_string(result.errors.size() - 1)
-                        + " more)";
+            {
+                std::lock_guard<std::mutex> lk(raw->pending_attachments_mu);
+                for (auto& a : result.attachments) {
+                    raw->pending_attachments.push_back(std::move(a));
                 }
-                raw->tui.set_status(msg);
-            } else if (!raw->pending_attachments.empty()) {
-                raw->tui.set_status(
-                    "attached " + attachment_status_label(raw->pending_attachments));
+                if (!result.errors.empty()) {
+                    std::string msg = "attach: " + result.errors.front();
+                    if (result.errors.size() > 1) {
+                        msg += " (+" + std::to_string(result.errors.size() - 1)
+                            + " more)";
+                    }
+                    raw->tui.set_status(msg);
+                } else if (!raw->pending_attachments.empty()) {
+                    raw->tui.set_status(
+                        "attached "
+                        + attachment_status_label(raw->pending_attachments));
+                }
             }
             if (pump_notify) pump_notify();
             return result.remaining_text;
