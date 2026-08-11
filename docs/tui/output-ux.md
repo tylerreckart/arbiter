@@ -90,7 +90,8 @@ still commit immediately · **Esc** / Ctrl-C cancels. Declines return
 Confirms and diff reviews share one FIFO interactive prompt queue. While a
 card is active the footer switches to the decision keys, the status line names
 the prompt, and `(+N more waiting)` appears when the backlog is deeper than
-one.
+one. Pane-close and “switch anyway?” confirms use the same › caret picker
+(Yes/No, defaulting to No).
 
 **Stream pause:** streamed ```diff fences **block the model stream** until you
 answer the review card (same contract as permission confirms pausing tool

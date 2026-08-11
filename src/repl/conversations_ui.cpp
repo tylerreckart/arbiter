@@ -394,24 +394,30 @@ void ReplSession::switch_conversation(bool create_new, std::string explicit_id,
             return;
         }
 
-        // Confirm outside layout_mu so the output pump can keep painting and
-        // so nested mouse Up reports are drained by read_confirm_key.
+        // Confirm outside layout_mu so the output pump can keep painting.
         {
             bool busy = false;
+            Pane* focused = nullptr;
             {
                 std::lock_guard<std::recursive_mutex> lk(layout_mu);
                 busy = focused_turn_in_flight();
-                if (busy) {
-                    layout_ptr->focused().tui.set_status(
-                        "Turn in progress — switch anyway? [y/N]");
-                    present_unlocked();
-                }
+                focused = &layout_ptr->focused();
             }
-            if (busy) {
-                const int key = arbiter::read_confirm_key();
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                layout_ptr->focused().tui.clear_status();
-                if (key != 'y' && key != 'Y') {
+            if (busy && focused) {
+                int opt_count = 0;
+                const auto* opts = yes_no_prompt_options(opt_count);
+                const auto decision = run_prompt_picker(
+                    *focused, opts, opt_count,
+                    /*initial_selected=*/1,  // default No
+                    /*permission_chrome=*/true,
+                    [&](int selected) {
+                        return arbiter::styled_yes_no_card(
+                            "switch", focused->conversation_id,
+                            {"Turn in progress — switch anyway?"}, selected);
+                    },
+                    "switch conversation");
+                if (!decision_is_affirmative(decision)) {
+                    std::lock_guard<std::recursive_mutex> lk(layout_mu);
                     history_sidebar.exit_focus();
                     present_unlocked();
                     return;

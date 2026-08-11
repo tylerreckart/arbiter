@@ -13,6 +13,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   show `(+N more waiting)`, switch the footer to picker hints, and name the
   active prompt on the status line. `/accept-edits [on|off]` toggles session
   accept-edits; `/prompts` and `/status` surface the flag and waiting cards.
+  Pane-close and conversation “switch anyway?” confirms share the same Yes/No
+  picker chrome (default No).
 - **Stream pause on ```diff review.** Streamed patches register on the
   producer thread and **block the model stream** until you answer (same
   contract as permission confirms). Esc leaves the patch pending for `/diff`.

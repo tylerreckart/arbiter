@@ -538,6 +538,27 @@ TEST_CASE("styled_diff_review_card includes apply reject Allow all Esc prompt") 
     CHECK(saw_allow_all);
 }
 
+TEST_CASE("styled_yes_no_card uses › caret picker chrome") {
+    auto card = styled_yes_no_card(
+        "close", "research", {"pane finished — close it?"}, /*selected=*/1);
+    REQUIRE(card.size() >= 3);
+    CHECK(card.front().text.find("confirm") != std::string::npos);
+    CHECK(card.front().text.find("close") != std::string::npos);
+    bool saw_yes = false;
+    bool saw_no_selected = false;
+    bool saw_hint = false;
+    for (const auto& line : card) {
+        if (line.text.find("Yes") != std::string::npos) saw_yes = true;
+        if (line.text.find("›") != std::string::npos &&
+            line.text.find("No") != std::string::npos)
+            saw_no_selected = true;
+        if (line.text.find("Enter confirm") != std::string::npos) saw_hint = true;
+    }
+    CHECK(saw_yes);
+    CHECK(saw_no_selected);
+    CHECK(saw_hint);
+}
+
 TEST_CASE("indented code block routes to code sink when wired") {
     std::vector<std::string> bodies;
     bool opened = false;

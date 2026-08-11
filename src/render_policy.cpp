@@ -304,4 +304,35 @@ std::vector<StyledLine> styled_diff_review_card(
     return lines;
 }
 
+std::vector<StyledLine> styled_yes_no_card(
+    const std::string& action,
+    const std::string& target,
+    const std::vector<std::string>& preview_lines,
+    int selected) {
+    std::vector<StyledLine> lines;
+    StyledLine header;
+    styled_append(header, StyleId::Warning, "confirm ");
+    styled_append(header, StyleId::Bold, action.empty() ? "choice" : action);
+    if (!target.empty()) {
+        styled_append(header, StyleId::System, "  ");
+        styled_append(header, StyleId::Code, target);
+    }
+    lines.push_back(std::move(header));
+
+    for (const auto& prev : preview_lines) {
+        if (prev.empty()) continue;
+        StyledLine row;
+        styled_append(row, StyleId::Dim, "  ");
+        styled_append(row, StyleId::System, prev);
+        lines.push_back(std::move(row));
+    }
+
+    static constexpr const char* kLabels[] = {"Yes", "No"};
+    static constexpr const char* kDetails[] = {
+        "confirm", "keep current state"};
+    static constexpr char kKeys[] = {'y', 'n'};
+    append_option_rows(lines, kLabels, kDetails, kKeys, 2, selected);
+    return lines;
+}
+
 } // namespace arbiter

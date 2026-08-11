@@ -227,6 +227,17 @@ struct ReplSession {
     static std::vector<std::string> patch_preview_lines(const std::string& patch);
     void handle_diff_decision(Pane& pane, int patch_id, InteractiveDecision d);
     bool service_interactive();
+    // Shared ↑↓/Enter option picker (agent permission / diff / yes-no).
+    // Safe to call on the main thread (does not re-enter the FIFO queue).
+    InteractiveDecision run_prompt_picker(
+        Pane& pane,
+        const InteractivePromptOption* opts,
+        int opt_count,
+        int initial_selected,
+        bool permission_chrome,
+        const std::function<std::vector<StyledLine>(int selected)>& build_card,
+        const std::string& status_label = {},
+        int pending_after = 0);
 
     // ── chords.cpp ─────────────────────────────────────────────────────────
     void clear_spawn_parent_refs(Pane* parent);

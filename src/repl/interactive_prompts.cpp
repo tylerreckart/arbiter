@@ -182,6 +182,135 @@ void ReplSession::handle_diff_decision(Pane& pane, int patch_id,
         // Cancel: leave pending.
 }
 
+InteractiveDecision ReplSession::run_prompt_picker(
+    Pane& pane,
+    const InteractivePromptOption* opts,
+    int opt_count,
+    int initial_selected,
+    bool permission_chrome,
+    const std::function<std::vector<StyledLine>(int selected)>& build_card,
+    const std::string& status_label,
+    int pending_after) {
+    if (!opts || opt_count <= 0) return InteractiveDecision::Cancel;
+    int selected = initial_selected;
+    if (selected < 0) selected = 0;
+    if (selected >= opt_count) selected = opt_count - 1;
+
+    const bool accept_on = interactive_prompts.accept_edits();
+    auto paint_chrome = [&]() {
+        std::string status = status_label.empty()
+            ? (permission_chrome ? "permission" : "diff review")
+            : status_label;
+        if (pending_after > 0) {
+            status += " · +";
+            status += std::to_string(pending_after);
+            status += " waiting";
+        }
+        if (accept_on) status += " · accept-edits on";
+        pane.tui.set_status(status);
+
+        std::string right;
+        if (pending_after > 0) {
+            right = "+" + std::to_string(pending_after) + " waiting";
+        } else if (accept_on) {
+            right = "accept-edits on";
+        }
+        if (permission_chrome) {
+            pane.tui.set_footer_override(
+                "↑↓ move  enter confirm  y/n shortcuts  esc cancel",
+                std::move(right));
+        } else {
+            pane.tui.set_footer_override(
+                "↑↓ move  enter confirm  a/r/A shortcuts  esc  pg scroll",
+                std::move(right));
+        }
+    };
+
+    auto paint = [&](bool first) {
+        auto card = build_card(selected);
+        std::lock_guard<std::recursive_mutex> lk(layout_mu);
+        if (first) {
+            pane_history_push_prose(pane, card, true);
+        } else {
+            pane_history_replace_last_prose(pane, card);
+        }
+        paint_chrome();
+        present_holding_lock();
+    };
+    paint(true);
+
+    auto clear_chrome = [&]() {
+        pane.tui.clear_footer_override();
+        pane.tui.clear_status();
+    };
+
+    while (true) {
+        char csi = 0;
+        std::string csi_params;
+        const int key = arbiter::read_history_sidebar_key(csi, csi_params);
+        if (key < 0) {
+            clear_chrome();
+            return InteractiveDecision::Cancel;
+        }
+        if (key == 0x1B && (csi == 'M' || csi == 'm')
+            && !csi_params.empty() && csi_params[0] == '<') {
+            continue;
+        }
+        // PgUp/PgDn — scroll the pane under the card.
+        if (csi == '~' && (csi_params == "5" || csi_params == "6")) {
+            const int step = std::max(1, pane.tui.scroll_region_rows() / 2);
+            std::lock_guard<std::recursive_mutex> lk(layout_mu);
+            const int max_off = pane_history_max_scroll(pane);
+            if (csi_params == "5") {
+                pane.scroll_offset =
+                    std::min(pane.scroll_offset + step, max_off);
+            } else {
+                pane.scroll_offset = std::max(0, pane.scroll_offset - step);
+            }
+            present_holding_lock();
+            continue;
+        }
+        if (arbiter::is_abandon_key(key, csi, csi_params)) {
+            clear_chrome();
+            return InteractiveDecision::Cancel;
+        }
+        if ((key == 0x1B && csi == 'A') || key == 'k' || key == 'K') {
+            selected = (selected + opt_count - 1) % opt_count;
+            paint(false);
+            continue;
+        }
+        if ((key == 0x1B && csi == 'B') || key == 'j' || key == 'J') {
+            selected = (selected + 1) % opt_count;
+            paint(false);
+            continue;
+        }
+        if (key == '\r' || key == '\n') {
+            clear_chrome();
+            return opts[selected].decision;
+        }
+        if (key > 0 && key < 256 && csi == 0) {
+            const char ch = static_cast<char>(key);
+            for (int i = 0; i < opt_count; ++i) {
+                const char s = opts[i].shortcut;
+                if (!s) continue;
+                if (s == 'A') {
+                    if (ch == 'A') {
+                        clear_chrome();
+                        return opts[i].decision;
+                    }
+                    continue;
+                }
+                if (ch == s ||
+                    ch == static_cast<char>(
+                             std::toupper(static_cast<unsigned char>(s)))) {
+                    clear_chrome();
+                    return opts[i].decision;
+                }
+            }
+        }
+    }
+}
+
 bool ReplSession::service_interactive() {
 
         auto entry_opt = interactive_prompts.take_front();
@@ -253,126 +382,6 @@ bool ReplSession::service_interactive() {
             static_cast<int>(interactive_prompts.size());
         const bool accept_on = interactive_prompts.accept_edits();
 
-        auto paint_prompt_chrome = [&](bool confirm_card) {
-            std::string status = confirm_card ? "permission" : "diff review";
-            status += " · ";
-            status += interactive_request_label(req);
-            if (pending_after > 0) {
-                status += " · +";
-                status += std::to_string(pending_after);
-                status += " waiting";
-            }
-            if (accept_on) status += " · accept-edits on";
-            pane.tui.set_status(status);
-
-            std::string right;
-            if (pending_after > 0) {
-                right = "+" + std::to_string(pending_after) + " waiting";
-            } else if (accept_on) {
-                right = "accept-edits on";
-            }
-            if (confirm_card) {
-                pane.tui.set_footer_override(
-                    "↑↓ move  enter confirm  y/n/A shortcuts  esc cancel",
-                    std::move(right));
-            } else {
-                pane.tui.set_footer_override(
-                    "↑↓ move  enter confirm  a/r/A shortcuts  esc  pg scroll",
-                    std::move(right));
-            }
-        };
-
-        auto clear_prompt_chrome = [&]() {
-            pane.tui.clear_footer_override();
-            pane.tui.clear_status();
-        };
-
-        // PgUp/PgDn while a card is armed — peek the full DiffSegment /
-        // permission context above the truncated preview.
-        auto try_scroll_prompt = [&](char csi, const std::string& params) -> bool {
-            if (!(csi == '~' && (params == "5" || params == "6"))) return false;
-            const int step = std::max(1, pane.tui.scroll_region_rows() / 2);
-            std::lock_guard<std::recursive_mutex> lk(layout_mu);
-            const int max_off = pane_history_max_scroll(pane);
-            if (params == "5") {
-                pane.scroll_offset = std::min(pane.scroll_offset + step, max_off);
-            } else {
-                pane.scroll_offset = std::max(0, pane.scroll_offset - step);
-            }
-            present_holding_lock();
-            return true;
-        };
-
-        auto run_option_picker =
-            [&](bool confirm_card,
-                const InteractivePromptOption* opts,
-                int opt_count,
-                const std::function<std::vector<StyledLine>(int)>& build_card)
-            -> InteractiveDecision {
-            int selected = 0;
-            auto paint = [&](bool first) {
-                auto card = build_card(selected);
-                std::lock_guard<std::recursive_mutex> lk(layout_mu);
-                if (first) {
-                    pane_history_push_prose(pane, card, true);
-                } else {
-                    pane_history_replace_last_prose(pane, card);
-                }
-                paint_prompt_chrome(confirm_card);
-                present_holding_lock();
-            };
-            paint(true);
-
-            while (true) {
-                char csi = 0;
-                std::string csi_params;
-                const int key = arbiter::read_history_sidebar_key(csi, csi_params);
-                if (key < 0) {
-                    return InteractiveDecision::Cancel;
-                }
-                if (key == 0x1B && (csi == 'M' || csi == 'm')
-                    && !csi_params.empty() && csi_params[0] == '<') {
-                    continue;
-                }
-                if (try_scroll_prompt(csi, csi_params)) continue;
-                if (arbiter::is_abandon_key(key, csi, csi_params)) {
-                    return InteractiveDecision::Cancel;
-                }
-                // ↑ / k  or  ↓ / j — move selection (CSI A is ↑, not letter A).
-                if ((key == 0x1B && csi == 'A') || key == 'k' || key == 'K') {
-                    selected = (selected + opt_count - 1) % opt_count;
-                    paint(false);
-                    continue;
-                }
-                if ((key == 0x1B && csi == 'B') || key == 'j' || key == 'J') {
-                    selected = (selected + 1) % opt_count;
-                    paint(false);
-                    continue;
-                }
-                if (key == '\r' || key == '\n') {
-                    return opts[selected].decision;
-                }
-                // Letter shortcuts commit immediately (sidebar menu style).
-                // `A` (Accept/Allow all) is case-sensitive; y/n/a/r are not.
-                if (key > 0 && key < 256 && csi == 0) {
-                    const char ch = static_cast<char>(key);
-                    for (int i = 0; i < opt_count; ++i) {
-                        const char s = opts[i].shortcut;
-                        if (!s) continue;
-                        if (s == 'A') {
-                            if (ch == 'A') return opts[i].decision;
-                            continue;
-                        }
-                        if (ch == s ||
-                            ch == static_cast<char>(std::toupper(
-                                      static_cast<unsigned char>(s)))) {
-                            return opts[i].decision;
-                        }
-                    }
-                }
-            }
-        };
-
         arbiter::InteractiveDecision decision =
             arbiter::InteractiveDecision::Cancel;
 
@@ -382,24 +391,31 @@ bool ReplSession::service_interactive() {
                 preview.insert(preview.begin(), req.summary);
             }
             int opt_count = 0;
-            const auto* opts = permission_prompt_options(opt_count);
-            decision = run_option_picker(
-                true, opts, opt_count,
+            const auto* opts = options_for_request(req, opt_count);
+            const bool yes_no =
+                (req.option_set == InteractiveOptionSet::YesNo);
+            decision = run_prompt_picker(
+                pane, opts, opt_count, req.default_selected,
+                /*permission_chrome=*/true,
                 [&](int selected) {
+                    if (yes_no) {
+                        return arbiter::styled_yes_no_card(
+                            req.action, req.target, preview, selected);
+                    }
                     return arbiter::styled_permission_card(
                         req.action, req.target, preview, pending_after,
                         accept_on, selected);
-                });
+                },
+                interactive_request_label(req), pending_after);
 
-            clear_prompt_chrome();
             const char* confirm_label =
                 (decision == arbiter::InteractiveDecision::AllowAll)
                     ? "[user accepted input — accept edits on]"
                 : (decision == arbiter::InteractiveDecision::Allow)
-                    ? "[user accepted input]"
+                    ? (yes_no ? "[confirmed]" : "[user accepted input]")
                 : (decision == arbiter::InteractiveDecision::Cancel)
                     ? "[user cancelled input]"
-                    : "[user denied input]";
+                    : (yes_no ? "[declined]" : "[user denied input]");
             const StyleId confirm_style =
                 decision_is_affirmative(decision) ? StyleId::Success
                 : (decision == arbiter::InteractiveDecision::Cancel)
@@ -430,15 +446,16 @@ bool ReplSession::service_interactive() {
             // DiffReview card
             int opt_count = 0;
             const auto* opts = diff_review_prompt_options(opt_count);
-            decision = run_option_picker(
-                false, opts, opt_count,
+            decision = run_prompt_picker(
+                pane, opts, opt_count, req.default_selected,
+                /*permission_chrome=*/false,
                 [&](int selected) {
                     return arbiter::styled_diff_review_card(
                         req.patch_id, req.path, req.summary, req.preview_lines,
                         pending_after, accept_on, selected);
-                });
+                },
+                interactive_request_label(req), pending_after);
 
-            clear_prompt_chrome();
             const char* label =
                 (decision == arbiter::InteractiveDecision::Allow)
                     ? "[diff apply]"

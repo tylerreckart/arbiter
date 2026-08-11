@@ -74,4 +74,11 @@ void apply_base_style(StyledLine& line, StyleId base);
     bool accept_edits_on = false,
     int selected = 0);
 
+// Yes/No choice card (pane close, switch-anyway) — same › caret picker chrome.
+[[nodiscard]] std::vector<StyledLine> styled_yes_no_card(
+    const std::string& action,
+    const std::string& target,
+    const std::vector<std::string>& preview_lines,
+    int selected = 1);
+
 } // namespace arbiter
