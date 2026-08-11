@@ -486,6 +486,7 @@ void ReplSession::run_input_loop() {
         const bool slash = !line.empty() && line[0] == '/';
         if (!slash) {
             std::lock_guard<std::mutex> lk(focused.pending_attachments_mu);
+            if (line.empty() && focused.pending_attachments.empty()) continue;
             queued.attachments = std::move(focused.pending_attachments);
             focused.pending_attachments.clear();
             focused.tui.clear_status();
