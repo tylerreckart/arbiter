@@ -248,6 +248,23 @@ TEST_CASE("parse: todo and phase seeds") {
     CHECK(out.plan_seeds[1].agent == "backend");
 }
 
+TEST_CASE("parse: caps todo and phase seed counts") {
+    std::string body =
+        "<intent><kind>multi</kind><confidence>0.9</confidence>"
+        "<agent>planner</agent><brief>x</brief>";
+    for (int i = 0; i < 40; ++i) {
+        body += "<todo>item " + std::to_string(i) + "</todo>";
+    }
+    for (int i = 0; i < 20; ++i) {
+        body += "<phase agent=\"research\" name=\"p" + std::to_string(i) +
+                "\">task</phase>";
+    }
+    body += "</intent>";
+    auto out = parse_intent_signal(body);
+    CHECK(out.todo_seeds.size() == 32);
+    CHECK(out.plan_seeds.size() == 16);
+}
+
 TEST_CASE("parse: invalid kind is malformed unknown") {
     auto out = parse_intent_signal(
         "<intent><kind>banana</kind><confidence>0.9</confidence>"

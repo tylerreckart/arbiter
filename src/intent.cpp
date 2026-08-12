@@ -329,11 +329,12 @@ Intent parse_intent_signal(const std::string& reply) {
 
     // Repeated <todo> tags.
     {
+        constexpr std::size_t kMaxIntentSeedTodos = 32;
         std::string hay = body;
         const std::string open = "<todo>";
         const std::string close = "</todo>";
         size_t pos = 0;
-        while (true) {
+        while (out.todo_seeds.size() < kMaxIntentSeedTodos) {
             auto a = hay.find(open, pos);
             if (a == std::string::npos) break;
             a += open.size();
@@ -348,11 +349,12 @@ Intent parse_intent_signal(const std::string& reply) {
 
     // <phase agent="..." name="...">task</phase>
     {
+        constexpr std::size_t kMaxIntentSeedPhases = 16;
         std::string hay = body;
         const std::string open = "<phase";
         const std::string close = "</phase>";
         size_t pos = 0;
-        while (true) {
+        while (out.plan_seeds.size() < kMaxIntentSeedPhases) {
             auto a = hay.find(open, pos);
             if (a == std::string::npos) break;
             auto tag_end = hay.find('>', a);

@@ -61,4 +61,15 @@ bool path_within_canonical_root(std::string_view root,
     return true;
 }
 
+bool agent_id_is_safe(const std::string& id) {
+    if (id.empty() || id.size() > 64) return false;
+    if (id[0] == '.' || id[0] == '/') return false;
+    for (char c : id) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
 } // namespace arbiter

@@ -1496,6 +1496,21 @@ static std::string resolve_memory_dir(const std::string& memory_dir,
 // the only kind of target /mem and /shared-mem append-writes should touch.
 // Used to abort before open() rather than append to a symlink or a file
 // owned by someone else in a shared-home scenario.
+static std::string mem_agent_path(const std::string& dir,
+                                  const std::string& agent_id,
+                                  std::string* err_out = nullptr) {
+    if (!agent_id_is_safe(agent_id)) {
+        if (err_out) *err_out = "ERR: invalid agent_id";
+        return {};
+    }
+    const std::string path = dir + "/" + agent_id + ".md";
+    if (!path_within_canonical_root(dir, path)) {
+        if (err_out) *err_out = "ERR: agent memory path escapes memory directory";
+        return {};
+    }
+    return path;
+}
+
 static std::string verify_mem_target(const std::string& path) {
     struct stat st{};
     if (::lstat(path.c_str(), &st) != 0) {
@@ -1518,13 +1533,21 @@ std::string cmd_mem_read(const std::string& agent_id, const std::string& memory_
     std::string dir = resolve_memory_dir(memory_dir, &err);
     if (dir.empty()) return "";   // read is non-fatal; silent on access issues
 
-    std::string path = dir + "/" + agent_id + ".md";
+    const std::string path = mem_agent_path(dir, agent_id);
+    if (path.empty()) return "";
     if (!verify_mem_target(path).empty()) return "";
-    std::ifstream f(path);
+    std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
+    f.seekg(0, std::ios::end);
+    auto size = f.tellg();
+    constexpr std::streamoff kMemReadMaxBytes = 4 * 1024 * 1024;
+    if (size < 0) return "";
+    if (size > kMemReadMaxBytes) size = kMemReadMaxBytes;
+    f.seekg(0);
+    std::string out(static_cast<size_t>(size), '\0');
+    f.read(out.data(), size);
+    out.resize(static_cast<size_t>(f.gcount()));
+    return out;
 }
 
 std::string cmd_mem_write(const std::string& agent_id, const std::string& text,
@@ -1533,7 +1556,9 @@ std::string cmd_mem_write(const std::string& agent_id, const std::string& text,
     std::string dir = resolve_memory_dir(memory_dir, &err);
     if (dir.empty()) return err;
 
-    std::string path = dir + "/" + agent_id + ".md";
+    std::string path = mem_agent_path(dir, agent_id, &err);
+    if (path.empty()) return err;
+
     std::string verr = verify_mem_target(path);
     if (!verr.empty()) return verr;
 
@@ -1561,7 +1586,8 @@ void cmd_mem_clear(const std::string& agent_id, const std::string& memory_dir) {
     std::string err;
     std::string dir = resolve_memory_dir(memory_dir, &err);
     if (dir.empty()) return;
-    std::string path = dir + "/" + agent_id + ".md";
+    const std::string path = mem_agent_path(dir, agent_id);
+    if (path.empty()) return;
     if (verify_mem_target(path).empty()) fs::remove(path);
 }
 

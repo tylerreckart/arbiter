@@ -5,9 +5,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace arbiter {
 namespace {
@@ -175,32 +179,54 @@ bool load_image_attachment(const std::string& path,
         err = "not a supported image type (png/jpeg/gif/webp): " + cleaned;
         return false;
     }
-    if (!file_exists_regular(cleaned)) {
-        err = "file not found: " + cleaned;
+
+    // Open with O_NOFOLLOW so a symlink swap between stat and read cannot
+    // redirect us to a different file than the one we validated.
+    const int fd = ::open(cleaned.c_str(), O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) {
+        if (errno == ENOENT) err = "file not found: " + cleaned;
+        else if (errno == ELOOP) err = "refusing symlink: " + cleaned;
+        else err = "cannot read: " + cleaned;
         return false;
     }
-    std::error_code ec;
-    const auto sz = std::filesystem::file_size(cleaned, ec);
-    if (ec) {
+    struct stat st{};
+    if (::fstat(fd, &st) != 0) {
+        ::close(fd);
         err = "cannot stat: " + cleaned;
         return false;
     }
-    if (sz == 0) {
+    if (!S_ISREG(st.st_mode)) {
+        ::close(fd);
+        err = "not a regular file: " + cleaned;
+        return false;
+    }
+    if (st.st_size == 0) {
+        ::close(fd);
         err = "empty image file: " + cleaned;
         return false;
     }
-    if (static_cast<std::size_t>(sz) > kPromptImageMaxBytes) {
+    if (static_cast<std::size_t>(st.st_size) > kPromptImageMaxBytes) {
+        ::close(fd);
         err = "image too large (max 20 MB): " + cleaned;
         return false;
     }
-    std::ifstream in(cleaned, std::ios::binary);
-    if (!in) {
-        err = "cannot read: " + cleaned;
-        return false;
+
+    std::string bytes(static_cast<std::size_t>(st.st_size), '\0');
+    std::size_t off = 0;
+    while (off < bytes.size()) {
+        const ssize_t n = ::read(fd, bytes.data() + off,
+                                 bytes.size() - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ::close(fd);
+            err = "read failed: " + cleaned;
+            return false;
+        }
+        if (n == 0) break;
+        off += static_cast<std::size_t>(n);
     }
-    std::string bytes(static_cast<std::size_t>(sz), '\0');
-    in.read(bytes.data(), static_cast<std::streamsize>(sz));
-    if (!in) {
+    ::close(fd);
+    if (off != bytes.size()) {
         err = "read failed: " + cleaned;
         return false;
     }

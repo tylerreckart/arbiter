@@ -361,7 +361,10 @@ bool ReplSession::service_interactive() {
                 return true;
             }
             if (prop->status == arbiter::DiffProposalStatus::Applied) {
-                // Already applied — treat waiters as success, not cancel.
+                // Already applied — complete waiters as success, but do not
+                // call on_complete (that is the apply path and would re-enter
+                // apply / surface "already applied"). Same skip as the normal
+                // apply arm uses for blocking waiters via (auto_review || !promise).
                 if (entry.promise) {
                     arbiter::complete_prompt_promise(
                         entry.promise, arbiter::InteractiveDecision::Allow);
