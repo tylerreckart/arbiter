@@ -46,6 +46,8 @@ Routing order:
 3. Tenant agents created through [`POST /v1/agents`](agents/create.md), scanned in ascending `agent_id` order (full catalog, not the newest-200 REST list page).
 4. If nothing matches, Arbiter routes the event to `index`.
 
+After that resolution, the same [intent engine](../concepts/intent.md) that fronts `/v1/orchestrate` runs. If the event still lands on `index` and master's `intent.mode` is hybrid/heuristic, a confident match may short-circuit to a loaded specialist. Explicit `agent` still wins. Seed slots (plan/todo) may be filled on the SSE `intent` event; they are not persisted.
+
 ```json
 {
   "name": "facilities",

@@ -825,8 +825,9 @@ const TuiRgba& thinking_fg(StyleId id, const TuiDesign& d) {
     case StyleId::Strike:
     case StyleId::Blockquote:
     case StyleId::Rule:
-    case StyleId::System:
         return d.text.muted;
+    case StyleId::System:
+        return d.content.system_fg;
     default:
         break;
     }

@@ -9,6 +9,7 @@ Start here if you want the model before the reference material.
 | [High-level architecture](architecture.md) | Conceptual overview of Arbiter's major architectural components |
 | [Writ](writ.md) | The slash-command DSL agents emit inline |
 | [Advisor](advisor.md) | Structural supervision gates (`CONTINUE` / `REDIRECT` / `HALT`) |
+| [Intent](intent.md) | Pre-dispatch classify/route (heuristic + optional LLM) |
 | [SSE events](sse-events.md) | The stream contract shared by TUI and HTTP |
 | [Structured memory](structured-memory.md) | Typed, temporal facts with layered retrieval |
 | [Tenants](tenants.md) | Isolation boundaries in API mode |

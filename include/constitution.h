@@ -2,6 +2,7 @@
 // arbiter/include/constitution.h — Constitution system
 // Master constitution (caveman-derived) + per-agent personality overlays.
 
+#include "intent.h"
 #include <string>
 #include <vector>
 #include <optional>
@@ -110,6 +111,11 @@ struct Constitution {
         int    age_half_life_days = 90;   // 30 → 0.9, 90 → 0.75, 180 → 0.6 …
         double age_floor         = 0.5;
     } memory;
+
+    // Ingress intent engine.  Distinct from memory.intent_routing (retrieval
+    // type-boosts).  File-backed agents default off; master_constitution()
+    // enables hybrid classify/route on index.  See docs/concepts/intent.md.
+    IntentConfig intent;
 
     // --- System prompt pieces ---
     std::string goal;               // what this agent is trying to accomplish

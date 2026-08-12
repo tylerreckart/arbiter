@@ -42,7 +42,7 @@ void apply_base_style(StyledLine& line, StyleId base);
 
 [[nodiscard]] std::vector<StyledLine> tool_call_summary_lines(int total, int failed);
 
-// Quiet system/activity chrome: dim middle-dot prefix so lines don't read as
+// Quiet system/activity chrome: middle-dot prefix so lines don't read as
 // model prose. Used for interrupts, advisor banners, confirm outcomes.
 [[nodiscard]] StyledLine styled_activity_line(std::string text,
                                               StyleId id = StyleId::System);

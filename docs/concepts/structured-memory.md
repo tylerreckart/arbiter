@@ -171,6 +171,8 @@ A regex-based question classifier detects cue words in `q` and adds a soft type 
 
 Caller-supplied `type=…` always wins; intent only fires when `type` is absent. Disable per-request with HTTP `intent=off` or per-agent with `memory.intent_routing=false`.
 
+This is retrieval-only. Orchestration classify/route is a separate [intent engine](intent.md) (`Constitution.intent`, `POST /v1/intent`).
+
 ### RRF graduated merge (free, fires when conversation-scoped)
 
 When the request includes `graduated=true` (HTTP) or runs inside a conversation (agent), `search_entries_graduated` runs **two** passes and reciprocal-rank-fuses the rankings:

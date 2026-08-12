@@ -7,6 +7,7 @@ Every event on the `/v1/orchestrate` stream has an `event:` line and a `data:` l
 | Event | When | Fields |
 |-------|------|--------|
 | `request_received` | Exactly once, first event on the stream. | `agent`, `tenant`, `tenant_id`, `message` (first 200 chars, ellipsis added if truncated). |
+| `intent` | Pre-dispatch classify/route on **fresh** ingress (`original_query` omitted) when the ingress agent's `intent.mode` is not `off`. After `request_received`, before `stream_start`. See [Intent](intent.md). | `kind`, `confidence`, `source`, `target_agent`, `applied`, `requested_agent`, `applied_agent`, `brief?`, `todo_seed_count`, `plan_seed_count`, `llm_used?`, `malformed?`. |
 | `stream_start` | Opens each turn. Fires for master + every delegated or parallel child. | `agent`, `stream_id`, `depth` (0 = master, 1 = delegated, 2 = sub-sub). |
 | `agent_start` | Just before each turn's outbound LLM request. | `agent`, `stream_id`, `depth`. |
 | `text` | Each clean (tool-call lines filtered out) delta from the model. Master text is suppressed during delegation iterations — only `→ delegating: …` status lines reach the wire until the synthesis turn. | `agent`, `stream_id`, `depth` (master only — sub-agent text events only have `agent` + `stream_id`), `delta`. |
@@ -37,6 +38,7 @@ The `kind` field disambiguates which advisor interaction fired:
 ## Ordering guarantees
 
 - `request_received` is always first.
+- When intent classification runs, `intent` follows `request_received` and precedes `stream_start`.
 - `done` is always last.
 - For any given `stream_id`: `stream_start` precedes every `text` / `tool_call` / `token_usage` / `sub_agent_response` / `advisor` carrying it, and `stream_end` follows every one of them.
 - For an advisor halt, the order on a given `stream_id` is: `advisor` (`kind: gate_halt`) → `escalation` → `stream_end` (`ok: false`).
@@ -51,5 +53,6 @@ Spec-compatible A2A clients hit [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.
 - [A2A protocol](a2a.md) — the Agent2Agent counterpart to this catalog.
 - [Fleet streaming](fleet-streaming.md)
 - [Advisor](advisor.md) — gate signal grammar, modes, redirect budget.
+- [Intent](intent.md) — pre-dispatch classify/route.
 - [`POST /v1/orchestrate`](../api/orchestrate.md)
 - [`POST /v1/conversations/:id/messages`](../api/conversations/messages-post.md)

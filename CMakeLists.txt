@@ -193,6 +193,7 @@ set(ARBITER_SOURCES
     src/context_compaction.cpp
     src/constitution.cpp
     src/orchestrator.cpp
+    src/intent.cpp
     src/advisor_gate.cpp
     src/advisor.cpp
     src/api_server.cpp
@@ -1574,6 +1575,18 @@ if(INDEX_BUILD_TESTS)
     )
     target_link_libraries(unit_advisor_gate PRIVATE CURL::libcurl)
     add_test(NAME unit_advisor_gate COMMAND unit_advisor_gate)
+
+    # Pre-dispatch intent classifier: cue matcher, LLM signal parser,
+    # fail-open, apply_routing.  Tiny target — no provider client.
+    add_executable(unit_intent
+        tests/test_intent.cpp
+        src/intent.cpp
+    )
+    target_include_directories(unit_intent PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_intent COMMAND unit_intent)
 
     # Remote TUI (--connect): URL/token resolution + SSE→renderer consumption.
     add_executable(unit_remote_connect

@@ -30,6 +30,8 @@ flowchart LR
 
             REQUESTS(("Requests"))
 
+            INTENT["Intent engine<br/>classify · route · seeds"]
+
             ORCHESTRATION["Shared orchestration loop"]
 
             subgraph EXECUTION["Agent execution"]
@@ -48,7 +50,8 @@ flowchart LR
 
             EVENT_BUS["Event bus<br/>same event model everywhere"]
 
-            REQUESTS --> ORCHESTRATION
+            REQUESTS --> INTENT
+            INTENT --> ORCHESTRATION
             ORCHESTRATION --> AGENT
 
             CONSTITUTION --> AGENT
@@ -60,6 +63,7 @@ flowchart LR
             AGENT -. optional supervision .-> ADVISOR
             ADVISOR -. continue · redirect · halt .-> ORCHESTRATION
             ADVISOR --> EVENTS
+            INTENT --> EVENTS
 
             EVENTS --> EVENT_BUS
         end
@@ -110,6 +114,7 @@ flowchart LR
 For implementation details and deeper explanations, see:
 
 - [Writ](writ.md)
+- [Intent](intent.md)
 - [Advisor](advisor.md)
 - [Structured memory](structured-memory.md)
 - [MCP](mcp.md)

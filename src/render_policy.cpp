@@ -118,15 +118,15 @@ std::vector<StyledLine> tool_call_summary_lines(int total, int failed) {
 
 StyledLine styled_activity_line(std::string text, StyleId id) {
     StyledLine line;
-    styled_append(line, StyleId::Dim, "\u00b7 ");  // ·
+    styled_append(line, id, "\u00b7 ");  // ·
     styled_append(line, id, std::move(text));
     return line;
 }
 
 StyledLine styled_interim_header(const std::string& agent_id) {
     StyledLine line;
-    styled_append(line, StyleId::Dim, "\u2192 ");  // →
-    styled_append(line, StyleId::Dim,
+    styled_append(line, StyleId::System, "\u2192 ");  // →
+    styled_append(line, StyleId::System,
                   agent_id.empty() ? "sub-agent" : agent_id);
     return line;
 }
@@ -171,11 +171,11 @@ void append_queue_hint(std::vector<StyledLine>& lines,
                        bool accept_edits_on) {
     if (pending_after <= 0 && !accept_edits_on) return;
     StyledLine hint;
-    styled_append(hint, StyleId::Dim, "  ");
+    styled_append(hint, StyleId::System, "  ");
     if (pending_after > 0) {
         styled_append(hint, StyleId::Info,
                       "(+" + std::to_string(pending_after) + " more waiting)");
-        if (accept_edits_on) styled_append(hint, StyleId::Dim, "  ");
+        if (accept_edits_on) styled_append(hint, StyleId::System, "  ");
     }
     if (accept_edits_on) {
         styled_append(hint, StyleId::Success, "accept-edits on");
@@ -195,23 +195,23 @@ void append_option_rows(std::vector<StyledLine>& lines,
     for (int i = 0; i < count; ++i) {
         const bool on = (i == selected);
         StyledLine row;
-        styled_append(row, on ? StyleId::Bold : StyleId::Dim, on ? "  › " : "    ");
+        styled_append(row, on ? StyleId::Bold : StyleId::System, on ? "  › " : "    ");
         if (shortcuts && shortcuts[i]) {
             std::string key = "[";
             key += shortcuts[i];
             key += "] ";
-            styled_append(row, on ? StyleId::Warning : StyleId::Dim, key);
+            styled_append(row, on ? StyleId::Warning : StyleId::System, key);
         }
         styled_append(row, on ? StyleId::Bold : StyleId::System,
                       labels[i] ? labels[i] : "");
         if (details && details[i] && details[i][0]) {
-            styled_append(row, StyleId::Dim, "  —  ");
-            styled_append(row, StyleId::Dim, details[i]);
+            styled_append(row, StyleId::System, "  —  ");
+            styled_append(row, StyleId::System, details[i]);
         }
         lines.push_back(std::move(row));
     }
     StyledLine hint;
-    styled_append(hint, StyleId::Dim, "  ↑↓ move  Enter confirm  Esc cancel");
+    styled_append(hint, StyleId::System, "  ↑↓ move  Enter confirm  Esc cancel");
     lines.push_back(std::move(hint));
 }
 
@@ -237,7 +237,7 @@ std::vector<StyledLine> styled_permission_card(
     for (const auto& prev : preview_lines) {
         if (prev.empty()) continue;
         StyledLine row;
-        styled_append(row, StyleId::Dim, "  ");
+        styled_append(row, StyleId::System, "  ");
         styled_append(row, StyleId::System, prev);
         lines.push_back(std::move(row));
     }
@@ -278,14 +278,14 @@ std::vector<StyledLine> styled_diff_review_card(
 
     if (!summary.empty()) {
         StyledLine sum;
-        styled_append(sum, StyleId::Dim, "  ");
+        styled_append(sum, StyleId::System, "  ");
         styled_append(sum, StyleId::System, summary);
         lines.push_back(std::move(sum));
     }
     for (const auto& prev : preview_lines) {
         if (prev.empty()) continue;
         StyledLine row;
-        styled_append(row, StyleId::Dim, "  ");
+        styled_append(row, StyleId::System, "  ");
         styled_append(row, StyleId::System, prev);
         lines.push_back(std::move(row));
     }
@@ -322,7 +322,7 @@ std::vector<StyledLine> styled_yes_no_card(
     for (const auto& prev : preview_lines) {
         if (prev.empty()) continue;
         StyledLine row;
-        styled_append(row, StyleId::Dim, "  ");
+        styled_append(row, StyleId::System, "  ");
         styled_append(row, StyleId::System, prev);
         lines.push_back(std::move(row));
     }

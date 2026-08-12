@@ -9,6 +9,7 @@
 #include "api_server.h"
 
 #include "advisor.h"
+#include "intent.h"
 #include "commands.h"
 #include "config.h"
 #include "constitution.h"
@@ -779,6 +780,19 @@ public:
             }
             if (malformed) value << " " << color(kDim) << "(malformed)" << reset();
             emit_inline_locked(label, clr, value.str(), line);
+            return;
+        }
+        if (ev == "intent") {
+            const std::string kind   = payload ? payload->get_string("kind") : "";
+            const std::string source = payload ? payload->get_string("source") : "";
+            const std::string target = payload ? payload->get_string("target_agent") : "";
+            const bool applied       = payload && payload->get_bool("applied");
+            std::ostringstream value;
+            value << kind;
+            if (!source.empty()) value << " " << color(kDim) << source << reset();
+            if (!target.empty())
+                value << " → " << target << (applied ? "" : " (hint)");
+            emit_inline_locked("intent", kBoldCyan, value.str(), line);
             return;
         }
         if (ev == "escalation") {
@@ -1575,6 +1589,19 @@ std::shared_ptr<JsonValue> constitution_to_json(const std::string& id,
         auto arr = jarr();
         for (auto& x : c.capabilities) arr->as_array_mut().push_back(jstr(x));
         m["capabilities"] = arr;
+    }
+    IntentConfig intent_defaults;
+    if (c.intent.mode != intent_defaults.mode ||
+        c.intent.min_confidence != intent_defaults.min_confidence ||
+        c.intent.apply_routing != intent_defaults.apply_routing ||
+        !c.intent.model.empty()) {
+        auto ic = jobj();
+        auto& ico = ic->as_object_mut();
+        ico["mode"] = jstr(c.intent.mode);
+        ico["min_confidence"] = jnum(c.intent.min_confidence);
+        ico["apply_routing"] = jbool(c.intent.apply_routing);
+        if (!c.intent.model.empty()) ico["model"] = jstr(c.intent.model);
+        m["intent"] = ic;
     }
     return o;
 }
@@ -5646,6 +5673,197 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     m["text"]     = jstr(out.text);
     m["malformed"] = jbool(out.malformed);
     write_json_response(fd, 200, resp);
+}
+
+// ── POST /v1/intent ──────────────────────────────────────────────────────────
+// Stateless classify/route.  Same resolve_intent() as depth-0 orchestrator
+// ingress.  Does not dispatch, persist todos, or execute plans.
+void handle_intent_classify(int fd, const HttpRequest& req,
+                            TenantStore& tenants, Tenant& tenant_in,
+                            InFlightRegistry& in_flight,
+                            const ApiServerOptions& opts) {
+    if (req.method != "POST") {
+        write_plain_response(fd, 405, "Method Not Allowed", "method not allowed\n");
+        return;
+    }
+
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
+
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    const std::string message = body->get_string("message", "");
+    if (message.empty()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("message is required");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    IntentInput in;
+    in.text = message;
+    in.requested_agent = body->get_string("requested_agent", "index");
+    if (in.requested_agent.empty()) in.requested_agent = "index";
+    in.source_hint = body->get_string("intent_source", "");
+
+    if (auto roster_val = body->get("roster"); roster_val && roster_val->is_array()) {
+        for (auto& row : roster_val->as_array()) {
+            if (!row || !row->is_object()) continue;
+            IntentRosterEntry e;
+            e.id = row->get_string("id");
+            e.role = row->get_string("role");
+            e.goal = row->get_string("goal");
+            if (auto caps = row->get("capabilities"); caps && caps->is_array()) {
+                for (auto& c : caps->as_array()) {
+                    if (c && c->is_string()) e.capabilities.push_back(c->as_string());
+                }
+            }
+            if (!e.id.empty() && e.id != "index") in.roster.push_back(std::move(e));
+        }
+    } else {
+        // Tenant catalog first (same ids API orch can actually dispatch),
+        // then agents_dir for TUI-style file agents. Tenant id wins on clash.
+        for (const auto& rec : tenants.list_agent_records_for_routing(tenant.id)) {
+            try {
+                auto c = Constitution::from_json(rec.agent_def_json);
+                IntentRosterEntry e{rec.agent_id, c.role, c.goal, c.capabilities};
+                if (!e.id.empty() && e.id != "index")
+                    in.roster.push_back(std::move(e));
+            } catch (...) {}
+        }
+        if (!opts.agents_dir.empty() && fs::is_directory(opts.agents_dir)) {
+            for (auto& entry : fs::directory_iterator(opts.agents_dir)) {
+                if (entry.path().extension() != ".json") continue;
+                try {
+                    auto c = Constitution::from_file(entry.path().string());
+                    std::string id = c.name.empty() ? entry.path().stem().string()
+                                                    : c.name;
+                    if (id.empty() || id == "index") continue;
+                    bool dup = false;
+                    for (const auto& existing : in.roster) {
+                        if (existing.id == id) { dup = true; break; }
+                    }
+                    if (!dup)
+                        in.roster.push_back({id, c.role, c.goal, c.capabilities});
+                } catch (...) {}
+            }
+        }
+    }
+
+    IntentConfig cfg = master_constitution().intent;
+    if (auto ic = body->get("intent"); ic && ic->is_object()) {
+        cfg.mode = ic->get_string("mode", cfg.mode);
+        cfg.min_confidence = ic->get_number("min_confidence", cfg.min_confidence);
+        cfg.model = ic->get_string("model", cfg.model);
+        cfg.apply_routing = ic->get_bool("apply_routing", cfg.apply_routing);
+    } else {
+        std::string mode_ov = body->get_string("mode", "");
+        if (!mode_ov.empty()) cfg.mode = mode_ov;
+        if (body->get("min_confidence"))
+            cfg.min_confidence = body->get_number("min_confidence", cfg.min_confidence);
+        std::string model_ov = body->get_string("model", "");
+        if (!model_ov.empty()) cfg.model = model_ov;
+        if (body->get("apply_routing"))
+            cfg.apply_routing = body->get_bool("apply_routing", cfg.apply_routing);
+    }
+    if (cfg.mode != "off" && cfg.mode != "heuristic" &&
+        cfg.mode != "hybrid" && cfg.mode != "llm")
+        cfg.mode = "hybrid";
+    if (cfg.min_confidence < 0.0) cfg.min_confidence = 0.0;
+    if (cfg.min_confidence > 1.0) cfg.min_confidence = 1.0;
+
+    std::unique_ptr<Orchestrator> orch;
+    try {
+        orch = std::make_unique<Orchestrator>(opts.api_keys);
+    } catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("orchestrator init failed: ") + e.what());
+        write_json_response(fd, 500, err);
+        return;
+    }
+
+    const std::string request_id = new_request_id();
+    InFlightScope in_flight_scope(in_flight, request_id, orch.get(), tenant.id);
+    TenantPreflight preflight{TenantGate::create(tenants, tenant),
+                              orch->client()};
+
+    IntentLlmFn llm;
+    if (cfg.mode == "hybrid" || cfg.mode == "llm") {
+        std::string model = cfg.model;
+        if (model.empty()) model = orch->get_constitution("index").advisor.model;
+        if (!model.empty()) {
+            llm = [&](const std::string& user_prompt) -> std::string {
+                ApiRequest req;
+                req.model = model;
+                req.max_tokens = 512;
+                req.include_temperature = false;
+                req.system_prompt = default_intent_prompt();
+                req.messages = {{"user", user_prompt}};
+                ApiResponse resp = orch->client().complete(req);
+                if (!resp.ok) return {};
+                return resp.content;
+            };
+        }
+    }
+
+    Intent intent = resolve_intent(in, cfg, llm);
+    bool in_roster = false;
+    for (const auto& e : in.roster) {
+        if (e.id == intent.target_agent) { in_roster = true; break; }
+    }
+    const bool applied = intent_should_apply(cfg, intent, in.requested_agent) &&
+                         in_roster;
+
+    auto out = jobj();
+    auto& m = out->as_object_mut();
+    m["kind"] = jstr(intent.kind.empty() ? "unknown" : intent.kind);
+    m["confidence"] = jnum(intent.confidence);
+    m["source"] = jstr(intent.source);
+    m["target_agent"] = jstr(intent.target_agent);
+    m["brief"] = jstr(intent.brief);
+    m["llm_used"] = jbool(intent.llm_used);
+    m["malformed"] = jbool(intent.malformed);
+    m["applied"] = jbool(applied);
+    m["requested_agent"] = jstr(in.requested_agent);
+    if (!intent.todo_seeds.empty()) {
+        auto arr = jarr();
+        for (const auto& t : intent.todo_seeds) {
+            auto e = jobj();
+            e->as_object_mut()["title"] = jstr(t.title);
+            if (!t.detail.empty()) e->as_object_mut()["detail"] = jstr(t.detail);
+            arr->as_array_mut().push_back(std::move(e));
+        }
+        m["todo_seeds"] = arr;
+    }
+    if (!intent.plan_seeds.empty()) {
+        auto arr = jarr();
+        for (const auto& p : intent.plan_seeds) {
+            auto e = jobj();
+            if (!p.name.empty()) e->as_object_mut()["name"] = jstr(p.name);
+            if (!p.agent.empty()) e->as_object_mut()["agent"] = jstr(p.agent);
+            if (!p.task.empty()) e->as_object_mut()["task"] = jstr(p.task);
+            arr->as_array_mut().push_back(std::move(e));
+        }
+        m["plan_seeds"] = arr;
+    }
+    write_json_response(fd, 200, out);
 }
 
 void handle_runs_list(int fd, const HttpRequest& req,
@@ -10462,6 +10680,32 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             emit("advisor", p);
         });
 
+    orch->set_intent_callback(
+        [&emit](const Orchestrator::IntentEvent& ev) {
+            auto p = jobj();
+            auto& m = p->as_object_mut();
+            m["kind"] = jstr(ev.intent.kind.empty() ? "unknown" : ev.intent.kind);
+            m["confidence"] = jnum(ev.intent.confidence);
+            m["source"] = jstr(ev.intent.source);
+            m["target_agent"] = jstr(ev.intent.target_agent);
+            m["applied"] = jbool(ev.applied);
+            m["requested_agent"] = jstr(ev.requested_agent);
+            m["applied_agent"] = jstr(ev.applied_agent);
+            if (!ev.intent.brief.empty()) {
+                std::string preview = ev.intent.brief;
+                if (preview.size() > 160) {
+                    preview.resize(157);
+                    preview += "...";
+                }
+                m["brief"] = jstr(preview);
+            }
+            m["todo_seed_count"] = jnum(static_cast<double>(ev.intent.todo_seeds.size()));
+            m["plan_seed_count"] = jnum(static_cast<double>(ev.intent.plan_seeds.size()));
+            if (ev.intent.llm_used) m["llm_used"] = jbool(true);
+            if (ev.intent.malformed) m["malformed"] = jbool(true);
+            emit("intent", p);
+        });
+
     // Kill-switch re-check immediately before provider I/O.  Admin
     // disable/rotate during post-SSE setup (catalog load, history
     // hydration, callback wiring) calls Orchestrator::cancel(), but
@@ -10493,6 +10737,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     }
 
     try {
+        if (auto hint = body->get_string("intent_source", ""); !hint.empty())
+            orch->set_intent_source_hint(std::move(hint));
         auto resp = orch->send_streaming(agent_id, std::move(message_parts),
             [&filter](const std::string& chunk) { filter.feed(chunk); },
             original_query);
@@ -10800,6 +11046,7 @@ void handle_event_ingest(int fd, HttpRequest req,
     // flows through the existing path unchanged.
     auto synth = jobj();
     synth->as_object_mut()["message"] = jstr(message);
+    synth->as_object_mut()["intent_source"] = jstr("event");
     req.body = json_serialize(*synth);
 
     handle_orchestrate(fd, req, opts, tenants, in_flight,
@@ -11950,6 +12197,12 @@ void ApiServer::handle_connection(int fd) {
             && segs[2] == "gate") {
             return handle_advise_gate(fd, req, tenants_, *tenant, in_flight_,
                                       opts_.api_keys);
+        }
+
+        // POST /v1/intent — stateless classify/route (no dispatch)
+        if (segs.size() == 2 && segs[0] == "v1" && segs[1] == "intent") {
+            return handle_intent_classify(fd, req, tenants_, *tenant, in_flight_,
+                                          opts_);
         }
 
         // ── Event ingestion ───────────────────────────────────────────────

@@ -77,6 +77,7 @@ Deleting a folder unfiles its conversations (`folder_id` cleared) rather than ca
 | `capabilities`| array<string> | Tools this agent uses (used by master for routing). |
 | `mode`        | string? | `"standard"` (default) or `"writer"`. |
 | `advisor`     | object? | Structured advisor config: `{model, prompt?, mode?, max_redirects?, malformed_halts?}`. `mode: "consult"` (default) makes `/advise` available; `mode: "gate"` additionally enforces a runtime gate at the executor's terminating turn. See [advisor](advisor.md). |
+| `intent`      | object? | Ingress classify/route: `{mode?, min_confidence?, apply_routing?, model?}`. Distinct from `memory.intent_routing`. See [intent](intent.md). |
 | `advisor_model` | string? | **Legacy** shorthand for `advisor.model` with `mode: "consult"`. New configs should use `advisor`. |
 | `personality` | string? | Free-form personality overlay. |
 | `created_at`  | integer | Epoch seconds. Stored agents only; absent for the built-in `index`. |

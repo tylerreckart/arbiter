@@ -427,11 +427,22 @@ void sync_surfaces_for_chrome_overrides(TuiDesign& d,
     }
 }
 
+void lift_chrome_contrast(TuiDesign& d) {
+    const TuiRgba& bg = rgba_unset(d.bg.scroll) ? d.bg.base : d.bg.scroll;
+    // Activity lines, permission cards, and Dim chrome were comment-gray
+    // on dark panes (~2:1). Blend toward primary until large-text AA.
+    d.content.system_fg =
+        ensure_contrast(d.content.system_fg, bg, 4.5, d.text.primary);
+    d.content.text_dim =
+        ensure_contrast(d.content.text_dim, bg, 4.5, d.text.primary);
+}
+
 void finalize_panel_surfaces(TuiDesign& d,
                              const JsonValue* doc,
                              const ChromeSnapshot* before) {
     if (doc && before) sync_surfaces_for_chrome_overrides(d, *doc, *before);
     derive_unset_panel_surfaces(d);
+    lift_chrome_contrast(d);
 }
 
 std::string executable_dir() {

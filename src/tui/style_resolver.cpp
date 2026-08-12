@@ -21,7 +21,6 @@ ResolvedStyle resolve_style(StyleId id) {
         break;
     case StyleId::Dim:
         rs.fg = &d.content.text_dim;
-        rs.attrs = kAttrDim;
         break;
     case StyleId::Bold:
         rs.fg = &d.text.primary;
@@ -120,7 +119,6 @@ ResolvedStyle resolve_style(StyleId id) {
         break;
     case StyleId::System:
         rs.fg = &d.content.system_fg;
-        rs.attrs = kAttrDim;
         break;
     case StyleId::UserEchoArrow:
         // Legacy caret slot — user echoes no longer emit an accent bar.

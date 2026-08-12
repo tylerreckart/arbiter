@@ -56,7 +56,7 @@ std::string style_open(StyleId id) {
     const Theme& t = theme();
     switch (id) {
     case StyleId::Default:   return {};
-    case StyleId::Dim:       return t.dim;
+    case StyleId::Dim:       return t.text_dim;
     case StyleId::Bold:      return t.bold;
     case StyleId::Italic:    return t.italic;
     case StyleId::Strike:    return t.strike + t.dim;
@@ -85,7 +85,7 @@ std::string style_open(StyleId id) {
     case StyleId::CodeNumber:   return t.md_code_number;
     case StyleId::CodeType:     return t.md_code_type;
     case StyleId::CodeFunction: return t.md_code_function;
-    case StyleId::System:       return t.dim + t.system_fg;
+    case StyleId::System:       return t.system_fg;
     case StyleId::UserEchoArrow:return t.user_echo_bg + t.user_echo_arrow;
     case StyleId::UserEchoText: return t.user_echo_bg + t.user_echo_text;
     }

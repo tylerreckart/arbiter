@@ -15,7 +15,7 @@ Send a user message and stream the assistant's reply. Same SSE response shape as
 | Field            | Type   | Required | Description |
 |------------------|--------|----------|-------------|
 | `message`        | string \| array | yes      | The new user turn. Plain string (text-only) or a content-parts array (text + image) — same vision shape as [`POST /v1/orchestrate`](../orchestrate.md#vision-input). |
-| `original_query` | string | no       | Same as [`POST /v1/orchestrate`](../orchestrate.md) — pins the advisor gate's original task on continuation turns. |
+| `original_query` | string | no       | Same as [`POST /v1/orchestrate`](../orchestrate.md) — pins the advisor gate's original task and suppresses intent reroute on continuation turns. |
 | `agent_def`      | object | no       | Override the conversation's snapshotted agent for this one turn (rare — usually a follow-up should just send `message`). When omitted, the conversation's snapshot from create time is reused. |
 
 ```bash

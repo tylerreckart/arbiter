@@ -56,6 +56,7 @@ calendar commitments.
 - [x] New user setup zero to first message < 2 minutes
 
 ### Phase 5 — Multi-agent mission control
+- [x] **Intent engine foundations-** Hybrid classify/route before dispatch (heuristic, then advisor-model LLM); seed slots for plans/todos; fail-open into index; `POST /v1/intent` + SSE `intent` event
 - [ ] **Fleet dashboard pane-** Live tree of depth, agent, tools, tokens; click-to-focus/Ctrl-W bindings
 - [ ] **Plan to execution observability-** Planner plans as first-class objects with progress against todos
 - [ ] **Delegation policies-** Consitutions declare max depth, allowed callees, budget caps (tokens/$)

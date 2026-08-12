@@ -137,7 +137,12 @@ TEST_CASE("missing panel surfaces derive from chrome colors") {
     CHECK(tui_design().content.code_bg[1] == 0x22);
     CHECK(tui_design().content.code_bg[2] == 0x33);
     CHECK(tui_design().content.code_header_bg[0] == 0x22);
-    CHECK(tui_design().content.system_fg[0] == 0x44);
+    // system_fg starts from text_dim then lifts to readable contrast.
+    CHECK(tui_design().content.system_fg[0] >= 0x44);
+    CHECK(tui_design().content.system_fg[0] +
+          tui_design().content.system_fg[1] +
+          tui_design().content.system_fg[2] >
+          (0x44 + 0x55 + 0x66));
     CHECK(tui_design().content.diff_bg_add[1] != 0);  // derived non-black
 }
 
@@ -248,6 +253,14 @@ TEST_CASE("user_echo_bg defaults to bg.header like the readline input") {
     CHECK(d.content.user_echo_bg[0] == d.bg.header[0]);
     CHECK(d.content.user_echo_bg[1] == d.bg.header[1]);
     CHECK(d.content.user_echo_bg[2] == d.bg.header[2]);
+}
+
+TEST_CASE("onedark system chrome is lifted past comment gray") {
+    const TuiDesign d = tui_design_for_preset("onedark");
+    // Baked onedark system_fg/text_dim is #5c6370 — too close to #282c34.
+    CHECK(d.content.system_fg[0] > 0x5c);
+    CHECK(d.content.system_fg[1] > 0x63);
+    CHECK(d.content.text_dim[0] > 0x5c);
 }
 
 TEST_CASE("scroll wrap width accounts for edge pad and gutter") {
