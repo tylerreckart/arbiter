@@ -2,7 +2,7 @@
   <img src="assets/icons/terminal_orange.png" alt="Logo" width="98">
   <h1 align="left">Arbiter</h1>
   <p align="left">
-    A multi-agent runtime in a single native binary.
+    A self-improving intent engine for autonomous work.
     <br> Local-first; network optional.
     <br><br>
     <a href="#about">About</a>
@@ -15,13 +15,13 @@
   </p>
 </p>
 
-![Arbiter session sidebar and inline diff rendering](assets/screenshots/vesper.jpg)
+![Arbiter session example](assets/gifs/trailer.gif)
 
 ## About
 
 Arbiter is a multi-agent orchestration harness built to be secure, durable, and event-driven. While there are many excellent agent frameworks available, they often force you to choose between strict tool limits, durable memory, or real-time event routing. Arbiter provides all three.
 
-The Arbiter runtime is a thin, event-streaming orchestration engine for building agent specialists and integrating real-time reasoning functionality (such as routing webhooks and sensor data via glob matching). Anyone can use the runtime to own their harness and embed strict, constitution-driven agents into their own applications—without duct-taping a chat CLI to someone else's API.
+The Arbiter runtime is a thin, event-streaming orchestration and intent engine for building agent specialists and integrating real-time reasoning functionality (such as routing webhooks and sensor data via glob matching). Anyone can use the runtime to own their harness and embed strict, constitution-driven agents into their own applications—without duct-taping a chat CLI to someone else's API. Arbiter's long-term goal is become a deterministic runtime for autonomous work. 
 
 ## One Event Model Everywhere
 
