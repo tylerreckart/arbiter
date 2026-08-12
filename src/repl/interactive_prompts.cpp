@@ -362,6 +362,8 @@ bool ReplSession::service_interactive() {
             }
             if (prop->status == arbiter::DiffProposalStatus::Applied) {
                 // Already applied — treat waiters as success, not cancel.
+                if (req.on_complete)
+                    req.on_complete(arbiter::InteractiveDecision::Allow);
                 if (entry.promise) {
                     arbiter::complete_prompt_promise(
                         entry.promise, arbiter::InteractiveDecision::Allow);
