@@ -510,15 +510,29 @@ private:
     // either id is missing or they are the same.
     void mirror_agent_state(const std::string& src_id, const std::string& dst_id);
 
-    // RAII: after a specialist turn, copy state back onto the requested
-    // agent so API persist / next hydrate still see the conversation.
+    // Intent reroute: mirror requested → specialist for the turn, sync back
+    // onto requested for checkpoints/persist, restore specialist afterward.
+    void begin_intent_mirror(const std::string& requested,
+                             const std::string& dispatched);
+    void sync_intent_mirror_for_checkpoint();
+    void end_intent_mirror();
+
+    // RAII: ends the active intent mirror on scope exit.
     struct IntentHistoryMirror {
         Orchestrator* orch = nullptr;
-        std::string   requested;
-        std::string   dispatched;
         bool          active = false;
         ~IntentHistoryMirror();
     };
+
+    struct IntentMirrorSlot {
+        std::string          requested;
+        std::string          dispatched;
+        std::vector<Message> dispatched_history_backup;
+        CompactionState      dispatched_compaction_backup;
+        std::string          dispatched_pinned_backup;
+        bool                 active = false;
+    };
+    IntentMirrorSlot intent_mirror_;
 
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;

@@ -5784,7 +5784,7 @@ void handle_intent_classify(int fd, const HttpRequest& req,
     }
     if (cfg.mode != "off" && cfg.mode != "heuristic" &&
         cfg.mode != "hybrid" && cfg.mode != "llm")
-        cfg.mode = "hybrid";
+        cfg.mode = "off";
     if (cfg.min_confidence < 0.0) cfg.min_confidence = 0.0;
     if (cfg.min_confidence > 1.0) cfg.min_confidence = 1.0;
 
