@@ -57,6 +57,7 @@ By default the server logs only structured events (request received, request com
 - text deltas (line-buffered, flushed on newline)
 - `tool_call` — slash-command execution with ✓/✗ status
 - `advisor` — runtime advisor activity: `advise` (executor `/advise` consult), `gate ✓` (continue), `gate ↻` (redirect with guidance), `gate ✗` (halt with reason), `gate ⛔` (redirect budget exhausted). See [`docs/concepts/sse-events.md`](../concepts/sse-events.md) and [`docs/concepts/advisor.md`](../concepts/advisor.md).
+- `intent` — pre-dispatch classify/route (`kind`, `source`, optional target). See [`docs/concepts/intent.md`](../concepts/intent.md).
 - `escalation` — out-of-band advisor halt notification (sibling of `stream_end`)
 - `file` — `/write` writes streamed to the client
 

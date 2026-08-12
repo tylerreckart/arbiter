@@ -440,6 +440,25 @@ void ReplSession::install_orch_callbacks() {
         p->output_queue.end_message();
     });
 
+    orch.set_intent_callback([&](const arbiter::Orchestrator::IntentEvent& ev) {
+        Pane* p = g_active_pane;
+        if (!p) return;
+        // Quiet unknown / empty classifications — same idea as gate_continue.
+        if (ev.intent.kind.empty() || ev.intent.kind == "unknown") return;
+        std::string text = "[intent " + ev.intent.kind;
+        if (!ev.intent.source.empty()) text += " " + ev.intent.source;
+        if (ev.applied && !ev.intent.target_agent.empty())
+            text += " → " + ev.intent.target_agent;
+        else if (!ev.intent.target_agent.empty())
+            text += " hint:" + ev.intent.target_agent;
+        text += "]";
+        p->output_queue.push_prose(
+            {arbiter::styled_activity_line(std::move(text),
+                                           ev.applied ? arbiter::StyleId::Info
+                                                      : arbiter::StyleId::Warning)});
+        p->output_queue.end_message();
+    });
+
     orch.set_advisor_event_callback([&](const arbiter::Orchestrator::AdvisorEvent& ev) {
         Pane* p = g_active_pane;
         if (!p) return;

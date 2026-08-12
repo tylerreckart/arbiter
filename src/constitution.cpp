@@ -815,6 +815,9 @@ Constitution master_constitution() {
              "Synthesize results. Produce real output — files, code, reports — not descriptions of output.";
     c.personality = "The administrator. Acts immediately. Delegates precisely. "
                     "Never describes work it could do. Issues commands and reports results.";
+    c.intent.mode = "hybrid";
+    c.intent.min_confidence = 0.8;
+    c.intent.apply_routing = true;
     c.rules = {
         // Routing
         "Read the AVAILABLE AGENTS block at the top of each query. Route based on agent role and goal.",
@@ -1004,6 +1007,26 @@ std::string Constitution::to_json() const {
         m["memory"] = mc;
     }
 
+    // Intent block — only emit when it deviates from file-agent defaults
+    // (mode off, min_confidence 0.8, apply_routing true, empty model).
+    IntentConfig intent_defaults;
+    if (intent.mode != intent_defaults.mode ||
+        intent.min_confidence != intent_defaults.min_confidence ||
+        intent.apply_routing != intent_defaults.apply_routing ||
+        !intent.model.empty()) {
+        auto ic = jobj();
+        auto& ico = ic->as_object_mut();
+        if (intent.mode != intent_defaults.mode)
+            ico["mode"] = jstr(intent.mode);
+        if (intent.min_confidence != intent_defaults.min_confidence)
+            ico["min_confidence"] = jnum(intent.min_confidence);
+        if (!intent.model.empty())
+            ico["model"] = jstr(intent.model);
+        if (intent.apply_routing != intent_defaults.apply_routing)
+            ico["apply_routing"] = jbool(intent.apply_routing);
+        m["intent"] = ic;
+    }
+
     return json_serialize(*obj);
 }
 
@@ -1087,6 +1110,26 @@ Constitution Constitution::from_json(const std::string& json_str) {
         if (c.memory.age_half_life_days < 1) c.memory.age_half_life_days = 1;
         if (c.memory.age_floor <= 0.0)       c.memory.age_floor = 0.5;
         if (c.memory.age_floor >  1.0)       c.memory.age_floor = 1.0;
+    }
+
+    // Ingress intent engine.  Absent → file-agent defaults (mode off).
+    auto intent_val = root->get("intent");
+    if (intent_val && intent_val->is_object()) {
+        c.intent.mode = intent_val->get_string("mode", c.intent.mode);
+        c.intent.min_confidence = intent_val->get_number("min_confidence",
+                                                         c.intent.min_confidence);
+        c.intent.model = intent_val->get_string("model", c.intent.model);
+        c.intent.apply_routing = intent_val->get_bool("apply_routing",
+                                                      c.intent.apply_routing);
+        if (c.intent.mode != "off" && c.intent.mode != "heuristic" &&
+            c.intent.mode != "hybrid" && c.intent.mode != "llm") {
+            fprintf(stderr,
+                "WARN: agent '%s' has unknown intent.mode '%s' — treating as off.\n",
+                c.name.c_str(), c.intent.mode.c_str());
+            c.intent.mode = "off";
+        }
+        if (c.intent.min_confidence < 0.0) c.intent.min_confidence = 0.0;
+        if (c.intent.min_confidence > 1.0) c.intent.min_confidence = 1.0;
     }
 
     auto rules_val = root->get("rules");

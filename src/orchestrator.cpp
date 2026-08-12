@@ -1,6 +1,7 @@
 // arbiter/src/orchestrator.cpp
 #include "orchestrator.h"
 #include "advisor.h"
+#include "intent.h"
 #include "atomic_file.h"
 #include "commands.h"
 #include "config.h"
@@ -663,6 +664,137 @@ int                Orchestrator::current_stream_id()    const { return tl_stream
 const std::string& Orchestrator::current_stream_agent() const { return tl_stream_agent; }
 int                Orchestrator::current_stream_depth() const { return tl_stream_depth; }
 
+Orchestrator::IntentIngress
+Orchestrator::apply_intent_ingress(const std::string& agent_id,
+                                   const std::string& classify_text,
+                                   bool fresh_ingress) {
+    IntentIngress result;
+    result.agent_id = agent_id.empty() ? "index" : agent_id;
+
+    const Constitution* cfg_src = &index_master_->config();
+    try {
+        cfg_src = &get_constitution(result.agent_id);
+    } catch (...) {
+        cfg_src = &index_master_->config();
+    }
+    const IntentConfig& icfg = cfg_src->intent;
+    if (icfg.mode == "off" || icfg.mode.empty()) {
+        intent_source_hint_.clear();
+        return result;
+    }
+
+    IntentInput in;
+    in.text = classify_text;
+    in.requested_agent = result.agent_id;
+    in.source_hint = std::move(intent_source_hint_);
+    intent_source_hint_.clear();
+    {
+        std::lock_guard<std::mutex> lock(agents_mutex_);
+        in.roster.reserve(agents_.size());
+        for (const auto& [id, agent] : agents_) {
+            const auto& c = agent->config();
+            in.roster.push_back({id, c.role, c.goal, c.capabilities});
+        }
+    }
+
+    IntentLlmFn llm;
+    if (icfg.mode == "hybrid" || icfg.mode == "llm") {
+        std::string model = icfg.model;
+        if (model.empty()) model = cfg_src->advisor.model;
+        if (model.empty()) model = index_master_->config().advisor.model;
+        if (!model.empty()) {
+            const std::string cost_id = result.agent_id;
+            llm = [this, model, cost_id](const std::string& user_prompt) -> std::string {
+                ApiRequest req;
+                req.model = model;
+                req.max_tokens = 512;
+                req.include_temperature = false;
+                req.system_prompt = default_intent_prompt();
+                req.messages = {{"user", user_prompt}};
+                ApiResponse resp = client_.complete(req);
+                if (cost_cb_) cost_cb_(cost_id, model, resp);
+                if (!resp.ok) return {};
+                return resp.content;
+            };
+        }
+    }
+
+    try {
+        result.intent = resolve_intent(in, icfg, llm);
+    } catch (...) {
+        return result;  // never break dispatch
+    }
+
+    result.applied = intent_should_apply(icfg, result.intent, in.requested_agent,
+                                         fresh_ingress) &&
+                     has_agent(result.intent.target_agent);
+    if (result.applied)
+        result.agent_id = result.intent.target_agent;
+
+    if (result.applied)
+        result.preamble = format_intent_preamble(result.intent, true);
+    else if (in.requested_agent == "index")
+        result.preamble = format_intent_preamble(result.intent, false);
+
+    if (intent_cb_ && result.intent.source != "none") {
+        IntentEvent ev;
+        ev.intent = result.intent;
+        ev.requested_agent = in.requested_agent;
+        ev.applied_agent = result.agent_id;
+        ev.applied = result.applied;
+        try { intent_cb_(ev); } catch (...) {}
+    }
+    return result;
+}
+
+void Orchestrator::mirror_agent_state(const std::string& src_id,
+                                      const std::string& dst_id) {
+    if (src_id.empty() || dst_id.empty() || src_id == dst_id) return;
+    Agent& src = get_agent(src_id);
+    Agent& dst = get_agent(dst_id);
+    dst.set_history(src.history());
+    dst.set_compaction_state(src.compaction_state());
+    dst.set_compaction_pinned_facts(src.compaction_pinned_facts());
+}
+
+void Orchestrator::begin_intent_mirror(const std::string& requested,
+                                       const std::string& dispatched) {
+    if (requested.empty() || dispatched.empty() || requested == dispatched)
+        return;
+    Agent& dst = get_agent(dispatched);
+    intent_mirror_.requested = requested;
+    intent_mirror_.dispatched = dispatched;
+    intent_mirror_.dispatched_history_backup = dst.history();
+    intent_mirror_.dispatched_compaction_backup = dst.compaction_state();
+    intent_mirror_.dispatched_pinned_backup = dst.compaction_pinned_facts();
+    intent_mirror_.active = true;
+    mirror_agent_state(requested, dispatched);
+}
+
+void Orchestrator::sync_intent_mirror_for_checkpoint() {
+    if (!intent_mirror_.active) return;
+    mirror_agent_state(intent_mirror_.dispatched, intent_mirror_.requested);
+}
+
+void Orchestrator::end_intent_mirror() {
+    if (!intent_mirror_.active) return;
+    try {
+        mirror_agent_state(intent_mirror_.dispatched, intent_mirror_.requested);
+        Agent& dst = get_agent(intent_mirror_.dispatched);
+        dst.set_history(std::move(intent_mirror_.dispatched_history_backup));
+        dst.set_compaction_state(intent_mirror_.dispatched_compaction_backup);
+        dst.set_compaction_pinned_facts(intent_mirror_.dispatched_pinned_backup);
+    } catch (...) {}
+    intent_mirror_.active = false;
+    intent_mirror_.requested.clear();
+    intent_mirror_.dispatched.clear();
+}
+
+Orchestrator::IntentHistoryMirror::~IntentHistoryMirror() {
+    if (!orch || !active) return;
+    try { orch->end_intent_mirror(); } catch (...) {}
+}
+
 // Core agentic dispatch loop
 ApiResponse Orchestrator::send_internal(const std::string& agent_id,
                                         const std::string& message,
@@ -678,14 +810,52 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
     if (!shared_cache) shared_cache = &local_cache;
     std::string orig_q = original_query.empty() ? message : original_query;
 
-    if (agent_id == "index") {
-        agent_ptr   = index_master_.get();
-        current_msg = global_status() + "\n\nQUERY: " + message;
-    } else {
-        agent_ptr   = &get_agent(agent_id);
-        current_msg = message;
+    std::string routed_id = agent_id;
+    IntentIngress ingress;
+    IntentHistoryMirror hist_mirror;
+    // Continuations (original_query set) skip classify+reroute so loops
+    // and HTTP follow-ups stay on the addressed agent.
+    if (depth == 0 && original_query.empty()) {
+        ingress = apply_intent_ingress(agent_id, orig_q, /*fresh_ingress=*/true);
+        routed_id = ingress.agent_id;
+    } else if (depth == 0) {
+        intent_source_hint_.clear();
     }
-    return run_dispatch(*agent_ptr, agent_id, current_msg, depth, shared_cache, orig_q);
+
+    if (routed_id == "index") {
+        agent_ptr   = index_master_.get();
+        current_msg = global_status() + "\n\n";
+        if (!ingress.preamble.empty())
+            current_msg += ingress.preamble + "\n\n";
+        current_msg += "QUERY: " + message;
+    } else {
+        try {
+            agent_ptr   = &get_agent(routed_id);
+        } catch (...) {
+            agent_ptr   = (agent_id == "index") ? index_master_.get()
+                                                : &get_agent(agent_id);
+            routed_id   = agent_id;
+            current_msg = (routed_id == "index")
+                ? global_status() + "\n\nQUERY: " + message
+                : message;
+            return run_dispatch(*agent_ptr, routed_id, current_msg, depth,
+                                shared_cache, orig_q);
+        }
+        if (ingress.applied) {
+            const std::string requested = agent_id.empty() ? "index" : agent_id;
+            if (requested != routed_id) {
+                try {
+                    begin_intent_mirror(requested, routed_id);
+                    hist_mirror.orch = this;
+                    hist_mirror.active = true;
+                } catch (...) {}
+            }
+        }
+        current_msg = message;
+        if (!ingress.preamble.empty())
+            current_msg = ingress.preamble + "\n\n" + current_msg;
+    }
+    return run_dispatch(*agent_ptr, routed_id, current_msg, depth, shared_cache, orig_q);
 }
 
 // Parameterised dispatch loop — the body of send_internal extracted so
@@ -1213,18 +1383,60 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     }
     const std::string orig_q = original_query.empty() ? message : original_query;
 
-    if (agent_id == "index") {
-        agent_ptr = index_master_.get();
-        // Master prepends global_status() + "QUERY: " as a leading text
-        // part; remaining parts (text + any image inputs) follow.
+    IntentIngress ingress;
+    IntentHistoryMirror hist_mirror;
+    if (original_query.empty())
+        ingress = apply_intent_ingress(agent_id, orig_q, /*fresh_ingress=*/true);
+    else
+        intent_source_hint_.clear();
+    std::string dispatch_id = ingress.agent_id.empty()
+        ? (agent_id.empty() ? "index" : agent_id)
+        : ingress.agent_id;
+
+    auto attach_index_prefix = [&]() {
         ContentPart prefix;
         prefix.kind = ContentPart::TEXT;
-        prefix.text = global_status() + "\n\nQUERY: ";
+        prefix.text = global_status() + "\n\n";
+        if (!ingress.preamble.empty())
+            prefix.text += ingress.preamble + "\n\n";
+        prefix.text += "QUERY: ";
         current_parts.push_back(std::move(prefix));
         for (auto& p : parts) current_parts.push_back(std::move(p));
+    };
+
+    if (dispatch_id != "index") {
+        try {
+            agent_ptr = &get_agent(dispatch_id);
+            if (ingress.applied) {
+                const std::string requested = agent_id.empty() ? "index" : agent_id;
+                if (requested != dispatch_id) {
+                    try {
+                        begin_intent_mirror(requested, dispatch_id);
+                        hist_mirror.orch = this;
+                        hist_mirror.active = true;
+                    } catch (...) {}
+                }
+            }
+            if (!ingress.preamble.empty()) {
+                ContentPart prefix;
+                prefix.kind = ContentPart::TEXT;
+                prefix.text = ingress.preamble + "\n\n";
+                current_parts.push_back(std::move(prefix));
+            }
+            for (auto& p : parts) current_parts.push_back(std::move(p));
+        } catch (...) {
+            dispatch_id = agent_id.empty() ? "index" : agent_id;
+            if (dispatch_id == "index") {
+                agent_ptr = index_master_.get();
+                attach_index_prefix();
+            } else {
+                agent_ptr = &get_agent(dispatch_id);
+                current_parts = std::move(parts);
+            }
+        }
     } else {
-        agent_ptr = &get_agent(agent_id);
-        current_parts = std::move(parts);
+        agent_ptr = index_master_.get();
+        attach_index_prefix();
     }
 
     // Pre-turn lesson + open-todo injection.  send_streaming is always
@@ -1246,7 +1458,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     if (lesson_invoker_cb_ && !message.empty()) {
         try {
             std::string block =
-                lesson_invoker_cb_("preamble", message, agent_id);
+                lesson_invoker_cb_("preamble", message, dispatch_id);
             if (!block.empty() &&
                 block.compare(0, 4, "ERR:") != 0 &&
                 block.compare(0, 11, "(no lessons") != 0) {
@@ -1256,7 +1468,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     }
     if (todo_invoker_cb_ && !message.empty()) {
         try {
-            std::string body = todo_invoker_cb_("list", "", agent_id);
+            std::string body = todo_invoker_cb_("list", "", dispatch_id);
             if (!body.empty() &&
                 body.compare(0, 4, "ERR:") != 0 &&
                 body.compare(0, 10, "(no todos)") != 0) {
@@ -1289,8 +1501,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     // has already minted some via a prior call).  Fleet consumers watch
     // stream_start/end to open and close UI slots.
     const int sid = next_stream_id();
-    StreamScope scope(sid, agent_id, 0);
-    if (stream_start_cb_) stream_start_cb_(agent_id, sid, 0);
+    StreamScope scope(sid, dispatch_id, 0);
+    if (stream_start_cb_) stream_start_cb_(dispatch_id, sid, 0);
 
     // ── Master text gating ────────────────────────────────────────────
     // The orchestrator's freeform prose during an iteration that ALSO
@@ -1376,14 +1588,14 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         // an error response.
         if (!iter_buffer.empty() && cb) cb(iter_buffer);
         iter_buffer.clear();
-        if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+        if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
         return resp;
     }
     // Bill the master's turn the same way send_internal bills delegated
     // turns.  Without this the API tenant is undercharged by the master's
     // share of provider cost; the REPL had its own post-call accounting
     // but SSE clients rely on cost_cb_ firing for every turn at every depth.
-    if (cost_cb_) cost_cb_(agent_id, agent_ptr->config().model, resp);
+    if (cost_cb_) cost_cb_(dispatch_id, agent_ptr->config().model, resp);
 
     // Carry the cumulative response across tool-call re-entry iterations.
     // Each `agent_ptr->stream()` call returns just that iteration's text,
@@ -1404,16 +1616,16 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     end_iteration(cmds);
 
     std::map<std::string, std::string> shared_cache;
-    auto invoker          = make_invoker(agent_id, 0, &shared_cache, orig_q);
-    auto advisor_invoker  = make_advisor_invoker(agent_id);
-    auto parallel_invoker = make_parallel_invoker(agent_id, 0, orig_q);
+    auto invoker          = make_invoker(dispatch_id, 0, &shared_cache, orig_q);
+    auto advisor_invoker  = make_advisor_invoker(dispatch_id);
+    auto parallel_invoker = make_parallel_invoker(dispatch_id, 0, orig_q);
 
     // Gate-mode wiring (master / top-level).  Same construction as
     // run_dispatch — see the longer comment there for the reasoning.
     const auto& gate_cfg = agent_ptr->config().advisor;
     const bool   gate_active = (gate_cfg.mode == "gate" && !gate_cfg.model.empty());
     AdvisorGateInvoker gate_invoker = gate_active
-        ? make_advisor_gate_invoker(agent_id)
+        ? make_advisor_gate_invoker(dispatch_id)
         : AdvisorGateInvoker{};
 
     // Bookkeeping for the gate's terminating-turn check.  `last_cmds` +
@@ -1468,7 +1680,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             // for the matching emit and rationale.
             if (advisor_event_cb_) {
                 AdvisorEvent ev;
-                ev.agent_id  = agent_id;
+                ev.agent_id  = dispatch_id;
                 ev.stream_id = sid;
                 ev.preview   = make_terminating_preview(resp.content);
                 ev.malformed = sig.malformed;
@@ -1495,8 +1707,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             if (sig.kind == AdvisorGateOutput::Kind::Halt) {
                 if (!iter_buffer.empty() && cb) cb(iter_buffer);
                 iter_buffer.clear();
-                if (escalation_cb_) escalation_cb_(agent_id, sid, sig.text);
-                if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+                if (escalation_cb_) escalation_cb_(dispatch_id, sid, sig.text);
+                if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
                 resp.ok           = false;
                 resp.error_type   = "advisor_halt";
                 resp.error        = sig.text;
@@ -1525,7 +1737,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             // both the structured `[/fetch ...] [END FETCH]` framing and the
             // image content in the same turn.
             std::vector<ContentPart> image_parts;
-            std::string tool_envelope = execute_agent_commands(cmds, agent_id, memory_dir_,
+            std::string tool_envelope = execute_agent_commands(cmds, dispatch_id, memory_dir_,
                                                   invoker, confirm_cb_, &shared_cache,
                                                   advisor_invoker, tool_status_cb_,
                                                   pane_spawner_cb_,
@@ -1577,14 +1789,14 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         if (!resp.ok) {
             if (!iter_buffer.empty() && cb) cb(iter_buffer);
             iter_buffer.clear();
-            if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
             resp.content        = std::move(total_content) + resp.content;
             resp.input_tokens   = total_input_tok  + resp.input_tokens;
             resp.output_tokens  = total_output_tok + resp.output_tokens;
             resp.had_tool_calls = had_any_tool_calls;
             return resp;
         }
-        if (cost_cb_) cost_cb_(agent_id, agent_ptr->config().model, resp);
+        if (cost_cb_) cost_cb_(dispatch_id, agent_ptr->config().model, resp);
         fire_history_checkpoint();
         if (!total_content.empty() && total_content.back() != '\n') total_content += "\n";
         total_content   += resp.content;
@@ -1603,7 +1815,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     resp.input_tokens   = total_input_tok;
     resp.output_tokens  = total_output_tok;
     resp.had_tool_calls = had_any_tool_calls;
-    if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
+    if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, resp.ok);
     return resp;
 }
 
@@ -2018,6 +2230,7 @@ std::string Orchestrator::execute_slash_command(const std::string& line,
 void Orchestrator::fire_history_checkpoint() {
     if (!history_checkpoint_cb_) return;
     try {
+        sync_intent_mirror_for_checkpoint();
         history_checkpoint_cb_();
     } catch (...) {
         // Persistence must never abort an in-flight turn.

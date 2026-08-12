@@ -243,6 +243,56 @@ TEST_CASE("advisor: object form wins when both legacy and object are present") {
     CHECK(c.advisor.mode  == "gate");
 }
 
+TEST_CASE("intent: absent yields file-agent defaults (mode off)") {
+    std::string js = R"({
+        "name": "research",
+        "model": "claude-sonnet-4-6"
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.intent.mode == "off");
+    CHECK(c.intent.apply_routing == true);
+    CHECK(c.intent.min_confidence == doctest::Approx(0.8));
+}
+
+TEST_CASE("intent: round-trip hybrid block") {
+    std::string js = R"({
+        "name": "index",
+        "model": "claude-sonnet-4-6",
+        "intent": {
+            "mode": "hybrid",
+            "min_confidence": 0.75,
+            "apply_routing": false,
+            "model": "anthropic/claude-haiku-4-5"
+        }
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.intent.mode == "hybrid");
+    CHECK(c.intent.min_confidence == doctest::Approx(0.75));
+    CHECK(c.intent.apply_routing == false);
+    CHECK(c.intent.model == "anthropic/claude-haiku-4-5");
+    auto again = Constitution::from_json(c.to_json());
+    CHECK(again.intent.mode == "hybrid");
+    CHECK(again.intent.apply_routing == false);
+    CHECK(again.intent.model == "anthropic/claude-haiku-4-5");
+}
+
+TEST_CASE("intent: unknown mode falls back to off") {
+    std::string js = R"({
+        "name": "research",
+        "model": "claude-sonnet-4-6",
+        "intent": { "mode": "banana" }
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.intent.mode == "off");
+}
+
+TEST_CASE("master_constitution enables hybrid intent") {
+    auto c = master_constitution();
+    CHECK(c.intent.mode == "hybrid");
+    CHECK(c.intent.apply_routing == true);
+    CHECK(c.intent.min_confidence == doctest::Approx(0.8));
+}
+
 TEST_CASE("advisor: absent yields disabled config") {
     std::string js = R"({
         "name": "marketer",

@@ -44,6 +44,7 @@ Either a bare constitution or wrapped under `agent_def`:
 | `advisor`       | object \| string | no | Advisor configuration. Object form: `{model, prompt?, mode?, max_redirects?, malformed_halts?}`. String form is treated as `{model: <s>, mode: "consult"}` (back-compat). See [advisor concept](../../concepts/advisor.md). |
 | `advisor_model` | string | no  | **Legacy.** Higher-capability model for `/advise` consults. New configurations should use `advisor.model` instead. If both `advisor` and `advisor_model` are present, the structured `advisor` block wins. |
 | `memory`        | object | no  | Per-agent memory enrichment toggles for `/mem search` and `/mem add entry`. See schema below and [Memory enrichment](../../concepts/structured-memory.md#memory-enrichment) in the structured-memory concept. |
+| `intent`        | object | no  | Pre-dispatch classify/route. Distinct from `memory.intent_routing`. File agents default `mode: "off"`; the built-in `index` master defaults `hybrid`. See [Intent](../../concepts/intent.md). |
 | `personality`   | string | no  | Free-form personality overlay. |
 
 #### `advisor` object schema
@@ -65,7 +66,18 @@ Controls advisor-driven enrichment on this agent's `/mem` operations. Every fiel
 | `search_expand`    | bool | `false` | On `/mem search`: call the advisor once to generate 2 paraphrases of the query, run all 3 variants through FTS, RRF-fuse the rankings. No-embedding alternative to dense retrieval. ~150 ms + ~$0.0001 per search at Haiku speeds. |
 | `auto_tag`         | bool | `false` | On `/mem add entry`: advisor extracts 2-4 lowercase hyphenated tags from `title` + `content` before storage. Tags get an 8× weight in the BM25 ranking, so this is one of the strongest no-cost ways to lift retrieval signal on agent ingest paths. |
 | `auto_supersede`   | bool | `false` | On `/mem add entry`: after the new entry is created, advisor inspects the top-5 same-type FTS hits on the new title for direct contradictions and stamps `valid_to=now()` on flagged ids. Bias is conservative — false positives erase legitimate prior memory. |
-| `intent_routing`   | bool | `true`  | On `/mem search`: heuristic regex-based question-intent classifier maps cue words ("favorite", "when", "how to", …) to memory-entry type boosts via the existing 1.3× BM25 multiplier. Caller-supplied `type=` always wins. Zero LLM cost; defaults on because the worst case is "no boost applied" (monotonic vs. off). |
+| `intent_routing`   | bool | `true`  | On `/mem search`: heuristic regex-based question-intent classifier maps cue words ("favorite", "when", "how to", …) to memory-entry type boosts via the existing 1.3× BM25 multiplier. Caller-supplied `type=` always wins. Zero LLM cost; defaults on because the worst case is "no boost applied" (monotonic vs. off). Not the orchestration [intent engine](../../concepts/intent.md). |
+
+#### `intent` object schema
+
+Ingress classify/route for this agent when it is the **requested** (depth-0) agent. Does not persist todos or execute plans.
+
+| Sub-field | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `mode` | string | `"off"` (file agents); `"hybrid"` on `index` | `"off"` skips classification. `"heuristic"` is cue/roster only. `"hybrid"` calls the advisor/intent model when heuristic confidence is below `min_confidence`. `"llm"` always calls the model when one is configured. |
+| `min_confidence` | number | `0.8` | Reroute threshold (0..1). |
+| `apply_routing` | bool | `true` | `false` = observe only (SSE + preamble, no agent change). |
+| `model` | string | `""` | LLM classifier. Empty → `advisor.model`. |
 
 ```bash
 curl -X POST \

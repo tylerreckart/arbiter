@@ -359,15 +359,14 @@ TEST_CASE("tool_call_summary_lines uses System for the count text") {
     CHECK(lines[0].spans[1].id == StyleId::System);
 }
 
-TEST_CASE("to_ansi System and Rule use theme tokens with dim") {
+TEST_CASE("to_ansi System uses system_fg without extra dim") {
     load_tui_design("");  // ensure design/theme are live
     StyledLine sys;
     styled_append(sys, StyleId::System, "status");
     const std::string sys_ansi = to_ansi(sys);
     CHECK(sys_ansi.find("status") != std::string::npos);
     CHECK(sys_ansi.find(theme().system_fg) != std::string::npos);
-    // Match OpenTUI resolve_style(System) which sets kAttrDim.
-    CHECK(sys_ansi.find(theme().dim) != std::string::npos);
+    CHECK(sys_ansi.find(theme().dim) == std::string::npos);
 
     StyledLine rule = styled_rule_line(4);
     const std::string rule_ansi = to_ansi(rule);

@@ -5,6 +5,7 @@
 #include "api_client.h"
 #include "commands.h"
 #include "event_routing.h"
+#include "intent.h"
 #include <atomic>
 #include <functional>
 #include <map>
@@ -182,6 +183,24 @@ public:
     using AdvisorEventCallback = std::function<void(const AdvisorEvent&)>;
     void set_advisor_event_callback(AdvisorEventCallback cb) { advisor_event_cb_ = std::move(cb); }
 
+    // Pre-dispatch intent classification.  Fires once per depth-0 send when
+    // the ingress agent's Constitution::intent.mode is not "off".  `applied`
+    // is true only when routing actually changed the target agent.
+    struct IntentEvent {
+        Intent      intent;
+        std::string requested_agent;
+        std::string applied_agent;
+        bool        applied = false;
+    };
+    using IntentCallback = std::function<void(const IntentEvent&)>;
+    void set_intent_callback(IntentCallback cb) { intent_cb_ = std::move(cb); }
+
+    // One-shot hint consumed by the next depth-0 send.  Event ingest sets
+    // "event" so Intent.source is event rather than heuristic/llm.
+    void set_intent_source_hint(std::string hint) {
+        intent_source_hint_ = std::move(hint);
+    }
+
     // Fired after mid-turn history commits that should hit disk promptly —
     // successful model iterations and committed tool-result user messages.
     // The TUI wires this to ConversationStore::save_async so SIGKILL/quit
@@ -215,9 +234,10 @@ public:
     // /fetch or /mem commands, they are executed and results fed back
     // automatically (up to 6 turns).
     // `original_query` pins the advisor gate's [ORIGINAL TASK] context across
-    // self-prompt continuations.  When empty, defaults to `message` (the
-    // first turn of a fresh request).  LoopManager passes the loop's initial
-    // prompt here on every iteration after the first.
+    // self-prompt continuations and suppresses intent reroute (fresh ingress
+    // only).  When empty, defaults to `message` (the first turn of a fresh
+    // request).  LoopManager passes the loop's initial prompt here on every
+    // iteration.
     ApiResponse send(const std::string& agent_id, const std::string& message,
                      const std::string& original_query = "");
 
@@ -467,10 +487,52 @@ private:
     StreamEndCallback   stream_end_cb_;
     EscalationCallback  escalation_cb_;
     AdvisorEventCallback advisor_event_cb_;
+    IntentCallback      intent_cb_;
+    std::string         intent_source_hint_;
     HistoryCheckpointCallback history_checkpoint_cb_;
     std::atomic<int>    stream_counter_{-1};   // next_stream_id returns 0 first
     int                 next_stream_id();
     void fire_history_checkpoint();
+
+    // Depth-0 ingress classify/route.  Fail-open: never throws into dispatch.
+    struct IntentIngress {
+        std::string agent_id;
+        std::string preamble;
+        Intent      intent;
+        bool        applied = false;
+    };
+    IntentIngress apply_intent_ingress(const std::string& agent_id,
+                                       const std::string& classify_text,
+                                       bool fresh_ingress = true);
+
+    // Copy history + compaction for the current ConversationScope from
+    // src → dst so intent reroute does not orphan the thread.  No-op if
+    // either id is missing or they are the same.
+    void mirror_agent_state(const std::string& src_id, const std::string& dst_id);
+
+    // Intent reroute: mirror requested → specialist for the turn, sync back
+    // onto requested for checkpoints/persist, restore specialist afterward.
+    void begin_intent_mirror(const std::string& requested,
+                             const std::string& dispatched);
+    void sync_intent_mirror_for_checkpoint();
+    void end_intent_mirror();
+
+    // RAII: ends the active intent mirror on scope exit.
+    struct IntentHistoryMirror {
+        Orchestrator* orch = nullptr;
+        bool          active = false;
+        ~IntentHistoryMirror();
+    };
+
+    struct IntentMirrorSlot {
+        std::string          requested;
+        std::string          dispatched;
+        std::vector<Message> dispatched_history_backup;
+        CompactionState      dispatched_compaction_backup;
+        std::string          dispatched_pinned_backup;
+        bool                 active = false;
+    };
+    IntentMirrorSlot intent_mirror_;
 
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;

@@ -15,7 +15,7 @@ Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v
 | Field        | Type     | Required | Default   | Description |
 |--------------|----------|----------|-----------|-------------|
 | `message`    | string \| array | yes | —      | The prompt to send to the agent. Either a plain string (text-only) or an array of content parts (text + image, see [Vision input](#vision-input) below). |
-| `original_query` | string | no | — | Pins the advisor gate's `[ORIGINAL TASK]` when `message` is a continuation prompt. Omit on the first turn of a loop; pass the loop's initial prompt on subsequent `/v1/orchestrate` calls. When omitted, defaults to the flattened `message` text. |
+| `original_query` | string | no | — | Pins the advisor gate's `[ORIGINAL TASK]` when `message` is a continuation prompt, and **suppresses intent reroute**. Omit on the first turn of a loop; pass the loop's initial prompt on subsequent `/v1/orchestrate` calls. When omitted, defaults to the flattened `message` text. |
 | `agent`      | string   | no       | `"index"` | Which agent to address. Any stored agent id, the built-in `"index"` master, or (with `agent_def`) a caller-supplied UUID. |
 | `agent_def`  | object   | no       | —         | Inline agent definition. See [Inline agents](#inline-agents) below. When set, overrides any stored agent at this id for this one request. |
 
@@ -123,7 +123,7 @@ curl -N \
 
 `Content-Type: text/event-stream`. `Connection: close`. One request per connection (no multiplexing).
 
-The stream begins with `request_received`, contains a sequence of `stream_start` / `text` / `tool_call` / `file` / `token_usage` / `sub_agent_response` / `stream_end` events for the master and any delegated sub-agents, and ends with exactly one `done` event (or, on fatal error, an `error` event followed by `done` with `ok: false`).
+The stream begins with `request_received`, may emit an `intent` classify/route event (when the ingress agent's `intent.mode` is not `off`), then a sequence of `stream_start` / `text` / `tool_call` / `file` / `token_usage` / `sub_agent_response` / `stream_end` events for the master and any delegated sub-agents, and ends with exactly one `done` event (or, on fatal error, an `error` event followed by `done` with `ok: false`). When the request addresses `index` and intent is confident, the runtime may short-circuit to a loaded specialist before the first `stream_start`. See [Intent](../concepts/intent.md).
 
 `duration_ms` on `done` is wall-clock from request receipt to stream close. See the [SSE event catalog](../concepts/sse-events.md) for full event-by-event field schemas, and [Fleet streaming](../concepts/fleet-streaming.md) for the routing rules when `/parallel` is in play.
 
