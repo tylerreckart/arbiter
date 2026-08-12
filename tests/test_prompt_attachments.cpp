@@ -87,6 +87,21 @@ TEST_CASE("load_image_attachment rejects missing and non-image paths") {
     std::filesystem::remove(txt, ec);
 }
 
+TEST_CASE("load_image_attachment rejects symlinks") {
+    TempPng png("arbiter_attach_real.png");
+    const std::filesystem::path link =
+        png.path.parent_path() / "arbiter_attach_link.png";
+    std::error_code ec;
+    std::filesystem::create_symlink(png.path, link, ec);
+    if (ec) return;  // skip when symlinks unavailable
+
+    PromptAttachment att;
+    std::string err;
+    CHECK_FALSE(load_image_attachment(link.string(), att, err));
+    CHECK(err.find("symlink") != std::string::npos);
+    std::filesystem::remove(link, ec);
+}
+
 TEST_CASE("extract_images_from_paste consumes a bare image path drop") {
     TempPng png("arbiter_paste_drop.png");
     auto result = extract_images_from_paste(png.path.string());

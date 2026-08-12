@@ -17,4 +17,8 @@ std::string canonical_workspace_root(std::string_view root,
 bool path_within_canonical_root(std::string_view root,
                                 std::string_view resolved);
 
+// Agent ids become path components for memory scratchpads — reject traversal,
+// absolute paths, hidden files, and non-alphanumeric characters.
+bool agent_id_is_safe(const std::string& id);
+
 } // namespace arbiter

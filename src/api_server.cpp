@@ -1616,7 +1616,7 @@ std::unique_ptr<Orchestrator> make_reflect_orchestrator(const ApiServerOptions& 
 
 // Forward decl — defined further down (shared with the memory file
 // scratchpad path-safety check).
-bool agent_id_is_safe(const std::string& id);
+// agent_id_is_safe lives in workspace_root.h (via commands.h).
 
 // Render a stored AgentRecord as the same JSON shape as the built-in
 // `index` master, plus `created_at`/`updated_at` so the front-end can
@@ -1963,16 +1963,7 @@ void handle_agent_delete(int fd, const std::string& agent_id,
 // traversal, no absolute paths, no hidden files.  Mirrors cmd_mem_*'s
 // naming convention so /v1/memory/:id returns exactly what /mem read would
 // have surfaced to the agent mid-turn.
-bool agent_id_is_safe(const std::string& id) {
-    if (id.empty() || id.size() > 64) return false;
-    if (id[0] == '.' || id[0] == '/') return false;
-    for (char c : id) {
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '-';
-        if (!ok) return false;
-    }
-    return true;
-}
+// agent_id_is_safe is defined in workspace_root.cpp.
 
 std::string tenant_memory_dir(const ApiServerOptions& opts, const Tenant& t) {
     if (opts.memory_root.empty()) return {};

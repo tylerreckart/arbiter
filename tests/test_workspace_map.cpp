@@ -98,6 +98,16 @@ TEST_CASE("path_within_canonical_root accepts native separators") {
     CHECK_FALSE(path_within_canonical_root("/proj", "/proj-evil"));
 }
 
+TEST_CASE("agent_id_is_safe rejects traversal and odd characters") {
+    CHECK(agent_id_is_safe("research"));
+    CHECK(agent_id_is_safe("agent_1"));
+    CHECK_FALSE(agent_id_is_safe(""));
+    CHECK_FALSE(agent_id_is_safe("../evil"));
+    CHECK_FALSE(agent_id_is_safe(".hidden"));
+    CHECK_FALSE(agent_id_is_safe("/abs"));
+    CHECK_FALSE(agent_id_is_safe("bad/id"));
+}
+
 TEST_CASE("cmd_map refuses missing workspace root") {
     TempDir decoy;
     const fs::path missing = decoy.path / "gone";

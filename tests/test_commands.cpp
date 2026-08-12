@@ -1245,3 +1245,36 @@ TEST_CASE("execute_agent_commands gates /map on capabilities") {
 
     fs::remove_all(root);
 }
+
+TEST_CASE("cmd_mem_write rejects agent_id path traversal") {
+    const auto pid = static_cast<long long>(::getpid());
+    const fs::path mem_root = fs::temp_directory_path() /
+        ("arbiter_mem_traversal_" + std::to_string(pid));
+    fs::create_directories(mem_root);
+
+    auto out = cmd_mem_write("../outside", "secret", mem_root.string());
+    CHECK(out.find("ERR:") == 0);
+    CHECK(out.find("invalid agent_id") != std::string::npos);
+    CHECK_FALSE(fs::exists(mem_root.parent_path() / "outside.md"));
+
+    fs::remove_all(mem_root);
+}
+
+TEST_CASE("cmd_mem_read caps oversized files at 4 MiB") {
+    const auto pid = static_cast<long long>(::getpid());
+    const fs::path mem_root = fs::temp_directory_path() /
+        ("arbiter_mem_cap_" + std::to_string(pid));
+    fs::create_directories(mem_root);
+    const std::string agent = "bigreader";
+
+    {
+        std::ofstream f(mem_root / (agent + ".md"), std::ios::binary);
+        std::string chunk(1024, 'x');
+        for (int i = 0; i < (5 * 1024); ++i) f << chunk;
+    }
+
+    auto body = cmd_mem_read(agent, mem_root.string());
+    CHECK(body.size() == 4u * 1024u * 1024u);
+
+    fs::remove_all(mem_root);
+}
