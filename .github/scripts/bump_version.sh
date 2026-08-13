@@ -178,9 +178,15 @@ already_released_trigger() {
   if ! git merge-base --is-ancestor "$trigger" HEAD 2>/dev/null; then
     return 1
   fi
-  local subj
+  local subj head_version
   subj="$(git log -1 --format=%s HEAD)"
   if is_release_subject "$subj"; then
+    # A push can land the release commit without the tag; retries must
+    # not skip until vX.Y.Z exists.
+    head_version="$(sed -nE 's/^chore\(release\): v([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' <<<"$subj")"
+    if [ -n "$head_version" ] && ! git rev-parse -q --verify "refs/tags/v${head_version}" >/dev/null; then
+      return 1
+    fi
     return 0
   fi
   if git log --format=%s "${trigger}..HEAD" | grep -q '^chore(release):'; then
