@@ -1,16 +1,16 @@
 name: Version bump
 
-# On every merge to main, cut a minor version (0.12.2 → 0.13.0): bump
+# On every merge to main, cut a patch version (0.12.2 → 0.12.3): bump
 # CMakeLists.txt (INDEX_VERSION), move CHANGELOG [Unreleased] into the
 # new heading, pin the site/docs download examples, commit, tag vX.Y.Z,
 # and dispatch release.yml to publish binaries.
 #
-# Manual versioning is still first-class:
-#   - Actions → Version bump → Run workflow → major / patch, or type
-#     an explicit X.Y.Z (1.0.0, a skipped 0.12.3, …).
+# Minor and major are manual:
+#   - Actions → Version bump → Run workflow → minor / major, or type
+#     an explicit X.Y.Z (1.0.0, a skipped 0.13.0, …).
 #   - Or bump `project(arbiter VERSION …)` in the PR itself.  On merge
 #     this workflow sees CMakeLists ahead of the latest tag and tags
-#     *that* version instead of auto-minoring.
+#     *that* version instead of auto-patching.
 #   - `[skip version]` in the merge commit (or squash PR title) skips
 #     the bump entirely.  `git tag vX.Y.Z && git push origin vX.Y.Z`
 #     still fires release.yml on its own.
@@ -30,10 +30,10 @@ on:
         description: "Bump type when no explicit version is set"
         type: choice
         options:
-          - minor
           - patch
+          - minor
           - major
-        default: minor
+        default: patch
       version:
         description: "Explicit X.Y.Z (optional; overrides bump type)"
         required: false
@@ -105,7 +105,7 @@ jobs:
           fi
 
           run_bump() {
-            local args=(--mode "$MODE" --bump "${INPUT_BUMP:-minor}" --trigger-sha "$TRIGGER_SHA")
+            local args=(--mode "$MODE" --bump "${INPUT_BUMP:-patch}" --trigger-sha "$TRIGGER_SHA")
             if [ -n "${INPUT_VERSION:-}" ]; then
               args+=(--version "$INPUT_VERSION")
             fi

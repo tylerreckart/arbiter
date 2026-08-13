@@ -100,16 +100,16 @@ out_field() {
 
 trap cleanup_case EXIT
 
-begin_case "auto minor from matching cmake+tag"
+begin_case "auto patch from matching cmake+tag"
 make_fixture 0.12.0 0.12.0
 "$SCRIPT" --mode auto --no-commit >bump.out
-assert_eq "next" "$(out_field version bump.out)" "0.13.0"
-assert_file_contains "cmake" CMakeLists.txt "project(arbiter VERSION 0.13.0"
-assert_file_contains "changelog heading" CHANGELOG.md "## [0.13.0] —"
+assert_eq "next" "$(out_field version bump.out)" "0.12.1"
+assert_file_contains "cmake" CMakeLists.txt "project(arbiter VERSION 0.12.1"
+assert_file_contains "changelog heading" CHANGELOG.md "## [0.12.1] —"
 assert_file_contains "changelog kept body" CHANGELOG.md "- New thing."
 assert_file_contains "unreleased remains" CHANGELOG.md "## [Unreleased]"
-assert_file_contains "site pin" web/lib/config.mjs "v0.13.0"
-assert_file_contains "docs pin" docs/getting-started/local.md "ARBITER_VERSION=v0.13.0"
+assert_file_contains "site pin" web/lib/config.mjs "v0.12.1"
+assert_file_contains "docs pin" docs/getting-started/local.md "ARBITER_VERSION=v0.12.1"
 
 begin_case "auto honors in-tree cmake ahead of tag"
 make_fixture 0.12.1 0.12.0
@@ -121,7 +121,18 @@ assert_file_contains "changelog" CHANGELOG.md "## [0.12.1] —"
 begin_case "auto baselines off latest tag when cmake is stale"
 make_fixture 0.12.0 0.12.2
 "$SCRIPT" --mode auto --no-commit >bump.out
+assert_eq "next" "$(out_field version bump.out)" "0.12.3"
+
+begin_case "auto ignores --bump minor"
+make_fixture 0.12.0 0.12.0
+"$SCRIPT" --mode auto --bump minor --no-commit >bump.out
+assert_eq "next" "$(out_field version bump.out)" "0.12.1"
+
+begin_case "manual minor bump"
+make_fixture 0.12.0 0.12.0
+"$SCRIPT" --mode manual --bump minor --no-commit >bump.out
 assert_eq "next" "$(out_field version bump.out)" "0.13.0"
+assert_file_contains "cmake" CMakeLists.txt "project(arbiter VERSION 0.13.0"
 
 begin_case "manual patch bump"
 make_fixture 0.12.0 0.12.0
@@ -149,12 +160,12 @@ begin_case "skip when trigger sha is already in a later release commit"
 make_fixture 0.12.0 0.12.0
 feature_sha="$(git rev-parse HEAD)"
 "$SCRIPT" --mode auto >first.out
-assert_eq "first next" "$(out_field version first.out)" "0.13.0"
+assert_eq "first next" "$(out_field version first.out)" "0.12.1"
 "$SCRIPT" --mode auto --trigger-sha "$feature_sha" >second.out
 assert_eq "second skipped" "$(out_field skipped second.out)" "true"
 "$SCRIPT" --mode manual --bump patch --trigger-sha "$feature_sha" --dry-run >manual.out
 assert_eq "manual still plans a patch" "$(out_field skipped manual.out)" "false"
-assert_eq "manual next" "$(out_field version manual.out)" "0.13.1"
+assert_eq "manual next" "$(out_field version manual.out)" "0.12.2"
 
 begin_case "does not double-cut changelog if heading exists"
 make_fixture 0.13.0 0.12.0
@@ -180,9 +191,9 @@ assert_file_not_contains "did not resurrect old unreleased" CHANGELOG.md "- New 
 begin_case "dry-run does not write"
 make_fixture 0.12.0 0.12.0
 "$SCRIPT" --mode auto --dry-run >bump.out
-assert_eq "next" "$(out_field version bump.out)" "0.13.0"
+assert_eq "next" "$(out_field version bump.out)" "0.12.1"
 assert_file_contains "cmake unchanged" CMakeLists.txt "project(arbiter VERSION 0.12.0"
-if git tag --list 'v0.13.0' | grep -q .; then
+if git tag --list 'v0.12.1' | grep -q .; then
   echo "  FAIL dry-run created a tag"
   FAIL=$((FAIL + 1))
 else
@@ -193,8 +204,8 @@ fi
 begin_case "commit + tag on auto"
 make_fixture 0.12.0 0.12.0
 "$SCRIPT" --mode auto >bump.out
-assert_eq "tag" "$(git tag --list 'v0.13.0')" "v0.13.0"
-assert_eq "subject" "$(git log -1 --format=%s)" "chore(release): v0.13.0"
+assert_eq "tag" "$(git tag --list 'v0.12.1')" "v0.12.1"
+assert_eq "subject" "$(git log -1 --format=%s)" "chore(release): v0.12.1"
 
 cleanup_case
 echo

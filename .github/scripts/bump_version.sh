@@ -9,10 +9,12 @@
 # Auto (mode=auto, the default on merges to main):
 #   - If CMakeLists is already ahead of the latest `vX.Y.Z` tag, the
 #     merge *was* a manual version bump — use that version, don't bump
-#     again.
-#   - Otherwise bump the minor (0.12.2 → 0.13.0).  Baseline is
+#     again.  That is how minor / major land: bump CMakeLists in the
+#     PR (or workflow_dispatch), not via the merge itself.
+#   - Otherwise bump the patch (0.12.2 → 0.12.3).  Baseline is
 #     max(CMakeLists, latest tag) so a stale CMakeLists after a
-#     tag-only release still advances.
+#     tag-only release still advances.  Auto ignores --bump so a
+#     merge cannot accidentally cut a minor.
 #
 # Manual (mode=manual, workflow_dispatch):
 #   - `--bump major|minor|patch` from that same baseline, or
@@ -29,9 +31,9 @@ usage() {
   cat <<'EOF' >&2
 usage: bump_version.sh [options]
 
-  --mode auto|manual     auto (default): minor bump, honor in-tree version
+  --mode auto|manual     auto (default): patch bump, honor in-tree version
                          manual: apply --bump / --version
-  --bump major|minor|patch   bump type (default: minor)
+  --bump major|minor|patch   bump type for --mode manual (default: patch)
   --version X.Y.Z        explicit version; overrides --bump
   --trigger-sha SHA      merge SHA that triggered CI; used for skip logic
   --dry-run              print the plan; do not write, commit, or tag
@@ -42,7 +44,7 @@ EOF
 }
 
 MODE="auto"
-BUMP="minor"
+BUMP="patch"
 EXPLICIT=""
 TRIGGER_SHA=""
 DRY_RUN=0
@@ -163,8 +165,8 @@ is_release_subject() {
 
 # A queued auto-run should no-op when a previous bump already landed a
 # release commit that contains this merge.  Without this, two merges
-# that race would each minor-bump and the second would cut an empty
-# vX.(Y+1).0 on top of the first.
+# that race would each patch-bump and the second would cut an empty
+# vX.Y.(Z+1) on top of the first.
 already_released_trigger() {
   local trigger="$1"
   if [ -z "$trigger" ]; then
@@ -299,7 +301,9 @@ elif version_gt "$CMAKE_VERSION" "${TAG_VERSION:-0.0.0}"; then
   # Merge already bumped CMakeLists (prepare-release PR / manual pin).
   NEXT="$CMAKE_VERSION"
 else
-  NEXT="$(bump_semver "$BASELINE" "$BUMP")"
+  # Merges always patch.  Minor/major are --mode manual or an in-tree
+  # CMakeLists pin (the branch above).
+  NEXT="$(bump_semver "$BASELINE" "patch")"
 fi
 
 echo "bump_version: cmake=${CMAKE_VERSION} tag=${TAG_VERSION:-<none>} baseline=${BASELINE} mode=${MODE} next=${NEXT}"

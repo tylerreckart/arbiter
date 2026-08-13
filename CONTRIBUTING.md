@@ -106,13 +106,13 @@ non-starter for merging.
 - New code without comments explaining *why* it exists is likely to
   get review notes.
 - Do not bump `CMakeLists.txt`'s `project(... VERSION ...)` in a
-  feature PR.  Merges to `main` cut the next minor automatically
+  feature PR.  Merges to `main` cut the next patch automatically
   (see Versioning below).
 
 ## Versioning and releases
 
-Arbiter is pre-1.0 and treats a merge to `main` as a minor release
-(`0.12.2` → `0.13.0`): `version.yml` bumps CMakeLists (the
+Arbiter is pre-1.0 and treats a merge to `main` as a patch release
+(`0.12.2` → `0.12.3`): `version.yml` bumps CMakeLists (the
 `INDEX_VERSION` baked into the binary), moves `[Unreleased]` in
 `CHANGELOG.md` into the new heading, pins the site/docs download
 examples, tags `vX.Y.Z`, and dispatches the binary release workflow.
@@ -120,13 +120,13 @@ examples, tags `vX.Y.Z`, and dispatches the binary release workflow.
 Leave the version number alone in ordinary PRs.  Notes go under
 `[Unreleased]`; the bump job cuts them on merge.
 
-To ship something other than the next minor:
+Minor and major are never automatic.  To ship one:
 
-- **Patch or major, or a specific X.Y.Z** — Actions → Version bump →
-  Run workflow.  Pick `patch` / `major`, or type an explicit version.
+- **Minor, major, or a specific X.Y.Z** — Actions → Version bump →
+  Run workflow.  Pick `minor` / `major`, or type an explicit version.
 - **Version in the PR itself** — change `project(arbiter VERSION …)`
   (and optionally cut the changelog heading).  On merge the workflow
-  tags that version instead of auto-minoring.  Use this for a
+  tags that version instead of auto-patching.  Use this for a
   prepare-release PR.
 - **Skip a release** — put `[skip version]` in the squash title or
   merge commit message.  Tag later by hand or via workflow_dispatch.
