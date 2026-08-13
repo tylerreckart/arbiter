@@ -7,13 +7,17 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
+#include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <poll.h>
+#include <signal.h>
 #include <sstream>
 #include <sys/wait.h>
 #include <system_error>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -254,17 +258,183 @@ bool copy_tree(const fs::path& from, const fs::path& to, std::string* err) {
             fs::path dest = to / rel;
             if (it->is_directory(ec)) {
                 fs::create_directories(dest, ec);
+                if (ec) {
+                    if (err) *err = "cannot create snapshot dir: " + ec.message();
+                    return false;
+                }
             } else if (it->is_regular_file(ec)) {
                 fs::create_directories(dest.parent_path(), ec);
+                if (ec) {
+                    if (err) *err = "cannot create snapshot dir: " + ec.message();
+                    return false;
+                }
                 fs::copy_file(it->path(), dest,
                               fs::copy_options::overwrite_existing, ec);
+                if (ec) {
+                    if (err) *err = "snapshot copy failed: " + ec.message();
+                    return false;
+                }
             }
+        }
+        if (ec) {
+            if (err) *err = "snapshot walk failed: " + ec.message();
+            return false;
         }
     } catch (const std::exception& e) {
         if (err) *err = e.what();
         return false;
     }
     return true;
+}
+
+struct HostShellOutcome {
+    int         exit_code = -1;
+    std::string log;
+    bool        timed_out = false;
+    bool        canceled = false;
+    bool        spawn_failed = false;
+};
+
+// Run `cmd` under /bin/sh with cwd=`dir`.  Avoids interpolating `dir`
+// into a shell string (path metacharacters cannot inject commands).
+// Parent enforces timeout and polls `cancel` to SIGKILL the child.
+HostShellOutcome run_host_shell_in_dir(const std::string& dir,
+                                       const std::string& cmd,
+                                       std::size_t log_cap,
+                                       int timeout_sec,
+                                       std::atomic<bool>* cancel) {
+    HostShellOutcome out;
+    std::string shell_cmd = cmd;
+    if (fs::exists("/usr/bin/timeout") && timeout_sec > 0) {
+        shell_cmd = "/usr/bin/timeout --kill-after=5 " +
+                    std::to_string(timeout_sec) + " " + cmd;
+    }
+
+    int pipe_fd[2] = {-1, -1};
+    if (::pipe(pipe_fd) != 0) {
+        out.spawn_failed = true;
+        return out;
+    }
+
+    pid_t pid = ::fork();
+    if (pid < 0) {
+        ::close(pipe_fd[0]);
+        ::close(pipe_fd[1]);
+        out.spawn_failed = true;
+        return out;
+    }
+
+    if (pid == 0) {
+        while (::dup2(pipe_fd[1], STDOUT_FILENO) < 0 && errno == EINTR) {}
+        while (::dup2(pipe_fd[1], STDERR_FILENO) < 0 && errno == EINTR) {}
+        ::close(pipe_fd[0]);
+        ::close(pipe_fd[1]);
+        if (::chdir(dir.c_str()) != 0) ::_exit(127);
+        ::execl("/bin/sh", "sh", "-c", shell_cmd.c_str(), static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+
+    ::close(pipe_fd[1]);
+    int read_fd = pipe_fd[0];
+    int flags = ::fcntl(read_fd, F_GETFL);
+    if (flags >= 0) ::fcntl(read_fd, F_SETFL, flags | O_NONBLOCK);
+
+    auto start = std::chrono::steady_clock::now();
+    auto deadline = (timeout_sec > 0)
+        ? start + std::chrono::seconds(timeout_sec)
+        : std::chrono::steady_clock::time_point::max();
+
+    char buf[4096];
+    bool eof = false;
+    while (!eof) {
+        if (cancel && cancel->load()) {
+            out.canceled = true;
+            ::kill(pid, SIGKILL);
+            break;
+        }
+        int poll_ms = -1;
+        if (timeout_sec > 0) {
+            auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                out.timed_out = true;
+                ::kill(pid, SIGKILL);
+                break;
+            }
+            poll_ms = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - now).count());
+            if (poll_ms < 0) poll_ms = 0;
+            if (poll_ms > 250) poll_ms = 250;
+        } else {
+            poll_ms = 250;
+        }
+
+        pollfd pfd{read_fd, POLLIN, 0};
+        int rc = ::poll(&pfd, 1, poll_ms);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (rc == 0) {
+            int status_check = 0;
+            pid_t r = ::waitpid(pid, &status_check, WNOHANG);
+            if (r == pid) {
+                int fl = ::fcntl(read_fd, F_GETFL);
+                if (fl >= 0) ::fcntl(read_fd, F_SETFL, fl & ~O_NONBLOCK);
+                ssize_t k;
+                while ((k = ::read(read_fd, buf, sizeof(buf))) > 0) {
+                    if (out.log.size() < log_cap) {
+                        std::size_t room = log_cap - out.log.size();
+                        out.log.append(buf, std::min(room, static_cast<std::size_t>(k)));
+                    }
+                }
+                ::close(read_fd);
+                if (WIFEXITED(status_check)) out.exit_code = WEXITSTATUS(status_check);
+                else if (WIFSIGNALED(status_check))
+                    out.exit_code = 128 + WTERMSIG(status_check);
+                else out.exit_code = status_check;
+                return out;
+            }
+            continue;
+        }
+        if (pfd.revents & (POLLIN | POLLHUP)) {
+            ssize_t k = ::read(read_fd, buf, sizeof(buf));
+            if (k > 0) {
+                if (out.log.size() < log_cap) {
+                    std::size_t room = log_cap - out.log.size();
+                    out.log.append(buf, std::min(room, static_cast<std::size_t>(k)));
+                }
+                continue;
+            }
+            if (k == 0) { eof = true; break; }
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            break;
+        }
+        if (pfd.revents & (POLLERR | POLLNVAL)) break;
+    }
+
+    ::close(read_fd);
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR) continue;
+        break;
+    }
+    if (out.canceled) {
+        out.exit_code = -1;
+        return out;
+    }
+    if (out.timed_out) {
+        out.exit_code = 124;
+        return out;
+    }
+#ifdef WIFEXITED
+    if (WIFEXITED(status)) out.exit_code = WEXITSTATUS(status);
+    else if (WIFSIGNALED(status)) out.exit_code = 128 + WTERMSIG(status);
+    else out.exit_code = status;
+#else
+    out.exit_code = status;
+#endif
+    return out;
 }
 
 void clear_dir_contents(const fs::path& root) {
@@ -669,8 +839,9 @@ bool verification_command_is_safe(const std::string& command) {
 }
 
 VerificationEvidence run_verification(const ReconcileSpec& spec,
-                                      std::atomic<bool>* cancel) {
+                                      const ReconcileHooks& hooks) {
     VerificationEvidence ev;
+    std::atomic<bool>* cancel = hooks.cancel;
     if (!spec.verification.require_tests) {
         ev.reason = "skipped";
         ev.passed = true;
@@ -696,45 +867,37 @@ VerificationEvidence run_verification(const ReconcileSpec& spec,
         return ev;
     }
 
-    // timeout(1) when present; otherwise run unbounded (unit tests are
-    // short).  cwd is the workspace.  stdout+stderr captured, truncated.
-    std::ostringstream wrapped;
-    wrapped << "cd \"" << spec.workspace.root << "\" && ";
-    if (fs::exists("/usr/bin/timeout")) {
-        wrapped << "/usr/bin/timeout --kill-after=5 " << kVerifyTimeoutSec << " ";
+    if (spec.workspace.kind == "sandbox") {
+        if (!hooks.verify_exec) {
+            ev.reason = "sandbox_unavailable";
+            return ev;
+        }
+        ev.ran = true;
+        VerificationEvidence sandbox_ev = hooks.verify_exec(cmd, cancel);
+        if (sandbox_ev.command.empty()) sandbox_ev.command = cmd;
+        return sandbox_ev;
     }
-    wrapped << cmd << " 2>&1";
 
     ev.ran = true;
-    FILE* pipe = popen(wrapped.str().c_str(), "r");
-    if (!pipe) {
+    HostShellOutcome run = run_host_shell_in_dir(
+        spec.workspace.root, cmd, kMaxVerifyLog, kVerifyTimeoutSec, cancel);
+    ev.log = std::move(run.log);
+    if (run.spawn_failed) {
+        ev.exit_code = -1;
         ev.reason = "spawn_failed";
-        ev.exit_code = -1;
         return ev;
     }
-    std::string log;
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), pipe)) {
-        if (cancel && cancel->load()) break;
-        if (log.size() < kMaxVerifyLog) {
-            std::size_t room = kMaxVerifyLog - log.size();
-            log.append(buf, std::min(room, std::strlen(buf)));
-        }
-    }
-    int st = pclose(pipe);
-    ev.log = std::move(log);
-    if (st == -1) {
+    if (run.canceled || (cancel && cancel->load())) {
         ev.exit_code = -1;
-        ev.reason = "wait_failed";
+        ev.reason = "canceled";
         return ev;
     }
-#ifdef WIFEXITED
-    if (WIFEXITED(st)) ev.exit_code = WEXITSTATUS(st);
-    else if (WIFSIGNALED(st)) ev.exit_code = 128 + WTERMSIG(st);
-    else ev.exit_code = st;
-#else
-    ev.exit_code = st;
-#endif
+    ev.exit_code = run.exit_code;
+    if (run.timed_out || ev.exit_code == 124) {
+        ev.passed = false;
+        ev.reason = "timeout";
+        return ev;
+    }
     ev.passed = (ev.exit_code == 0);
     ev.reason = ev.passed ? "passed" : "failed";
     return ev;
@@ -961,7 +1124,7 @@ ReconcileResult run_reconcile(const ReconcileSpec& spec,
         return finish_fail("delta_unresolved");
     }
 
-    out.verification = run_verification(bound, hooks.cancel);
+    out.verification = run_verification(bound, hooks);
     apply_verify_to_delta(out.delta, out.verification);
 
     if (canceled()) return finish_fail("canceled");

@@ -3786,6 +3786,22 @@ void TenantStore::upsert_reconcile_run(const ReconcileRun& row) {
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "upsert reconcile_run");
 }
 
+bool TenantStore::try_cancel_reconcile_run(int64_t tenant_id,
+                                          const std::string& request_id) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    int64_t now = now_epoch();
+    Stmt q(db_,
+        "UPDATE reconcile_runs SET status = 'canceled', reason = 'canceled', "
+        "updated_at = ? WHERE tenant_id = ? AND request_id = ? "
+        "AND status = 'running';");
+    q.bind(1, now);
+    q.bind(2, tenant_id);
+    q.bind(3, request_id);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "cancel reconcile_run");
+    return sqlite3_changes(db_) > 0;
+}
+
 std::optional<TenantStore::ReconcileRun>
 TenantStore::get_reconcile_run(int64_t tenant_id,
                                const std::string& request_id) const {

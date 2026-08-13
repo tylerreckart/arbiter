@@ -117,7 +117,13 @@ struct ReconcileHooks {
     using ImplementFn = std::function<std::string(const StateContract&,
                                                   const std::string& workspace_root,
                                                   std::atomic<bool>* cancel)>;
+    // Optional sandbox verification runner.  Required when
+    // workspace.kind=sandbox so tests execute inside the tenant
+    // container instead of on the API host.
+    using VerifyExecFn = std::function<VerificationEvidence(
+        const std::string& command, std::atomic<bool>* cancel)>;
     ImplementFn      implement;
+    VerifyExecFn     verify_exec;
     std::atomic<bool>* cancel = nullptr;
 };
 
@@ -145,7 +151,7 @@ std::string detect_test_command(const std::string& workspace_root);
 bool verification_command_is_safe(const std::string& command);
 
 VerificationEvidence run_verification(const ReconcileSpec& spec,
-                                      std::atomic<bool>* cancel = nullptr);
+                                      const ReconcileHooks& hooks = {});
 
 bool snapshot_workspace(const std::string& root,
                         const std::string& dest,

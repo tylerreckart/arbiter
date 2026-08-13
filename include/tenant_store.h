@@ -613,6 +613,11 @@ public:
 
     void upsert_reconcile_run(const ReconcileRun& row);
 
+    // Flip status to canceled only when still running.  Returns true when
+    // the row was updated (compare-and-swap on terminal states).
+    bool try_cancel_reconcile_run(int64_t tenant_id,
+                                  const std::string& request_id);
+
     std::optional<ReconcileRun>
     get_reconcile_run(int64_t tenant_id, const std::string& request_id) const;
 

@@ -5951,15 +5951,7 @@ void handle_reconcile_cancel(int fd, const std::string& request_id,
     fake.method = "POST";
     fake.path = "/v1/requests/" + request_id + "/cancel";
     handle_cancel(fd, fake, in_flight, tenant);
-    auto row = tenants.get_reconcile_run(tenant.id, request_id);
-    if (row && row->status == "running") {
-        // If the run already left the in-flight map, still flip the row
-        // so GET does not look live.  In-flight cancel is handled by the
-        // atomic checked inside run_reconcile.
-        row->status = "canceled";
-        row->reason = "canceled";
-        tenants.upsert_reconcile_run(*row);
-    }
+    tenants.try_cancel_reconcile_run(tenant.id, request_id);
 }
 
 void handle_reconcile_post(int fd, const HttpRequest& req,
@@ -6137,6 +6129,33 @@ void handle_reconcile_post(int fd, const HttpRequest& req,
 
     ReconcileHooks hooks;
     hooks.cancel = &cancel_flag;
+    if (spec.workspace.kind == "sandbox" && opts.sandbox) {
+        SandboxManager* mgr = opts.sandbox;
+        const int64_t sandbox_tid = tenant.id;
+        hooks.verify_exec = [mgr, sandbox_tid](const std::string& cmd,
+                                               std::atomic<bool>* cancel) {
+            VerificationEvidence ev;
+            ev.command = cmd;
+            if (cancel && cancel->load()) {
+                ev.reason = "canceled";
+                return ev;
+            }
+            ev.ran = true;
+            SandboxExecResult r = mgr->exec(sandbox_tid, cmd);
+            ev.log = r.output;
+            if (ev.log.size() > 32 * 1024) ev.log.resize(32 * 1024);
+            ev.exit_code = r.exit_status;
+            if (!r.ok) {
+                ev.passed = false;
+                ev.reason = r.timed_out ? "timeout" : "spawn_failed";
+                return ev;
+            }
+            ev.passed = (ev.exit_code == 0);
+            ev.reason = ev.passed ? "passed"
+                       : (r.timed_out ? "timeout" : "failed");
+            return ev;
+        };
+    }
     ReconcileResult result = run_reconcile(spec, hooks);
     persist_reconcile_row(tenants, tenant.id, request_id, spec, &result);
 
@@ -6169,12 +6188,15 @@ void handle_reconcile_post(int fd, const HttpRequest& req,
     sse.emit("done", terminal);
     sse.close();
 
+    const int64_t completed_s = static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
     std::string rs = "completed";
     if (result.status == "canceled") rs = "canceled";
     else if (!ok) rs = "failed";
     tenants.update_request_status(request_id,
         std::optional<std::string>(rs),
-        std::optional<int64_t>(now_s),
+        std::optional<int64_t>(completed_s),
         ok ? std::nullopt : std::optional<std::string>(result.reason),
         std::nullopt);
 }
