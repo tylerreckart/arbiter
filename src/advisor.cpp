@@ -67,21 +67,25 @@ AdvisorGateOutput run_advisor_gate(
         return out;
     }
 
+    AdvisorGateInput capped = in;
+    cap_advisor_gate_input(capped);
+    const std::string prompt = cap_advisor_prompt_override(prompt_override);
+
     std::ostringstream q;
-    q << "[ORIGINAL TASK]\n" << in.original_task << "\n[END ORIGINAL TASK]\n\n"
-      << "[EXECUTOR TERMINATING TURN]\n" << in.terminating_text
+    q << "[ORIGINAL TASK]\n" << capped.original_task << "\n[END ORIGINAL TASK]\n\n"
+      << "[EXECUTOR TERMINATING TURN]\n" << capped.terminating_text
       << "\n[END EXECUTOR TERMINATING TURN]\n\n"
       << "[TOOL CALLS THIS TURN]\n"
-      << (in.tool_summary.empty() ? "(none)\n" : in.tool_summary)
+      << (capped.tool_summary.empty() ? "(none)\n" : capped.tool_summary)
       << "[END TOOL CALLS]\n";
 
     ApiRequest req;
     req.model               = advisor_model;
     req.max_tokens          = 512;   // signals are short
     req.include_temperature = false; // reasoning models reject temperature
-    req.system_prompt       = prompt_override.empty()
+    req.system_prompt       = prompt.empty()
                               ? std::string(default_gate_prompt())
-                              : prompt_override;
+                              : prompt;
     req.messages            = {{"user", q.str()}};
 
     ApiResponse resp = client.complete(req);

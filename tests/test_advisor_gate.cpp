@@ -105,3 +105,61 @@ TEST_CASE("parse: raw is preserved verbatim for telemetry") {
     auto out = parse_advisor_signal("<signal>CONTINUE</signal>");
     CHECK(out.raw == "<signal>CONTINUE</signal>");
 }
+
+TEST_CASE("cap: fields under budget are unchanged") {
+    AdvisorGateInput in;
+    in.original_task = "ship it";
+    in.terminating_text = "done";
+    in.tool_summary = "- read args=foo";
+    cap_advisor_gate_input(in);
+    CHECK(in.original_task == "ship it");
+    CHECK(in.terminating_text == "done");
+    CHECK(in.tool_summary == "- read args=foo");
+}
+
+TEST_CASE("cap: oversized original_task is truncated to budget") {
+    AdvisorGateInput in;
+    in.original_task.assign(kAdvisorGateMaxOriginalTask + 1024, 'x');
+    cap_advisor_gate_input(in);
+    CHECK(in.original_task.size() <= kAdvisorGateMaxOriginalTask);
+    CHECK(in.original_task.find("[truncated]") != std::string::npos);
+    const auto once = in.original_task;
+    cap_advisor_gate_input(in);
+    CHECK(in.original_task == once);
+}
+
+TEST_CASE("cap: oversized terminating_text and tool_summary") {
+    AdvisorGateInput in;
+    in.terminating_text.assign(kAdvisorGateMaxTerminatingText + 50, 'y');
+    in.tool_summary.assign(kAdvisorGateMaxToolSummary + 50, 'z');
+    cap_advisor_gate_input(in);
+    CHECK(in.terminating_text.size() <= kAdvisorGateMaxTerminatingText);
+    CHECK(in.tool_summary.size() <= kAdvisorGateMaxToolSummary);
+    CHECK(in.terminating_text.find("[truncated]") != std::string::npos);
+    CHECK(in.tool_summary.find("[truncated]") != std::string::npos);
+}
+
+TEST_CASE("cap: prompt override is truncated to budget") {
+    std::string prompt(kAdvisorGateMaxPromptOverride + 80, 'p');
+    auto capped = cap_advisor_prompt_override(prompt);
+    CHECK(capped.size() <= kAdvisorGateMaxPromptOverride);
+    CHECK(capped.find("[truncated]") != std::string::npos);
+    CHECK(cap_advisor_prompt_override(capped) == capped);
+}
+
+TEST_CASE("cap: does not split a UTF-8 sequence") {
+    // U+2014 EM DASH is e2 80 94 (3 bytes).  Place it so resize(keep)
+    // lands on the lead byte.
+    AdvisorGateInput in;
+    const std::string dash = "\xE2\x80\x94";
+    const size_t marker_len = std::string("\n... [truncated]").size();
+    const size_t keep = kAdvisorGateMaxOriginalTask - marker_len;
+    in.original_task.assign(keep - 1, 'a');
+    in.original_task += dash;
+    in.original_task.append(64, 'b');
+    cap_advisor_gate_input(in);
+    CHECK(in.original_task.size() <= kAdvisorGateMaxOriginalTask);
+    CHECK(in.original_task.find("[truncated]") != std::string::npos);
+    CHECK(in.original_task.find(dash) == std::string::npos);
+    CHECK(in.original_task.find('\xE2') == std::string::npos);
+}

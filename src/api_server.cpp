@@ -5546,6 +5546,9 @@ void handle_schedule_runs(int fd, int64_t task_id, const HttpRequest& /*req*/,
 // Stateless, one-shot advisor gate call.  Exposes run_advisor_gate() to
 // external callers that own their own executor loop and need to honour the
 // gate verdict themselves.  Bearer auth required; no orchestrator involved.
+// TenantLimiter is acquired at the dispatch site (same as orchestrate /
+// events) so concurrent advisor completions share the per-tenant cap.
+// Request body fields are capped before the advisor prompt is built.
 //
 // Request body (JSON):
 //   advisor_model    — provider-prefixed model id (required)
@@ -5589,10 +5592,11 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     }
 
     const std::string advisor_model    = body->get_string("advisor_model", "");
-    const std::string prompt_override  = body->get_string("prompt", "");
-    const std::string original_task    = body->get_string("original_task", "");
-    const std::string terminating_text = body->get_string("terminating_text", "");
-    const std::string tool_summary     = body->get_string("tool_summary", "");
+    std::string prompt_override  = cap_advisor_prompt_override(
+        body->get_string("prompt", ""));
+    std::string original_task    = body->get_string("original_task", "");
+    std::string terminating_text = body->get_string("terminating_text", "");
+    std::string tool_summary     = body->get_string("tool_summary", "");
 
     if (advisor_model.empty()) {
         auto err = jobj();
@@ -5614,13 +5618,14 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     }
 
     AdvisorGateInput in;
-    in.original_task    = original_task;
-    in.terminating_text = terminating_text;
-    in.tool_summary     = tool_summary;
+    in.original_task    = std::move(original_task);
+    in.terminating_text = std::move(terminating_text);
+    in.tool_summary     = std::move(tool_summary);
+    cap_advisor_gate_input(in);
 
-    // Build a per-request Orchestrator solely so admin kill-switch can
-    // cancel() the provider call via InFlightRegistry (same path as
-    // orchestrate / A2A).  No agents are installed.
+    // Per-request Orchestrator so admin kill-switch can cancel() the
+    // provider call via InFlightRegistry (same path as orchestrate / A2A).
+    // A shared pool would mix cancel state across requests; keep one-shot.
     std::unique_ptr<Orchestrator> orch;
     try {
         orch = std::make_unique<Orchestrator>(api_keys);
@@ -12202,6 +12207,19 @@ void ApiServer::handle_connection(int fd) {
         // POST /v1/advise/gate — stateless gate verdict for external callers
         if (segs.size() == 3 && segs[0] == "v1" && segs[1] == "advise"
             && segs[2] == "gate") {
+            if (!refresh_active_tenant(tenants_, *tenant)) {
+                reject_disabled_tenant(fd);
+                return;
+            }
+            auto lim = limiter_->acquire(tenant->id);
+            if (!lim.granted()) {
+                write_429_response(fd, lim.retry_after_seconds,
+                    lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                        ? "concurrent_request_limit"
+                        : "rate_limit",
+                    metrics_.get(), tenant->id);
+                return;
+            }
             return handle_advise_gate(fd, req, tenants_, *tenant, in_flight_,
                                       opts_.api_keys);
         }

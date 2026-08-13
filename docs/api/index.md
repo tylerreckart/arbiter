@@ -36,6 +36,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [`POST /v1/events`](events.md)
 - [`POST /v1/orchestrate`](orchestrate.md)
 - [`POST /v1/intent`](intent.md)
+- [`POST /v1/advise/gate`](advise-gate.md)
 - [`POST /v1/requests/:id/cancel`](requests-cancel.md)
 - [`GET /v1/requests`](requests/list.md)
 - [`GET /v1/requests/:id`](requests/get.md)
