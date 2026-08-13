@@ -70,6 +70,14 @@ void render_messages(opentui::PaneScrollView& view,
     // Hydrate todos across the replay window so id→subject mapping matches
     // live chrome (same record_tool cadence as replay_sidebar_todos).
     SidebarState sidebar_labels;
+    for (std::size_t i = 0; i < begin; ++i) {
+        const Message& m = history[i];
+        if (is_replay_noise(m)) continue;
+        for (const auto& t : m.tool_trace) {
+            if (t.label.rfind("todo:", 0) == 0)
+                sidebar_labels.record_tool(t.label, t.ok, t.result_preview);
+        }
+    }
     for (std::size_t i = begin; i < end; ++i) {
         const Message& m = history[i];
         if (is_replay_noise(m)) continue;

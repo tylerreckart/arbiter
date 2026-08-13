@@ -5706,6 +5706,14 @@ void handle_intent_classify(int fd, const HttpRequest& req,
         write_json_response(fd, 400, err);
         return;
     }
+    constexpr std::size_t kIntentMessageMaxBytes = 64 * 1024;
+    if (message.size() > kIntentMessageMaxBytes) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("message exceeds 64 KiB");
+        write_json_response(fd, 400, err);
+        return;
+    }
 
     IntentInput in;
     in.text = message;
@@ -5714,6 +5722,14 @@ void handle_intent_classify(int fd, const HttpRequest& req,
     in.source_hint = body->get_string("intent_source", "");
 
     if (auto roster_val = body->get("roster"); roster_val && roster_val->is_array()) {
+        constexpr std::size_t kIntentRosterMax = 128;
+        if (roster_val->as_array().size() > kIntentRosterMax) {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("roster exceeds 128 entries");
+            write_json_response(fd, 400, err);
+            return;
+        }
         for (auto& row : roster_val->as_array()) {
             if (!row || !row->is_object()) continue;
             IntentRosterEntry e;
@@ -12192,6 +12208,19 @@ void ApiServer::handle_connection(int fd) {
 
         // POST /v1/intent — stateless classify/route (no dispatch)
         if (segs.size() == 2 && segs[0] == "v1" && segs[1] == "intent") {
+            if (!refresh_active_tenant(tenants_, *tenant)) {
+                reject_disabled_tenant(fd);
+                return;
+            }
+            auto lim = limiter_->acquire(tenant->id);
+            if (!lim.granted()) {
+                write_429_response(fd, lim.retry_after_seconds,
+                    lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                        ? "concurrent_request_limit"
+                        : "rate_limit",
+                    metrics_.get(), tenant->id);
+                return;
+            }
             return handle_intent_classify(fd, req, tenants_, *tenant, in_flight_,
                                           opts_);
         }
