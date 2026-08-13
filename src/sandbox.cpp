@@ -812,7 +812,7 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
             || out.find("is restarting")     != std::string::npos
             || out.find("is paused")         != std::string::npos;
     };
-    if (rc != 0 && !timed_out && is_docker_lost(rc, r.output)) {
+    if (rc != 0 && !timed_out && !canceled && is_docker_lost(rc, r.output)) {
         std::lock_guard<std::mutex> lk(mu_);
         running_.erase(tenant_id);
     }
@@ -831,7 +831,7 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     } else if (rc != 0 && rc != -1) {
         r.output += "\n[exit " + std::to_string(rc) + "]";
     }
-    if (rc == -1) {
+    if (rc == -1 && !canceled) {
         r.ok = false;
         r.error = r.output;
         // r.output already starts with "ERR: " from run_capture.
