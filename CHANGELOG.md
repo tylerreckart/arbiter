@@ -8,6 +8,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Automatic minor releases on merge to `main`.** `version.yml` bumps
+  `CMakeLists.txt`, cuts `[Unreleased]` into the new `CHANGELOG.md`
+  heading, pins site/docs download examples, tags `vX.Y.0`, and
+  dispatches the binary release.  Patch / major / explicit versions
+  stay available via workflow_dispatch, a version bump in the PR, or
+  `[skip version]` on the merge commit.  See
+  [`CONTRIBUTING.md`](CONTRIBUTING.md#versioning-and-releases).
 - **TUI image drop / `/attach`.** Drag-dropping an image onto the prompt
   (terminals paste the file path) stages it for the next send; `/attach
   <path>`, `/attach list`, and `/attach clear` manage the same queue.
