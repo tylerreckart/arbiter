@@ -587,6 +587,43 @@ public:
                          int64_t since_seq,
                          int limit) const;
 
+    // ── Intent reconcile runs ───────────────────────────────────────────
+    //
+    // One row per POST /v1/reconcile.  Tenant-scoped.  `status` is the
+    // typed result: running | satisfied | failed | rolled_back | canceled.
+    // Distinct from request_status.state which tracks the SSE log.
+
+    struct ReconcileRun {
+        std::string request_id;
+        int64_t     tenant_id = 0;
+        std::string status;
+        std::string reason;
+        std::string target_state_json;
+        std::string invariants_json;
+        std::string contract_json;
+        std::string workspace_kind;
+        std::string workspace_root;
+        std::string verification_json;
+        bool        rollback_on_failure = false;
+        std::string snapshot_path;
+        std::string result_json;
+        int64_t     created_at = 0;
+        int64_t     updated_at = 0;
+    };
+
+    void upsert_reconcile_run(const ReconcileRun& row);
+
+    std::optional<ReconcileRun>
+    get_reconcile_run(int64_t tenant_id, const std::string& request_id) const;
+
+    std::vector<ReconcileRun>
+    list_reconcile_runs(int64_t tenant_id, int limit) const;
+
+    // Recovery: every status='running' reconcile is marked failed.
+    std::vector<std::string>
+    recover_running_reconcile_runs(int64_t updated_at,
+                                   const std::string& reason);
+
     // ── Idempotency keys (durable Idempotency-Key → request_id) ─────────
     //
     // Persists the `(tenant_id, key) → request_id` mapping that the

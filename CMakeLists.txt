@@ -194,6 +194,7 @@ set(ARBITER_SOURCES
     src/constitution.cpp
     src/orchestrator.cpp
     src/intent.cpp
+    src/reconcile.cpp
     src/advisor_gate.cpp
     src/advisor.cpp
     src/api_server.cpp
@@ -1587,6 +1588,20 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_intent COMMAND unit_intent)
+
+    # Intent reconcile: admit, contract compile, observe ΔS, verification
+    # mandate, implement stub, snapshot rollback.  No provider client.
+    add_executable(unit_reconcile
+        tests/test_reconcile.cpp
+        src/reconcile.cpp
+        src/json.cpp
+        src/workspace_root.cpp
+    )
+    target_include_directories(unit_reconcile PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_reconcile COMMAND unit_reconcile)
 
     # Remote TUI (--connect): URL/token resolution + SSE→renderer consumption.
     add_executable(unit_remote_connect

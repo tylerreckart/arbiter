@@ -39,6 +39,8 @@ arbiter --api [--port N] [--bind ADDR] [--verbose] [--allow-host-exec]
 The HTTP surface is documented in detail in [`docs/api/`](../api/index.md). Quick orientation:
 
 - **`POST /v1/orchestrate`** — drives the full agentic loop, streams everything back as SSE.
+- **`POST /v1/intent`** — stateless classify/route (no dispatch).
+- **`POST /v1/reconcile`** — desired-end-state workspace reconcile (tests required; SSE). See [`docs/concepts/reconcile.md`](../concepts/reconcile.md).
 - **`GET /v1/agents`**, **`POST /v1/agents`**, etc. — manage the tenant-stored agent catalogue.
 - **`POST /v1/conversations`**, **`/messages`** — long-running conversations with persisted history.
 - **`/v1/memory/*`** — structured memory graph (typed nodes, relations, FTS search).

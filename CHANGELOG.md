@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Intent reconcile (Phase A).** `POST /v1/reconcile` compiles `target_state` +
+  invariants into a state contract, observes a bound workspace (sandbox or
+  experimental `path`), requires tests by default, and can snapshot/restore on
+  failure. SSE: `reconcile.progress` / `delta` / `verification` / `rollback` /
+  `done`. `@arbiter/sdk` `IntentClient.reconcile()`. See
+  [`docs/concepts/reconcile.md`](docs/concepts/reconcile.md).
 - **TUI image drop / `/attach`.** Drag-dropping an image onto the prompt
   (terminals paste the file path) stages it for the next send; `/attach
   <path>`, `/attach list`, and `/attach clear` manage the same queue.

@@ -9,6 +9,9 @@ compile_commands.json
 /web/.dev-dist/
 /web/node_modules/
 
+# SDK install leftovers
+/sdk/ts/node_modules/
+
 # Editor / IDE droppings
 .vscode/
 .idea/

@@ -77,6 +77,8 @@ Depth **0** only, inside `Orchestrator::send` / `send_streaming`, before lesson/
 
 Plan/todo seeds appear on the Intent object, the SSE `intent` event, and [`POST /v1/intent`](../api/intent.md). Nothing is written to the todo store or `execute_plan` in this foundation.
 
+Desired-end-state work (workspace + tests + rollback) is [`POST /v1/reconcile`](../api/reconcile.md) — see [Reconcile](reconcile.md). Classify still does not persist seeds.
+
 ## Observability
 
 | Surface | What you see |
@@ -88,6 +90,7 @@ Plan/todo seeds appear on the Intent object, the SSE `intent` event, and [`POST 
 ## See also
 
 - [`POST /v1/intent`](../api/intent.md) — standalone classify
+- [`POST /v1/reconcile`](../api/reconcile.md) — desired end state + verification
 - [`POST /v1/orchestrate`](../api/orchestrate.md)
 - [Advisor](advisor.md) — post-turn supervision, not ingress routing
 - [Architecture](architecture.md)
