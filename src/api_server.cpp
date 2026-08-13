@@ -6141,10 +6141,16 @@ void handle_reconcile_post(int fd, const HttpRequest& req,
                 return ev;
             }
             ev.ran = true;
-            SandboxExecResult r = mgr->exec(sandbox_tid, cmd);
+            SandboxExecResult r = mgr->exec(sandbox_tid, cmd,
+                                            kReconcileVerifyTimeoutSec, cancel);
             ev.log = r.output;
             if (ev.log.size() > 32 * 1024) ev.log.resize(32 * 1024);
             ev.exit_code = r.exit_status;
+            if (r.canceled || (cancel && cancel->load())) {
+                ev.passed = false;
+                ev.reason = "canceled";
+                return ev;
+            }
             if (!r.ok) {
                 ev.passed = false;
                 ev.reason = r.timed_out ? "timeout" : "spawn_failed";

@@ -32,7 +32,6 @@ constexpr std::size_t kMaxTargetJson     = 64 * 1024;
 constexpr std::size_t kMaxWalkFiles      = 2000;
 constexpr std::size_t kMaxReadBytes      = 64 * 1024;
 constexpr std::size_t kMaxVerifyLog      = 32 * 1024;
-constexpr int         kVerifyTimeoutSec  = 120;
 constexpr std::size_t kMaxFilesChanged   = 256;
 
 const std::unordered_set<std::string> kSkipDirNames = {
@@ -880,7 +879,7 @@ VerificationEvidence run_verification(const ReconcileSpec& spec,
 
     ev.ran = true;
     HostShellOutcome run = run_host_shell_in_dir(
-        spec.workspace.root, cmd, kMaxVerifyLog, kVerifyTimeoutSec, cancel);
+        spec.workspace.root, cmd, kMaxVerifyLog, kReconcileVerifyTimeoutSec, cancel);
     ev.log = std::move(run.log);
     if (run.spawn_failed) {
         ev.exit_code = -1;

@@ -24,6 +24,9 @@
 
 namespace arbiter {
 
+// Wall-clock cap for reconcile verification test runs (host and sandbox).
+constexpr int kReconcileVerifyTimeoutSec = 120;
+
 struct ReconcileInvariant {
     enum class Tier { Expr, Named };
     Tier        tier = Tier::Named;
