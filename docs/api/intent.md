@@ -75,4 +75,4 @@ LLM cost, when incurred, is a single history-less complete() on `intent.model` o
 
 - [Intent concept](../concepts/intent.md)
 - [`POST /v1/orchestrate`](orchestrate.md) — full dispatch after the same classifier
-- [`POST /v1/advise/gate`](../concepts/advisor.md) — post-turn gate, not ingress
+- [`POST /v1/advise/gate`](advise-gate.md) — post-turn gate, not ingress
