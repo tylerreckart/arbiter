@@ -1278,3 +1278,47 @@ TEST_CASE("cmd_mem_read caps oversized files at 4 MiB") {
 
     fs::remove_all(mem_root);
 }
+
+TEST_CASE("cmd_mem_shared_read caps oversized files at 4 MiB") {
+    const auto pid = static_cast<long long>(::getpid());
+    const fs::path mem_root = fs::temp_directory_path() /
+        ("arbiter_shared_mem_cap_" + std::to_string(pid));
+    fs::create_directories(mem_root);
+
+    {
+        std::ofstream f(mem_root / "shared.md", std::ios::binary);
+        std::string chunk(1024, 's');
+        for (int i = 0; i < (5 * 1024); ++i) f << chunk;
+    }
+
+    auto body = cmd_mem_shared_read(mem_root.string());
+    CHECK(body.size() == 4u * 1024u * 1024u);
+
+    fs::remove_all(mem_root);
+}
+
+TEST_CASE("cmd_mem_write refuses symlink memory targets") {
+    const auto pid = static_cast<long long>(::getpid());
+    const fs::path mem_root = fs::temp_directory_path() /
+        ("arbiter_mem_symlink_" + std::to_string(pid));
+    const fs::path outside = fs::temp_directory_path() /
+        ("arbiter_mem_outside_" + std::to_string(pid) + ".md");
+    fs::create_directories(mem_root);
+    {
+        std::ofstream f(outside);
+        f << "victim";
+    }
+    fs::create_symlink(outside, mem_root / "agent.md");
+
+    auto out = cmd_mem_write("agent", "payload", mem_root.string());
+    CHECK(out.find("ERR:") == 0);
+    CHECK(out.find("symlink") != std::string::npos);
+
+    std::ifstream victim(outside);
+    std::string contents;
+    victim >> contents;
+    CHECK(contents == "victim");
+
+    fs::remove_all(mem_root);
+    fs::remove(outside);
+}

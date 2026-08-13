@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <curl/curl.h>
 
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -1526,6 +1527,60 @@ static std::string verify_mem_target(const std::string& path) {
     return "";
 }
 
+constexpr std::streamoff kMemReadMaxBytes = 4 * 1024 * 1024;
+
+// Append `text` to a scratchpad file via O_NOFOLLOW so a symlink swap
+// between verify_mem_target() and open() cannot redirect the write.
+static std::string mem_append_verified(const std::string& path,
+                                       const std::string& text) {
+    const int fd = ::open(path.c_str(),
+                          O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0600);
+    if (fd < 0) {
+        if (errno == ELOOP)
+            return "ERR: refusing to write through symlink: " + path;
+        return std::string("ERR: cannot open ") + path + " for writing ("
+             + std::strerror(errno) + ")";
+    }
+
+    struct stat st{};
+    if (::fstat(fd, &st) != 0) {
+        const int e = errno;
+        ::close(fd);
+        return std::string("ERR: fstat ") + path + ": " + std::strerror(e);
+    }
+    if (!S_ISREG(st.st_mode)) {
+        ::close(fd);
+        return "ERR: memory target is not a regular file: " + path;
+    }
+    if (st.st_uid != ::geteuid()) {
+        ::close(fd);
+        return "ERR: memory file not owned by current user: " + path;
+    }
+
+    std::ostringstream payload;
+    std::time_t now = std::time(nullptr);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+    payload << "\n<!-- " << ts << " -->\n" << text << "\n";
+    const std::string body = payload.str();
+
+    std::size_t off = 0;
+    while (off < body.size()) {
+        const ssize_t n = ::write(fd, body.data() + off, body.size() - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            const int e = errno;
+            ::close(fd);
+            std::string why = std::strerror(e);
+            if (e == ENOSPC) why = "disk full (ENOSPC)";
+            return "ERR: write failed for " + path + " — " + why;
+        }
+        off += static_cast<std::size_t>(n);
+    }
+    ::close(fd);
+    return {};
+}
+
 } // namespace
 
 std::string cmd_mem_read(const std::string& agent_id, const std::string& memory_dir) {
@@ -1540,7 +1595,6 @@ std::string cmd_mem_read(const std::string& agent_id, const std::string& memory_
     if (!f.is_open()) return "";
     f.seekg(0, std::ios::end);
     auto size = f.tellg();
-    constexpr std::streamoff kMemReadMaxBytes = 4 * 1024 * 1024;
     if (size < 0) return "";
     if (size > kMemReadMaxBytes) size = kMemReadMaxBytes;
     f.seekg(0);
@@ -1562,21 +1616,8 @@ std::string cmd_mem_write(const std::string& agent_id, const std::string& text,
     std::string verr = verify_mem_target(path);
     if (!verr.empty()) return verr;
 
-    std::ofstream f(path, std::ios::app);
-    if (!f.is_open())
-        return std::string("ERR: cannot open ") + path + " for writing ("
-             + std::strerror(errno) + ")";
-
-    std::time_t now = std::time(nullptr);
-    char ts[32];
-    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-    f << "\n<!-- " << ts << " -->\n" << text << "\n";
-    if (f.fail()) {
-        int e = errno;
-        std::string why = std::strerror(e);
-        if (e == ENOSPC) why = "disk full (ENOSPC)";
-        return "ERR: write failed for " + path + " — " + why;
-    }
+    if (std::string write_err = mem_append_verified(path, text); !write_err.empty())
+        return write_err;
     // Keep per-user memory files unreadable to other users on shared systems.
     ::chmod(path.c_str(), 0600);
     return "OK: memory written to " + path;
@@ -1605,11 +1646,17 @@ std::string cmd_mem_shared_read(const std::string& memory_dir) {
     if (dir.empty()) return "";
     std::string path = dir + "/shared.md";
     if (!verify_mem_target(path).empty()) return "";
-    std::ifstream f(path);
+    std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return "";
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
+    f.seekg(0, std::ios::end);
+    auto size = f.tellg();
+    if (size < 0) return "";
+    if (size > kMemReadMaxBytes) size = kMemReadMaxBytes;
+    f.seekg(0);
+    std::string out(static_cast<size_t>(size), '\0');
+    f.read(out.data(), size);
+    out.resize(static_cast<size_t>(f.gcount()));
+    return out;
 }
 
 std::string cmd_mem_shared_write(const std::string& text, const std::string& memory_dir) {
@@ -1619,19 +1666,8 @@ std::string cmd_mem_shared_write(const std::string& text, const std::string& mem
     std::string path = dir + "/shared.md";
     std::string verr = verify_mem_target(path);
     if (!verr.empty()) return verr;
-    std::ofstream f(path, std::ios::app);
-    if (!f.is_open())
-        return std::string("ERR: cannot open shared scratchpad: ") + std::strerror(errno);
-    std::time_t now = std::time(nullptr);
-    char ts[32];
-    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-    f << "\n<!-- " << ts << " -->\n" << text << "\n";
-    if (f.fail()) {
-        int e = errno;
-        std::string why = std::strerror(e);
-        if (e == ENOSPC) why = "disk full (ENOSPC)";
-        return "ERR: write failed for shared scratchpad — " + why;
-    }
+    if (std::string write_err = mem_append_verified(path, text); !write_err.empty())
+        return write_err;
     ::chmod(path.c_str(), 0600);
     return "OK";
 }
