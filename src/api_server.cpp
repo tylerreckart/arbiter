@@ -5723,8 +5723,14 @@ void handle_intent_classify(int fd, const HttpRequest& req,
 
     if (auto roster_val = body->get("roster"); roster_val && roster_val->is_array()) {
         constexpr std::size_t kIntentRosterMax = 128;
+        if (roster_val->as_array().size() > kIntentRosterMax) {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("roster exceeds 128 entries");
+            write_json_response(fd, 400, err);
+            return;
+        }
         for (auto& row : roster_val->as_array()) {
-            if (in.roster.size() >= kIntentRosterMax) break;
             if (!row || !row->is_object()) continue;
             IntentRosterEntry e;
             e.id = row->get_string("id");
