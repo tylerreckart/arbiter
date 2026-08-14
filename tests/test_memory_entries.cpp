@@ -743,3 +743,30 @@ TEST_CASE("graduated search collapses to single-pass when no conversation contex
     auto rows = s.search_entries_graduated(tid, f);
     CHECK(rows.size() == 2);
 }
+
+TEST_CASE("scratchpad append rejects writes beyond 4 MiB cap") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "scratch-cap");
+
+    const std::string oversized(static_cast<std::size_t>(4 * 1024 * 1024) + 1, 'x');
+    CHECK(s.append_scratchpad(tid, "agent-a", oversized) < 0);
+}
+
+TEST_CASE("scratchpad fills to cap then rejects further writes") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "scratch-fill");
+
+    const std::string chunk(4096, 'y');
+    int ok_writes = 0;
+    while (s.append_scratchpad(tid, "agent-b", chunk) >= 0) ++ok_writes;
+    CHECK(ok_writes > 0);
+    const int64_t sz = s.scratchpad_byte_size(tid, "agent-b");
+    CHECK(sz > 0);
+    CHECK(sz <= static_cast<int64_t>(4 * 1024 * 1024));
+    CHECK(s.append_scratchpad(tid, "agent-b", chunk) < 0);
+    CHECK(s.read_scratchpad(tid, "agent-b").size() == static_cast<std::size_t>(sz));
+}

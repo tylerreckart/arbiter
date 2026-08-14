@@ -2000,8 +2000,8 @@ void handle_memory_list(int fd, const ApiServerOptions& /*opts*/,
         auto& m = entry->as_object_mut();
         m["agent_id"] = jstr(scope);    // "" for the shared scratchpad
         m["kind"]     = jstr(scope.empty() ? "shared" : "agent");
-        const std::string content = tenants.read_scratchpad(tenant.id, scope);
-        m["size"]     = jnum(static_cast<double>(content.size()));
+        m["size"]     = jnum(static_cast<double>(
+            tenants.scratchpad_byte_size(tenant.id, scope)));
         a.push_back(std::move(entry));
     }
     auto body = jobj();
@@ -5726,8 +5726,8 @@ void handle_intent_classify(int fd, const HttpRequest& req,
     if (in.requested_agent.empty()) in.requested_agent = "index";
     in.source_hint = body->get_string("intent_source", "");
 
+    constexpr std::size_t kIntentRosterMax = 128;
     if (auto roster_val = body->get("roster"); roster_val && roster_val->is_array()) {
-        constexpr std::size_t kIntentRosterMax = 128;
         if (roster_val->as_array().size() > kIntentRosterMax) {
             auto err = jobj();
             err->as_object_mut()["error"] =
@@ -5776,6 +5776,13 @@ void handle_intent_classify(int fd, const HttpRequest& req,
                 } catch (...) {}
             }
         }
+    }
+    if (in.roster.size() > kIntentRosterMax) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("roster exceeds 128 entries");
+        write_json_response(fd, 400, err);
+        return;
     }
 
     IntentConfig cfg = master_constitution().intent;
@@ -6145,11 +6152,15 @@ MemoryScratchpadInvoker make_memory_scratchpad_callback(int64_t tenant_id,
         }
         if (op == "write") {
             int64_t sz = store->append_scratchpad(tenant_id, agent_id, args);
+            if (sz < 0)
+                return "ERR: scratchpad exceeds maximum size (4 MiB)";
             return "OK: memory written (" + std::to_string(sz) +
                    " bytes total in scratchpad)";
         }
         if (op == "shared-write") {
             int64_t sz = store->append_scratchpad(tenant_id, std::string{}, args);
+            if (sz < 0)
+                return "ERR: scratchpad exceeds maximum size (4 MiB)";
             return "OK (" + std::to_string(sz) + " bytes total)";
         }
         if (op == "clear") {
