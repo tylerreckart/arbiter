@@ -197,6 +197,15 @@ set(ARBITER_SOURCES
     src/reconcile.cpp
     src/advisor_gate.cpp
     src/advisor.cpp
+    src/api/auth.cpp
+    src/api/event_logger.cpp
+    src/api/http_request.cpp
+    src/api/http_response.cpp
+    src/api/http_transport.cpp
+    src/api/http_util.cpp
+    src/api/in_flight.cpp
+    src/api/request_id.cpp
+    src/api/sse_stream.cpp
     src/api_server.cpp
     src/sandbox.cpp
     src/ssrf_guard.cpp
