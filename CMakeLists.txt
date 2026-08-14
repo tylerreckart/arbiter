@@ -1524,6 +1524,33 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_agent_conversation COMMAND unit_agent_conversation)
 
+    # Intent reroute history mirror: per-turn RAII + ConversationScope
+    # isolation so concurrent panes cannot clobber restore backups.
+    add_executable(unit_intent_history_mirror
+        tests/test_intent_history_mirror.cpp
+        src/agent.cpp
+        src/context_compaction.cpp
+        src/model_catalog.cpp
+        src/model_context.cpp
+        src/constitution.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_intent_history_mirror PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_intent_history_mirror PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_intent_history_mirror COMMAND unit_intent_history_mirror)
+
     # Context compaction: model-facing view, cut rules, threshold, session v2.
     add_executable(unit_context_compaction
         tests/test_context_compaction.cpp

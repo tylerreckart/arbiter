@@ -2,6 +2,7 @@
 #include "orchestrator.h"
 #include "advisor.h"
 #include "intent.h"
+#include "intent_history_mirror.h"
 #include "atomic_file.h"
 #include "commands.h"
 #include "config.h"
@@ -747,54 +748,6 @@ Orchestrator::apply_intent_ingress(const std::string& agent_id,
     return result;
 }
 
-void Orchestrator::mirror_agent_state(const std::string& src_id,
-                                      const std::string& dst_id) {
-    if (src_id.empty() || dst_id.empty() || src_id == dst_id) return;
-    Agent& src = get_agent(src_id);
-    Agent& dst = get_agent(dst_id);
-    dst.set_history(src.history());
-    dst.set_compaction_state(src.compaction_state());
-    dst.set_compaction_pinned_facts(src.compaction_pinned_facts());
-}
-
-void Orchestrator::begin_intent_mirror(const std::string& requested,
-                                       const std::string& dispatched) {
-    if (requested.empty() || dispatched.empty() || requested == dispatched)
-        return;
-    Agent& dst = get_agent(dispatched);
-    intent_mirror_.requested = requested;
-    intent_mirror_.dispatched = dispatched;
-    intent_mirror_.dispatched_history_backup = dst.history();
-    intent_mirror_.dispatched_compaction_backup = dst.compaction_state();
-    intent_mirror_.dispatched_pinned_backup = dst.compaction_pinned_facts();
-    intent_mirror_.active = true;
-    mirror_agent_state(requested, dispatched);
-}
-
-void Orchestrator::sync_intent_mirror_for_checkpoint() {
-    if (!intent_mirror_.active) return;
-    mirror_agent_state(intent_mirror_.dispatched, intent_mirror_.requested);
-}
-
-void Orchestrator::end_intent_mirror() {
-    if (!intent_mirror_.active) return;
-    try {
-        mirror_agent_state(intent_mirror_.dispatched, intent_mirror_.requested);
-        Agent& dst = get_agent(intent_mirror_.dispatched);
-        dst.set_history(std::move(intent_mirror_.dispatched_history_backup));
-        dst.set_compaction_state(intent_mirror_.dispatched_compaction_backup);
-        dst.set_compaction_pinned_facts(intent_mirror_.dispatched_pinned_backup);
-    } catch (...) {}
-    intent_mirror_.active = false;
-    intent_mirror_.requested.clear();
-    intent_mirror_.dispatched.clear();
-}
-
-Orchestrator::IntentHistoryMirror::~IntentHistoryMirror() {
-    if (!orch || !active) return;
-    try { orch->end_intent_mirror(); } catch (...) {}
-}
-
 // Core agentic dispatch loop
 ApiResponse Orchestrator::send_internal(const std::string& agent_id,
                                         const std::string& message,
@@ -845,9 +798,8 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
             const std::string requested = agent_id.empty() ? "index" : agent_id;
             if (requested != routed_id) {
                 try {
-                    begin_intent_mirror(requested, routed_id);
-                    hist_mirror.orch = this;
-                    hist_mirror.active = true;
+                    hist_mirror = IntentHistoryMirror(get_agent(requested),
+                                                      get_agent(routed_id));
                 } catch (...) {}
             }
         }
@@ -1411,9 +1363,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                 const std::string requested = agent_id.empty() ? "index" : agent_id;
                 if (requested != dispatch_id) {
                     try {
-                        begin_intent_mirror(requested, dispatch_id);
-                        hist_mirror.orch = this;
-                        hist_mirror.active = true;
+                        hist_mirror = IntentHistoryMirror(get_agent(requested),
+                                                          get_agent(dispatch_id));
                     } catch (...) {}
                 }
             }
@@ -2230,7 +2181,8 @@ std::string Orchestrator::execute_slash_command(const std::string& line,
 void Orchestrator::fire_history_checkpoint() {
     if (!history_checkpoint_cb_) return;
     try {
-        sync_intent_mirror_for_checkpoint();
+        if (auto* mirror = IntentHistoryMirror::current())
+            mirror->sync_to_requested();
         history_checkpoint_cb_();
     } catch (...) {
         // Persistence must never abort an in-flight turn.

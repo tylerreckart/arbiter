@@ -64,7 +64,7 @@ Reroute only happens when all of these hold: **fresh ingress** (`original_query`
 
 Loop continuations and HTTP follow-ups that pass `original_query` skip classify+reroute entirely so the addressed agent stays sticky. `/loop` always pins `original_query`, so it never intent-reroutes.
 
-When reroute does fire, conversation history and compaction are mirrored requested → specialist before the turn and specialist → requested after, so the thread stays on the agent the caller addressed (API persist / next hydrate still work).
+When reroute does fire, conversation history and compaction are mirrored requested → specialist before the turn and specialist → requested after, so the thread stays on the agent the caller addressed (API persist / next hydrate still work). The backup is turn-scoped RAII (thread-local), not a single slot on the shared Orchestrator — concurrent REPL panes can reroute at the same time without restoring the wrong specialist history.
 
 ## Where it runs
 
