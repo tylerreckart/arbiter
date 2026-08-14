@@ -207,6 +207,18 @@ make_fixture 0.12.0 0.12.0
 assert_eq "tag" "$(git tag --list 'v0.12.1')" "v0.12.1"
 assert_eq "subject" "$(git log -1 --format=%s)" "chore(release): v0.12.1"
 
+begin_case "no-tag commits without creating a tag"
+make_fixture 0.12.0 0.12.0
+"$SCRIPT" --mode auto --no-tag >bump.out
+assert_eq "subject" "$(git log -1 --format=%s)" "chore(release): v0.12.1"
+if git tag --list 'v0.12.1' | grep -q .; then
+  echo "  FAIL --no-tag created a tag"
+  FAIL=$((FAIL + 1))
+else
+  echo "  ok  no tag"
+  PASS=$((PASS + 1))
+fi
+
 cleanup_case
 echo
 echo "${PASS} passed, ${FAIL} failed"
