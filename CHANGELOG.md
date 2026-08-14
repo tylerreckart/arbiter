@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **TenantLimiter idle eviction.** Per-tenant `State` entries are dropped when
+  `in_flight` returns to zero and the token bucket is (or would be) full, and
+  unlimited tenants never insert a slot. Long-lived `--api` processes no longer
+  accumulate one map entry per distinct tenant ID for the life of the process
+  (#220).
+
 ## [0.12.3] — 2026-08-14
 
 ### Added

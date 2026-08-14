@@ -31,8 +31,12 @@ void TenantLimiter::Guard::release() {
     {
         std::lock_guard<std::mutex> lk(parent->mu_);
         auto it = parent->states_.find(tenant_id);
-        if (it != parent->states_.end() && it->second.in_flight > 0) {
-            --it->second.in_flight;
+        if (it != parent->states_.end()) {
+            if (it->second.in_flight > 0) --it->second.in_flight;
+            it->second.last_used = std::chrono::steady_clock::now();
+            // Idle + full bucket is equivalent to a freshly created State,
+            // so drop it.  Distinct tenant IDs must not accumulate forever.
+            parent->maybe_erase_idle_locked(it);
         }
     }
     parent = nullptr;
@@ -70,8 +74,7 @@ void TenantLimiter::clear_tenant_override(int64_t tenant_id) {
     if (it != states_.end()) it->second.limits = defaults_;
 }
 
-TenantLimits TenantLimiter::effective(int64_t tenant_id) const {
-    std::lock_guard<std::mutex> lk(mu_);
+TenantLimits TenantLimiter::effective_locked(int64_t tenant_id) const {
     auto ov = overrides_.find(tenant_id);
     if (ov == overrides_.end()) return defaults_;
     TenantLimits eff = ov->second;
@@ -79,6 +82,16 @@ TenantLimits TenantLimiter::effective(int64_t tenant_id) const {
     if (eff.rate_per_min   <= 0) eff.rate_per_min   = defaults_.rate_per_min;
     if (eff.burst          <= 0) eff.burst          = eff.rate_per_min;
     return eff;
+}
+
+TenantLimits TenantLimiter::effective(int64_t tenant_id) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return effective_locked(tenant_id);
+}
+
+std::size_t TenantLimiter::tracked_tenant_count() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return states_.size();
 }
 
 TenantLimiter::State& TenantLimiter::state_for(int64_t tenant_id) {
@@ -93,6 +106,7 @@ TenantLimiter::State& TenantLimiter::state_for(int64_t tenant_id) {
     if (s.limits.burst          <= 0) s.limits.burst          = s.limits.rate_per_min;
     s.tokens     = static_cast<double>(s.limits.burst);
     s.last_refill = std::chrono::steady_clock::now();
+    s.last_used   = s.last_refill;
 
     auto [ins, _] = states_.emplace(tenant_id, std::move(s));
     return ins->second;
@@ -116,11 +130,71 @@ void TenantLimiter::refill_locked(State& s) {
     s.last_refill = now;
 }
 
+bool TenantLimiter::bucket_at_capacity_locked(State& s) {
+    refill_locked(s);
+    double cap = static_cast<double>(s.limits.burst > 0
+                                          ? s.limits.burst
+                                          : (s.limits.rate_per_min > 0
+                                                 ? s.limits.rate_per_min
+                                                 : 0));
+    return s.tokens + 1e-9 >= cap;
+}
+
+void TenantLimiter::maybe_erase_idle_locked(std::map<int64_t, State>::iterator it) {
+    if (it == states_.end()) return;
+    if (it->second.in_flight > 0) return;
+    if (bucket_at_capacity_locked(it->second)) states_.erase(it);
+}
+
+void TenantLimiter::sweep_idle_locked(int64_t keep_id) {
+    // Drop idle tenants whose bucket is (or would be) full — equivalent
+    // to a fresh State.  Hard-cap leftover idle entries (depleted buckets
+    // from extreme tenant churn) so states_ cannot grow without bound.
+    constexpr std::size_t kMaxTrackedTenants = 65536;
+
+    for (auto it = states_.begin(); it != states_.end(); ) {
+        if (it->first == keep_id || it->second.in_flight > 0) {
+            ++it;
+            continue;
+        }
+        if (bucket_at_capacity_locked(it->second)) {
+            it = states_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    while (states_.size() > kMaxTrackedTenants) {
+        auto victim = states_.end();
+        for (auto it = states_.begin(); it != states_.end(); ++it) {
+            if (it->first == keep_id || it->second.in_flight > 0) continue;
+            if (victim == states_.end() ||
+                it->second.last_used < victim->second.last_used) {
+                victim = it;
+            }
+        }
+        if (victim == states_.end()) break;
+        states_.erase(victim);
+    }
+}
+
 TenantLimiter::Result TenantLimiter::acquire(int64_t tenant_id) {
     Result r;
     std::lock_guard<std::mutex> lk(mu_);
 
+    TenantLimits eff = effective_locked(tenant_id);
+    // Unlimited on both axes: grant without a State so distinct tenant
+    // IDs never accumulate when the operator left the limiter off.
+    if (eff.max_concurrent <= 0 && eff.rate_per_min <= 0) {
+        r.kind = Result::Kind::Granted;
+        return r;
+    }
+
+    constexpr std::size_t kSweepStart = 1024;
+    if (states_.size() >= kSweepStart) sweep_idle_locked(tenant_id);
+
     State& s = state_for(tenant_id);
+    s.last_used = std::chrono::steady_clock::now();
 
     // Concurrent cap.  Skipped when limit==0 (unlimited).
     if (s.limits.max_concurrent > 0 &&

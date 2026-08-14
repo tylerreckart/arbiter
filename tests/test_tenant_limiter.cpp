@@ -20,7 +20,16 @@ TEST_CASE("zero defaults grant every acquire") {
         auto r = lim.acquire(/*tenant_id=*/1);
         CHECK(r.granted());
     }
-    // Outstanding guards from the loop above all destructed → no leaks.
+    CHECK(lim.tracked_tenant_count() == 0);
+}
+
+TEST_CASE("unlimited distinct tenants never accumulate State entries") {
+    TenantLimiter lim;
+    for (int64_t id = 1; id <= 1000; ++id) {
+        auto r = lim.acquire(id);
+        CHECK(r.granted());
+    }
+    CHECK(lim.tracked_tenant_count() == 0);
 }
 
 TEST_CASE("concurrent cap rejects surplus with retry hint") {
@@ -60,6 +69,20 @@ TEST_CASE("guard releases on destruction") {
     CHECK(c.granted());
 }
 
+TEST_CASE("concurrent cap drops idle tenant state after last release") {
+    TenantLimits d;
+    d.max_concurrent = 1;
+    TenantLimiter lim(d);
+
+    for (int64_t id = 1; id <= 40; ++id) {
+        auto a = lim.acquire(id);
+        CHECK(a.granted());
+        CHECK(lim.tracked_tenant_count() == 1);
+        a.guard.release();
+        CHECK(lim.tracked_tenant_count() == 0);
+    }
+}
+
 TEST_CASE("token bucket: burst granted, then surplus rejected, then refill") {
     TenantLimits d;
     d.rate_per_min = 60;     // 1/sec
@@ -88,6 +111,25 @@ TEST_CASE("token bucket: burst granted, then surplus rejected, then refill") {
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     auto r5 = lim.acquire(1);
     CHECK(r5.granted());
+}
+
+TEST_CASE("rate-limit state is retained until the bucket can refill") {
+    TenantLimits d;
+    d.rate_per_min = 60;     // 1/sec
+    d.burst        = 1;
+    TenantLimiter lim(d);
+
+    auto r1 = lim.acquire(1);
+    CHECK(r1.granted());
+    r1.guard.release();
+    // Idle but depleted: must keep the State so the next acquire is still
+    // rate-limited rather than seeing a fresh full bucket.
+    CHECK(lim.tracked_tenant_count() == 1);
+
+    auto r2 = lim.acquire(1);
+    CHECK(!r2.granted());
+    CHECK(r2.kind == TenantLimiter::Result::Kind::RateExceeded);
+    CHECK(lim.tracked_tenant_count() == 1);
 }
 
 TEST_CASE("per-tenant override only affects that tenant") {

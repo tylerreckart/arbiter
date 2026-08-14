@@ -35,7 +35,7 @@ Bearer auth carries in the `Authorization` header — no cookies — so credenti
 
 ## Per-tenant rate / concurrency limiting
 
-The runtime keeps a per-tenant in-flight counter and a token-bucket rate limiter in front of the expensive routes (`POST /v1/orchestrate`, `POST /v1/conversations/:id/messages`, `POST /v1/agents/:id/chat`, `POST /v1/a2a/agents/:id`, `POST /v1/events`, `POST /v1/advise/gate`). Cheap reads (health, GET memory, GET schedules) are unaffected — the bucket isn't consumed.
+The runtime keeps a per-tenant in-flight counter and a token-bucket rate limiter in front of the expensive routes (`POST /v1/orchestrate`, `POST /v1/conversations/:id/messages`, `POST /v1/agents/:id/chat`, `POST /v1/a2a/agents/:id`, `POST /v1/events`, `POST /v1/advise/gate`, `POST /v1/intent`). Cheap reads (health, GET memory, GET schedules) are unaffected — the bucket isn't consumed. Idle per-tenant slots are evicted once in-flight returns to zero and the token bucket is full, so distinct tenant IDs do not accumulate for the life of the process.
 
 | Env var                          | Meaning                                                            | Default        |
 |----------------------------------|--------------------------------------------------------------------|----------------|

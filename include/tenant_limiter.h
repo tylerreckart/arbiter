@@ -27,10 +27,15 @@
 //     `tenants` row supersede the defaults at acquire time.
 //
 //   • Disabled (max_concurrent == 0 AND rate_per_min == 0) ⇒ acquire
-//     always grants without taking the lock.
+//     grants without inserting a State (lock is still taken to read
+//     overrides).  Idle State entries (in_flight == 0 and a full
+//     token bucket, or a bucket that refill would fill) are evicted
+//     on release / opportunistic acquire sweeps so distinct tenant
+//     IDs cannot grow `states_` without bound.
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -96,17 +101,26 @@ public:
     // config).  Existing per-tenant overrides are preserved.
     void set_defaults(TenantLimits d);
 
+    // Live State entries.  Used by tests to pin idle eviction; also a
+    // cheap ops signal for how many tenants currently occupy a slot.
+    std::size_t tracked_tenant_count() const;
+
 private:
     struct State {
         TenantLimits limits;
         int          in_flight    = 0;
         // Token bucket: real-valued tokens with continuous refill.
         double       tokens       = 0.0;
-        std::chrono:: steady_clock::time_point last_refill;
+        std::chrono::steady_clock::time_point last_refill;
+        std::chrono::steady_clock::time_point last_used;
     };
 
     State& state_for(int64_t tenant_id);   // lazy-init under mu_
     void   refill_locked(State& s);
+    TenantLimits effective_locked(int64_t tenant_id) const;
+    bool   bucket_at_capacity_locked(State& s);
+    void   maybe_erase_idle_locked(std::map<int64_t, State>::iterator it);
+    void   sweep_idle_locked(int64_t keep_id);
 
     TenantLimits             defaults_;
     mutable std::mutex       mu_;
