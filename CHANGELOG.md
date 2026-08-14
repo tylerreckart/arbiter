@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.12.3] — 2026-08-14
+
 ### Added
 - **Intent reconcile (Phase A).** `POST /v1/reconcile` compiles `target_state` +
   invariants into a state contract, observes a bound workspace (sandbox or
