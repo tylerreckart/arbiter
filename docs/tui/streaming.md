@@ -49,7 +49,7 @@ When a provider streams a separate reasoning channel (`thinking_delta` /
 rounded box also appears in scrollback above the assistant prose — markdown
 body inside the same chrome dialect as user echoes (scroll bg, muted border,
 info title). Expand with `^O`. Models without that channel keep the header
-spinner only. User submits paint as a matching **you** box (plain-text body).
+spinner only. User submits paint as a matching **user** box (plain-text body).
 
 ## End of turn
 

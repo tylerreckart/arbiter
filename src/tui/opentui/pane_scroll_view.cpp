@@ -1160,7 +1160,7 @@ bool PaneScrollView::UserEchoSegment::can_expand() const {
 }
 
 std::string PaneScrollView::UserEchoSegment::header_text() const {
-    return "you";
+    return "user";
 }
 
 bool PaneScrollView::UserEchoSegment::is_find_command() const {

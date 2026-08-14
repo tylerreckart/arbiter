@@ -9,7 +9,7 @@ Live order within a turn (tools appear as `/cmd` lines are dispatched, after
 the model stream that emitted them):
 
 ```
-╭── you ──────────────────╮                UserEchoSegment (rounded box)
+╭── user ─────────────────╮                UserEchoSegment (rounded box)
 │  submit text…           │                plain body; collapses long pastes
 ╰─────────────────────────╯
                                   ← one blank row
@@ -29,7 +29,7 @@ assistant prose / markdown / code / diffs  (writ lines swallowed)
 
 | Layer | Segment | Notes |
 |-------|---------|-------|
-| User | `UserEchoSegment` | Rounded box titled `you`; scroll bg + muted border + info title (same dialect as thinking); plain-text body |
+| User | `UserEchoSegment` | Rounded box titled `user`; scroll bg + muted border + info title (same dialect as thinking); plain-text body |
 | Tools | `ToolSegment` | One row per `/cmd`; expand for args/result; clustered (no gap between tools) |
 | Reasoning | `ThinkingSegment` | Rounded box titled `thinking`; markdown body; scroll bg + muted border + info title |
 | Assistant | `Prose` / `Code` / `Diff` | Same StreamRenderer path as before |

@@ -217,7 +217,7 @@ TEST_CASE("UserEchoSegment uses rounded box chrome like thinking") {
     // Lead-in blank + top + body + bottom.
     CHECK(rows == 4);
 
-    const auto title_hits = view.find_rows("you");
+    const auto title_hits = view.find_rows("user");
     REQUIRE(title_hits.size() == 1);
     const auto body_hits = view.find_rows("brief");
     REQUIRE(body_hits.size() == 1);
@@ -249,7 +249,7 @@ TEST_CASE("UserEchoSegment skips echoed /find from find_rows") {
 
     view.append_user_echo("/find needle");
     CHECK(view.find_rows("needle").empty());
-    CHECK_FALSE(view.find_rows("you").empty());
+    CHECK_FALSE(view.find_rows("user").empty());
 }
 
 TEST_CASE("block gaps are a single blank row between distinct segment kinds") {

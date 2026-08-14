@@ -87,7 +87,7 @@ public:
                          bool new_block = false,
                          std::string_view agent_id = {});
     // User submit echo: same rounded-box chrome dialect as ThinkingSegment
-    // (title "you", scroll bg, muted border, info title). Plain-text body;
+    // (title "user", scroll bg, muted border, info title). Plain-text body;
     // collapses long pastes like thinking.
     void append_user_echo(std::string_view text, bool new_block = true);
     void clear();
@@ -357,7 +357,7 @@ private:
     };
 
     // User submit echo. Shares ThinkingSegment's rounded-box chrome (scroll
-    // bg, muted border, info title) with title "you". Plain-text body; long
+    // bg, muted border, info title) with title "user". Plain-text body; long
     // pastes collapse to kPreviewRows like thinking.
     struct UserEchoSegment final : Segment {
         std::string text_;

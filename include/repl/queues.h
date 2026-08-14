@@ -126,7 +126,7 @@ public:
     // `agent_id` colors the left accent from the theme agent palette.
     void push_thinking(const std::string& delta, const std::string& agent_id = {});
 
-    // User submit echo → UserEchoSegment (rounded box, title "you").
+    // User submit echo → UserEchoSegment (rounded box, title "user").
     void push_user_echo(std::string_view text);
 
     std::vector<OutputItem> drain_items();
