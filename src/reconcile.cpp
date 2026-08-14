@@ -691,7 +691,7 @@ StateContract compile_intent_contract(const ReconcileSpec& spec,
             cl.id = "system";
             cl.checker = "workspace.mentions";
             cl.arg = system;
-            cl.agent = "backend";
+            cl.agent = "nexus";
             c.clauses.push_back(std::move(cl));
         }
         std::string status = target->get_string("status", "");
@@ -700,7 +700,7 @@ StateContract compile_intent_contract(const ReconcileSpec& spec,
             cl.id = "status";
             cl.checker = "workspace.mentions";
             cl.arg = status;
-            cl.agent = "backend";
+            cl.agent = "nexus";
             c.clauses.push_back(std::move(cl));
         }
     }
@@ -718,7 +718,7 @@ StateContract compile_intent_contract(const ReconcileSpec& spec,
         } else if (const NamedSpec* ns = find_named(inv->raw)) {
             cl.checker = ns->checker;
             cl.arg = ns->arg;
-            cl.agent = "backend";
+            cl.agent = "nexus";
         }
         c.clauses.push_back(std::move(cl));
     }
@@ -729,7 +729,7 @@ StateContract compile_intent_contract(const ReconcileSpec& spec,
         cl.checker = "verification.pass";
         cl.arg = spec.verification.command.empty() ? "auto"
                                                    : spec.verification.command;
-        cl.agent = "devops";
+        cl.agent = "forge";
         c.clauses.push_back(std::move(cl));
     }
     return c;

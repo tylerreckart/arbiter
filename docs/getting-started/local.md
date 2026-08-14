@@ -56,7 +56,7 @@ arbiter --init                          # seed ~/.arbiter/ with starter agents
 arbiter                                 # launch the terminal client
 ```
 
-`--init` writes nine starter agents into `~/.arbiter/agents/*.json` (reviewer, research, writer, devops, planner, backend, frontend, marketer, social) and is safe to re-run — existing files are preserved unless you pass `--force`. See [`cli/init.md`](../cli/init.md) for the full layout.
+`--init` writes nine starter agents into `~/.arbiter/agents/*.json` (vera, scout, quill, forge, compass, nexus, loom, beacon, echo) and is safe to re-run — existing files are preserved unless you pass `--force`. See [`cli/init.md`](../cli/init.md) for the full layout.
 
 `arbiter` opens the interactive TUI. Type a message and the master agent (`index`) decides whether to answer directly or delegate. Switch agents with `/use <name>`; send a one-off to a specific agent with `/send <name> <message>`. Full TUI reference: [`tui/`](../tui/index.md).
 

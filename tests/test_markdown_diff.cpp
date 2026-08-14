@@ -442,10 +442,10 @@ TEST_CASE("styled_activity_line and interim header helpers") {
 }
 
 TEST_CASE("styled_delegation_line highlights routing status") {
-    auto line = styled_delegation_line("/agent research GOAL: dig");
+    auto line = styled_delegation_line("/agent scout GOAL: dig");
     CHECK(line.text.find("\u2192 ") == 0);
     CHECK(line.text.find("delegating") != std::string::npos);
-    CHECK(line.text.find("/agent research") != std::string::npos);
+    CHECK(line.text.find("/agent scout") != std::string::npos);
     REQUIRE(line.spans.size() >= 3);
     CHECK(line.spans[0].id == StyleId::Info);
     CHECK(line.spans[1].id == StyleId::Bold);
@@ -459,7 +459,7 @@ TEST_CASE("markdown styles writs and delegation status lines") {
     MarkdownRenderer md;
     auto lines = md.feed_styled(
         "/read #2\n"
-        "\xe2\x86\x92 delegating: /agent research GOAL: dig\n"
+        "\xe2\x86\x92 delegating: /agent scout GOAL: dig\n"
         "/browse https://example.com\n");
     auto rest = md.flush_styled();
     lines.insert(lines.end(), rest.begin(), rest.end());

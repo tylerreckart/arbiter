@@ -561,7 +561,7 @@ TEST_CASE("/parallel from a sub-agent caller reaches the invoker") {
     // /parallel.  A research-style caller must be able to fan out.
     AgentCommand cmd;
     cmd.name = "parallel";
-    cmd.content = "/agent backend dig A\n/agent frontend dig B\n";
+    cmd.content = "/agent nexus dig A\n/agent loom dig B\n";
     cmd.truncated = false;
 
     bool called = false;

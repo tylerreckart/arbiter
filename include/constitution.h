@@ -16,7 +16,7 @@ enum class Brevity { Lite, Full, Ultra };
 struct Constitution {
     // --- Core identity ---
     std::string name;
-    std::string role;               // e.g. "code-reviewer", "researcher", "devops"
+    std::string role;               // e.g. "code-reviewer", "research-analyst", "infrastructure-engineer"
     std::string personality;        // free-form personality overlay
 
     // --- Behavioral rules ---

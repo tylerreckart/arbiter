@@ -2,7 +2,7 @@
 
 A persistent record of what the agent has learned the hard way: *"this approach failed, here's what to try instead"*. Distinct from [structured memory](structured-memory.md) — memory holds **facts the agent observed**; lessons hold **the agent's own reflections on its mistakes**, scoped to the agent's identity rather than to a conversation.
 
-The point: stop agents repeating the same failures across sessions. A `research` agent that figures out (the hard way) that a particular endpoint requires an `Authorization` header should record that lesson once and never re-discover it.
+The point: stop agents repeating the same failures across sessions. A `scout` agent that figures out (the hard way) that a particular endpoint requires an `Authorization` header should record that lesson once and never re-discover it.
 
 ## How it surfaces
 
@@ -103,7 +103,7 @@ Indexed on `(tenant_id, agent_id, last_seen_at DESC)` for the at-a-glance list a
 
 ## Tenancy and trust posture
 
-Every read and write enforces tenant_id match. Lessons never cross tenant or agent boundaries — a `research` agent's lessons aren't visible to a `writer` agent in the same tenant. This is a deliberate split: lessons capture an agent's individual relationship with its tools, and conflating different agents' lessons would dilute the signal.
+Every read and write enforces tenant_id match. Lessons never cross tenant or agent boundaries — a `scout` agent's lessons aren't visible to a `quill` agent in the same tenant. This is a deliberate split: lessons capture an agent's individual relationship with its tools, and conflating different agents' lessons would dilute the signal.
 
 ## See also
 

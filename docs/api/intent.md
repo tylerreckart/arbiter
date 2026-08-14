@@ -41,7 +41,7 @@ curl http://127.0.0.1:8080/v1/intent \
   "kind": "research",
   "confidence": 0.9,
   "source": "heuristic",
-  "target_agent": "research",
+  "target_agent": "scout",
   "brief": "Route to research (research).",
   "llm_used": false,
   "malformed": false,

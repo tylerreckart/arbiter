@@ -69,17 +69,19 @@ bool roster_has(const std::vector<IntentRosterEntry>& roster,
 }
 
 // Preferred starter id for a kind; empty if kind has no default agent.
+// Starter ids are personal callsigns (scout, vera, …) while kind remains the
+// closed intent taxonomy (research, review, …).
 const char* preferred_agent(const std::string& kind) {
-    if (kind == "research")  return "research";
-    if (kind == "review")    return "reviewer";
-    if (kind == "write")     return "writer";
-    if (kind == "ops")       return "devops";
-    if (kind == "frontend")  return "frontend";
-    if (kind == "backend")   return "backend";
-    if (kind == "plan")      return "planner";
-    if (kind == "market")    return "marketer";
-    if (kind == "social")    return "social";
-    if (kind == "multi")     return "planner";
+    if (kind == "research")  return "scout";
+    if (kind == "review")    return "vera";
+    if (kind == "write")     return "quill";
+    if (kind == "ops")       return "forge";
+    if (kind == "frontend")  return "loom";
+    if (kind == "backend")   return "nexus";
+    if (kind == "plan")      return "compass";
+    if (kind == "market")    return "beacon";
+    if (kind == "social")    return "echo";
+    if (kind == "multi")     return "compass";
     return "";
 }
 
@@ -281,7 +283,7 @@ const char* default_intent_prompt() {
         "plan, market, social, multi, unknown.\n"
         "<agent> must be an id from the roster, or empty if the master (index) "
         "should handle it. Do not invent agent ids.\n"
-        "Use kind=multi and agent=planner (if present) when the work needs "
+        "Use kind=multi and agent=compass (if present) when the work needs "
         "decomposition. Emit <todo> / <phase> only for multi or plan; they are "
         "seeds, not orders to execute.\n"
         "Default to unknown + empty agent when unsure.";

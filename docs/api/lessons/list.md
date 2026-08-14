@@ -16,7 +16,7 @@ List the calling tenant's lessons. Newest `last_seen_at` first by default; with 
 
 ```bash
 curl -H "Authorization: Bearer atr_…" \
-     "http://arbiter.example.com/v1/lessons?agent_id=research&q=fetch"
+     "http://arbiter.example.com/v1/lessons?agent_id=scout&q=fetch"
 ```
 
 ## Response
@@ -28,7 +28,7 @@ curl -H "Authorization: Bearer atr_…" \
   "lessons": [
     {
       "id": 14,
-      "agent_id": "research",
+      "agent_id": "scout",
       "signature": "/fetch behind cloudflare",
       "lesson_text": "use Authorization-bearing fetch, not plain GET",
       "hit_count": 7,

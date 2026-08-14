@@ -595,7 +595,7 @@ static std::string writer_prompt() {
         "- Deliver files to disk — never leave content only in chat.\n"
         "  Edits: fenced ```diff (user reviews). New/full files: /write … /endwrite.\n"
         "- To inspect a codebase before writing docs: use /exec to read files and structure.\n"
-        "- To gather facts before writing: use /agent research <query> or /fetch <url>.\n"
+        "- To gather facts before writing: use /agent scout <query> or /fetch <url>.\n"
         "- To preserve an outline or draft across sessions: use /mem write.\n";
     s += prompt_code_change_format();
     return s;
@@ -611,7 +611,7 @@ static std::string planner_prompt() {
         "PLANNING METHODOLOGY:\n"
         "1. Inspect the environment first. Use /exec to read project structure, "
         "check git state, list files, or run any command that reveals relevant constraints.\n"
-        "2. Gather missing domain knowledge. Use /agent research <query> or /fetch <url> "
+        "2. Gather missing domain knowledge. Use /agent scout <query> or /fetch <url> "
         "if the task requires external facts before a plan can be formed.\n"
         "3. Produce the plan. Write it to a file with /write. Never just display it.\n"
         "4. Execute Phase 1 immediately if instructed. Otherwise, stop after the plan file.\n\n"
@@ -895,17 +895,17 @@ Constitution master_constitution() {
         // Routing
         "Read the AVAILABLE AGENTS block at the top of each query. Route based on agent role and goal.",
         "Route based on what is being requested:",
-        "  - Research, facts, URLs, competitive analysis → /agent research",
-        "  - Code review, defect analysis, PR feedback → /agent reviewer",
-        "  - Essays, READMEs, docs, PRDs, reports, creative writing → /agent writer",
-        "  - Shell commands, git, Docker, CI/CD, infra → /agent devops",
-        "  - Marketing strategy, positioning, messaging, campaigns → /agent marketer",
-        "  - Social media content, captions, threads, growth strategy → /agent social",
-        "  - React, TypeScript, CSS, accessibility, frontend architecture → /agent frontend",
-        "  - APIs, databases, distributed systems, backend architecture → /agent backend",
-        "  - Complex multi-step work needing decomposition, or any >3-step task with unclear sequencing → /agent planner",
+        "  - Research, facts, URLs, competitive analysis → /agent scout",
+        "  - Code review, defect analysis, PR feedback → /agent vera",
+        "  - Essays, READMEs, docs, PRDs, reports, creative writing → /agent quill",
+        "  - Shell commands, git, Docker, CI/CD, infra → /agent forge",
+        "  - Marketing strategy, positioning, messaging, campaigns → /agent beacon",
+        "  - Social media content, captions, threads, growth strategy → /agent echo",
+        "  - React, TypeScript, CSS, accessibility, frontend architecture → /agent loom",
+        "  - APIs, databases, distributed systems, backend architecture → /agent nexus",
+        "  - Complex multi-step work needing decomposition, or any >3-step task with unclear sequencing → /agent compass",
         "When two agents could handle a request, prefer the more specific one, and prefer a doer "
-        "(devops/frontend/backend) over writer if the deliverable is code or a command.",
+        "(forge/loom/nexus) over quill if the deliverable is code or a command.",
         "Delegations chain ACROSS TURNS, not within one. A /agent or /parallel call's "
         "results arrive in your tool buffer — the buffer your NEXT turn reads. Commands "
         "later in the SAME turn cannot see them. So a turn that emits /parallel followed "
@@ -933,8 +933,8 @@ Constitution master_constitution() {
         "  5. PRIOR FINDINGS — if a previous agent produced results for this pipeline, include key facts "
         "(not the full output). Max 500 characters. Omit if this is the first agent in the chain.",
         "  6. SUCCESS — what makes this done (e.g. 'file exists at X', 'N sources cited', 'builds clean').",
-        "Example — instead of '/agent research what is X', use: "
-        "'/agent research GOAL: gather facts on X for a technical audience. "
+        "Example — instead of '/agent scout what is X', use: "
+        "'/agent scout GOAL: gather facts on X for a technical audience. "
         "FORMAT: bulleted list with sources. CONSTRAINTS: focus on Y and Z, skip marketing fluff. "
         "SUCCESS: at least 5 sources with publication dates and confidence levels.'",
 
@@ -944,13 +944,13 @@ Constitution master_constitution() {
 
         // Pipeline composition
         "Compose pipelines for complex tasks. Chain sequentially — each step feeds the next. Examples:",
-        "  - 'Write a research report on X' → /agent research (gather facts) → "
-        "    /agent writer (draft using those facts, with /write to produce the file)",
-        "  - 'Audit and document this codebase' → /agent devops (inspect structure) → "
-        "    /agent reviewer (find issues) → /agent writer (write docs using both outputs)",
-        "  - 'Build and test this feature' → /agent devops (run tests, build) → "
-        "    /agent reviewer (review output)",
-        "  - 'Build X from scratch' or any large multi-phase task → /agent planner first, "
+        "  - 'Write a research report on X' → /agent scout (gather facts) → "
+        "    /agent quill (draft using those facts, with /write to produce the file)",
+        "  - 'Audit and document this codebase' → /agent forge (inspect structure) → "
+        "    /agent vera (find issues) → /agent quill (write docs using both outputs)",
+        "  - 'Build and test this feature' → /agent forge (run tests, build) → "
+        "    /agent vera (review output)",
+        "  - 'Build X from scratch' or any large multi-phase task → /agent compass first, "
         "    then execute the phases it produces in order",
         "Keep the chain short. Default to one hop; go longer only when each step genuinely "
         "depends on the previous one's output.",

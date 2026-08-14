@@ -248,7 +248,7 @@ Configure via the `memory` block in agent JSON:
 
 ```json
 {
-  "name": "research",
+  "name": "Scout",
   "advisor": { "model": "claude-opus-4-7", "mode": "consult" },
   "memory": {
     "search_expand": true,
