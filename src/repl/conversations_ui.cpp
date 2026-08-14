@@ -133,8 +133,7 @@ void ReplSession::apply_conversation_to_pane(Pane& pane, const std::string& id, 
                 // Render a simple user/assistant transcript into scrollback.
                 for (const auto& m : msgs) {
                     if (m.role == "user") {
-                        pane.output_queue.push_prose_msg(
-                            m.content, StyleId::UserEchoText);
+                        pane.output_queue.push_user_echo(m.content);
                         pane.output_queue.end_message();
                     } else if (m.role == "assistant") {
                         StreamRenderer renderer(kReplay, pane.output_queue);

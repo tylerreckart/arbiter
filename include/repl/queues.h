@@ -12,6 +12,7 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace arbiter {
@@ -61,7 +62,7 @@ private:
 };
 
 struct OutputItem {
-    enum class Kind : std::uint8_t { Text, Diff, Prose, Code, Tool, Thinking };
+    enum class Kind : std::uint8_t { Text, Diff, Prose, Code, Tool, Thinking, UserEcho };
     enum class CodeOp : std::uint8_t { Open, Line, Close };
 
     Kind kind = Kind::Text;
@@ -124,6 +125,9 @@ public:
     // (creates one if needed). Collapsed by default in the scroll view.
     // `agent_id` colors the left accent from the theme agent palette.
     void push_thinking(const std::string& delta, const std::string& agent_id = {});
+
+    // User submit echo → UserEchoSegment (rounded box, title "user").
+    void push_user_echo(std::string_view text);
 
     std::vector<OutputItem> drain_items();
 

@@ -201,8 +201,55 @@ TEST_CASE("ThinkingSegment renders markdown structure in body rows") {
     view.append_thinking("## Plan\n\n- step one\n- step two",
                          /*new_block=*/true,
                          "researcher");
-    // pad + header + at least one body line + pad (+ optional gap).
+    // gap + top + at least one body + bottom.
     CHECK(view.total_visual_rows() - baseline >= 4);
+}
+
+TEST_CASE("UserEchoSegment uses rounded box chrome like thinking") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    const int baseline = view.total_visual_rows();
+
+    view.append_user_echo("brief");
+    const int rows = view.total_visual_rows() - baseline;
+    // Lead-in blank + top + body + bottom.
+    CHECK(rows == 4);
+
+    const auto title_hits = view.find_rows("user");
+    REQUIRE(title_hits.size() == 1);
+    const auto body_hits = view.find_rows("brief");
+    REQUIRE(body_hits.size() == 1);
+    CHECK(body_hits[0] == title_hits[0] + 1);
+}
+
+TEST_CASE("UserEchoSegment collapses long pastes like thinking") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 40, 40);
+    const int baseline = view.total_visual_rows();
+
+    view.append_user_echo("one\ntwo\nthree\nfour\nfive");
+    const int collapsed = view.total_visual_rows() - baseline;
+    // gap + top + 3 preview + bottom = 6.
+    CHECK(collapsed == 6);
+
+    CHECK(view.toggle_code_block_in_view(/*scroll_offset=*/0));
+    const int expanded = view.total_visual_rows() - baseline;
+    CHECK(expanded - collapsed == 2);
+}
+
+TEST_CASE("UserEchoSegment skips echoed /find from find_rows") {
+    load_tui_design("");
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+
+    view.append_user_echo("/find needle");
+    CHECK(view.find_rows("needle").empty());
+    CHECK_FALSE(view.find_rows("user").empty());
 }
 
 TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
@@ -211,15 +258,14 @@ TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
     PaneScrollView view;
     bind_view(view, tui, 80, 40);
 
-    view.append_prose(styled_user_echo_lines("hello"));
+    view.append_user_echo("hello");
     const int after_echo = view.total_visual_rows();
-    // Lead-in blank under the header + top pad + text + bottom pad.
+    // Lead-in blank + rounded box (top + body + bottom).
     CHECK(after_echo == 4);
 
     view.append_thinking("plan", /*new_block=*/true);
     const int after_think = view.total_visual_rows();
-    // Echo bottom pad already supplies the one-row gap; thinking chrome is
-    // pad + header + body + pad = 4 (no extra BlankSegment).
+    // start_block_gap (1) + thinking box (top + body + bottom = 3).
     CHECK(after_think - after_echo == 4);
 
     ToolActivityEvent start;
@@ -235,8 +281,6 @@ TEST_CASE("block gaps are a single blank row between distinct segment kinds") {
     view.upsert_tool(start2, /*new_block=*/false);
 
     // Thinking→tools: one BlankSegment; tools stay clustered.
-    // Thinking's own bottom pad does not count as inter-block credit (only
-    // prose/echo pads do), so tools still get an explicit gap.
     const int after_tools = view.total_visual_rows();
     CHECK(after_tools - after_think == 1 /*gap*/ + 2 /*tool rows*/);
 }
@@ -293,8 +337,8 @@ TEST_CASE("first user echo has a lead-in blank under the header") {
     bind_view(view, tui, 80, 40);
     CHECK(view.total_visual_rows() == 0);
 
-    view.append_prose(styled_user_echo_lines("hi"), /*new_block=*/true);
-    // BlankSegment + echo top pad + text + bottom pad.
+    view.append_user_echo("hi");
+    // BlankSegment + rounded box (top + body + bottom).
     CHECK(view.total_visual_rows() == 4);
 }
 
@@ -514,7 +558,7 @@ TEST_CASE("degenerate zero-size pane draw is a no-op") {
     CHECK(tui.scroll_region_rows() <= 0);
 
     PaneScrollView view;
-    view.append_prose(styled_user_echo_lines("should not paint"));
+    view.append_user_echo("should not paint");
     // frame=1 is an invalid OpenTUI handle; a regression that skipped the
     // guard would crash or corrupt rather than return cleanly.
     view.draw(/*frame=*/1, tui, 0, 0);
