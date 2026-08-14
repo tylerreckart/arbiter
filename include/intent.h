@@ -31,6 +31,11 @@ struct IntentConfig {
     bool        apply_routing = true;
 };
 
+// Standalone POST /v1/intent starts from master's intent block but forces
+// mode=heuristic so a caller cannot burn provider quota without opting
+// into hybrid/llm via `mode` or `intent.mode`.
+IntentConfig standalone_intent_config(const IntentConfig& master);
+
 struct IntentRosterEntry {
     std::string id;
     std::string role;

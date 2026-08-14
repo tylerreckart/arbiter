@@ -26,6 +26,17 @@ TenantLimits load_tenant_limits_from_env() {
     return d;
 }
 
+TenantLimits load_intent_llm_limits_from_env() {
+    TenantLimits d;
+    // Classify is one short complete(); 20/min with a small burst is
+    // enough for interactive preview without letting a tenant burn
+    // provider quota.  0 disables (general TenantLimiter still applies).
+    d.rate_per_min = env_int("ARBITER_INTENT_LLM_RATE_PER_MIN", 20);
+    d.burst        = env_int("ARBITER_INTENT_LLM_RATE_BURST", 5);
+    if (d.burst <= 0) d.burst = d.rate_per_min;
+    return d;
+}
+
 void TenantLimiter::Guard::release() {
     if (!parent) return;
     {

@@ -133,4 +133,9 @@ private:
 // the embedded defaults (0 = unlimited).
 TenantLimits load_tenant_limits_from_env();
 
+// Always-on cap for POST /v1/intent LLM classify (hybrid/llm).  Independent
+// of ARBITER_TENANT_RATE_PER_MIN, which defaults to unlimited.  A 0 rate
+// disables this extra bucket.
+TenantLimits load_intent_llm_limits_from_env();
+
 } // namespace arbiter

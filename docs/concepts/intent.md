@@ -89,7 +89,7 @@ Desired-end-state work (workspace + tests + rollback) is [`POST /v1/reconcile`](
 
 ## See also
 
-- [`POST /v1/intent`](../api/intent.md) — standalone classify
+- [`POST /v1/intent`](../api/intent.md) — standalone classify (defaults to heuristic; opt into hybrid/llm)
 - [`POST /v1/reconcile`](../api/reconcile.md) — desired end state + verification
 - [`POST /v1/orchestrate`](../api/orchestrate.md)
 - [Advisor](advisor.md) — post-turn supervision, not ingress routing

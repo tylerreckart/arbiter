@@ -12,11 +12,11 @@ Use this when an external framework wants Arbiter's hybrid classifier without ow
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `message` | string | yes | — | Utterance or event text to classify. |
+| `message` | string | yes | — | Utterance or event text to classify. **Max 64 KiB.** |
 | `requested_agent` | string | no | `"index"` | Ingress agent. Non-`index` values are treated as explicit (no reroute). |
-| `roster` | array | no | tenant + file agents | `{id, role?, goal?, capabilities?}` entries. When omitted, Arbiter uses tenant-stored agents then `agents_dir` (tenant id wins on collision). |
-| `intent` | object | no | master's `intent` block | Override `{mode, min_confidence, apply_routing, model}`. |
-| `mode` | string | no | master's mode | Shorthand when `intent` is omitted. `off` \| `heuristic` \| `hybrid` \| `llm`. |
+| `roster` | array | no | tenant + file agents | `{id, role?, goal?, capabilities?}` entries. When omitted, Arbiter uses tenant-stored agents then `agents_dir` (tenant id wins on collision). Max 128 entries. |
+| `intent` | object | no | master's `intent` block, **except `mode` defaults to `heuristic`** | Override `{mode, min_confidence, apply_routing, model}`. |
+| `mode` | string | no | `"heuristic"` | Shorthand when `intent` is omitted. `off` \| `heuristic` \| `hybrid` \| `llm`. Master's hybrid does **not** apply unless you set this. |
 | `min_confidence` | number | no | `0.8` | Reroute threshold. |
 | `apply_routing` | bool | no | `true` | Classification still runs when false; `applied` will be false. |
 | `model` | string | no | `advisor.model` | LLM classifier model for `hybrid` / `llm`. |
@@ -60,15 +60,16 @@ curl http://127.0.0.1:8080/v1/intent \
 | `applied` | True when `apply_routing` would rewrite an `index` ingress to `target_agent` **and** that id is in the roster used for this request. This endpoint never dispatches. [`POST /v1/orchestrate`](orchestrate.md) additionally requires the agent to be loaded on the request orch (API: tenant catalog; TUI: `agents_dir`). |
 | `todo_seeds` / `plan_seeds` | Optional decomposition hints. Not persisted. |
 
-LLM cost, when incurred, is a single history-less complete() on `intent.model` or the master advisor model. Transport/parse failure fail-opens (`target_agent` empty, `malformed` may be true).
+LLM cost, when incurred, is a single history-less complete() on `intent.model` or the master advisor model. Transport/parse failure fail-opens (`target_agent` empty, `malformed` may be true). Standalone classify defaults to **heuristic** so that call is opt-in. Hybrid/llm classify is rate-limited per tenant (default 20/min, burst 5) independently of `ARBITER_TENANT_RATE_PER_MIN`.
 
 ## Failure modes
 
 | Status | When | Body |
 |--------|------|------|
-| 400 | Body is not a JSON object, or `message` is missing. | `{"error":"..."}` |
+| 400 | Body is not a JSON object, `message` is missing, `message` exceeds 64 KiB, or `roster` exceeds 128 entries. | `{"error":"..."}` |
 | 401 | Bearer token missing/invalid, or tenant disabled. | `{"error":"..."}` |
 | 405 | Method is not POST. | plain text |
+| 429 | General tenant limiter, or LLM classify quota (`reason` is `rate_limit`, `concurrent_request_limit`, or `intent_llm_rate_limit`). | `{"error":"rate limit exceeded",...}` |
 | 500 | Orchestrator / client init failed. | `{"error":"..."}` |
 
 ## See also

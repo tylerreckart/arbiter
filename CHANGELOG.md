@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **`POST /v1/intent` defaults to heuristic.** Standalone classify no longer
+  inherits master's `hybrid` mode. Callers must set `mode` or `intent.mode` to
+  `hybrid` / `llm` to spend a provider call. Messages over 64 KiB are rejected
+  (already). LLM classify is additionally capped at 20/min per tenant
+  (`ARBITER_INTENT_LLM_RATE_PER_MIN` / `ARBITER_INTENT_LLM_RATE_BURST`; `0`
+  disables). Over-quota LLM classify returns `429` with
+  `reason: intent_llm_rate_limit` (#212).
+
 ### Fixed
 - **TenantLimiter idle eviction.** Per-tenant `State` entries are dropped when
   `in_flight` returns to zero and the token bucket is (or would be) full, and
