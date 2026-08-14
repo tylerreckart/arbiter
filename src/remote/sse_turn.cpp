@@ -46,6 +46,14 @@ void RemoteSseTurnConsumer::on_event(const std::string& event_name,
         if (payload) handle_escalation(*payload);
         return;
     }
+    if (event_name == "intent") {
+        if (payload) handle_intent(*payload);
+        return;
+    }
+    if (event_name == "advisor") {
+        if (payload) handle_advisor(*payload);
+        return;
+    }
     if (event_name == "error") {
         if (payload) handle_error(*payload);
         return;
@@ -54,7 +62,7 @@ void RemoteSseTurnConsumer::on_event(const std::string& event_name,
         if (payload) handle_done(*payload);
         return;
     }
-    // stream_start / agent_start / stream_end / token_usage / advisor —
+    // stream_start / agent_start / stream_end / token_usage —
     // informational; local TUI mirrors these via orch callbacks.  Skip.
 }
 
@@ -141,10 +149,44 @@ void RemoteSseTurnConsumer::handle_escalation(const JsonValue& payload) {
     const std::string reason = payload.get_string("reason");
     if (hooks_.on_escalation) hooks_.on_escalation(agent, reason);
     else {
-        std::string text = "[advisor halt: " +
-            (agent.empty() ? "?" : agent) + "] " + reason;
-        queue_.push_prose(
-            {styled_activity_line(std::move(text), StyleId::Error)});
+        queue_.push_prose({styled_advisor_halt_line(agent, reason)});
+        queue_.end_message();
+    }
+}
+
+void RemoteSseTurnConsumer::handle_intent(const JsonValue& payload) {
+    const std::string kind = payload.get_string("kind");
+    const std::string source = payload.get_string("source");
+    const std::string target = payload.get_string("target_agent");
+    const bool applied = payload.get_bool("applied", false);
+    if (hooks_.on_intent) {
+        hooks_.on_intent(kind, source, target, applied);
+        return;
+    }
+    auto line = styled_intent_event_line(kind, source, target, applied);
+    if (!line) return;
+    queue_.push_prose({std::move(*line)});
+    queue_.end_message();
+}
+
+void RemoteSseTurnConsumer::handle_advisor(const JsonValue& payload) {
+    const std::string kind = payload.get_string("kind");
+    const std::string agent = payload.get_string("agent");
+    const std::string detail = payload.get_string("detail");
+    if (hooks_.on_advisor) {
+        hooks_.on_advisor(kind, agent, detail);
+        return;
+    }
+    if (kind == "gate_continue" || kind == "gate_halt" || kind == "gate_budget") {
+        return;
+    }
+    if (kind == "consult") {
+        queue_.push_prose({styled_advisor_consult_line(agent, detail)});
+        queue_.end_message();
+        return;
+    }
+    if (kind == "gate_redirect") {
+        queue_.push_prose({styled_advisor_redirect_line(agent, detail)});
         queue_.end_message();
     }
 }

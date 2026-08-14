@@ -19,7 +19,12 @@ assistant prose / markdown / code / diffs  (writ lines swallowed)
 ○ fetch:https://…                          ToolSegment appears as dispatch starts
 ✓ exec:git status                          resolves when the result returns
                                   ← one blank row
-· [interrupted]                            activity chrome (system lines)
+· [interrupted]                            activity chrome (system noise)
+↗ research · heuristic                     intent applied (info; ≠ → delegating)
+· intent research · hint:research          intent classified, not applied
+◇ advise · index Should we…?               advisor consult (soft)
+↻ redirect · research Add a failing…       advisor gate redirect (warning)
+⛔ halt · research incomplete…             advisor halt (error; once via escalation)
 → delegating: /agent …                     bold/info routing status (not prose)
 › /read #2                                 verbose writs (› + WritLine)
 ```
@@ -30,7 +35,8 @@ assistant prose / markdown / code / diffs  (writ lines swallowed)
 | Tools | `ToolSegment` | One row per `/cmd`; expand for args/result; clustered (no gap between tools) |
 | Reasoning | `ThinkingSegment` | Markdown body on input/echo bg; per-agent left accent from theme palette; dimmed readable text |
 | Assistant | `Prose` / `Code` / `Diff` | Same StreamRenderer path as before |
-| System | styled activity / delegation lines | Interrupts, advisor, `→ delegating:` |
+| System | styled activity lines | Interrupts, confirm outcomes (`·`) |
+| Runtime | intent / advisor helpers | `↗` applied intent, `◇` advise, `↻` redirect, `⛔` halt; `→ delegating:` stays separate |
 
 Quiet default: writ lines stay swallowed (`BlockParser` covers `/read`, `/browse`,
 `/todo`, `/search`, …); tools appear as compact status rows, not raw `/fetch`

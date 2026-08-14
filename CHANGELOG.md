@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **TUI runtime-event chrome.** Intent and advisor lines leave the shared `·`
+  activity lane: applied intent is `↗ research · heuristic`, unapplied stays a
+  soft `· intent … · hint:…`, consult is `◇ advise`, redirect is `↻ redirect`,
+  and halt/budget paint once as `⛔ halt` via escalation (no double banner).
+  Remote `--connect` SSE now mirrors intent/advisor the same way.
+
 ## [0.12.5] — 2026-08-14
 
 ### Changed

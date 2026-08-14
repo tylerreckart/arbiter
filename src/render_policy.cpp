@@ -123,6 +123,155 @@ StyledLine styled_activity_line(std::string text, StyleId id) {
     return line;
 }
 
+namespace {
+
+std::string truncate_detail(std::string_view detail, std::size_t max_bytes) {
+    if (max_bytes == 0 || detail.size() <= max_bytes) {
+        return std::string(detail);
+    }
+    if (max_bytes <= 3) return std::string(detail.substr(0, max_bytes));
+    std::string out(detail.substr(0, max_bytes - 3));
+    out += "...";
+    return out;
+}
+
+void append_agent_suffix(StyledLine& line,
+                         std::string_view agent_id,
+                         StyleId agent_style) {
+    if (agent_id.empty()) return;
+    styled_append(line, StyleId::System, " \u00b7 ");  // ·
+    styled_append(line, agent_style, agent_id);
+}
+
+}  // namespace
+
+StyledLine styled_runtime_event(std::string_view glyph,
+                                StyleId glyph_style,
+                                std::string_view label,
+                                StyleId label_style,
+                                std::string_view detail,
+                                StyleId detail_style,
+                                std::size_t detail_max) {
+    StyledLine line;
+    if (!glyph.empty()) {
+        styled_append(line, glyph_style, glyph);
+        if (glyph.back() != ' ') styled_append(line, glyph_style, " ");
+    }
+    if (!label.empty()) {
+        styled_append(line, label_style, label);
+    }
+    const std::string clipped = truncate_detail(detail, detail_max);
+    if (!clipped.empty()) {
+        if (!label.empty()) styled_append(line, StyleId::System, " ");
+        styled_append(line, detail_style, clipped);
+    }
+    return line;
+}
+
+std::optional<StyledLine> styled_intent_event_line(std::string_view kind,
+                                                   std::string_view source,
+                                                   std::string_view target_agent,
+                                                   bool applied) {
+    if (kind.empty() || kind == "unknown") return std::nullopt;
+
+    if (applied) {
+        // ↗ research · heuristic   (target is the kind when applied; agent
+        // name follows as bold identity when present and distinct).
+        StyledLine line = styled_runtime_event(
+            "\u2197",  // ↗
+            StyleId::Info,
+            kind,
+            StyleId::Bold,
+            {},
+            StyleId::System);
+        if (!source.empty()) {
+            styled_append(line, StyleId::System, " \u00b7 ");
+            styled_append(line, StyleId::Info, source);
+        }
+        if (!target_agent.empty() && target_agent != kind) {
+            append_agent_suffix(line, target_agent, StyleId::Bold);
+        } else if (!target_agent.empty()) {
+            // kind == agent id (common for specialist short-circuit): still
+            // show the arrow's payload as the agent name above; nothing more.
+        }
+        return line;
+    }
+
+    // · intent research · hint:agent
+    std::string label = "intent ";
+    label.append(kind);
+    StyledLine line = styled_runtime_event(
+        "\u00b7",  // ·
+        StyleId::Warning,
+        label,
+        StyleId::Warning,
+        {},
+        StyleId::System);
+    if (!source.empty()) {
+        styled_append(line, StyleId::System, " \u00b7 ");
+        styled_append(line, StyleId::Warning, source);
+    }
+    if (!target_agent.empty()) {
+        styled_append(line, StyleId::System, " \u00b7 hint:");
+        styled_append(line, StyleId::Warning, target_agent);
+    }
+    return line;
+}
+
+StyledLine styled_advisor_consult_line(std::string_view agent_id,
+                                       std::string_view detail) {
+    StyledLine line = styled_runtime_event(
+        "\u25c7",  // ◇
+        StyleId::System,
+        "advise",
+        StyleId::System,
+        {},
+        StyleId::System);
+    append_agent_suffix(line, agent_id, StyleId::System);
+    const std::string clipped = truncate_detail(detail, 120);
+    if (!clipped.empty()) {
+        styled_append(line, StyleId::System, " ");
+        styled_append(line, StyleId::Dim, clipped);
+    }
+    return line;
+}
+
+StyledLine styled_advisor_redirect_line(std::string_view agent_id,
+                                        std::string_view detail) {
+    StyledLine line = styled_runtime_event(
+        "\u21bb",  // ↻
+        StyleId::Warning,
+        "redirect",
+        StyleId::Warning,
+        {},
+        StyleId::System);
+    append_agent_suffix(line, agent_id, StyleId::Bold);
+    const std::string clipped = truncate_detail(detail, 120);
+    if (!clipped.empty()) {
+        styled_append(line, StyleId::System, " ");
+        styled_append(line, StyleId::Warning, clipped);
+    }
+    return line;
+}
+
+StyledLine styled_advisor_halt_line(std::string_view agent_id,
+                                    std::string_view reason) {
+    StyledLine line = styled_runtime_event(
+        "\u26d4",  // ⛔
+        StyleId::Error,
+        "halt",
+        StyleId::Error,
+        {},
+        StyleId::System);
+    append_agent_suffix(line, agent_id, StyleId::Bold);
+    const std::string clipped = truncate_detail(reason, 160);
+    if (!clipped.empty()) {
+        styled_append(line, StyleId::System, " ");
+        styled_append(line, StyleId::Error, clipped);
+    }
+    return line;
+}
+
 StyledLine styled_interim_header(const std::string& agent_id) {
     StyledLine line;
     styled_append(line, StyleId::System, "\u2192 ");  // →

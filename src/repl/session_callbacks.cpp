@@ -434,46 +434,52 @@ void ReplSession::install_orch_callbacks() {
                                       const std::string& reason) {
         Pane* p = g_active_pane;
         if (!p) return;
-        std::string text = "[advisor halt: " + agent_id + "] " + reason;
+        // Single halt chrome — advisor gate_halt/gate_budget are suppressed
+        // below so escalation owns the user-visible banner.
         p->output_queue.push_prose(
-            {arbiter::styled_activity_line(std::move(text), arbiter::StyleId::Error)});
+            {arbiter::styled_advisor_halt_line(agent_id, reason)});
         p->output_queue.end_message();
     });
 
     orch.set_intent_callback([&](const arbiter::Orchestrator::IntentEvent& ev) {
         Pane* p = g_active_pane;
         if (!p) return;
-        // Quiet unknown / empty classifications — same idea as gate_continue.
-        if (ev.intent.kind.empty() || ev.intent.kind == "unknown") return;
-        std::string text = "[intent " + ev.intent.kind;
-        if (!ev.intent.source.empty()) text += " " + ev.intent.source;
-        if (ev.applied && !ev.intent.target_agent.empty())
-            text += " → " + ev.intent.target_agent;
-        else if (!ev.intent.target_agent.empty())
-            text += " hint:" + ev.intent.target_agent;
-        text += "]";
-        p->output_queue.push_prose(
-            {arbiter::styled_activity_line(std::move(text),
-                                           ev.applied ? arbiter::StyleId::Info
-                                                      : arbiter::StyleId::Warning)});
+        auto line = arbiter::styled_intent_event_line(
+            ev.intent.kind, ev.intent.source, ev.intent.target_agent, ev.applied);
+        if (!line) return;
+        p->output_queue.push_prose({std::move(*line)});
         p->output_queue.end_message();
     });
 
     orch.set_advisor_event_callback([&](const arbiter::Orchestrator::AdvisorEvent& ev) {
         Pane* p = g_active_pane;
         if (!p) return;
-        if (ev.kind == "gate_continue") return;  // quiet success
+        // Quiet success; halt/budget paint once via escalation_callback.
+        if (ev.kind == "gate_continue" ||
+            ev.kind == "gate_halt" ||
+            ev.kind == "gate_budget") {
+            return;
+        }
+        if (ev.kind == "consult") {
+            p->output_queue.push_prose(
+                {arbiter::styled_advisor_consult_line(ev.agent_id, ev.detail)});
+            p->output_queue.end_message();
+            return;
+        }
+        if (ev.kind == "gate_redirect") {
+            p->output_queue.push_prose(
+                {arbiter::styled_advisor_redirect_line(ev.agent_id, ev.detail)});
+            p->output_queue.end_message();
+            return;
+        }
+        // Unknown advisor kinds: keep a soft activity fallback.
         arbiter::StyleId style = arbiter::StyleId::System;
-        std::string label;
-        if      (ev.kind == "consult")       { label = "advisor consult"; style = arbiter::StyleId::System; }
-        else if (ev.kind == "gate_redirect") { label = "advisor redirect"; style = arbiter::StyleId::Warning; }
-        else if (ev.kind == "gate_halt")     { label = "advisor halt";    style = arbiter::StyleId::Error;  }
-        else if (ev.kind == "gate_budget")   { label = "advisor budget";  style = arbiter::StyleId::Error;  }
-        else                                  { label = ev.kind;            style = arbiter::StyleId::System; }
-        std::string detail = ev.detail;
-        if (detail.size() > 200) { detail.resize(197); detail += "..."; }
-        std::string text = "[" + label + ": " + ev.agent_id + "]";
-        if (!detail.empty()) text += " " + detail;
+        std::string text = "[" + ev.kind + ": " + ev.agent_id + "]";
+        if (!ev.detail.empty()) {
+            std::string detail = ev.detail;
+            if (detail.size() > 200) { detail.resize(197); detail += "..."; }
+            text += " " + detail;
+        }
         p->output_queue.push_prose(
             {arbiter::styled_activity_line(std::move(text), style)});
         p->output_queue.end_message();
