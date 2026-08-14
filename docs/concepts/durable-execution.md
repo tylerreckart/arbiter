@@ -21,6 +21,7 @@ Two SQLite tables on `tenants.db` (plus `idempotency_keys` for durable retry ded
 | `request_status`  | One row per orchestrate call. State (`running` / `completed` / `failed` / `canceled`), agent, conversation, started_at, completed_at, error_message, last_seq. |
 | `request_events`  | Append-only event log. Each row carries `(request_id, seq, event_kind, payload_json, created_at_ms)`. Unique on `(request_id, seq)`; FK cascades from both `tenants` and `request_status`. |
 | `idempotency_keys` | `(tenant_id, key) → request_id` with `created_at` for the 24h TTL. Survives process restart so `Idempotency-Key` retries still join the original run. |
+| `reconcile_runs` | Typed intent-reconcile result (`satisfied` / `failed` / `rolled_back` / …) keyed by the same `request_id`. |
 
 `request_events.seq` is per-request monotonic, assigned by the SSE writer. The unique index prevents duplicate inserts.
 

@@ -27,6 +27,7 @@
 // the idle threshold; stop_all() still runs on ApiServer shutdown.
 // Workspace bytes survive both paths.
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -129,6 +130,7 @@ struct SandboxExecResult {
     std::string output;
     int         exit_status = 0;
     bool        timed_out   = false;
+    bool        canceled    = false;
     bool        ok          = true;   // infra-level OK (container ran, exec returned)
     std::string error;                // populated when ok=false
 };
@@ -178,7 +180,12 @@ public:
     // Run a shell command inside the tenant's container.  Lazily starts
     // the container if not yet running.  Always returns a result; on
     // infra failure the body is an "ERR: ..." string and ok=false.
-    SandboxExecResult exec(int64_t tenant_id, const std::string& command);
+    // timeout_seconds_override: when > 0, replaces cfg_.exec_timeout_seconds
+    // for this call.  cancel: when set, polls every 250ms and SIGKILLs the
+    // docker-exec driver on cancel (same cadence as reconcile host verify).
+    SandboxExecResult exec(int64_t tenant_id, const std::string& command,
+                           int timeout_seconds_override = 0,
+                           std::atomic<bool>* cancel = nullptr);
 
     // Drop a file into the tenant's workspace.  Used by the /write
     // interceptor so the same byte sequence the client receives is also

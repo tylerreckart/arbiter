@@ -914,6 +914,38 @@ void TenantStore::open(const std::string& path) {
             ON idempotency_keys(created_at);
     )SQL");
 
+    // Intent reconcile runs (#209).  Typed desired-state job bound to a
+    // workspace.  request_id matches request_status when the HTTP handler
+    // persists SSE; no FK so observe-only tests can insert independently.
+    exec_sql(db_, R"SQL(
+        CREATE TABLE IF NOT EXISTS reconcile_runs (
+            request_id          TEXT    PRIMARY KEY,
+            tenant_id           INTEGER NOT NULL,
+            status              TEXT    NOT NULL,
+            reason              TEXT    NOT NULL DEFAULT '',
+            target_state_json   TEXT    NOT NULL,
+            invariants_json     TEXT    NOT NULL DEFAULT '[]',
+            contract_json       TEXT    NOT NULL DEFAULT '{}',
+            workspace_kind      TEXT    NOT NULL,
+            workspace_root      TEXT    NOT NULL DEFAULT '',
+            verification_json   TEXT    NOT NULL DEFAULT '{}',
+            rollback_on_failure INTEGER NOT NULL DEFAULT 0,
+            snapshot_path       TEXT    NOT NULL DEFAULT '',
+            result_json         TEXT    NOT NULL DEFAULT '',
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        );
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS reconcile_runs_tenant_recent
+            ON reconcile_runs(tenant_id, created_at DESC);
+    )SQL");
+    exec_sql(db_, R"SQL(
+        CREATE INDEX IF NOT EXISTS reconcile_runs_status
+            ON reconcile_runs(status, created_at);
+    )SQL");
+
     // Lessons: agent-scoped "learned-from-failure" record.  Indexed by
     // (tenant, agent, last_seen_at DESC) for the agent's at-a-glance
     // list and (tenant, agent, signature) for the loop detector's
@@ -3677,6 +3709,145 @@ TenantStore::list_request_events(int64_t tenant_id,
     q.bind(3, since_seq);
     q.bind(4, static_cast<int64_t>(limit));
     while (q.step() == SQLITE_ROW) out.push_back(row_to_request_event(q));
+    return out;
+}
+
+namespace {
+
+constexpr const char* kReconcileRunCols =
+    "request_id, tenant_id, status, reason, target_state_json, "
+    "invariants_json, contract_json, workspace_kind, workspace_root, "
+    "verification_json, rollback_on_failure, snapshot_path, result_json, "
+    "created_at, updated_at";
+
+TenantStore::ReconcileRun row_to_reconcile_run(Stmt& q) {
+    TenantStore::ReconcileRun r;
+    r.request_id          = q.column_text(0);
+    r.tenant_id           = q.column_int64(1);
+    r.status              = q.column_text(2);
+    r.reason              = q.column_text(3);
+    r.target_state_json   = q.column_text(4);
+    r.invariants_json     = q.column_text(5);
+    r.contract_json       = q.column_text(6);
+    r.workspace_kind      = q.column_text(7);
+    r.workspace_root      = q.column_text(8);
+    r.verification_json   = q.column_text(9);
+    r.rollback_on_failure = q.column_int64(10) != 0;
+    r.snapshot_path       = q.column_text(11);
+    r.result_json         = q.column_text(12);
+    r.created_at          = q.column_int64(13);
+    r.updated_at          = q.column_int64(14);
+    return r;
+}
+
+}  // namespace
+
+void TenantStore::upsert_reconcile_run(const ReconcileRun& row) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    int64_t now = now_epoch();
+    int64_t created = row.created_at > 0 ? row.created_at : now;
+    int64_t updated = row.updated_at > 0 ? row.updated_at : now;
+    Stmt q(db_,
+        "INSERT INTO reconcile_runs "
+        "(request_id, tenant_id, status, reason, target_state_json, "
+        " invariants_json, contract_json, workspace_kind, workspace_root, "
+        " verification_json, rollback_on_failure, snapshot_path, result_json, "
+        " created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(request_id) DO UPDATE SET "
+        " status = excluded.status, "
+        " reason = excluded.reason, "
+        " target_state_json = excluded.target_state_json, "
+        " invariants_json = excluded.invariants_json, "
+        " contract_json = excluded.contract_json, "
+        " workspace_kind = excluded.workspace_kind, "
+        " workspace_root = excluded.workspace_root, "
+        " verification_json = excluded.verification_json, "
+        " rollback_on_failure = excluded.rollback_on_failure, "
+        " snapshot_path = excluded.snapshot_path, "
+        " result_json = excluded.result_json, "
+        " updated_at = excluded.updated_at;");
+    q.bind(1, row.request_id);
+    q.bind(2, row.tenant_id);
+    q.bind(3, row.status);
+    q.bind(4, row.reason);
+    q.bind(5, row.target_state_json);
+    q.bind(6, row.invariants_json);
+    q.bind(7, row.contract_json);
+    q.bind(8, row.workspace_kind);
+    q.bind(9, row.workspace_root);
+    q.bind(10, row.verification_json);
+    q.bind(11, static_cast<int64_t>(row.rollback_on_failure ? 1 : 0));
+    q.bind(12, row.snapshot_path);
+    q.bind(13, row.result_json);
+    q.bind(14, created);
+    q.bind(15, updated);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "upsert reconcile_run");
+}
+
+bool TenantStore::try_cancel_reconcile_run(int64_t tenant_id,
+                                          const std::string& request_id) {
+    if (!db_) throw std::runtime_error("TenantStore not opened");
+    int64_t now = now_epoch();
+    Stmt q(db_,
+        "UPDATE reconcile_runs SET status = 'canceled', reason = 'canceled', "
+        "updated_at = ? WHERE tenant_id = ? AND request_id = ? "
+        "AND status = 'running';");
+    q.bind(1, now);
+    q.bind(2, tenant_id);
+    q.bind(3, request_id);
+    int rc = q.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "cancel reconcile_run");
+    return sqlite3_changes(db_) > 0;
+}
+
+std::optional<TenantStore::ReconcileRun>
+TenantStore::get_reconcile_run(int64_t tenant_id,
+                               const std::string& request_id) const {
+    if (!db_) return std::nullopt;
+    std::string sql = std::string("SELECT ") + kReconcileRunCols +
+        " FROM reconcile_runs WHERE tenant_id = ? AND request_id = ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, request_id);
+    if (q.step() != SQLITE_ROW) return std::nullopt;
+    return row_to_reconcile_run(q);
+}
+
+std::vector<TenantStore::ReconcileRun>
+TenantStore::list_reconcile_runs(int64_t tenant_id, int limit) const {
+    std::vector<ReconcileRun> out;
+    if (!db_) return out;
+    if (limit <= 0 || limit > 200) limit = 100;
+    std::string sql = std::string("SELECT ") + kReconcileRunCols +
+        " FROM reconcile_runs WHERE tenant_id = ? "
+        " ORDER BY created_at DESC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, tenant_id);
+    q.bind(2, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_reconcile_run(q));
+    return out;
+}
+
+std::vector<std::string>
+TenantStore::recover_running_reconcile_runs(int64_t updated_at,
+                                            const std::string& reason) {
+    std::vector<std::string> out;
+    if (!db_) return out;
+    {
+        Stmt q(db_,
+            "SELECT request_id FROM reconcile_runs WHERE status = 'running';");
+        while (q.step() == SQLITE_ROW) out.push_back(q.column_text(0));
+    }
+    if (out.empty()) return out;
+    int64_t ts = updated_at > 0 ? updated_at : now_epoch();
+    Stmt u(db_,
+        "UPDATE reconcile_runs SET status = 'failed', reason = ?, "
+        "updated_at = ? WHERE status = 'running';");
+    u.bind(1, reason);
+    u.bind(2, ts);
+    u.step();
     return out;
 }
 

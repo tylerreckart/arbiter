@@ -8,6 +8,11 @@ Every event on the `/v1/orchestrate` stream has an `event:` line and a `data:` l
 |-------|------|--------|
 | `request_received` | Exactly once, first event on the stream. | `agent`, `tenant`, `tenant_id`, `message` (first 200 chars, ellipsis added if truncated). |
 | `intent` | Pre-dispatch classify/route on **fresh** ingress (`original_query` omitted) when the ingress agent's `intent.mode` is not `off`. After `request_received`, before `stream_start`. See [Intent](intent.md). | `kind`, `confidence`, `source`, `target_agent`, `applied`, `requested_agent`, `applied_agent`, `brief?`, `todo_seed_count`, `plan_seed_count`, `llm_used?`, `malformed?`. |
+| `reconcile.progress` | Phase note on [`POST /v1/reconcile`](../api/reconcile.md). | `request_id`, `phase`, `detail?`. |
+| `reconcile.delta` | Contract observation: residual vs held clauses. | `residual`, `held`, `empty`. |
+| `reconcile.verification` | Test runner outcome. | `ran`, `passed`, `command`, `reason`, `exit_code`. |
+| `reconcile.rollback` | Snapshot restored after failure. | `ok`, `snapshot_path`. |
+| `reconcile.done` | Structured reconcile result (before the stream's `done`). | Same shape as `GET /v1/reconcile/:id`. |
 | `stream_start` | Opens each turn. Fires for master + every delegated or parallel child. | `agent`, `stream_id`, `depth` (0 = master, 1 = delegated, 2 = sub-sub). |
 | `agent_start` | Just before each turn's outbound LLM request. | `agent`, `stream_id`, `depth`. |
 | `text` | Each clean (tool-call lines filtered out) delta from the model. Master text is suppressed during delegation iterations — only `→ delegating: …` status lines reach the wire until the synthesis turn. | `agent`, `stream_id`, `depth` (master only — sub-agent text events only have `agent` + `stream_id`), `delta`. |
@@ -54,5 +59,6 @@ Spec-compatible A2A clients hit [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.
 - [Fleet streaming](fleet-streaming.md)
 - [Advisor](advisor.md) — gate signal grammar, modes, redirect budget.
 - [Intent](intent.md) — pre-dispatch classify/route.
+- [Reconcile](reconcile.md) — desired-end-state contract, tests, rollback.
 - [`POST /v1/orchestrate`](../api/orchestrate.md)
 - [`POST /v1/conversations/:id/messages`](../api/conversations/messages-post.md)

@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Added
+- **Intent reconcile (Phase A).** `POST /v1/reconcile` compiles `target_state` +
+  invariants into a state contract, observes a bound workspace (sandbox or
+  experimental `path`), requires tests by default, and can snapshot/restore on
+  failure. SSE: `reconcile.progress` / `delta` / `verification` / `rollback` /
+  `done`. `@arbiter/sdk` `IntentClient.reconcile()`. See
+  [`docs/concepts/reconcile.md`](docs/concepts/reconcile.md).
 - **Automatic patch releases on merge to `main`.** `version.yml` bumps
   `CMakeLists.txt`, cuts `[Unreleased]` into the new `CHANGELOG.md`
   heading, pins site/docs download examples, tags `vX.Y.Z`, and

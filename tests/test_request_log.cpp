@@ -276,3 +276,62 @@ TEST_CASE("idempotency_keys survive across TenantStore reopen") {
         CHECK(got->request_id == "req-persist");
     }
 }
+
+TEST_CASE("reconcile_runs: upsert / get is tenant-scoped") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t a = make_tenant(s, "acme");
+    const int64_t b = make_tenant(s, "beta");
+
+    TenantStore::ReconcileRun row;
+    row.request_id = "rec-1";
+    row.tenant_id = a;
+    row.status = "running";
+    row.target_state_json = R"({"system":"demo"})";
+    row.invariants_json = R"(["require_readme"])";
+    row.workspace_kind = "path";
+    row.workspace_root = "/tmp/ws";
+    s.upsert_reconcile_run(row);
+
+    auto got = s.get_reconcile_run(a, "rec-1");
+    REQUIRE(got);
+    CHECK(got->status == "running");
+    CHECK(got->target_state_json.find("demo") != std::string::npos);
+    CHECK_FALSE(s.get_reconcile_run(b, "rec-1"));
+
+    row.status = "satisfied";
+    row.reason = "ok";
+    s.upsert_reconcile_run(row);
+    auto again = s.get_reconcile_run(a, "rec-1");
+    REQUIRE(again);
+    CHECK(again->status == "satisfied");
+    CHECK(again->reason == "ok");
+}
+
+TEST_CASE("reconcile_runs recovery sweep flips running rows") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    TenantStore::ReconcileRun row;
+    row.request_id = "rec-live";
+    row.tenant_id = tid;
+    row.status = "running";
+    row.target_state_json = "{}";
+    row.workspace_kind = "sandbox";
+    s.upsert_reconcile_run(row);
+
+    TenantStore::ReconcileRun done = row;
+    done.request_id = "rec-done";
+    done.status = "satisfied";
+    s.upsert_reconcile_run(done);
+
+    auto ids = s.recover_running_reconcile_runs(999, "interrupted");
+    REQUIRE(ids.size() == 1);
+    CHECK(ids[0] == "rec-live");
+    auto live = s.get_reconcile_run(tid, "rec-live");
+    REQUIRE(live);
+    CHECK(live->status == "failed");
+    CHECK(live->reason == "interrupted");
+    auto kept = s.get_reconcile_run(tid, "rec-done");
+    REQUIRE(kept);
+    CHECK(kept->status == "satisfied");
+}
+

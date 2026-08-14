@@ -126,6 +126,24 @@ Deleting a folder unfiles its conversations (`folder_id` cleared) rather than ca
 | `created_at`      | integer | Epoch seconds. |
 | `updated_at`      | integer | Epoch seconds. |
 
+## ReconcileRun
+
+One `POST /v1/reconcile` job. Tenant-scoped. Distinct from `request_status` (SSE log) even when they share `request_id`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `request_id` | string | Same id as the SSE log row. |
+| `tenant_id` | integer | FK. |
+| `status` | string | `running` \| `satisfied` \| `failed` \| `rolled_back` \| `canceled`. |
+| `reason` | string | `ok`, `delta_unresolved`, `verification_missing`, `unknown_invariant`, … |
+| `target_state` | object | Desired end state. |
+| `invariants` | array\<string\> | Expr + named catalog. |
+| `contract` | object | Compiled clauses. |
+| `workspace.kind` | string | `sandbox` \| `path`. |
+| `rollback_on_failure` | boolean | Snapshot/restore. |
+| `result` | object? | Terminal `reconcile.done` payload. |
+| `created_at` / `updated_at` | integer | Epoch seconds. |
+
 ## See also
 
 - [Tenants](tenants.md), [Structured memory](structured-memory.md), [Artifacts](artifacts.md).

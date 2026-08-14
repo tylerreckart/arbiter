@@ -10,6 +10,7 @@
 
 #include "advisor.h"
 #include "intent.h"
+#include "reconcile.h"
 #include "commands.h"
 #include "config.h"
 #include "constitution.h"
@@ -49,6 +50,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <cstring>
 #include <ctime>
@@ -4465,10 +4467,11 @@ std::string new_request_id() {
 class InFlightScope {
 public:
     InFlightScope(InFlightRegistry& reg, std::string id,
-                   Orchestrator* orch, int64_t tenant_id)
+                   Orchestrator* orch, int64_t tenant_id,
+                   std::atomic<bool>* cancel_flag = nullptr)
         : reg_(reg), id_(std::move(id)) {
         std::lock_guard<std::mutex> lk(reg_.mu);
-        reg_.by_id[id_] = {orch, tenant_id};
+        reg_.by_id[id_] = {orch, tenant_id, cancel_flag};
     }
     ~InFlightScope() {
         std::lock_guard<std::mutex> lk(reg_.mu);
@@ -4508,7 +4511,8 @@ void handle_cancel(int fd, const HttpRequest& req,
         if (it != reg.by_id.end() && it->second.tenant_id == tenant.id) {
             // Tenant isolation: cross-tenant ids surface as 404, never
             // as a successful cancel of another tenant's stream.
-            it->second.orch->cancel();
+            if (it->second.orch) it->second.orch->cancel();
+            if (it->second.cancel_flag) it->second.cancel_flag->store(true);
             cancelled = true;
         }
     }
@@ -5876,6 +5880,352 @@ void handle_intent_classify(int fd, const HttpRequest& req,
         m["plan_seeds"] = arr;
     }
     write_json_response(fd, 200, out);
+}
+
+// Defined later with the orchestrate handler; declared here so reconcile
+// can share Idempotency-Key replay/claim.
+std::optional<std::string>
+check_idempotency_replay(const ApiServerOptions& opts,
+                          const HttpRequest& req, int64_t tenant_id);
+std::optional<std::string>
+claim_idempotency_key(const ApiServerOptions& opts,
+                      const HttpRequest& req, int64_t tenant_id,
+                      const std::string& request_id);
+
+// ── POST /v1/reconcile + GET /v1/reconcile/:id (+ events / cancel) ───────────
+
+bool reconcile_path_workspace_allowed() {
+    const char* e = std::getenv("ARBITER_RECONCILE_ALLOW_PATH");
+    if (!e || !*e) return false;
+    std::string v = e;
+    return v == "1" || v == "true" || v == "TRUE" || v == "yes";
+}
+
+void persist_reconcile_row(TenantStore& tenants, int64_t tenant_id,
+                           const std::string& request_id,
+                           const ReconcileSpec& spec,
+                           const ReconcileResult* result,
+                           const std::string& status_override = {}) {
+    TenantStore::ReconcileRun row;
+    row.request_id = request_id;
+    row.tenant_id = tenant_id;
+    row.status = !status_override.empty() ? status_override
+                 : (result ? result->status : "running");
+    row.reason = result ? result->reason : "";
+    row.target_state_json = spec.target_state_json;
+    {
+        auto arr = jarr();
+        for (const auto& i : spec.invariants)
+            arr->as_array_mut().push_back(jstr(i));
+        row.invariants_json = json_serialize(*arr);
+    }
+    if (result) {
+        row.contract_json = json_serialize(*contract_to_json(result->contract));
+        row.result_json = json_serialize(*result_to_json(*result));
+        row.snapshot_path = result->snapshot_path;
+        auto ev = jobj();
+        ev->as_object_mut()["ran"] = jbool(result->verification.ran);
+        ev->as_object_mut()["passed"] = jbool(result->verification.passed);
+        ev->as_object_mut()["command"] = jstr(result->verification.command);
+        ev->as_object_mut()["reason"] = jstr(result->verification.reason);
+        row.verification_json = json_serialize(*ev);
+    }
+    row.workspace_kind = spec.workspace.kind;
+    row.workspace_root = spec.workspace.root;
+    row.rollback_on_failure = spec.rollback_on_failure;
+    tenants.upsert_reconcile_run(row);
+}
+
+void handle_reconcile_get(int fd, const std::string& request_id,
+                          TenantStore& tenants, const Tenant& tenant) {
+    auto row = tenants.get_reconcile_run(tenant.id, request_id);
+    if (!row) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("reconcile run not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    if (!row->result_json.empty()) {
+        try {
+            auto parsed = json_parse(row->result_json);
+            if (parsed && parsed->is_object()) {
+                parsed->as_object_mut()["request_id"] = jstr(row->request_id);
+                parsed->as_object_mut()["workspace_kind"] = jstr(row->workspace_kind);
+                write_json_response(fd, 200, parsed);
+                return;
+            }
+        } catch (...) {}
+    }
+    auto out = jobj();
+    auto& m = out->as_object_mut();
+    m["request_id"] = jstr(row->request_id);
+    m["status"] = jstr(row->status);
+    m["reason"] = jstr(row->reason);
+    m["workspace_kind"] = jstr(row->workspace_kind);
+    write_json_response(fd, 200, out);
+}
+
+void handle_reconcile_cancel(int fd, const std::string& request_id,
+                             InFlightRegistry& in_flight,
+                             TenantStore& tenants, const Tenant& tenant) {
+    HttpRequest fake;
+    fake.method = "POST";
+    fake.path = "/v1/requests/" + request_id + "/cancel";
+    handle_cancel(fd, fake, in_flight, tenant);
+    tenants.try_cancel_reconcile_run(tenant.id, request_id);
+}
+
+void handle_reconcile_post(int fd, const HttpRequest& req,
+                           TenantStore& tenants, Tenant tenant_in,
+                           InFlightRegistry& in_flight,
+                           const ApiServerOptions& opts,
+                           RequestEventBus* bus) {
+    if (req.method != "POST") {
+        write_plain_response(fd, 405, "Method Not Allowed", "method not allowed\n");
+        return;
+    }
+    Tenant tenant = tenant_in;
+    if (!refresh_active_tenant(tenants, tenant)) {
+        reject_disabled_tenant(fd);
+        return;
+    }
+    if (req.body.size() > 256 * 1024) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("request body exceeds 256 KiB");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    std::shared_ptr<JsonValue> body;
+    try { body = json_parse(req.body); }
+    catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(std::string("invalid JSON: ") + e.what());
+        write_json_response(fd, 400, err);
+        return;
+    }
+    if (!body || !body->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("body must be a JSON object");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    auto ts = body->get("target_state");
+    if (!ts || !ts->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("target_state object is required");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    ReconcileSpec spec;
+    spec.target_state_json = json_serialize(*ts);
+    spec.mode = body->get_string("mode", "observe");
+    spec.rollback_on_failure = body->get_bool("rollback_on_failure", false);
+    if (auto inv = body->get("invariants"); inv && inv->is_array()) {
+        for (auto& v : inv->as_array()) {
+            if (!v || !v->is_string()) {
+                auto err = jobj();
+                err->as_object_mut()["error"] =
+                    jstr("invariants must be an array of strings");
+                write_json_response(fd, 400, err);
+                return;
+            }
+            spec.invariants.push_back(v->as_string());
+        }
+    }
+    if (auto ver = body->get("verification"); ver && ver->is_object()) {
+        spec.verification.require_tests =
+            ver->get_bool("require_tests", true);
+        spec.verification.command = ver->get_string("command", "auto");
+    }
+    if (auto b = body->get("budgets"); b && b->is_object()) {
+        spec.max_waves = b->get_int("max_waves", spec.max_waves);
+        spec.max_wall_ms = static_cast<int64_t>(
+            b->get_number("max_wall_ms", static_cast<double>(spec.max_wall_ms)));
+    }
+
+    auto ws = body->get("workspace");
+    if (!ws || !ws->is_object()) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("workspace object is required");
+        write_json_response(fd, 400, err);
+        return;
+    }
+    spec.workspace.kind = ws->get_string("kind", "");
+    if (spec.workspace.kind == "sandbox") {
+        if (!opts.sandbox) {
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr(
+                "sandbox workspace requires ARBITER_SANDBOX_IMAGE; "
+                "or pass workspace.kind=path with ARBITER_RECONCILE_ALLOW_PATH=1");
+            write_json_response(fd, 400, err);
+            return;
+        }
+        spec.workspace.root = opts.sandbox->ensure_workspace(tenant.id);
+        if (spec.workspace.root.empty()) {
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr("failed to create sandbox workspace");
+            write_json_response(fd, 500, err);
+            return;
+        }
+    } else if (spec.workspace.kind == "path") {
+        if (!reconcile_path_workspace_allowed()) {
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr(
+                "workspace.kind=path is experimental; set ARBITER_RECONCILE_ALLOW_PATH=1");
+            write_json_response(fd, 400, err);
+            return;
+        }
+        spec.workspace.root = ws->get_string("root", "");
+    } else {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("workspace.kind must be sandbox or path");
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    if (auto adm = admit_reconcile(spec)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr(adm->message);
+        err->as_object_mut()["code"] = jstr(adm->code);
+        write_json_response(fd, 400, err);
+        return;
+    }
+
+    if (auto replay = check_idempotency_replay(opts, req, tenant.id)) {
+        handle_request_events(fd, *replay, req, tenants, tenant, bus,
+                              /*wait_for_status_row=*/true);
+        return;
+    }
+
+    const std::string request_id = new_request_id();
+    if (auto taken = claim_idempotency_key(opts, req, tenant.id, request_id)) {
+        handle_request_events(fd, *taken, req, tenants, tenant, bus,
+                              /*wait_for_status_row=*/true);
+        return;
+    }
+
+    const int64_t now_s = static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    try {
+        tenants.create_request_status(tenant.id, request_id, "reconcile", 0, now_s);
+    } catch (const std::exception& e) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr(std::string("failed to persist reconcile run: ") + e.what());
+        write_json_response(fd, 500, err);
+        return;
+    }
+    persist_reconcile_row(tenants, tenant.id, request_id, spec, nullptr, "running");
+
+    std::atomic<bool> cancel_flag{false};
+    InFlightScope in_flight_scope(in_flight, request_id, nullptr, tenant.id,
+                                  &cancel_flag);
+
+    SseStream sse(fd);
+    sse.set_persistence(&tenants, bus, tenant.id, request_id);
+    sse.write_headers();
+
+    auto progress = [&](const std::string& phase, const std::string& detail = {}) {
+        auto o = jobj();
+        o->as_object_mut()["request_id"] = jstr(request_id);
+        o->as_object_mut()["phase"] = jstr(phase);
+        if (!detail.empty()) o->as_object_mut()["detail"] = jstr(detail);
+        sse.emit("reconcile.progress", o);
+    };
+
+    {
+        auto rec = jobj();
+        rec->as_object_mut()["agent"] = jstr("reconcile");
+        rec->as_object_mut()["tenant"] = jstr(tenant.name);
+        rec->as_object_mut()["tenant_id"] = jnum(static_cast<double>(tenant.id));
+        rec->as_object_mut()["message"] = jstr("reconcile");
+        rec->as_object_mut()["request_id"] = jstr(request_id);
+        sse.emit("request_received", rec);
+    }
+    progress("admitted");
+
+    ReconcileHooks hooks;
+    hooks.cancel = &cancel_flag;
+    if (spec.workspace.kind == "sandbox" && opts.sandbox) {
+        SandboxManager* mgr = opts.sandbox;
+        const int64_t sandbox_tid = tenant.id;
+        hooks.verify_exec = [mgr, sandbox_tid](const std::string& cmd,
+                                               std::atomic<bool>* cancel) {
+            VerificationEvidence ev;
+            ev.command = cmd;
+            if (cancel && cancel->load()) {
+                ev.reason = "canceled";
+                return ev;
+            }
+            ev.ran = true;
+            SandboxExecResult r = mgr->exec(sandbox_tid, cmd,
+                                            kReconcileVerifyTimeoutSec, cancel);
+            ev.log = r.output;
+            if (ev.log.size() > 32 * 1024) ev.log.resize(32 * 1024);
+            ev.exit_code = r.exit_status;
+            if (r.canceled || (cancel && cancel->load())) {
+                ev.passed = false;
+                ev.reason = "canceled";
+                return ev;
+            }
+            if (!r.ok) {
+                ev.passed = false;
+                ev.reason = r.timed_out ? "timeout" : "spawn_failed";
+                return ev;
+            }
+            ev.passed = (ev.exit_code == 0);
+            ev.reason = ev.passed ? "passed"
+                       : (r.timed_out ? "timeout" : "failed");
+            return ev;
+        };
+    }
+    ReconcileResult result = run_reconcile(spec, hooks);
+    persist_reconcile_row(tenants, tenant.id, request_id, spec, &result);
+
+    sse.emit("reconcile.delta", delta_to_json(result.delta));
+    {
+        auto v = jobj();
+        v->as_object_mut()["ran"] = jbool(result.verification.ran);
+        v->as_object_mut()["passed"] = jbool(result.verification.passed);
+        v->as_object_mut()["command"] = jstr(result.verification.command);
+        v->as_object_mut()["reason"] = jstr(result.verification.reason);
+        v->as_object_mut()["exit_code"] = jnum(result.verification.exit_code);
+        sse.emit("reconcile.verification", v);
+    }
+    if (result.rolled_back) {
+        auto rb = jobj();
+        rb->as_object_mut()["ok"] = jbool(true);
+        rb->as_object_mut()["snapshot_path"] = jstr(result.snapshot_path);
+        sse.emit("reconcile.rollback", rb);
+    }
+    auto done_body = result_to_json(result);
+    done_body->as_object_mut()["request_id"] = jstr(request_id);
+    sse.emit("reconcile.done", done_body);
+
+    auto terminal = jobj();
+    bool ok = result.status == "satisfied";
+    terminal->as_object_mut()["ok"] = jbool(ok);
+    terminal->as_object_mut()["request_id"] = jstr(request_id);
+    terminal->as_object_mut()["status"] = jstr(result.status);
+    if (!ok) terminal->as_object_mut()["error"] = jstr(result.reason);
+    sse.emit("done", terminal);
+    sse.close();
+
+    const int64_t completed_s = static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    std::string rs = "completed";
+    if (result.status == "canceled") rs = "canceled";
+    else if (!ok) rs = "failed";
+    tenants.update_request_status(request_id,
+        std::optional<std::string>(rs),
+        std::optional<int64_t>(completed_s),
+        ok ? std::nullopt : std::optional<std::string>(result.reason),
+        std::nullopt);
 }
 
 void handle_runs_list(int fd, const HttpRequest& req,
@@ -8990,7 +9340,8 @@ void handle_a2a_tasks_cancel(int fd,
         std::lock_guard<std::mutex> lk(in_flight.mu);
         auto it = in_flight.by_id.find(task_id);
         if (it != in_flight.by_id.end() && it->second.tenant_id == tenant.id) {
-            it->second.orch->cancel();
+            if (it->second.orch) it->second.orch->cancel();
+            if (it->second.cancel_flag) it->second.cancel_flag->store(true);
             cancelled_in_flight = true;
         }
     }
@@ -10930,8 +11281,9 @@ void InFlightRegistry::cancel_for_tenant(int64_t tenant_id) {
     // under its own mutex, so holding mu through it is cheap.
     std::lock_guard<std::mutex> lk(mu);
     for (auto& [_, entry] : by_id) {
-        if (entry.tenant_id == tenant_id && entry.orch) {
-            entry.orch->cancel();
+        if (entry.tenant_id == tenant_id) {
+            if (entry.orch) entry.orch->cancel();
+            if (entry.cancel_flag) entry.cancel_flag->store(true);
         }
     }
 }
@@ -11185,6 +11537,8 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         auto orphaned = tenants_.recover_running_requests(
             "failed", now_s,
             "request was interrupted by a server restart; reconnect to retry");
+        auto rec_orphans = tenants_.recover_running_reconcile_runs(
+            now_s, "request was interrupted by a server restart; reconnect to retry");
         for (const auto& rid : orphaned) {
             // Synthesise a terminal `done` event so resubscribe finds
             // a clean tail.  Use the next seq (last_seq+1) for a
@@ -11202,9 +11556,10 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
             // status flip and emits the terminal frame on demand.
             (void)status; (void)rid;
         }
-        if (!orphaned.empty()) {
+        if (!orphaned.empty() || !rec_orphans.empty()) {
             Logger::global().info("recovery_sweep", {
                 {"orphaned_count", std::to_string(orphaned.size())},
+                {"reconcile_orphaned_count", std::to_string(rec_orphans.size())},
                 {"new_state",      "failed"},
             });
         }
@@ -11352,6 +11707,9 @@ void ApiServer::stop() {
         for (auto& kv : in_flight_.by_id) {
             if (kv.second.orch) {
                 try { kv.second.orch->cancel(); } catch (...) {}
+            }
+            if (kv.second.cancel_flag) {
+                kv.second.cancel_flag->store(true);
             }
         }
     }
@@ -12241,6 +12599,61 @@ void ApiServer::handle_connection(int fd) {
             }
             return handle_intent_classify(fd, req, tenants_, *tenant, in_flight_,
                                           opts_);
+        }
+
+        // Intent reconcile: desired end state → workspace + tests
+        // POST /v1/reconcile
+        // GET  /v1/reconcile/:id
+        // GET  /v1/reconcile/:id/events
+        // POST /v1/reconcile/:id/cancel
+        if (segs.size() >= 2 && segs[0] == "v1" && segs[1] == "reconcile") {
+            if (segs.size() == 2) {
+                if (req.method != "POST") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                auto lim = limiter_->acquire(tenant->id);
+                if (!lim.granted()) {
+                    write_429_response(fd, lim.retry_after_seconds,
+                        lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                            ? "concurrent_request_limit"
+                            : "rate_limit",
+                        metrics_.get(), tenant->id);
+                    return;
+                }
+                return handle_reconcile_post(fd, req, tenants_, *tenant, in_flight_,
+                                             opts_, request_events_.get());
+            }
+            const std::string& rid = segs[2];
+            if (segs.size() == 3) {
+                if (req.method == "GET")
+                    return handle_reconcile_get(fd, rid, tenants_, *tenant);
+                write_plain_response(fd, 405, "Method Not Allowed",
+                                     "method not allowed\n");
+                return;
+            }
+            if (segs.size() == 4 && segs[3] == "events") {
+                if (req.method != "GET") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                handle_request_events(fd, rid, req, tenants_, *tenant,
+                                       request_events_.get());
+                return;
+            }
+            if (segs.size() == 4 && segs[3] == "cancel") {
+                if (req.method != "POST") {
+                    write_plain_response(fd, 405, "Method Not Allowed",
+                                         "method not allowed\n");
+                    return;
+                }
+                return handle_reconcile_cancel(fd, rid, in_flight_, tenants_,
+                                               *tenant);
+            }
+            write_plain_response(fd, 404, "Not Found", "reconcile route not found\n");
+            return;
         }
 
         // ── Event ingestion ───────────────────────────────────────────────

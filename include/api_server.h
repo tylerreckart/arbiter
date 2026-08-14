@@ -9,6 +9,8 @@
 // Endpoints:
 //   GET  /v1/health              — 200 "ok", no auth, liveness probe
 //   POST /v1/orchestrate         — main orchestration call, SSE response (tenant auth)
+//   POST /v1/intent              — stateless classify/route
+//   POST /v1/reconcile           — desired-state workspace reconcile (SSE)
 //   GET  /v1/admin/tenants       — list tenants (admin auth)
 //   POST /v1/admin/tenants       — create tenant, returns plaintext token (admin auth)
 //   GET  /v1/admin/tenants/{id}  — one tenant (admin auth)
@@ -78,8 +80,9 @@ struct Tenant;
 // dangling pointer.
 struct InFlightRegistry {
     struct Entry {
-        Orchestrator* orch     = nullptr;
-        int64_t       tenant_id = 0;
+        Orchestrator*      orch        = nullptr;
+        int64_t            tenant_id   = 0;
+        std::atomic<bool>* cancel_flag = nullptr;  // reconcile (no Orchestrator)
     };
     std::mutex                           mu;
     std::unordered_map<std::string, Entry> by_id;

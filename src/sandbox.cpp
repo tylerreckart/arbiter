@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <limits>
 #include <chrono>
@@ -63,8 +64,11 @@ int run_capture(const std::vector<std::string>& argv,
                 size_t output_cap,
                 std::string& out,
                 bool& timed_out_out,
-                bool* truncated_out = nullptr) {
+                bool* truncated_out = nullptr,
+                std::atomic<bool>* cancel = nullptr,
+                bool* canceled_out = nullptr) {
     timed_out_out = false;
+    if (canceled_out) *canceled_out = false;
     out.clear();
     if (argv.empty()) {
         out = "ERR: empty argv";
@@ -117,6 +121,11 @@ int run_capture(const std::vector<std::string>& argv,
     char buf[4096];
     bool eof = false;
     while (!eof) {
+        if (cancel && cancel->load()) {
+            if (canceled_out) *canceled_out = true;
+            ::kill(pid, SIGKILL);
+            break;
+        }
         // Compute remaining time before poll.  When the deadline is
         // "max", use -1 (block until I/O) — combined with periodic
         // waitpid below, the child still drains correctly.
@@ -132,12 +141,13 @@ int run_capture(const std::vector<std::string>& argv,
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     deadline - now).count());
             if (poll_ms < 0) poll_ms = 0;
-            if (poll_ms > 1000) poll_ms = 1000;
+            if (cancel && poll_ms > 250) poll_ms = 250;
+            else if (poll_ms > 1000) poll_ms = 1000;
         } else {
             // No deadline: poll in 1 s windows so we wake periodically
             // to call waitpid (catches the child exiting after closing
             // stdout, before its zombie is reaped).
-            poll_ms = 1000;
+            poll_ms = cancel ? 250 : 1000;
         }
 
         pollfd pfd{read_fd, POLLIN, 0};
@@ -206,6 +216,10 @@ int run_capture(const std::vector<std::string>& argv,
 
     ::close(read_fd);
     int status = 0;
+    if (canceled_out && *canceled_out) {
+        ::waitpid(pid, &status, 0);
+        return -1;
+    }
     if (timed_out_out) {
         ::waitpid(pid, &status, 0);
         return 124; // conventional timeout exit code
@@ -673,7 +687,9 @@ bool SandboxManager::ensure_container(int64_t tenant_id, std::string& err_out) {
 }
 
 SandboxExecResult SandboxManager::exec(int64_t tenant_id,
-                                        const std::string& command) {
+                                        const std::string& command,
+                                        int timeout_seconds_override,
+                                        std::atomic<bool>* cancel) {
     SandboxExecResult r;
     if (!usable_) {
         r.ok = false;
@@ -697,11 +713,14 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     }
 
     const std::string name = container_name_for(tenant_id);
+    const int exec_timeout = (timeout_seconds_override > 0)
+        ? timeout_seconds_override
+        : cfg_.exec_timeout_seconds;
     // Container-side deadline (GNU timeout when present) + parent-side
     // backstop.  Parent gets a small grace so the in-container timeout
     // can exit with 124 before we SIGKILL the docker-exec driver.
     const std::string wrapped =
-        wrap_exec_with_timeout(command, cfg_.exec_timeout_seconds);
+        wrap_exec_with_timeout(command, exec_timeout);
     std::vector<std::string> argv{
         cfg_.runtime, "exec",
         "-i",
@@ -709,8 +728,8 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         name,
         "sh", "-c", wrapped
     };
-    const int parent_timeout = (cfg_.exec_timeout_seconds > 0)
-        ? cfg_.exec_timeout_seconds + 2
+    const int parent_timeout = (exec_timeout > 0)
+        ? exec_timeout + 2
         : 0;
 
     // Always serialize same-tenant /exec on the per-tenant mutex:
@@ -725,22 +744,24 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     const bool quota_enforced = cfg_.workspace_max_bytes > 0;
 
     bool timed_out = false;
+    bool canceled = false;
     bool truncated = false;
     int rc = run_capture(argv, parent_timeout,
                           static_cast<size_t>(cfg_.output_max_bytes),
-                          r.output, timed_out, &truncated);
+                          r.output, timed_out, &truncated, cancel, &canceled);
     // GNU timeout exits 124 on deadline; treat that as a clean timeout
     // even when the parent backstop did not fire.
-    if (!timed_out && cfg_.exec_timeout_seconds > 0 && rc == 124) {
+    if (!timed_out && !canceled && exec_timeout > 0 && rc == 124) {
         timed_out = true;
     }
-    r.timed_out  = timed_out;
+    r.canceled   = canceled;
+    r.timed_out  = timed_out && !canceled;
     r.exit_status = rc;
 
-    if (timed_out) {
+    if (timed_out || canceled) {
         // Best-effort: kill leftover non-PID-1 processes so a timed-out
-        // workload cannot keep burning CPU/memory inside the warm
-        // container after docker-exec is gone.  Safe under tenant_lk —
+        // or canceled workload cannot keep burning CPU/memory inside the
+        // warm container after docker-exec is gone.  Safe under tenant_lk —
         // no overlapping /exec for this tenant can be in-flight.
         std::string kill_out;
         bool kill_to = false;
@@ -791,7 +812,7 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
             || out.find("is restarting")     != std::string::npos
             || out.find("is paused")         != std::string::npos;
     };
-    if (rc != 0 && !timed_out && is_docker_lost(rc, r.output)) {
+    if (rc != 0 && !timed_out && !canceled && is_docker_lost(rc, r.output)) {
         std::lock_guard<std::mutex> lk(mu_);
         running_.erase(tenant_id);
     }
@@ -806,11 +827,11 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     }
     if (timed_out) {
         r.output += "\n[timed out after " +
-                    std::to_string(cfg_.exec_timeout_seconds) + "s]";
+                    std::to_string(exec_timeout) + "s]";
     } else if (rc != 0 && rc != -1) {
         r.output += "\n[exit " + std::to_string(rc) + "]";
     }
-    if (rc == -1) {
+    if (rc == -1 && !canceled) {
         r.ok = false;
         r.error = r.output;
         // r.output already starts with "ERR: " from run_capture.

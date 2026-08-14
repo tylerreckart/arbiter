@@ -30,7 +30,7 @@ flowchart LR
 
             REQUESTS(("Requests"))
 
-            INTENT["Intent engine<br/>classify · route · seeds"]
+            INTENT["Intent engine<br/>classify · route · reconcile"]
 
             ORCHESTRATION["Shared orchestration loop"]
 
@@ -115,6 +115,7 @@ For implementation details and deeper explanations, see:
 
 - [Writ](writ.md)
 - [Intent](intent.md)
+- [Reconcile](reconcile.md)
 - [Advisor](advisor.md)
 - [Structured memory](structured-memory.md)
 - [MCP](mcp.md)
