@@ -3023,6 +3023,10 @@ TenantStore::get_a2a_task(int64_t tenant_id,
 
 // ── Agent file-scratchpad ──────────────────────────────────────────────
 
+namespace {
+constexpr std::size_t kScratchpadMaxBytes = 4 * 1024 * 1024;
+} // namespace
+
 std::string TenantStore::read_scratchpad(int64_t tenant_id,
                                           const std::string& scope_key) const {
     if (!db_) return "";
@@ -3031,7 +3035,21 @@ std::string TenantStore::read_scratchpad(int64_t tenant_id,
     q.bind(1, tenant_id);
     q.bind(2, scope_key);
     if (q.step() != SQLITE_ROW) return "";
-    return q.column_text(0);
+    std::string out = q.column_text(0);
+    if (out.size() > kScratchpadMaxBytes)
+        out.resize(kScratchpadMaxBytes);
+    return out;
+}
+
+int64_t TenantStore::scratchpad_byte_size(int64_t tenant_id,
+                                           const std::string& scope_key) const {
+    if (!db_) return 0;
+    Stmt q(db_, "SELECT length(content) FROM agent_scratchpad "
+                 "WHERE tenant_id = ? AND scope_key = ?;");
+    q.bind(1, tenant_id);
+    q.bind(2, scope_key);
+    if (q.step() != SQLITE_ROW) return 0;
+    return q.column_int64(0);
 }
 
 namespace {
@@ -3069,6 +3087,8 @@ int64_t TenantStore::append_scratchpad(int64_t tenant_id,
         sel.bind(2, scope_key);
         if (sel.step() == SQLITE_ROW) current = sel.column_text(0);
     }
+    if (current.size() + block.size() > kScratchpadMaxBytes) return -1;
+
     const std::string new_content = current + block;
 
     if (current.empty()) {

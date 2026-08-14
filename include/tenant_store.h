@@ -1030,13 +1030,18 @@ public:
 
     // Appends a `\n<!-- <ts> -->\n<text>\n` block to the existing content
     // (or starts the content with that block on first write).  Returns
-    // the new total content size in bytes (callers usually ignore).
+    // the new total content size in bytes on success, or -1 when the
+    // scratchpad would exceed the 4 MiB cap.
     int64_t append_scratchpad(int64_t tenant_id,
                                const std::string& scope_key,
                                const std::string& text);
 
     // Returns true if a row was deleted.  Idempotent.
     bool clear_scratchpad(int64_t tenant_id, const std::string& scope_key);
+
+    // Byte length of stored scratchpad content (0 when missing).
+    int64_t scratchpad_byte_size(int64_t tenant_id,
+                                 const std::string& scope_key) const;
 
     // List every scope_key that has a non-empty scratchpad for this
     // tenant.  Used by `GET /v1/memory` to enumerate available agent
