@@ -3,8 +3,9 @@
 //
 // Per-tenant in-flight cap + token-bucket rate limit for the expensive
 // HTTP routes (orchestrate, conversation messages, agent chat, A2A
-// dispatch).  Catches runaway agent loops and prevents one tenant from
-// starving every other tenant of provider quota or accept-queue slots.
+// dispatch, event ingest, advisor gate).  Catches runaway agent loops
+// and prevents one tenant from starving every other tenant of provider
+// quota or accept-queue slots.
 //
 // Design:
 //

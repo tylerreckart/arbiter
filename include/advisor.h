@@ -40,8 +40,10 @@ const char* default_gate_prompt();
 //                    Empty ⇒ returns Halt(malformed) — defence-in-depth; the
 //                    caller is expected to have checked mode == "gate" first.
 //   prompt_override  gate system-prompt override; empty ⇒ default_gate_prompt().
+//                    Capped at kAdvisorGateMaxPromptOverride.
 //   in               structured executor context (task, terminating text,
-//                    tool summary).
+//                    tool summary).  Fields are capped (see
+//                    cap_advisor_gate_input) before the prompt is built.
 //   on_response      optional hook fired with the raw ApiResponse after the
 //                    call — used by the orchestrator to attribute cost to the
 //                    caller's ledger.  A standalone deployment wires its own

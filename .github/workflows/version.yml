@@ -1,0 +1,149 @@
+name: Version bump
+
+# On every merge to main, cut a patch version (0.12.2 → 0.12.3): bump
+# CMakeLists.txt (INDEX_VERSION), move CHANGELOG [Unreleased] into the
+# new heading, pin the site/docs download examples, commit, tag vX.Y.Z,
+# and dispatch release.yml to publish binaries.
+#
+# Minor and major are manual:
+#   - Actions → Version bump → Run workflow → minor / major, or type
+#     an explicit X.Y.Z (1.0.0, a skipped 0.13.0, …).
+#   - Or bump `project(arbiter VERSION …)` in the PR itself.  On merge
+#     this workflow sees CMakeLists ahead of the latest tag and tags
+#     *that* version instead of auto-patching.
+#   - `[skip version]` in the merge commit (or squash PR title) skips
+#     the bump entirely.  `git tag vX.Y.Z && git push origin vX.Y.Z`
+#     still fires release.yml on its own.
+#
+# GITHUB_TOKEN pushes do not retrigger `on: push: tags` in
+# release.yml, so after pushing the tag we `workflow_dispatch` that
+# workflow (the documented exception).  Our own `chore(release):`
+# commit would otherwise loop this workflow; the job `if:` drops it.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Bump type when no explicit version is set"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      version:
+        description: "Explicit X.Y.Z (optional; overrides bump type)"
+        required: false
+        type: string
+
+permissions:
+  contents: write   # commit + tag on main
+  actions: write    # dispatch release.yml
+
+concurrency:
+  group: version-main
+  # Queue, don't cancel: two merges in flight should serialize so the
+  # second run sees the first release commit (and no-ops, or bumps
+  # again if it landed *after* that commit).
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Cut version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'push' &&
+        !startsWith(github.event.head_commit.message, 'chore(release):') &&
+        !contains(github.event.head_commit.message, '[skip version]')
+      )
+    outputs:
+      skipped: ${{ steps.cut.outputs.skipped }}
+      version: ${{ steps.cut.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The triggering SHA can lag origin/main when two merges land in
+      # the same window.  Always edit the current tip so we don't push
+      # a bump that drops a newer merge.
+      - name: Sync to origin/main
+        run: |
+          set -euxo pipefail
+          git fetch origin main --tags --force
+          git checkout -B main origin/main
+
+      - name: Self-test bump script
+        run: |
+          set -euxo pipefail
+          chmod +x .github/scripts/bump_version.sh \
+                   .github/scripts/test_bump_version.sh
+          .github/scripts/test_bump_version.sh
+
+      - name: Cut version, commit, tag, push
+        id: cut
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_BUMP: ${{ github.event.inputs.bump }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            MODE=manual
+          else
+            MODE=auto
+          fi
+
+          run_bump() {
+            local args=(--mode "$MODE" --bump "${INPUT_BUMP:-patch}" --trigger-sha "$TRIGGER_SHA")
+            if [ -n "${INPUT_VERSION:-}" ]; then
+              args+=(--version "$INPUT_VERSION")
+            fi
+            .github/scripts/bump_version.sh "${args[@]}"
+          }
+
+          for attempt in 1 2 3; do
+            git fetch origin main --tags --force
+            git reset --hard origin/main
+            run_bump
+            # Last write wins in GITHUB_OUTPUT; retries append, so read
+            # the trailing skipped=/version= lines rather than grepping
+            # for any historical skipped=true.
+            skipped="$(grep '^skipped=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2-)"
+            VERSION="$(grep '^version=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+            if [ "$skipped" = "true" ]; then
+              exit 0
+            fi
+            if git push origin HEAD:main && git push origin "v${VERSION}"; then
+              exit 0
+            fi
+            echo "push failed (attempt ${attempt}); retrying from origin/main"
+            # Drop the local tag so a retry can recreate it after reset.
+            git tag -d "v${VERSION}" || true
+          done
+          echo "push still failing after retries" >&2
+          exit 1
+
+      # GITHUB_TOKEN tag pushes do not fire release.yml's `on: push:
+      # tags`.  workflow_dispatch does.  release.yml checks out the
+      # tag input, so the tag must exist (previous step) before this.
+      - name: Dispatch binary release
+        if: steps.cut.outputs.skipped != 'true' && steps.cut.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          gh workflow run release.yml \
+            --repo "${{ github.repository }}" \
+            --ref main \
+            -f "tag=v${{ steps.cut.outputs.version }}"

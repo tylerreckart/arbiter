@@ -8,10 +8,45 @@
 
 #include <cctype>
 #include <string>
+#include <utility>
 
 namespace arbiter {
 
 namespace {
+
+// Truncate `s` to `max` bytes without splitting a UTF-8 sequence.  When
+// truncated, a marker is included inside the budget so a second call is
+// a no-op (size already <= max).
+std::string cap_bytes(std::string s, size_t max) {
+    if (s.size() <= max) return s;
+    static constexpr char kMarker[] = "\n... [truncated]";
+    constexpr size_t kMarkerLen = sizeof(kMarker) - 1;
+    const size_t keep = (max > kMarkerLen) ? (max - kMarkerLen) : max;
+    s.resize(keep);
+    if (!s.empty()) {
+        size_t i = s.size();
+        while (i > 0 &&
+               (static_cast<unsigned char>(s[i - 1]) & 0xC0) == 0x80) {
+            --i;
+        }
+        if (i == s.size()) {
+            // Last byte is not a continuation — ASCII (keep) or a stray
+            // multi-byte lead (drop).
+            if (static_cast<unsigned char>(s.back()) >= 0xC0) s.pop_back();
+        } else {
+            const unsigned char lead = static_cast<unsigned char>(s[i]);
+            int need = 1;
+            if      ((lead & 0xE0) == 0xC0) need = 2;
+            else if ((lead & 0xF0) == 0xE0) need = 3;
+            else if ((lead & 0xF8) == 0xF0) need = 4;
+            else if (lead >= 0x80)          need = 0;  // invalid lead
+            if (need == 0 || s.size() - i < static_cast<size_t>(need))
+                s.resize(i);
+        }
+    }
+    if (max > kMarkerLen) s += kMarker;
+    return s;
+}
 
 // Find the first `<tag>...</tag>` block in `s`, return inner text (trimmed).
 // Tag matching is literal — no regex, no case-folding on the tag itself.
@@ -63,6 +98,19 @@ AdvisorGateOutput parse_advisor_signal(const std::string& reply) {
 
     out.malformed = true;
     return out;
+}
+
+void cap_advisor_gate_input(AdvisorGateInput& in) {
+    in.original_task    = cap_bytes(std::move(in.original_task),
+                                    kAdvisorGateMaxOriginalTask);
+    in.terminating_text = cap_bytes(std::move(in.terminating_text),
+                                    kAdvisorGateMaxTerminatingText);
+    in.tool_summary     = cap_bytes(std::move(in.tool_summary),
+                                    kAdvisorGateMaxToolSummary);
+}
+
+std::string cap_advisor_prompt_override(std::string prompt) {
+    return cap_bytes(std::move(prompt), kAdvisorGateMaxPromptOverride);
 }
 
 }  // namespace arbiter

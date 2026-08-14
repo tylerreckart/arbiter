@@ -153,6 +153,19 @@ using AdvisorGateInvoker = std::function<AdvisorGateOutput(const AdvisorGateInpu
 // failure-mode policy (the runtime gate fails closed by default).
 AdvisorGateOutput parse_advisor_signal(const std::string& reply);
 
+// Byte caps applied before the advisor prompt is built.  Shared by
+// POST /v1/advise/gate and the in-loop gate so a large HTTP body or
+// executor turn cannot inflate the advisor completion.
+inline constexpr std::size_t kAdvisorGateMaxOriginalTask    = 32 * 1024;
+inline constexpr std::size_t kAdvisorGateMaxTerminatingText = 32 * 1024;
+inline constexpr std::size_t kAdvisorGateMaxToolSummary     = 8 * 1024;
+inline constexpr std::size_t kAdvisorGateMaxPromptOverride  = 16 * 1024;
+
+// Truncate gate fields in-place to the caps above.  Idempotent: a
+// second call is a no-op when already within budget.
+void cap_advisor_gate_input(AdvisorGateInput& in);
+std::string cap_advisor_prompt_override(std::string prompt);
+
 // Gatekeeper for potentially-destructive operations.  Carries enough context
 // for the TUI to render a permission card (action, target, content preview).
 // Returns true to proceed, false to abort.  If unset, every guarded command

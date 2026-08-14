@@ -2,13 +2,19 @@ name: Build and publish release
 
 # Build arbiter on tag push and publish a GitHub Release on this same
 # repository with prebuilt binaries for each platform.  Tag-driven —
-# pushing a `vX.Y.Z` tag is the only thing that fires this.
+# a `vX.Y.Z` tag (or workflow_dispatch with that tag) is what fires this.
 #
-# Setup prereqs (one-time):
-#   - Bump `project(arbiter VERSION X.Y.Z ...)` in CMakeLists.txt to match
-#     the tag you're about to push (the binary embeds it via INDEX_VERSION).
-#   - `git tag vX.Y.Z && git push origin vX.Y.Z` runs this workflow.
-#     Or: Actions → Build and publish release → Run workflow → pick a tag.
+# Tags usually come from version.yml: merges to main auto-cut a patch
+# (`v0.12.3`, …) and then dispatch this workflow.  Minor / major:
+#   - Actions → Version bump → minor / major / explicit X.Y.Z
+#   - Bump `project(arbiter VERSION X.Y.Z ...)` in a PR; on merge,
+#     version.yml tags that version instead of auto-patching
+#   - `git tag vX.Y.Z && git push origin vX.Y.Z` (this `on: push: tags`)
+#   - Actions → Build and publish release → Run workflow → pick a tag
+#
+# INDEX_VERSION is whatever CMakeLists.txt has at the tagged commit.
+# version.yml keeps that in sync with the tag; a hand-pushed tag should
+# too, or the binary will advertise a stale version.
 #
 # Asset naming (kept version-free so `releases/latest/download/...` works
 # as a stable URL in install scripts):

@@ -28,6 +28,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Fixture tests for the main-merge version bumper.  Cheap (temp git
+  # repo, no compilers) and catches a broken bump_version.sh before it
+  # lands on main and skips/misfires a release.
+  version_script:
+    name: version-bump-script
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test bump_version.sh
+        run: |
+          set -euxo pipefail
+          chmod +x .github/scripts/bump_version.sh \
+                   .github/scripts/test_bump_version.sh
+          .github/scripts/test_bump_version.sh
+
   build_and_test:
     name: ${{ matrix.os_slug }}-${{ matrix.arch_slug }}
     runs-on: ${{ matrix.runs_on }}

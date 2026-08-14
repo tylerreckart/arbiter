@@ -70,11 +70,11 @@ Where the gate fires inside the dispatch loop:
 1. The executor's current turn produced no further tool calls (`cmds.empty()`) — i.e., it's about to terminate.
 2. If `mode != "gate"`, terminate immediately (legacy behaviour).
 3. Otherwise the runtime calls the gate with a structured input:
-   - `original_task` — the user's original request (no truncation beyond the master's own delegation cap).
-   - `terminating_text` — the executor's text for this turn only.
-   - `tool_summary` — a one-line-per-call summary of the tools the executor used in the turn that produced these results: `- <name> args=<first 80 chars> result=<first 200 chars>`.
+   - `original_task` — the user's original request (capped at 32 KB).
+   - `terminating_text` — the executor's text for this turn only (capped at 32 KB).
+   - `tool_summary` — a one-line-per-call summary of the tools the executor used in the turn that produced these results: `- <name> args=<first 80 chars> result=<first 200 chars>` (capped at 8 KB).
 
-   The advisor sees nothing else — no prior turns, no full reasoning trace. Its system prompt is fixed (or `prompt`-overridden); its history is empty per call.
+   The advisor sees nothing else — no prior turns, no full reasoning trace. Its system prompt is fixed (or `prompt`-overridden, capped at 16 KB); its history is empty per call.
 
 4. The runtime parses the reply into one of:
    - `CONTINUE` — the loop terminates and the response returns to the caller.
@@ -113,3 +113,4 @@ The consult path doesn't constrain the executor — it's an affordance, not a ga
 - [SSE events](sse-events.md) — `advisor` and `escalation` event payloads.
 - [Agent data model](data-model.md) — where the advisor block lives.
 - [`POST /v1/agents`](../api/agents/create.md) — create an agent with an advisor configured.
+- [`POST /v1/advise/gate`](../api/advise-gate.md) — standalone gate verdict for external executor loops.
