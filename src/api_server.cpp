@@ -7624,9 +7624,7 @@ A2AInvoker make_a2a_invoker(const ApiServerOptions& opts,
 // cwd — SECURITY.md's "orchestrate intercepts /write" guarantee applies
 // to every API entrypoint.  Streaming handlers may replace the
 // interceptor afterward with one that also emits SSE `file` events.
-namespace {
 thread_local int64_t g_tls_tool_conversation_id = 0;
-} // namespace
 
 void wire_orch_tools_impl(Orchestrator& orch,
                              const ApiServerOptions& opts,
