@@ -473,7 +473,7 @@ TEST_CASE("styled_advisor_event lines use distinct glyphs") {
     CHECK(redirect.spans[0].id == StyleId::Warning);
 
     auto halt = styled_advisor_halt_line("research", "incomplete without verification");
-    CHECK(halt.text.find("\u2717 ") == 0);  // ✗
+    CHECK(halt.text.find("\u00d7 ") == 0);  // ×
     CHECK(halt.text.find("halt") != std::string::npos);
     CHECK(halt.spans[0].id == StyleId::Error);
 }

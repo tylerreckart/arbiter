@@ -78,7 +78,7 @@ void apply_base_style(StyledLine& line, StyleId base);
 [[nodiscard]] StyledLine styled_advisor_redirect_line(std::string_view agent_id,
                                                       std::string_view detail);
 
-// Gate halt / budget exhaustion (`✗ halt · agent`): error. Prefer this over a
+// Gate halt / budget exhaustion (`× halt · agent`): error. Prefer this over a
 // second activity line when both advisor gate_halt and escalation fire.
 [[nodiscard]] StyledLine styled_advisor_halt_line(std::string_view agent_id,
                                                   std::string_view reason);
