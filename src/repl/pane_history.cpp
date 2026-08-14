@@ -59,6 +59,11 @@ void pane_history_drain_queue(Pane& pane) {
                 pane.scroll->append_thinking(item.data, item.new_block, item.agent_id);
             }
             break;
+        case OutputItem::Kind::UserEcho:
+            if (pane.scroll && !item.data.empty()) {
+                pane.scroll->append_user_echo(item.data, item.new_block);
+            }
+            break;
         }
     }
     if (pane.scroll_offset > 0) {

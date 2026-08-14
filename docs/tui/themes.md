@@ -87,7 +87,7 @@ Example partial override on a preset (in `tui.json` or a theme file):
   },
   "layout": {
     "pane_padding_x": 1,
-    "input_padding_x": 2
+    "input_padding_x": 1
   }
 }
 ```

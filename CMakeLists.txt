@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.12.5 LANGUAGES CXX)
+project(arbiter VERSION 0.12.6 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -197,6 +197,15 @@ set(ARBITER_SOURCES
     src/reconcile.cpp
     src/advisor_gate.cpp
     src/advisor.cpp
+    src/api/auth.cpp
+    src/api/event_logger.cpp
+    src/api/http_request.cpp
+    src/api/http_response.cpp
+    src/api/http_transport.cpp
+    src/api/http_util.cpp
+    src/api/in_flight.cpp
+    src/api/request_id.cpp
+    src/api/sse_stream.cpp
     src/api_server.cpp
     src/sandbox.cpp
     src/ssrf_guard.cpp

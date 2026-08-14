@@ -43,7 +43,7 @@ When the terminal is at least 96 columns wide **and only one pane is open**, a f
 - **Context** — context window fill (`used` % and token fraction from the last turn; session `peak` %), plus cumulative in/out tokens, cost, and turn count.
 - **Agent** — focused pane's current agent and model; last turn model when different.
 - **Task** — focused pane's pinned original task (advisor-gated work).
-- **Todos** — `/todo` items tracked this session (`•` pending, `▶` in progress, `✓` done).
+- **Todos** — `/todo` items tracked this session (`○` pending, `●` in progress, `✓` done).
 - **Scheduled** — `/schedule` entries and active `/loop` background tasks (when present).
 - **Tools** — recent tool calls with descriptive labels (`exec: git status`, `write: path`, …) and ✓/✗ status; live count while a turn runs tools.
 - **MCP** — recent MCP invocations as `server.tool`, listed separately.

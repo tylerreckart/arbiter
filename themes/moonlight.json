@@ -111,7 +111,7 @@
     "scroll_pad_y": 0,
     "show_footer": true,
     "show_history_sidebar": true,
-    "status_inset_x": 2,
+    "status_inset_x": 1,
     "status_pill": true
   },
   "text": {

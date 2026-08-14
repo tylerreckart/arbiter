@@ -313,6 +313,25 @@ void OutputQueue::push_thinking(const std::string& delta, const std::string& age
     if (fn) fn();
 }
 
+void OutputQueue::push_user_echo(std::string_view text) {
+    if (text.empty()) return;
+    std::function<void()> fn;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        OutputItem item;
+        item.kind = OutputItem::Kind::UserEcho;
+        item.data.assign(text.data(), text.size());
+        item.new_block = true;  // each submit is its own box
+        items_.push_back(std::move(item));
+        // Consume pending separators so the following assistant block still
+        // gets a clean gap via append_thinking / append_prose.
+        need_sep_ = false;
+        split_after_diff_ = false;
+        fn = notify_fn_;
+    }
+    if (fn) fn();
+}
+
 void OutputQueue::push_prose_msg(const std::string& text, StyleId id) {
     size_t start = 0;
     while (start < text.size() && (text[start] == '\n' || text[start] == '\r')) ++start;

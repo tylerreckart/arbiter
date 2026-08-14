@@ -21,7 +21,7 @@ void replay_into(PaneScrollView& view, const std::vector<Message>& history) {
     OutputQueue queue;
     for (const Message& m : history) {
         if (m.role == "user") {
-            queue.push_prose(styled_user_echo_lines(replay_user_echo_text(m)));
+            queue.push_user_echo(replay_user_echo_text(m));
             queue.end_message();
             continue;
         }
@@ -70,6 +70,11 @@ void replay_into(PaneScrollView& view, const std::vector<Message>& history) {
         case OutputItem::Kind::Thinking:
             if (!item.data.empty()) {
                 view.append_thinking(item.data, item.new_block, item.agent_id);
+            }
+            break;
+        case OutputItem::Kind::UserEcho:
+            if (!item.data.empty()) {
+                view.append_user_echo(item.data, item.new_block);
             }
             break;
         }
