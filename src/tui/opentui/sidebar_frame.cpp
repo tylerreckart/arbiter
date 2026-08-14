@@ -166,8 +166,8 @@ int draw_todo_list(OpenTuiHandle frame,
                                : active ? d.accent.warning
                                         : sc.label;
         const char* mark = done   ? "\u2713"   // ✓
-                         : active ? "\u25b6"   // ▶
-                                  : "\u2022";  // •
+                         : active ? "\u25CF"   // ●
+                                  : "\u25CB";  // ○
         draw_text(frame,
                   static_cast<std::uint32_t>(content_x),
                   static_cast<std::uint32_t>(row),

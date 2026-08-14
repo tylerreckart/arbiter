@@ -51,13 +51,13 @@ A successful `/todo list` looks like:
 ```
 [/todo list]
 3 open (1 in progress, 2 pending):
-▶ #14  [p1]  [in_progress]  review the canary deploy status
-  #15  [p1]  [pending]      write the post-mortem
-  #16  [p2]  [pending]      file the rollback ticket  (tenant-wide)
+● #14  [p1]  [in_progress]  review the canary deploy status
+○ #15  [p1]  [pending]      write the post-mortem
+○ #16  [p2]  [pending]      file the rollback ticket  (tenant-wide)
 [END TODO]
 ```
 
-The `▶` marker singles out `in_progress` rows. `[p<N>]` is the row's `position` within its (status, conversation) bucket — useful when reasoning about `PATCH position` reorders. A `(tenant-wide)` suffix means the row's `conversation_id` is 0 — it'll surface in this conversation but also in every other thread for the tenant.
+Markers match tool-row vocabulary: `○` pending, `●` in progress, `✓` done (`✗` canceled). `[p<N>]` is the row's `position` within its (status, conversation) bucket — useful when reasoning about `PATCH position` reorders. A `(tenant-wide)` suffix means the row's `conversation_id` is 0 — it'll surface in this conversation but also in every other thread for the tenant.
 
 `/todo list all` includes terminal rows (`completed`, `canceled`) for retrospective review; bare `/todo list` keeps the display focused on open work.
 
@@ -80,9 +80,9 @@ Pipeline memory (entries written by prior agents this conversation — …):
   - #281  [project]  Q3 observability rollout — initial brief
 Open todos (mark progress as you go — /todo start <id|subject>, /todo done <id|subject>):
 3 open (1 in progress, 2 pending):
-▶ #14  [in_progress]  review the canary deploy status
-  #15  [pending]      write the post-mortem
-  #16  [pending]      file the rollback ticket
+● #14  [in_progress]  review the canary deploy status
+○ #15  [pending]      write the post-mortem
+○ #16  [pending]      file the rollback ticket
 [END DELEGATION CONTEXT]
 ```
 

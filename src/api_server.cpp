@@ -6918,9 +6918,10 @@ TodoInvoker make_todo_invoker_callback(
                     (r.status == "completed" || r.status == "canceled");
                 if (terminal && !include_terminal) continue;
                 const char* mark =
-                    r.status == "in_progress" ? "▶ " :
+                    r.status == "in_progress" ? "● " :
                     r.status == "completed"   ? "✓ " :
                     r.status == "canceled"    ? "✗ " :
+                    r.status == "pending"     ? "○ " :
                                                 "  ";
                 out << mark << "#" << r.id
                     << "  [p" << r.position << "]"
