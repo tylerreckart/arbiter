@@ -86,17 +86,23 @@ public:
     void append_thinking(std::string_view delta,
                          bool new_block = false,
                          std::string_view agent_id = {});
+    // User submit echo: same rounded-box chrome dialect as ThinkingSegment
+    // (title "you", scroll bg, muted border, info title). Plain-text body;
+    // collapses long pastes like thinking.
+    void append_user_echo(std::string_view text, bool new_block = true);
     void clear();
 
     // Re-resolve scrollback colors after a TUI preset change.
     void retheme();
 
-    // Toggle expand/collapse on a truncated code block or tool row in view.
+    // Toggle expand/collapse on a truncated code block, user echo, thinking,
+    // or tool row in view.
     bool toggle_code_block_in_view(int scroll_offset);
 
-    // Toggle the expandable segment under a terminal click (thinking / tool /
-    // truncated code). Returns false when the click misses content or lands
-    // on a non-expandable row. Recomputes bind geometry from `tui`.
+    // Toggle the expandable segment under a terminal click (user echo /
+    // thinking / tool / truncated code). Returns false when the click misses
+    // content or lands on a non-expandable row. Recomputes bind geometry from
+    // `tui`.
     bool toggle_expandable_at_click(const TUI& tui,
                                     int term_x,
                                     int term_y,
@@ -350,6 +356,43 @@ private:
         mutable std::vector<StyledLine> body_cache_;
     };
 
+    // User submit echo. Shares ThinkingSegment's rounded-box chrome (scroll
+    // bg, muted border, info title) with title "you". Plain-text body; long
+    // pastes collapse to kPreviewRows like thinking.
+    struct UserEchoSegment final : Segment {
+        std::string text_;
+        bool expanded_ = false;
+        mutable int wrap_cols_{80};
+        static constexpr int kPreviewRows = 3;
+        static constexpr int kExpandedCap = 40;
+        static constexpr int kBoxChromeCols = 6;
+        static constexpr int kBodyInset = 2;
+
+        void set_text(std::string_view text);
+        void toggle_expanded();
+        [[nodiscard]] bool can_expand() const;
+        [[nodiscard]] std::string header_text() const;
+        [[nodiscard]] int body_content_cols(int content_w) const;
+        [[nodiscard]] const std::vector<StyledLine>& wrapped_body(int body_cols) const;
+        [[nodiscard]] int visual_rows(int content_w) const override;
+        void set_wrap_cols(int cols) override;
+        void collect_lines(std::vector<std::string>& out) const override;
+        [[nodiscard]] bool find_skip_line(std::size_t index) const override;
+        void draw(OpenTuiHandle frame,
+                  int x,
+                  int y,
+                  int w,
+                  int h,
+                  int skip_rows) const override;
+
+    private:
+        void invalidate_cache() const;
+        [[nodiscard]] bool is_find_command() const;
+        mutable std::string cache_src_;
+        mutable int cache_cols_{-1};
+        mutable std::vector<StyledLine> body_cache_;
+    };
+
     // Compact per-tool activity row (Claude Code–style timeline).
     // Collapsed = 1 status line; expanded = detail + result preview.
     struct ToolSegment final : Segment {
@@ -421,6 +464,7 @@ private:
         Diff,
         Tool,
         Thinking,
+        UserEcho,
         Other,
     };
 

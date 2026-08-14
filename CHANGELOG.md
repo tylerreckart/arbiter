@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **TUI user-echo chrome.** Submits use the same rounded-box dialect as
+  thinking (`╭── you ──╮` on scroll bg, muted border, info title) instead of
+  a flat input-band strip. Long pastes collapse to three preview rows (`^O`
+  / click to expand). Live, replay, and remote `--connect` share
+  `push_user_echo` / `UserEchoSegment`.
+
 ## [0.12.6] — 2026-08-14
 
 

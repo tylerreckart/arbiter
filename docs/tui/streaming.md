@@ -46,9 +46,10 @@ The thinking and tool-call spinners deliberately don't share a row — early ver
 
 When a provider streams a separate reasoning channel (`thinking_delta` /
 `reasoning_content` / Gemini `thought` parts), a collapsed **thinking**
-strip also appears in scrollback above the assistant prose — markdown body
-on the input/echo background with a per-agent theme accent. Expand with
-`^O`. Models without that channel keep the header spinner only.
+rounded box also appears in scrollback above the assistant prose — markdown
+body inside the same chrome dialect as user echoes (scroll bg, muted border,
+info title). Expand with `^O`. Models without that channel keep the header
+spinner only. User submits paint as a matching **you** box (plain-text body).
 
 ## End of turn
 

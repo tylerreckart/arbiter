@@ -500,7 +500,7 @@ void ReplSession::run_input_loop() {
             if (!echo.empty()) echo += "\n";
             echo += "[" + attachment_status_label(queued.attachments) + "]";
         }
-        focused.output_queue.push_prose(arbiter::styled_user_echo_lines(echo));
+        focused.output_queue.push_user_echo(echo);
         focused.output_queue.end_message();
 
         focused.cmd_queue.push(std::move(queued));

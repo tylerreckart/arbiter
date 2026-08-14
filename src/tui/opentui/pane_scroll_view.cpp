@@ -1095,6 +1095,193 @@ void PaneScrollView::ThinkingSegment::draw(OpenTuiHandle frame,
     });
 }
 
+// --- UserEchoSegment (submit echo; same rounded chrome as thinking) ----------
+
+void PaneScrollView::UserEchoSegment::invalidate_cache() const {
+    cache_src_.clear();
+    cache_cols_ = -1;
+    body_cache_.clear();
+}
+
+void PaneScrollView::UserEchoSegment::set_text(std::string_view text) {
+    text_.assign(text.data(), text.size());
+    invalidate_cache();
+}
+
+void PaneScrollView::UserEchoSegment::toggle_expanded() {
+    if (!can_expand()) return;
+    expanded_ = !expanded_;
+}
+
+int PaneScrollView::UserEchoSegment::body_content_cols(int content_w) const {
+    const int cols = std::max(1, content_w > 0 ? content_w : wrap_cols_);
+    return std::max(1, cols - kBoxChromeCols);
+}
+
+const std::vector<StyledLine>&
+PaneScrollView::UserEchoSegment::wrapped_body(int body_cols) const {
+    if (cache_cols_ == body_cols && cache_src_ == text_) return body_cache_;
+    cache_src_ = text_;
+    cache_cols_ = body_cols;
+    body_cache_.clear();
+    if (text_.empty()) return body_cache_;
+
+    // Plain-text body (not markdown): split on newlines, then soft-wrap.
+    std::size_t start = 0;
+    while (start <= text_.size()) {
+        std::size_t end = text_.find('\n', start);
+        if (end == std::string::npos) end = text_.size();
+        StyledLine line;
+        const std::string_view chunk(text_.data() + start, end - start);
+        if (!chunk.empty() && chunk.back() == '\r') {
+            styled_append(line, StyleId::Default,
+                          chunk.substr(0, chunk.size() - 1));
+        } else {
+            styled_append(line, StyleId::Default, chunk);
+        }
+        auto parts = wrap_styled_line(line, body_cols);
+        body_cache_.insert(body_cache_.end(),
+                           std::make_move_iterator(parts.begin()),
+                           std::make_move_iterator(parts.end()));
+        if (end == text_.size()) break;
+        start = end + 1;
+    }
+    while (!body_cache_.empty() && body_cache_.back().text.empty()) {
+        body_cache_.pop_back();
+    }
+    return body_cache_;
+}
+
+bool PaneScrollView::UserEchoSegment::can_expand() const {
+    const int body_n =
+        static_cast<int>(wrapped_body(body_content_cols(wrap_cols_)).size());
+    if (expanded_) return body_n > 0;
+    return body_n > kPreviewRows;
+}
+
+std::string PaneScrollView::UserEchoSegment::header_text() const {
+    return "you";
+}
+
+bool PaneScrollView::UserEchoSegment::is_find_command() const {
+    return arbiter::is_user_echo_find_command(arbiter::styled_user_echo(text_));
+}
+
+int PaneScrollView::UserEchoSegment::visual_rows(int content_w) const {
+    const auto& body = wrapped_body(body_content_cols(content_w));
+    const int body_n = static_cast<int>(body.size());
+    static constexpr int kChromeRows = 2;
+    if (!expanded_) {
+        if (body_n == 0) return kChromeRows;
+        return kChromeRows + std::min(body_n, kPreviewRows);
+    }
+    return kChromeRows + std::min(body_n, kExpandedCap);
+}
+
+void PaneScrollView::UserEchoSegment::set_wrap_cols(int cols) {
+    wrap_cols_ = std::max(1, cols);
+    invalidate_cache();
+}
+
+void PaneScrollView::UserEchoSegment::collect_lines(
+    std::vector<std::string>& out) const {
+    out.push_back(header_text());
+    if (text_.empty()) {
+        out.emplace_back();
+        return;
+    }
+    const int body_cols = body_content_cols(wrap_cols_);
+    const auto& body = wrapped_body(body_cols);
+    const int body_n = static_cast<int>(body.size());
+    const int limit = expanded_
+        ? std::min(body_n, kExpandedCap)
+        : std::min(body_n, kPreviewRows);
+    const bool truncated = expanded_ ? body_n > kExpandedCap
+                                     : body_n > kPreviewRows;
+    for (int i = 0; i < limit; ++i) {
+        if (truncated && i == limit - 1) {
+            out.push_back(with_truncation_mark(body[static_cast<size_t>(i)],
+                                               body_cols).text);
+        } else {
+            out.push_back(body[static_cast<size_t>(i)].text);
+        }
+    }
+    out.emplace_back();  // bottom border
+}
+
+bool PaneScrollView::UserEchoSegment::find_skip_line(std::size_t index) const {
+    // Skip self-matches on echoed `/find` chrome (title stays searchable).
+    if (index == 0) return false;
+    return is_find_command();
+}
+
+void PaneScrollView::UserEchoSegment::draw(OpenTuiHandle frame,
+                                            int x,
+                                            int y,
+                                            int w,
+                                            int h,
+                                            int skip_rows) const {
+    if (w < 2 || h <= 0) return;
+    const TuiDesign& d = tui_design();
+    const TuiRgba& bg = d.bg.scroll;
+    const TuiRgba& border_fg = d.text.muted;
+    const int body_cols = std::max(1, w - kBoxChromeCols);
+    const int text_x = x + 1 + kBodyInset;
+
+    int screen_row = 0;
+    auto emit = [&](auto&& painter) -> bool {
+        if (screen_row < skip_rows) {
+            ++screen_row;
+            return true;
+        }
+        const int drawn = screen_row - skip_rows;
+        if (drawn >= h) return false;
+        fill_rect(frame, x, y + drawn, w, 1, bg);
+        painter(y + drawn);
+        ++screen_row;
+        return true;
+    };
+
+    if (!emit([&](int yy) {
+            draw_rounded_box_row(frame, x, yy, w, /*top=*/true, border_fg, bg,
+                                 header_text(), &d.accent.info);
+        })) {
+        return;
+    }
+
+    auto draw_body_row = [&](const StyledLine& line) -> bool {
+        return emit([&](int yy) {
+            draw_text(frame, x, yy, d.border.vertical, border_fg, bg);
+            draw_text(frame, x + w - 1, yy, d.border.vertical, border_fg, bg);
+            if (line.text.empty()) return;
+            const std::string chunk = trim_to_cells(line.text, body_cols);
+            if (chunk.empty()) return;
+            draw_text(frame, text_x, yy, chunk, d.text.primary, bg);
+        });
+    };
+
+    if (!text_.empty()) {
+        const auto& body = wrapped_body(body_cols);
+        const int body_n = static_cast<int>(body.size());
+        const int limit = expanded_
+            ? std::min(body_n, kExpandedCap)
+            : std::min(body_n, kPreviewRows);
+        const bool truncated = expanded_ ? body_n > kExpandedCap
+                                         : body_n > kPreviewRows;
+        for (int i = 0; i < limit; ++i) {
+            StyledLine row = body[static_cast<size_t>(i)];
+            if (truncated && i == limit - 1) {
+                row = with_truncation_mark(row, body_cols);
+            }
+            if (!draw_body_row(row)) return;
+        }
+    }
+
+    emit([&](int yy) {
+        draw_rounded_box_row(frame, x, yy, w, /*top=*/false, border_fg, bg);
+    });
+}
+
 // --- ToolSegment (per-tool activity timeline) ---------------------------------
 
 void PaneScrollView::ToolSegment::apply(const ToolActivityEvent& event) {
@@ -1380,6 +1567,7 @@ PaneScrollView::SegmentKind PaneScrollView::last_content_kind() const {
 #endif
         if (dynamic_cast<const ToolSegment*>(it->get())) return SegmentKind::Tool;
         if (dynamic_cast<const ThinkingSegment*>(it->get())) return SegmentKind::Thinking;
+        if (dynamic_cast<const UserEchoSegment*>(it->get())) return SegmentKind::UserEcho;
         return SegmentKind::Other;
     }
     return SegmentKind::None;
@@ -1657,6 +1845,18 @@ void PaneScrollView::append_thinking(std::string_view delta,
     segments_.push_back(std::move(seg));
 }
 
+void PaneScrollView::append_user_echo(std::string_view text, bool /*new_block*/) {
+    if (text.empty()) return;
+    const TuiDesign& d = tui_design();
+    // Match ThinkingSegment spacing: one blank before the box so echoes don't
+    // kiss prior chrome (tools/prose/thinking). Each submit is its own box.
+    start_block_gap(d.layout.block_gap);
+    auto seg = std::make_unique<UserEchoSegment>();
+    seg->set_wrap_cols(wrap_cols_);
+    seg->set_text(text);
+    segments_.push_back(std::move(seg));
+}
+
 void PaneScrollView::append_diff(std::string_view patch) {
     if (patch.empty()) return;
     const int gap = std::max(tui_design().layout.block_gap, tui_design().layout.panel_gap);
@@ -1771,11 +1971,18 @@ bool PaneScrollView::toggle_code_block_in_view(int scroll_offset) {
     CodeSegment* code_target = nullptr;
     ToolSegment* tool_target = nullptr;
     ThinkingSegment* think_target = nullptr;
+    UserEchoSegment* echo_target = nullptr;
     int row = 0;
     for (const auto& seg : segments_) {
         const int h = seg->visual_rows(wrap_cols_);
         const int seg_end = row + h;
         if (seg_end > first_visible && row < last_visible) {
+            if (auto* echo = dynamic_cast<UserEchoSegment*>(seg.get())) {
+                if (echo->can_expand()) {
+                    echo_target = echo;
+                    break;
+                }
+            }
             if (auto* think = dynamic_cast<ThinkingSegment*>(seg.get())) {
                 if (think->can_expand()) {
                     think_target = think;
@@ -1796,6 +2003,10 @@ bool PaneScrollView::toggle_code_block_in_view(int scroll_offset) {
             }
         }
         row = seg_end;
+    }
+    if (echo_target) {
+        echo_target->toggle_expanded();
+        return true;
     }
     if (think_target) {
         think_target->toggle_expanded();
@@ -1832,6 +2043,11 @@ bool PaneScrollView::toggle_expandable_at_click(const TUI& tui,
         const int h = seg->visual_rows(wrap_cols_);
         const int seg_end = row + h;
         if (global_row >= row && global_row < seg_end) {
+            if (auto* echo = dynamic_cast<UserEchoSegment*>(seg.get())) {
+                if (!echo->can_expand()) return false;
+                echo->toggle_expanded();
+                return true;
+            }
             if (auto* think = dynamic_cast<ThinkingSegment*>(seg.get())) {
                 if (!think->can_expand()) return false;
                 think->toggle_expanded();

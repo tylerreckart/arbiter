@@ -53,6 +53,11 @@ void drain_into(opentui::PaneScrollView& view,
                 view.append_thinking(item.data, item.new_block, item.agent_id);
             }
             break;
+        case OutputItem::Kind::UserEcho:
+            if (!item.data.empty()) {
+                view.append_user_echo(item.data, item.new_block);
+            }
+            break;
         }
     }
 }
@@ -83,7 +88,7 @@ void render_messages(opentui::PaneScrollView& view,
         if (is_replay_noise(m)) continue;
 
         if (m.role == "user") {
-            queue.push_prose(styled_user_echo_lines(replay_user_echo_text(m)));
+            queue.push_user_echo(replay_user_echo_text(m));
             queue.end_message();
             continue;
         }
