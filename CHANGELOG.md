@@ -16,7 +16,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   disables). Over-quota LLM classify returns `429` with
   `reason: intent_llm_rate_limit` (#212).
 
+## [0.12.4] — 2026-08-14
+
 ### Fixed
+- **Intent mirror isolation.** Intent reroute history backup is turn-scoped RAII
+  (thread-local) instead of a single `Orchestrator` slot, so concurrent REPL
+  panes no longer overwrite each other's specialist restore state or checkpoint
+  the wrong agent pair (#211).
 - **TenantLimiter idle eviction.** Per-tenant `State` entries are dropped when
   `in_flight` returns to zero and the token bucket is (or would be) full, and
   unlimited tenants never insert a slot. Long-lived `--api` processes no longer
