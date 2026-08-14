@@ -441,6 +441,43 @@ TEST_CASE("styled_activity_line and interim header helpers") {
     CHECK(hdr.text.find("researcher") != std::string::npos);
 }
 
+TEST_CASE("styled_intent_event_line uses routing glyphs") {
+    auto applied = styled_intent_event_line("research", "heuristic", "research", true);
+    REQUIRE(applied);
+    CHECK(applied->text.find("\u2197 ") == 0);  // ↗
+    CHECK(applied->text.find("research") != std::string::npos);
+    CHECK(applied->text.find("heuristic") != std::string::npos);
+    CHECK(applied->spans[0].id == StyleId::Info);
+
+    auto hint = styled_intent_event_line("research", "llm", "research", false);
+    REQUIRE(hint);
+    CHECK(hint->text.find("\u00b7 ") == 0);
+    CHECK(hint->text.find("intent research") != std::string::npos);
+    CHECK(hint->text.find("hint:research") != std::string::npos);
+    CHECK(hint->spans[0].id == StyleId::Warning);
+
+    CHECK_FALSE(styled_intent_event_line("unknown", "heuristic", "", false));
+    CHECK_FALSE(styled_intent_event_line("", "heuristic", "", true));
+}
+
+TEST_CASE("styled_advisor_event lines use distinct glyphs") {
+    auto consult = styled_advisor_consult_line("index", "Should we pin the API?");
+    CHECK(consult.text.find("\u25c7 ") == 0);  // ◇
+    CHECK(consult.text.find("advise") != std::string::npos);
+    CHECK(consult.text.find("index") != std::string::npos);
+    CHECK(consult.text.find("pin the API") != std::string::npos);
+
+    auto redirect = styled_advisor_redirect_line("research", "Add a failing test first");
+    CHECK(redirect.text.find("\u21bb ") == 0);  // ↻
+    CHECK(redirect.text.find("redirect") != std::string::npos);
+    CHECK(redirect.spans[0].id == StyleId::Warning);
+
+    auto halt = styled_advisor_halt_line("research", "incomplete without verification");
+    CHECK(halt.text.find("\u00d7 ") == 0);  // ×
+    CHECK(halt.text.find("halt") != std::string::npos);
+    CHECK(halt.spans[0].id == StyleId::Error);
+}
+
 TEST_CASE("styled_delegation_line highlights routing status") {
     auto line = styled_delegation_line("/agent research GOAL: dig");
     CHECK(line.text.find("\u2192 ") == 0);

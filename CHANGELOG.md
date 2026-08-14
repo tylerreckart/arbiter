@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Changed
+- **TUI runtime-event chrome.** Intent and advisor lines leave the shared `·`
+  activity lane: applied intent is `↗ research · heuristic`, unapplied stays a
+  soft `· intent … · hint:…`, consult is `◇ advise`, redirect is `↻ redirect`,
+  and halt/budget paint once as `× halt` via escalation (no double banner).
+  Remote `--connect` SSE now mirrors intent/advisor the same way.
+  
 - **TUI user-echo chrome.** Submits use the same rounded-box dialect as
   thinking (`╭── user ──╮` on scroll bg, muted border, info title) instead of
   a flat input-band strip. Long pastes collapse to three preview rows (`^O`
@@ -17,7 +23,6 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   same one-cell inset (`input_padding_x` / `status_inset_x`, was two).
 
 ## [0.12.6] — 2026-08-14
-
 
 ## [0.12.5] — 2026-08-14
 
