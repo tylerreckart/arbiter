@@ -112,13 +112,19 @@ non-starter for merging.
 ## Versioning and releases
 
 Arbiter is pre-1.0 and treats a merge to `main` as a patch release
-(`0.12.2` → `0.12.3`): `version.yml` bumps CMakeLists (the
-`INDEX_VERSION` baked into the binary), moves `[Unreleased]` in
-`CHANGELOG.md` into the new heading, pins the site/docs download
-examples, tags `vX.Y.Z`, and dispatches the binary release workflow.
+(`0.12.2` → `0.12.3`). `main` requires pull requests, so `version.yml`
+opens a `chore/release-vX.Y.Z` PR (CMakeLists `INDEX_VERSION`,
+`CHANGELOG.md` `[Unreleased]` cut, site/docs pins) rather than
+pushing to `main`. Squash-merging that PR tags `vX.Y.Z` and
+dispatches the binary release.
 
-Leave the version number alone in ordinary PRs.  Notes go under
+Leave the version number alone in ordinary PRs. Notes go under
 `[Unreleased]`; the bump job cuts them on merge.
+
+The Actions repo setting **Allow GitHub Actions to create and approve
+pull requests** must be on, or the bot cannot open the release PR.
+If required reviews block auto-merge, merge `chore/release-v*` by
+hand (keep the `chore(release): vX.Y.Z` title).
 
 Minor and major are never automatic.  To ship one:
 

@@ -1,24 +1,28 @@
 name: Version bump
 
-# On every merge to main, cut a patch version (0.12.2 → 0.12.3): bump
-# CMakeLists.txt (INDEX_VERSION), move CHANGELOG [Unreleased] into the
-# new heading, pin the site/docs download examples, commit, tag vX.Y.Z,
-# and dispatch release.yml to publish binaries.
+# main is ruleset-protected ("Changes must be made through a pull
+# request"), so this workflow never pushes commits to main.
 #
-# Minor and major are manual:
-#   - Actions → Version bump → Run workflow → minor / major, or type
-#     an explicit X.Y.Z (1.0.0, a skipped 0.13.0, …).
-#   - Or bump `project(arbiter VERSION …)` in the PR itself.  On merge
-#     this workflow sees CMakeLists ahead of the latest tag and tags
-#     *that* version instead of auto-patching.
-#   - `[skip version]` in the merge commit (or squash PR title) skips
-#     the bump entirely.  `git tag vX.Y.Z && git push origin vX.Y.Z`
-#     still fires release.yml on its own.
+# Feature merge (or workflow_dispatch):
+#   Open / update a `chore/release-vX.Y.Z` PR with the CMakeLists,
+#   changelog, and install-pin edits.  Enable auto-merge when the
+#   repo allows it.  Do not tag yet — a squash merge rewrites the SHA.
 #
-# GITHUB_TOKEN pushes do not retrigger `on: push: tags` in
-# release.yml, so after pushing the tag we `workflow_dispatch` that
-# workflow (the documented exception).  Our own `chore(release):`
-# commit would otherwise loop this workflow; the job `if:` drops it.
+# Release PR merged (`chore(release): vX.Y.Z` on main), or a feature
+# PR that already bumped CMakeLists ahead of the latest tag:
+#   Tag HEAD and dispatch release.yml.  Tag pushes are not subject to
+#   the pull-request ruleset.
+#
+# Auto cuts a patch (0.12.2 → 0.12.3).  Minor / major:
+#   - Actions → Version bump → minor / major / explicit X.Y.Z
+#   - Or bump `project(arbiter VERSION …)` in the PR; on merge this
+#     workflow tags that version instead of auto-patching
+#   - `[skip version]` skips entirely
+#   - `git tag vX.Y.Z && git push origin vX.Y.Z` still fires
+#     release.yml on its own
+#
+# Creating the release PR requires Settings → Actions → General →
+# "Allow GitHub Actions to create and approve pull requests".
 
 on:
   push:
@@ -40,14 +44,12 @@ on:
         type: string
 
 permissions:
-  contents: write   # commit + tag on main
-  actions: write    # dispatch release.yml
+  contents: write        # push release branch + tags
+  pull-requests: write   # open / auto-merge the release PR
+  actions: write         # dispatch release.yml
 
 concurrency:
   group: version-main
-  # Queue, don't cancel: two merges in flight should serialize so the
-  # second run sees the first release commit (and no-ops, or bumps
-  # again if it landed *after* that commit).
   cancel-in-progress: false
 
 jobs:
@@ -59,20 +61,17 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (
         github.event_name == 'push' &&
-        !startsWith(github.event.head_commit.message, 'chore(release):') &&
         !contains(github.event.head_commit.message, '[skip version]')
       )
     outputs:
       skipped: ${{ steps.cut.outputs.skipped }}
       version: ${{ steps.cut.outputs.version }}
+      tagged: ${{ steps.cut.outputs.tagged }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # The triggering SHA can lag origin/main when two merges land in
-      # the same window.  Always edit the current tip so we don't push
-      # a bump that drops a newer merge.
       - name: Sync to origin/main
         run: |
           set -euxo pipefail
@@ -86,17 +85,21 @@ jobs:
                    .github/scripts/test_bump_version.sh
           .github/scripts/test_bump_version.sh
 
-      - name: Cut version, commit, tag, push
+      - name: Cut version
         id: cut
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_BUMP: ${{ github.event.inputs.bump }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
           TRIGGER_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euxo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          echo "tagged=false" >> "$GITHUB_OUTPUT"
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             MODE=manual
@@ -104,41 +107,62 @@ jobs:
             MODE=auto
           fi
 
-          run_bump() {
-            local args=(--mode "$MODE" --bump "${INPUT_BUMP:-patch}" --trigger-sha "$TRIGGER_SHA")
-            if [ -n "${INPUT_VERSION:-}" ]; then
-              args+=(--version "$INPUT_VERSION")
-            fi
-            .github/scripts/bump_version.sh "${args[@]}"
-          }
+          args=(--mode "$MODE" --bump "${INPUT_BUMP:-patch}" --trigger-sha "$TRIGGER_SHA" --no-tag)
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            args+=(--version "$INPUT_VERSION")
+          fi
+          .github/scripts/bump_version.sh "${args[@]}"
 
-          for attempt in 1 2 3; do
-            git fetch origin main --tags --force
-            git reset --hard origin/main
-            run_bump
-            # Last write wins in GITHUB_OUTPUT; retries append, so read
-            # the trailing skipped=/version= lines rather than grepping
-            # for any historical skipped=true.
-            skipped="$(grep '^skipped=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2-)"
-            VERSION="$(grep '^version=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
-            if [ "$skipped" = "true" ]; then
-              exit 0
-            fi
-            if git push origin HEAD:main && git push origin "v${VERSION}"; then
-              exit 0
-            fi
-            echo "push failed (attempt ${attempt}); retrying from origin/main"
-            # Drop the local tag so a retry can recreate it after reset.
-            git tag -d "v${VERSION}" || true
-          done
-          echo "push still failing after retries" >&2
-          exit 1
+          skipped="$(grep '^skipped=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2-)"
+          VERSION="$(grep '^version=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2- || true)"
+          if [ "$skipped" = "true" ]; then
+            exit 0
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "bump produced no version" >&2
+            exit 1
+          fi
 
-      # GITHUB_TOKEN tag pushes do not fire release.yml's `on: push:
-      # tags`.  workflow_dispatch does.  release.yml checks out the
-      # tag input, so the tag must exist (previous step) before this.
+          MAIN_SHA="$(git rev-parse origin/main)"
+          HEAD_SHA="$(git rev-parse HEAD)"
+
+          # Version files already on main (release PR just merged, or a
+          # prepare-release PR bumped CMakeLists).  Tag that commit —
+          # allowed even when main forbids direct pushes.
+          if [ "$HEAD_SHA" = "$MAIN_SHA" ]; then
+            git tag "v${VERSION}"
+            git push origin "v${VERSION}"
+            echo "tagged=true" >> "$GITHUB_OUTPUT"
+            echo "bump_version: tagged v${VERSION} on ${HEAD_SHA}"
+            exit 0
+          fi
+
+          # New release commit is not on main.  Open a PR; squash merge
+          # later rewrites the SHA, so tagging happens on the next run.
+          BRANCH="chore/release-v${VERSION}"
+          git push --force origin "HEAD:refs/heads/${BRANCH}"
+
+          PR_URL="$(gh pr list --head "$BRANCH" --base main --state open --json url --jq '.[0].url // empty' || true)"
+          if [ -z "$PR_URL" ]; then
+            if ! PR_URL="$(gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore(release): v${VERSION}" \
+              --body "Cut CMakeLists, changelog, and install pins to v${VERSION}. Squash-merge and keep this title; the version workflow then tags v${VERSION} and publishes binaries. main requires pull requests, so the bot cannot push this commit directly.")"; then
+              echo "::error::Could not open the release PR. Enable Settings → Actions → General → 'Allow GitHub Actions to create and approve pull requests', then re-run. Branch ${BRANCH} is already pushed."
+              exit 1
+            fi
+          fi
+          echo "pr_url=${PR_URL}" >> "$GITHUB_OUTPUT"
+          echo "opened ${PR_URL}"
+
+          # Best-effort: queue merge once checks pass.  Required reviews
+          # or a disabled auto-merge setting leave the PR for a human.
+          gh pr merge "$PR_URL" --squash --auto --delete-branch || \
+            echo "auto-merge not enabled; merge ${PR_URL} to tag v${VERSION}"
+
       - name: Dispatch binary release
-        if: steps.cut.outputs.skipped != 'true' && steps.cut.outputs.version != ''
+        if: steps.cut.outputs.tagged == 'true' && steps.cut.outputs.version != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

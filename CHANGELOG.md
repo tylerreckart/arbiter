@@ -14,12 +14,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   failure. SSE: `reconcile.progress` / `delta` / `verification` / `rollback` /
   `done`. `@arbiter/sdk` `IntentClient.reconcile()`. See
   [`docs/concepts/reconcile.md`](docs/concepts/reconcile.md).
-- **Automatic patch releases on merge to `main`.** `version.yml` bumps
-  `CMakeLists.txt`, cuts `[Unreleased]` into the new `CHANGELOG.md`
-  heading, pins site/docs download examples, tags `vX.Y.Z`, and
-  dispatches the binary release.  Minor / major / explicit versions
-  stay available via workflow_dispatch, a version bump in the PR, or
-  `[skip version]` on the merge commit.  See
+- **Automatic patch releases on merge to `main`.** `version.yml` opens
+  a `chore/release-vX.Y.Z` PR (CMakeLists, changelog, install pins);
+  squash-merging it tags `vX.Y.Z` and dispatches the binary release.
+  Direct pushes to `main` are forbidden by repo rules.  Minor / major
+  / explicit versions stay available via workflow_dispatch, a version
+  bump in the PR, or `[skip version]` on the merge commit.  See
   [`CONTRIBUTING.md`](CONTRIBUTING.md#versioning-and-releases).
 - **TUI image drop / `/attach`.** Drag-dropping an image onto the prompt
   (terminals paste the file path) stages it for the next send; `/attach

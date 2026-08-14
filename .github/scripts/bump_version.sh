@@ -343,7 +343,7 @@ if [ "$NO_COMMIT" -eq 1 ]; then
 fi
 
 if [ -z "$(git status --porcelain CMakeLists.txt CHANGELOG.md web/lib/config.mjs docs/getting-started/local.md 2>/dev/null || true)" ]; then
-  echo "bump_version: tree already at ${NEXT}; tagging HEAD"
+  echo "bump_version: tree already at ${NEXT}"
 else
   git add CMakeLists.txt CHANGELOG.md web/lib/config.mjs docs/getting-started/local.md
   git commit -m "$(cat <<EOF

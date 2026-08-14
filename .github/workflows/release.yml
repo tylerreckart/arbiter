@@ -4,8 +4,8 @@ name: Build and publish release
 # repository with prebuilt binaries for each platform.  Tag-driven —
 # a `vX.Y.Z` tag (or workflow_dispatch with that tag) is what fires this.
 #
-# Tags usually come from version.yml: merges to main auto-cut a patch
-# (`v0.12.3`, …) and then dispatch this workflow.  Minor / major:
+# Tags usually come from version.yml after a `chore/release-vX.Y.Z`
+# PR merges (main forbids direct pushes).  Minor / major:
 #   - Actions → Version bump → minor / major / explicit X.Y.Z
 #   - Bump `project(arbiter VERSION X.Y.Z ...)` in a PR; on merge,
 #     version.yml tags that version instead of auto-patching
