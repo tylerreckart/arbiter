@@ -13,7 +13,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   a flat input-band strip. Long pastes collapse to three preview rows (`^O`
   / click to expand). Live, replay, and remote `--connect` share
   `push_user_echo` / `UserEchoSegment`. Thinking and user boxes use a
-  one-cell body inset (was two).
+  one-cell body inset (was two). Readline prompt and status labels use the
+  same one-cell inset (`input_padding_x` / `status_inset_x`, was two).
 
 ## [0.12.6] — 2026-08-14
 
