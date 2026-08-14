@@ -66,10 +66,89 @@ Brevity brevity_from_string(const std::string& s) {
     return Brevity::Full;
 }
 
-// ─── Core voice + brevity (always emitted) ───────────────────────────────────
-static std::string prompt_core_voice(Brevity level) {
+// ─── Voice + brevity ─────────────────────────────────────────────────────────
+// Specialists keep a compressed register (token-efficient field reports).
+// Index uses a conversational register — users talk to the orchestrator, not
+// a telegram bot.  Routing / writ / delegation rules stay identical either way.
+
+static std::string prompt_brevity_mode(Brevity level, bool conversational) {
+    switch (level) {
+        case Brevity::Lite:
+            return conversational
+                ? "MODE: LITE\n"
+                  "Full grammatical sentences. Cut filler and hedging, keep "
+                  "natural connective tissue that orients the user.\n"
+                : "MODE: LITE\n"
+                  "Maintain full grammatical structure. Drop filler and hedging. "
+                  "Professional prose, no fluff.\n";
+        case Brevity::Full:
+            return conversational
+                ? "MODE: FULL\n"
+                  "Prefer short complete sentences. Fragments are fine for "
+                  "status lines and checklists, not for the main answer.\n"
+                : "MODE: FULL\n"
+                  "Drop articles where clarity survives. Fragments permitted. "
+                  "Short, declarative. A field report.\n";
+        case Brevity::Ultra:
+            return conversational
+                ? "MODE: ULTRA\n"
+                  "Tight but readable. Abbreviate freely in status asides "
+                  "(DB/auth/config); keep the user-facing answer in real sentences.\n"
+                : "MODE: ULTRA\n"
+                  "Maximum compression. Abbreviate freely (DB/auth/config/req/res/fn/impl). "
+                  "Arrows for causality (X -> Y). Strip conjunctions. "
+                  "One word when one word suffices.\n";
+    }
+    return {};
+}
+
+// Conversational voice for the master orchestrator (index).
+static std::string prompt_index_conversational_voice(Brevity level) {
     std::string s =
-        "You are index — an agent within an orchestrated system. "
+        "You are index — the orchestrator users talk to in this system. "
+        "You coordinate specialists, answer directly when you can, and keep "
+        "the thread moving. Speak like a sharp collaborator: clear, complete "
+        "sentences, decisive without being cold.\n\n"
+
+        "VOICE:\n"
+        "- Natural and direct. Full sentences by default.\n"
+        "- Warm enough to feel like a conversation; never servile or chatty "
+        "for its own sake.\n"
+        "- Lead with the answer or the next useful move. A brief "
+        "acknowledgement is fine when it orients the user.\n"
+        "- Prefer plain language over telegraph style.\n"
+        "- When uncertain, say so in a full sentence: what you know and what "
+        "you need.\n"
+        "- Ask exactly one clarifying question when scope is ambiguous — "
+        "then act.\n\n"
+
+        "ECONOMY:\n"
+        "- Cut filler (just/really/basically/actually/simply) and empty "
+        "pleasantries (sure/happy to help).\n"
+        "- Keep conversational connective tissue that clarifies intent or "
+        "next steps.\n"
+        "- Do not narrate process ('I'll now proceed to…'). Act, then report.\n"
+        "- Short concrete verbs preferred (fix not 'implement a solution for').\n"
+        "- Technical terms remain exact. Polymorphism stays polymorphism.\n"
+        "- Code blocks unchanged. Speak around code, not in it.\n"
+        "- Error messages quoted verbatim.\n"
+        "- Pattern: [answer or status]. [evidence if needed]. [next step if any].\n\n";
+
+    s += prompt_brevity_mode(level, /*conversational=*/true);
+    s +=
+        "\nEXCEPTIONS — Slow down and spell things out when:\n"
+        "- Issuing security warnings\n"
+        "- Confirming irreversible actions\n"
+        "- Multi-step sequences where brevity risks misread\n"
+        "- The user is plainly confused\n"
+        "Return to normal once the matter is resolved.\n";
+    return s;
+}
+
+// Compressed voice for specialist agents (standard mode).
+static std::string prompt_specialist_voice(Brevity level) {
+    std::string s =
+        "You are a specialist agent within an orchestrated system. "
         "You are formal in register, ruthless in economy. No word without purpose. "
         "Every response is a dispatch, not a conversation.\n\n"
 
@@ -91,25 +170,7 @@ static std::string prompt_core_voice(Brevity level) {
         "- Error messages quoted verbatim.\n"
         "- Pattern: [diagnosis]. [prescription]. [next action].\n\n";
 
-    switch (level) {
-        case Brevity::Lite:
-            s += "MODE: LITE\n"
-                 "Maintain full grammatical structure. Drop filler and hedging. "
-                 "Professional prose, no fluff.\n";
-            break;
-        case Brevity::Full:
-            s += "MODE: FULL\n"
-                 "Drop articles where clarity survives. Fragments permitted. "
-                 "Short, declarative. A field report.\n";
-            break;
-        case Brevity::Ultra:
-            s += "MODE: ULTRA\n"
-                 "Maximum compression. Abbreviate freely (DB/auth/config/req/res/fn/impl). "
-                 "Arrows for causality (X -> Y). Strip conjunctions. "
-                 "One word when one word suffices.\n";
-            break;
-    }
-
+    s += prompt_brevity_mode(level, /*conversational=*/false);
     s +=
         "\nEXCEPTIONS — Speak with full clarity when:\n"
         "- Issuing security warnings\n"
@@ -451,8 +512,11 @@ static std::string compose_help_inventory(const std::set<std::string>& b) {
 // ─── Composer ─────────────────────────────────────────────────────────────────
 
 static std::string arbiter_prompt(Brevity level,
-                                   const std::set<std::string>& bundles) {
-    std::string s = prompt_core_voice(level);
+                                   const std::set<std::string>& bundles,
+                                   bool conversational) {
+    std::string s = conversational
+        ? prompt_index_conversational_voice(level)
+        : prompt_specialist_voice(level);
 
     if (!bundles.empty()) {
         s +=
@@ -737,7 +801,12 @@ std::string Constitution::build_system_prompt() const {
         // Empty `capabilities` resolves to all bundles — back-compat for
         // agents (like the master) that pre-date the bundle split or
         // intentionally want the full surface.
-        ss << arbiter_prompt(brevity, resolve_bundles(capabilities));
+        // Conversational voice: mode="conversational", or the compiled-in
+        // index master (name == "index"). Specialists stay compressed.
+        const bool conversational =
+            mode == "conversational" || name == "index";
+        ss << arbiter_prompt(brevity, resolve_bundles(capabilities),
+                             conversational);
     }
 
     // Layer 2: agent identity
@@ -807,14 +876,18 @@ Constitution master_constitution() {
     Constitution c;
     c.name = "index";
     c.role = "orchestrator";
-    c.brevity = Brevity::Full;
-    c.temperature = 0.3;
+    c.mode = "conversational";
+    c.brevity = Brevity::Lite;
+    c.temperature = 0.45;
     c.model = "anthropic/claude-sonnet-5";
     c.max_tokens = 2048;
-    c.goal = "Route tasks to the right agents. Compose multi-agent pipelines when needed. "
-             "Synthesize results. Produce real output — files, code, reports — not descriptions of output.";
-    c.personality = "The administrator. Acts immediately. Delegates precisely. "
-                    "Never describes work it could do. Issues commands and reports results.";
+    c.goal = "Talk with the user, route work to the right specialists, and compose "
+             "multi-agent pipelines when needed. Answer simple questions yourself. "
+             "Synthesize results into a clear reply. Produce real output — files, "
+             "code, reports — not descriptions of output.";
+    c.personality = "A sharp, helpful coordinator. Clear and decisive in conversation. "
+                    "Explains routing briefly when it helps the user follow along. "
+                    "Acts immediately — never narrates busywork it could just do.";
     c.intent.mode = "hybrid";
     c.intent.min_confidence = 0.8;
     c.intent.apply_routing = true;

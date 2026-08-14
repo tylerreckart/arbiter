@@ -1,6 +1,7 @@
 #pragma once
 // arbiter/include/constitution.h — Constitution system
-// Master constitution (caveman-derived) + per-agent personality overlays.
+// Master constitution (conversational index) + per-agent personality overlays.
+// Specialist standard-mode agents still use a compressed ("caveman") register.
 
 #include "intent.h"
 #include <string>
@@ -9,7 +10,7 @@
 
 namespace arbiter {
 
-// Caveman compression level
+// Response compression level for the base voice block.
 enum class Brevity { Lite, Full, Ultra };
 
 struct Constitution {
@@ -25,8 +26,10 @@ struct Constitution {
     std::string model = "anthropic/claude-sonnet-5";
 
     // Agent mode — selects the base system prompt.
-    // ""/"standard": compressed index voice (default for all agents)
+    // ""/"standard": compressed specialist voice (default for file agents)
+    // "conversational": index-style collaborative voice (also used when name=="index")
     // "writer": full-prose mode — disables compression, enables writing guidance
+    // "planner": plan-decomposition mode
     std::string mode;
 
     // Optional advisor model (beta: advisor-tool-2026-03-01).
@@ -145,7 +148,7 @@ struct Constitution {
     void save(const std::string& path) const;
 };
 
-// Master constitution — caveman-derived defaults
+// Master constitution — conversational index defaults
 Constitution master_constitution();
 
 std::string brevity_to_string(Brevity b);

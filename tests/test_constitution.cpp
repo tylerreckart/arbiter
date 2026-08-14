@@ -31,8 +31,10 @@ TEST_CASE("empty capabilities yields the legacy surface (master back-compat)") {
     auto c = make_agent();
     auto prompt = c.build_system_prompt();
 
-    // All legacy section headings should still appear so the master
-    // orchestrator's behaviour stays unchanged after the bundle split.
+    // Specialist compressed voice + full default-bundle surface.  Empty
+    // capabilities still means "all default bundles" (master back-compat for
+    // the inventory); conversational voice is selected separately via
+    // mode="conversational" or name=="index".
     CHECK(prompt.find("VOICE:")                          != std::string::npos);
     CHECK(prompt.find("COMPRESSION RULES:")              != std::string::npos);
     CHECK(prompt.find("EXCEPTIONS")                      != std::string::npos);
@@ -291,6 +293,45 @@ TEST_CASE("master_constitution enables hybrid intent") {
     CHECK(c.intent.mode == "hybrid");
     CHECK(c.intent.apply_routing == true);
     CHECK(c.intent.min_confidence == doctest::Approx(0.8));
+}
+
+TEST_CASE("master_constitution uses conversational voice, not caveman dispatch") {
+    auto c = master_constitution();
+    CHECK(c.mode == "conversational");
+    CHECK(c.brevity == Brevity::Lite);
+    CHECK(c.temperature == doctest::Approx(0.45));
+
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("orchestrator users talk to") != std::string::npos);
+    CHECK(prompt.find("sharp collaborator") != std::string::npos);
+    CHECK(prompt.find("ECONOMY:") != std::string::npos);
+    CHECK(prompt.find("dispatch, not a conversation") == std::string::npos);
+    CHECK(prompt.find("never warm, never servile") == std::string::npos);
+    CHECK(prompt.find("COMPRESSION RULES:") == std::string::npos);
+
+    // Orchestration surface unchanged: full default bundles + delegation.
+    CHECK(prompt.find("CAPABILITIES:") != std::string::npos);
+    CHECK(prompt.find("/agent ") != std::string::npos);
+    CHECK(prompt.find("DELEGATION-TURN OUTPUT DISCIPLINE:") != std::string::npos);
+    CHECK(prompt.find("MODE: LITE") != std::string::npos);
+}
+
+TEST_CASE("mode=conversational selects index voice without renaming the agent") {
+    auto c = make_agent({"/exec", "/write"});
+    c.mode = "conversational";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("orchestrator users talk to") != std::string::npos);
+    CHECK(prompt.find("dispatch, not a conversation") == std::string::npos);
+    CHECK(prompt.find("COMPRESSION RULES:") == std::string::npos);
+}
+
+TEST_CASE("specialist standard mode keeps compressed voice") {
+    auto c = make_agent({"/exec"});
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("specialist agent within an orchestrated system")
+              != std::string::npos);
+    CHECK(prompt.find("dispatch, not a conversation") != std::string::npos);
+    CHECK(prompt.find("COMPRESSION RULES:") != std::string::npos);
 }
 
 TEST_CASE("advisor: absent yields disabled config") {
