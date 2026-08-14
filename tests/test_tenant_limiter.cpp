@@ -9,8 +9,9 @@
 #include "doctest.h"
 #include "tenant_limiter.h"
 
-#include <thread>
 #include <chrono>
+#include <cstdlib>
+#include <thread>
 
 using namespace arbiter;
 
@@ -192,4 +193,16 @@ TEST_CASE("per-tenant override with 0 field inherits the default") {
     auto eff = lim.effective(3);
     CHECK(eff.max_concurrent == 10);
     CHECK(eff.rate_per_min   == 30);
+}
+
+TEST_CASE("intent LLM limiter defaults are on") {
+    TenantLimits d = load_intent_llm_limits_from_env();
+    // Unset env → 20/min burst 5 so classify cannot free-ride the
+    // unlimited general tenant limiter.
+    if (!std::getenv("ARBITER_INTENT_LLM_RATE_PER_MIN") &&
+        !std::getenv("ARBITER_INTENT_LLM_RATE_BURST")) {
+        CHECK(d.rate_per_min == 20);
+        CHECK(d.burst == 5);
+        CHECK(d.max_concurrent == 0);
+    }
 }

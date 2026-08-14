@@ -342,3 +342,35 @@ TEST_CASE("cues: bare deploy/react/sql/cite do not false-positive") {
     auto rs = heuristic_classify(in);
     CHECK(rs.kind != "research");
 }
+
+TEST_CASE("standalone classify defaults to heuristic, keeps master thresholds") {
+    IntentConfig master;
+    master.mode = "hybrid";
+    master.min_confidence = 0.9;
+    master.apply_routing = true;
+    master.model = "advisor-model";
+    auto cfg = standalone_intent_config(master);
+    CHECK(cfg.mode == "heuristic");
+    CHECK(cfg.min_confidence == doctest::Approx(0.9));
+    CHECK(cfg.apply_routing);
+    CHECK(cfg.model == "advisor-model");
+}
+
+TEST_CASE("standalone heuristic does not invoke llm on unconfident text") {
+    IntentInput in;
+    in.text = "Hello there, please help";
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    bool called = false;
+    auto llm = [&](const std::string&) {
+        called = true;
+        return std::string{};
+    };
+    IntentConfig master;
+    master.mode = "hybrid";
+    auto cfg = standalone_intent_config(master);
+    auto out = resolve_intent(in, cfg, llm);
+    CHECK_FALSE(called);
+    CHECK_FALSE(out.llm_used);
+    CHECK(out.source == "heuristic");
+}

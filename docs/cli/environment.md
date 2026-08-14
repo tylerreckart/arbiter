@@ -35,6 +35,8 @@ See [`docs/cli/connect.md`](connect.md). Local provider keys (`OPENROUTER_API_KE
 | `ARBITER_CORS_ORIGINS`    | Comma-separated Origin allowlist. Unset ⇒ `Access-Control-Allow-Origin: *`. When set, only matching `Origin` values are echoed (with `Vary: Origin`); mismatches omit the header. See [Operations → CORS](../concepts/operations.md#cors). |
 | `ARBITER_CIRCUIT_FAILURE_THRESHOLD` | Consecutive provider failures that open the circuit breaker. Default `5` (clamped ≥1). See [Operations → Circuit breaker](../concepts/operations.md#provider-circuit-breaker). |
 | `ARBITER_CIRCUIT_COOLDOWN_SECONDS`  | Cooldown in Open before a half-open probe. Default `30` (clamped ≥0). |
+| `ARBITER_INTENT_LLM_RATE_PER_MIN` | Extra per-tenant token bucket for `POST /v1/intent` hybrid/llm classify. Default `20`. `0` disables. Independent of `ARBITER_TENANT_RATE_PER_MIN`. See [Operations → Per-tenant rate / concurrency limiting](../concepts/operations.md#per-tenant-rate--concurrency-limiting). |
+| `ARBITER_INTENT_LLM_RATE_BURST` | Burst for the intent LLM bucket. Default `5`. |
 
 ## TUI session durability
 

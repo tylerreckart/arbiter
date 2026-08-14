@@ -542,4 +542,12 @@ std::string format_intent_preamble(const Intent& intent, bool for_specialist) {
     return ss.str();
 }
 
+IntentConfig standalone_intent_config(const IntentConfig& master) {
+    IntentConfig cfg = master;
+    // Ingress classify on index is hybrid; the standalone endpoint is a
+    // cheap preview unless the caller explicitly asks for a model call.
+    cfg.mode = "heuristic";
+    return cfg;
+}
+
 } // namespace arbiter

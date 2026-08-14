@@ -5678,10 +5678,16 @@ void handle_advise_gate(int fd, const HttpRequest& req,
 // ── POST /v1/intent ──────────────────────────────────────────────────────────
 // Stateless classify/route.  Same resolve_intent() as depth-0 orchestrator
 // ingress.  Does not dispatch, persist todos, or execute plans.
+// Defaults to heuristic so master's hybrid cannot burn provider quota
+// unless the caller sets mode/intent.mode.  Messages > 64 KiB and
+// rosters > 128 are rejected.  LLM classify (hybrid/llm) also consumes
+// intent_llm_limiter (always-on; independent of ARBITER_TENANT_RATE_PER_MIN).
 void handle_intent_classify(int fd, const HttpRequest& req,
                             TenantStore& tenants, Tenant& tenant_in,
                             InFlightRegistry& in_flight,
-                            const ApiServerOptions& opts) {
+                            const ApiServerOptions& opts,
+                            TenantLimiter* intent_llm_limiter,
+                            Metrics* metrics) {
     if (req.method != "POST") {
         write_plain_response(fd, 405, "Method Not Allowed", "method not allowed\n");
         return;
@@ -5789,7 +5795,7 @@ void handle_intent_classify(int fd, const HttpRequest& req,
         return;
     }
 
-    IntentConfig cfg = master_constitution().intent;
+    IntentConfig cfg = standalone_intent_config(master_constitution().intent);
     if (auto ic = body->get("intent"); ic && ic->is_object()) {
         cfg.mode = ic->get_string("mode", cfg.mode);
         cfg.min_confidence = ic->get_number("min_confidence", cfg.min_confidence);
@@ -5828,11 +5834,21 @@ void handle_intent_classify(int fd, const HttpRequest& req,
                               orch->client()};
 
     IntentLlmFn llm;
+    bool llm_rate_limited = false;
+    int llm_retry_after = 1;
     if (cfg.mode == "hybrid" || cfg.mode == "llm") {
         std::string model = cfg.model;
         if (model.empty()) model = orch->get_constitution("index").advisor.model;
         if (!model.empty()) {
             llm = [&](const std::string& user_prompt) -> std::string {
+                if (intent_llm_limiter) {
+                    auto lim = intent_llm_limiter->acquire(tenant.id);
+                    if (!lim.granted()) {
+                        llm_rate_limited = true;
+                        llm_retry_after = lim.retry_after_seconds;
+                        return {};
+                    }
+                }
                 ApiRequest req;
                 req.model = model;
                 req.max_tokens = 512;
@@ -5847,6 +5863,11 @@ void handle_intent_classify(int fd, const HttpRequest& req,
     }
 
     Intent intent = resolve_intent(in, cfg, llm);
+    if (llm_rate_limited) {
+        write_429_response(fd, llm_retry_after, "intent_llm_rate_limit",
+                           metrics, tenant.id);
+        return;
+    }
     bool in_roster = false;
     for (const auto& e : in.roster) {
         if (e.id == intent.target_agent) { in_roster = true; break; }
@@ -11442,6 +11463,8 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     // / RATE_PER_MIN / BURST).  Zeroed defaults ⇒ unlimited; the limiter
     // grants every acquire without taking the lock.
     limiter_ = std::make_unique<TenantLimiter>(load_tenant_limits_from_env());
+    intent_llm_limiter_ =
+        std::make_unique<TenantLimiter>(load_intent_llm_limits_from_env());
 
     // Idempotency cache for retry-safe POSTs.  Always present; an
     // absent Idempotency-Key header on a request bypasses it entirely.
@@ -12609,7 +12632,8 @@ void ApiServer::handle_connection(int fd) {
                 return;
             }
             return handle_intent_classify(fd, req, tenants_, *tenant, in_flight_,
-                                          opts_);
+                                          opts_, intent_llm_limiter_.get(),
+                                          metrics_.get());
         }
 
         // Intent reconcile: desired end state → workspace + tests

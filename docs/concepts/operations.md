@@ -37,11 +37,15 @@ Bearer auth carries in the `Authorization` header — no cookies — so credenti
 
 The runtime keeps a per-tenant in-flight counter and a token-bucket rate limiter in front of the expensive routes (`POST /v1/orchestrate`, `POST /v1/conversations/:id/messages`, `POST /v1/agents/:id/chat`, `POST /v1/a2a/agents/:id`, `POST /v1/events`, `POST /v1/advise/gate`, `POST /v1/intent`). Cheap reads (health, GET memory, GET schedules) are unaffected — the bucket isn't consumed. Idle per-tenant slots are evicted once in-flight returns to zero and the token bucket is full, so distinct tenant IDs do not accumulate for the life of the process.
 
+`POST /v1/intent` additionally has an always-on LLM-classify bucket (defaults below). Heuristic classify does not consume it; hybrid/llm does, and only when the classifier actually calls the model.
+
 | Env var                          | Meaning                                                            | Default        |
 |----------------------------------|--------------------------------------------------------------------|----------------|
 | `ARBITER_TENANT_MAX_CONCURRENT`  | Max concurrent in-flight LLM requests per tenant.                   | `0` (unlimited) |
 | `ARBITER_TENANT_RATE_PER_MIN`    | Token-bucket refill rate per tenant.                                | `0` (unlimited) |
 | `ARBITER_TENANT_RATE_BURST`      | Token-bucket capacity (max burst above refill rate).                | `rate_per_min` |
+| `ARBITER_INTENT_LLM_RATE_PER_MIN`| Extra bucket for `POST /v1/intent` hybrid/llm classify.             | `20` |
+| `ARBITER_INTENT_LLM_RATE_BURST`  | Burst for the intent LLM bucket.                                    | `5` |
 
 A `0` on either axis disables that axis (the limiter grants every acquire without taking the lock; zero overhead for operators not using the surface). Surplus requests get `429 Too Many Requests` with `Retry-After` set to a best-guess wait. The body distinguishes the two failure modes:
 
@@ -51,7 +55,7 @@ A `0` on either axis disables that axis (the limiter grants every acquire withou
   "retry_after_seconds": 1 }
 ```
 
-`reason` is one of `concurrent_request_limit` or `rate_limit`; clients can branch on it. Defaults are catch-the-runaway-loop, not fairness — operators wanting precise per-tenant SLAs should set explicit values via env or per-tenant overrides on the admin tenant row.
+`reason` is one of `concurrent_request_limit`, `rate_limit`, or `intent_llm_rate_limit`; clients can branch on it. Defaults are catch-the-runaway-loop, not fairness — operators wanting precise per-tenant SLAs should set explicit values via env or per-tenant overrides on the admin tenant row.
 
 ## Deployment
 

@@ -282,6 +282,9 @@ private:
     // come from env at startup); a zeroed config means "unlimited" so
     // operators not using this surface pay no cost.
     std::unique_ptr<TenantLimiter>   limiter_;
+    // Always-on token bucket for POST /v1/intent LLM classify.  Separate
+    // from limiter_ because ARBITER_TENANT_RATE_PER_MIN defaults to 0.
+    std::unique_ptr<TenantLimiter>   intent_llm_limiter_;
     // /exec sandbox.  Constructed iff opts.sandbox_enabled
     // AND usable() — null otherwise.  When null, /exec falls back to
     // the legacy disabled behaviour (cmd_exec gated by exec_disabled).
