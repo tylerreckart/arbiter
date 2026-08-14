@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.12.4] — 2026-08-14
+
 ### Fixed
 - **Intent mirror isolation.** Intent reroute history backup is turn-scoped RAII
   (thread-local) instead of a single `Orchestrator` slot, so concurrent REPL
