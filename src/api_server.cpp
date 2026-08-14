@@ -91,6 +91,7 @@
 
 namespace arbiter {
 
+namespace {
 
 // ─── Admin endpoints ────────────────────────────────────────────────────────
 //
