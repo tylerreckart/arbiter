@@ -175,7 +175,7 @@ TEST_CASE("RemoteSseTurnConsumer paints intent and advisor chrome") {
     CHECK(prose[1].find("advise") != std::string::npos);
     CHECK(prose[2].find("\u21bb ") == 0);
     CHECK(prose[2].find("redirect") != std::string::npos);
-    CHECK(prose[3].find("\u26d4 ") == 0);
+    CHECK(prose[3].find("\u2717 ") == 0);
     CHECK(prose[3].find("halt") != std::string::npos);
     CHECK(prose[3].find("incomplete") != std::string::npos);
 }

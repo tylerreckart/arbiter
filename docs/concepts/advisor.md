@@ -114,9 +114,9 @@ The consult path doesn't constrain the executor — it's an affordance, not a ga
 | `consult` | Soft `◇ advise · <agent> <question>` |
 | `gate_continue` | Quiet (no scrollback line) |
 | `gate_redirect` | Warning `↻ redirect · <agent> <guidance>` |
-| `gate_halt` / `gate_budget` | Error `⛔ halt · <agent> <reason>` once via the escalation path (advisor event itself is not double-painted) |
+| `gate_halt` / `gate_budget` | Error `✗ halt · <agent> <reason>` once via the escalation path (advisor event itself is not double-painted) |
 
-Same glyph dialect as the verbose API log (`advise` / `↻` / `⛔`); distinct from `·` system activity and from `→ delegating:`.
+Same glyph dialect as the verbose API log (`advise` / `↻` / `✗`); distinct from `·` system activity and from `→ delegating:`.
 
 ## See also
 

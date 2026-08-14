@@ -257,7 +257,7 @@ StyledLine styled_advisor_redirect_line(std::string_view agent_id,
 StyledLine styled_advisor_halt_line(std::string_view agent_id,
                                     std::string_view reason) {
     StyledLine line = styled_runtime_event(
-        "\u26d4",  // ⛔
+        "\u2717",  // ✗ (same dialect as verbose gate halt / tool fail)
         StyleId::Error,
         "halt",
         StyleId::Error,
