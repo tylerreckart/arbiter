@@ -23,7 +23,7 @@ else if mode=hybrid|llm   → one LLM call, tagged <intent> reply
 else                      → fall through to index
 ```
 
-Closed `kind` values: `research`, `review`, `write`, `ops`, `frontend`, `backend`, `plan`, `market`, `social`, `multi`, `unknown`. They align with the starter agents under `agents/*.json`. `multi` means "needs decomposition"; seed slots may be filled.
+Closed `kind` values: `research`, `review`, `write`, `ops`, `frontend`, `backend`, `plan`, `market`, `social`, `multi`, `unknown`. They map onto the personal starter callsigns under `agents/*.json` (`scout`, `vera`, `quill`, `forge`, `loom`, `nexus`, `compass`, `beacon`, `echo`). `multi` means "needs decomposition"; seed slots may be filled.
 
 LLM replies use a tagged grammar (same idea as the [advisor gate](advisor.md)):
 
@@ -31,10 +31,10 @@ LLM replies use a tagged grammar (same idea as the [advisor gate](advisor.md)):
 <intent>
 <kind>research</kind>
 <confidence>0.86</confidence>
-<agent>research</agent>
+<agent>scout</agent>
 <brief>User wants a literature-style survey of X.</brief>
 <todo>Find primary sources</todo>
-<phase agent="research" name="survey">…</phase>
+<phase agent="scout" name="survey">…</phase>
 </intent>
 ```
 
@@ -84,7 +84,7 @@ Desired-end-state work (workspace + tests + rollback) is [`POST /v1/reconcile`](
 | Surface | What you see |
 |---------|----------------|
 | SSE `intent` | After `request_received`, before `stream_start`. See [SSE catalog](sse-events.md). |
-| TUI | Applied: info-tinted `↗ research · heuristic`. Classified but not applied: warning-tinted `· intent research · hint:agent`. Quiet when `kind` is empty/`unknown`. Distinct from `·` system activity and from `→ delegating:`. |
+| TUI | Applied: info-tinted `↗ research · heuristic` (callsign suffix when the agent id differs from the kind, e.g. `scout`). Classified but not applied: warning-tinted `· intent research · hint:scout`. Quiet when `kind` is empty/`unknown`. Distinct from `·` system activity and from `→ delegating:`. |
 | Verbose API log | `--verbose` renders `intent` alongside `advisor` / `tool_call`. |
 
 ## See also

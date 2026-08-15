@@ -26,7 +26,7 @@ curl -H "Authorization: Bearer atr_…" \
   "requests": [
     {
       "request_id": "a1b2c3d4e5f60718",
-      "agent_id": "research",
+      "agent_id": "scout",
       "conversation_id": 7,
       "state": "completed",
       "started_at": 1746810000,

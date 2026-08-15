@@ -23,18 +23,18 @@ event: open
 data: {"ok":true}
 
 event: notification
-data: {"kind":"run.started","task_id":17,"run_id":42,"agent_id":"reviewer",
+data: {"kind":"run.started","task_id":17,"run_id":42,"agent_id":"vera",
        "status":"running","started_at":1746720000,"completed_at":0}
 
 event: notification
-data: {"kind":"run.completed","task_id":17,"run_id":42,"agent_id":"reviewer",
+data: {"kind":"run.completed","task_id":17,"run_id":42,"agent_id":"vera",
        "status":"succeeded","started_at":1746720000,"completed_at":1746720185,
        "result_summary":"Reviewed deploy 2f8e91. All green."}
 
 : heartbeat
 
 event: notification
-data: {"kind":"run.failed","task_id":18,"run_id":43,"agent_id":"research",
+data: {"kind":"run.failed","task_id":18,"run_id":43,"agent_id":"scout",
        "status":"failed","started_at":1746720500,"completed_at":1746720601,
        "error_message":"upstream rate limit"}
 ```

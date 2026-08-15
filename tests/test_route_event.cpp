@@ -69,3 +69,15 @@ TEST_CASE("route_event skips agents without event_types") {
     CHECK(route_event(dir, "sensor.temp").empty());
     fs::remove_all(dir);
 }
+
+TEST_CASE("route_event uses filename stem when name is Title Case") {
+    const std::string dir = make_temp_agents_dir();
+    write_agent(dir, "scout", R"({
+        "name": "Scout",
+        "model": "ollama/qwen",
+        "goal": "watch sensors",
+        "event_types": ["sensor.*"]
+    })");
+    CHECK(route_event(dir, "sensor.temp.high") == "scout");
+    fs::remove_all(dir);
+}

@@ -21,7 +21,7 @@ Same `scheduled_task` shape as [`POST /v1/schedules`](create.md).
 {
   "scheduled_task": {
     "id": 17,
-    "agent_id": "reviewer",
+    "agent_id": "vera",
     "schedule_phrase": "every monday at 09:00",
     "schedule_kind": "recurring",
     "next_fire_at": 1746864000,

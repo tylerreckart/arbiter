@@ -7,6 +7,19 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **Conversational index voice.** The master orchestrator (`index`) now speaks
+  in a collaborative register (complete sentences, brief orientation) instead of
+  the shared caveman “dispatch, not a conversation” voice. Specialists keep the
+  compressed field-report register. Routing, writs, and delegation rules are
+  unchanged.
+- **Personal starter callsigns.** Starter agents are renamed to function-flavored
+  personal ids: `scout` (research), `vera` (review), `quill` (write), `forge`
+  (ops), `compass` (plan), `nexus` (backend), `loom` (frontend), `beacon`
+  (market), `echo` (social). Intent *kinds* are unchanged and map onto these
+  callsigns. Re-seed with `arbiter --init --force`, which also removes the
+  retired job-title files (`research.json`, `reviewer.json`, …).
+
 ## [0.12.7] — 2026-08-14
 
 ### Changed

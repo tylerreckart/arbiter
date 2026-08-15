@@ -1066,7 +1066,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                 iss >> subcmd;
                 if (subcmd != "execute") {
                     push_status("Usage: /plan execute <path>\n"
-                                      "  Runs a plan file produced by /agent planner, executing each\n"
+                                      "  Runs a plan file produced by /agent compass, executing each\n"
                                       "  phase sequentially and injecting prior outputs into dependents.");
                     return;
                 }

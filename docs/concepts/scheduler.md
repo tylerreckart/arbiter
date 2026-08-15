@@ -56,13 +56,13 @@ Agents emit:
 /schedule resume 42
 ```
 
-The `:` separates the schedule phrase from the message that the agent will see when the task fires. The scheduled task targets the calling agent by default — a `research` agent emitting `/schedule …` queues work for `research`. Other agents are addressable via the HTTP `POST /v1/schedules` endpoint with an `agent` field.
+The `:` separates the schedule phrase from the message that the agent will see when the task fires. The scheduled task targets the calling agent by default — a `scout` agent emitting `/schedule …` queues work for `scout`. Other agents are addressable via the HTTP `POST /v1/schedules` endpoint with an `agent` field.
 
 A successful create returns:
 
 ```
 [/schedule create in 1 hour: review the deploy ...]
-OK: scheduled #17 — in 1 hour (2026-05-08 14:23) → research
+OK: scheduled #17 — in 1 hour (2026-05-08 14:23) → scout
   message: review the deploy status and report regressions
 [END SCHEDULE]
 ```
@@ -89,7 +89,7 @@ event: open
 data: {"ok":true}
 
 event: notification
-data: {"kind":"run.completed","task_id":17,"run_id":42,"agent_id":"research",
+data: {"kind":"run.completed","task_id":17,"run_id":42,"agent_id":"scout",
        "status":"succeeded","started_at":1746720000,"completed_at":1746720185,
        "result_summary":"…"}
 ```

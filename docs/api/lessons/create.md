@@ -30,7 +30,7 @@ curl -X POST \
 {
   "lesson": {
     "id": 14,
-    "agent_id": "research",
+    "agent_id": "scout",
     "signature": "/fetch behind cloudflare",
     "lesson_text": "use Authorization-bearing fetch, not plain GET",
     "hit_count": 0,

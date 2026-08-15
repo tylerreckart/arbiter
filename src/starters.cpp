@@ -32,15 +32,15 @@ struct StarterMeta {
 };
 
 constexpr StarterMeta kCuratedOrder[] = {
-    { "reviewer", "code review — terse, defect-focused"            },
-    { "research", "research analyst — haiku + opus advisor combo"  },
-    { "writer",   "essays, READMEs, docs, creative writing"        },
-    { "devops",   "infrastructure engineer — shell, git, CI/CD"    },
-    { "planner",  "task decomposition into phased execution plans" },
-    { "backend",  "APIs, data modeling, distributed systems"       },
-    { "frontend", "components, state, accessibility, performance"  },
-    { "marketer", "strategy, positioning, campaign concepts"       },
-    { "social",   "platform-native content, growth, engagement"    },
+    { "vera",    "Vera — code review, defect-focused"              },
+    { "scout",   "Scout — research analyst, primary sources first" },
+    { "quill",   "Quill — essays, READMEs, docs, creative writing" },
+    { "forge",   "Forge — infrastructure, shell, git, CI/CD"       },
+    { "compass", "Compass — task decomposition into phased plans"  },
+    { "nexus",   "Nexus — APIs, data modeling, distributed systems"},
+    { "loom",    "Loom — components, state, accessibility, perf"   },
+    { "beacon",  "Beacon — strategy, positioning, campaigns"       },
+    { "echo",    "Echo — platform-native content and growth"       },
 };
 
 // A starter that's in the embedded JSON table but not in kCuratedOrder
@@ -68,7 +68,7 @@ std::vector<StarterAgent> starter_agents() {
     out.reserve(table.size());
 
     // Curated entries first, in declared order, so the menu stays stable
-    // for users who've memorised "research is option 2".
+    // for users who've memorised the starter order.
     for (const auto& meta : kCuratedOrder) {
         std::string id(meta.id);
         auto it = table.find(id);

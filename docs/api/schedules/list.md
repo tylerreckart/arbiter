@@ -26,7 +26,7 @@ curl -H "Authorization: Bearer atr_…" \
   "schedules": [
     {
       "id": 17,
-      "agent_id": "reviewer",
+      "agent_id": "vera",
       "conversation_id": 0,
       "message": "summarise the week's PRs",
       "schedule_phrase": "every monday at 09:00",

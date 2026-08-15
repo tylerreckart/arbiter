@@ -153,9 +153,8 @@ void Orchestrator::load_agents(const std::string& dir) {
         if (entry.path().extension() == ".json") {
             try {
                 auto config = Constitution::from_file(entry.path().string());
-                std::string id = config.name.empty()
-                    ? entry.path().stem().string()
-                    : config.name;
+                std::string id = file_backed_agent_id(
+                    config, entry.path().stem().string());
                 create_agent(id, std::move(config));
             } catch (const std::exception& e) {
                 // Skip malformed agent files, log to stderr
@@ -1868,8 +1867,12 @@ std::string Orchestrator::global_status() const {
         ss << "AGENTS — delegate with /agent <id> <task>:\n";
         for (auto& [id, agent] : agents_) {
             const auto& cfg = agent->config();
-            // One compact line per agent: id [role] model — goal
+            // One compact line per agent: id (Name) [role] model — goal
+            // Ids are lowercase callsigns (scout, vera, …); constitution
+            // name carries the personal Title Case form when it differs.
             ss << "  " << id;
+            if (!cfg.name.empty() && cfg.name != id)
+                ss << " (" << cfg.name << ")";
             if (!cfg.role.empty())
                 ss << " [" << cfg.role << "]";
             ss << " " << short_model(cfg.model);
