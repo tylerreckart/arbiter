@@ -2,10 +2,12 @@
 #include "constitution.h"
 #include "api_client.h"   // is_weak_executor
 #include "json.h"
+#include <cctype>
 #include <fstream>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 
 namespace arbiter {
 
@@ -1238,6 +1240,22 @@ void Constitution::save(const std::string& path) const {
     std::ofstream f(path);
     if (!f.is_open()) throw std::runtime_error("Cannot write constitution: " + path);
     f << to_json();
+}
+
+static bool ascii_iequals(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        auto ca = static_cast<unsigned char>(a[i]);
+        auto cb = static_cast<unsigned char>(b[i]);
+        if (std::tolower(ca) != std::tolower(cb)) return false;
+    }
+    return true;
+}
+
+std::string file_backed_agent_id(const Constitution& c, std::string_view stem) {
+    if (stem.empty()) return c.name;
+    if (c.name.empty() || ascii_iequals(c.name, stem)) return std::string(stem);
+    return c.name;
 }
 
 } // namespace arbiter

@@ -35,9 +35,8 @@ std::string route_event(const std::string& agents_dir,
         try {
             auto config = Constitution::from_file(entry.path().string());
             if (config.event_types.empty()) continue;
-            std::string id = config.name.empty()
-                ? entry.path().stem().string()
-                : config.name;
+            std::string id = file_backed_agent_id(
+                config, entry.path().stem().string());
             agents.emplace_back(std::move(id), config.event_types);
         } catch (const std::exception& e) {
             std::fprintf(stderr, "WARN: route_event skip %s: %s\n",

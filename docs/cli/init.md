@@ -48,7 +48,13 @@ To reset *every* starter back to the embedded defaults — useful after an upgra
 arbiter --init --force
 ```
 
-`--force` overwrites unconditionally; any local edits are lost. There's no interactive confirm.
+`--force` overwrites every current starter unconditionally (local edits are
+lost; no confirm) and deletes the retired job-title starter files
+(`research.json`, `reviewer.json`, `writer.json`, `devops.json`,
+`planner.json`, `backend.json`, `frontend.json`, `marketer.json`,
+`social.json`) so an upgrade does not keep both rosters loaded. Schedules
+and `/agent` commands that still name those old ids need retargeting to the
+new callsigns.
 
 ## What's NOT in `--init`
 

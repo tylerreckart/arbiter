@@ -22,7 +22,8 @@ std::string route_event(
 
 // Scan *.json agent files in agents_dir for the first agent whose
 // event_types array contains a glob matching event_type.  Returns that
-// agent's id (Constitution::name or filename stem), or "" if no match.
+// agent's id (filename stem, or Constitution::name when it is a distinct
+// id), or "" if no match.
 // Callers fall back to tenant routing and then "index".  Reads constitution
 // files on each call — intended for the
 // infrequent /v1/events path, not a hot loop.

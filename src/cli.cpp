@@ -26,6 +26,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <thread>
 
 #include <fcntl.h>
@@ -162,6 +163,23 @@ void cmd_init(bool force) {
             for (const auto& s : starter_agents())
                 if (s.id == id) { blurb = s.blurb; break; }
             std::cout << "  " << id << ".json — " << blurb << "\n";
+        }
+    }
+    if (force) {
+        std::vector<std::string> removed;
+        for (auto id : kRetiredStarterIds) {
+            std::string path = agents_dir + "/" + std::string(id) + ".json";
+            if (!fs::exists(path)) continue;
+            std::error_code ec;
+            fs::remove(path, ec);
+            if (!ec) removed.emplace_back(id);
+        }
+        if (!removed.empty()) {
+            std::cout << "Removed " << removed.size()
+                      << " retired starter"
+                      << (removed.size() == 1 ? "" : "s") << ":\n";
+            for (const auto& id : removed)
+                std::cout << "  " << id << ".json\n";
         }
     }
     if (!kept.empty()) {

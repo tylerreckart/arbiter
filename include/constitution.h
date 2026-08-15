@@ -5,6 +5,7 @@
 
 #include "intent.h"
 #include <string>
+#include <string_view>
 #include <vector>
 #include <optional>
 
@@ -147,6 +148,12 @@ struct Constitution {
     static Constitution from_file(const std::string& path);
     void save(const std::string& path) const;
 };
+
+// Routing id for a file-backed agent. Filename stem is the id when
+// Constitution::name is empty or differs only by case (Title Case
+// callsigns like `"name": "Scout"` in scout.json). A name that is a
+// different id still wins, matching historical load_agents behavior.
+std::string file_backed_agent_id(const Constitution& c, std::string_view stem);
 
 // Master constitution — conversational index defaults
 Constitution master_constitution();

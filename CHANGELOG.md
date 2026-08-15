@@ -17,8 +17,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   personal ids: `scout` (research), `vera` (review), `quill` (write), `forge`
   (ops), `compass` (plan), `nexus` (backend), `loom` (frontend), `beacon`
   (market), `echo` (social). Intent *kinds* are unchanged and map onto these
-  callsigns. Re-seed with `arbiter --init --force` (or delete the old
-  `~/.arbiter/agents/*.json` files) to pick up the new roster.
+  callsigns. Re-seed with `arbiter --init --force`, which also removes the
+  retired job-title files (`research.json`, `reviewer.json`, …).
 
 ## [0.12.7] — 2026-08-14
 

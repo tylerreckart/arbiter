@@ -153,9 +153,8 @@ void Orchestrator::load_agents(const std::string& dir) {
         if (entry.path().extension() == ".json") {
             try {
                 auto config = Constitution::from_file(entry.path().string());
-                std::string id = config.name.empty()
-                    ? entry.path().stem().string()
-                    : config.name;
+                std::string id = file_backed_agent_id(
+                    config, entry.path().stem().string());
                 create_agent(id, std::move(config));
             } catch (const std::exception& e) {
                 // Skip malformed agent files, log to stderr

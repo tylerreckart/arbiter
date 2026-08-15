@@ -4772,8 +4772,8 @@ void handle_intent_classify(int fd, const HttpRequest& req,
                 if (entry.path().extension() != ".json") continue;
                 try {
                     auto c = Constitution::from_file(entry.path().string());
-                    std::string id = c.name.empty() ? entry.path().stem().string()
-                                                    : c.name;
+                    std::string id = file_backed_agent_id(
+                        c, entry.path().stem().string());
                     if (id.empty() || id == "index") continue;
                     bool dup = false;
                     for (const auto& existing : in.roster) {

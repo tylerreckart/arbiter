@@ -12,14 +12,24 @@
 #include "constitution.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace arbiter {
 
 struct StarterAgent {
-    std::string  id;       // "reviewer", "research", …
+    std::string  id;       // "scout", "vera", …
     std::string  blurb;    // one-line description shown in menus
     Constitution config;   // defaults (id, model, advisor_model, rules, …)
+};
+
+// Job-title starter ids replaced by personal callsigns. `--init --force`
+// deletes these files so an upgrade does not load the old roster beside
+// the new one. Without --force they are left alone (the user may have
+// customized them).
+inline constexpr std::string_view kRetiredStarterIds[] = {
+    "research", "reviewer", "writer", "devops", "planner",
+    "backend", "frontend", "marketer", "social",
 };
 
 // Returns a fresh copy of every starter's default config.  Caller is free

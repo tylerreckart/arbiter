@@ -363,3 +363,19 @@ TEST_CASE("/mem variants all map to the mem bundle") {
         CHECK(p.find("/mem add ")   != std::string::npos);
     }
 }
+
+TEST_CASE("file_backed_agent_id prefers stem for Title Case display names") {
+    Constitution c;
+    c.name = "Scout";
+    CHECK(file_backed_agent_id(c, "scout") == "scout");
+    CHECK(file_backed_agent_id(c, "SCOUT") == "SCOUT");
+
+    c.name = "scout";
+    CHECK(file_backed_agent_id(c, "scout") == "scout");
+
+    c.name.clear();
+    CHECK(file_backed_agent_id(c, "scout") == "scout");
+
+    c.name = "research";
+    CHECK(file_backed_agent_id(c, "scout") == "research");
+}
