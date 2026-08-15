@@ -494,6 +494,11 @@ private:
     int                 next_stream_id();
     void fire_history_checkpoint();
 
+    // True when this turn should stop: sticky cancel, hard-cancel, or the
+    // thread-local RequestCancelScope token.  Rechecked at each dispatch
+    // iteration so a kill during tools does not start another LLM call.
+    [[nodiscard]] bool turn_is_cancelled() const;
+
     // Depth-0 ingress classify/route.  Fail-open: never throws into dispatch.
     struct IntentIngress {
         std::string agent_id;

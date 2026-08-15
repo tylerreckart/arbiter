@@ -62,6 +62,9 @@ struct DiffUndoSnapshot {
     std::string post_image;
 };
 
+// Refuse to load a target larger than this (avoids OOM on multi-GB files).
+inline constexpr std::uint64_t kMaxDiffFileBytes = 10ull * 1024 * 1024;
+
 // Apply `patch` under `workspace_root` (must be an existing directory).
 // Empty workspace_root ⇒ current_path().  Non-empty missing roots ERR
 // without falling back to process cwd.  Refuses absolute/escaping paths,

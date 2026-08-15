@@ -41,6 +41,18 @@ TEST_CASE("is_destructive_exec catches common destructive patterns") {
     // Redirects
     CHECK(is_destructive_exec("echo x > file.txt"));
     CHECK(is_destructive_exec("echo x >> file.txt"));
+    CHECK(is_destructive_exec("echo x>file.txt"));
+    CHECK(is_destructive_exec("cat a|rm -rf /tmp/x"));
+
+    // Path-qualified binaries and brace expansion
+    CHECK(is_destructive_exec("/usr/bin/rm -rf /tmp/stuff"));
+    CHECK(is_destructive_exec("/bin/sudo id"));
+    CHECK(is_destructive_exec("{rm,-rf,/tmp/x}"));
+
+    // Shell-meta bypasses
+    CHECK(is_destructive_exec("true; rm -rf /tmp/x"));
+    CHECK(is_destructive_exec("$(rm -rf /tmp/x)"));
+    CHECK(is_destructive_exec("`rm -rf /tmp/x`"));
 
     // find -delete
     CHECK(is_destructive_exec("find . -delete"));
@@ -200,6 +212,40 @@ TEST_CASE("cmd_write honors explicit workspace_root over process cwd") {
 
     fs::current_path(prev);
     fs::remove_all(base);
+}
+
+TEST_CASE("cmd_write rejects null, backslash, control bytes, and oversized bodies") {
+    CHECK(cmd_write(std::string("bad\0path", 8), "x").find("ERR:") == 0);
+    CHECK(cmd_write("foo\\bar", "x").find("ERR:") == 0);
+    CHECK(cmd_write("foo\nbar", "x").find("ERR:") == 0);
+    std::string huge(kMaxWriteBytes + 1, 'a');
+    CHECK(cmd_write("ok.txt", huge).find("10 MiB") != std::string::npos);
+}
+
+TEST_CASE("cmd_write refuses a dangling symlink leaf") {
+    const auto pid = static_cast<long long>(::getpid());
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path root = fs::temp_directory_path() /
+        ("arbiter_write_symlink_" + std::to_string(pid) + "_" +
+         std::to_string(stamp));
+    fs::create_directories(root);
+    fs::create_symlink(root / "missing.txt", root / "dangling");
+
+    std::string result = cmd_write("dangling", "pwned", root.string());
+    CHECK(result.find("ERR:") == 0);
+    CHECK(result.find("symlink") != std::string::npos);
+    CHECK_FALSE(fs::exists(root / "missing.txt"));
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("cmd_fetch_bytes rejects non-positive max_bytes") {
+    auto r = cmd_fetch_bytes("https://example.com/", 0);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("max_bytes") != std::string::npos);
+    auto r2 = cmd_fetch_bytes("https://example.com/", -1);
+    CHECK_FALSE(r2.ok);
+    CHECK(r2.error.find("max_bytes") != std::string::npos);
 }
 
 TEST_CASE("cmd_write refuses missing workspace_root without process-cwd fallback") {
@@ -554,6 +600,29 @@ TEST_CASE("/parallel allows duplicate agent_id (ephemeral clones)") {
     CHECK(out.find("[child 2/2 — /agent researcher]") != std::string::npos);
     CHECK(out.find("ok-a") != std::string::npos);
     CHECK(out.find("ok-b") != std::string::npos);
+}
+
+TEST_CASE("/parallel rejects fan-out above kMaxParallelChildren") {
+    AgentCommand cmd;
+    cmd.name = "parallel";
+    for (std::size_t i = 0; i < kMaxParallelChildren + 1; ++i) {
+        cmd.content += "/agent researcher task " + std::to_string(i) + "\n";
+    }
+
+    bool invoker_called = false;
+    auto inv = [&](const std::vector<std::pair<std::string, std::string>>&)
+        -> std::vector<std::string> {
+        invoker_called = true;
+        return {};
+    };
+
+    auto out = execute_agent_commands(
+        {cmd}, "research", "",
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        false, inv);
+
+    CHECK_FALSE(invoker_called);
+    CHECK(out.find("ERR: /parallel fan-out exceeds") != std::string::npos);
 }
 
 TEST_CASE("/parallel from a sub-agent caller reaches the invoker") {

@@ -1108,6 +1108,11 @@ static std::string preflight_ssrf_check(const std::string& url) {
 FetchedResource cmd_fetch_bytes(const std::string& url, int64_t max_bytes) {
     FetchedResource r;
 
+    if (max_bytes <= 0) {
+        r.error = "max_bytes must be positive";
+        return r;
+    }
+
     const bool is_http  = url.size() >= 7 && url.compare(0, 7, "http://")  == 0;
     const bool is_https = url.size() >= 8 && url.compare(0, 8, "https://") == 0;
     if (!is_http && !is_https) {
@@ -1335,6 +1340,14 @@ std::string cmd_exec(const std::string& command, bool confirmed) {
 std::string cmd_write(const std::string& path, const std::string& content,
                       std::string_view workspace_root) {
     if (path.empty()) return "ERR: empty path";
+    if (path.size() > 1024) return "ERR: path too long";
+    if (path.find('\0') != std::string::npos) return "ERR: null byte in path";
+    if (path.find('\\') != std::string::npos) return "ERR: backslash in path";
+    for (unsigned char c : path) {
+        if (c < 0x20) return "ERR: control byte in path";
+    }
+    if (content.size() > kMaxWriteBytes)
+        return "ERR: write exceeds 10 MiB cap";
 
     // Path safety: canonicalize and verify the resolved path stays within the
     // workspace root.  The root itself is canonicalised so symlinked ancestors
@@ -1397,6 +1410,12 @@ std::string cmd_write(const std::string& path, const std::string& content,
         if (ec) return "ERR: cannot create directories: " + ec.message();
     }
 
+    {
+        std::error_code lec;
+        if (fs::symlink_status(resolved, lec).type() == fs::file_type::symlink)
+            return "ERR: refusing to write through symlink: " + path;
+    }
+
     // Back up existing file before overwriting.
     bool overwrite = false;
     std::string bak_note;
@@ -1409,25 +1428,56 @@ std::string cmd_write(const std::string& path, const std::string& content,
         if (!ec) bak_note = " (previous saved to " + bak.string() + ")";
     }
 
-    std::ofstream f(resolved, std::ios::out | std::ios::trunc);
-    if (!f.is_open()) {
+    // O_NOFOLLOW so a symlink swap between the prefix check and open
+    // cannot redirect the write outside the workspace.
+    const int fd = ::open(resolved.c_str(),
+                          O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        if (errno == ELOOP)
+            return "ERR: refusing to write through symlink: " + path;
         int err = errno;
         return std::string("ERR: cannot open for writing: ") + path
              + " (" + std::strerror(err) + ")";
     }
-
-    f << content;
-    if (!content.empty() && content.back() != '\n') f << '\n';
-
-    if (f.fail()) {
-        int err = errno;
-        std::string why = std::strerror(err);
-        if (err == ENOSPC) why = "disk full (ENOSPC)";
-        else if (err == EDQUOT) why = "disk quota exceeded (EDQUOT)";
-        else if (err == EACCES) why = "permission denied (EACCES)";
-        return "ERR: write failed: " + path + " — " + why;
+    struct stat st{};
+    if (::fstat(fd, &st) != 0) {
+        const int e = errno;
+        ::close(fd);
+        return std::string("ERR: fstat ") + path + ": " + std::strerror(e);
     }
-    f.close();
+    if (!S_ISREG(st.st_mode)) {
+        ::close(fd);
+        return "ERR: write target is not a regular file: " + path;
+    }
+
+    auto write_all = [&](const char* data, size_t n) -> std::string {
+        size_t off = 0;
+        while (off < n) {
+            const ssize_t w = ::write(fd, data + off, n - off);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                const int err = errno;
+                std::string why = std::strerror(err);
+                if (err == ENOSPC) why = "disk full (ENOSPC)";
+                else if (err == EDQUOT) why = "disk quota exceeded (EDQUOT)";
+                else if (err == EACCES) why = "permission denied (EACCES)";
+                return "ERR: write failed: " + path + " — " + why;
+            }
+            off += static_cast<size_t>(w);
+        }
+        return {};
+    };
+    if (auto err = write_all(content.data(), content.size()); !err.empty()) {
+        ::close(fd);
+        return err;
+    }
+    if (!content.empty() && content.back() != '\n') {
+        if (auto err = write_all("\n", 1); !err.empty()) {
+            ::close(fd);
+            return err;
+        }
+    }
+    ::close(fd);
 
     // Verify: read the file back and compare bytes.  Catches silent
     // disk-level truncation (partial fs writes, ENOSPC, etc.) and gives
@@ -1727,25 +1777,31 @@ bool is_destructive_exec(const std::string& cmd) {
         return padded.find(needle) != std::string::npos;
     };
 
-    // Destructive filesystem + process tools.
-    if (has(" rm ") || has(" rmdir ") || has(" unlink ") ||
-        has(" shred ") || has(" truncate ") ||
-        has(" dd ")  || has(" mkfs")      || has(" wipefs") ||
+    // Destructive filesystem + process tools.  Path-qualified binaries
+    // (`/usr/bin/rm`, `./rm`) miss the space-padded word check, so also
+    // match a leading slash before the token.
+    if (has(" rm ") || has("/rm ") || has(" rmdir ") || has("/rmdir ") ||
+        has(" unlink ") || has("/unlink ") ||
+        has(" shred ") || has("/shred ") || has(" truncate ") ||
+        has(" dd ") || has("/dd ") || has(" mkfs") || has(" wipefs") ||
         has(" fdisk ") || has(" parted ") ||
         has(" chmod -r") || has(" chown -r")) return true;
 
     // Privilege escalation — anything can happen past sudo.
-    if (has(" sudo ") || has(" doas ")) return true;
+    if (has(" sudo ") || has("/sudo ") || has(" doas ") || has("/doas "))
+        return true;
 
-    // Shell redirection overwrites/appends files.  We gate both since an
-    // agent-issued `>` is the moral equivalent of /write.
-    if (padded.find(" > ") != std::string::npos ||
-        padded.find(">>") != std::string::npos) return true;
+    // Brace expansion can hide a destructive argv (`{rm,-rf,/tmp/x}`).
+    if (s.find('{') != std::string::npos && s.find(',') != std::string::npos)
+        return true;
+
+    // Shell redirection overwrites/appends files.  Gate any `>` — not
+    // only space-padded ` > ` — so `echo x>file` cannot skip confirm.
+    if (s.find('>') != std::string::npos) return true;
 
     // Piped commands reach a second tool whose token isn't at the command
-    // head, so the " rm " / " dd " checks above won't see it.  Treat any
-    // pipe as confirm-worthy — the user gets one prompt for the whole chain.
-    if (padded.find(" | ") != std::string::npos) return true;
+    // head.  Treat any pipe as confirm-worthy, including tight `a|b`.
+    if (s.find('|') != std::string::npos) return true;
 
     // find -delete / find -exec rm …
     if (has(" find ") && (has(" -delete") ||
@@ -2842,6 +2898,12 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                 block << "ERR: /parallel block had no /agent lines — only "
                          "/agent <id> <msg> is permitted inside "
                          "/parallel.../endparallel\n";
+                cache_result = false;
+            } else if (children.size() > kMaxParallelChildren) {
+                block << "ERR: /parallel fan-out exceeds "
+                      << kMaxParallelChildren
+                      << " children (got " << children.size()
+                      << ") — split the batch\n";
                 cache_result = false;
             } else if (!parallel_invoker) {
                 block << "ERR: /parallel unavailable in this context\n";

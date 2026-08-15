@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <sys/stat.h>
 #include <poll.h>
 #include <signal.h>
 #include <sstream>
@@ -909,13 +910,34 @@ bool SandboxManager::write_to_workspace(int64_t tenant_id,
         }
         target = std::move(again);
     }
-    std::ofstream f(target, std::ios::out | std::ios::trunc | std::ios::binary);
-    if (!f.is_open()) {
-        err_out = "open for writing failed: " + target.string();
+    const int fd = ::open(target.c_str(),
+                          O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        if (errno == ELOOP) {
+            err_out = "refusing to write through symlink: " + target.string();
+            return false;
+        }
+        err_out = std::string("open for writing failed: ") + std::strerror(errno);
         return false;
     }
-    f.write(content.data(), static_cast<std::streamsize>(content.size()));
-    if (!f.good()) { err_out = "write failed: " + target.string(); return false; }
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(fd);
+        err_out = "write target is not a regular file";
+        return false;
+    }
+    std::size_t off = 0;
+    while (off < content.size()) {
+        const ssize_t n = ::write(fd, content.data() + off, content.size() - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            err_out = std::string("write failed: ") + std::strerror(errno);
+            ::close(fd);
+            return false;
+        }
+        off += static_cast<std::size_t>(n);
+    }
+    ::close(fd);
     touch_access(tenant_id);
     return true;
 }
