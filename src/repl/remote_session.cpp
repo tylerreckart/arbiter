@@ -209,10 +209,37 @@ ApiResponse ReplSession::run_remote_turn(Pane& pane, const std::string& line,
         interim.flush();
     };
     hooks.on_escalation = [&](const std::string& agent, const std::string& reason) {
-        std::string text = "[advisor halt: " + agent + "] " + reason;
         pane.output_queue.push_prose(
-            {styled_activity_line(std::move(text), StyleId::Error)});
+            {styled_advisor_halt_line(agent, reason)});
         pane.output_queue.end_message();
+    };
+    hooks.on_intent = [&](const std::string& kind,
+                            const std::string& source,
+                            const std::string& target,
+                            bool applied) {
+        auto line = styled_intent_event_line(kind, source, target, applied);
+        if (!line) return;
+        pane.output_queue.push_prose({std::move(*line)});
+        pane.output_queue.end_message();
+    };
+    hooks.on_advisor = [&](const std::string& kind,
+                             const std::string& agent,
+                             const std::string& detail) {
+        if (kind == "gate_continue" || kind == "gate_halt" || kind == "gate_budget") {
+            return;  // quiet success; halt paints via on_escalation
+        }
+        if (kind == "consult") {
+            pane.output_queue.push_prose(
+                {styled_advisor_consult_line(agent, detail)});
+            pane.output_queue.end_message();
+            return;
+        }
+        if (kind == "gate_redirect") {
+            pane.output_queue.push_prose(
+                {styled_advisor_redirect_line(agent, detail)});
+            pane.output_queue.end_message();
+            return;
+        }
     };
 
     RemoteSseTurnConsumer consumer(renderer, pane.output_queue, std::move(hooks));

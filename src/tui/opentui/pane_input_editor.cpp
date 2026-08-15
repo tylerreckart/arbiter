@@ -18,9 +18,9 @@ namespace arbiter::opentui {
 
 namespace {
 
-// One cell for the box border + one cell of breathing room inside it.
+// One cell for the box border; inner pad comes from layout.input_padding_x
+// (default 1) so readline matches thinking/user-echo body inset.
 constexpr int kInputBorderCells = 1;
-constexpr int kInputInnerPad = 1;
 constexpr int kBracketedPasteEvent = 0x100;
 
 constexpr std::uint8_t kWrapWord = 2;
@@ -384,7 +384,8 @@ void PaneInputEditor::update_input_rows() {
     if (cols <= 0) cols = 80;
     const TuiDesign& d = tui_design();
     const int outer_pad = tui_pane_edge_pad(cols, d);
-    const int chrome_inset = kInputBorderCells + kInputInnerPad;
+    const int inner_pad = std::max(0, d.layout.input_padding_x);
+    const int chrome_inset = kInputBorderCells + inner_pad;
     const int content_cols = std::max(1, cols - (outer_pad * 2) - (chrome_inset * 2));
     const int editor_cols =
         std::max(1, content_cols - std::max(0, prompt_cols_));
@@ -422,7 +423,8 @@ void PaneInputEditor::draw(OpenTuiHandle frame, const TUI& tui, bool focused) co
     const TuiDesign& d = tui_design();
     const int cols = std::max(1, tui.cols());
     const int outer_pad = tui_pane_edge_pad(cols, d);
-    const int chrome_inset = kInputBorderCells + kInputInnerPad;
+    const int inner_pad = std::max(0, d.layout.input_padding_x);
+    const int chrome_inset = kInputBorderCells + inner_pad;
     const std::uint32_t content_x = px
         + static_cast<std::uint32_t>(outer_pad + chrome_inset);
 
@@ -492,7 +494,8 @@ void PaneInputEditor::set_cursor_from_click(int term_x, int term_y) {
     const TuiDesign& d = tui_design();
     const int cols = std::max(1, tui_.cols());
     const int outer_pad = tui_pane_edge_pad(cols, d);
-    const int chrome_inset = kInputBorderCells + kInputInnerPad;
+    const int inner_pad = std::max(0, d.layout.input_padding_x);
+    const int chrome_inset = kInputBorderCells + inner_pad;
 
     const int px = tui_.left_col() - 1;
     const int py = tui_.input_top_row_pub();

@@ -107,6 +107,17 @@ When `mode: "consult"` (or the legacy `advisor_model` is set), the executor can 
 
 The consult path doesn't constrain the executor — it's an affordance, not a gate. Use `mode: "gate"` when you want structural enforcement.
 
+## Observability (TUI)
+
+| Event | Chrome |
+|-------|--------|
+| `consult` | Soft `◇ advise · <agent> <question>` |
+| `gate_continue` | Quiet (no scrollback line) |
+| `gate_redirect` | Warning `↻ redirect · <agent> <guidance>` |
+| `gate_halt` / `gate_budget` | Error `× halt · <agent> <reason>` once via the escalation path (advisor event itself is not double-painted) |
+
+Same glyph dialect as consult/redirect (`◇` / `↻`); halt uses text `×` (not emoji, distinct from tool-fail `✗`). Distinct from `·` system activity and from `→ delegating:`.
+
 ## See also
 
 - [Philosophy](../philosophy.md) — the structural-separation argument.

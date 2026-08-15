@@ -136,7 +136,10 @@ void draw_pane_chrome(OpenTuiHandle frame, const TUI& tui) {
     }
 
     auto paint_status_or_badge = [&](int row_y) {
-        const int inset = 1 + header_pad;           // corner + padding cells
+        // Match thinking/user box titles: one cell past the corner (plus any
+        // theme bump via status_inset_x). Status string still frames with spaces.
+        const int inset = std::max(
+            1, std::min(d.layout.status_inset_x, std::max(0, content_w / 2)));
         const int status_budget = content_w - inset * 2 - 2;
         const std::string* status_src = nullptr;
         if (!chrome.pre_input_status.empty()) {

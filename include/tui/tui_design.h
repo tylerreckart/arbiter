@@ -49,8 +49,8 @@ struct TuiDesign {
     struct Layout {
         int pane_padding_x = 1;
         int header_padding_x = 1;
-        int status_inset_x = 2;
-        int input_padding_x = 1;
+        int status_inset_x = 1;       // cells past box corner to status label
+        int input_padding_x = 1;      // cells inside input box border to prompt
         int footer_gap = 1;
         int block_gap = 1;            // blank rows between messages
         int panel_gap = 1;            // blank rows before/after code & diff

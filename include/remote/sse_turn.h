@@ -30,6 +30,16 @@ struct RemoteTurnHooks {
     std::function<void(const std::string& agent, const std::string& content)> on_sub_agent;
     // Escalation / advisor halt.
     std::function<void(const std::string& agent, const std::string& reason)> on_escalation;
+    // Pre-dispatch intent classify/route (SSE `intent`).
+    std::function<void(const std::string& kind,
+                       const std::string& source,
+                       const std::string& target_agent,
+                       bool applied)> on_intent;
+    // Advisor activity (SSE `advisor`); halt/budget are suppressed by the
+    // session hook in favor of on_escalation.
+    std::function<void(const std::string& kind,
+                       const std::string& agent,
+                       const std::string& detail)> on_advisor;
 };
 
 struct RemoteTurnResult {
@@ -64,6 +74,8 @@ private:
     void handle_request_received(const JsonValue& payload);
     void handle_sub_agent(const JsonValue& payload);
     void handle_escalation(const JsonValue& payload);
+    void handle_intent(const JsonValue& payload);
+    void handle_advisor(const JsonValue& payload);
 
     StreamRenderer& renderer_;
     OutputQueue&    queue_;

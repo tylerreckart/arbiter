@@ -9,39 +9,48 @@ Live order within a turn (tools appear as `/cmd` lines are dispatched, after
 the model stream that emitted them):
 
 ```
-user echo strip (inset + vertical pad, input bg)
+╭── user ─────────────────╮                UserEchoSegment (rounded box)
+│  submit text…           │                plain body; collapses long pastes
+╰─────────────────────────╯
                                   ← one blank row
-thinking strip (agent accent + input bg + pad) ThinkingSegment (when provider emits)
-  markdown body, dimmed…                   up to 3 wrapped body rows when collapsed
+╭── thinking ─────────────╮                ThinkingSegment (when provider emits)
+│  markdown body…         │                up to 3 wrapped body rows when collapsed
+╰─────────────────────────╯
                                   ← one blank row
 assistant prose / markdown / code / diffs  (writ lines swallowed)
                                   ← one blank row
 ○ fetch:https://…                          ToolSegment appears as dispatch starts
 ✓ exec:git status                          resolves when the result returns
                                   ← one blank row
-· [interrupted]                            activity chrome (system lines)
+· [interrupted]                            activity chrome (system noise)
+↗ research · heuristic                     intent applied (info; ≠ → delegating)
+· intent research · hint:research          intent classified, not applied
+◇ advise · index Should we…?               advisor consult (soft)
+↻ redirect · research Add a failing…       advisor gate redirect (warning)
+× halt · research incomplete…             advisor halt (error; once via escalation)
 → delegating: /agent …                     bold/info routing status (not prose)
 › /read #2                                 verbose writs (› + WritLine)
 ```
 
 | Layer | Segment | Notes |
 |-------|---------|-------|
-| User | `ProseSegment` + `UserEchoText` | Full-width strip with input inset + vertical pad |
+| User | `UserEchoSegment` | Rounded box titled `user`; scroll bg + muted border + info title (same dialect as thinking); plain-text body |
 | Tools | `ToolSegment` | One row per `/cmd`; expand for args/result; clustered (no gap between tools) |
-| Reasoning | `ThinkingSegment` | Markdown body on input/echo bg; per-agent left accent from theme palette; dimmed readable text |
+| Reasoning | `ThinkingSegment` | Rounded box titled `thinking`; markdown body; scroll bg + muted border + info title |
 | Assistant | `Prose` / `Code` / `Diff` | Same StreamRenderer path as before |
-| System | styled activity / delegation lines | Interrupts, advisor, `→ delegating:` |
+| System | styled activity lines | Interrupts, confirm outcomes (`·`) |
+| Runtime | intent / advisor helpers | `↗` applied intent, `◇` advise, `↻` redirect, `×` halt; `→ delegating:` stays separate |
 
 Quiet default: writ lines stay swallowed (`BlockParser` covers `/read`, `/browse`,
 `/todo`, `/search`, …); tools appear as compact status rows, not raw `/fetch`
 dumps. `/verbose` still streams raw writs with `›` WritLine styling.
 
 Blocks are separated by exactly one blank row (`layout.block_gap`, default 1).
-Trailing soft blanks inside prose are trimmed before the next block, and empty
-user-echo pad rows already count toward that single gap so blanks never stack.
-Prose text buffers use newlines as separators (not terminators) so a phantom
-empty row cannot appear after every segment. The first block in an empty pane
-also gets a lead-in blank so user echoes don't sit flush against the header.
+Trailing soft blanks inside prose are trimmed before the next block so blanks
+never stack. Prose text buffers use newlines as separators (not terminators)
+so a phantom empty row cannot appear after every segment. The first block in
+an empty pane also gets a lead-in blank so user echoes don't sit flush against
+the header.
 
 The mid-separator chrome (thinking indicator / tool status) is three rows tall:
 one blank pad, the status text, and one blank pad above the input strip.
@@ -57,8 +66,8 @@ one blank pad, the status text, and one blank pad above the input strip.
    `tool_trace` (conversation switch replays that history). When a nested
    `/agent` dispatched the tool, the same entry is mirrored onto the child.
 
-Expand/collapse: `^O` (same chord as code blocks) when a tool or thinking
-row is in view, or left-click the block in the scroll region.
+Expand/collapse: `^O` (same chord as code blocks) when a user echo, tool, or
+thinking row is in view, or left-click the block in the scroll region.
 
 ## Permission cards
 

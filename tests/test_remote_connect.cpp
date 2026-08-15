@@ -146,6 +146,40 @@ TEST_CASE("RemoteSseTurnConsumer captures request_id via hook") {
     CHECK(seen == "hooked");
 }
 
+TEST_CASE("RemoteSseTurnConsumer paints intent and advisor chrome") {
+    OutputQueue queue;
+    StreamRenderer renderer(kMasterStream, queue);
+    RemoteSseTurnConsumer consumer(renderer, queue);
+
+    consumer.on_event("intent",
+        R"({"kind":"research","source":"heuristic","target_agent":"research","applied":true})");
+    consumer.on_event("advisor",
+        R"({"agent":"index","kind":"consult","detail":"pin the API?"})");
+    consumer.on_event("advisor",
+        R"({"agent":"research","kind":"gate_redirect","detail":"add a test"})");
+    consumer.on_event("advisor",
+        R"({"agent":"research","kind":"gate_halt","detail":"nope"})");
+    consumer.on_event("escalation",
+        R"({"agent":"research","reason":"incomplete"})");
+
+    auto items = queue.drain_items();
+    std::vector<std::string> prose;
+    for (const auto& item : items) {
+        if (item.kind != OutputItem::Kind::Prose) continue;
+        for (const auto& line : item.styled_lines) prose.push_back(line.text);
+    }
+    REQUIRE(prose.size() == 4);  // intent, consult, redirect, halt (gate_halt skipped)
+    CHECK(prose[0].find("\u2197 ") == 0);
+    CHECK(prose[0].find("research") != std::string::npos);
+    CHECK(prose[1].find("\u25c7 ") == 0);
+    CHECK(prose[1].find("advise") != std::string::npos);
+    CHECK(prose[2].find("\u21bb ") == 0);
+    CHECK(prose[2].find("redirect") != std::string::npos);
+    CHECK(prose[3].find("\u00d7 ") == 0);
+    CHECK(prose[3].find("halt") != std::string::npos);
+    CHECK(prose[3].find("incomplete") != std::string::npos);
+}
+
 TEST_CASE("SseReader pipes into RemoteSseTurnConsumer") {
     OutputQueue queue;
     StreamRenderer renderer(kMasterStream, queue);
