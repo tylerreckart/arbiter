@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.12.8] — 2026-08-15
+
 ### Changed
 - **Conversational index voice.** The master orchestrator (`index`) now speaks
   in a collaborative register (complete sentences, brief orientation) instead of
