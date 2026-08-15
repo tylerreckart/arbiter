@@ -2293,6 +2293,33 @@ void write_memory_error(int fd, int code, const std::string& msg) {
     write_json_response(fd, code, e);
 }
 
+// True when a memory HTTP call will invoke a provider complete()
+// (rerank / expand / auto_tag).  Used at dispatch so those paths
+// consume TenantLimiter the same way /v1/intent and /v1/advise/gate do.
+bool memory_http_uses_llm(const std::string& method,
+                          const std::string& path,
+                          const std::string& body) {
+    if (method == "GET") {
+        const auto qp = parse_query(path);
+        auto has = [&](const char* k) {
+            auto it = qp.find(k);
+            return it != qp.end() && !it->second.empty();
+        };
+        return has("rerank") || has("rerank_fine") || has("expand");
+    }
+    if (method == "POST") {
+        try {
+            auto j = json_parse(body);
+            if (!j || !j->is_object()) return false;
+            auto v = j->get("auto_tag");
+            return v && v->is_string() && !v->as_string().empty();
+        } catch (...) {
+            return false;
+        }
+    }
+    return false;
+}
+
 void handle_memory_entry_create(int fd, const HttpRequest& req,
                                  const ApiServerOptions& opts,
                                  TenantStore& tenants, const Tenant& tenant) {
@@ -10193,8 +10220,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 terminal_state = "canceled";
                 status_error   = std::optional<std::string>("cancelled");
             } else if (!ok_final) {
-                status_error = std::optional<std::string>(
-                    tenant_revoked ? "tenant disabled" : resp.error);
+                if (tenant_revoked) {
+                    status_error = std::optional<std::string>("tenant disabled");
+                } else {
+                    const char* code = sanitised_provider_error_code(resp.error_type);
+                    status_error = std::optional<std::string>(
+                        sanitised_provider_error_message(code));
+                }
             }
             tenants.update_request_status(request_id,
                 std::optional<std::string>(terminal_state),
@@ -10293,7 +10325,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             tenants.update_request_status(request_id,
                 std::optional<std::string>("failed"),
                 completed,
-                std::optional<std::string>(e.what()),
+                std::optional<std::string>("internal error"),
                 std::nullopt);
         }
     }
@@ -11310,6 +11342,21 @@ void ApiServer::handle_connection(int fd) {
             // ── /v1/memory/entries ─────────────────────────────────────
             if (segs.size() >= 3 && segs[2] == "entries") {
                 if (segs.size() == 3) {
+                    if ((req.method == "POST" || req.method == "GET") &&
+                        memory_http_uses_llm(req.method, req.path, req.body)) {
+                        auto lim = limiter_->acquire(tenant->id);
+                        if (!lim.granted()) {
+                            write_429_response(fd, lim.retry_after_seconds,
+                                lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                                    ? "concurrent_request_limit"
+                                    : "rate_limit",
+                                metrics_.get(), tenant->id);
+                            return;
+                        }
+                        if (req.method == "POST")
+                            return handle_memory_entry_create(fd, req, opts_, tenants_, *tenant);
+                        return handle_memory_entry_list(fd, req, opts_, tenants_, *tenant);
+                    }
                     if (req.method == "POST")
                         return handle_memory_entry_create(fd, req, opts_, tenants_, *tenant);
                     if (req.method == "GET")
@@ -11696,7 +11743,7 @@ void ApiServer::handle_connection(int fd) {
     } catch (const std::exception& e) {
         log_uncaught(e.what());
         write_plain_response(fd, 500, "Internal Server Error",
-                              std::string("internal error: ") + e.what() + "\n");
+                              "internal error\n");
     } catch (...) {
         log_uncaught("(non-std exception)");
         write_plain_response(fd, 500, "Internal Server Error", "internal error\n");

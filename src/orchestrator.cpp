@@ -273,6 +273,10 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
     return [this, caller_id, depth, original_query](
                const std::vector<std::pair<std::string, std::string>>& kids)
                -> std::vector<std::string> {
+        if (kids.size() > kMaxParallelChildren) {
+            return {"ERR: /parallel fan-out exceeds " +
+                    std::to_string(kMaxParallelChildren) + " children"};
+        }
         // Each child runs on an *ephemeral* Agent — a fresh instance built
         // from the registered agent's Constitution.  Two children with the
         // same agent_id therefore can't race each other's history_ (each
@@ -948,6 +952,17 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     bool user_already_committed = false;
 
     for (int i = 0; i < kMaxTurns; ++i) {
+        if (turn_is_cancelled()) {
+            ApiResponse r;
+            r.ok         = false;
+            r.error_type = "cancelled";
+            r.error      = "cancelled";
+            r.content    = std::move(total_content);
+            r.input_tokens  = total_input_tok;
+            r.output_tokens = total_output_tok;
+            if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+            return r;
+        }
         // Notify UI that a sub-agent is about to make an API call.
         if (depth > 0 && start_cb_) start_cb_(agent_id);
 
@@ -1221,8 +1236,7 @@ ApiResponse Orchestrator::send(const std::string& agent_id,
             orch.client_.clear_hard_cancel();
         }
     } sticky_guard{*this};
-    if (sticky_cancel_.load(std::memory_order_acquire) ||
-        client_.hard_cancelled()) {
+    if (turn_is_cancelled()) {
         ApiResponse r;
         r.ok         = false;
         r.error_type = "cancelled";
@@ -1308,8 +1322,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             orch.client_.clear_hard_cancel();
         }
     } sticky_guard{*this};
-    if (sticky_cancel_.load(std::memory_order_acquire) ||
-        client_.hard_cancelled()) {
+    if (turn_is_cancelled()) {
         ApiResponse r;
         r.ok         = false;
         r.error_type = "cancelled";
@@ -1602,6 +1615,18 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     // inactive) is preserved exactly: cmds.empty terminates immediately.
     static constexpr int kMaxIters = 6;
     for (int i = 1; i < kMaxIters; ++i) {
+        if (turn_is_cancelled()) {
+            ApiResponse r;
+            r.ok         = false;
+            r.error_type = "cancelled";
+            r.error      = "cancelled";
+            r.content    = std::move(total_content);
+            r.input_tokens  = total_input_tok;
+            r.output_tokens = total_output_tok;
+            r.had_tool_calls = had_any_tool_calls;
+            if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
+            return r;
+        }
         if (cmds.empty()) {
             if (!gate_active) break;
 
@@ -2090,8 +2115,33 @@ Orchestrator::PlanResult Orchestrator::execute_plan(
 
         std::string output;
         if (is_direct) {
-            // "direct" phases: the task is a shell command
-            output = cmd_exec(task_msg);
+            // "direct" phases run a shell command.  Use the same /exec
+            // gates as agent turns so a plan file cannot bypass sandbox
+            // or exec_disabled.
+            if (exec_disabled_ && !exec_invoker_cb_) {
+                result.ok = false;
+                result.error = "Phase " + std::to_string(phase.number) +
+                               " (direct): /exec is disabled in this context";
+                return result;
+            }
+            if (confirm_cb_) {
+                ConfirmRequest req;
+                req.action  = "exec";
+                req.target  = task_msg;
+                req.summary = "plan direct phase";
+                req.preview_lines.push_back(task_msg.substr(0, 200));
+                if (!confirm_cb_(req)) {
+                    result.ok = false;
+                    result.error = "Phase " + std::to_string(phase.number) +
+                                   " (direct): exec declined";
+                    return result;
+                }
+            }
+            if (exec_invoker_cb_) {
+                output = exec_invoker_cb_(task_msg);
+            } else {
+                output = cmd_exec(task_msg, /*confirmed=*/true);
+            }
         } else {
             auto resp = send_internal(phase.agent, task_msg, 0);
             if (!resp.ok) {
@@ -2190,6 +2240,14 @@ void Orchestrator::fire_history_checkpoint() {
     } catch (...) {
         // Persistence must never abort an in-flight turn.
     }
+}
+
+bool Orchestrator::turn_is_cancelled() const {
+    if (sticky_cancel_.load(std::memory_order_acquire)) return true;
+    if (client_.hard_cancelled()) return true;
+    if (auto t = current_request_cancel_token(); t && t->is_cancelled())
+        return true;
+    return false;
 }
 
 void Orchestrator::cancel() {

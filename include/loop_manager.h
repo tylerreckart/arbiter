@@ -61,6 +61,11 @@ struct LoopEntry {
     bool stop_req    = false;
     bool suspend_req = false;
 
+    // Per-loop cancel token.  kill() request_cancel()s it so an in-flight
+    // orch.send() aborts instead of running to completion.
+    std::shared_ptr<CancelToken> cancel_token;
+    Orchestrator* orch = nullptr;
+
     // Buffered output — loop runs silently; pull via /log <id>.
     std::vector<std::string> output_log;
 

@@ -59,12 +59,14 @@ struct Entry {
     bool is_dir = false;
 };
 
-std::vector<Entry> list_children(const fs::path& dir) {
+std::vector<Entry> list_children(const fs::path& dir, int max_collect) {
     std::vector<Entry> out;
     std::error_code ec;
     for (auto it = fs::directory_iterator(dir, ec);
          !ec && it != fs::directory_iterator(); it.increment(ec)) {
         if (ec) break;
+        if (max_collect > 0 && static_cast<int>(out.size()) >= max_collect)
+            break;
         const auto name = it->path().filename().string();
         if (is_ignored_name(name)) continue;
         std::error_code sec;
@@ -126,7 +128,10 @@ bool walk(const fs::path& dir, const std::string& root_str, int depth,
         st.truncated_depth = true;
         return true;  // skip this subtree, continue siblings
     }
-    auto children = list_children(dir);
+    const int remaining = (opts.max_entries > 0)
+        ? (opts.max_entries - st.entries + 64)
+        : 0;
+    auto children = list_children(dir, remaining > 0 ? remaining : 0);
     for (size_t i = 0; i < children.size(); ++i) {
         const auto& child = children[i];
         const bool last = (i + 1 == children.size());

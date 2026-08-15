@@ -455,3 +455,24 @@ TEST_CASE("DiffProposalStore: add / apply / reject / undo lifecycle") {
     CHECK(store.clear_undo_after_revert(2));
     CHECK(store.get(2)->status == DiffProposalStatus::Pending);
 }
+
+TEST_CASE("apply_unified_diff refuses files over kMaxDiffFileBytes") {
+    TempDir dir;
+    const fs::path big = dir.path / "huge.txt";
+    {
+        std::ofstream out(big, std::ios::binary | std::ios::trunc);
+        out << "x\n";
+    }
+    REQUIRE(::truncate(big.c_str(),
+                       static_cast<off_t>(kMaxDiffFileBytes + 1)) == 0);
+
+    const char* patch =
+        "--- a/huge.txt\n"
+        "+++ b/huge.txt\n"
+        "@@ -1 +1 @@\n"
+        "-x\n"
+        "+y\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("10 MiB") != std::string::npos);
+}

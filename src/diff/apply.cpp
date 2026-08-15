@@ -5,10 +5,15 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <sys/stat.h>
 #include <system_error>
+#include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -173,18 +178,34 @@ bool write_file_bytes(const fs::path& path, const std::string& bytes,
     // Write via temp sibling then rename for a rough atomic replace.
     const fs::path tmp = path.string() + ".arbiter-diff.tmp";
     {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out.is_open()) {
-            err = "cannot open for writing: " + tmp.string();
+        const int fd = ::open(tmp.c_str(),
+                              O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+        if (fd < 0) {
+            if (errno == ELOOP)
+                err = "refusing to write through symlink: " + tmp.string();
+            else
+                err = "cannot open for writing: " + tmp.string();
             return false;
         }
-        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-        if (!out.good()) {
-            err = "write failed: " + tmp.string();
-            out.close();
-            fs::remove(tmp, ec);
+        struct stat st{};
+        if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+            ::close(fd);
+            err = "write target is not a regular file: " + tmp.string();
             return false;
         }
+        std::size_t off = 0;
+        while (off < bytes.size()) {
+            const ssize_t n = ::write(fd, bytes.data() + off, bytes.size() - off);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                err = "write failed: " + tmp.string();
+                ::close(fd);
+                fs::remove(tmp, ec);
+                return false;
+            }
+            off += static_cast<std::size_t>(n);
+        }
+        ::close(fd);
     }
     fs::rename(tmp, path, ec);
     if (ec) {
@@ -523,6 +544,11 @@ DiffApplyResult apply_unified_diff(std::string_view patch,
 
     std::string pre;
     if (exists) {
+        auto sz = fs::file_size(path, ec);
+        if (!ec && sz > kMaxDiffFileBytes) {
+            result.error = "file exceeds 10 MiB apply cap: " + rel;
+            return result;
+        }
         if (!read_file_bytes(path, pre, err)) {
             result.error = err;
             return result;

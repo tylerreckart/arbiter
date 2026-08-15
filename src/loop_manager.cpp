@@ -101,6 +101,10 @@ LoopManager::~LoopManager() {
     }
     for (auto& [id, e] : loops) {
         { std::lock_guard<std::mutex> ek(e->mu); e->stop_req = true; }
+        if (e->cancel_token) {
+            e->cancel_token->request_cancel();
+            if (e->orch) e->orch->cancel_token(e->cancel_token);
+        }
         e->cv.notify_all();
     }
     for (auto& [id, e] : loops) {
@@ -120,6 +124,8 @@ std::string LoopManager::start(Orchestrator& orch,
     e->started  = std::chrono::steady_clock::now();
     e->state    = LoopState::Running;
     e->oq       = oq;
+    e->orch     = &orch;
+    e->cancel_token = std::make_shared<CancelToken>();
     e->thread   = std::thread(run_loop, e.get(), std::ref(orch), initial_prompt);
     loops_[lid] = std::move(e);
     return lid;
@@ -137,6 +143,10 @@ bool LoopManager::kill(const std::string& lid) {
         loops_.erase(it);
     }
     { std::lock_guard<std::mutex> ek(e->mu); e->stop_req = true; }
+    if (e->cancel_token) {
+        e->cancel_token->request_cancel();
+        if (e->orch) e->orch->cancel_token(e->cancel_token);
+    }
     e->cv.notify_all();
     if (e->thread.joinable()) e->thread.join();
     return true;
@@ -171,7 +181,11 @@ bool LoopManager::inject(const std::string& lid, const std::string& msg) {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = loops_.find(lid);
     if (it == loops_.end()) return false;
-    { std::lock_guard<std::mutex> ek(it->second->mu); it->second->injected.push(msg); }
+    {
+        std::lock_guard<std::mutex> ek(it->second->mu);
+        if (it->second->injected.size() >= 16) return false;
+        it->second->injected.push(msg);
+    }
     it->second->cv.notify_all();
     return true;
 }
@@ -366,6 +380,8 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
 
         // Pin original_task on every iteration so the in-loop advisor gate
         // evaluates against the loop's real goal, not the continuation prompt.
+        // Bind the loop's CancelToken so kill() aborts this send().
+        RequestCancelScope cancel_scope(orch.client(), e->cancel_token);
         auto resp = orch.send(e->agent_id, prompt, original_task);
         int iter_now;
         { std::lock_guard<std::mutex> ek(e->mu); iter_now = ++e->iter; }

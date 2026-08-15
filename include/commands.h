@@ -161,6 +161,14 @@ inline constexpr std::size_t kAdvisorGateMaxTerminatingText = 32 * 1024;
 inline constexpr std::size_t kAdvisorGateMaxToolSummary     = 8 * 1024;
 inline constexpr std::size_t kAdvisorGateMaxPromptOverride  = 16 * 1024;
 
+// /parallel fan-out hard cap.  Each child is a thread + ApiClient; an
+// unbounded block is a cheap DoS against the host and the provider.
+inline constexpr std::size_t kMaxParallelChildren = 16;
+
+// Host /write size cap (CLI / TUI disk path).  API interceptors enforce
+// file_max_bytes separately; this bounds the non-intercepted path.
+inline constexpr std::size_t kMaxWriteBytes = 10 * 1024 * 1024;
+
 // Truncate gate fields in-place to the caps above.  Idempotent: a
 // second call is a no-op when already within budget.
 void cap_advisor_gate_input(AdvisorGateInput& in);
