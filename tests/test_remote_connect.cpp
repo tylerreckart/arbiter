@@ -206,3 +206,23 @@ TEST_CASE("SseReader pipes into RemoteSseTurnConsumer") {
     CHECK(result.request_id == "sse1");
     CHECK(result.content == "ok");
 }
+
+TEST_CASE("CommandQueue caps pending depth") {
+    CommandQueue q;
+    for (int i = 0; i < CommandQueue::kMaxDepth; ++i) {
+        CHECK(q.push("item " + std::to_string(i)));
+    }
+    CHECK_FALSE(q.push("overflow"));
+    CHECK(q.pending() == CommandQueue::kMaxDepth);
+}
+
+TEST_CASE("CommandQueue pop drains capped queue") {
+    CommandQueue q;
+    for (int i = 0; i < CommandQueue::kMaxDepth; ++i) {
+        CHECK(q.push("x"));
+    }
+    std::string out;
+    CHECK(q.try_pop(out));
+    CHECK(q.push("replacement"));
+    CHECK(q.pending() == CommandQueue::kMaxDepth);
+}
