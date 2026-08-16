@@ -27,8 +27,11 @@ struct QueuedCommand {
 
 class CommandQueue {
 public:
-    void push(std::string cmd);
-    void push(QueuedCommand cmd);
+    static constexpr int kMaxDepth = 16;
+
+    // Returns false when the queue is at capacity (item not enqueued).
+    bool push(std::string cmd);
+    bool push(QueuedCommand cmd);
 
     // Blocks until an item is available or the queue is stopped.
     // Returns false when stopped and empty.
