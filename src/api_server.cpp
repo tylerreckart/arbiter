@@ -1678,7 +1678,12 @@ AdvisorFn build_memory_advisor(
         r.system_prompt       = sys_prompt;
         r.messages            = {{"user", prompt}};
         ApiResponse resp = client.complete(r);
-        if (!resp.ok) return "ERR: " + resp.error;
+        if (!resp.ok) {
+            std::fprintf(stderr,
+                "[arbiter] memory advisor upstream error: type=%s message=%s\n",
+                resp.error_type.c_str(), resp.error.c_str());
+            return "ERR:provider_unavailable";
+        }
         return resp.content;
     };
 }
@@ -1718,8 +1723,7 @@ ExpansionResult expand_query_with_advisor(
 
     std::string resp = advisor(prompt.str());
     if (resp.size() >= 4 && resp.compare(0, 4, "ERR:") == 0) {
-        out.note = "(query expansion advisor unavailable:" +
-                   resp.substr(4) + " — searching original only)";
+        out.note = "(query expansion advisor unavailable — searching original only)";
         return out;
     }
 
@@ -1804,8 +1808,7 @@ TagExtractionResult extract_tags_with_advisor(
 
     std::string resp = advisor(prompt.str());
     if (resp.size() >= 4 && resp.compare(0, 4, "ERR:") == 0) {
-        out.note = "(auto-tag advisor unavailable:" + resp.substr(4) +
-                   " — using caller tags only)";
+        out.note = "(auto-tag advisor unavailable — using caller tags only)";
         return out;
     }
 
@@ -1941,8 +1944,7 @@ SupersessionResult detect_supersession_with_advisor(
 
     std::string resp = advisor(prompt.str());
     if (resp.size() >= 4 && resp.compare(0, 4, "ERR:") == 0) {
-        out.note = "(supersession advisor unavailable:" + resp.substr(4) +
-                   " — no auto-invalidation)";
+        out.note = "(supersession advisor unavailable — no auto-invalidation)";
         return out;
     }
 
@@ -2141,8 +2143,7 @@ RerankResult rerank_with_advisor(
         // the reason so the caller can adapt.
         return {
             std::move(candidates),
-            "(rerank requested but advisor unavailable:" + resp.substr(4) +
-            " — falling back to FTS order)",
+            "(rerank requested but advisor unavailable — falling back to FTS order)",
             false,
         };
     }
@@ -5496,6 +5497,11 @@ const char* sanitised_provider_error_message(const char* code) {
     return "the upstream provider returned an error";
 }
 
+std::string sanitised_api_response_error(const ApiResponse& resp) {
+    const char* code = sanitised_provider_error_code(resp.error_type);
+    return sanitised_provider_error_message(code);
+}
+
 // ── A2A JSON-RPC dispatch (PR-2: message/send synchronous) ─────────────────
 //
 // Writes a single JSON-RPC response envelope to the wire.  All A2A errors
@@ -7912,12 +7918,13 @@ void handle_a2a_message_send(int fd,
     try {
         resp = orch->send(agent_id, prompt);
     } catch (const std::exception& e) {
+        std::fprintf(stderr, "[a2a] message/send agent threw: %s\n", e.what());
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::failed),
-                                 "", e.what());
+                                 "", "internal error");
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::ERR_INVALID_AGENT_RESPONSE,
-            std::string("agent threw: ") + e.what()));
+            "agent threw an internal error"));
         return;
     }
 
@@ -7954,7 +7961,7 @@ void handle_a2a_message_send(int fd,
     tenants.update_a2a_task(tenant.id, task_id,
                              a2a::task_state_to_string(task.status.state),
                              final_msg_json,
-                             resp.ok ? "" : resp.error);
+                             resp.ok ? "" : sanitised_api_response_error(resp));
 
     write_a2a_rpc(fd, a2a::make_result_response(rpc_id, a2a::to_json(task)));
 }
@@ -8212,6 +8219,7 @@ void handle_a2a_message_stream(int fd,
     } catch (const std::exception& e) {
         // Catastrophic failure during the loop.  Surface as a final
         // failed-status update so the client knows the stream is over.
+        std::fprintf(stderr, "[a2a] message/stream agent threw: %s\n", e.what());
         a2a::Message err_msg;
         err_msg.role        = "agent";
         err_msg.message_id  = task_id + "-err";
@@ -8219,13 +8227,13 @@ void handle_a2a_message_stream(int fd,
         err_msg.context_id  = context_id;
         a2a::Part p_err;
         p_err.kind = "text";
-        p_err.text = std::string("agent threw: ") + e.what();
+        p_err.text = "agent threw an internal error";
         err_msg.parts.push_back(std::move(p_err));
         writer.emit_status(a2a::TaskState::failed, /*final=*/true,
                            std::move(err_msg));
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::failed),
-                                 "", e.what());
+                                 "", "internal error");
         sse.close();
         return;
     }
@@ -8306,7 +8314,7 @@ void handle_a2a_message_stream(int fd,
     tenants.update_a2a_task(tenant.id, task_id,
                              a2a::task_state_to_string(terminal),
                              final_msg_json,
-                             resp.ok ? "" : resp.error);
+                             resp.ok ? "" : sanitised_api_response_error(resp));
     sse.close();
 }
 

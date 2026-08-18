@@ -15,16 +15,18 @@ void trim_trailing_newlines(std::string& s) {
 
 // ─── CommandQueue ────────────────────────────────────────────────────────────
 
-void CommandQueue::push(std::string cmd) {
+bool CommandQueue::push(std::string cmd) {
     QueuedCommand q;
     q.text = std::move(cmd);
-    push(std::move(q));
+    return push(std::move(q));
 }
 
-void CommandQueue::push(QueuedCommand cmd) {
+bool CommandQueue::push(QueuedCommand cmd) {
     std::lock_guard<std::mutex> lk(mu_);
+    if (static_cast<int>(items_.size()) >= kMaxDepth) return false;
     items_.push(std::move(cmd));
     cv_.notify_one();
+    return true;
 }
 
 bool CommandQueue::pop(QueuedCommand& out) {

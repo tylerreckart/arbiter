@@ -503,7 +503,12 @@ void ReplSession::run_input_loop() {
         focused.output_queue.push_user_echo(echo);
         focused.output_queue.end_message();
 
-        focused.cmd_queue.push(std::move(queued));
+        if (!focused.cmd_queue.push(std::move(queued))) {
+            focused.tui.set_status("queue full (max " +
+                std::to_string(CommandQueue::kMaxDepth) +
+                " pending) — wait for the current turn");
+            continue;
+        }
         if (focused.cmd_queue.is_busy()) {
             focused.tui.show_queue_depth(focused.cmd_queue.pending());
             if (pump_notify) pump_notify();
