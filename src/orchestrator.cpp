@@ -1253,6 +1253,8 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
     static constexpr int kMaxRetries = 3;
 
     for (int retry = 0; retry < kMaxRetries; ++retry) {
+        if (turn_is_cancelled()) return;
+
         std::string trunc_path;
         for (const auto& c : cmds) {
             if (c.name == "write" && c.truncated) {
@@ -2124,11 +2126,16 @@ Orchestrator::PlanResult Orchestrator::execute_plan(
                                " (direct): /exec is disabled in this context";
                 return result;
             }
-            if (confirm_cb_) {
+            // Mirror agent /exec gating: host exec always confirms; sandboxed
+            // exec only confirms destructive patterns.
+            if (confirm_cb_ &&
+                (!exec_invoker_cb_ || is_destructive_exec(task_msg))) {
                 ConfirmRequest req;
                 req.action  = "exec";
                 req.target  = task_msg;
-                req.summary = "plan direct phase";
+                req.summary = exec_invoker_cb_
+                    ? "plan direct phase — destructive command"
+                    : "plan direct phase — HOST SHELL (unsandboxed)";
                 req.preview_lines.push_back(task_msg.substr(0, 200));
                 if (!confirm_cb_(req)) {
                     result.ok = false;
