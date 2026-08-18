@@ -502,10 +502,14 @@ void ReplSession::run_input_loop() {
             echo += "[" + attachment_status_label(queued.attachments) + "]";
         }
 
-        // Copy-push so a rejected submit can restore staged attachments.
-        // Echo only after enqueue so a full queue cannot leave a user box
-        // for a command that will never run.
+        // Echo first (without waking the pump) so a waiting exec thread
+        // cannot drain a response ahead of the user box.  Drop the echo if
+        // the command queue rejects the submit.
+        if (!echo.empty()) {
+            focused.output_queue.push_user_echo(echo, /*notify=*/false);
+        }
         if (!focused.cmd_queue.push(queued)) {
+            if (!echo.empty()) focused.output_queue.try_drop_last_user_echo();
             if (!slash && !queued.attachments.empty()) {
                 std::lock_guard<std::mutex> lk(focused.pending_attachments_mu);
                 focused.pending_attachments.insert(
@@ -518,11 +522,10 @@ void ReplSession::run_input_loop() {
                 " pending) — wait for the current turn");
             continue;
         }
-        focused.output_queue.push_user_echo(echo);
         focused.output_queue.end_message();
+        if (pump_notify) pump_notify();
         if (focused.cmd_queue.is_busy()) {
             focused.tui.show_queue_depth(focused.cmd_queue.pending());
-            if (pump_notify) pump_notify();
         }
     }
 

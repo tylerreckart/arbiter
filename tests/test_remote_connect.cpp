@@ -242,3 +242,17 @@ TEST_CASE("CommandQueue push_unbounded bypasses the user-submit cap") {
     CHECK(q.try_pop(out));
     CHECK(out == "[PANE RESULT]");
 }
+
+TEST_CASE("OutputQueue try_drop_last_user_echo removes an undrained echo") {
+    OutputQueue q;
+    q.push_user_echo("hello", /*notify=*/false);
+    CHECK(q.try_drop_last_user_echo());
+    CHECK(q.drain_items().empty());
+    q.push_user_echo("kept", /*notify=*/false);
+    q.push("response");
+    CHECK_FALSE(q.try_drop_last_user_echo());
+    auto items = q.drain_items();
+    REQUIRE(items.size() == 2);
+    CHECK(items[0].kind == OutputItem::Kind::UserEcho);
+    CHECK(items[0].data == "kept");
+}
