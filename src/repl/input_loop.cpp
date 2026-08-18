@@ -49,6 +49,7 @@
 #include "config.h"
 
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <cstdlib>
@@ -500,15 +501,25 @@ void ReplSession::run_input_loop() {
             if (!echo.empty()) echo += "\n";
             echo += "[" + attachment_status_label(queued.attachments) + "]";
         }
-        focused.output_queue.push_user_echo(echo);
-        focused.output_queue.end_message();
 
-        if (!focused.cmd_queue.push(std::move(queued))) {
+        // Copy-push so a rejected submit can restore staged attachments.
+        // Echo only after enqueue so a full queue cannot leave a user box
+        // for a command that will never run.
+        if (!focused.cmd_queue.push(queued)) {
+            if (!slash && !queued.attachments.empty()) {
+                std::lock_guard<std::mutex> lk(focused.pending_attachments_mu);
+                focused.pending_attachments.insert(
+                    focused.pending_attachments.begin(),
+                    std::make_move_iterator(queued.attachments.begin()),
+                    std::make_move_iterator(queued.attachments.end()));
+            }
             focused.tui.set_status("queue full (max " +
                 std::to_string(CommandQueue::kMaxDepth) +
                 " pending) — wait for the current turn");
             continue;
         }
+        focused.output_queue.push_user_echo(echo);
+        focused.output_queue.end_message();
         if (focused.cmd_queue.is_busy()) {
             focused.tui.show_queue_depth(focused.cmd_queue.pending());
             if (pump_notify) pump_notify();

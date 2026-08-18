@@ -445,3 +445,27 @@ TEST_CASE("A2aStreamWriter slow_consumer closes stream without failed state") {
     REQUIRE(meta);
     CHECK(meta->get_string("x-arbiter.error_code", "") == "slow_consumer");
 }
+
+TEST_CASE("build_terminal_task puts error and error_type in metadata") {
+    Message user;
+    user.role = "user";
+    user.message_id = "m1";
+    Part p;
+    p.kind = "text";
+    p.text = "hi";
+    user.parts.push_back(std::move(p));
+
+    arbiter::ApiResponse resp;
+    resp.ok = false;
+    resp.error = "the upstream provider returned an error";
+    resp.error_type = "provider_error";
+
+    Task task = build_terminal_task("t1", "c1", "researcher", user, resp);
+    CHECK(task.status.state == TaskState::failed);
+    REQUIRE(task.metadata);
+    CHECK(task.metadata->get_string("x-arbiter.error", "") ==
+          "the upstream provider returned an error");
+    CHECK(task.metadata->get_string("x-arbiter.error_type", "") ==
+          "provider_error");
+    CHECK(task.metadata->get_string("x-arbiter.agent_id", "") == "researcher");
+}

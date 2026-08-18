@@ -33,6 +33,11 @@ public:
     bool push(std::string cmd);
     bool push(QueuedCommand cmd);
 
+    // Always enqueues, even at kMaxDepth.  Child-pane result frames must
+    // not be dropped because the parent already has 16 user commands pending.
+    void push_unbounded(std::string cmd);
+    void push_unbounded(QueuedCommand cmd);
+
     // Blocks until an item is available or the queue is stopped.
     // Returns false when stopped and empty.
     bool pop(std::string& out);

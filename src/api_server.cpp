@@ -7948,7 +7948,10 @@ void handle_a2a_message_send(int fd,
     }
 
     ApiResponse wire_resp = resp;
-    if (!wire_resp.ok) wire_resp.error = sanitised_api_response_error(resp);
+    if (!wire_resp.ok) {
+        wire_resp.error = sanitised_api_response_error(resp);
+        wire_resp.error_type = sanitised_provider_error_code(resp.error_type);
+    }
     a2a::Task task = a2a::build_terminal_task(task_id, context_id, agent_id,
                                                user_msg, wire_resp);
 

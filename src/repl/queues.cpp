@@ -29,6 +29,18 @@ bool CommandQueue::push(QueuedCommand cmd) {
     return true;
 }
 
+void CommandQueue::push_unbounded(std::string cmd) {
+    QueuedCommand q;
+    q.text = std::move(cmd);
+    push_unbounded(std::move(q));
+}
+
+void CommandQueue::push_unbounded(QueuedCommand cmd) {
+    std::lock_guard<std::mutex> lk(mu_);
+    items_.push(std::move(cmd));
+    cv_.notify_one();
+}
+
 bool CommandQueue::pop(QueuedCommand& out) {
     std::unique_lock<std::mutex> lk(mu_);
     cv_.wait(lk, [this]{ return !items_.empty() || stopped_; });
