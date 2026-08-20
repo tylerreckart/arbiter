@@ -15,6 +15,7 @@
 #include <cstring>
 #include <ctime>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -3076,26 +3077,31 @@ int64_t TenantStore::append_scratchpad(int64_t tenant_id,
     if (!db_) return 0;
     const std::string block = scratchpad_block(text);
     const int64_t now = now_epoch();
-    // Read-modify-write under the shared connection: SQLite serialises
-    // writers via the busy-timeout pragma, so concurrent appends from
-    // parallel orchestrator threads will queue rather than corrupt.
+
+    // Cap check + write must not interleave: parallel /mem appends
+    // (e.g. /parallel fan-out) previously both passed the pre-check and
+    // concatenated past kScratchpadMaxBytes.  Shared-connection SQLite
+    // cannot use BEGIN IMMEDIATE here — a second thread's BEGIN fails
+    // with "cannot start a transaction within a transaction".
+    std::lock_guard<std::mutex> lock(write_mu_);
     std::string current;
+    bool exists = false;
     {
         Stmt sel(db_, "SELECT content FROM agent_scratchpad "
                        "WHERE tenant_id = ? AND scope_key = ?;");
         sel.bind(1, tenant_id);
         sel.bind(2, scope_key);
-        if (sel.step() == SQLITE_ROW) current = sel.column_text(0);
+        if (sel.step() == SQLITE_ROW) {
+            current = sel.column_text(0);
+            exists  = true;
+        }
     }
     if (current.size() + block.size() > kScratchpadMaxBytes) return -1;
 
-    const std::string new_content = current + block;
-
-    if (current.empty()) {
-        // First write — try INSERT; on UNIQUE conflict (a parallel
-        // appender beat us to it) fall through to UPDATE.
+    if (!exists) {
+        const std::string new_content = current + block;
         Stmt ins(db_,
-            "INSERT OR IGNORE INTO agent_scratchpad "
+            "INSERT INTO agent_scratchpad "
             "(tenant_id, scope_key, content, updated_at) "
             "VALUES (?, ?, ?, ?);");
         ins.bind(1, tenant_id);
@@ -3103,25 +3109,26 @@ int64_t TenantStore::append_scratchpad(int64_t tenant_id,
         ins.bind(3, new_content);
         ins.bind(4, now);
         ins.step();
-        if (sqlite3_changes(db_) > 0) return static_cast<int64_t>(new_content.size());
+    } else {
+        Stmt upd(db_,
+            "UPDATE agent_scratchpad SET content = content || ?, updated_at = ? "
+            " WHERE tenant_id = ? AND scope_key = ?;");
+        upd.bind(1, block);
+        upd.bind(2, now);
+        upd.bind(3, tenant_id);
+        upd.bind(4, scope_key);
+        upd.step();
     }
 
-    Stmt upd(db_,
-        "UPDATE agent_scratchpad SET content = content || ?, updated_at = ? "
-        " WHERE tenant_id = ? AND scope_key = ?;");
-    upd.bind(1, block);
-    upd.bind(2, now);
-    upd.bind(3, tenant_id);
-    upd.bind(4, scope_key);
-    upd.step();
-    // Fetch the post-update size so the caller can surface a useful
-    // "OK: wrote N bytes" line that matches the file path's behaviour.
-    Stmt sz(db_, "SELECT length(content) FROM agent_scratchpad "
-                  "WHERE tenant_id = ? AND scope_key = ?;");
-    sz.bind(1, tenant_id);
-    sz.bind(2, scope_key);
-    if (sz.step() == SQLITE_ROW) return sz.column_int64(0);
-    return 0;
+    int64_t new_size = 0;
+    {
+        Stmt sz(db_, "SELECT length(content) FROM agent_scratchpad "
+                      "WHERE tenant_id = ? AND scope_key = ?;");
+        sz.bind(1, tenant_id);
+        sz.bind(2, scope_key);
+        if (sz.step() == SQLITE_ROW) new_size = sz.column_int64(0);
+    }
+    return new_size;
 }
 
 bool TenantStore::clear_scratchpad(int64_t tenant_id,
@@ -3320,8 +3327,18 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
         return out;
     }
 
-    // Determine if this is an in-place update (same path → subtract its
-    // size from quota math) or a fresh insert.
+    const std::string digest    = sha256_hex(content);
+    const std::string mime_safe = mime_type.empty() ? "application/octet-stream"
+                                                     : mime_type;
+    const int64_t now = now_epoch();
+
+    // Quota math + INSERT/UPDATE must not interleave.  Parallel
+    // /write --persist (or HTTP artifact PUTs) previously both passed
+    // the pre-check and landed over the conversation or tenant cap.
+    // BEGIN IMMEDIATE is unsafe on this shared connection (nested BEGIN
+    // throws); write_mu_ spans the check-then-act instead.
+    std::lock_guard<std::mutex> lock(write_mu_);
+
     int64_t existing_size = 0;
     bool    is_update     = false;
     {
@@ -3360,11 +3377,6 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
         return out;
     }
 
-    const std::string digest    = sha256_hex(content);
-    const std::string mime_safe = mime_type.empty() ? "application/octet-stream"
-                                                     : mime_type;
-    const int64_t now = now_epoch();
-
     if (is_update) {
         Stmt upd(db_,
             "UPDATE tenant_artifacts "
@@ -3400,9 +3412,6 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
         ins.bind(9, now);
         int rc = ins.step();
         if (rc == SQLITE_CONSTRAINT) {
-            // Race: a parallel writer beat us between the SELECT and the
-            // INSERT.  Surface a clean error rather than silently
-            // overwriting; the caller can retry as a PUT.
             out.status    = PutArtifactResult::Status::PathRejected;
             out.error_msg = "path collision (concurrent write); retry";
             out.tenant_used_bytes       = tenant_used;
@@ -3412,16 +3421,16 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
         out.status = PutArtifactResult::Status::Created;
     }
 
-    // Reload the canonical row so the caller's response shape is
-    // identical for create and update.
-    Stmt sel(db_, (std::string("SELECT ") + kArtifactMetaCols +
-                   " FROM tenant_artifacts "
-                   "WHERE tenant_id = ? AND conversation_id = ? AND path = ?;").c_str());
-    sel.bind(1, tenant_id);
-    sel.bind(2, conversation_id);
-    sel.bind(3, sanitized_path);
-    if (sel.step() == SQLITE_ROW) {
-        out.record = row_to_artifact(sel);
+    {
+        Stmt sel(db_, (std::string("SELECT ") + kArtifactMetaCols +
+                       " FROM tenant_artifacts "
+                       "WHERE tenant_id = ? AND conversation_id = ? AND path = ?;").c_str());
+        sel.bind(1, tenant_id);
+        sel.bind(2, conversation_id);
+        sel.bind(3, sanitized_path);
+        if (sel.step() == SQLITE_ROW) {
+            out.record = row_to_artifact(sel);
+        }
     }
     out.tenant_used_bytes       = tnt_after;
     out.conversation_used_bytes = conv_after;
