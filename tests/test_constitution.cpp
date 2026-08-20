@@ -320,7 +320,9 @@ TEST_CASE("mode=conversational selects index voice without renaming the agent") 
     auto c = make_agent({"/exec", "/write"});
     c.mode = "conversational";
     auto prompt = c.build_system_prompt();
-    CHECK(prompt.find("orchestrator users talk to") != std::string::npos);
+    CHECK(prompt.find("collaborator users talk to") != std::string::npos);
+    CHECK(prompt.find("You are index") == std::string::npos);
+    CHECK(prompt.find("ECONOMY:") != std::string::npos);
     CHECK(prompt.find("dispatch, not a conversation") == std::string::npos);
     CHECK(prompt.find("COMPRESSION RULES:") == std::string::npos);
 }
@@ -332,6 +334,62 @@ TEST_CASE("specialist standard mode keeps compressed voice") {
               != std::string::npos);
     CHECK(prompt.find("dispatch, not a conversation") != std::string::npos);
     CHECK(prompt.find("COMPRESSION RULES:") != std::string::npos);
+}
+
+TEST_CASE("mode=spoken selects TTS register and skips TUI diff format") {
+    auto c = make_agent({"/exec", "/write"});
+    c.mode = "spoken";
+    c.name = "Arthur";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("spoken assistant") != std::string::npos);
+    CHECK(prompt.find("text-to-speech") != std::string::npos);
+    CHECK(prompt.find("No markdown") != std::string::npos);
+    CHECK(prompt.find("FILES AND CODE:") != std::string::npos);
+    CHECK(prompt.find("CODE CHANGE FORMAT:") == std::string::npos);
+    CHECK(prompt.find("You are index") == std::string::npos);
+    CHECK(prompt.find("dispatch, not a conversation") == std::string::npos);
+    CHECK(prompt.find("/exec ") != std::string::npos);
+    CHECK(prompt.find("NAME: Arthur") != std::string::npos);
+    // Overlay is for non-spoken modes only.
+    CHECK(prompt.find("SPOKEN OUTPUT:") == std::string::npos);
+}
+
+TEST_CASE("channel=voice overlays spoken constraints on specialist identity") {
+    auto c = make_agent({"/exec"});
+    c.channel = "voice";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("specialist agent within an orchestrated system")
+              != std::string::npos);
+    CHECK(prompt.find("SPOKEN OUTPUT:") != std::string::npos);
+    CHECK(prompt.find("text-to-speech") != std::string::npos);
+    CHECK(prompt.find("CODE CHANGE FORMAT:") != std::string::npos);
+}
+
+TEST_CASE("channel=voice overlays spoken constraints on conversational index") {
+    auto c = master_constitution();
+    c.channel = "voice";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("You are index") != std::string::npos);
+    CHECK(prompt.find("SPOKEN OUTPUT:") != std::string::npos);
+    CHECK(prompt.find("cannot see markdown") != std::string::npos);
+}
+
+TEST_CASE("channel=voice round-trips through JSON; text is omitted") {
+    std::string js = R"({
+        "name": "arthur",
+        "model": "claude-sonnet-4-6",
+        "mode": "spoken",
+        "channel": "voice"
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.mode == "spoken");
+    CHECK(c.channel == "voice");
+    auto again = Constitution::from_json(c.to_json());
+    CHECK(again.mode == "spoken");
+    CHECK(again.channel == "voice");
+
+    auto texty = Constitution::from_json(R"({"name":"x","channel":"text"})");
+    CHECK(texty.channel.empty());
 }
 
 TEST_CASE("advisor: absent yields disabled config") {

@@ -51,6 +51,7 @@ calendar commitments.
 - [x] **Model catalog UX-** Richer `/model` / `GET /v1/models` with context limits used by compaction
 - [ ] **MCP setup UX-** Improve `--setup-tools`; TUI browser for enable/disable servers; clearer tool error cards and statuses
 - [ ] **A2A pushNotificationConfig-** Scheduling bus for agent notifications
+- [x] **Spoken voice channel-** `mode: "spoken"` + request `channel: "voice"` so Intercom-style bridges get speakable prose without stuffing reminders into user turns ([docs](docs/concepts/voice.md)). In-process STT/TTS remains [#207](https://github.com/tylerreckart/arbiter/issues/207)
 
 **Acceptance criteria:** 
 - [x] New user setup zero to first message < 2 minutes

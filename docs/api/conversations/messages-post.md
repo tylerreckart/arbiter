@@ -16,6 +16,7 @@ Send a user message and stream the assistant's reply. Same SSE response shape as
 |------------------|--------|----------|-------------|
 | `message`        | string \| array | yes      | The new user turn. Plain string (text-only) or a content-parts array (text + image) — same vision shape as [`POST /v1/orchestrate`](../orchestrate.md#vision-input). |
 | `original_query` | string | no       | Same as [`POST /v1/orchestrate`](../orchestrate.md) — pins the advisor gate's original task and suppresses intent reroute on continuation turns. |
+| `channel`        | string | no       | `"text"` (default) or `"voice"`. Same as [`POST /v1/orchestrate`](../orchestrate.md) — spoken overlay + sticky routing for TTS bridges. See [Voice](../../concepts/voice.md). |
 | `agent_def`      | object | no       | Override the conversation's snapshotted agent for this one turn (rare — usually a follow-up should just send `message`). When omitted, the conversation's snapshot from create time is reused. |
 
 ```bash
@@ -50,7 +51,7 @@ The `request_id` from this call's `request_received` event is the handle to pass
 
 | Status | When | Body |
 |--------|------|------|
-| 400    | Body isn't a JSON object; missing `message`; `agent_def` shape invalid. | `{"error": "..."}` |
+| 400    | Body isn't a JSON object; missing `message`; invalid `channel`; `agent_def` shape invalid. | `{"error": "..."}` |
 | 401    | Missing / invalid bearer. | `{"error": "..."}` |
 | 404    | Conversation doesn't exist or belongs to another tenant. | `{"error": "conversation not found"}` |
 | 200 + `done.ok = false` | LLM upstream failure, billing-service denial, transient I/O. See [`POST /v1/orchestrate`](../orchestrate.md#failure-modes). | SSE stream |
@@ -60,3 +61,4 @@ The `request_id` from this call's `request_received` event is the handle to pass
 - [`POST /v1/orchestrate`](../orchestrate.md) — single-turn variant without history replay.
 - [`GET /v1/conversations/:id/messages`](messages-list.md) — read history back.
 - [`POST /v1/requests/:id/cancel`](../requests-cancel.md), [SSE event catalog](../../concepts/sse-events.md).
+- [Voice](../../concepts/voice.md) — `channel: "voice"` for Intercom-style bridges.

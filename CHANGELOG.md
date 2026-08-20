@@ -7,6 +7,16 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Spoken voice channel.** Constitutions accept `mode: "spoken"` (TTS register:
+  no markdown/LaTeX, short spoken answers, writs unchanged). HTTP turns accept
+  `channel: "voice"` on `/v1/orchestrate`, conversation messages, and agent chat:
+  spoken-output overlay on the ingress agent, sticky intent (no specialist
+  reroute), and `channel` on `request_received`. Voice bridges (Intercom) should
+  send the transcript alone rather than appending a “this is voice” suffix.
+  See [Voice](docs/concepts/voice.md). Named `mode: "conversational"` agents are
+  no longer told they are `index`.
+
 ## [0.12.10] — 2026-08-20
 
 

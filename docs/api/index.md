@@ -21,6 +21,7 @@ Each endpoint page below uses the same template: **Function**, **Request**, **Re
 - [MCP servers](../concepts/mcp.md)
 - [A2A protocol](../concepts/a2a.md)
 - [Web search](../concepts/search.md)
+- [Voice](../concepts/voice.md)
 - [Data model](../concepts/data-model.md)
 - [Operational notes](../concepts/operations.md)
 - [Scheduler](../concepts/scheduler.md)

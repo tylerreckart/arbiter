@@ -75,7 +75,8 @@ Deleting a folder unfiles its conversations (`folder_id` cleared) rather than ca
 | `temperature` | number  | 0.0–2.0. |
 | `rules`       | array<string> | Behavioral constraints. |
 | `capabilities`| array<string> | Tools this agent uses (used by master for routing). |
-| `mode`        | string? | `"standard"` (default) or `"writer"`. |
+| `mode`        | string? | `""` / `"standard"` (compressed specialist), `"conversational"` (index-style), `"spoken"` (TTS / Intercom), `"writer"`, or `"planner"`. |
+| `channel`     | string? | `"voice"` when this agent's replies are read aloud. Request `channel` can set the same overlay for one turn. See [Voice](voice.md). |
 | `advisor`     | object? | Structured advisor config: `{model, prompt?, mode?, max_redirects?, malformed_halts?}`. `mode: "consult"` (default) makes `/advise` available; `mode: "gate"` additionally enforces a runtime gate at the executor's terminating turn. See [advisor](advisor.md). |
 | `intent`      | object? | Ingress classify/route: `{mode?, min_confidence?, apply_routing?, model?}`. Distinct from `memory.intent_routing`. See [intent](intent.md). |
 | `advisor_model` | string? | **Legacy** shorthand for `advisor.model` with `mode: "consult"`. New configs should use `advisor`. |

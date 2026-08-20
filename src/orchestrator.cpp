@@ -770,8 +770,10 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
     IntentIngress ingress;
     IntentHistoryMirror hist_mirror;
     // Continuations (original_query set) skip classify+reroute so loops
-    // and HTTP follow-ups stay on the addressed agent.
-    if (depth == 0 && original_query.empty()) {
+    // and HTTP follow-ups stay on the addressed agent. Voice-channel
+    // turns stay sticky too — a TTS client must not be rerouted onto a
+    // compressed specialist mid-conversation.
+    if (depth == 0 && original_query.empty() && ingress_channel_ != "voice") {
         ingress = apply_intent_ingress(agent_id, orig_q, /*fresh_ingress=*/true);
         routed_id = ingress.agent_id;
     } else if (depth == 0) {
@@ -1351,7 +1353,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
 
     IntentIngress ingress;
     IntentHistoryMirror hist_mirror;
-    if (original_query.empty())
+    if (original_query.empty() && ingress_channel_ != "voice")
         ingress = apply_intent_ingress(agent_id, orig_q, /*fresh_ingress=*/true);
     else
         intent_source_hint_.clear();

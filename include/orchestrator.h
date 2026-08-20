@@ -201,6 +201,15 @@ public:
         intent_source_hint_ = std::move(hint);
     }
 
+    // Ingress output channel for this request. "voice" keeps the addressed
+    // agent sticky (no intent reroute) so a TTS client is not handed a
+    // compressed specialist mid-conversation. Pair with Constitution::channel
+    // on the ingress agent so the system prompt grows a SPOKEN OUTPUT overlay.
+    void set_ingress_channel(std::string channel) {
+        ingress_channel_ = std::move(channel);
+    }
+    const std::string& ingress_channel() const { return ingress_channel_; }
+
     // Fired after mid-turn history commits that should hit disk promptly —
     // successful model iterations and committed tool-result user messages.
     // The TUI wires this to ConversationStore::save_async so SIGKILL/quit
@@ -495,6 +504,7 @@ private:
     AdvisorEventCallback advisor_event_cb_;
     IntentCallback      intent_cb_;
     std::string         intent_source_hint_;
+    std::string         ingress_channel_;
     HistoryCheckpointCallback history_checkpoint_cb_;
     std::atomic<int>    stream_counter_{-1};   // next_stream_id returns 0 first
     int                 next_stream_id();

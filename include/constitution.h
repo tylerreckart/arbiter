@@ -2,6 +2,7 @@
 // arbiter/include/constitution.h — Constitution system
 // Master constitution (conversational index) + per-agent personality overlays.
 // Specialist standard-mode agents still use a compressed ("caveman") register.
+// Spoken mode is the TTS / Intercom register (see docs/concepts/voice.md).
 
 #include "intent.h"
 #include <string>
@@ -29,9 +30,16 @@ struct Constitution {
     // Agent mode — selects the base system prompt.
     // ""/"standard": compressed specialist voice (default for file agents)
     // "conversational": index-style collaborative voice (also used when name=="index")
+    // "spoken": TTS/voice-intercom register — spoken English only, no markdown
     // "writer": full-prose mode — disables compression, enables writing guidance
     // "planner": plan-decomposition mode
     std::string mode;
+
+    // Per-request (or agent_def) output channel. Empty / "text" = screen.
+    // "voice" = the reply will be read aloud (Intercom, phone, ESP). Spoken
+    // mode already covers this; on other modes a SPOKEN OUTPUT overlay is
+    // appended so user-facing prose stays speakable. Not an identity field.
+    std::string channel;
 
     // Optional advisor model (beta: advisor-tool-2026-03-01).
     // When set, the executor model can consult this higher-intelligence model

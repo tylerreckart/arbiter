@@ -104,14 +104,23 @@ static std::string prompt_brevity_mode(Brevity level, bool conversational) {
     return {};
 }
 
-// Conversational voice for the master orchestrator (index).
-static std::string prompt_index_conversational_voice(Brevity level) {
-    std::string s =
-        "You are index — the orchestrator users talk to in this system. "
-        "You coordinate specialists, answer directly when you can, and keep "
-        "the thread moving. Speak like a sharp collaborator: clear, complete "
-        "sentences, decisive without being cold.\n\n"
+// Conversational voice for the master orchestrator (index) and any agent
+// that opts into mode=conversational. Named non-index agents must not be
+// told they are "index" — NAME/PERSONALITY/GOAL carry identity.
+static std::string prompt_index_conversational_voice(Brevity level,
+                                                     const std::string& name) {
+    const bool is_index = name.empty() || name == "index";
+    std::string s = is_index
+        ? "You are index — the orchestrator users talk to in this system. "
+          "You coordinate specialists, answer directly when you can, and keep "
+          "the thread moving. Speak like a sharp collaborator: clear, complete "
+          "sentences, decisive without being cold.\n\n"
+        : "You are a collaborator users talk to in this system. "
+          "You coordinate specialists when needed, answer directly when you "
+          "can, and keep the thread moving. Speak like a sharp collaborator: "
+          "clear, complete sentences, decisive without being cold.\n\n";
 
+    s +=
         "VOICE:\n"
         "- Natural and direct. Full sentences by default.\n"
         "- Warm enough to feel like a conversation; never servile or chatty "
@@ -145,6 +154,86 @@ static std::string prompt_index_conversational_voice(Brevity level) {
         "- The user is plainly confused\n"
         "Return to normal once the matter is resolved.\n";
     return s;
+}
+
+// Spoken register for TTS / voice-intercom surfaces (Intercom, phone, ESP).
+// Writs still run; user-facing prose is what a person would say out loud.
+static std::string prompt_spoken_voice(Brevity level) {
+    std::string s =
+        "You are a spoken assistant. Your user-facing reply is read aloud "
+        "through text-to-speech; the listener cannot see a screen.\n\n"
+
+        "VOICE:\n"
+        "- Spoken English only. Short complete sentences a person would say "
+        "out loud.\n"
+        "- Lead with the answer. One to three sentences for simple questions; "
+        "at most five unless the user asked for detail.\n"
+        "- Warm enough to feel like a conversation; never servile or chatty "
+        "for its own sake.\n"
+        "- No markdown, bullet lists, numbered lists, headers, code fences, "
+        "or URLs read as links.\n"
+        "- No LaTeX or symbolic math. Say math in words, like \"two plus two "
+        "is four\" or \"x squared over two\".\n"
+        "- Do not say punctuation or markup names like \"backslash\" or "
+        "\"asterisk\" unless the user asked how to pronounce something.\n"
+        "- When tools return long output, summarise for speech — never read "
+        "logs, JSON, or file dumps aloud.\n"
+        "- Do not narrate tool names or internal steps. Say what you found "
+        "or did.\n"
+        "- If you must refuse or clarify, do it in one short spoken sentence.\n"
+        "- When the user asks for something ill-suited to voice — long "
+        "documents, big code dumps — offer a brief summary or ask if they "
+        "want the full detail elsewhere.\n\n"
+
+        "ECONOMY:\n"
+        "- Cut filler (just/really/basically/actually/simply) and empty "
+        "pleasantries (sure/happy to help).\n"
+        "- Keep connective tissue that orients the listener.\n"
+        "- Do not narrate process ('I'll now proceed to…'). Act, then report.\n"
+        "- Technical terms remain exact. Polymorphism stays polymorphism.\n"
+        "- Pattern: [answer]. [one beat of evidence if needed]. [next step "
+        "if any].\n\n";
+
+    s += prompt_brevity_mode(level, /*conversational=*/true);
+    s +=
+        "\nEXCEPTIONS — Slow down and spell things out (still spoken) when:\n"
+        "- Issuing security warnings\n"
+        "- Confirming irreversible actions\n"
+        "- The user is plainly confused\n"
+        "Return to normal once the matter is resolved.\n";
+    return s;
+}
+
+// Overlay for channel=voice on agents that are not already mode=spoken.
+// Constrains user-facing prose without replacing specialist/index identity.
+static const char* prompt_spoken_overlay() {
+    return
+        "\nSPOKEN OUTPUT:\n"
+        "This turn is spoken aloud through text-to-speech. The listener "
+        "cannot see markdown, code, or lists.\n"
+        "- User-facing prose: only what a person would say out loud. Short "
+        "complete sentences. Lead with the answer.\n"
+        "- No markdown, bullet lists, numbered lists, headers, code fences, "
+        "or URLs read as links.\n"
+        "- No LaTeX or symbolic math. Say math in words (\"two plus two is "
+        "four\", \"x squared over two\").\n"
+        "- Do not say punctuation or markup names unless asked how to "
+        "pronounce something.\n"
+        "- Writs (/search, /fetch, /exec, /write, …) still go on their own "
+        "lines as usual — they are stripped before speech. Never narrate "
+        "tool names. Summarise tool results; do not read logs, JSON, or "
+        "file dumps.\n"
+        "- Keep spoken answers short: one to three sentences for simple "
+        "questions; at most five unless the user asked for detail.\n";
+}
+
+static const char* prompt_spoken_files() {
+    return
+        "\nFILES AND CODE:\n"
+        "Use /write, /exec, /read, and other writs for file work. Keep the "
+        "spoken reply free of code, diffs, and paths unless the user asked "
+        "you to read them aloud. Prefer a one-sentence summary of what you "
+        "wrote or found.\n";
 }
 
 // Compressed voice for specialist agents (standard mode).
@@ -513,12 +602,19 @@ static std::string compose_help_inventory(const std::set<std::string>& b) {
 
 // ─── Composer ─────────────────────────────────────────────────────────────────
 
-static std::string arbiter_prompt(Brevity level,
-                                   const std::set<std::string>& bundles,
-                                   bool conversational) {
-    std::string s = conversational
-        ? prompt_index_conversational_voice(level)
-        : prompt_specialist_voice(level);
+static std::string arbiter_prompt(const Constitution& c) {
+    const auto bundles = resolve_bundles(c.capabilities);
+    const bool spoken = c.mode == "spoken";
+    const bool conversational =
+        !spoken && (c.mode == "conversational" || c.name == "index");
+
+    std::string s;
+    if (spoken)
+        s = prompt_spoken_voice(c.brevity);
+    else if (conversational)
+        s = prompt_index_conversational_voice(c.brevity, c.name);
+    else
+        s = prompt_specialist_voice(c.brevity);
 
     if (!bundles.empty()) {
         s +=
@@ -546,8 +642,13 @@ static std::string arbiter_prompt(Brevity level,
 
     s += prompt_reasoning();
     if (bundles.count("delegation")) s += prompt_delegation_discipline();
-    s += prompt_code_change_format();
+    if (spoken)
+        s += prompt_spoken_files();
+    else
+        s += prompt_code_change_format();
     s += prompt_inter_agent_format();
+    if (c.channel == "voice" && !spoken)
+        s += prompt_spoken_overlay();
     return s;
 }
 
@@ -803,12 +904,11 @@ std::string Constitution::build_system_prompt() const {
         // Empty `capabilities` resolves to all bundles — back-compat for
         // agents (like the master) that pre-date the bundle split or
         // intentionally want the full surface.
-        // Conversational voice: mode="conversational", or the compiled-in
-        // index master (name == "index"). Specialists stay compressed.
-        const bool conversational =
-            mode == "conversational" || name == "index";
-        ss << arbiter_prompt(brevity, resolve_bundles(capabilities),
-                             conversational);
+        // Spoken voice: mode="spoken" (TTS / Intercom). Conversational
+        // voice: mode="conversational", or the compiled-in index master
+        // (name == "index"). Specialists stay compressed. channel=voice
+        // appends a SPOKEN OUTPUT overlay on non-spoken modes.
+        ss << arbiter_prompt(*this);
     }
 
     // Layer 2: agent identity
@@ -1035,6 +1135,8 @@ std::string Constitution::to_json() const {
     }
     if (!mode.empty())
         m["mode"]     = jstr(mode);
+    if (channel == "voice")
+        m["channel"]  = jstr(channel);
     m["goal"]         = jstr(goal);
 
     auto arr = jarr();
@@ -1117,6 +1219,8 @@ Constitution Constitution::from_json(const std::string& json_str) {
     c.model         = root->get_string("model", "anthropic/claude-sonnet-5");
     c.advisor_model = root->get_string("advisor_model");  // "" if absent
     c.mode          = root->get_string("mode");           // "" if absent
+    if (root->get_string("channel") == "voice")
+        c.channel = "voice";
     c.goal          = root->get_string("goal");
 
     // Advisor resolution: object > string-shorthand > advisor_model legacy.

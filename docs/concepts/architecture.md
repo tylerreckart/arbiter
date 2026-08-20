@@ -120,5 +120,6 @@ For implementation details and deeper explanations, see:
 - [Structured memory](structured-memory.md)
 - [MCP](mcp.md)
 - [A2A](a2a.md)
+- [Voice](voice.md)
 - [Tenants](tenants.md)
 - [SSE events](sse-events.md)

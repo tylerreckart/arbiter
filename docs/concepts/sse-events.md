@@ -6,7 +6,7 @@ Every event on the `/v1/orchestrate` stream has an `event:` line and a `data:` l
 
 | Event | When | Fields |
 |-------|------|--------|
-| `request_received` | Exactly once, first event on the stream. | `agent`, `tenant`, `tenant_id`, `message` (first 200 chars, ellipsis added if truncated). |
+| `request_received` | Exactly once, first event on the stream. | `agent`, `tenant`, `tenant_id`, `message` (first 200 chars, ellipsis added if truncated), `channel?` (`"voice"` when the request asked for spoken output). |
 | `intent` | Pre-dispatch classify/route on **fresh** ingress (`original_query` omitted) when the ingress agent's `intent.mode` is not `off`. After `request_received`, before `stream_start`. See [Intent](intent.md). | `kind`, `confidence`, `source`, `target_agent`, `applied`, `requested_agent`, `applied_agent`, `brief?`, `todo_seed_count`, `plan_seed_count`, `llm_used?`, `malformed?`. |
 | `reconcile.progress` | Phase note on [`POST /v1/reconcile`](../api/reconcile.md). | `request_id`, `phase`, `detail?`. |
 | `reconcile.delta` | Contract observation: residual vs held clauses. | `residual`, `held`, `empty`. |
@@ -60,5 +60,6 @@ Spec-compatible A2A clients hit [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.
 - [Advisor](advisor.md) — gate signal grammar, modes, redirect budget.
 - [Intent](intent.md) — pre-dispatch classify/route.
 - [Reconcile](reconcile.md) — desired-end-state contract, tests, rollback.
+- [Voice](voice.md) — spoken constitution register and `channel: "voice"` for TTS bridges.
 - [`POST /v1/orchestrate`](../api/orchestrate.md)
 - [`POST /v1/conversations/:id/messages`](../api/conversations/messages-post.md)
