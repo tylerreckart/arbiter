@@ -7,6 +7,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.12.10] — 2026-08-20
+
+
 ## [0.12.9] — 2026-08-18
 
 
