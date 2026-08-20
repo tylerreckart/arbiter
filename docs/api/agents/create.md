@@ -40,7 +40,8 @@ Either a bare constitution or wrapped under `agent_def`:
 | `rules`         | array<string> | no | Behavioural constraints appended to the system prompt. |
 | `capabilities`  | array<string> | no | Tools this agent uses. Used by master for routing. |
 | `event_types`   | array<string> | no | Glob patterns for [`POST /v1/events`](../events.md) automatic routing (`fnmatch`). Empty / omitted ⇒ not event-routed. |
-| `mode`          | string | no  | `""` / `"standard"` (default) or `"writer"`. |
+| `mode`          | string | no  | `""` / `"standard"` (compressed specialist), `"conversational"`, `"spoken"` (TTS), `"writer"`, or `"planner"`. |
+| `channel`       | string | no  | `"voice"` to treat replies as spoken (same overlay as request `channel`). See [Voice](../../concepts/voice.md). |
 | `advisor`       | object \| string | no | Advisor configuration. Object form: `{model, prompt?, mode?, max_redirects?, malformed_halts?}`. String form is treated as `{model: <s>, mode: "consult"}` (back-compat). See [advisor concept](../../concepts/advisor.md). |
 | `advisor_model` | string | no  | **Legacy.** Higher-capability model for `/advise` consults. New configurations should use `advisor.model` instead. If both `advisor` and `advisor_model` are present, the structured `advisor` block wins. |
 | `memory`        | object | no  | Per-agent memory enrichment toggles for `/mem search` and `/mem add entry`. See schema below and [Memory enrichment](../../concepts/structured-memory.md#memory-enrichment) in the structured-memory concept. |

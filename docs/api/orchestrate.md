@@ -16,6 +16,7 @@ Spec-compatible Agent2Agent (A2A) clients can call the same agents via [`POST /v
 |--------------|----------|----------|-----------|-------------|
 | `message`    | string \| array | yes | —      | The prompt to send to the agent. Either a plain string (text-only) or an array of content parts (text + image, see [Vision input](#vision-input) below). |
 | `original_query` | string | no | — | Pins the advisor gate's `[ORIGINAL TASK]` when `message` is a continuation prompt, and **suppresses intent reroute**. Omit on the first turn of a loop; pass the loop's initial prompt on subsequent `/v1/orchestrate` calls. When omitted, defaults to the flattened `message` text. |
+| `channel`    | string   | no       | `"text"`  | `"text"` (default) or `"voice"`. Voice marks the turn for TTS (Intercom and similar bridges): spoken-output overlay on the ingress agent, no intent reroute, `channel` echoed on `request_received`. Store only the transcript in `message` — do not append a “this is voice” suffix. See [Voice](../concepts/voice.md). |
 | `agent`      | string   | no       | `"index"` | Which agent to address. Any stored agent id, the built-in `"index"` master, or (with `agent_def`) a caller-supplied UUID. |
 | `agent_def`  | object   | no       | —         | Inline agent definition. See [Inline agents](#inline-agents) below. When set, overrides any stored agent at this id for this one request. |
 
@@ -157,7 +158,7 @@ A retry that arrives before the original has created its `request_status` row (m
 
 | Status | When | Body |
 |--------|------|------|
-| 400    | Body isn't a JSON object; missing `message`; `agent_def` shape invalid (Constitution parse fails); id-resolution conflict; attempt to override `"index"`. | `{"error": "..."}` |
+| 400    | Body isn't a JSON object; missing `message`; invalid `channel` (not `"text"` or `"voice"`); `agent_def` shape invalid (Constitution parse fails); id-resolution conflict; attempt to override `"index"`. | `{"error": "..."}` |
 | 401    | Missing / invalid bearer; tenant disabled. | `{"error": "..."}` |
 | 200 + `done.ok = false` | Errors that arise after the SSE stream opens (LLM upstream failure, cap exceeded, agent missing for non-`index` id with no inline / stored / snapshot fallback, transient I/O, provider circuit breaker open). The stream contains an `error` event followed by `done` with `ok: false`. The connection-level catch returns 200 because headers are already on the wire. | SSE stream |
 

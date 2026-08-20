@@ -27,7 +27,7 @@ The master orchestrator (`index`) is not written to disk — it ships as a compi
 
 Starter agents use personal callsigns (`scout`, `vera`, `quill`, …) as their ids — related to their function, but meant to feel like a roster of people rather than a list of job titles. Intent *kinds* (`research`, `review`, `write`, …) are unchanged; they map onto these callsigns.
 
-Index speaks in a **conversational** register (complete sentences, collaborative tone) while specialists keep a compressed field-report voice. Routing, writ inventory, and delegation rules are shared; only the user-facing register differs.
+Index speaks in a **conversational** register (complete sentences, collaborative tone) while specialists keep a compressed field-report voice. Dedicated TTS agents use `mode: "spoken"`. Routing, writ inventory, and delegation rules are shared; only the user-facing register differs. See [Voice](../concepts/voice.md).
 
 The starter JSON files are the **single source of truth** for what gets written. They live in `agents/` in the source tree and are embedded into the binary at build time. `--init` writes them verbatim — pretty-printed, in source order, byte-identical to the source tree — so the file you see on disk matches what a maintainer would see in the repo.
 

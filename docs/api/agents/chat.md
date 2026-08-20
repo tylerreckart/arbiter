@@ -17,6 +17,7 @@ The path `:id` resolves through the same chain as `/v1/orchestrate` — inline `
 | Field        | Type     | Required | Description |
 |--------------|----------|----------|-------------|
 | `message`    | string   | yes | The prompt. |
+| `channel`    | string   | no  | `"text"` or `"voice"`. Same as [`POST /v1/orchestrate`](../orchestrate.md). |
 | `agent_def`  | object   | no  | Inline agent definition. If present, its `id` MUST match the path `:id`. |
 | `agent`      | string   | —   | **Ignored** — the path wins. |
 

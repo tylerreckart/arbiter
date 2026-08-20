@@ -16,7 +16,7 @@ The HTTP API is built around [Server-Sent Events](concepts/sse-events.md), not r
 
 The protocol cares about ordering only where it has to: `request_received` is always first, `done` is always last, per-stream events are causally ordered. Cross-stream events interleave by wall-clock — and that's the *correct* behaviour, because the underlying work is concurrent.
 
-The TUI is structurally a consumer of this same event model, even when the work runs in-process. The `text` deltas land in the scrollback buffer, the `tool_call` events drive the spinner indicator on the mid-separator, `file` events become inline file blocks. There's no "TUI mode" of the orchestration loop that's different from the API mode.
+The TUI is structurally a consumer of this same event model, even when the work runs in-process. The `text` deltas land in the scrollback buffer, the `tool_call` events drive the spinner indicator on the mid-separator, `file` events become inline file blocks. There's no "TUI mode" of the orchestration loop that's different from the API mode. Voice bridges (Intercom) are the same consumer with a `channel: "voice"` hint so the constitution speaks for TTS; audio encoding stays at the edge. See [Voice](concepts/voice.md).
 
 ## 4. Tenants are tight; isolation is total
 

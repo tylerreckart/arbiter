@@ -630,6 +630,7 @@ std::shared_ptr<JsonValue> constitution_to_json(const std::string& id,
     m["temperature"]  = jnum(c.temperature);
     if (!c.advisor_model.empty()) m["advisor_model"] = jstr(c.advisor_model);
     if (!c.mode.empty())          m["mode"]          = jstr(c.mode);
+    if (c.channel == "voice")     m["channel"]       = jstr(c.channel);
     if (!c.personality.empty())   m["personality"]   = jstr(c.personality);
     if (!c.rules.empty()) {
         auto arr = jarr();
@@ -9139,6 +9140,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     }
     const std::string original_query = body->get_string("original_query", "");
+    const std::string channel_raw = body->get_string("channel", "");
+    std::string channel;
+    if (channel_raw.empty() || channel_raw == "text") {
+        channel.clear();
+    } else if (channel_raw == "voice") {
+        channel = "voice";
+    } else {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("channel must be \"text\" or \"voice\"");
+        write_json_response(fd, 400, err);
+        return;
+    }
 
     // ── Resolve the agent identity ────────────────────────────────────────
     //
@@ -9526,6 +9540,18 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                   "'index' (the master orchestrator) instead.");
         sse.close();
         return;
+    }
+
+    // Voice-channel requests (Intercom, phone, ESP): spoken overlay on the
+    // ingress agent and sticky routing so TTS is not handed a compressed
+    // specialist.  Does not rewrite the stored user message.
+    if (channel == "voice") {
+        orch->set_ingress_channel("voice");
+        try {
+            orch->get_agent(agent_id).config_mut().channel = "voice";
+        } catch (const std::exception&) {
+            // Ingress missing is already reported above.
+        }
     }
 
     // ── Conversation thread resumption ──────────────────────────────────
@@ -10046,6 +10072,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         m["message"]    = jstr(message.size() > 200
                                ? message.substr(0, 200) + "…"
                                : message);
+        if (channel == "voice") m["channel"] = jstr("voice");
         emit("request_received", p);
     }
 

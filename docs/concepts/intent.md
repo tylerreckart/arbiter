@@ -62,7 +62,7 @@ The `intent` block lives on a `Constitution`. File-backed agents default **off**
 
 Reroute only happens when all of these hold: **fresh ingress** (`original_query` omitted), ingress agent is `index`, `apply_routing` is true, confidence ≥ threshold, and `target_agent` is loaded. Explicit `agent` on `/v1/orchestrate` or `/v1/events` always wins.
 
-Loop continuations and HTTP follow-ups that pass `original_query` skip classify+reroute entirely so the addressed agent stays sticky. `/loop` always pins `original_query`, so it never intent-reroutes.
+Loop continuations and HTTP follow-ups that pass `original_query` skip classify+reroute entirely so the addressed agent stays sticky. `/loop` always pins `original_query`, so it never intent-reroutes. Requests with [`channel: "voice"`](voice.md) also skip reroute (the transcript is a spoken continuation, not a fresh specialist dispatch).
 
 When reroute does fire, conversation history and compaction are mirrored requested → specialist before the turn and specialist → requested after, so the thread stays on the agent the caller addressed (API persist / next hydrate still work). The backup is turn-scoped RAII (thread-local), not a single slot on the shared Orchestrator — concurrent REPL panes can reroute at the same time without restoring the wrong specialist history.
 
