@@ -49,6 +49,7 @@
 #include "config.h"
 
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <cstdlib>
@@ -500,18 +501,31 @@ void ReplSession::run_input_loop() {
             if (!echo.empty()) echo += "\n";
             echo += "[" + attachment_status_label(queued.attachments) + "]";
         }
-        focused.output_queue.push_user_echo(echo);
-        focused.output_queue.end_message();
 
-        if (!focused.cmd_queue.push(std::move(queued))) {
+        // Echo first (without waking the pump) so a waiting exec thread
+        // cannot drain a response ahead of the user box.  Drop the echo if
+        // the command queue rejects the submit.
+        if (!echo.empty()) {
+            focused.output_queue.push_user_echo(echo, /*notify=*/false);
+        }
+        if (!focused.cmd_queue.push(queued)) {
+            if (!echo.empty()) focused.output_queue.try_drop_last_user_echo();
+            if (!slash && !queued.attachments.empty()) {
+                std::lock_guard<std::mutex> lk(focused.pending_attachments_mu);
+                focused.pending_attachments.insert(
+                    focused.pending_attachments.begin(),
+                    std::make_move_iterator(queued.attachments.begin()),
+                    std::make_move_iterator(queued.attachments.end()));
+            }
             focused.tui.set_status("queue full (max " +
                 std::to_string(CommandQueue::kMaxDepth) +
                 " pending) — wait for the current turn");
             continue;
         }
+        focused.output_queue.end_message();
+        if (pump_notify) pump_notify();
         if (focused.cmd_queue.is_busy()) {
             focused.tui.show_queue_depth(focused.cmd_queue.pending());
-            if (pump_notify) pump_notify();
         }
     }
 

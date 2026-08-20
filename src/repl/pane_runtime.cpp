@@ -166,7 +166,7 @@ void ReplSession::start_pane_thread(Pane& p_ref) {
                                 + task_preview + ")]\n"
                                 + p.last_response
                                 + "\n[END PANE RESULT]";
-                            parent->cmd_queue.push(frame);
+                            parent->cmd_queue.push_unbounded(frame);
                         }
                     }
 

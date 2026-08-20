@@ -7947,8 +7947,13 @@ void handle_a2a_message_send(int fd,
         return;
     }
 
+    ApiResponse wire_resp = resp;
+    if (!wire_resp.ok) {
+        wire_resp.error = sanitised_api_response_error(resp);
+        wire_resp.error_type = sanitised_provider_error_code(resp.error_type);
+    }
     a2a::Task task = a2a::build_terminal_task(task_id, context_id, agent_id,
-                                               user_msg, resp);
+                                               user_msg, wire_resp);
 
     // Persist the terminal state.  We snapshot only the assistant
     // Message — history/artifacts can be reconstructed by combining

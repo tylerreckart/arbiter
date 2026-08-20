@@ -29,6 +29,18 @@ bool CommandQueue::push(QueuedCommand cmd) {
     return true;
 }
 
+void CommandQueue::push_unbounded(std::string cmd) {
+    QueuedCommand q;
+    q.text = std::move(cmd);
+    push_unbounded(std::move(q));
+}
+
+void CommandQueue::push_unbounded(QueuedCommand cmd) {
+    std::lock_guard<std::mutex> lk(mu_);
+    items_.push(std::move(cmd));
+    cv_.notify_one();
+}
+
 bool CommandQueue::pop(QueuedCommand& out) {
     std::unique_lock<std::mutex> lk(mu_);
     cv_.wait(lk, [this]{ return !items_.empty() || stopped_; });
@@ -315,7 +327,7 @@ void OutputQueue::push_thinking(const std::string& delta, const std::string& age
     if (fn) fn();
 }
 
-void OutputQueue::push_user_echo(std::string_view text) {
+void OutputQueue::push_user_echo(std::string_view text, bool notify) {
     if (text.empty()) return;
     std::function<void()> fn;
     {
@@ -329,9 +341,18 @@ void OutputQueue::push_user_echo(std::string_view text) {
         // gets a clean gap via append_thinking / append_prose.
         need_sep_ = false;
         split_after_diff_ = false;
-        fn = notify_fn_;
+        if (notify) fn = notify_fn_;
     }
     if (fn) fn();
+}
+
+bool OutputQueue::try_drop_last_user_echo() {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (items_.empty() || items_.back().kind != OutputItem::Kind::UserEcho)
+        return false;
+    items_.pop_back();
+    need_sep_ = true;
+    return true;
 }
 
 void OutputQueue::push_prose_msg(const std::string& text, StyleId id) {

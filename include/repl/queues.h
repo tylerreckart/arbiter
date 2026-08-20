@@ -33,6 +33,11 @@ public:
     bool push(std::string cmd);
     bool push(QueuedCommand cmd);
 
+    // Always enqueues, even at kMaxDepth.  Child-pane result frames must
+    // not be dropped because the parent already has 16 user commands pending.
+    void push_unbounded(std::string cmd);
+    void push_unbounded(QueuedCommand cmd);
+
     // Blocks until an item is available or the queue is stopped.
     // Returns false when stopped and empty.
     bool pop(std::string& out);
@@ -130,7 +135,13 @@ public:
     void push_thinking(const std::string& delta, const std::string& agent_id = {});
 
     // User submit echo → UserEchoSegment (rounded box, title "user").
-    void push_user_echo(std::string_view text);
+    // `notify` wakes the output pump; the input loop defers that until
+    // CommandQueue::push succeeds so a rejected submit can still drop the echo.
+    void push_user_echo(std::string_view text, bool notify = true);
+
+    // Remove the most recent UserEcho if it is still the last queued item.
+    // Returns false if the pump already drained it or the tail is another kind.
+    bool try_drop_last_user_echo();
 
     std::vector<OutputItem> drain_items();
 
