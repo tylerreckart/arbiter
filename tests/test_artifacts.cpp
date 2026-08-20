@@ -16,9 +16,14 @@
 #include "doctest.h"
 #include "tenant_store.h"
 
+#include <sqlite3.h>
+
+#include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace arbiter;
@@ -57,6 +62,24 @@ std::string sane(const std::string& raw) {
     auto r = sanitize_artifact_path(raw, err);
     REQUIRE_MESSAGE(r.has_value(), "expected '" << raw << "' to be accepted, got: " << err);
     return *r;
+}
+
+// Inflate SUM(size) without storing a 50 MiB blob so conversation-cap
+// tests stay cheap.  Quota math reads the size column, not length(content).
+void set_artifact_accounted_size(const fs::path& db_path, const std::string& path,
+                                 int64_t size) {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open(db_path.c_str(), &raw) == SQLITE_OK);
+    sqlite3_busy_timeout(raw, 5000);
+    const std::string sql =
+        "UPDATE tenant_artifacts SET size = " + std::to_string(size) +
+        " WHERE path = '" + path + "';";
+    char* err = nullptr;
+    const int rc = sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, &err);
+    INFO((err ? err : "ok"));
+    REQUIRE(rc == SQLITE_OK);
+    if (err) sqlite3_free(err);
+    sqlite3_close(raw);
 }
 
 bool sanitize_rejects(const std::string& raw, const std::string& expected_substr = "") {
@@ -228,6 +251,67 @@ TEST_CASE("per-file quota rejects oversize without consuming budget") {
     CHECK(r.error_msg.find("per-file") != std::string::npos);
     CHECK(r.tenant_used_bytes == 0);     // nothing was written
     CHECK(s.list_artifacts_conversation(tid, cid, 50).empty());
+}
+
+TEST_CASE("conversation quota rejects a write that would exceed the cap") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t cid = make_conversation(s, tid, "research");
+
+    REQUIRE(s.put_artifact(tid, cid, "seed.bin", "x", "application/octet-stream")
+                .status == PutArtifactResult::Status::Created);
+    const int64_t leftover = 80;
+    set_artifact_accounted_size(db.path, "seed.bin",
+                                kArtifactPerConversationMaxBytes - leftover);
+    CHECK(s.bytes_used_conversation(tid, cid)
+          == kArtifactPerConversationMaxBytes - leftover);
+
+    auto over = s.put_artifact(tid, cid, "overflow.txt",
+                               std::string(leftover + 1, 'y'), "text/plain");
+    CHECK(over.status == PutArtifactResult::Status::QuotaExceeded);
+    CHECK(s.list_artifacts_conversation(tid, cid, 50).size() == 1);
+    CHECK(s.bytes_used_conversation(tid, cid)
+          == kArtifactPerConversationMaxBytes - leftover);
+}
+
+TEST_CASE("parallel put_artifact cannot exceed conversation quota") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t cid = make_conversation(s, tid, "research");
+
+    REQUIRE(s.put_artifact(tid, cid, "seed.bin", "x", "application/octet-stream")
+                .status == PutArtifactResult::Status::Created);
+    const int64_t leftover = 80;
+    set_artifact_accounted_size(db.path, "seed.bin",
+                                kArtifactPerConversationMaxBytes - leftover);
+
+    constexpr int kWriters = 8;
+    const std::string payload(50, 'z');
+    std::atomic<int> created{0};
+    std::atomic<int> quota_rejected{0};
+    std::atomic<int> thrown{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kWriters);
+    for (int i = 0; i < kWriters; ++i) {
+        threads.emplace_back([&, i]() {
+            try {
+                const std::string path = "race/" + std::to_string(i) + ".txt";
+                auto r = s.put_artifact(tid, cid, path, payload, "text/plain");
+                if (r.status == PutArtifactResult::Status::Created) created++;
+                else if (r.status == PutArtifactResult::Status::QuotaExceeded)
+                    quota_rejected++;
+            } catch (...) {
+                thrown++;
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    CHECK(thrown == 0);
+    CHECK(created <= 1);
+    CHECK(quota_rejected >= kWriters - 1);
+    CHECK(s.bytes_used_conversation(tid, cid)
+          <= kArtifactPerConversationMaxBytes);
 }
 
 TEST_CASE("PUT overwrite subtracts existing size before quota check") {

@@ -14,6 +14,7 @@
 // and table on first open.
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -1186,7 +1187,13 @@ public:
     bool delete_relation(int64_t tenant_id, int64_t id);
 
 private:
-    sqlite3* db_ = nullptr;
+    sqlite3*   db_ = nullptr;
+    // FULLMUTEX serialises individual sqlite3_* calls, not the
+    // check-then-act span of quota enforcement.  One connection is
+    // shared across request threads, so this mutex (not BEGIN
+    // IMMEDIATE — nested BEGIN on the same connection fails) holds
+    // across quota math and the following INSERT/UPDATE.
+    std::mutex write_mu_;
 
     // Re-read a tenant row into `t`.  Used internally after mutations.
     bool reload_tenant(int64_t id, Tenant& t) const;

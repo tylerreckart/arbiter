@@ -15,10 +15,13 @@
 
 #include <sqlite3.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <set>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace arbiter;
@@ -769,4 +772,43 @@ TEST_CASE("scratchpad fills to cap then rejects further writes") {
     CHECK(sz <= static_cast<int64_t>(4 * 1024 * 1024));
     CHECK(s.append_scratchpad(tid, "agent-b", chunk) < 0);
     CHECK(s.read_scratchpad(tid, "agent-b").size() == static_cast<std::size_t>(sz));
+}
+
+TEST_CASE("parallel scratchpad appends cannot exceed 4 MiB cap") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "scratch-race");
+    const int64_t cap = 4ll * 1024 * 1024;
+
+    const std::string chunk(4096, 'y');
+    while (s.scratchpad_byte_size(tid, "race") + 8192 <= cap) {
+        REQUIRE(s.append_scratchpad(tid, "race", chunk) >= 0);
+    }
+
+    constexpr int kWriters = 8;
+    const std::string payload(3000, 'z');
+    std::atomic<int> accepted{0};
+    std::atomic<int> rejected{0};
+    std::atomic<int> thrown{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kWriters);
+    for (int i = 0; i < kWriters; ++i) {
+        threads.emplace_back([&]() {
+            try {
+                if (s.append_scratchpad(tid, "race", payload) < 0) rejected++;
+                else accepted++;
+            } catch (...) {
+                thrown++;
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    CHECK(thrown == 0);
+    CHECK(accepted + rejected == kWriters);
+    CHECK(rejected >= 1);
+    const int64_t sz = s.scratchpad_byte_size(tid, "race");
+    CHECK(sz <= cap);
+    CHECK(s.read_scratchpad(tid, "race").size() == static_cast<std::size_t>(sz));
 }
