@@ -115,6 +115,14 @@ void admin_error(int fd, int code, const std::string& msg) {
     write_json_response(fd, code, e);
 }
 
+// Fixed tenant-facing message for orchestrator construction failures.
+// Raw exception text (paths, provider keys, library internals) logs stderr only.
+constexpr const char kTenantInternalError[] = "internal error";
+
+void log_operator_error(const char* context, const std::exception& e) {
+    std::fprintf(stderr, "[arbiter] %s: %s\n", context, e.what());
+}
+
 // Compare bearer to the admin token.  Timing-safe is overkill for a shared
 // secret loaded from disk at startup, but it costs nothing here and keeps
 // future pen-test reviewers from flagging a naive ==.
@@ -704,9 +712,9 @@ void handle_agents_list(int fd, const ApiServerOptions& opts,
     std::unique_ptr<Orchestrator> orch;
     try { orch = make_reflect_orchestrator(opts); }
     catch (const std::exception& e) {
+        log_operator_error("orchestrator init failed", e);
         auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr(std::string("orchestrator init failed: ") + e.what());
+        err->as_object_mut()["error"] = jstr(kTenantInternalError);
         write_json_response(fd, 500, err);
         return;
     }
@@ -737,9 +745,9 @@ void handle_agent_get(int fd, const std::string& agent_id,
         std::unique_ptr<Orchestrator> orch;
         try { orch = make_reflect_orchestrator(opts); }
         catch (const std::exception& e) {
+            log_operator_error("orchestrator init failed", e);
             auto err = jobj();
-            err->as_object_mut()["error"] =
-                jstr(std::string("orchestrator init failed: ") + e.what());
+            err->as_object_mut()["error"] = jstr(kTenantInternalError);
             write_json_response(fd, 500, err);
             return;
         }
@@ -793,9 +801,9 @@ void handle_a2a_agent_card_get(int fd, const std::string& agent_id,
         std::unique_ptr<Orchestrator> orch;
         try { orch = make_reflect_orchestrator(opts); }
         catch (const std::exception& e) {
+            log_operator_error("orchestrator init failed", e);
             auto err = jobj();
-            err->as_object_mut()["error"] =
-                jstr(std::string("orchestrator init failed: ") + e.what());
+            err->as_object_mut()["error"] = jstr(kTenantInternalError);
             write_json_response(fd, 500, err);
             return;
         }
@@ -4660,9 +4668,9 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     try {
         orch = std::make_unique<Orchestrator>(api_keys);
     } catch (const std::exception& e) {
+        log_operator_error("orchestrator init failed", e);
         auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr(std::string("orchestrator init failed: ") + e.what());
+        err->as_object_mut()["error"] = jstr(kTenantInternalError);
         write_json_response(fd, 500, err);
         return;
     }
@@ -4847,9 +4855,9 @@ void handle_intent_classify(int fd, const HttpRequest& req,
     try {
         orch = std::make_unique<Orchestrator>(opts.api_keys);
     } catch (const std::exception& e) {
+        log_operator_error("orchestrator init failed", e);
         auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr(std::string("orchestrator init failed: ") + e.what());
+        err->as_object_mut()["error"] = jstr(kTenantInternalError);
         write_json_response(fd, 500, err);
         return;
     }
@@ -6221,11 +6229,17 @@ MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
 // request's tenant_id so concurrent requests for two tenants land in
 // two distinct per-tenant containers.
 ExecInvoker make_exec_invoker_callback(const ApiServerOptions& opts,
-                                        int64_t tenant_id) {
+                                        int64_t tenant_id,
+                                        Orchestrator* orch) {
     SandboxManager* mgr = opts.sandbox;
     if (mgr) {
-        return [mgr, tenant_id](const std::string& cmd) -> std::string {
-            SandboxExecResult r = mgr->exec(tenant_id, cmd);
+        return [mgr, tenant_id, orch](const std::string& cmd) -> std::string {
+            std::atomic<bool>* cancel = nullptr;
+            if (auto token = current_request_cancel_token())
+                cancel = token->cancel_flag();
+            else if (orch)
+                cancel = orch->sticky_cancel_flag();
+            SandboxExecResult r = mgr->exec(tenant_id, cmd, /*timeout=*/0, cancel);
             return r.output;
         };
     }
@@ -7697,7 +7711,7 @@ void wire_orch_tools_impl(Orchestrator& orch,
         orch.set_memory_dir(opts.memory_root + "/t" + std::to_string(tenant_id));
     }
     orch.set_exec_disabled(opts.exec_disabled);
-    if (auto exec_inv = make_exec_invoker_callback(opts, tenant_id)) {
+    if (auto exec_inv = make_exec_invoker_callback(opts, tenant_id, &orch)) {
         orch.set_exec_invoker(std::move(exec_inv));
     }
 
@@ -7786,7 +7800,8 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
     try {
         orch = std::make_unique<Orchestrator>(opts.api_keys);
     } catch (const std::exception& e) {
-        err_out = std::string("orchestrator init failed: ") + e.what();
+        log_operator_error("orchestrator init failed", e);
+        err_out = kTenantInternalError;
         return nullptr;
     }
     orch->client().set_circuit_breaker(opts.circuit_breaker);
@@ -7834,8 +7849,9 @@ void handle_a2a_message_send(int fd,
     try {
         user_msg = a2a::extract_send_message(*rpc.params);
     } catch (const std::exception& e) {
+        std::fprintf(stderr, "[a2a] invalid message params: %s\n", e.what());
         write_a2a_rpc(fd, a2a::make_error_response(
-            rpc_id, a2a::RPC_INVALID_PARAMS, e.what()));
+            rpc_id, a2a::RPC_INVALID_PARAMS, "invalid message params"));
         return;
     }
 
@@ -7843,8 +7859,10 @@ void handle_a2a_message_send(int fd,
     try {
         prompt = a2a::concatenate_text_parts(user_msg);
     } catch (const std::exception& e) {
+        std::fprintf(stderr, "[a2a] invalid message content: %s\n", e.what());
         write_a2a_rpc(fd, a2a::make_error_response(
-            rpc_id, a2a::ERR_CONTENT_TYPE_INVALID, e.what()));
+            rpc_id, a2a::ERR_CONTENT_TYPE_INVALID,
+            "message has no supported text parts"));
         return;
     }
     if (prompt.empty()) {
@@ -8000,16 +8018,19 @@ void handle_a2a_message_stream(int fd,
     try {
         user_msg = a2a::extract_send_message(*rpc.params);
     } catch (const std::exception& e) {
+        std::fprintf(stderr, "[a2a] invalid message params: %s\n", e.what());
         write_a2a_rpc(fd, a2a::make_error_response(
-            rpc_id, a2a::RPC_INVALID_PARAMS, e.what()));
+            rpc_id, a2a::RPC_INVALID_PARAMS, "invalid message params"));
         return;
     }
     std::string prompt;
     try {
         prompt = a2a::concatenate_text_parts(user_msg);
     } catch (const std::exception& e) {
+        std::fprintf(stderr, "[a2a] invalid message content: %s\n", e.what());
         write_a2a_rpc(fd, a2a::make_error_response(
-            rpc_id, a2a::ERR_CONTENT_TYPE_INVALID, e.what()));
+            rpc_id, a2a::ERR_CONTENT_TYPE_INVALID,
+            "message has no supported text parts"));
         return;
     }
     if (prompt.empty()) {
@@ -9350,6 +9371,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     try {
         orch = std::make_unique<Orchestrator>(opts.api_keys);
     } catch (const std::exception& e) {
+        log_operator_error("orchestrator init failed", e);
         if (request_status_created) {
             const int64_t completed = static_cast<int64_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(
@@ -9357,13 +9379,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                     .count());
             tenants.update_request_status(
                 request_id, std::optional<std::string>("failed"), completed,
-                std::optional<std::string>(
-                    std::string("orchestrator init failed: ") + e.what()),
+                std::optional<std::string>(kTenantInternalError),
                 std::nullopt);
         }
         auto err = jobj();
-        err->as_object_mut()["error"] =
-            jstr(std::string("orchestrator init failed: ") + e.what());
+        err->as_object_mut()["error"] = jstr(kTenantInternalError);
         write_json_response(fd, 500, err);
         return;
     }
@@ -9729,7 +9749,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     };
     orch->set_write_interceptor(write_interceptor);
     orch->set_exec_disabled(opts.exec_disabled);
-    if (auto exec_inv = make_exec_invoker_callback(opts, tenant.id)) {
+    if (auto exec_inv = make_exec_invoker_callback(opts, tenant.id, orch_ptr)) {
         orch->set_exec_invoker(std::move(exec_inv));
     }
     orch->client().set_circuit_breaker(opts.circuit_breaker);

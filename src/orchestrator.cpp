@@ -1253,6 +1253,8 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
     static constexpr int kMaxRetries = 3;
 
     for (int retry = 0; retry < kMaxRetries; ++retry) {
+        if (turn_is_cancelled()) return;
+
         std::string trunc_path;
         for (const auto& c : cmds) {
             if (c.name == "write" && c.truncated) {

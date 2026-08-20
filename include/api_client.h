@@ -34,6 +34,12 @@ public:
         return cancelled_.load(std::memory_order_acquire);
     }
 
+    // Poll target for sandbox exec and other subprocess drivers that need
+    // a raw atomic<bool>* (same cadence as reconcile host verify).
+    [[nodiscard]] std::atomic<bool>* cancel_flag() noexcept {
+        return &cancelled_;
+    }
+
 private:
     friend class ApiClient;
     friend class RequestCancelScope;
