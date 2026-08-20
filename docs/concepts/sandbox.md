@@ -56,7 +56,7 @@ Setting `ARBITER_SANDBOX_IMAGE` is the only required step. Everything else has a
 | `ARBITER_SANDBOX_CPUS`                  | CPU shares per container. `0` = no cap.                                                                | `1.0`          |
 | `ARBITER_SANDBOX_PIDS_LIMIT`            | Max processes per container. `0` = no cap.                                                             | `256`          |
 | `ARBITER_SANDBOX_EXEC_TIMEOUT`          | Wall-clock kill, seconds, per `/exec` call. `0` = no timeout. Enforced in-container via GNU `timeout` when present, with a parent-side `docker exec` SIGKILL backstop and a best-effort kill of leftover non-PID-1 processes. | `30`           |
-| `ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`   | Per-tenant workspace disk quota, bytes. `/write` over the cap returns ERR; reads still work. `0` = no quota. | `1073741824` (1 GiB) |
+| `ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`   | Per-tenant workspace disk quota, bytes. `/write` over the cap returns ERR; `/exec` over the cap rolls the bind mount back. `0` = no quota. | `1073741824` (1 GiB) |
 | `ARBITER_SANDBOX_IDLE_SECONDS`          | Idle threshold before a tenant container is stopped by the background reaper. Workspace files survive. `0` = no reaping. | `1800` (30 min) |
 | `ARBITER_SANDBOX_WORKSPACES_ROOT`       | Host directory for per-tenant workspace bind mounts (`<root>/t<tenant_id>/`).                          | `~/.arbiter/workspaces` |
 
@@ -130,9 +130,9 @@ The reaper tick fires at `max(30, idle_seconds / 4)` seconds — so an `ARBITER_
 
 ### Disk quota
 
-`ARBITER_SANDBOX_WORKSPACE_MAX_BYTES` (default 1 GiB) caps total bytes per tenant workspace. Enforcement is at `/write` time: the runtime walks the workspace, computes the projected post-write total (subtracting any pre-existing file's size for in-place overwrites), and rejects with a clean `ERR` if the new total would exceed the cap. The walk is O(N files) per write — fine for typical agent workloads, slower if a workspace accumulates tens of thousands of files.
+`ARBITER_SANDBOX_WORKSPACE_MAX_BYTES` (default 1 GiB) caps total bytes per tenant workspace. `/write` walks the workspace, computes the projected post-write total (subtracting any pre-existing file's size for in-place overwrites), and rejects with a clean `ERR` if the new total would exceed the cap. The walk is O(N files) per write — fine for typical agent workloads, slower if a workspace accumulates tens of thousands of files.
 
-Writes from inside the container (e.g. `dd if=/dev/zero of=/workspace/big`) are **not** intercepted by the quota check — that path goes through `docker exec`, not `/write`. Operators wanting hard FS quotas should pair the soft cap with a kernel-level limit (XFS project quotas, ZFS dataset reservations, or `--storage-opt size=...` on storage drivers that support it). The agent-visible cap still catches the common case of an agent enthusiastically `/write`ing megabytes of generated text.
+`/exec` is held on the same per-tenant mutex. After the command returns, the runtime remeasures; if the bind mount is over the cap it rolls the tree back to the pre-exec file list (new files deleted, grown files truncated with `O_NOFOLLOW` so a swapped symlink cannot reach a host path). If the pre-exec inventory was incomplete, unknown paths are left in place and the error reports that rollback left the workspace over the cap. Operators wanting a kernel-enforced ceiling should still pair this with XFS project quotas, ZFS dataset reservations, or `--storage-opt size=...`.
 
 ## Resource caps
 
@@ -197,6 +197,8 @@ drwx------ 3 1000 1000 4096 May 11 22:01 ..
 | `[exit 137]` on an `/exec` that allocated a lot                | OOM-killed by the memory cap. Bump `ARBITER_SANDBOX_MEMORY_MB` or shrink the workload.| Tool-result block marked as failed.                                                            |
 | `ERR: invalid path: …` from `/write` or `/read`                | Absolute path, traversal, or control byte in the request.                             | Agent's standard sanitiser error.                                                              |
 | `ERR: workspace quota exceeded (…); used …, attempted …`       | `/write` would push the workspace past `ARBITER_SANDBOX_WORKSPACE_MAX_BYTES`.         | Agent adapts (clean up + retry, or split the write). Reads still work.                         |
+| `ERR: workspace quota exceeded after /exec (…); used …, rolled back to …` | `/exec` left the bind mount over the cap; new/grown files were rolled back.      | Tool-result marked failed. Workspace is at or under the cap when rollback succeeded.           |
+| `ERR: … rollback left … (still over cap)`                      | Rollback could not restore the cap (incomplete snapshot, leftover writer, or chmod). | Agent can `/list` / `/read` and delete; operator logs `sandbox_workspace_rollback_incomplete`. |
 | `sandbox_container_reaped` in structured logs                  | Background reaper stopped a container idle past `ARBITER_SANDBOX_IDLE_SECONDS`.       | Informational only. Next sandbox op for that tenant cold-starts.                               |
 | `[sandbox] survivor container … exec-probe failed; rebuilding` | Re-attach path found a "running" container that didn't respond to `docker exec true`. | Container is force-removed and a fresh one starts. Workspace bytes remain.                     |
 | Container vanished out of band (`docker rm -f`)                | Operator force-removed the container.                                                 | Next `/exec` notices the stale row, restarts cleanly.                                          |
