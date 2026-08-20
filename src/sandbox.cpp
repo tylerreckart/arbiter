@@ -22,6 +22,8 @@
 #include <signal.h>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
@@ -57,6 +59,100 @@ std::string wrap_exec_with_timeout(const std::string& command,
            "exec timeout -s KILL " + std::to_string(timeout_seconds) +
            "s sh -c " + q + "; "
            "else exec sh -c " + q + "; fi";
+}
+
+// Pre-exec inventory of the bind-mounted workspace.  Used to roll back
+// files created or grown by a shell command that blew past
+// workspace_max_bytes — without copying the tree (default cap is 1 GiB).
+// New files are deleted; grown files are truncated to their prior size
+// (appends restore original bytes; full overwrites keep the first N
+// bytes of the new content).
+struct WorkspaceSnap {
+    std::unordered_map<std::string, uintmax_t> files;
+    std::unordered_set<std::string>            dirs;
+};
+
+WorkspaceSnap snapshot_workspace_tree(const fs::path& ws) {
+    WorkspaceSnap snap;
+    std::error_code ec;
+    if (!fs::exists(ws, ec) || !fs::is_directory(ws, ec)) return snap;
+    for (auto it = fs::recursive_directory_iterator(ws, ec);
+         !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        std::error_code sec;
+        if (it->is_symlink(sec)) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        auto rel = fs::relative(it->path(), ws, sec);
+        if (sec) continue;
+        const std::string key = rel.generic_string();
+        if (key.empty() || key == ".") continue;
+        if (it->is_directory(sec)) {
+            snap.dirs.insert(key);
+        } else if (it->is_regular_file(sec)) {
+            auto sz = fs::file_size(it->path(), sec);
+            if (!sec) snap.files.emplace(key, sz);
+        }
+    }
+    return snap;
+}
+
+void rollback_workspace_to_snap(const fs::path& ws, const WorkspaceSnap& snap) {
+    std::error_code ec;
+    std::vector<fs::path> files;
+    std::vector<fs::path> dirs;
+    std::vector<fs::path> links;
+    for (auto it = fs::recursive_directory_iterator(ws, ec);
+         !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        std::error_code sec;
+        if (it->is_symlink(sec)) {
+            links.push_back(it->path());
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (it->is_directory(sec)) dirs.push_back(it->path());
+        else if (it->is_regular_file(sec)) files.push_back(it->path());
+    }
+
+    auto rel_key = [&](const fs::path& p) -> std::string {
+        std::error_code rec;
+        auto rel = fs::relative(p, ws, rec);
+        if (rec) return {};
+        return rel.generic_string();
+    };
+
+    for (const auto& p : files) {
+        const std::string key = rel_key(p);
+        auto it = snap.files.find(key);
+        if (it == snap.files.end()) {
+            fs::remove(p, ec);
+            continue;
+        }
+        auto sz = fs::file_size(p, ec);
+        if (!ec && sz > it->second) {
+            fs::resize_file(p, it->second, ec);
+        }
+    }
+    for (const auto& p : links) {
+        const std::string key = rel_key(p);
+        if (snap.files.find(key) == snap.files.end() &&
+            snap.dirs.find(key) == snap.dirs.end()) {
+            fs::remove(p, ec);
+        }
+    }
+    std::sort(dirs.begin(), dirs.end(),
+              [](const fs::path& a, const fs::path& b) {
+                  return a.native().size() > b.native().size();
+              });
+    for (const auto& p : dirs) {
+        const std::string key = rel_key(p);
+        if (key.empty() || key == ".") continue;
+        if (snap.dirs.find(key) == snap.dirs.end()) {
+            fs::remove_all(p, ec);
+        }
+    }
 }
 
 // Run argv, capture stdout+stderr into `out`. SIGKILL on timeout; -1 on fork failure.
@@ -743,6 +839,9 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     auto tenant_mu = start_mutex_for(tenant_id);
     std::unique_lock<std::mutex> tenant_lk(*tenant_mu);
     const bool quota_enforced = cfg_.workspace_max_bytes > 0;
+    const fs::path ws_path = workspace_path_for(tenant_id);
+    const WorkspaceSnap pre_exec =
+        quota_enforced ? snapshot_workspace_tree(ws_path) : WorkspaceSnap{};
 
     bool timed_out = false;
     bool canceled = false;
@@ -785,10 +884,13 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         }
         const int64_t used = measure_workspace_bytes(tenant_id);
         if (used > cfg_.workspace_max_bytes) {
+            rollback_workspace_to_snap(ws_path, pre_exec);
+            const int64_t used_after = measure_workspace_bytes(tenant_id);
             r.ok = false;
             r.error = "workspace quota exceeded after /exec (" +
                       std::to_string(cfg_.workspace_max_bytes) +
-                      " bytes); used " + std::to_string(used);
+                      " bytes); used " + std::to_string(used) +
+                      ", rolled back to " + std::to_string(used_after);
             if (r.output.empty()) r.output = "ERR: " + r.error;
             else r.output += "\nERR: " + r.error;
         }

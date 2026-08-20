@@ -1,5 +1,5 @@
-// tests/test_sandbox_quota.cpp — workspace quota under parallel /write (#129)
-// and /exec mutex + post-check (#136).
+// tests/test_sandbox_quota.cpp — workspace quota under parallel /write (#129),
+// /exec mutex + post-check (#136), and /exec over-cap rollback (#240).
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <sys/stat.h>
 #include <thread>
 #include <vector>
@@ -98,27 +99,33 @@ SandboxConfig make_quota_config(const std::string& root, int64_t quota) {
 }
 
 struct PathGuard {
-    const char* old_path;
+    std::string old_path;
+    bool had_path = false;
     explicit PathGuard(const std::string& root) {
+        const char* p = std::getenv("PATH");
+        had_path = p != nullptr;
+        if (had_path) old_path = p;
         const std::string bin = root + "/bin";
-        old_path = std::getenv("PATH");
-        std::string new_path = bin + ":" + (old_path ? old_path : "");
+        std::string new_path = bin + ":" + (had_path ? old_path : "");
         ::setenv("PATH", new_path.c_str(), 1);
     }
     ~PathGuard() {
-        if (old_path) ::setenv("PATH", old_path, 1);
+        if (had_path) ::setenv("PATH", old_path.c_str(), 1);
         else ::unsetenv("PATH");
     }
 };
 
 struct WorkspaceEnvGuard {
-    const char* old_ws;
+    std::string old_ws;
+    bool had_ws = false;
     explicit WorkspaceEnvGuard(const std::string& ws) {
-        old_ws = std::getenv("ARBITER_TEST_WORKSPACE");
+        const char* p = std::getenv("ARBITER_TEST_WORKSPACE");
+        had_ws = p != nullptr;
+        if (had_ws) old_ws = p;
         ::setenv("ARBITER_TEST_WORKSPACE", ws.c_str(), 1);
     }
     ~WorkspaceEnvGuard() {
-        if (old_ws) ::setenv("ARBITER_TEST_WORKSPACE", old_ws, 1);
+        if (had_ws) ::setenv("ARBITER_TEST_WORKSPACE", old_ws.c_str(), 1);
         else ::unsetenv("ARBITER_TEST_WORKSPACE");
     }
 };
@@ -206,7 +213,66 @@ TEST_CASE("sandbox exec: post-check fails when shell write exceeds quota") {
         tid, "head -c 400 /dev/zero > overflow.bin");
     CHECK_FALSE(result.ok);
     CHECK(result.error.find("quota exceeded") != std::string::npos);
-    CHECK(mgr.measure_workspace_bytes(tid) > kQuota);
+    CHECK(result.error.find("rolled back") != std::string::npos);
+    CHECK(mgr.measure_workspace_bytes(tid) <= kQuota);
+    CHECK(mgr.measure_workspace_bytes(tid) == 700);
+    CHECK_FALSE(fs::exists(fs::path(ws) / "overflow.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "seed.txt") == 700);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: quota rollback truncates appended files") {
+    const std::string root = make_temp_root("quota-exec-append");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 8;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(700, 'a'), err));
+
+    auto result = mgr.exec(
+        tid, "head -c 400 /dev/zero >> seed.txt");
+    CHECK_FALSE(result.ok);
+    CHECK(result.error.find("rolled back") != std::string::npos);
+    CHECK(mgr.measure_workspace_bytes(tid) == 700);
+    CHECK(fs::file_size(fs::path(ws) / "seed.txt") == 700);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: writes under quota are kept") {
+    const std::string root = make_temp_root("quota-exec-keep");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 9;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    auto result = mgr.exec(tid, "head -c 50 /dev/zero > ok.bin");
+    CHECK(result.ok);
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+    CHECK(fs::exists(fs::path(ws) / "ok.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "ok.bin") == 50);
 
     fs::remove_all(root);
 }
