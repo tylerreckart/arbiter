@@ -392,6 +392,12 @@ public:
         return sticky_cancel_.load(std::memory_order_acquire);
     }
 
+    // Poll target for sandbox /exec when no per-request CancelToken is
+    // installed (API /v1/requests/:id/cancel sets sticky_cancel_).
+    [[nodiscard]] std::atomic<bool>* sticky_cancel_flag() noexcept {
+        return &sticky_cancel_;
+    }
+
     // Drop sticky + ApiClient hard-cancel.  Used by the REPL when Esc fires
     // while idle (no turn token) so the next user message is not rejected.
     void clear_sticky_cancel() {

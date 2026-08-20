@@ -432,6 +432,18 @@ TEST_CASE("CancelToken request_cancel is independent of ApiClient::cancel()") {
     }
 }
 
+TEST_CASE("CancelToken::cancel_flag polls same state as is_cancelled") {
+    using arbiter::CancelToken;
+
+    auto token = std::make_shared<CancelToken>();
+    CHECK_FALSE(token->is_cancelled());
+    CHECK_FALSE(token->cancel_flag()->load());
+
+    token->request_cancel();
+    CHECK(token->is_cancelled());
+    CHECK(token->cancel_flag()->load());
+}
+
 TEST_CASE("ApiClient::cancel hard-cancel survives stream/complete entry clear") {
     using arbiter::ApiClient;
     using arbiter::ApiRequest;
