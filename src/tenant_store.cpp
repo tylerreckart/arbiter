@@ -3057,9 +3057,13 @@ namespace {
 std::string scratchpad_block(const std::string& text) {
     // Match the file-based format so existing prompts and consumers
     // still see `<!-- YYYY-MM-DD HH:MM:SS --> ...` between entries.
+    // localtime_r: std::localtime uses a shared static tm and races
+    // under parallel append_scratchpad (TSan on the concurrent cap test).
     std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    if (!localtime_r(&now, &tm)) tm = {};
     char ts[32];
-    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
     std::string out;
     out.reserve(text.size() + 64);
     out += "\n<!-- ";
