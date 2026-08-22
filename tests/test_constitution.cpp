@@ -392,6 +392,24 @@ TEST_CASE("channel=voice round-trips through JSON; text is omitted") {
     CHECK(texty.channel.empty());
 }
 
+TEST_CASE("constitution_skips_intent_reroute for spoken and voice agents") {
+    Constitution spoken;
+    spoken.mode = "spoken";
+    CHECK(constitution_skips_intent_reroute(spoken));
+
+    Constitution voice;
+    voice.channel = "voice";
+    CHECK(constitution_skips_intent_reroute(voice));
+
+    Constitution standard;
+    standard.mode = "standard";
+    CHECK_FALSE(constitution_skips_intent_reroute(standard));
+
+    Constitution conversational;
+    conversational.mode = "conversational";
+    CHECK_FALSE(constitution_skips_intent_reroute(conversational));
+}
+
 TEST_CASE("advisor: absent yields disabled config") {
     std::string js = R"({
         "name": "marketer",

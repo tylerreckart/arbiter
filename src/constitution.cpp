@@ -68,6 +68,10 @@ Brevity brevity_from_string(const std::string& s) {
     return Brevity::Full;
 }
 
+bool constitution_skips_intent_reroute(const Constitution& c) {
+    return c.mode == "spoken" || c.channel == "voice";
+}
+
 // ─── Voice + brevity ─────────────────────────────────────────────────────────
 // Specialists keep a compressed register (token-efficient field reports).
 // Index uses a conversational register — users talk to the orchestrator, not

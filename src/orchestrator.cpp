@@ -773,7 +773,8 @@ ApiResponse Orchestrator::send_internal(const std::string& agent_id,
     // and HTTP follow-ups stay on the addressed agent. Voice-channel
     // turns stay sticky too — a TTS client must not be rerouted onto a
     // compressed specialist mid-conversation.
-    if (depth == 0 && original_query.empty() && ingress_channel_ != "voice") {
+    if (depth == 0 && original_query.empty() &&
+        !ingress_skips_intent_reroute(agent_id)) {
         ingress = apply_intent_ingress(agent_id, orig_q, /*fresh_ingress=*/true);
         routed_id = ingress.agent_id;
     } else if (depth == 0) {
@@ -1353,7 +1354,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
 
     IntentIngress ingress;
     IntentHistoryMirror hist_mirror;
-    if (original_query.empty() && ingress_channel_ != "voice")
+    if (original_query.empty() && !ingress_skips_intent_reroute(agent_id))
         ingress = apply_intent_ingress(agent_id, orig_q, /*fresh_ingress=*/true);
     else
         intent_source_hint_.clear();
@@ -1814,6 +1815,17 @@ const Constitution& Orchestrator::get_constitution(const std::string& id) const 
     if (it == agents_.end())
         throw std::out_of_range("unknown agent: " + id);
     return it->second->config();
+}
+
+bool Orchestrator::ingress_skips_intent_reroute(
+        const std::string& agent_id) const {
+    if (ingress_channel_ == "voice") return true;
+    const std::string id = agent_id.empty() ? "index" : agent_id;
+    try {
+        return constitution_skips_intent_reroute(get_constitution(id));
+    } catch (...) {
+    }
+    return false;
 }
 
 std::vector<std::string> Orchestrator::list_agents_all() const {

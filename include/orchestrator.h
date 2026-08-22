@@ -210,6 +210,14 @@ public:
     }
     const std::string& ingress_channel() const { return ingress_channel_; }
 
+    // True when depth-0 ingress must stay on the addressed agent (no intent
+    // reroute).  Request channel=voice, agent_def mode=spoken, or persisted
+    // agent_def channel=voice all qualify — TTS clients must not be handed a
+    // compressed specialist mid-conversation when the bridge omits per-turn
+    // channel on a spoken agent.
+    [[nodiscard]] bool ingress_skips_intent_reroute(
+            const std::string& agent_id) const;
+
     // Fired after mid-turn history commits that should hit disk promptly —
     // successful model iterations and committed tool-result user messages.
     // The TUI wires this to ConversationStore::save_async so SIGKILL/quit

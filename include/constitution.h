@@ -169,4 +169,9 @@ Constitution master_constitution();
 std::string brevity_to_string(Brevity b);
 Brevity brevity_from_string(const std::string& s);
 
+// True when an agent's constitution pins ingress (no intent reroute).
+// Request channel=voice is handled separately on Orchestrator; this covers
+// agent_def mode=spoken and persisted channel=voice.
+bool constitution_skips_intent_reroute(const Constitution& c);
+
 } // namespace arbiter
