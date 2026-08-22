@@ -12,6 +12,9 @@
 //            taken beside the bind mount.  Over-cap or cancelled results
 //            restore the tree from that snapshot (deleted files recreated,
 //            overwrites reverted, new files removed) so the cap sticks.
+//            Restore uses openat(O_NOFOLLOW)/mkdirat/unlinkat from the
+//            workspace directory fd so a command cannot redirect host-side
+//            writes through a parent symlink.
 //   /write   writes the file into the host workspace dir (the container
 //            sees it on next /exec via the bind mount); the SSE `file`
 //            event still fires for the live UI

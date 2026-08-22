@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
@@ -65,23 +66,125 @@ std::string wrap_exec_with_timeout(const std::string& command,
 // `t<tid>/` so the container cannot mutate it.  Used to restore the tree
 // when /exec exceeds workspace_max_bytes or is cancelled — including
 // deleted files and same-size overwrites, which a size-only inventory
-// cannot reconstruct.
+// cannot reconstruct.  Restore is confined to the workspace directory fd
+// (openat/mkdirat/unlinkat, never following dest parent symlinks).
 struct WorkspaceSnap {
     fs::path dir;
     bool     complete = true;
 };
 
-void force_remove_path(const fs::path& p) {
-    std::error_code ec;
-    fs::remove(p, ec);
-    if (!ec) return;
-    ::fchmodat(AT_FDCWD, p.c_str(), 0700, AT_SYMLINK_NOFOLLOW);
-    fs::remove(p, ec);
-    if (ec) fs::remove_all(p, ec);
+struct Fd {
+    int fd = -1;
+    Fd() = default;
+    explicit Fd(int f) : fd(f) {}
+    ~Fd() { reset(); }
+    Fd(const Fd&) = delete;
+    Fd& operator=(const Fd&) = delete;
+    Fd(Fd&& o) noexcept : fd(o.fd) { o.fd = -1; }
+    Fd& operator=(Fd&& o) noexcept {
+        if (this != &o) {
+            reset();
+            fd = o.fd;
+            o.fd = -1;
+        }
+        return *this;
+    }
+    void reset() {
+        if (fd >= 0) {
+            ::close(fd);
+            fd = -1;
+        }
+    }
+    int get() const { return fd; }
+    explicit operator bool() const { return fd >= 0; }
+};
+
+bool split_rel_parts(const fs::path& rel, std::vector<std::string>& parts) {
+    parts.clear();
+    for (const auto& comp : rel) {
+        const std::string s = comp.generic_string();
+        if (s.empty() || s == "." || s == "/") continue;
+        if (s == "..") return false;
+        parts.push_back(s);
+    }
+    return !parts.empty();
 }
 
-bool copy_regular_nofollow(const fs::path& src, const fs::path& dst) {
-    const int in = ::open(src.c_str(), O_RDONLY | O_NOFOLLOW);
+bool confined_rm_rf_at(int parentfd, const char* name);
+
+bool confined_clear_children(int dirfd) {
+    const int dupfd = ::dup(dirfd);
+    if (dupfd < 0) return false;
+    DIR* d = ::fdopendir(dupfd);
+    if (!d) {
+        ::close(dupfd);
+        return false;
+    }
+    std::vector<std::string> names;
+    while (dirent* ent = ::readdir(d)) {
+        if (ent->d_name[0] == '.' &&
+            (ent->d_name[1] == '\0' ||
+             (ent->d_name[1] == '.' && ent->d_name[2] == '\0'))) {
+            continue;
+        }
+        names.emplace_back(ent->d_name);
+    }
+    ::closedir(d);
+    bool ok = true;
+    for (const auto& name : names) {
+        if (!confined_rm_rf_at(dirfd, name.c_str())) ok = false;
+    }
+    return ok;
+}
+
+bool confined_rm_rf_at(int parentfd, const char* name) {
+    struct stat st{};
+    if (::fstatat(parentfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+        return errno == ENOENT;
+    if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+        Fd child(::openat(parentfd, name,
+                          O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (!child) return false;
+        if (!confined_clear_children(child.get())) return false;
+        child.reset();
+        if (::unlinkat(parentfd, name, AT_REMOVEDIR) == 0) return true;
+        ::fchmodat(parentfd, name, 0700, AT_SYMLINK_NOFOLLOW);
+        return ::unlinkat(parentfd, name, AT_REMOVEDIR) == 0;
+    }
+    if (::unlinkat(parentfd, name, 0) == 0) return true;
+    ::fchmodat(parentfd, name, 0700, AT_SYMLINK_NOFOLLOW);
+    return ::unlinkat(parentfd, name, 0) == 0;
+}
+
+// Open `name` as a real directory under parentfd.  A leftover file or
+// symlink at that name is removed first so restore cannot follow a
+// tenant-planted parent into the host filesystem.
+int ensure_dir_at(int parentfd, const char* name) {
+    if (::mkdirat(parentfd, name, 0755) != 0 && errno != EEXIST) return -1;
+    int fd = ::openat(parentfd, name,
+                      O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd >= 0) return fd;
+    if (errno != ENOTDIR && errno != ELOOP && errno != EEXIST) return -1;
+    if (!confined_rm_rf_at(parentfd, name)) return -1;
+    if (::mkdirat(parentfd, name, 0755) != 0) return -1;
+    return ::openat(parentfd, name,
+                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+}
+
+Fd walk_ensure_dirs(int rootfd, const std::vector<std::string>& parts,
+                    std::size_t dir_count) {
+    Fd cur(::dup(rootfd));
+    if (!cur) return Fd();
+    for (std::size_t i = 0; i < dir_count; ++i) {
+        const int next = ensure_dir_at(cur.get(), parts[i].c_str());
+        if (next < 0) return Fd();
+        cur = Fd(next);
+    }
+    return cur;
+}
+
+bool copy_regular_to_dirfd(const fs::path& src, int dst_dirfd, const char* name) {
+    const int in = ::open(src.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (in < 0) return false;
     struct stat st{};
     if (::fstat(in, &st) != 0 || !S_ISREG(st.st_mode)) {
@@ -89,10 +192,19 @@ bool copy_regular_nofollow(const fs::path& src, const fs::path& dst) {
         return false;
     }
     const mode_t mode = static_cast<mode_t>(st.st_mode & 0777);
-    int out = ::open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode);
-    if (out < 0 && errno == ELOOP) {
-        ::unlink(dst.c_str());
-        out = ::open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode);
+    auto open_out = [&]() {
+        return ::openat(dst_dirfd, name,
+                        O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+                        mode);
+    };
+    int out = open_out();
+    if (out < 0 && (errno == ELOOP || errno == EISDIR || errno == ENOTDIR ||
+                    errno == EEXIST)) {
+        if (!confined_rm_rf_at(dst_dirfd, name)) {
+            ::close(in);
+            return false;
+        }
+        out = open_out();
     }
     if (out < 0) {
         ::close(in);
@@ -110,7 +222,8 @@ bool copy_regular_nofollow(const fs::path& src, const fs::path& dst) {
         }
         std::size_t off = 0;
         while (off < static_cast<std::size_t>(n)) {
-            const ssize_t w = ::write(out, buf + off, static_cast<std::size_t>(n) - off);
+            const ssize_t w = ::write(out, buf + off,
+                                      static_cast<std::size_t>(n) - off);
             if (w < 0) {
                 if (errno == EINTR) continue;
                 ok = false;
@@ -120,14 +233,62 @@ bool copy_regular_nofollow(const fs::path& src, const fs::path& dst) {
         }
     }
     ::close(in);
+    if (ok) ::fchmod(out, mode);
     ::close(out);
-    if (ok) ::fchmodat(AT_FDCWD, dst.c_str(), mode, AT_SYMLINK_NOFOLLOW);
     return ok;
 }
 
-// Copy `src` → `dst` without following leaf symlinks.  Directories are
-// recreated; regular files are copied with O_NOFOLLOW; symlinks are
-// recreated as symlinks.  Sets complete=false on any walk/copy error.
+bool copy_regular_nofollow(const fs::path& src, const fs::path& dst) {
+    const int in = ::open(src.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (in < 0) return false;
+    struct stat st{};
+    if (::fstat(in, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(in);
+        return false;
+    }
+    const mode_t mode = static_cast<mode_t>(st.st_mode & 0777);
+    int out = ::open(dst.c_str(),
+                     O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, mode);
+    if (out < 0 && errno == ELOOP) {
+        ::unlink(dst.c_str());
+        out = ::open(dst.c_str(),
+                     O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, mode);
+    }
+    if (out < 0) {
+        ::close(in);
+        return false;
+    }
+    char buf[8192];
+    bool ok = true;
+    while (ok) {
+        const ssize_t n = ::read(in, buf, sizeof(buf));
+        if (n == 0) break;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
+        }
+        std::size_t off = 0;
+        while (off < static_cast<std::size_t>(n)) {
+            const ssize_t w = ::write(out, buf + off,
+                                      static_cast<std::size_t>(n) - off);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                ok = false;
+                break;
+            }
+            off += static_cast<std::size_t>(w);
+        }
+    }
+    ::close(in);
+    if (ok) ::fchmod(out, mode);
+    ::close(out);
+    return ok;
+}
+
+// Copy `src` → `dst` without following leaf symlinks.  Used for the
+// pre-exec snapshot (destination is a host-owned sibling of t<tid>/).
+// Restore into the tenant workspace uses confined_copy_tree_into instead.
 void copy_tree_nofollow(const fs::path& src, const fs::path& dst, bool& complete,
                         std::atomic<bool>* cancel = nullptr) {
     std::error_code ec;
@@ -240,38 +401,137 @@ std::unordered_set<std::string> list_rel_keys(const fs::path& root, bool& comple
     return keys;
 }
 
+void confined_remove_unlisted(int dirfd, const std::string& prefix,
+                              const std::unordered_set<std::string>& keep,
+                              bool& ok) {
+    const int dupfd = ::dup(dirfd);
+    if (dupfd < 0) {
+        ok = false;
+        return;
+    }
+    DIR* d = ::fdopendir(dupfd);
+    if (!d) {
+        ::close(dupfd);
+        ok = false;
+        return;
+    }
+    std::vector<std::string> names;
+    while (dirent* ent = ::readdir(d)) {
+        if (ent->d_name[0] == '.' &&
+            (ent->d_name[1] == '\0' ||
+             (ent->d_name[1] == '.' && ent->d_name[2] == '\0'))) {
+            continue;
+        }
+        names.emplace_back(ent->d_name);
+    }
+    ::closedir(d);
+    for (const auto& name : names) {
+        const std::string rel = prefix.empty() ? name : prefix + "/" + name;
+        struct stat st{};
+        if (::fstatat(dirfd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) {
+            ok = false;
+            continue;
+        }
+        if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+            if (keep.find(rel) == keep.end()) {
+                if (!confined_rm_rf_at(dirfd, name.c_str())) ok = false;
+            } else {
+                Fd child(::openat(dirfd, name.c_str(),
+                                  O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+                if (!child) {
+                    ok = false;
+                    continue;
+                }
+                confined_remove_unlisted(child.get(), rel, keep, ok);
+            }
+        } else if (keep.find(rel) == keep.end()) {
+            if (!confined_rm_rf_at(dirfd, name.c_str())) ok = false;
+        }
+    }
+}
+
+// Restore snap into `ws` using only *at() calls from an O_NOFOLLOW directory
+// fd.  Path concatenation + open/create_directories follows intermediate
+// dest symlinks, so a command that replaces a snapshotted directory with
+// `ln -s /host/path` would otherwise redirect rollback writes off-workspace.
+bool confined_copy_tree_into(int ws_fd, const fs::path& src, bool& complete,
+                             std::atomic<bool>* cancel) {
+    std::error_code ec;
+    if (!fs::exists(src, ec) || !fs::is_directory(src, ec)) return true;
+    for (auto it = fs::recursive_directory_iterator(
+             src, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        if (cancel && cancel->load(std::memory_order_acquire)) {
+            complete = false;
+            return false;
+        }
+        std::error_code sec;
+        auto rel = fs::relative(it->path(), src, sec);
+        if (sec || rel.empty() || rel == ".") {
+            complete = false;
+            continue;
+        }
+        std::vector<std::string> parts;
+        if (!split_rel_parts(rel, parts)) {
+            complete = false;
+            continue;
+        }
+        if (it->is_symlink(sec)) {
+            it.disable_recursion_pending();
+            std::error_code lec;
+            auto link = fs::read_symlink(it->path(), lec);
+            if (lec) {
+                complete = false;
+                continue;
+            }
+            Fd parent = walk_ensure_dirs(ws_fd, parts, parts.size() - 1);
+            if (!parent) {
+                complete = false;
+                continue;
+            }
+            const char* leaf = parts.back().c_str();
+            confined_rm_rf_at(parent.get(), leaf);
+            if (::symlinkat(link.c_str(), parent.get(), leaf) != 0)
+                complete = false;
+            continue;
+        }
+        if (it->is_directory(sec)) {
+            Fd dir = walk_ensure_dirs(ws_fd, parts, parts.size());
+            if (!dir) complete = false;
+            continue;
+        }
+        if (it->is_regular_file(sec)) {
+            Fd parent = walk_ensure_dirs(ws_fd, parts, parts.size() - 1);
+            if (!parent) {
+                complete = false;
+                continue;
+            }
+            if (!copy_regular_to_dirfd(it->path(), parent.get(),
+                                       parts.back().c_str())) {
+                complete = false;
+            }
+            continue;
+        }
+    }
+    if (ec) complete = false;
+    return complete;
+}
+
 bool rollback_workspace_to_snap(const fs::path& ws, const WorkspaceSnap& snap) {
     if (snap.dir.empty()) return false;
+    Fd ws_fd(::open(ws.c_str(),
+                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (!ws_fd) return false;
     bool ok = true;
     if (snap.complete) {
         bool list_ok = true;
         const auto keep = list_rel_keys(snap.dir, list_ok);
         if (!list_ok) ok = false;
-        std::vector<fs::path> extras;
-        std::error_code ec;
-        for (auto it = fs::recursive_directory_iterator(
-                 ws, fs::directory_options::skip_permission_denied, ec);
-             !ec && it != fs::recursive_directory_iterator();
-             it.increment(ec)) {
-            std::error_code sec;
-            if (it->is_symlink(sec)) it.disable_recursion_pending();
-            auto rel = fs::relative(it->path(), ws, sec);
-            if (sec) {
-                ok = false;
-                continue;
-            }
-            const std::string key = rel.generic_string();
-            if (key.empty() || key == ".") continue;
-            if (keep.find(key) == keep.end()) extras.push_back(it->path());
-        }
-        std::sort(extras.begin(), extras.end(),
-                  [](const fs::path& a, const fs::path& b) {
-                      return a.native().size() > b.native().size();
-                  });
-        for (const auto& p : extras) force_remove_path(p);
+        confined_remove_unlisted(ws_fd.get(), "", keep, ok);
     }
     bool copy_ok = true;
-    copy_tree_nofollow(snap.dir, ws, copy_ok);
+    confined_copy_tree_into(ws_fd.get(), snap.dir, copy_ok, nullptr);
     return ok && copy_ok;
 }
 
@@ -987,6 +1247,7 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     bool canceled = false;
     bool truncated = false;
     int rc = 0;
+    bool ran_command = false;
     if (quota_enforced) {
         if (cancel && cancel->load(std::memory_order_acquire)) {
             canceled = true;
@@ -999,6 +1260,7 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     }
 
     if (!canceled) {
+        ran_command = true;
         rc = run_capture(argv, parent_timeout,
                           static_cast<size_t>(cfg_.output_max_bytes),
                           r.output, timed_out, &truncated, cancel, &canceled);
@@ -1034,7 +1296,9 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         }
         const int64_t used = measure_workspace_bytes(tenant_id);
         const bool over_cap = used > cfg_.workspace_max_bytes;
-        if (over_cap || canceled) {
+        // Skip restore when we never ran the command (cancel during the
+        // snapshot copy) — an incomplete snap must not clobber the live tree.
+        if (ran_command && (over_cap || canceled)) {
             const bool restored = rollback_workspace_to_snap(ws_path, pre_exec);
             const int64_t used_after = measure_workspace_bytes(tenant_id);
             if (over_cap) {

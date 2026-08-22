@@ -398,6 +398,109 @@ TEST_CASE("sandbox exec: quota rollback removes chmod-locked overflow") {
     fs::remove_all(root);
 }
 
+TEST_CASE("sandbox exec: quota rollback does not follow dest parent symlinks") {
+    const std::string root = make_temp_root("quota-exec-symlink");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 16;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    const fs::path outside = fs::path(root) / "outside";
+    fs::create_directories(outside);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(
+        tid, "keep/nested/seed.txt", std::string(700, 'a'), err));
+
+    // Replace the intermediate directory with a symlink to a host path
+    // outside the workspace, then overflow.  Leaf O_NOFOLLOW would still
+    // write keep/nested/seed.txt through that parent.
+    auto result = mgr.exec(
+        tid,
+        "rm -rf keep/nested; ln -s " + outside.string() + " keep/nested; "
+        "echo hijacked > keep/nested/seed.txt; "
+        "head -c 1100 /dev/zero > overflow.bin");
+    CHECK_FALSE(result.ok);
+    CHECK(result.error.find("rolled back") != std::string::npos);
+
+    const fs::path keep_nested = fs::path(ws) / "keep" / "nested";
+    CHECK_FALSE(fs::is_symlink(keep_nested));
+    CHECK(fs::is_directory(keep_nested));
+    {
+        std::ifstream in(keep_nested / "seed.txt", std::ios::binary);
+        std::string body((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+        CHECK(body == std::string(700, 'a'));
+    }
+    CHECK_FALSE(fs::exists(fs::path(ws) / "overflow.bin"));
+    CHECK(mgr.measure_workspace_bytes(tid) == 700);
+
+    {
+        std::ifstream in(outside / "seed.txt");
+        std::string body;
+        std::getline(in, body);
+        CHECK(body == "hijacked");
+    }
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: quota rollback replaces a top-level dest symlink") {
+    const std::string root = make_temp_root("quota-exec-symlink-root");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 17;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    const fs::path outside = fs::path(root) / "outside";
+    fs::create_directories(outside);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(
+        tid, "keep/nested/seed.txt", std::string(700, 'a'), err));
+
+    auto result = mgr.exec(
+        tid,
+        "rm -rf keep; ln -s " + outside.string() + " keep; "
+        "mkdir -p keep/nested; echo hijacked > keep/nested/seed.txt; "
+        "head -c 1100 /dev/zero > overflow.bin");
+    CHECK_FALSE(result.ok);
+
+    const fs::path keep = fs::path(ws) / "keep";
+    CHECK_FALSE(fs::is_symlink(keep));
+    CHECK(fs::is_directory(keep));
+    {
+        std::ifstream in(keep / "nested" / "seed.txt", std::ios::binary);
+        std::string body((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+        CHECK(body == std::string(700, 'a'));
+    }
+    {
+        std::ifstream in(outside / "nested" / "seed.txt");
+        std::string body;
+        std::getline(in, body);
+        CHECK(body == "hijacked");
+    }
+
+    fs::remove_all(root);
+}
+
 TEST_CASE("sandbox exec: writes under quota are kept") {
     const std::string root = make_temp_root("quota-exec-keep");
     install_docker_stub(root);

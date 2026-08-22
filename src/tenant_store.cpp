@@ -218,10 +218,38 @@ void check_sqlite(sqlite3* db, int rc, const std::string& ctx) {
     }
 }
 
+// Map each sqlite3* to the TenantStore mutex that owns it so Stmt and
+// exec_sql serialize with ImmediateTx without threading the mutex through
+// every call site.  SQLite transactions are per-connection: any statement
+// on this handle while ImmediateTx is open is part of that transaction.
+std::mutex g_conn_mu;
+std::unordered_map<sqlite3*, std::recursive_mutex*> g_conn_locks;
+
+void register_conn_lock(sqlite3* db, std::recursive_mutex* mu) {
+    std::lock_guard<std::mutex> g(g_conn_mu);
+    g_conn_locks[db] = mu;
+}
+
+void unregister_conn_lock(sqlite3* db) {
+    std::lock_guard<std::mutex> g(g_conn_mu);
+    g_conn_locks.erase(db);
+}
+
+std::unique_lock<std::recursive_mutex> lock_conn(sqlite3* db) {
+    std::recursive_mutex* mu = nullptr;
+    {
+        std::lock_guard<std::mutex> g(g_conn_mu);
+        auto it = g_conn_locks.find(db);
+        if (it != g_conn_locks.end()) mu = it->second;
+    }
+    if (!mu) return {};
+    return std::unique_lock<std::recursive_mutex>(*mu);
+}
+
 // Thin RAII wrapper for prepared statements.
 class Stmt {
 public:
-    Stmt(sqlite3* db, const char* sql) : db_(db) {
+    Stmt(sqlite3* db, const char* sql) : lk_(lock_conn(db)), db_(db) {
         int rc = sqlite3_prepare_v2(db, sql, -1, &stmt_, nullptr);
         check_sqlite(db, rc, std::string("prepare: ") + sql);
     }
@@ -246,11 +274,13 @@ public:
 
     sqlite3_stmt* raw() { return stmt_; }
 private:
+    std::unique_lock<std::recursive_mutex> lk_;
     sqlite3*      db_ = nullptr;
     sqlite3_stmt* stmt_ = nullptr;
 };
 
 void exec_sql(sqlite3* db, const char* sql) {
+    auto lk = lock_conn(db);
     char* err = nullptr;
     int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
     if (rc != SQLITE_OK) {
@@ -261,14 +291,15 @@ void exec_sql(sqlite3* db, const char* sql) {
 }
 
 // One exclusive write transaction on a shared sqlite3*.  Locks write_mu_
-// so a second thread cannot BEGIN on this connection, then BEGIN IMMEDIATE
-// so other processes opening the same file wait on SQLite's reserved lock.
+// for the whole BEGIN…COMMIT/ROLLBACK so Stmt/exec_sql on this connection
+// wait rather than joining the transaction.  BEGIN IMMEDIATE then makes
+// other processes opening the same file wait on SQLite's reserved lock.
 struct ImmediateTx {
     sqlite3* db;
-    std::unique_lock<std::mutex> lk;
+    std::unique_lock<std::recursive_mutex> lk;
     bool committed = false;
 
-    ImmediateTx(sqlite3* d, std::mutex& mu) : db(d), lk(mu) {
+    ImmediateTx(sqlite3* d, std::recursive_mutex& mu) : db(d), lk(mu) {
         exec_sql(db, "BEGIN IMMEDIATE;");
     }
     ~ImmediateTx() {
@@ -305,7 +336,10 @@ constexpr const char* kTenantCols =
 // ─── TenantStore ────────────────────────────────────────────────────────────
 
 TenantStore::~TenantStore() {
-    if (db_) sqlite3_close(db_);
+    if (db_) {
+        unregister_conn_lock(db_);
+        sqlite3_close(db_);
+    }
 }
 
 void TenantStore::open(const std::string& path) {
@@ -322,6 +356,7 @@ void TenantStore::open(const std::string& path) {
         db_ = nullptr;
         throw std::runtime_error(msg);
     }
+    register_conn_lock(db_, &write_mu_);
 
     // WAL gives us concurrent readers while the writer appends.
     exec_sql(db_, "PRAGMA journal_mode = WAL;");

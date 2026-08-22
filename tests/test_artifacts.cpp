@@ -491,3 +491,43 @@ TEST_CASE("parallel artifact puts across TenantStore instances stay under quota"
     CHECK(a.bytes_used_conversation(tid, cid) <= kArtifactPerConversationMaxBytes);
     CHECK(b.bytes_used_conversation(tid, cid) <= kArtifactPerConversationMaxBytes);
 }
+
+TEST_CASE("quota rollback does not revert concurrent autocommit writes") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "tx-isolation");
+    const int64_t cid = make_conversation(s, tid, "thread");
+
+    const std::string file(static_cast<std::size_t>(kArtifactPerFileMaxBytes), 'z');
+    const int fill = static_cast<int>(
+        kArtifactPerConversationMaxBytes / kArtifactPerFileMaxBytes);
+    for (int i = 0; i < fill; ++i) {
+        REQUIRE(s.put_artifact(tid, cid, "fill_" + std::to_string(i) + ".bin",
+                               file, "application/octet-stream").status
+                == PutArtifactResult::Status::Created);
+    }
+
+    std::atomic<bool> stop{false};
+    std::thread roller([&] {
+        while (!stop.load(std::memory_order_acquire)) {
+            (void)s.put_artifact(tid, cid, "overflow.bin", file,
+                                 "application/octet-stream");
+        }
+    });
+
+    std::vector<int64_t> ids;
+    ids.reserve(40);
+    for (int i = 0; i < 40; ++i) {
+        auto e = s.create_entry(tid, "note",
+                                "keep-" + std::to_string(i),
+                                "body", "", "[]");
+        ids.push_back(e.id);
+    }
+    stop.store(true, std::memory_order_release);
+    roller.join();
+
+    for (int64_t id : ids) {
+        CHECK(s.get_entry(tid, id).has_value());
+    }
+}
