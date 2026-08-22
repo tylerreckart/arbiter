@@ -14,6 +14,7 @@
 // and table on first open.
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -1187,6 +1188,15 @@ public:
 
 private:
     sqlite3* db_ = nullptr;
+
+    // Serializes every use of this sqlite3*.  SQLite transactions are
+    // per-connection: an unlocked INSERT on the same handle joins an
+    // in-flight ImmediateTx and is rolled back with it.  FULLMUTEX only
+    // serializes individual C API calls, not the transaction boundary.
+    // recursive so Stmt/exec_sql can lock while ImmediateTx already holds
+    // the mutex.  Cross-process writers wait on BEGIN IMMEDIATE's reserved
+    // lock (busy_timeout).
+    mutable std::recursive_mutex write_mu_;
 
     // Re-read a tenant row into `t`.  Used internally after mutations.
     bool reload_tenant(int64_t id, Tenant& t) const;

@@ -1391,3 +1391,20 @@ TEST_CASE("cmd_mem_write refuses symlink memory targets") {
     fs::remove_all(mem_root);
     fs::remove(outside);
 }
+
+TEST_CASE("execute_agent_commands skips remaining tools when cancel poll fires") {
+    std::vector<AgentCommand> cmds(3);
+    cmds[0].name = "help"; cmds[0].args = "";
+    cmds[1].name = "help"; cmds[1].args = "mem";
+    cmds[2].name = "help"; cmds[2].args = "exec";
+
+    int polls = 0;
+    CommandCancelScope scope([&] {
+        ++polls;
+        return polls > 1;
+    });
+    auto result = execute_agent_commands(cmds, "test", "");
+    CHECK(result.find("[TOOL RESULTS CANCELLED]") != std::string::npos);
+    CHECK(result.find("[/help mem]") == std::string::npos);
+    CHECK(result.find("[/help exec]") == std::string::npos);
+}

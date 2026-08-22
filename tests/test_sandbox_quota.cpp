@@ -6,9 +6,11 @@
 #include "sandbox.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
@@ -70,6 +72,11 @@ if [ "$1" = exec ]; then
         here=${0%/*}
         /bin/cat "$here/overflow.dat"
         exit $?
+        ;;
+      *'/proc/[0-9]*'*)
+        # Survivor cleanup walks /proc inside the container.  No-op on the
+        # host stub so quota tests cannot SIGKILL CI processes.
+        exit 0
         ;;
     esac
     if [ -n "$ARBITER_TEST_WORKSPACE" ]; then
@@ -246,6 +253,250 @@ TEST_CASE("sandbox exec: quota rollback truncates appended files") {
     CHECK(result.error.find("rolled back") != std::string::npos);
     CHECK(mgr.measure_workspace_bytes(tid) == 700);
     CHECK(fs::file_size(fs::path(ws) / "seed.txt") == 700);
+    {
+        std::ifstream in(fs::path(ws) / "seed.txt", std::ios::binary);
+        std::string body((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+        CHECK(body == std::string(700, 'a'));
+    }
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: quota rollback restores files deleted by the command") {
+    const std::string root = make_temp_root("quota-exec-delete");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 12;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(700, 'a'), err));
+
+    auto result = mgr.exec(
+        tid, "rm seed.txt; head -c 1100 /dev/zero > overflow.bin");
+    CHECK_FALSE(result.ok);
+    CHECK(result.error.find("rolled back") != std::string::npos);
+    CHECK(mgr.measure_workspace_bytes(tid) == 700);
+    CHECK(fs::exists(fs::path(ws) / "seed.txt"));
+    CHECK_FALSE(fs::exists(fs::path(ws) / "overflow.bin"));
+    {
+        std::ifstream in(fs::path(ws) / "seed.txt", std::ios::binary);
+        std::string body((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+        CHECK(body == std::string(700, 'a'));
+    }
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: quota rollback restores same-size overwrites") {
+    const std::string root = make_temp_root("quota-exec-overwrite");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 13;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(700, 'a'), err));
+
+    auto result = mgr.exec(
+        tid, "head -c 700 /dev/zero | tr '\\0' 'b' > seed.txt; "
+             "head -c 400 /dev/zero > overflow.bin");
+    CHECK_FALSE(result.ok);
+    CHECK(mgr.measure_workspace_bytes(tid) == 700);
+    {
+        std::ifstream in(fs::path(ws) / "seed.txt", std::ios::binary);
+        std::string body((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+        CHECK(body == std::string(700, 'a'));
+    }
+    CHECK_FALSE(fs::exists(fs::path(ws) / "overflow.bin"));
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: cancel restores under-quota mutations") {
+    const std::string root = make_temp_root("quota-exec-cancel");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 14;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    std::atomic<bool> cancel{false};
+    std::thread canceller([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        cancel.store(true, std::memory_order_release);
+    });
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > partial.bin; sleep 5",
+        /*timeout_seconds_override=*/0, &cancel);
+    canceller.join();
+
+    CHECK(result.canceled);
+    CHECK_FALSE(result.ok);
+    CHECK(result.output.find("[cancelled]") != std::string::npos);
+    CHECK(result.output.find("ERR:") != std::string::npos);
+    CHECK_FALSE(fs::exists(fs::path(ws) / "partial.bin"));
+    CHECK(fs::exists(fs::path(ws) / "seed.txt"));
+    CHECK(mgr.measure_workspace_bytes(tid) == 100);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: quota rollback removes chmod-locked overflow") {
+    const std::string root = make_temp_root("quota-exec-chmod");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 15;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(700, 'a'), err));
+
+    auto result = mgr.exec(
+        tid, "head -c 400 /dev/zero > overflow.bin; chmod 000 overflow.bin");
+    CHECK_FALSE(result.ok);
+    CHECK(mgr.measure_workspace_bytes(tid) == 700);
+    CHECK_FALSE(fs::exists(fs::path(ws) / "overflow.bin"));
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: quota rollback does not follow dest parent symlinks") {
+    const std::string root = make_temp_root("quota-exec-symlink");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 16;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    const fs::path outside = fs::path(root) / "outside";
+    fs::create_directories(outside);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(
+        tid, "keep/nested/seed.txt", std::string(700, 'a'), err));
+
+    // Replace the intermediate directory with a symlink to a host path
+    // outside the workspace, then overflow.  Leaf O_NOFOLLOW would still
+    // write keep/nested/seed.txt through that parent.
+    auto result = mgr.exec(
+        tid,
+        "rm -rf keep/nested; ln -s " + outside.string() + " keep/nested; "
+        "echo hijacked > keep/nested/seed.txt; "
+        "head -c 1100 /dev/zero > overflow.bin");
+    CHECK_FALSE(result.ok);
+    CHECK(result.error.find("rolled back") != std::string::npos);
+
+    const fs::path keep_nested = fs::path(ws) / "keep" / "nested";
+    CHECK_FALSE(fs::is_symlink(keep_nested));
+    CHECK(fs::is_directory(keep_nested));
+    {
+        std::ifstream in(keep_nested / "seed.txt", std::ios::binary);
+        std::string body((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+        CHECK(body == std::string(700, 'a'));
+    }
+    CHECK_FALSE(fs::exists(fs::path(ws) / "overflow.bin"));
+    CHECK(mgr.measure_workspace_bytes(tid) == 700);
+
+    {
+        std::ifstream in(outside / "seed.txt");
+        std::string body;
+        std::getline(in, body);
+        CHECK(body == "hijacked");
+    }
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: quota rollback replaces a top-level dest symlink") {
+    const std::string root = make_temp_root("quota-exec-symlink-root");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 17;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    const fs::path outside = fs::path(root) / "outside";
+    fs::create_directories(outside);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(
+        tid, "keep/nested/seed.txt", std::string(700, 'a'), err));
+
+    auto result = mgr.exec(
+        tid,
+        "rm -rf keep; ln -s " + outside.string() + " keep; "
+        "mkdir -p keep/nested; echo hijacked > keep/nested/seed.txt; "
+        "head -c 1100 /dev/zero > overflow.bin");
+    CHECK_FALSE(result.ok);
+
+    const fs::path keep = fs::path(ws) / "keep";
+    CHECK_FALSE(fs::is_symlink(keep));
+    CHECK(fs::is_directory(keep));
+    {
+        std::ifstream in(keep / "nested" / "seed.txt", std::ios::binary);
+        std::string body((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+        CHECK(body == std::string(700, 'a'));
+    }
+    {
+        std::ifstream in(outside / "nested" / "seed.txt");
+        std::string body;
+        std::getline(in, body);
+        CHECK(body == "hijacked");
+    }
 
     fs::remove_all(root);
 }

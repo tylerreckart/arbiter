@@ -6212,7 +6212,10 @@ MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
 
             try {
                 auto& cli = mcp_mgr->client(server);
-                auto result = cli.call_tool(tool, arg_obj);
+                std::atomic<bool>* cancel = nullptr;
+                if (auto token = current_request_cancel_token())
+                    cancel = token->cancel_flag();
+                auto result = cli.call_tool(tool, arg_obj, cancel);
                 return mcp::render_tool_result(result);
             } catch (const std::exception& e) {
                 return std::string("ERR: ") + e.what() + "\n";

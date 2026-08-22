@@ -1325,6 +1325,7 @@ if(INDEX_BUILD_TESTS)
         OpenSSL::SSL
         OpenSSL::Crypto
         SQLite3::SQLite3
+        Threads::Threads
     )
     add_test(NAME unit_memory_entries COMMAND unit_memory_entries)
 
@@ -1385,6 +1386,7 @@ if(INDEX_BUILD_TESTS)
         OpenSSL::SSL
         OpenSSL::Crypto
         SQLite3::SQLite3
+        Threads::Threads
     )
     add_test(NAME unit_artifacts COMMAND unit_artifacts)
 
@@ -1412,6 +1414,7 @@ if(INDEX_BUILD_TESTS)
         CURL::libcurl
         OpenSSL::SSL
         OpenSSL::Crypto
+        Threads::Threads
     )
     add_test(NAME unit_mcp COMMAND unit_mcp)
 

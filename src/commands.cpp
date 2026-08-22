@@ -34,6 +34,22 @@ namespace arbiter {
 
 namespace {
 
+thread_local CancelPollFn tl_cancel_poll;
+
+} // namespace
+
+CommandCancelScope::CommandCancelScope(CancelPollFn fn) : prev_(tl_cancel_poll) {
+    tl_cancel_poll = std::move(fn);
+}
+CommandCancelScope::~CommandCancelScope() {
+    tl_cancel_poll = std::move(prev_);
+}
+bool command_dispatch_cancelled() {
+    return static_cast<bool>(tl_cancel_poll) && tl_cancel_poll();
+}
+
+namespace {
+
 // Local display-width helpers so commands.cpp stays free of styled_text /
 // theme deps (unit_mcp and other light binaries link commands.cpp alone).
 int utf8_codepoint(std::string_view text, size_t& index) {
@@ -1967,6 +1983,10 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
         // Enforce total budget
         if (out.tellp() >= static_cast<std::streampos>(kTotalLimit)) {
             out << "[TOOL RESULTS TRUNCATED: budget exhausted]\n\n";
+            break;
+        }
+        if (command_dispatch_cancelled()) {
+            out << "[TOOL RESULTS CANCELLED]\n\n";
             break;
         }
 

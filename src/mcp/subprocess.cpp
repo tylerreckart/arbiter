@@ -246,9 +246,12 @@ bool Subprocess::drain_into_buf(std::chrono::milliseconds timeout) {
 }
 
 std::optional<std::string>
-Subprocess::recv_line(std::chrono::milliseconds timeout) {
+Subprocess::recv_line(std::chrono::milliseconds timeout,
+                      std::atomic<bool>* cancel) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (true) {
+        if (cancel && cancel->load(std::memory_order_acquire))
+            return std::nullopt;
         // Already have a complete line buffered?
         auto nl = read_buf_.find('\n');
         if (nl != std::string::npos) {
@@ -263,11 +266,17 @@ Subprocess::recv_line(std::chrono::milliseconds timeout) {
         if (now >= deadline) return std::nullopt;
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - now);
+        if (cancel && remaining > std::chrono::milliseconds(250))
+            remaining = std::chrono::milliseconds(250);
         if (!drain_into_buf(remaining)) {
+            if (cancel && cancel->load(std::memory_order_acquire))
+                return std::nullopt;
             // Drain returned false — either EOF, timeout, or error.  If
             // we accumulated a partial that never got terminated, drop
             // it; the caller will get nullopt and treat the session as
             // failed.
+            auto after = std::chrono::steady_clock::now();
+            if (cancel && after < deadline) continue;
             return std::nullopt;
         }
     }

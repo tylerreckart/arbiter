@@ -2,6 +2,7 @@
 
 #include "mcp/client.h"
 
+#include <atomic>
 #include <stdexcept>
 
 namespace arbiter::mcp {
@@ -59,7 +60,8 @@ Client::~Client() = default;
 
 Response Client::rpc(const std::string& method,
                       std::shared_ptr<JsonValue> params,
-                      std::chrono::milliseconds timeout) {
+                      std::chrono::milliseconds timeout,
+                      std::atomic<bool>* cancel) {
     if (!proc_) throw std::runtime_error("MCP client not initialised");
     Request req;
     req.id     = next_id_++;
@@ -71,14 +73,23 @@ Response Client::rpc(const std::string& method,
 
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (true) {
+        if (cancel && cancel->load(std::memory_order_acquire)) {
+            proc_->terminate();
+            throw std::runtime_error("MCP '" + method + "' cancelled");
+        }
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
         if (remaining.count() <= 0)
             throw std::runtime_error("MCP '" + method + "' timed out");
 
-        auto line = proc_->recv_line(remaining);
-        if (!line)
+        auto line = proc_->recv_line(remaining, cancel);
+        if (!line) {
+            if (cancel && cancel->load(std::memory_order_acquire)) {
+                proc_->terminate();
+                throw std::runtime_error("MCP '" + method + "' cancelled");
+            }
             throw std::runtime_error("MCP server stopped responding during '" + method + "'");
+        }
         if (line->empty()) continue;   // tolerate blank-line keepalives
 
         Response resp;
@@ -101,12 +112,13 @@ const std::vector<ToolDescriptor>& Client::tools() {
 }
 
 ToolResult Client::call_tool(const std::string& name,
-                              std::shared_ptr<JsonValue> arguments) {
+                              std::shared_ptr<JsonValue> arguments,
+                              std::atomic<bool>* cancel) {
     auto params = jobj();
     auto& m = params->as_object_mut();
     m["name"]      = jstr(name);
     m["arguments"] = (arguments && arguments->is_object()) ? arguments : jobj();
-    auto resp = rpc("tools/call", params, cfg_.call_timeout);
+    auto resp = rpc("tools/call", params, cfg_.call_timeout, cancel);
     return parse_tool_result(resp);
 }
 

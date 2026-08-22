@@ -341,9 +341,14 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
             const std::string sub_msg = kids[i].second;
             threads.emplace_back([this, i, sub_id, sub_msg, caller_id, depth,
                                    original_query, &results, &child_clients,
-                                   pane_binder, conv_key]() {
+                                   pane_binder, conv_key, parent_token]() {
                 if (pane_binder) pane_binder();
                 ConversationScope scope(conv_key);
+                std::unique_ptr<RequestCancelScope> child_cancel;
+                if (parent_token) {
+                    child_cancel = std::make_unique<RequestCancelScope>(
+                        *child_clients[i], parent_token);
+                }
                 // Basic validations — mirror make_invoker's gates, except
                 // self-invoke: /parallel always runs on an ephemeral Agent
                 // clone, so a sub-agent (e.g. research) may fan out to
@@ -1111,7 +1116,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         }
 
         resp.had_tool_calls = true;
-        current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
+        {
+            CommandCancelScope cancel_scope([this] { return turn_is_cancelled(); });
+            current_msg = execute_agent_commands(cmds, agent_id, memory_dir_,
                                               invoker, confirm_cb_, shared_cache,
                                               advisor_invoker, tool_status_cb_,
                                               pane_spawner_cb_,
@@ -1134,6 +1141,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               agent_ptr->config().capabilities,
                                               nullptr,
                                               workspace_root_provider_cb_);
+        }
 
         // Loop detection.  For each cmd this iteration, find its result
         // block in current_msg and check whether the body contained
@@ -1716,7 +1724,10 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             // both the structured `[/fetch ...] [END FETCH]` framing and the
             // image content in the same turn.
             std::vector<ContentPart> image_parts;
-            std::string tool_envelope = execute_agent_commands(cmds, dispatch_id, memory_dir_,
+            std::string tool_envelope;
+            {
+                CommandCancelScope cancel_scope([this] { return turn_is_cancelled(); });
+                tool_envelope = execute_agent_commands(cmds, dispatch_id, memory_dir_,
                                                   invoker, confirm_cb_, &shared_cache,
                                                   advisor_invoker, tool_status_cb_,
                                                   pane_spawner_cb_,
@@ -1739,6 +1750,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   agent_ptr->config().capabilities,
                                                   &image_parts,
                                                   workspace_root_provider_cb_);
+            }
             last_cmds         = cmds;
             last_tool_results = tool_envelope;
             if (image_parts.empty()) {
@@ -2215,6 +2227,7 @@ std::string Orchestrator::execute_slash_command(const std::string& line,
     auto advisor_invoker  = make_advisor_invoker(agent_id);
     auto parallel_invoker = make_parallel_invoker(agent_id, 0, "");
 
+    CommandCancelScope cancel_scope([this] { return turn_is_cancelled(); });
     return execute_agent_commands(cmds, agent_id, memory_dir_,
                                   invoker, confirm_cb_, &dedup_cache,
                                   advisor_invoker, tool_status_cb_,
