@@ -3059,7 +3059,9 @@ std::string scratchpad_block(const std::string& text) {
     // still see `<!-- YYYY-MM-DD HH:MM:SS --> ...` between entries.
     std::time_t now = std::time(nullptr);
     char ts[32];
-    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+    std::tm tm{};
+    localtime_r(&now, &tm);
+    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
     std::string out;
     out.reserve(text.size() + 64);
     out += "\n<!-- ";
