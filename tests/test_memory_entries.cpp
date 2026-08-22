@@ -18,7 +18,10 @@
 #include <chrono>
 #include <filesystem>
 #include <set>
+#include <atomic>
 #include <thread>
+#include <unistd.h>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace arbiter;
@@ -769,4 +772,58 @@ TEST_CASE("scratchpad fills to cap then rejects further writes") {
     CHECK(sz <= static_cast<int64_t>(4 * 1024 * 1024));
     CHECK(s.append_scratchpad(tid, "agent-b", chunk) < 0);
     CHECK(s.read_scratchpad(tid, "agent-b").size() == static_cast<std::size_t>(sz));
+}
+
+TEST_CASE("parallel scratchpad appends cannot exceed 4 MiB cap") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "scratch-race");
+
+    constexpr int kThreads = 16;
+    const std::string chunk(256 * 1024, 'z');
+    std::atomic<int> ok{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&] {
+            if (s.append_scratchpad(tid, "racer", chunk) >= 0)
+                ok.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    const int64_t sz = s.scratchpad_byte_size(tid, "racer");
+    CHECK(sz <= static_cast<int64_t>(4 * 1024 * 1024));
+    CHECK(sz > 0);
+    CHECK(ok.load() > 0);
+}
+
+TEST_CASE("parallel scratchpad appends across TenantStore instances stay under cap") {
+    TempDb db;
+    TenantStore a;
+    TenantStore b;
+    a.open(db.path.string());
+    b.open(db.path.string());
+    const int64_t tid = make_tenant(a, "scratch-2conn");
+
+    constexpr int kThreads = 8;
+    const std::string chunk(256 * 1024, 'w');
+    std::atomic<int> ok{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads * 2);
+    auto spawn = [&](TenantStore* store) {
+        for (int i = 0; i < kThreads; ++i) {
+            threads.emplace_back([store, tid, &chunk, &ok] {
+                if (store->append_scratchpad(tid, "shared", chunk) >= 0)
+                    ok.fetch_add(1, std::memory_order_relaxed);
+            });
+        }
+    };
+    spawn(&a);
+    spawn(&b);
+    for (auto& t : threads) t.join();
+
+    CHECK(a.scratchpad_byte_size(tid, "shared") <= static_cast<int64_t>(4 * 1024 * 1024));
+    CHECK(b.scratchpad_byte_size(tid, "shared") <= static_cast<int64_t>(4 * 1024 * 1024));
 }

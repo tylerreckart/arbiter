@@ -15,6 +15,7 @@
 #include <cstring>
 #include <ctime>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -258,6 +259,31 @@ void exec_sql(sqlite3* db, const char* sql) {
         throw std::runtime_error(msg);
     }
 }
+
+// One exclusive write transaction on a shared sqlite3*.  Locks write_mu_
+// so a second thread cannot BEGIN on this connection, then BEGIN IMMEDIATE
+// so other processes opening the same file wait on SQLite's reserved lock.
+struct ImmediateTx {
+    sqlite3* db;
+    std::unique_lock<std::mutex> lk;
+    bool committed = false;
+
+    ImmediateTx(sqlite3* d, std::mutex& mu) : db(d), lk(mu) {
+        exec_sql(db, "BEGIN IMMEDIATE;");
+    }
+    ~ImmediateTx() {
+        if (!committed && db) {
+            sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
+        }
+    }
+    ImmediateTx(const ImmediateTx&) = delete;
+    ImmediateTx& operator=(const ImmediateTx&) = delete;
+
+    void commit() {
+        exec_sql(db, "COMMIT;");
+        committed = true;
+    }
+};
 
 Tenant row_to_tenant(Stmt& q) {
     // Column order must match the SELECT lists below.
@@ -1502,49 +1528,44 @@ ConversationMessage TenantStore::append_message(int64_t tenant_id,
         throw std::runtime_error("cannot append HTTP messages to a TUI conversation");
 
     const int64_t now = now_epoch();
-    exec_sql(db_, "BEGIN IMMEDIATE;");
-    try {
-        {
-            Stmt ins(db_,
-                std::string("INSERT INTO messages (").append(kMsgCols)
-                    .append(") VALUES (NULL, ?, ?, ?, ?, ?, ?, ?);").c_str());
-            ins.bind(1, conversation_id);
-            ins.bind(2, role);
-            ins.bind(3, content);
-            ins.bind(4, input_tokens);
-            ins.bind(5, output_tokens);
-            ins.bind(6, now);
-            if (request_id.empty()) ins.bind(7, nullptr);
-            else                    ins.bind(7, request_id);
-            ins.step();
-        }
-        const int64_t mid = sqlite3_last_insert_rowid(db_);
-        {
-            Stmt bump(db_,
-                "UPDATE conversations "
-                "   SET updated_at    = ?, "
-                "       message_count = message_count + 1 "
-                " WHERE id = ?;");
-            bump.bind(1, now);
-            bump.bind(2, conversation_id);
-            bump.step();
-        }
-        exec_sql(db_, "COMMIT;");
-
-        ConversationMessage m;
-        m.id              = mid;
-        m.conversation_id = conversation_id;
-        m.role            = role;
-        m.content         = content;
-        m.input_tokens    = input_tokens;
-        m.output_tokens   = output_tokens;
-        m.created_at      = now;
-        m.request_id      = request_id;
-        return m;
-    } catch (...) {
-        exec_sql(db_, "ROLLBACK;");
-        throw;
+    ImmediateTx tx(db_, write_mu_);
+    {
+        Stmt ins(db_,
+            std::string("INSERT INTO messages (").append(kMsgCols)
+                .append(") VALUES (NULL, ?, ?, ?, ?, ?, ?, ?);").c_str());
+        ins.bind(1, conversation_id);
+        ins.bind(2, role);
+        ins.bind(3, content);
+        ins.bind(4, input_tokens);
+        ins.bind(5, output_tokens);
+        ins.bind(6, now);
+        if (request_id.empty()) ins.bind(7, nullptr);
+        else                    ins.bind(7, request_id);
+        ins.step();
     }
+    const int64_t mid = sqlite3_last_insert_rowid(db_);
+    {
+        Stmt bump(db_,
+            "UPDATE conversations "
+            "   SET updated_at    = ?, "
+            "       message_count = message_count + 1 "
+            " WHERE id = ?;");
+        bump.bind(1, now);
+        bump.bind(2, conversation_id);
+        bump.step();
+    }
+    tx.commit();
+
+    ConversationMessage m;
+    m.id              = mid;
+    m.conversation_id = conversation_id;
+    m.role            = role;
+    m.content         = content;
+    m.input_tokens    = input_tokens;
+    m.output_tokens   = output_tokens;
+    m.created_at      = now;
+    m.request_id      = request_id;
+    return m;
 }
 
 std::vector<ConversationMessage>
@@ -1940,8 +1961,7 @@ bool TenantStore::reassign_conversation_scoped_data(int64_t tenant_id,
         return false;
     }
 
-    exec_sql(db_, "BEGIN IMMEDIATE;");
-    auto rollback = [this]() { exec_sql(db_, "ROLLBACK;"); };
+    ImmediateTx tx(db_, write_mu_);
 
     auto run = [&](const char* sql) -> bool {
         Stmt q(db_, sql);
@@ -1953,17 +1973,14 @@ bool TenantStore::reassign_conversation_scoped_data(int64_t tenant_id,
 
     if (!run("UPDATE todos SET conversation_id = ? "
              "WHERE tenant_id = ? AND conversation_id = ?;")) {
-        rollback();
         return false;
     }
     if (!run("UPDATE scheduled_tasks SET conversation_id = ? "
              "WHERE tenant_id = ? AND conversation_id = ?;")) {
-        rollback();
         return false;
     }
     if (!run("UPDATE memory_entries SET conversation_id = ? "
              "WHERE tenant_id = ? AND conversation_id = ?;")) {
-        rollback();
         return false;
     }
 
@@ -1984,17 +2001,15 @@ bool TenantStore::reassign_conversation_scoped_data(int64_t tenant_id,
         q.bind(3, tenant_id);
         q.bind(4, to_id);
         if (q.step() != SQLITE_DONE) {
-            rollback();
             return false;
         }
     }
     if (!run("UPDATE tenant_artifacts SET conversation_id = ? "
              "WHERE tenant_id = ? AND conversation_id = ?;")) {
-        rollback();
         return false;
     }
 
-    exec_sql(db_, "COMMIT;");
+    tx.commit();
     return true;
 }
 
@@ -2134,7 +2149,7 @@ bool TenantStore::delete_conversation_folder(int64_t tenant_id, int64_t id) {
     if (!db_) return false;
     if (!get_conversation_folder(tenant_id, id)) return false;
 
-    exec_sql(db_, "BEGIN IMMEDIATE;");
+    ImmediateTx tx(db_, write_mu_);
     {
         Stmt q(db_,
                "UPDATE conversations SET folder_id = 0, updated_at = ? "
@@ -2143,7 +2158,6 @@ bool TenantStore::delete_conversation_folder(int64_t tenant_id, int64_t id) {
         q.bind(2, tenant_id);
         q.bind(3, id);
         if (q.step() != SQLITE_DONE) {
-            exec_sql(db_, "ROLLBACK;");
             return false;
         }
     }
@@ -2154,11 +2168,10 @@ bool TenantStore::delete_conversation_folder(int64_t tenant_id, int64_t id) {
         q.bind(1, tenant_id);
         q.bind(2, id);
         if (q.step() != SQLITE_DONE) {
-            exec_sql(db_, "ROLLBACK;");
             return false;
         }
     }
-    exec_sql(db_, "COMMIT;");
+    tx.commit();
     return true;
 }
 
@@ -3057,8 +3070,10 @@ std::string scratchpad_block(const std::string& text) {
     // Match the file-based format so existing prompts and consumers
     // still see `<!-- YYYY-MM-DD HH:MM:SS --> ...` between entries.
     std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&now, &tm);
     char ts[32];
-    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
     std::string out;
     out.reserve(text.size() + 64);
     out += "\n<!-- ";
@@ -3075,53 +3090,68 @@ int64_t TenantStore::append_scratchpad(int64_t tenant_id,
                                         const std::string& text) {
     if (!db_) return 0;
     const std::string block = scratchpad_block(text);
+    const int64_t block_bytes = static_cast<int64_t>(block.size());
+    if (block_bytes > static_cast<int64_t>(kScratchpadMaxBytes)) return -1;
     const int64_t now = now_epoch();
-    // Read-modify-write under the shared connection: SQLite serialises
-    // writers via the busy-timeout pragma, so concurrent appends from
-    // parallel orchestrator threads will queue rather than corrupt.
-    std::string current;
+    const int64_t cap = static_cast<int64_t>(kScratchpadMaxBytes);
+
+    // Exclusive transaction so parallel /mem appends (same connection or
+    // another process on this file) cannot both pass the cap check.
+    ImmediateTx tx(db_, write_mu_);
+
+    bool row_exists = false;
+    int64_t current_bytes = 0;
     {
-        Stmt sel(db_, "SELECT content FROM agent_scratchpad "
+        Stmt sel(db_, "SELECT length(CAST(content AS BLOB)) FROM agent_scratchpad "
                        "WHERE tenant_id = ? AND scope_key = ?;");
         sel.bind(1, tenant_id);
         sel.bind(2, scope_key);
-        if (sel.step() == SQLITE_ROW) current = sel.column_text(0);
+        if (sel.step() == SQLITE_ROW) {
+            row_exists = true;
+            current_bytes = sel.column_int64(0);
+        }
     }
-    if (current.size() + block.size() > kScratchpadMaxBytes) return -1;
+    if (current_bytes + block_bytes > cap) return -1;
 
-    const std::string new_content = current + block;
-
-    if (current.empty()) {
-        // First write — try INSERT; on UNIQUE conflict (a parallel
-        // appender beat us to it) fall through to UPDATE.
+    if (!row_exists) {
         Stmt ins(db_,
-            "INSERT OR IGNORE INTO agent_scratchpad "
+            "INSERT INTO agent_scratchpad "
             "(tenant_id, scope_key, content, updated_at) "
             "VALUES (?, ?, ?, ?);");
         ins.bind(1, tenant_id);
         ins.bind(2, scope_key);
-        ins.bind(3, new_content);
+        ins.bind(3, block);
         ins.bind(4, now);
-        ins.step();
-        if (sqlite3_changes(db_) > 0) return static_cast<int64_t>(new_content.size());
+        int rc = ins.step();
+        if (rc != SQLITE_DONE) {
+            check_sqlite(db_, rc, "insert scratchpad");
+            return -1;
+        }
+        tx.commit();
+        return block_bytes;
     }
 
     Stmt upd(db_,
         "UPDATE agent_scratchpad SET content = content || ?, updated_at = ? "
-        " WHERE tenant_id = ? AND scope_key = ?;");
+        " WHERE tenant_id = ? AND scope_key = ? "
+        "   AND length(CAST(content AS BLOB)) + ? <= ?;");
     upd.bind(1, block);
     upd.bind(2, now);
     upd.bind(3, tenant_id);
     upd.bind(4, scope_key);
+    upd.bind(5, block_bytes);
+    upd.bind(6, cap);
     upd.step();
-    // Fetch the post-update size so the caller can surface a useful
-    // "OK: wrote N bytes" line that matches the file path's behaviour.
-    Stmt sz(db_, "SELECT length(content) FROM agent_scratchpad "
+    if (sqlite3_changes(db_) <= 0) return -1;
+
+    int64_t new_size = 0;
+    Stmt sz(db_, "SELECT length(CAST(content AS BLOB)) FROM agent_scratchpad "
                   "WHERE tenant_id = ? AND scope_key = ?;");
     sz.bind(1, tenant_id);
     sz.bind(2, scope_key);
-    if (sz.step() == SQLITE_ROW) return sz.column_int64(0);
-    return 0;
+    if (sz.step() == SQLITE_ROW) new_size = sz.column_int64(0);
+    tx.commit();
+    return new_size;
 }
 
 bool TenantStore::clear_scratchpad(int64_t tenant_id,
@@ -3320,8 +3350,13 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
         return out;
     }
 
-    // Determine if this is an in-place update (same path → subtract its
-    // size from quota math) or a fresh insert.
+    const std::string digest    = sha256_hex(content);
+    const std::string mime_safe = mime_type.empty() ? "application/octet-stream"
+                                                     : mime_type;
+    const int64_t now = now_epoch();
+
+    ImmediateTx tx(db_, write_mu_);
+
     int64_t existing_size = 0;
     bool    is_update     = false;
     {
@@ -3360,11 +3395,6 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
         return out;
     }
 
-    const std::string digest    = sha256_hex(content);
-    const std::string mime_safe = mime_type.empty() ? "application/octet-stream"
-                                                     : mime_type;
-    const int64_t now = now_epoch();
-
     if (is_update) {
         Stmt upd(db_,
             "UPDATE tenant_artifacts "
@@ -3400,9 +3430,6 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
         ins.bind(9, now);
         int rc = ins.step();
         if (rc == SQLITE_CONSTRAINT) {
-            // Race: a parallel writer beat us between the SELECT and the
-            // INSERT.  Surface a clean error rather than silently
-            // overwriting; the caller can retry as a PUT.
             out.status    = PutArtifactResult::Status::PathRejected;
             out.error_msg = "path collision (concurrent write); retry";
             out.tenant_used_bytes       = tenant_used;
@@ -3412,8 +3439,6 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
         out.status = PutArtifactResult::Status::Created;
     }
 
-    // Reload the canonical row so the caller's response shape is
-    // identical for create and update.
     Stmt sel(db_, (std::string("SELECT ") + kArtifactMetaCols +
                    " FROM tenant_artifacts "
                    "WHERE tenant_id = ? AND conversation_id = ? AND path = ?;").c_str());
@@ -3425,6 +3450,7 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
     }
     out.tenant_used_bytes       = tnt_after;
     out.conversation_used_bytes = conv_after;
+    tx.commit();
     return out;
 }
 
@@ -3930,59 +3956,55 @@ bool TenantStore::put_idempotency_key(int64_t tenant_id,
     if (created_at <= 0) created_at = now_epoch();
 
     // Serialize concurrent reserves for the same key so two racing
-    // inserts can't both believe they won.
-    exec_sql(db_, "BEGIN IMMEDIATE;");
-    try {
-        std::string existing_id;
-        int64_t existing_created = 0;
-        bool found = false;
-        {
-            Stmt q(db_,
-                "SELECT request_id, created_at FROM idempotency_keys "
-                " WHERE tenant_id = ? AND key = ?;");
-            q.bind(1, tenant_id);
-            q.bind(2, key);
-            if (q.step() == SQLITE_ROW) {
-                found = true;
-                existing_id = q.column_text(0);
-                existing_created = q.column_int64(1);
-            }
+    // inserts can't both believe they won.  write_mu_ + BEGIN IMMEDIATE
+    // covers same-connection threads and other processes on this file.
+    ImmediateTx tx(db_, write_mu_);
+    std::string existing_id;
+    int64_t existing_created = 0;
+    bool found = false;
+    {
+        Stmt q(db_,
+            "SELECT request_id, created_at FROM idempotency_keys "
+            " WHERE tenant_id = ? AND key = ?;");
+        q.bind(1, tenant_id);
+        q.bind(2, key);
+        if (q.step() == SQLITE_ROW) {
+            found = true;
+            existing_id = q.column_text(0);
+            existing_created = q.column_int64(1);
         }
-
-        if (found) {
-            if (created_at - existing_created >= ttl_seconds) {
-                Stmt u(db_,
-                    "UPDATE idempotency_keys "
-                    "   SET request_id = ?, created_at = ? "
-                    " WHERE tenant_id = ? AND key = ?;");
-                u.bind(1, request_id);
-                u.bind(2, created_at);
-                u.bind(3, tenant_id);
-                u.bind(4, key);
-                u.step();
-                exec_sql(db_, "COMMIT;");
-                return true;
-            }
-            exec_sql(db_, "COMMIT;");
-            return existing_id == request_id;
-        }
-
-        Stmt ins(db_,
-            "INSERT INTO idempotency_keys "
-            "(tenant_id, key, request_id, created_at) "
-            "VALUES (?, ?, ?, ?);");
-        ins.bind(1, tenant_id);
-        ins.bind(2, key);
-        ins.bind(3, request_id);
-        ins.bind(4, created_at);
-        int rc = ins.step();
-        if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert idempotency_key");
-        exec_sql(db_, "COMMIT;");
-        return true;
-    } catch (...) {
-        try { exec_sql(db_, "ROLLBACK;"); } catch (...) {}
-        throw;
     }
+
+    if (found) {
+        if (created_at - existing_created >= ttl_seconds) {
+            Stmt u(db_,
+                "UPDATE idempotency_keys "
+                "   SET request_id = ?, created_at = ? "
+                " WHERE tenant_id = ? AND key = ?;");
+            u.bind(1, request_id);
+            u.bind(2, created_at);
+            u.bind(3, tenant_id);
+            u.bind(4, key);
+            u.step();
+            tx.commit();
+            return true;
+        }
+        tx.commit();
+        return existing_id == request_id;
+    }
+
+    Stmt ins(db_,
+        "INSERT INTO idempotency_keys "
+        "(tenant_id, key, request_id, created_at) "
+        "VALUES (?, ?, ?, ?);");
+    ins.bind(1, tenant_id);
+    ins.bind(2, key);
+    ins.bind(3, request_id);
+    ins.bind(4, created_at);
+    int rc = ins.step();
+    if (rc != SQLITE_DONE) check_sqlite(db_, rc, "insert idempotency_key");
+    tx.commit();
+    return true;
 }
 
 int64_t TenantStore::prune_idempotency_keys(int64_t older_than_epoch) {

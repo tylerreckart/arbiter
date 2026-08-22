@@ -16,9 +16,12 @@
 #include "doctest.h"
 #include "tenant_store.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <thread>
+#include <unistd.h>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace arbiter;
@@ -408,4 +411,83 @@ TEST_CASE("artifact link is not affected by another tenant's delete") {
     auto still = s.get_entry(a, a_ent.id);
     REQUIRE(still.has_value());
     CHECK(still->artifact_id == a_art.record->id);
+}
+
+TEST_CASE("parallel artifact puts cannot exceed conversation quota") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "quota-race");
+    const int64_t cid = make_conversation(s, tid, "thread");
+
+    const std::string file(static_cast<std::size_t>(kArtifactPerFileMaxBytes), 'x');
+    const int fill = static_cast<int>(
+        (kArtifactPerConversationMaxBytes / kArtifactPerFileMaxBytes) - 1);
+    REQUIRE(fill > 0);
+    for (int i = 0; i < fill; ++i) {
+        auto r = s.put_artifact(tid, cid, "fill_" + std::to_string(i) + ".bin",
+                                file, "application/octet-stream");
+        REQUIRE(r.status == PutArtifactResult::Status::Created);
+    }
+    REQUIRE(s.bytes_used_conversation(tid, cid) ==
+            static_cast<int64_t>(fill) * kArtifactPerFileMaxBytes);
+
+    constexpr int kThreads = 8;
+    std::atomic<int> created{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&, i] {
+            auto r = s.put_artifact(tid, cid, "race_" + std::to_string(i) + ".bin",
+                                    file, "application/octet-stream");
+            if (r.status == PutArtifactResult::Status::Created)
+                created.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    CHECK(created.load() == 1);
+    CHECK(s.bytes_used_conversation(tid, cid) <= kArtifactPerConversationMaxBytes);
+}
+
+TEST_CASE("parallel artifact puts across TenantStore instances stay under quota") {
+    TempDb db;
+    TenantStore a;
+    TenantStore b;
+    a.open(db.path.string());
+    b.open(db.path.string());
+    const int64_t tid = make_tenant(a, "quota-2conn");
+    const int64_t cid = make_conversation(a, tid, "thread");
+
+    const std::string file(static_cast<std::size_t>(kArtifactPerFileMaxBytes), 'y');
+    const int fill = static_cast<int>(
+        (kArtifactPerConversationMaxBytes / kArtifactPerFileMaxBytes) - 1);
+    for (int i = 0; i < fill; ++i) {
+        REQUIRE(a.put_artifact(tid, cid, "fill_" + std::to_string(i) + ".bin",
+                               file, "application/octet-stream").status
+                == PutArtifactResult::Status::Created);
+    }
+
+    constexpr int kThreads = 4;
+    std::atomic<int> created{0};
+    std::vector<std::thread> threads;
+    auto spawn = [&](TenantStore* store, int offset) {
+        for (int i = 0; i < kThreads; ++i) {
+            threads.emplace_back([store, tid, cid, i, offset, &file, &created] {
+                auto r = store->put_artifact(
+                    tid, cid,
+                    "race_" + std::to_string(offset + i) + ".bin",
+                    file, "application/octet-stream");
+                if (r.status == PutArtifactResult::Status::Created)
+                    created.fetch_add(1, std::memory_order_relaxed);
+            });
+        }
+    };
+    spawn(&a, 0);
+    spawn(&b, kThreads);
+    for (auto& t : threads) t.join();
+
+    CHECK(created.load() == 1);
+    CHECK(a.bytes_used_conversation(tid, cid) <= kArtifactPerConversationMaxBytes);
+    CHECK(b.bytes_used_conversation(tid, cid) <= kArtifactPerConversationMaxBytes);
 }

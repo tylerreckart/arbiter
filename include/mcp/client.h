@@ -53,11 +53,13 @@ public:
     const std::vector<ToolDescriptor>& tools();
 
     // Synchronous tool call.  Returns the parsed result; throws on
-    // protocol-level failures (bad framing, server crash, timeout).
-    // Tool-level errors (isError=true in the response) come back inside
-    // ToolResult so the agent can read them like any other tool output.
+    // protocol-level failures (bad framing, server crash, timeout,
+    // or cancel).  Tool-level errors (isError=true in the response)
+    // come back inside ToolResult so the agent can read them like any
+    // other tool output.  `cancel` is polled during the response wait.
     ToolResult call_tool(const std::string& name,
-                          std::shared_ptr<JsonValue> arguments);
+                          std::shared_ptr<JsonValue> arguments,
+                          std::atomic<bool>* cancel = nullptr);
 
 private:
     ClientConfig                   cfg_;
@@ -71,7 +73,8 @@ private:
     // or protocol error.
     Response rpc(const std::string& method,
                   std::shared_ptr<JsonValue> params,
-                  std::chrono::milliseconds timeout);
+                  std::chrono::milliseconds timeout,
+                  std::atomic<bool>* cancel = nullptr);
 };
 
 } // namespace arbiter::mcp

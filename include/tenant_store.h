@@ -14,6 +14,7 @@
 // and table on first open.
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -1187,6 +1188,14 @@ public:
 
 private:
     sqlite3* db_ = nullptr;
+
+    // Serializes every BEGIN IMMEDIATE on this connection.  SQLite FULLMUTEX
+    // serializes C API calls, but a transaction stays open across them, so a
+    // second thread's BEGIN on the same sqlite3* would fail with "cannot start
+    // a transaction within a transaction".  The mutex also covers the
+    // check-then-act span in put_artifact / append_scratchpad.  Cross-process
+    // writers are serialized by BEGIN IMMEDIATE's reserved lock (busy_timeout).
+    std::mutex write_mu_;
 
     // Re-read a tenant row into `t`.  Used internally after mutations.
     bool reload_tenant(int64_t id, Tenant& t) const;

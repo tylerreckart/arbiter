@@ -8,9 +8,10 @@
 // the single source of truth that all three writs share:
 //
 //   /exec    runs `docker exec` against the container with cwd /workspace.
-//            When workspace_max_bytes is set, a post-exec over-cap result
-//            rolls the bind-mounted tree back to the pre-exec file list
-//            (new files deleted, grown files truncated) so the cap sticks.
+//            When workspace_max_bytes is set, a pre-exec content snapshot is
+//            taken beside the bind mount.  Over-cap or cancelled results
+//            restore the tree from that snapshot (deleted files recreated,
+//            overwrites reverted, new files removed) so the cap sticks.
 //   /write   writes the file into the host workspace dir (the container
 //            sees it on next /exec via the bind mount); the SSE `file`
 //            event still fires for the live UI
@@ -98,10 +99,11 @@ struct SandboxConfig {
 
     // Per-tenant workspace disk quota, bytes.  Enforced on host-visible
     // workspace mutations: /write rejects writes that would exceed the
-    // cap; /exec holds the per-tenant quota mutex, then rolls the tree
-    // back to the pre-exec file list if the command left the workspace
-    // over the cap (so shell redirects cannot bypass /write).  0 = no
-    // quota.  Default 1 GiB.
+    // cap; /exec holds the per-tenant quota mutex, snapshots workspace
+    // contents, then restores that snapshot if the command left the
+    // workspace over the cap or was cancelled (so shell redirects and
+    // partial cancelled writes cannot bypass /write).  0 = no quota.
+    // Default 1 GiB.
     int64_t workspace_max_bytes = 1ll * 1024 * 1024 * 1024;
 
     // Test-only: milliseconds to sleep after a successful quota check and

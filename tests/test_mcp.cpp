@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <atomic>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
@@ -166,6 +167,20 @@ TEST_CASE("Subprocess: recv_line returns nullopt on timeout") {
     Subprocess proc({"/bin/cat"});
     auto got = proc.recv_line(100ms);
     CHECK_FALSE(got.has_value());     // /bin/cat never spontaneously emits
+}
+
+TEST_CASE("Subprocess: recv_line returns nullopt on cancel") {
+    Subprocess proc({"/bin/cat"});
+    std::atomic<bool> cancel{false};
+    std::thread t([&] {
+        std::this_thread::sleep_for(80ms);
+        cancel.store(true, std::memory_order_release);
+    });
+    const auto start = std::chrono::steady_clock::now();
+    auto got = proc.recv_line(10s, &cancel);
+    t.join();
+    CHECK_FALSE(got.has_value());
+    CHECK(std::chrono::steady_clock::now() - start < 2s);
 }
 
 TEST_CASE("Subprocess: terminate is idempotent and SIGKILLs after grace") {

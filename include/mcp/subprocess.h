@@ -14,6 +14,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <atomic>
 #include <sys/types.h>
 #include <vector>
 
@@ -42,11 +43,13 @@ public:
 
     // Read one '\n'-terminated line from the child's stdout, with a
     // wall-clock deadline.  Returns std::nullopt on EOF (child exited),
-    // timeout (deadline elapsed before a complete line arrived), or
-    // any other read error.  The trailing '\n' is stripped from the
-    // returned value.
+    // timeout (deadline elapsed before a complete line arrived), cancel,
+    // or any other read error.  The trailing '\n' is stripped from the
+    // returned value.  When `cancel` is set, poll slices stay at 250ms
+    // so Esc / HTTP cancel can abort a long tools/call.
     std::optional<std::string>
-    recv_line(std::chrono::milliseconds timeout);
+    recv_line(std::chrono::milliseconds timeout,
+              std::atomic<bool>* cancel = nullptr);
 
     // True if the child is still alive.  Cheap — just a non-blocking
     // waitpid(WNOHANG).  Caches the exit status once observed.

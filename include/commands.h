@@ -431,6 +431,22 @@ using SchedulerInvoker = std::function<std::string(const std::string& kind,
 // Conservative — misses creative destruction, but catches the common footguns.
 bool is_destructive_exec(const std::string& cmd);
 
+// Optional per-thread cancel poll for execute_agent_commands.  Orchestrator
+// installs this around tool dispatch so Esc / HTTP cancel skips remaining
+// slash commands after the in-flight tool returns.  Nested scopes restore
+// the previous poll.
+using CancelPollFn = std::function<bool()>;
+class CommandCancelScope {
+public:
+    explicit CommandCancelScope(CancelPollFn fn);
+    ~CommandCancelScope();
+    CommandCancelScope(const CommandCancelScope&) = delete;
+    CommandCancelScope& operator=(const CommandCancelScope&) = delete;
+private:
+    CancelPollFn prev_;
+};
+bool command_dispatch_cancelled();
+
 // Execute a parsed command list and return a [TOOL RESULTS] message
 // suitable for feeding back to the agent.
 // agent_invoker: optional — if provided, /agent commands are dispatched through it.

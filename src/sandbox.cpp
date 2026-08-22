@@ -61,99 +61,238 @@ std::string wrap_exec_with_timeout(const std::string& command,
            "else exec sh -c " + q + "; fi";
 }
 
-// Pre-exec inventory of the bind-mounted workspace.  Used to roll back
-// files created or grown by a shell command that blew past
-// workspace_max_bytes — without copying the tree (default cap is 1 GiB).
-// New files are deleted; grown files are truncated to their prior size
-// (appends restore original bytes; full overwrites keep the first N
-// bytes of the new content).
+// Pre-exec copy of the bind-mounted workspace, stored as a sibling of
+// `t<tid>/` so the container cannot mutate it.  Used to restore the tree
+// when /exec exceeds workspace_max_bytes or is cancelled — including
+// deleted files and same-size overwrites, which a size-only inventory
+// cannot reconstruct.
 struct WorkspaceSnap {
-    std::unordered_map<std::string, uintmax_t> files;
-    std::unordered_set<std::string>            dirs;
+    fs::path dir;
+    bool     complete = true;
 };
 
-WorkspaceSnap snapshot_workspace_tree(const fs::path& ws) {
-    WorkspaceSnap snap;
+void force_remove_path(const fs::path& p) {
     std::error_code ec;
-    if (!fs::exists(ws, ec) || !fs::is_directory(ws, ec)) return snap;
-    for (auto it = fs::recursive_directory_iterator(ws, ec);
+    fs::remove(p, ec);
+    if (!ec) return;
+    ::fchmodat(AT_FDCWD, p.c_str(), 0700, AT_SYMLINK_NOFOLLOW);
+    fs::remove(p, ec);
+    if (ec) fs::remove_all(p, ec);
+}
+
+bool copy_regular_nofollow(const fs::path& src, const fs::path& dst) {
+    const int in = ::open(src.c_str(), O_RDONLY | O_NOFOLLOW);
+    if (in < 0) return false;
+    struct stat st{};
+    if (::fstat(in, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(in);
+        return false;
+    }
+    const mode_t mode = static_cast<mode_t>(st.st_mode & 0777);
+    int out = ::open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode);
+    if (out < 0 && errno == ELOOP) {
+        ::unlink(dst.c_str());
+        out = ::open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode);
+    }
+    if (out < 0) {
+        ::close(in);
+        return false;
+    }
+    char buf[8192];
+    bool ok = true;
+    while (ok) {
+        const ssize_t n = ::read(in, buf, sizeof(buf));
+        if (n == 0) break;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
+        }
+        std::size_t off = 0;
+        while (off < static_cast<std::size_t>(n)) {
+            const ssize_t w = ::write(out, buf + off, static_cast<std::size_t>(n) - off);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                ok = false;
+                break;
+            }
+            off += static_cast<std::size_t>(w);
+        }
+    }
+    ::close(in);
+    ::close(out);
+    if (ok) ::fchmodat(AT_FDCWD, dst.c_str(), mode, AT_SYMLINK_NOFOLLOW);
+    return ok;
+}
+
+// Copy `src` → `dst` without following leaf symlinks.  Directories are
+// recreated; regular files are copied with O_NOFOLLOW; symlinks are
+// recreated as symlinks.  Sets complete=false on any walk/copy error.
+void copy_tree_nofollow(const fs::path& src, const fs::path& dst, bool& complete,
+                        std::atomic<bool>* cancel = nullptr) {
+    std::error_code ec;
+    fs::create_directories(dst, ec);
+    if (ec) {
+        complete = false;
+        return;
+    }
+    if (!fs::exists(src, ec) || !fs::is_directory(src, ec)) return;
+    for (auto it = fs::recursive_directory_iterator(
+             src, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::recursive_directory_iterator();
          it.increment(ec)) {
+        if (cancel && cancel->load(std::memory_order_acquire)) {
+            complete = false;
+            return;
+        }
         std::error_code sec;
-        if (it->is_symlink(sec)) {
-            it.disable_recursion_pending();
+        auto rel = fs::relative(it->path(), src, sec);
+        if (sec || rel.empty() || rel == ".") {
+            complete = false;
             continue;
         }
-        auto rel = fs::relative(it->path(), ws, sec);
-        if (sec) continue;
-        const std::string key = rel.generic_string();
-        if (key.empty() || key == ".") continue;
-        if (it->is_directory(sec)) {
-            snap.dirs.insert(key);
-        } else if (it->is_regular_file(sec)) {
-            auto sz = fs::file_size(it->path(), sec);
-            if (!sec) snap.files.emplace(key, sz);
+        const fs::path target = dst / rel;
+        if (it->is_symlink(sec)) {
+            it.disable_recursion_pending();
+            std::error_code lec;
+            auto link = fs::read_symlink(it->path(), lec);
+            if (lec) {
+                complete = false;
+                continue;
+            }
+            if (target.has_parent_path()) fs::create_directories(target.parent_path(), lec);
+            fs::remove(target, lec);
+            fs::create_symlink(link, target, lec);
+            if (lec) complete = false;
+            continue;
         }
+        if (it->is_directory(sec)) {
+            fs::create_directories(target, sec);
+            if (sec) complete = false;
+            continue;
+        }
+        if (it->is_regular_file(sec)) {
+            if (target.has_parent_path()) {
+                fs::create_directories(target.parent_path(), sec);
+                if (sec) {
+                    complete = false;
+                    continue;
+                }
+            }
+            if (!copy_regular_nofollow(it->path(), target)) complete = false;
+            continue;
+        }
+    }
+    if (ec) complete = false;
+}
+
+WorkspaceSnap snapshot_workspace_tree(const fs::path& ws, const fs::path& snap_dir,
+                                      std::atomic<bool>* cancel = nullptr) {
+    WorkspaceSnap snap;
+    snap.dir = snap_dir;
+    std::error_code ec;
+    fs::remove_all(snap_dir, ec);
+    if (cancel && cancel->load(std::memory_order_acquire)) {
+        snap.complete = false;
+        snap.dir.clear();
+        return snap;
+    }
+    if (!fs::exists(ws, ec) || !fs::is_directory(ws, ec)) {
+        fs::create_directories(snap_dir, ec);
+        if (ec) {
+            snap.complete = false;
+            snap.dir.clear();
+        }
+        return snap;
+    }
+    copy_tree_nofollow(ws, snap_dir, snap.complete, cancel);
+    if (cancel && cancel->load(std::memory_order_acquire)) {
+        snap.complete = false;
+        return snap;
+    }
+    if (!fs::exists(snap_dir, ec)) {
+        snap.complete = false;
+        snap.dir.clear();
     }
     return snap;
 }
 
-void rollback_workspace_to_snap(const fs::path& ws, const WorkspaceSnap& snap) {
+std::unordered_set<std::string> list_rel_keys(const fs::path& root, bool& complete) {
+    std::unordered_set<std::string> keys;
     std::error_code ec;
-    std::vector<fs::path> files;
-    std::vector<fs::path> dirs;
-    std::vector<fs::path> links;
-    for (auto it = fs::recursive_directory_iterator(ws, ec);
+    if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) return keys;
+    for (auto it = fs::recursive_directory_iterator(
+             root, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::recursive_directory_iterator();
          it.increment(ec)) {
         std::error_code sec;
-        if (it->is_symlink(sec)) {
-            links.push_back(it->path());
-            it.disable_recursion_pending();
+        if (it->is_symlink(sec)) it.disable_recursion_pending();
+        auto rel = fs::relative(it->path(), root, sec);
+        if (sec) {
+            complete = false;
             continue;
         }
-        if (it->is_directory(sec)) dirs.push_back(it->path());
-        else if (it->is_regular_file(sec)) files.push_back(it->path());
-    }
-
-    auto rel_key = [&](const fs::path& p) -> std::string {
-        std::error_code rec;
-        auto rel = fs::relative(p, ws, rec);
-        if (rec) return {};
-        return rel.generic_string();
-    };
-
-    for (const auto& p : files) {
-        const std::string key = rel_key(p);
-        auto it = snap.files.find(key);
-        if (it == snap.files.end()) {
-            fs::remove(p, ec);
-            continue;
-        }
-        auto sz = fs::file_size(p, ec);
-        if (!ec && sz > it->second) {
-            fs::resize_file(p, it->second, ec);
-        }
-    }
-    for (const auto& p : links) {
-        const std::string key = rel_key(p);
-        if (snap.files.find(key) == snap.files.end() &&
-            snap.dirs.find(key) == snap.dirs.end()) {
-            fs::remove(p, ec);
-        }
-    }
-    std::sort(dirs.begin(), dirs.end(),
-              [](const fs::path& a, const fs::path& b) {
-                  return a.native().size() > b.native().size();
-              });
-    for (const auto& p : dirs) {
-        const std::string key = rel_key(p);
+        const std::string key = rel.generic_string();
         if (key.empty() || key == ".") continue;
-        if (snap.dirs.find(key) == snap.dirs.end()) {
-            fs::remove_all(p, ec);
-        }
+        keys.insert(key);
     }
+    if (ec) complete = false;
+    return keys;
 }
+
+bool rollback_workspace_to_snap(const fs::path& ws, const WorkspaceSnap& snap) {
+    if (snap.dir.empty()) return false;
+    bool ok = true;
+    if (snap.complete) {
+        bool list_ok = true;
+        const auto keep = list_rel_keys(snap.dir, list_ok);
+        if (!list_ok) ok = false;
+        std::vector<fs::path> extras;
+        std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator(
+                 ws, fs::directory_options::skip_permission_denied, ec);
+             !ec && it != fs::recursive_directory_iterator();
+             it.increment(ec)) {
+            std::error_code sec;
+            if (it->is_symlink(sec)) it.disable_recursion_pending();
+            auto rel = fs::relative(it->path(), ws, sec);
+            if (sec) {
+                ok = false;
+                continue;
+            }
+            const std::string key = rel.generic_string();
+            if (key.empty() || key == ".") continue;
+            if (keep.find(key) == keep.end()) extras.push_back(it->path());
+        }
+        std::sort(extras.begin(), extras.end(),
+                  [](const fs::path& a, const fs::path& b) {
+                      return a.native().size() > b.native().size();
+                  });
+        for (const auto& p : extras) force_remove_path(p);
+    }
+    bool copy_ok = true;
+    copy_tree_nofollow(snap.dir, ws, copy_ok);
+    return ok && copy_ok;
+}
+
+struct SnapGuard {
+    fs::path dir;
+    ~SnapGuard() {
+        if (dir.empty()) return;
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+    }
+};
+
+// Kill leftover non-PID-1 processes inside the warm container.  Skip PID 1
+// and the cleanup shell itself so the loop cannot SIGKILL before finishing.
+constexpr const char* kKillExecSurvivors =
+    "self=$$; "
+    "for p in /proc/[0-9]*; do "
+    "pid=${p#/proc/}; "
+    "case \"$pid\" in 1|\"$self\") continue ;; esac; "
+    "kill -9 \"$pid\" 2>/dev/null || true; "
+    "done";
 
 // Run argv, capture stdout+stderr into `out`. SIGKILL on timeout; -1 on fork failure.
 int run_capture(const std::vector<std::string>& argv,
@@ -840,19 +979,34 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     std::unique_lock<std::mutex> tenant_lk(*tenant_mu);
     const bool quota_enforced = cfg_.workspace_max_bytes > 0;
     const fs::path ws_path = workspace_path_for(tenant_id);
-    const WorkspaceSnap pre_exec =
-        quota_enforced ? snapshot_workspace_tree(ws_path) : WorkspaceSnap{};
-
+    const fs::path snap_dir = fs::path(cfg_.workspaces_root) /
+        (".exec-snap-t" + std::to_string(tenant_id));
+    WorkspaceSnap pre_exec;
+    SnapGuard snap_guard;
     bool timed_out = false;
     bool canceled = false;
     bool truncated = false;
-    int rc = run_capture(argv, parent_timeout,
+    int rc = 0;
+    if (quota_enforced) {
+        if (cancel && cancel->load(std::memory_order_acquire)) {
+            canceled = true;
+        } else {
+            pre_exec = snapshot_workspace_tree(ws_path, snap_dir, cancel);
+            snap_guard.dir = pre_exec.dir;
+            if (cancel && cancel->load(std::memory_order_acquire))
+                canceled = true;
+        }
+    }
+
+    if (!canceled) {
+        rc = run_capture(argv, parent_timeout,
                           static_cast<size_t>(cfg_.output_max_bytes),
                           r.output, timed_out, &truncated, cancel, &canceled);
-    // GNU timeout exits 124 on deadline; treat that as a clean timeout
-    // even when the parent backstop did not fire.
-    if (!timed_out && !canceled && exec_timeout > 0 && rc == 124) {
-        timed_out = true;
+        // GNU timeout exits 124 on deadline; treat that as a clean timeout
+        // even when the parent backstop did not fire.
+        if (!timed_out && !canceled && exec_timeout > 0 && rc == 124) {
+            timed_out = true;
+        }
     }
     r.canceled   = canceled;
     r.timed_out  = timed_out && !canceled;
@@ -862,16 +1016,12 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         // Best-effort: kill leftover non-PID-1 processes so a timed-out
         // or canceled workload cannot keep burning CPU/memory inside the
         // warm container after docker-exec is gone.  Safe under tenant_lk —
-        // no overlapping /exec for this tenant can be in-flight.
+        // no overlapping /exec for this tenant can be in-flight.  The
+        // cleanup shell skips $$ so it cannot SIGKILL itself mid-loop.
         std::string kill_out;
         bool kill_to = false;
         run_capture(
-            {cfg_.runtime, "exec", name, "sh", "-c",
-             "for p in /proc/[0-9]*; do "
-             "pid=${p#/proc/}; "
-             "[ \"$pid\" = \"1\" ] && continue; "
-             "kill -9 \"$pid\" 2>/dev/null || true; "
-             "done"},
+            {cfg_.runtime, "exec", name, "sh", "-c", kKillExecSurvivors},
             /*timeout_seconds=*/5,
             /*output_cap=*/4096,
             kill_out, kill_to);
@@ -883,16 +1033,33 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
                 std::chrono::milliseconds(cfg_.quota_exec_pause_ms));
         }
         const int64_t used = measure_workspace_bytes(tenant_id);
-        if (used > cfg_.workspace_max_bytes) {
-            rollback_workspace_to_snap(ws_path, pre_exec);
+        const bool over_cap = used > cfg_.workspace_max_bytes;
+        if (over_cap || canceled) {
+            const bool restored = rollback_workspace_to_snap(ws_path, pre_exec);
             const int64_t used_after = measure_workspace_bytes(tenant_id);
-            r.ok = false;
-            r.error = "workspace quota exceeded after /exec (" +
-                      std::to_string(cfg_.workspace_max_bytes) +
-                      " bytes); used " + std::to_string(used) +
-                      ", rolled back to " + std::to_string(used_after);
-            if (r.output.empty()) r.output = "ERR: " + r.error;
-            else r.output += "\nERR: " + r.error;
+            if (over_cap) {
+                r.ok = false;
+                const bool still_over = used_after > cfg_.workspace_max_bytes;
+                if (!restored || still_over || !pre_exec.complete) {
+                    Logger::global().warn("sandbox_workspace_rollback_incomplete", {
+                        {"tenant_id", std::to_string(tenant_id)},
+                        {"used", std::to_string(used)},
+                        {"used_after", std::to_string(used_after)},
+                    });
+                    r.error = "workspace quota exceeded after /exec (" +
+                              std::to_string(cfg_.workspace_max_bytes) +
+                              " bytes); used " + std::to_string(used) +
+                              ", rollback incomplete (now " +
+                              std::to_string(used_after) + ")";
+                } else {
+                    r.error = "workspace quota exceeded after /exec (" +
+                              std::to_string(cfg_.workspace_max_bytes) +
+                              " bytes); used " + std::to_string(used) +
+                              ", rolled back to " + std::to_string(used_after);
+                }
+                if (r.output.empty()) r.output = "ERR: " + r.error;
+                else r.output += "\nERR: " + r.error;
+            }
         }
     }
     if (metrics_) {
@@ -931,6 +1098,12 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     if (timed_out) {
         r.output += "\n[timed out after " +
                     std::to_string(exec_timeout) + "s]";
+    } else if (canceled) {
+        r.ok = false;
+        if (r.error.empty()) r.error = "request cancelled";
+        r.output += "\n[cancelled]";
+        if (r.output.find("ERR:") == std::string::npos)
+            r.output += "\nERR: request cancelled";
     } else if (rc != 0 && rc != -1) {
         r.output += "\n[exit " + std::to_string(rc) + "]";
     }
