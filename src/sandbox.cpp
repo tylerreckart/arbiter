@@ -49,49 +49,54 @@ std::string shell_single_quote(const std::string& s) {
 }
 
 // Wrap a user command so the container itself enforces the wall-clock
-// deadline.  GNU coreutils `timeout` reserves exit 124 for "deadline
-// fired" (even with -s KILL).  We only use that binary when
-// `timeout --version` succeeds — BusyBox timeout(1) returns 128+signal,
-// which collides with OOM and external kills.  Non-GNU images get a
-// watchdog that exits 124 only if this wrapper's SIGKILL succeeded.
-// The parent-side SIGKILL of `docker exec` + kill_exec_survivors is
-// still the backstop.
+// deadline.  GNU `timeout -s KILL` SIGKILLs its own process group and
+// exits 137 instead of reserved 124; BusyBox timeout(1) also uses
+// 128+signal, which collides with OOM.  A sentinel watchdog exits 124
+// only if this wrapper's kill succeeded.  The parent-side SIGKILL of
+// `docker exec` + kill_exec_survivors is still the backstop.
 std::string wrap_exec_with_timeout(const std::string& command,
                                    int timeout_seconds) {
     if (timeout_seconds <= 0) return command;
     const std::string q = shell_single_quote(command);
     const std::string n = std::to_string(timeout_seconds);
+    // setsid (when present) puts command and watchdog in their own
+    // sessions so SIGKILL of a process group cannot hit this shell.
+    // $cpid/$stamp are expanded by this shell when the watchdog line
+    // runs, so the deadline helper bakes in concrete values.
     return
-        "if command -v timeout >/dev/null 2>&1 && "
-        "timeout --version >/dev/null 2>&1; then "
-        "exec timeout -s KILL " + n + "s sh -c " + q + "; "
-        "else "
-        "sh -c " + q + " & "
-        "cpid=$!; "
         "stamp=/tmp/.arbiter-to-$$; "
         "rm -f \"$stamp\"; "
-        "( sleep " + n + "; "
-        "  if kill -s KILL \"$cpid\" 2>/dev/null; then "
-        "    echo 1 > \"$stamp\"; "
-        "  fi "
-        ") & "
-        "wdpid=$!; "
+        "if command -v setsid >/dev/null 2>&1; then "
+        "  setsid sh -c " + q + " & "
+        "  cpid=$!; "
+        "  setsid sh -c \"sleep " + n + "; "
+        "    if kill -s KILL -- -$cpid 2>/dev/null; then echo 1 > $stamp; fi\" & "
+        "  wdpid=$!; "
+        "else "
+        "  sh -c " + q + " & "
+        "  cpid=$!; "
+        "  sh -c \"sleep " + n + "; "
+        "    if kill -s KILL $cpid 2>/dev/null; then echo 1 > $stamp; fi\" & "
+        "  wdpid=$!; "
+        "fi; "
         "wait \"$cpid\"; "
         "rc=$?; "
-        "kill \"$wdpid\" 2>/dev/null; "
+        "if command -v setsid >/dev/null 2>&1; then "
+        "  kill -s KILL -- -$wdpid 2>/dev/null; "
+        "fi; "
+        "kill -s KILL \"$wdpid\" 2>/dev/null; "
         "wait \"$wdpid\" 2>/dev/null; "
         "if [ -f \"$stamp\" ]; then "
         "  rm -f \"$stamp\"; "
         "  exit 124; "
         "fi; "
-        "exit $rc; "
-        "fi";
+        "exit $rc";
 }
 
 // Map a finished /exec status to "the configured deadline fired".
-// The wrapper (GNU timeout or the sentinel watchdog) exits 124 only
-// when it sent the deadline kill.  137/143 are never treated as
-// timeout — those are OOM / self-kill / external signals.
+// The sentinel watchdog exits 124 only when it sent the deadline kill.
+// 137/143 are never treated as timeout — those are OOM / self-kill /
+// external signals.
 bool exec_status_indicates_timeout(int rc, int exec_timeout_seconds) {
     return exec_timeout_seconds > 0 && rc == 124;
 }
