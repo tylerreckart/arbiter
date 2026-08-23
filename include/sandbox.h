@@ -15,8 +15,9 @@
 //            sticks.  Timeout is the parent backstop or a per-exec
 //            watchdog stamp written into the workspace when the deadline
 //            elapses, before the wrapper SIGKILLs the command (so reaping
-//            the leftover watchdog cannot drop the signal).  A stamp left
-//            by a command that exited on its own (not SIGKILL) is discarded.
+//            the leftover watchdog cannot drop the signal).  The stamp is
+//            retracted if that SIGKILL fails or the command exited without
+//            SIGKILL, so a natural `exit 137` at the deadline is kept.
 //            Exit statuses 124/137/143 are never treated as timeout.
 //            Restore uses openat(O_NOFOLLOW)/mkdirat/unlinkat from the
 //            workspace directory fd so a command cannot redirect host-side
@@ -30,9 +31,9 @@
 // Resource caps (memory, cpus, pids, --network=none) are applied at
 // container start.  Per-exec wall-clock is enforced two ways: the command
 // is wrapped with a sentinel watchdog that writes a per-exec token into
-// the workspace when the deadline elapses and then SIGKILLs the command
-// (the wrapper drops that token if the command exited without SIGKILL),
-// and the parent SIGKILLs the `docker exec` driver process when
+// the workspace when the deadline elapses, SIGKILLs the command, and
+// retracts the token if that kill fails, and the parent SIGKILLs the
+// `docker exec` driver process when
 // the deadline elapses.  On timeout a best-effort pass kills leftover non-PID-1
 // processes inside the warm container.  Same-tenant `/exec` calls are
 // serialized so that survivor cleanup cannot clobber a concurrent exec.

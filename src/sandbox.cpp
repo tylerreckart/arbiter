@@ -112,18 +112,24 @@ bool consume_watchdog_stamp(const fs::path& ws_path,
 // Wrap a user command so the container itself enforces the wall-clock
 // deadline.  GNU `timeout -s KILL` and BusyBox timeout(1) both report
 // timeout as 128+signal, which collides with OOM and with a command
-// that simply `exit 124`.  After `sleep N` the watchdog writes an
-// unpredictable token into the bind-mounted workspace *first* (atomic
-// tmp+mv), then SIGKILLs the command.  Write-before-kill is required:
-// `wait` on the command cannot return until after that kill, so the
-// leftover watchdog reap below cannot drop a real timeout.
+// that simply `exit 124`.
 //
-// A command that finishes on its own at the same instant can still
-// leave a stamp (write raced ahead of the failed kill).  After wait,
-// the wrapper reaps the leftover watchdog and discards the stamp
-// unless the command died SIGKILL (128+9 = 137).  Parent consume of
-// the stamp — never 124/137/143 alone — is the timeout signal.
-// Parent SIGKILL of `docker exec` remains the backstop.
+// Protocol:
+//   1. Watchdog writes the token first (atomic tmp+mv), then SIGKILLs.
+//      Write-before-kill means `wait` on the command cannot return
+//      until after a real timeout stamp is durable.
+//   2. If that SIGKILL fails the command already exited; the watchdog
+//      deletes the stamp so a natural `exit 137` at the deadline is
+//      not reported as timeout.
+//   3. After `wait`, if a stamp is already visible the wrapper waits
+//      for the watchdog (so a failed-kill retract can finish) instead
+//      of SIGKILLing it.  If no stamp is visible the command finished
+//      first: reap the leftover and discard any stamp that appears
+//      after wait (too late to be a watchdog kill).
+//   4. Any remaining stamp on a non-137 status is discarded.
+//
+// Parent consume of the stamp — never 124/137/143 alone — is the
+// timeout signal.  Parent SIGKILL of `docker exec` remains the backstop.
 std::string wrap_exec_with_timeout(const std::string& command,
                                    int timeout_seconds,
                                    const std::string& stamp_rel,
@@ -134,38 +140,47 @@ std::string wrap_exec_with_timeout(const std::string& command,
     const std::string qstamp = shell_single_quote(stamp_rel);
     const std::string qtmp = shell_single_quote(stamp_rel + ".tmp");
     const std::string qtok = shell_single_quote(token);
-    // Durable "deadline elapsed" marker.  Inserted inside the watchdog's
-    // double-quoted `sh -c` so $cpid is still expanded by the wrapper.
-    const std::string stamp_then_kill =
+    // Inserted inside the watchdog's double-quoted `sh -c` so $cpid is
+    // still expanded by the wrapper.
+    const std::string publish =
         "printf '%s\\n' " + qtok + " > " + qtmp + " && "
         "mv -f " + qtmp + " " + qstamp + "; ";
+    const std::string retract =
+        "rm -f " + qstamp + " " + qtmp + "; ";
     return
         "if command -v setsid >/dev/null 2>&1; then "
         "  setsid sh -c " + q + " & "
         "  cpid=$!; "
         "  setsid sh -c \"sleep " + n + "; "
-        + stamp_then_kill +
-        "    kill -s KILL -- -$cpid 2>/dev/null\" & "
+        + publish +
+        "    if ! kill -s KILL -- -$cpid 2>/dev/null; then "
+        + retract +
+        "    fi\" & "
         "  wdpid=$!; "
         "else "
         "  sh -c " + q + " & "
         "  cpid=$!; "
         "  sh -c \"sleep " + n + "; "
-        + stamp_then_kill +
-        "    kill -s KILL $cpid 2>/dev/null\" & "
+        + publish +
+        "    if ! kill -s KILL $cpid 2>/dev/null; then "
+        + retract +
+        "    fi\" & "
         "  wdpid=$!; "
         "fi; "
         "wait \"$cpid\"; "
         "rc=$?; "
-        "if command -v setsid >/dev/null 2>&1; then "
-        "  kill -s KILL -- -$wdpid 2>/dev/null; "
+        "if [ -f " + qstamp + " ]; then "
+        "  wait \"$wdpid\" 2>/dev/null; "
+        "else "
+        "  if command -v setsid >/dev/null 2>&1; then "
+        "    kill -s KILL -- -$wdpid 2>/dev/null; "
+        "  fi; "
+        "  kill -s KILL \"$wdpid\" 2>/dev/null; "
+        "  wait \"$wdpid\" 2>/dev/null; "
+        + retract +
         "fi; "
-        "kill -s KILL \"$wdpid\" 2>/dev/null; "
-        "wait \"$wdpid\" 2>/dev/null; "
-        // Natural completion at the deadline can leave a stamp after a
-        // failed kill.  Only SIGKILL (watchdog or equivalent) keeps it.
         "if [ \"$rc\" -ne 137 ]; then "
-        "  rm -f " + qstamp + " " + qtmp + "; "
+        + retract +
         "fi; "
         "exit $rc";
 }
