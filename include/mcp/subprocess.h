@@ -38,7 +38,9 @@ public:
     Subprocess& operator=(const Subprocess&) = delete;
 
     // Send one line.  '\n' is appended automatically.  Returns false on
-    // a closed pipe (child exited).
+    // a closed pipe (child exited).  SIGPIPE is blocked around the write
+    // and any pending SIGPIPE is drained before the mask is restored, so
+    // a dead child becomes EPIPE rather than killing the host process.
     bool send_line(const std::string& line);
 
     // Read one '\n'-terminated line from the child's stdout, with a

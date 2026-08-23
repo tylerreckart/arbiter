@@ -301,6 +301,17 @@ TEST_CASE("Subprocess: recv_line returns nullopt on cancel") {
     CHECK(std::chrono::steady_clock::now() - start < 2s);
 }
 
+TEST_CASE("Subprocess: send_line after child exit returns false without SIGPIPE") {
+    // /bin/true exits immediately; a subsequent write must be EPIPE, not
+    // a process-killing SIGPIPE.  This is the same path Manager hits when
+    // a cached Client is used after its subprocess has died.
+    Subprocess proc({"/bin/true"});
+    for (int i = 0; i < 50 && proc.alive(); ++i)
+        std::this_thread::sleep_for(20ms);
+    CHECK_FALSE(proc.alive());
+    CHECK_FALSE(proc.send_line("hello after exit"));
+}
+
 TEST_CASE("Subprocess: terminate is idempotent and SIGKILLs after grace") {
     // /bin/sleep does not respond to stdin and ignores EOF on it, so the
     // SIGTERM-then-grace-then-SIGKILL escalation path is what reaps it.

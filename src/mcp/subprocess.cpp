@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdexcept>
 #include <string_view>
@@ -181,6 +182,12 @@ Subprocess::Subprocess(const std::vector<std::string>& argv,
     stdout_fd_ = out_pipe[0];
     set_cloexec(stdin_fd_);
     set_cloexec(stdout_fd_);
+#ifdef F_SETNOSIGPIPE
+    {
+        int one = 1;
+        ::fcntl(stdin_fd_, F_SETNOSIGPIPE, one);
+    }
+#endif
 
     // Non-blocking on the read side so recv_line's poll-based deadline
     // works correctly without requiring a separate timer thread.
@@ -200,18 +207,38 @@ bool Subprocess::send_line(const std::string& line) {
     if (buf.empty() || buf.back() != '\n') buf.push_back('\n');
     const char* p = buf.data();
     size_t      n = buf.size();
-    while (n > 0) {
+    // Block SIGPIPE for this thread only.  A closed child stdin must
+    // return EPIPE, not kill the host (CLI / unit tests do not ignore
+    // SIGPIPE process-wide the way ApiServer does).  write() still
+    // queues a pending SIGPIPE while the signal is blocked — drain it
+    // with sigwait before restoring the mask, or unblocking delivers
+    // it and kills the process.
+    sigset_t block, old;
+    sigemptyset(&block);
+    sigaddset(&block, SIGPIPE);
+    const bool masked = (::pthread_sigmask(SIG_BLOCK, &block, &old) == 0);
+    bool ok = true;
+    while (ok && n > 0) {
         ssize_t k = ::write(stdin_fd_, p, n);
         if (k < 0) {
             if (errno == EINTR) continue;
             // EPIPE/EBADF = child exited; broken pipe is normal during
             // shutdown.  Caller treats false as "session is dead".
-            return false;
+            ok = false;
+            break;
         }
         p += k;
         n -= static_cast<size_t>(k);
     }
-    return true;
+    if (masked) {
+        sigset_t pending;
+        if (::sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE)) {
+            int sig = 0;
+            ::sigwait(&block, &sig);
+        }
+        ::pthread_sigmask(SIG_SETMASK, &old, nullptr);
+    }
+    return ok;
 }
 
 bool Subprocess::drain_into_buf(std::chrono::milliseconds timeout) {
