@@ -472,7 +472,7 @@ TEST_CASE("sandbox exec: SIGTERM status 143 before the deadline keeps writes") {
     fs::remove_all(root);
 }
 
-TEST_CASE("sandbox exec: GNU timeout status 124 rolls back under-quota writes") {
+TEST_CASE("sandbox exec: natural status 124 is not a timeout") {
     const std::string root = make_temp_root("quota-exec-124");
     install_docker_stub(root);
     PathGuard path_guard(root);
@@ -492,12 +492,20 @@ TEST_CASE("sandbox exec: GNU timeout status 124 rolls back under-quota writes") 
     REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
 
     auto result = mgr.exec(
-        tid, "head -c 50 /dev/zero > partial.bin; exit 124");
-    CHECK(result.timed_out);
-    CHECK(result.output.find("[timed out") != std::string::npos);
-    CHECK_FALSE(fs::exists(fs::path(ws) / "partial.bin"));
-    CHECK(fs::exists(fs::path(ws) / "seed.txt"));
-    CHECK(mgr.measure_workspace_bytes(tid) == 100);
+        tid, "head -c 50 /dev/zero > kept.bin; exit 124");
+    CHECK_FALSE(result.timed_out);
+    CHECK(result.output.find("[timed out") == std::string::npos);
+    CHECK(result.output.find("[exit 124]") != std::string::npos);
+    CHECK(fs::exists(fs::path(ws) / "kept.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+    // Watchdog stamp must not leak into the tenant tree.
+    bool leaked = false;
+    for (auto it = fs::directory_iterator(ws); it != fs::directory_iterator(); ++it) {
+        if (it->path().filename().string().rfind(".arbiter-to-", 0) == 0)
+            leaked = true;
+    }
+    CHECK_FALSE(leaked);
 
     fs::remove_all(root);
 }

@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <cstdint>
 #include <limits>
 #include <chrono>
 #include <cstdio>
@@ -48,35 +49,94 @@ std::string shell_single_quote(const std::string& s) {
     return out;
 }
 
+std::string random_hex(size_t nbytes) {
+    std::string raw(nbytes, '\0');
+    const int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    size_t off = 0;
+    if (fd >= 0) {
+        while (off < nbytes) {
+            const ssize_t n = ::read(fd, raw.data() + off, nbytes - off);
+            if (n <= 0) break;
+            off += static_cast<size_t>(n);
+        }
+        ::close(fd);
+    }
+    if (off < nbytes) {
+        const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        const uint64_t mix = static_cast<uint64_t>(now) ^
+                             (static_cast<uint64_t>(::getpid()) << 32);
+        for (size_t i = off; i < nbytes; ++i)
+            raw[i] = static_cast<char>(mix >> ((i % 8) * 8));
+    }
+    static const char kHex[] = "0123456789abcdef";
+    std::string hex(nbytes * 2, '0');
+    for (size_t i = 0; i < nbytes; ++i) {
+        const unsigned char b = static_cast<unsigned char>(raw[i]);
+        hex[2 * i]     = kHex[b >> 4];
+        hex[2 * i + 1] = kHex[b & 0xf];
+    }
+    return hex;
+}
+
+// True when the watchdog wrote `token` to `stamp_name` under the
+// bind-mounted workspace.  O_NOFOLLOW so a planted symlink cannot
+// redirect the read.  Always unlinks the stamp so it cannot affect
+// quota accounting or leak into the tenant tree.
+bool consume_watchdog_stamp(const fs::path& ws_path,
+                            const std::string& stamp_name,
+                            const std::string& token) {
+    if (ws_path.empty() || stamp_name.empty() || token.empty()) return false;
+    if (stamp_name.find('/') != std::string::npos) return false;
+    const fs::path stamp = ws_path / stamp_name;
+    bool matched = false;
+    const int fd = ::open(stamp.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd >= 0) {
+        std::string body(token.size() + 2, '\0');
+        const ssize_t n = ::read(fd, body.data(), body.size());
+        ::close(fd);
+        if (n > 0) {
+            body.resize(static_cast<size_t>(n));
+            if (!body.empty() && body.back() == '\n') body.pop_back();
+            if (!body.empty() && body.back() == '\r') body.pop_back();
+            matched = (body == token);
+        }
+    }
+    ::unlink(stamp.c_str());
+    return matched;
+}
+
 // Wrap a user command so the container itself enforces the wall-clock
-// deadline.  GNU `timeout -s KILL` SIGKILLs its own process group and
-// exits 137 instead of reserved 124; BusyBox timeout(1) also uses
-// 128+signal, which collides with OOM.  A sentinel watchdog exits 124
-// only if this wrapper's kill succeeded.  The parent-side SIGKILL of
-// `docker exec` + kill_exec_survivors is still the backstop.
+// deadline.  GNU `timeout -s KILL` and BusyBox timeout(1) both report
+// timeout as 128+signal, which collides with OOM and with a command
+// that simply `exit 124`.  The watchdog writes an unpredictable token
+// into the bind-mounted workspace after it successfully SIGKILLs the
+// command; the parent treats that file — not any exit status — as the
+// timeout signal.  Parent SIGKILL of `docker exec` remains the backstop.
 std::string wrap_exec_with_timeout(const std::string& command,
-                                   int timeout_seconds) {
+                                   int timeout_seconds,
+                                   const std::string& stamp_rel,
+                                   const std::string& token) {
     if (timeout_seconds <= 0) return command;
     const std::string q = shell_single_quote(command);
     const std::string n = std::to_string(timeout_seconds);
-    // setsid (when present) puts command and watchdog in their own
-    // sessions so SIGKILL of a process group cannot hit this shell.
-    // $cpid/$stamp are expanded by this shell when the watchdog line
-    // runs, so the deadline helper bakes in concrete values.
+    const std::string qstamp = shell_single_quote(stamp_rel);
+    const std::string qtok = shell_single_quote(token);
     return
-        "stamp=/tmp/.arbiter-to-$$; "
-        "rm -f \"$stamp\"; "
         "if command -v setsid >/dev/null 2>&1; then "
         "  setsid sh -c " + q + " & "
         "  cpid=$!; "
         "  setsid sh -c \"sleep " + n + "; "
-        "    if kill -s KILL -- -$cpid 2>/dev/null; then echo 1 > $stamp; fi\" & "
+        "    if kill -s KILL -- -$cpid 2>/dev/null; then "
+        "      printf '%s\\n' " + qtok + " > " + qstamp + "; "
+        "    fi\" & "
         "  wdpid=$!; "
         "else "
         "  sh -c " + q + " & "
         "  cpid=$!; "
         "  sh -c \"sleep " + n + "; "
-        "    if kill -s KILL $cpid 2>/dev/null; then echo 1 > $stamp; fi\" & "
+        "    if kill -s KILL $cpid 2>/dev/null; then "
+        "      printf '%s\\n' " + qtok + " > " + qstamp + "; "
+        "    fi\" & "
         "  wdpid=$!; "
         "fi; "
         "wait \"$cpid\"; "
@@ -86,19 +146,7 @@ std::string wrap_exec_with_timeout(const std::string& command,
         "fi; "
         "kill -s KILL \"$wdpid\" 2>/dev/null; "
         "wait \"$wdpid\" 2>/dev/null; "
-        "if [ -f \"$stamp\" ]; then "
-        "  rm -f \"$stamp\"; "
-        "  exit 124; "
-        "fi; "
         "exit $rc";
-}
-
-// Map a finished /exec status to "the configured deadline fired".
-// The sentinel watchdog exits 124 only when it sent the deadline kill.
-// 137/143 are never treated as timeout — those are OOM / self-kill /
-// external signals.
-bool exec_status_indicates_timeout(int rc, int exec_timeout_seconds) {
-    return exec_timeout_seconds > 0 && rc == 124;
 }
 
 // Pre-exec copy of the bind-mounted workspace, stored as a sibling of
@@ -1251,11 +1299,17 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     const int exec_timeout = (timeout_seconds_override > 0)
         ? timeout_seconds_override
         : cfg_.exec_timeout_seconds;
-    // Container-side deadline (GNU timeout when present) + parent-side
-    // backstop.  Parent gets a small grace so the in-container timeout
-    // can exit with 124 before we SIGKILL the docker-exec driver.
+    // Container-side watchdog + parent-side backstop.  Parent gets a
+    // small grace so the watchdog can write its workspace stamp before
+    // we SIGKILL the docker-exec driver.
+    const std::string timeout_token =
+        (exec_timeout > 0) ? random_hex(16) : std::string{};
+    const std::string timeout_stamp =
+        timeout_token.empty() ? std::string{}
+                              : (".arbiter-to-" + timeout_token);
     const std::string wrapped =
-        wrap_exec_with_timeout(command, exec_timeout);
+        wrap_exec_with_timeout(command, exec_timeout,
+                               timeout_stamp, timeout_token);
     std::vector<std::string> argv{
         cfg_.runtime, "exec",
         "-i",
@@ -1304,9 +1358,11 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
                           static_cast<size_t>(cfg_.output_max_bytes),
                           r.output, timed_out, &truncated, cancel, &canceled);
         // Parent backstop sets timed_out when it SIGKILLs docker-exec.
-        // Container-side wrapper reserves 124 for "we fired the deadline".
-        if (!timed_out && !canceled &&
-            exec_status_indicates_timeout(rc, exec_timeout)) {
+        // Container-side timeout is the watchdog stamp only — never the
+        // command's exit status (124/137/143 are ordinary statuses).
+        // consume_ always unlinks the stamp so it cannot affect quota.
+        if (consume_watchdog_stamp(ws_path, timeout_stamp, timeout_token) &&
+            !timed_out && !canceled) {
             timed_out = true;
         }
     }

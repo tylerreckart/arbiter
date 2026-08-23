@@ -12,10 +12,10 @@
 //            taken beside the bind mount.  Over-cap, cancelled, or timed-out
 //            results restore the tree from that snapshot (deleted files
 //            recreated, overwrites reverted, new files removed) so the cap
-//            sticks.  Timeout is the parent backstop or the wrapper's
-//            reserved status 124 (sentinel watchdog).  137 and 143 are
-//            never treated as timeout — those are OOM, self-kill, or
-//            external signals.
+//            sticks.  Timeout is the parent backstop or a per-exec
+//            watchdog stamp written into the workspace after the wrapper
+//            itself SIGKILLs the command.  Exit statuses 124/137/143 are
+//            never treated as timeout.
 //            Restore uses openat(O_NOFOLLOW)/mkdirat/unlinkat from the
 //            workspace directory fd so a command cannot redirect host-side
 //            writes through a parent symlink.
@@ -27,8 +27,9 @@
 //
 // Resource caps (memory, cpus, pids, --network=none) are applied at
 // container start.  Per-exec wall-clock is enforced two ways: the command
-// is wrapped with a sentinel watchdog that exits 124 only if it sent
-// SIGKILL, and the parent SIGKILLs the `docker exec` driver process when
+// is wrapped with a sentinel watchdog that writes a per-exec token into
+// the workspace only if it sent SIGKILL, and the parent SIGKILLs the
+// `docker exec` driver process when
 // the deadline elapses.  On timeout a best-effort pass kills leftover non-PID-1
 // processes inside the warm container.  Same-tenant `/exec` calls are
 // serialized so that survivor cleanup cannot clobber a concurrent exec.
