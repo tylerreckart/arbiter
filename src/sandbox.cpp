@@ -80,8 +80,9 @@ std::string random_hex(size_t nbytes) {
 
 // True when the watchdog wrote `token` to `stamp_name` under the
 // bind-mounted workspace.  O_NOFOLLOW so a planted symlink cannot
-// redirect the read.  Always unlinks the stamp so it cannot affect
-// quota accounting or leak into the tenant tree.
+// redirect the read.  Always unlinks the stamp and its atomic-write
+// temp so they cannot affect quota accounting or leak into the tenant
+// tree.
 bool consume_watchdog_stamp(const fs::path& ws_path,
                             const std::string& stamp_name,
                             const std::string& token) {
@@ -102,16 +103,24 @@ bool consume_watchdog_stamp(const fs::path& ws_path,
         }
     }
     ::unlink(stamp.c_str());
+    // Best-effort: a leftover atomic-write temp must not charge quota
+    // or linger in the tenant tree if the watchdog was reaped mid-write.
+    ::unlink((ws_path / (stamp_name + ".tmp")).c_str());
     return matched;
 }
 
 // Wrap a user command so the container itself enforces the wall-clock
 // deadline.  GNU `timeout -s KILL` and BusyBox timeout(1) both report
 // timeout as 128+signal, which collides with OOM and with a command
-// that simply `exit 124`.  The watchdog writes an unpredictable token
-// into the bind-mounted workspace after it successfully SIGKILLs the
-// command; the parent treats that file — not any exit status — as the
-// timeout signal.  Parent SIGKILL of `docker exec` remains the backstop.
+// that simply `exit 124`.  After `sleep N` the watchdog writes an
+// unpredictable token into the bind-mounted workspace *first* (atomic
+// tmp+mv), then SIGKILLs the command.  Write-before-kill is required:
+// `wait` on the command cannot return until after that kill, so the
+// leftover watchdog reap below cannot drop a real timeout.  The previous
+// order (kill, then stamp, and only if kill succeeded) lost the stamp
+// when the wrapper reaped the watchdog between kill and printf — the
+// parent then saw ordinary 137 and kept under-quota partial writes.
+// Parent SIGKILL of `docker exec` remains the backstop.
 std::string wrap_exec_with_timeout(const std::string& command,
                                    int timeout_seconds,
                                    const std::string& stamp_rel,
@@ -120,23 +129,27 @@ std::string wrap_exec_with_timeout(const std::string& command,
     const std::string q = shell_single_quote(command);
     const std::string n = std::to_string(timeout_seconds);
     const std::string qstamp = shell_single_quote(stamp_rel);
+    const std::string qtmp = shell_single_quote(stamp_rel + ".tmp");
     const std::string qtok = shell_single_quote(token);
+    // Durable "deadline elapsed" marker.  Inserted inside the watchdog's
+    // double-quoted `sh -c` so $cpid is still expanded by the wrapper.
+    const std::string stamp_then_kill =
+        "printf '%s\\n' " + qtok + " > " + qtmp + " && "
+        "mv -f " + qtmp + " " + qstamp + "; ";
     return
         "if command -v setsid >/dev/null 2>&1; then "
         "  setsid sh -c " + q + " & "
         "  cpid=$!; "
         "  setsid sh -c \"sleep " + n + "; "
-        "    if kill -s KILL -- -$cpid 2>/dev/null; then "
-        "      printf '%s\\n' " + qtok + " > " + qstamp + "; "
-        "    fi\" & "
+        + stamp_then_kill +
+        "    kill -s KILL -- -$cpid 2>/dev/null\" & "
         "  wdpid=$!; "
         "else "
         "  sh -c " + q + " & "
         "  cpid=$!; "
         "  sh -c \"sleep " + n + "; "
-        "    if kill -s KILL $cpid 2>/dev/null; then "
-        "      printf '%s\\n' " + qtok + " > " + qstamp + "; "
-        "    fi\" & "
+        + stamp_then_kill +
+        "    kill -s KILL $cpid 2>/dev/null\" & "
         "  wdpid=$!; "
         "fi; "
         "wait \"$cpid\"; "

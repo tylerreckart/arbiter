@@ -499,10 +499,11 @@ TEST_CASE("sandbox exec: natural status 124 is not a timeout") {
     CHECK(fs::exists(fs::path(ws) / "kept.bin"));
     CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
     CHECK(mgr.measure_workspace_bytes(tid) == 150);
-    // Watchdog stamp must not leak into the tenant tree.
+    // Watchdog stamp (and its atomic-write .tmp) must not leak.
     bool leaked = false;
     for (auto it = fs::directory_iterator(ws); it != fs::directory_iterator(); ++it) {
-        if (it->path().filename().string().rfind(".arbiter-to-", 0) == 0)
+        const auto name = it->path().filename().string();
+        if (name.rfind(".arbiter-to-", 0) == 0)
             leaked = true;
     }
     CHECK_FALSE(leaked);
@@ -528,6 +529,9 @@ TEST_CASE("sandbox exec: timeout restores under-quota mutations") {
     std::string err;
     REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
 
+    // Watchdog writes the stamp before SIGKILL so leftover reap of the
+    // watchdog cannot drop a real timeout (parent would otherwise see
+    // ordinary 137 and keep this under-quota write).
     auto result = mgr.exec(
         tid, "head -c 50 /dev/zero > partial.bin; sleep 5",
         /*timeout_seconds_override=*/1);
@@ -536,6 +540,12 @@ TEST_CASE("sandbox exec: timeout restores under-quota mutations") {
     CHECK_FALSE(fs::exists(fs::path(ws) / "partial.bin"));
     CHECK(fs::exists(fs::path(ws) / "seed.txt"));
     CHECK(mgr.measure_workspace_bytes(tid) == 100);
+    bool leaked = false;
+    for (auto it = fs::directory_iterator(ws); it != fs::directory_iterator(); ++it) {
+        if (it->path().filename().string().rfind(".arbiter-to-", 0) == 0)
+            leaked = true;
+    }
+    CHECK_FALSE(leaked);
 
     fs::remove_all(root);
 }
