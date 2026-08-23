@@ -31,7 +31,7 @@ not writable.
 Pin a specific release:
 
 ```bash
-curl -fsSL https://arbiter.run/install.sh | ARBITER_VERSION=v0.12.12 sh
+curl -fsSL https://arbiter.run/install.sh | ARBITER_VERSION=v0.12.13 sh
 ```
 
 ### From source
