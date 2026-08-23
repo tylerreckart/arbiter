@@ -2,9 +2,11 @@
 // include/mcp/manager.h — Per-request MCP session manager
 //
 // The Manager owns a registry of named server configs and lazy-spawns
-// a Client the first time the agent references each one.  All clients
-// die together when the Manager is destroyed (which happens at
-// orchestrator teardown — i.e. when the /v1/orchestrate request ends).
+// a Client the first time the agent references each one.  Cached
+// Clients are shared_ptrs: in-flight /mcp calls keep their session
+// alive if a later acquire evicts a dead subprocess.  Remaining
+// cache entries die when the Manager is destroyed (orchestrator
+// teardown — i.e. when the /v1/orchestrate request ends).
 //
 // Why per-request and not long-lived?
 //   • Tenant isolation — a stateful playwright session must not bleed
@@ -73,16 +75,27 @@ public:
     std::vector<std::string> server_names() const;
 
     // Acquire (or spawn) the named client.  Throws if the name isn't
-    // registered, or if spawn/handshake fails.  The returned reference
-    // is valid for the lifetime of the Manager.  Not thread-safe across
-    // managers, but the per-request orchestrator funnels every /mcp
-    // call through one thread so we don't need a finer-grained lock.
-    Client& client(const std::string& name);
+    // registered, or if spawn/handshake fails.
+    //
+    // Returns a shared_ptr so the caller keeps the Client alive even if a
+    // later acquire evicts a dead subprocess from the cache.  /parallel
+    // children share one Manager and can call /mcp concurrently; each
+    // invoker holds its own ref for the duration of tools()/call_tool(),
+    // so destroying the cache entry cannot UAF an in-flight call.
+    //
+    // A cached Client whose subprocess has exited is dropped from the
+    // map and replaced with a fresh session on the next acquire.
+    // Liveness is checked outside the Manager lock (it takes the
+    // Client's rpc_mu_) so an in-flight cancel cannot deadlock the
+    // cache or waitpid the child twice.  In-flight callers of the
+    // dead Client still see their own shared_ptr (and get a protocol
+    // error on the next RPC).
+    std::shared_ptr<Client> client(const std::string& name);
 
 private:
-    std::vector<ServerSpec>                            specs_;
-    std::map<std::string, std::unique_ptr<Client>>     clients_;
-    mutable std::mutex                                 mu_;
+    std::vector<ServerSpec>                                specs_;
+    std::map<std::string, std::shared_ptr<Client>>         clients_;
+    mutable std::mutex                                     mu_;
 };
 
 } // namespace arbiter::mcp

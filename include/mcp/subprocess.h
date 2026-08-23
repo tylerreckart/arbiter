@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <atomic>
+#include <mutex>
 #include <sys/types.h>
 #include <vector>
 
@@ -38,7 +39,9 @@ public:
     Subprocess& operator=(const Subprocess&) = delete;
 
     // Send one line.  '\n' is appended automatically.  Returns false on
-    // a closed pipe (child exited).
+    // a closed pipe (child exited).  SIGPIPE is blocked around the write
+    // and any pending SIGPIPE is drained before the mask is restored, so
+    // a dead child becomes EPIPE rather than killing the host process.
     bool send_line(const std::string& line);
 
     // Read one '\n'-terminated line from the child's stdout, with a
@@ -53,7 +56,10 @@ public:
 
     // True if the child is still alive.  Cheap — just a non-blocking
     // waitpid(WNOHANG).  Caches the exit status once observed.
-    bool alive();
+    // Serialized with terminate() / destructor reap on mu_ so a
+    // Manager liveness check cannot waitpid the same pid as an
+    // in-flight cancel.
+    bool alive() const;
 
     // Send SIGTERM, give the child up to `grace` to exit, then SIGKILL.
     // Idempotent — safe to call after the child has already exited.
@@ -66,8 +72,10 @@ private:
 
     std::string read_buf_;    // accumulator for partial lines
 
-    bool exited_   = false;
-    int  exit_status_ = 0;
+    // Guards pid_/exited_/exit_status_ and every waitpid of pid_.
+    mutable std::mutex mu_;
+    mutable bool exited_   = false;
+    mutable int  exit_status_ = 0;
 
     // Move all bytes available on stdout into read_buf_, blocking up to
     // `timeout`.  Returns false on EOF / read error / timeout-with-no-bytes.

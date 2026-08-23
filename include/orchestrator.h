@@ -526,6 +526,10 @@ private:
                                        const std::string& classify_text,
                                        bool fresh_ingress = true);
 
+    // Spoken/voice agents and voice-channel ingress must not be intent-rerouted
+    // onto compressed specialists mid-conversation.
+    [[nodiscard]] bool ingress_skips_intent_reroute(const std::string& agent_id) const;
+
     // Master index agent for meta-queries
     std::unique_ptr<Agent> index_master_;
 

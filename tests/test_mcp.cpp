@@ -12,7 +12,7 @@
 // smoke test (operator runs `arbiter --api`, then a /v1/orchestrate call
 // emits `/mcp call playwright browser_navigate {"url":"..."}`).
 
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 
 #include "commands.h"
@@ -23,16 +23,141 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <atomic>
+#include <string>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 using namespace arbiter;
 using namespace arbiter::mcp;
 using namespace std::chrono_literals;
+
+static std::string g_argv0;
+
+static std::string this_executable() {
+#if defined(__linux__)
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        return std::string(buf, static_cast<size_t>(n));
+    }
+#elif defined(__APPLE__)
+    char buf[4096];
+    uint32_t sz = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &sz) == 0) return std::string(buf);
+#endif
+    return g_argv0;
+}
+
+// Minimal stdio MCP server so Manager/Client tests do not need playwright.
+// argv: --mcp-stub [--exit-after-init] [--die-after=N] [--hang-on-call]
+static int mcp_stub_main(int argc, char** argv) {
+    bool exit_after_init = false;
+    bool hang_on_call = false;
+    int die_after = 0;
+    for (int i = 2; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--exit-after-init") exit_after_init = true;
+        else if (a == "--hang-on-call") hang_on_call = true;
+        else if (a.rfind("--die-after=", 0) == 0)
+            die_after = std::atoi(a.c_str() + 12);
+    }
+
+    int tool_replies = 0;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.empty()) continue;
+        std::shared_ptr<JsonValue> v;
+        try { v = json_parse(line); }
+        catch (...) { continue; }
+        if (!v || !v->is_object()) continue;
+
+        const std::string method = v->get_string("method", "");
+        if (method == "notifications/initialized") {
+            if (exit_after_init) return 0;
+            continue;
+        }
+
+        auto idv = v->get("id");
+        if (!idv || !idv->is_number()) continue;
+        const double id = idv->as_number();
+
+        auto resp = jobj();
+        auto& m = resp->as_object_mut();
+        m["jsonrpc"] = jstr("2.0");
+        m["id"] = jnum(id);
+
+        if (method == "initialize") {
+            auto result = jobj();
+            auto& rm = result->as_object_mut();
+            rm["protocolVersion"] = jstr("2025-06-18");
+            rm["capabilities"] = jobj();
+            auto info = jobj();
+            info->as_object_mut()["name"] = jstr("arbiter-test-stub");
+            rm["serverInfo"] = info;
+            m["result"] = result;
+        } else if (method == "tools/list") {
+            auto tool = jobj();
+            auto& tm = tool->as_object_mut();
+            tm["name"] = jstr("ping");
+            tm["description"] = jstr("pong");
+            tm["inputSchema"] = jobj();
+            auto tools = jarr();
+            tools->as_array_mut().push_back(std::move(tool));
+            auto result = jobj();
+            result->as_object_mut()["tools"] = tools;
+            m["result"] = result;
+            ++tool_replies;
+        } else if (method == "tools/call") {
+            if (hang_on_call) {
+                std::string unused;
+                while (std::getline(std::cin, unused)) {}
+                return 0;
+            }
+            auto item = jobj();
+            auto& im = item->as_object_mut();
+            im["type"] = jstr("text");
+            im["text"] = jstr("pong");
+            auto content = jarr();
+            content->as_array_mut().push_back(std::move(item));
+            auto result = jobj();
+            result->as_object_mut()["content"] = content;
+            result->as_object_mut()["isError"] = jbool(false);
+            m["result"] = result;
+            ++tool_replies;
+        } else {
+            auto err = jobj();
+            err->as_object_mut()["code"] = jnum(-32601);
+            err->as_object_mut()["message"] = jstr("unknown method");
+            m["error"] = err;
+        }
+
+        std::cout << json_serialize(*resp) << '\n' << std::flush;
+        if (die_after > 0 && tool_replies >= die_after) return 0;
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc >= 1 && argv[0]) g_argv0 = argv[0];
+    if (argc >= 2 && std::strcmp(argv[1], "--mcp-stub") == 0)
+        return mcp_stub_main(argc, argv);
+    doctest::Context ctx;
+    ctx.applyCommandLine(argc, argv);
+    return ctx.run();
+}
 
 // ── 1. JSON-RPC framing ─────────────────────────────────────────────
 
@@ -181,6 +306,37 @@ TEST_CASE("Subprocess: recv_line returns nullopt on cancel") {
     t.join();
     CHECK_FALSE(got.has_value());
     CHECK(std::chrono::steady_clock::now() - start < 2s);
+}
+
+TEST_CASE("Subprocess: send_line after child exit returns false without SIGPIPE") {
+    // /bin/true exits immediately; a subsequent write must be EPIPE, not
+    // a process-killing SIGPIPE.  This is the same path Manager hits when
+    // a cached Client is used after its subprocess has died.
+    Subprocess proc({"/bin/true"});
+    for (int i = 0; i < 50 && proc.alive(); ++i)
+        std::this_thread::sleep_for(20ms);
+    CHECK_FALSE(proc.alive());
+    CHECK_FALSE(proc.send_line("hello after exit"));
+}
+
+TEST_CASE("Subprocess: concurrent alive and terminate do not double-reap") {
+    Subprocess proc({"/bin/sleep", "30"});
+    REQUIRE(proc.alive());
+    std::atomic<int> polls{0};
+    std::thread poller([&] {
+        for (int i = 0; i < 400; ++i) {
+            (void)proc.alive();
+            polls.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::sleep_for(1ms);
+        }
+    });
+    std::this_thread::sleep_for(20ms);
+    proc.terminate(80ms);
+    poller.join();
+    CHECK(polls.load() > 0);
+    CHECK_FALSE(proc.alive());
+    proc.terminate(50ms);
+    CHECK_FALSE(proc.alive());
 }
 
 TEST_CASE("Subprocess: terminate is idempotent and SIGKILLs after grace") {
@@ -618,4 +774,153 @@ TEST_CASE("load_server_registry skips entries with empty command") {
     CHECK(loaded[0].name == "ok");
     CHECK(loaded[0].argv.size() == 3);
     fs::remove_all(dir);
+}
+
+// ── 6. Manager client lifetime ──────────────────────────────────────
+
+namespace {
+
+ServerSpec stub_spec(std::vector<std::string> extra_args = {}) {
+    ServerSpec s;
+    s.name = "stub";
+    s.argv = {this_executable(), "--mcp-stub"};
+    s.argv.insert(s.argv.end(), extra_args.begin(), extra_args.end());
+    s.init_timeout = 5s;
+    s.call_timeout = 3s;
+    return s;
+}
+
+void wait_until_dead(const std::shared_ptr<Client>& cli) {
+    for (int i = 0; i < 50 && cli && cli->alive(); ++i)
+        std::this_thread::sleep_for(20ms);
+}
+
+} // namespace
+
+TEST_CASE("Manager: evicting a dead client keeps in-flight shared_ptrs valid") {
+    Manager mgr({stub_spec({"--die-after=1"})});
+
+    auto first = mgr.client("stub");
+    REQUIRE(first);
+    const auto tools = first->tools();
+    REQUIRE(tools.size() == 1);
+    CHECK(tools[0].name == "ping");
+    wait_until_dead(first);
+    REQUIRE_FALSE(first->alive());
+
+    // Eviction + respawn.  `first` must remain a usable object (no UAF)
+    // even though it is no longer the cached session.
+    auto second = mgr.client("stub");
+    REQUIRE(second);
+    CHECK(first != second);
+    CHECK_FALSE(first->alive());
+    CHECK_THROWS(first->call_tool("ping", jobj()));
+
+    const auto tools2 = second->tools();
+    REQUIRE(tools2.size() == 1);
+    CHECK(tools2[0].name == "ping");
+}
+
+TEST_CASE("Manager: live client is reused; tools/call round-trips") {
+    Manager mgr({stub_spec()});
+
+    auto a = mgr.client("stub");
+    auto b = mgr.client("stub");
+    REQUIRE(a);
+    REQUIRE(b);
+    CHECK(a == b);
+    CHECK(a->alive());
+
+    const auto tools = a->tools();
+    REQUIRE_FALSE(tools.empty());
+    auto result = b->call_tool("ping", jobj());
+    CHECK_FALSE(result.is_error);
+    REQUIRE_FALSE(result.content.empty());
+    CHECK(result.content[0].text == "pong");
+}
+
+TEST_CASE("Manager: concurrent acquire and RPC do not race the cache") {
+    Manager mgr({stub_spec({"--die-after=1"})});
+
+    constexpr int kThreads = 8;
+    std::atomic<int> ok{0};
+    std::atomic<int> failed{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&] {
+            try {
+                auto cli = mgr.client("stub");
+                auto tools = cli->tools();
+                if (!tools.empty())
+                    ok.fetch_add(1, std::memory_order_relaxed);
+                else
+                    failed.fetch_add(1, std::memory_order_relaxed);
+            } catch (...) {
+                failed.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    CHECK(ok.load() + failed.load() == kThreads);
+    CHECK(ok.load() >= 1);
+}
+
+TEST_CASE("Manager: concurrent call_tool on one session serializes") {
+    Manager mgr({stub_spec()});
+    auto cli = mgr.client("stub");
+    REQUIRE(cli);
+
+    constexpr int kThreads = 6;
+    std::atomic<int> ok{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&] {
+            try {
+                auto result = cli->call_tool("ping", jobj());
+                if (!result.is_error && !result.content.empty() &&
+                    result.content[0].text == "pong")
+                    ok.fetch_add(1, std::memory_order_relaxed);
+            } catch (...) {
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+    CHECK(ok.load() == kThreads);
+}
+
+TEST_CASE("Manager: acquire during cancelled RPC does not race reap") {
+    Manager mgr({stub_spec({"--hang-on-call"})});
+    auto cli = mgr.client("stub");
+    REQUIRE(cli);
+
+    std::atomic<bool> cancel{false};
+    std::thread rpc([&] {
+        try {
+            (void)cli->call_tool("ping", jobj(), &cancel);
+        } catch (...) {
+        }
+    });
+
+    std::this_thread::sleep_for(40ms);
+    std::atomic<int> acquires{0};
+    std::vector<std::thread> acquirers;
+    for (int i = 0; i < 4; ++i) {
+        acquirers.emplace_back([&] {
+            for (int j = 0; j < 16; ++j) {
+                try {
+                    auto c = mgr.client("stub");
+                    (void)c->alive();
+                    acquires.fetch_add(1, std::memory_order_relaxed);
+                } catch (...) {
+                }
+                std::this_thread::sleep_for(5ms);
+            }
+        });
+    }
+    cancel.store(true, std::memory_order_release);
+    rpc.join();
+    for (auto& t : acquirers) t.join();
+    CHECK(acquires.load() > 0);
 }

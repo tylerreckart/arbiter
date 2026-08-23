@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <cstdint>
 #include <limits>
 #include <chrono>
 #include <cstdio>
@@ -48,18 +49,140 @@ std::string shell_single_quote(const std::string& s) {
     return out;
 }
 
+std::string random_hex(size_t nbytes) {
+    std::string raw(nbytes, '\0');
+    const int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    size_t off = 0;
+    if (fd >= 0) {
+        while (off < nbytes) {
+            const ssize_t n = ::read(fd, raw.data() + off, nbytes - off);
+            if (n <= 0) break;
+            off += static_cast<size_t>(n);
+        }
+        ::close(fd);
+    }
+    if (off < nbytes) {
+        const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        const uint64_t mix = static_cast<uint64_t>(now) ^
+                             (static_cast<uint64_t>(::getpid()) << 32);
+        for (size_t i = off; i < nbytes; ++i)
+            raw[i] = static_cast<char>(mix >> ((i % 8) * 8));
+    }
+    static const char kHex[] = "0123456789abcdef";
+    std::string hex(nbytes * 2, '0');
+    for (size_t i = 0; i < nbytes; ++i) {
+        const unsigned char b = static_cast<unsigned char>(raw[i]);
+        hex[2 * i]     = kHex[b >> 4];
+        hex[2 * i + 1] = kHex[b & 0xf];
+    }
+    return hex;
+}
+
+// True when the watchdog wrote `token` to `stamp_name` under the
+// bind-mounted workspace.  O_NOFOLLOW so a planted symlink cannot
+// redirect the read.  Always unlinks the stamp and its atomic-write
+// temp so they cannot affect quota accounting or leak into the tenant
+// tree.
+bool consume_watchdog_stamp(const fs::path& ws_path,
+                            const std::string& stamp_name,
+                            const std::string& token) {
+    if (ws_path.empty() || stamp_name.empty() || token.empty()) return false;
+    if (stamp_name.find('/') != std::string::npos) return false;
+    const fs::path stamp = ws_path / stamp_name;
+    bool matched = false;
+    const int fd = ::open(stamp.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd >= 0) {
+        std::string body(token.size() + 2, '\0');
+        const ssize_t n = ::read(fd, body.data(), body.size());
+        ::close(fd);
+        if (n > 0) {
+            body.resize(static_cast<size_t>(n));
+            if (!body.empty() && body.back() == '\n') body.pop_back();
+            if (!body.empty() && body.back() == '\r') body.pop_back();
+            matched = (body == token);
+        }
+    }
+    ::unlink(stamp.c_str());
+    // Best-effort: a leftover atomic-write temp must not charge quota
+    // or linger in the tenant tree if the watchdog was reaped mid-write.
+    ::unlink((ws_path / (stamp_name + ".tmp")).c_str());
+    return matched;
+}
+
 // Wrap a user command so the container itself enforces the wall-clock
-// deadline when GNU `timeout` is on PATH inside the image.  Falls back
-// to a plain `sh -c` when `timeout` is missing — the parent-side
-// SIGKILL of `docker exec` + kill_exec_survivors remains the backstop.
+// deadline.  GNU `timeout -s KILL` and BusyBox timeout(1) both report
+// timeout as 128+signal, which collides with OOM and with a command
+// that simply `exit 124`.
+//
+// Protocol:
+//   1. Watchdog writes the token first (atomic tmp+mv), then SIGKILLs.
+//      Write-before-kill means `wait` on the command cannot return
+//      until after a real timeout stamp is durable.
+//   2. If that SIGKILL fails the command already exited; the watchdog
+//      deletes the stamp so a natural `exit 137` at the deadline is
+//      not reported as timeout.
+//   3. After `wait`, if a stamp is already visible the wrapper waits
+//      for the watchdog (so a failed-kill retract can finish) instead
+//      of SIGKILLing it.  If no stamp is visible the command finished
+//      first: reap the leftover and discard any stamp that appears
+//      after wait (too late to be a watchdog kill).
+//   4. Any remaining stamp on a non-137 status is discarded.
+//
+// Parent consume of the stamp — never 124/137/143 alone — is the
+// timeout signal.  Parent SIGKILL of `docker exec` remains the backstop.
 std::string wrap_exec_with_timeout(const std::string& command,
-                                   int timeout_seconds) {
+                                   int timeout_seconds,
+                                   const std::string& stamp_rel,
+                                   const std::string& token) {
     if (timeout_seconds <= 0) return command;
     const std::string q = shell_single_quote(command);
-    return "if command -v timeout >/dev/null 2>&1; then "
-           "exec timeout -s KILL " + std::to_string(timeout_seconds) +
-           "s sh -c " + q + "; "
-           "else exec sh -c " + q + "; fi";
+    const std::string n = std::to_string(timeout_seconds);
+    const std::string qstamp = shell_single_quote(stamp_rel);
+    const std::string qtmp = shell_single_quote(stamp_rel + ".tmp");
+    const std::string qtok = shell_single_quote(token);
+    // Inserted inside the watchdog's double-quoted `sh -c` so $cpid is
+    // still expanded by the wrapper.
+    const std::string publish =
+        "printf '%s\\n' " + qtok + " > " + qtmp + " && "
+        "mv -f " + qtmp + " " + qstamp + "; ";
+    const std::string retract =
+        "rm -f " + qstamp + " " + qtmp + "; ";
+    return
+        "if command -v setsid >/dev/null 2>&1; then "
+        "  setsid sh -c " + q + " & "
+        "  cpid=$!; "
+        "  setsid sh -c \"sleep " + n + "; "
+        + publish +
+        "    if ! kill -s KILL -- -$cpid 2>/dev/null; then "
+        + retract +
+        "    fi\" & "
+        "  wdpid=$!; "
+        "else "
+        "  sh -c " + q + " & "
+        "  cpid=$!; "
+        "  sh -c \"sleep " + n + "; "
+        + publish +
+        "    if ! kill -s KILL $cpid 2>/dev/null; then "
+        + retract +
+        "    fi\" & "
+        "  wdpid=$!; "
+        "fi; "
+        "wait \"$cpid\"; "
+        "rc=$?; "
+        "if [ -f " + qstamp + " ]; then "
+        "  wait \"$wdpid\" 2>/dev/null; "
+        "else "
+        "  if command -v setsid >/dev/null 2>&1; then "
+        "    kill -s KILL -- -$wdpid 2>/dev/null; "
+        "  fi; "
+        "  kill -s KILL \"$wdpid\" 2>/dev/null; "
+        "  wait \"$wdpid\" 2>/dev/null; "
+        + retract +
+        "fi; "
+        "if [ \"$rc\" -ne 137 ]; then "
+        + retract +
+        "fi; "
+        "exit $rc";
 }
 
 // Pre-exec copy of the bind-mounted workspace, stored as a sibling of
@@ -1212,11 +1335,17 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
     const int exec_timeout = (timeout_seconds_override > 0)
         ? timeout_seconds_override
         : cfg_.exec_timeout_seconds;
-    // Container-side deadline (GNU timeout when present) + parent-side
-    // backstop.  Parent gets a small grace so the in-container timeout
-    // can exit with 124 before we SIGKILL the docker-exec driver.
+    // Container-side watchdog + parent-side backstop.  Parent gets a
+    // small grace so the watchdog can write its workspace stamp before
+    // we SIGKILL the docker-exec driver.
+    const std::string timeout_token =
+        (exec_timeout > 0) ? random_hex(16) : std::string{};
+    const std::string timeout_stamp =
+        timeout_token.empty() ? std::string{}
+                              : (".arbiter-to-" + timeout_token);
     const std::string wrapped =
-        wrap_exec_with_timeout(command, exec_timeout);
+        wrap_exec_with_timeout(command, exec_timeout,
+                               timeout_stamp, timeout_token);
     std::vector<std::string> argv{
         cfg_.runtime, "exec",
         "-i",
@@ -1264,9 +1393,12 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         rc = run_capture(argv, parent_timeout,
                           static_cast<size_t>(cfg_.output_max_bytes),
                           r.output, timed_out, &truncated, cancel, &canceled);
-        // GNU timeout exits 124 on deadline; treat that as a clean timeout
-        // even when the parent backstop did not fire.
-        if (!timed_out && !canceled && exec_timeout > 0 && rc == 124) {
+        // Parent backstop sets timed_out when it SIGKILLs docker-exec.
+        // Container-side timeout is the watchdog stamp only — never the
+        // command's exit status (124/137/143 are ordinary statuses).
+        // consume_ always unlinks the stamp so it cannot affect quota.
+        if (consume_watchdog_stamp(ws_path, timeout_stamp, timeout_token) &&
+            !timed_out && !canceled) {
             timed_out = true;
         }
     }
@@ -1298,7 +1430,9 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         const bool over_cap = used > cfg_.workspace_max_bytes;
         // Skip restore when we never ran the command (cancel during the
         // snapshot copy) — an incomplete snap must not clobber the live tree.
-        if (ran_command && (over_cap || canceled)) {
+        // Timed-out commands can mutate the workspace before the deadline;
+        // roll back under-quota partial writes the same way cancel does.
+        if (ran_command && (over_cap || canceled || timed_out)) {
             const bool restored = rollback_workspace_to_snap(ws_path, pre_exec);
             const int64_t used_after = measure_workspace_bytes(tenant_id);
             if (over_cap) {

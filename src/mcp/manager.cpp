@@ -222,9 +222,10 @@ bool save_server_registry(const std::string& path,
 Manager::Manager(std::vector<ServerSpec> specs) : specs_(std::move(specs)) {}
 
 Manager::~Manager() {
-    // Destruction order: clients first (under the lock so a parallel
-    // /mcp call can't race a crash here), then specs.  Each Client's
-    // dtor SIGTERMs its subprocess.
+    // Drop cache entries under the lock so a parallel /mcp acquire
+    // cannot race the map.  In-flight shared_ptrs keep their Client
+    // (and its subprocess) alive until those calls return; each
+    // remaining Client dtor then SIGTERMs its subprocess.
     std::lock_guard<std::mutex> lk(mu_);
     clients_.clear();
 }
@@ -241,10 +242,29 @@ std::vector<std::string> Manager::server_names() const {
     return out;
 }
 
-Client& Manager::client(const std::string& name) {
+std::shared_ptr<Client> Manager::client(const std::string& name) {
+    std::shared_ptr<Client> cached;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = clients_.find(name);
+        if (it != clients_.end()) cached = it->second;
+    }
+    // Liveness (and in-flight cancel/reap) serialize on the Client's
+    // rpc_mu_.  Check it *outside* mu_ so a long tools/call cannot
+    // pin the whole Manager.
+    if (cached && cached->alive()) return cached;
+
     std::lock_guard<std::mutex> lk(mu_);
     auto it = clients_.find(name);
-    if (it != clients_.end()) return *it->second;
+    if (it != clients_.end()) {
+        if (!cached || it->second != cached) {
+            // Another acquire installed a replacement while we waited.
+            return it->second;
+        }
+        // Drop the cache entry only.  Callers that already hold a
+        // shared_ptr keep the dead Client until they release it.
+        clients_.erase(it);
+    }
 
     // Find the spec.
     const ServerSpec* spec = nullptr;
@@ -258,10 +278,9 @@ Client& Manager::client(const std::string& name) {
     cfg.init_timeout = spec->init_timeout;
     cfg.call_timeout = spec->call_timeout;
 
-    auto cli = std::make_unique<Client>(std::move(cfg));
-    Client& ref = *cli;
-    clients_[name] = std::move(cli);
-    return ref;
+    auto cli = std::make_shared<Client>(std::move(cfg));
+    clients_[name] = cli;
+    return cli;
 }
 
 } // namespace arbiter::mcp

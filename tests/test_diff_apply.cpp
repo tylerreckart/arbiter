@@ -476,3 +476,20 @@ TEST_CASE("apply_unified_diff refuses files over kMaxDiffFileBytes") {
     CHECK_FALSE(r.ok);
     CHECK(r.error.find("10 MiB") != std::string::npos);
 }
+
+TEST_CASE("apply_unified_diff: refuses to read through symlink") {
+    TempDir dir;
+    write_text(dir.path / "secret.txt", "secret\n");
+    const fs::path link = dir.path / "foo.txt";
+    fs::create_symlink(dir.path / "secret.txt", link);
+    const char* patch =
+        "--- a/foo.txt\n"
+        "+++ b/foo.txt\n"
+        "@@ -1 +1 @@\n"
+        "-secret\n"
+        "+public\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("symlink") != std::string::npos);
+    CHECK(read_text(dir.path / "secret.txt") == "secret\n");
+}

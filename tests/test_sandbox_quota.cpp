@@ -371,6 +371,251 @@ TEST_CASE("sandbox exec: cancel restores under-quota mutations") {
     fs::remove_all(root);
 }
 
+TEST_CASE("sandbox exec: SIGKILL status 137 before the deadline keeps writes") {
+    const std::string root = make_temp_root("quota-exec-137");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    cfg.exec_timeout_seconds = 30;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 21;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    // Command exits 137 immediately (OOM / self-kill), far short of the
+    // 30s deadline.  Must not be classified as a wrapper timeout.
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > kept.bin; exit 137");
+    CHECK_FALSE(result.timed_out);
+    CHECK_FALSE(result.canceled);
+    CHECK(result.output.find("[timed out") == std::string::npos);
+    CHECK(result.output.find("[exit 137]") != std::string::npos);
+    CHECK(fs::exists(fs::path(ws) / "kept.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
+    CHECK(fs::exists(fs::path(ws) / "seed.txt"));
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: SIGKILL status 137 near the deadline keeps writes") {
+    const std::string root = make_temp_root("quota-exec-137-late");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 24;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    // Finishes ~200ms before a 2s deadline with 137.  A wall-clock
+    // heuristic would still classify this as timeout; the wrapper
+    // did not fire, so the write must stay.
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > kept.bin; sleep 1.8; exit 137",
+        /*timeout_seconds_override=*/2);
+    CHECK_FALSE(result.timed_out);
+    CHECK_FALSE(result.canceled);
+    CHECK(result.output.find("[timed out") == std::string::npos);
+    CHECK(result.output.find("[exit 137]") != std::string::npos);
+    CHECK(fs::exists(fs::path(ws) / "kept.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: SIGTERM status 143 before the deadline keeps writes") {
+    const std::string root = make_temp_root("quota-exec-143");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    cfg.exec_timeout_seconds = 30;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 22;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > kept.bin; exit 143");
+    CHECK_FALSE(result.timed_out);
+    CHECK(result.output.find("[timed out") == std::string::npos);
+    CHECK(result.output.find("[exit 143]") != std::string::npos);
+    CHECK(fs::exists(fs::path(ws) / "kept.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: natural status 124 is not a timeout") {
+    const std::string root = make_temp_root("quota-exec-124");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    cfg.exec_timeout_seconds = 30;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 23;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > kept.bin; exit 124");
+    CHECK_FALSE(result.timed_out);
+    CHECK(result.output.find("[timed out") == std::string::npos);
+    CHECK(result.output.find("[exit 124]") != std::string::npos);
+    CHECK(fs::exists(fs::path(ws) / "kept.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+    // Watchdog stamp (and its atomic-write .tmp) must not leak.
+    bool leaked = false;
+    for (auto it = fs::directory_iterator(ws); it != fs::directory_iterator(); ++it) {
+        const auto name = it->path().filename().string();
+        if (name.rfind(".arbiter-to-", 0) == 0)
+            leaked = true;
+    }
+    CHECK_FALSE(leaked);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: natural exit near the deadline keeps writes") {
+    const std::string root = make_temp_root("quota-exec-natural-late");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 25;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    // Finishes ~200ms before a 1s deadline with status 0.  Write-before-kill
+    // can leave a stamp if the watchdog races the natural exit; the wrapper
+    // must discard that stamp so this write is kept.
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > kept.bin; sleep 0.8",
+        /*timeout_seconds_override=*/1);
+    CHECK_FALSE(result.timed_out);
+    CHECK(result.output.find("[timed out") == std::string::npos);
+    CHECK(fs::exists(fs::path(ws) / "kept.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: natural 137 at the deadline keeps writes") {
+    const std::string root = make_temp_root("quota-exec-137-at-deadline");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 26;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    // Finishes with 137 in the same second as the deadline.  The watchdog
+    // may write a stamp and then fail SIGKILL; that stamp must be
+    // retracted so this under-quota write is kept.
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > kept.bin; sleep 0.8; exit 137",
+        /*timeout_seconds_override=*/1);
+    CHECK_FALSE(result.timed_out);
+    CHECK(result.output.find("[timed out") == std::string::npos);
+    CHECK(fs::exists(fs::path(ws) / "kept.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: timeout restores under-quota mutations") {
+    const std::string root = make_temp_root("quota-exec-timeout");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 15;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    // Watchdog writes the stamp before SIGKILL so leftover reap of the
+    // watchdog cannot drop a real timeout (parent would otherwise see
+    // ordinary 137 and keep this under-quota write).
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > partial.bin; sleep 5",
+        /*timeout_seconds_override=*/1);
+    CHECK(result.timed_out);
+    CHECK(result.output.find("[timed out") != std::string::npos);
+    CHECK_FALSE(fs::exists(fs::path(ws) / "partial.bin"));
+    CHECK(fs::exists(fs::path(ws) / "seed.txt"));
+    CHECK(mgr.measure_workspace_bytes(tid) == 100);
+    bool leaked = false;
+    for (auto it = fs::directory_iterator(ws); it != fs::directory_iterator(); ++it) {
+        if (it->path().filename().string().rfind(".arbiter-to-", 0) == 0)
+            leaked = true;
+    }
+    CHECK_FALSE(leaked);
+
+    fs::remove_all(root);
+}
+
 TEST_CASE("sandbox exec: quota rollback removes chmod-locked overflow") {
     const std::string root = make_temp_root("quota-exec-chmod");
     install_docker_stub(root);
