@@ -9,9 +9,12 @@
 //
 //   /exec    runs `docker exec` against the container with cwd /workspace.
 //            When workspace_max_bytes is set, a pre-exec content snapshot is
-//            taken beside the bind mount.  Over-cap or cancelled results
-//            restore the tree from that snapshot (deleted files recreated,
-//            overwrites reverted, new files removed) so the cap sticks.
+//            taken beside the bind mount.  Over-cap, cancelled, or timed-out
+//            results restore the tree from that snapshot (deleted files
+//            recreated, overwrites reverted, new files removed) so the cap
+//            sticks.  Timeout is the parent backstop, GNU timeout's reserved
+//            status 124, or BusyBox-style 137/143 only after the deadline
+//            has actually elapsed (so an OOM SIGKILL does not roll back).
 //            Restore uses openat(O_NOFOLLOW)/mkdirat/unlinkat from the
 //            workspace directory fd so a command cannot redirect host-side
 //            writes through a parent symlink.

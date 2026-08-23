@@ -62,6 +62,25 @@ std::string wrap_exec_with_timeout(const std::string& command,
            "else exec sh -c " + q + "; fi";
 }
 
+// Map a finished /exec status to "the configured deadline fired".
+//
+// GNU `timeout` exits 124 on deadline (whether it sent SIGTERM or
+// SIGKILL).  BusyBox `timeout -s KILL` exits 137 and default SIGTERM
+// exits 143 — but those are also OOM / external-signal statuses, so
+// they only count when the command actually ran to the deadline.
+// A 250ms slack covers timer/scheduling jitter so a BusyBox kill at
+// T is not missed while an immediate `exit 137` is not rolled back.
+bool exec_status_indicates_timeout(
+        int rc,
+        int exec_timeout_seconds,
+        std::chrono::steady_clock::duration elapsed) {
+    if (exec_timeout_seconds <= 0) return false;
+    if (rc == 124) return true;
+    if (rc != 137 && rc != 143) return false;
+    return elapsed + std::chrono::milliseconds(250) >=
+           std::chrono::seconds(exec_timeout_seconds);
+}
+
 // Pre-exec copy of the bind-mounted workspace, stored as a sibling of
 // `t<tid>/` so the container cannot mutate it.  Used to restore the tree
 // when /exec exceeds workspace_max_bytes or is cancelled — including
@@ -1261,14 +1280,18 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
 
     if (!canceled) {
         ran_command = true;
+        const auto exec_started = std::chrono::steady_clock::now();
         rc = run_capture(argv, parent_timeout,
                           static_cast<size_t>(cfg_.output_max_bytes),
                           r.output, timed_out, &truncated, cancel, &canceled);
-        // GNU timeout exits 124 on deadline (SIGTERM default) or 137 when
-        // -s KILL is used (wrap_exec_with_timeout).  Parent backstop sets
-        // timed_out directly; map container-side kills here too.
-        if (!timed_out && !canceled && exec_timeout > 0 &&
-            (rc == 124 || rc == 137 || rc == 143)) {
+        const auto elapsed = std::chrono::steady_clock::now() - exec_started;
+        // Parent backstop sets timed_out when it SIGKILLs docker-exec.
+        // Container-side GNU `timeout` reserves 124.  BusyBox `timeout
+        // -s KILL` returns 137 (128+SIGKILL) and default SIGTERM returns
+        // 143 — the same statuses as OOM / external signals, so those
+        // only count as a deadline when the wall-clock actually elapsed.
+        if (!timed_out && !canceled &&
+            exec_status_indicates_timeout(rc, exec_timeout, elapsed)) {
             timed_out = true;
         }
     }

@@ -3,6 +3,7 @@
 #include "mcp/client.h"
 
 #include <atomic>
+#include <mutex>
 #include <stdexcept>
 
 namespace arbiter::mcp {
@@ -66,6 +67,14 @@ Response Client::rpc(const std::string& method,
                       std::shared_ptr<JsonValue> params,
                       std::chrono::milliseconds timeout,
                       std::atomic<bool>* cancel) {
+    std::lock_guard<std::mutex> lk(rpc_mu_);
+    return rpc_unlocked(method, std::move(params), timeout, cancel);
+}
+
+Response Client::rpc_unlocked(const std::string& method,
+                               std::shared_ptr<JsonValue> params,
+                               std::chrono::milliseconds timeout,
+                               std::atomic<bool>* cancel) {
     if (!proc_) throw std::runtime_error("MCP client not initialised");
     Request req;
     req.id     = next_id_++;
@@ -108,8 +117,9 @@ Response Client::rpc(const std::string& method,
 }
 
 const std::vector<ToolDescriptor>& Client::tools() {
+    std::lock_guard<std::mutex> lk(rpc_mu_);
     if (tools_loaded_) return tools_cache_;
-    auto resp = rpc("tools/list", jobj(), cfg_.call_timeout);
+    auto resp = rpc_unlocked("tools/list", jobj(), cfg_.call_timeout, nullptr);
     tools_cache_ = parse_tools_list(resp);
     tools_loaded_ = true;
     return tools_cache_;
@@ -122,7 +132,8 @@ ToolResult Client::call_tool(const std::string& name,
     auto& m = params->as_object_mut();
     m["name"]      = jstr(name);
     m["arguments"] = (arguments && arguments->is_object()) ? arguments : jobj();
-    auto resp = rpc("tools/call", params, cfg_.call_timeout, cancel);
+    std::lock_guard<std::mutex> lk(rpc_mu_);
+    auto resp = rpc_unlocked("tools/call", params, cfg_.call_timeout, cancel);
     return parse_tool_result(resp);
 }
 

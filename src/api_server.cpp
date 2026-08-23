@@ -6143,8 +6143,8 @@ MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
             for (auto& s : targets) {
                 out << "[" << s << "]\n";
                 try {
-                    auto& cli = mcp_mgr->client(s);
-                    auto& tools = cli.tools();
+                    auto cli = mcp_mgr->client(s);
+                    auto& tools = cli->tools();
                     if (tools.empty()) {
                         out << "  (server returned no tools)\n";
                     }
@@ -6215,11 +6215,11 @@ MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
             }
 
             try {
-                auto& cli = mcp_mgr->client(server);
+                auto cli = mcp_mgr->client(server);
                 std::atomic<bool>* cancel = nullptr;
                 if (auto token = current_request_cancel_token())
                     cancel = token->cancel_flag();
-                auto result = cli.call_tool(tool, arg_obj, cancel);
+                auto result = cli->call_tool(tool, arg_obj, cancel);
                 return mcp::render_tool_result(result);
             } catch (const std::exception& e) {
                 Logger::global().warn("mcp_call_failed", {

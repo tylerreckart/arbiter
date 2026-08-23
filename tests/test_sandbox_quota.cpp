@@ -371,6 +371,102 @@ TEST_CASE("sandbox exec: cancel restores under-quota mutations") {
     fs::remove_all(root);
 }
 
+TEST_CASE("sandbox exec: SIGKILL status 137 before the deadline keeps writes") {
+    const std::string root = make_temp_root("quota-exec-137");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    cfg.exec_timeout_seconds = 30;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 21;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    // Command exits 137 immediately (OOM / self-kill), far short of the
+    // 30s deadline.  Must not be classified as a wrapper timeout.
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > kept.bin; exit 137");
+    CHECK_FALSE(result.timed_out);
+    CHECK_FALSE(result.canceled);
+    CHECK(result.output.find("[timed out") == std::string::npos);
+    CHECK(result.output.find("[exit 137]") != std::string::npos);
+    CHECK(fs::exists(fs::path(ws) / "kept.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
+    CHECK(fs::exists(fs::path(ws) / "seed.txt"));
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: SIGTERM status 143 before the deadline keeps writes") {
+    const std::string root = make_temp_root("quota-exec-143");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    cfg.exec_timeout_seconds = 30;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 22;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > kept.bin; exit 143");
+    CHECK_FALSE(result.timed_out);
+    CHECK(result.output.find("[timed out") == std::string::npos);
+    CHECK(result.output.find("[exit 143]") != std::string::npos);
+    CHECK(fs::exists(fs::path(ws) / "kept.bin"));
+    CHECK(fs::file_size(fs::path(ws) / "kept.bin") == 50);
+    CHECK(mgr.measure_workspace_bytes(tid) == 150);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox exec: GNU timeout status 124 rolls back under-quota writes") {
+    const std::string root = make_temp_root("quota-exec-124");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    cfg.exec_timeout_seconds = 30;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 23;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > partial.bin; exit 124");
+    CHECK(result.timed_out);
+    CHECK(result.output.find("[timed out") != std::string::npos);
+    CHECK_FALSE(fs::exists(fs::path(ws) / "partial.bin"));
+    CHECK(fs::exists(fs::path(ws) / "seed.txt"));
+    CHECK(mgr.measure_workspace_bytes(tid) == 100);
+
+    fs::remove_all(root);
+}
+
 TEST_CASE("sandbox exec: timeout restores under-quota mutations") {
     const std::string root = make_temp_root("quota-exec-timeout");
     install_docker_stub(root);

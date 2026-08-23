@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,8 @@ public:
     // or cancel).  Tool-level errors (isError=true in the response)
     // come back inside ToolResult so the agent can read them like any
     // other tool output.  `cancel` is polled during the response wait.
+    // Concurrent tools()/call_tool() on the same Client serialize on
+    // the JSON-RPC pipe — one stateful session, one in-flight RPC.
     ToolResult call_tool(const std::string& name,
                           std::shared_ptr<JsonValue> arguments,
                           std::atomic<bool>* cancel = nullptr);
@@ -70,14 +73,21 @@ private:
     int64_t                        next_id_ = 1;
     std::vector<ToolDescriptor>    tools_cache_;
     bool                           tools_loaded_ = false;
+    std::mutex                     rpc_mu_;
 
     // Send a request, read its matching response (skipping inbound
     // server notifications and stale responses).  Throws on timeout
-    // or protocol error.
+    // or protocol error.  Takes rpc_mu_.
     Response rpc(const std::string& method,
                   std::shared_ptr<JsonValue> params,
                   std::chrono::milliseconds timeout,
                   std::atomic<bool>* cancel = nullptr);
+
+    // Same as rpc() but caller already holds rpc_mu_.
+    Response rpc_unlocked(const std::string& method,
+                           std::shared_ptr<JsonValue> params,
+                           std::chrono::milliseconds timeout,
+                           std::atomic<bool>* cancel);
 };
 
 } // namespace arbiter::mcp
