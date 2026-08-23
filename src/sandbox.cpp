@@ -49,36 +49,51 @@ std::string shell_single_quote(const std::string& s) {
 }
 
 // Wrap a user command so the container itself enforces the wall-clock
-// deadline when GNU `timeout` is on PATH inside the image.  Falls back
-// to a plain `sh -c` when `timeout` is missing — the parent-side
-// SIGKILL of `docker exec` + kill_exec_survivors remains the backstop.
+// deadline.  GNU coreutils `timeout` reserves exit 124 for "deadline
+// fired" (even with -s KILL).  We only use that binary when
+// `timeout --version` succeeds — BusyBox timeout(1) returns 128+signal,
+// which collides with OOM and external kills.  Non-GNU images get a
+// watchdog that exits 124 only if this wrapper's SIGKILL succeeded.
+// The parent-side SIGKILL of `docker exec` + kill_exec_survivors is
+// still the backstop.
 std::string wrap_exec_with_timeout(const std::string& command,
                                    int timeout_seconds) {
     if (timeout_seconds <= 0) return command;
     const std::string q = shell_single_quote(command);
-    return "if command -v timeout >/dev/null 2>&1; then "
-           "exec timeout -s KILL " + std::to_string(timeout_seconds) +
-           "s sh -c " + q + "; "
-           "else exec sh -c " + q + "; fi";
+    const std::string n = std::to_string(timeout_seconds);
+    return
+        "if command -v timeout >/dev/null 2>&1 && "
+        "timeout --version >/dev/null 2>&1; then "
+        "exec timeout -s KILL " + n + "s sh -c " + q + "; "
+        "else "
+        "sh -c " + q + " & "
+        "cpid=$!; "
+        "stamp=/tmp/.arbiter-to-$$; "
+        "rm -f \"$stamp\"; "
+        "( sleep " + n + "; "
+        "  if kill -s KILL \"$cpid\" 2>/dev/null; then "
+        "    echo 1 > \"$stamp\"; "
+        "  fi "
+        ") & "
+        "wdpid=$!; "
+        "wait \"$cpid\"; "
+        "rc=$?; "
+        "kill \"$wdpid\" 2>/dev/null; "
+        "wait \"$wdpid\" 2>/dev/null; "
+        "if [ -f \"$stamp\" ]; then "
+        "  rm -f \"$stamp\"; "
+        "  exit 124; "
+        "fi; "
+        "exit $rc; "
+        "fi";
 }
 
 // Map a finished /exec status to "the configured deadline fired".
-//
-// GNU `timeout` exits 124 on deadline (whether it sent SIGTERM or
-// SIGKILL).  BusyBox `timeout -s KILL` exits 137 and default SIGTERM
-// exits 143 — but those are also OOM / external-signal statuses, so
-// they only count when the command actually ran to the deadline.
-// A 250ms slack covers timer/scheduling jitter so a BusyBox kill at
-// T is not missed while an immediate `exit 137` is not rolled back.
-bool exec_status_indicates_timeout(
-        int rc,
-        int exec_timeout_seconds,
-        std::chrono::steady_clock::duration elapsed) {
-    if (exec_timeout_seconds <= 0) return false;
-    if (rc == 124) return true;
-    if (rc != 137 && rc != 143) return false;
-    return elapsed + std::chrono::milliseconds(250) >=
-           std::chrono::seconds(exec_timeout_seconds);
+// The wrapper (GNU timeout or the sentinel watchdog) exits 124 only
+// when it sent the deadline kill.  137/143 are never treated as
+// timeout — those are OOM / self-kill / external signals.
+bool exec_status_indicates_timeout(int rc, int exec_timeout_seconds) {
+    return exec_timeout_seconds > 0 && rc == 124;
 }
 
 // Pre-exec copy of the bind-mounted workspace, stored as a sibling of
@@ -1280,18 +1295,13 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
 
     if (!canceled) {
         ran_command = true;
-        const auto exec_started = std::chrono::steady_clock::now();
         rc = run_capture(argv, parent_timeout,
                           static_cast<size_t>(cfg_.output_max_bytes),
                           r.output, timed_out, &truncated, cancel, &canceled);
-        const auto elapsed = std::chrono::steady_clock::now() - exec_started;
         // Parent backstop sets timed_out when it SIGKILLs docker-exec.
-        // Container-side GNU `timeout` reserves 124.  BusyBox `timeout
-        // -s KILL` returns 137 (128+SIGKILL) and default SIGTERM returns
-        // 143 — the same statuses as OOM / external signals, so those
-        // only count as a deadline when the wall-clock actually elapsed.
+        // Container-side wrapper reserves 124 for "we fired the deadline".
         if (!timed_out && !canceled &&
-            exec_status_indicates_timeout(rc, exec_timeout, elapsed)) {
+            exec_status_indicates_timeout(rc, exec_timeout)) {
             timed_out = true;
         }
     }
