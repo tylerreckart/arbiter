@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -309,7 +310,8 @@ Subprocess::recv_line(std::chrono::milliseconds timeout,
     }
 }
 
-bool Subprocess::alive() {
+bool Subprocess::alive() const {
+    std::lock_guard<std::mutex> lk(mu_);
     if (exited_ || pid_ < 0) return false;
     int status = 0;
     pid_t r = ::waitpid(pid_, &status, WNOHANG);
@@ -326,6 +328,7 @@ bool Subprocess::alive() {
 }
 
 void Subprocess::terminate(std::chrono::milliseconds grace) {
+    std::lock_guard<std::mutex> lk(mu_);
     if (pid_ < 0 || exited_) return;
     // Closing the write side first lets a well-behaved child exit on
     // EOF without needing a signal.  npm-installed CLIs usually do.

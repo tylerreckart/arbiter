@@ -85,8 +85,11 @@ public:
     //
     // A cached Client whose subprocess has exited is dropped from the
     // map and replaced with a fresh session on the next acquire.
-    // In-flight callers of the dead Client still see their own shared_ptr
-    // (and get a protocol error on the next RPC).
+    // Liveness is checked outside the Manager lock (it takes the
+    // Client's rpc_mu_) so an in-flight cancel cannot deadlock the
+    // cache or waitpid the child twice.  In-flight callers of the
+    // dead Client still see their own shared_ptr (and get a protocol
+    // error on the next RPC).
     std::shared_ptr<Client> client(const std::string& name);
 
 private:

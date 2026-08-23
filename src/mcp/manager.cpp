@@ -243,10 +243,24 @@ std::vector<std::string> Manager::server_names() const {
 }
 
 std::shared_ptr<Client> Manager::client(const std::string& name) {
+    std::shared_ptr<Client> cached;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = clients_.find(name);
+        if (it != clients_.end()) cached = it->second;
+    }
+    // Liveness (and in-flight cancel/reap) serialize on the Client's
+    // rpc_mu_.  Check it *outside* mu_ so a long tools/call cannot
+    // pin the whole Manager.
+    if (cached && cached->alive()) return cached;
+
     std::lock_guard<std::mutex> lk(mu_);
     auto it = clients_.find(name);
     if (it != clients_.end()) {
-        if (it->second && it->second->alive()) return it->second;
+        if (!cached || it->second != cached) {
+            // Another acquire installed a replacement while we waited.
+            return it->second;
+        }
         // Drop the cache entry only.  Callers that already hold a
         // shared_ptr keep the dead Client until they release it.
         clients_.erase(it);

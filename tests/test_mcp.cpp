@@ -62,13 +62,15 @@ static std::string this_executable() {
 }
 
 // Minimal stdio MCP server so Manager/Client tests do not need playwright.
-// argv: --mcp-stub [--exit-after-init] [--die-after=N]
+// argv: --mcp-stub [--exit-after-init] [--die-after=N] [--hang-on-call]
 static int mcp_stub_main(int argc, char** argv) {
     bool exit_after_init = false;
+    bool hang_on_call = false;
     int die_after = 0;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--exit-after-init") exit_after_init = true;
+        else if (a == "--hang-on-call") hang_on_call = true;
         else if (a.rfind("--die-after=", 0) == 0)
             die_after = std::atoi(a.c_str() + 12);
     }
@@ -119,6 +121,11 @@ static int mcp_stub_main(int argc, char** argv) {
             m["result"] = result;
             ++tool_replies;
         } else if (method == "tools/call") {
+            if (hang_on_call) {
+                std::string unused;
+                while (std::getline(std::cin, unused)) {}
+                return 0;
+            }
             auto item = jobj();
             auto& im = item->as_object_mut();
             im["type"] = jstr("text");
@@ -310,6 +317,26 @@ TEST_CASE("Subprocess: send_line after child exit returns false without SIGPIPE"
         std::this_thread::sleep_for(20ms);
     CHECK_FALSE(proc.alive());
     CHECK_FALSE(proc.send_line("hello after exit"));
+}
+
+TEST_CASE("Subprocess: concurrent alive and terminate do not double-reap") {
+    Subprocess proc({"/bin/sleep", "30"});
+    REQUIRE(proc.alive());
+    std::atomic<int> polls{0};
+    std::thread poller([&] {
+        for (int i = 0; i < 400; ++i) {
+            (void)proc.alive();
+            polls.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::sleep_for(1ms);
+        }
+    });
+    std::this_thread::sleep_for(20ms);
+    proc.terminate(80ms);
+    poller.join();
+    CHECK(polls.load() > 0);
+    CHECK_FALSE(proc.alive());
+    proc.terminate(50ms);
+    CHECK_FALSE(proc.alive());
 }
 
 TEST_CASE("Subprocess: terminate is idempotent and SIGKILLs after grace") {
@@ -861,4 +888,39 @@ TEST_CASE("Manager: concurrent call_tool on one session serializes") {
     }
     for (auto& t : threads) t.join();
     CHECK(ok.load() == kThreads);
+}
+
+TEST_CASE("Manager: acquire during cancelled RPC does not race reap") {
+    Manager mgr({stub_spec({"--hang-on-call"})});
+    auto cli = mgr.client("stub");
+    REQUIRE(cli);
+
+    std::atomic<bool> cancel{false};
+    std::thread rpc([&] {
+        try {
+            (void)cli->call_tool("ping", jobj(), &cancel);
+        } catch (...) {
+        }
+    });
+
+    std::this_thread::sleep_for(40ms);
+    std::atomic<int> acquires{0};
+    std::vector<std::thread> acquirers;
+    for (int i = 0; i < 4; ++i) {
+        acquirers.emplace_back([&] {
+            for (int j = 0; j < 16; ++j) {
+                try {
+                    auto c = mgr.client("stub");
+                    (void)c->alive();
+                    acquires.fetch_add(1, std::memory_order_relaxed);
+                } catch (...) {
+                }
+                std::this_thread::sleep_for(5ms);
+            }
+        });
+    }
+    cancel.store(true, std::memory_order_release);
+    rpc.join();
+    for (auto& t : acquirers) t.join();
+    CHECK(acquires.load() > 0);
 }

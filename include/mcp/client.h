@@ -48,7 +48,9 @@ public:
 
     const std::string& name() const { return cfg_.name; }
 
-    // True while the subprocess is still running.
+    // True while the subprocess is still running.  Takes rpc_mu_ so a
+    // Manager cache check cannot inspect liveness while an in-flight
+    // RPC is cancelling and reaping the same process.
     bool alive() const;
 
     // Cached after first call; refresh by recreating the Client.  The
@@ -73,7 +75,7 @@ private:
     int64_t                        next_id_ = 1;
     std::vector<ToolDescriptor>    tools_cache_;
     bool                           tools_loaded_ = false;
-    std::mutex                     rpc_mu_;
+    mutable std::mutex             rpc_mu_;
 
     // Send a request, read its matching response (skipping inbound
     // server notifications and stale responses).  Throws on timeout

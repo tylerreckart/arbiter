@@ -116,10 +116,13 @@ bool consume_watchdog_stamp(const fs::path& ws_path,
 // unpredictable token into the bind-mounted workspace *first* (atomic
 // tmp+mv), then SIGKILLs the command.  Write-before-kill is required:
 // `wait` on the command cannot return until after that kill, so the
-// leftover watchdog reap below cannot drop a real timeout.  The previous
-// order (kill, then stamp, and only if kill succeeded) lost the stamp
-// when the wrapper reaped the watchdog between kill and printf — the
-// parent then saw ordinary 137 and kept under-quota partial writes.
+// leftover watchdog reap below cannot drop a real timeout.
+//
+// A command that finishes on its own at the same instant can still
+// leave a stamp (write raced ahead of the failed kill).  After wait,
+// the wrapper reaps the leftover watchdog and discards the stamp
+// unless the command died SIGKILL (128+9 = 137).  Parent consume of
+// the stamp — never 124/137/143 alone — is the timeout signal.
 // Parent SIGKILL of `docker exec` remains the backstop.
 std::string wrap_exec_with_timeout(const std::string& command,
                                    int timeout_seconds,
@@ -159,6 +162,11 @@ std::string wrap_exec_with_timeout(const std::string& command,
         "fi; "
         "kill -s KILL \"$wdpid\" 2>/dev/null; "
         "wait \"$wdpid\" 2>/dev/null; "
+        // Natural completion at the deadline can leave a stamp after a
+        // failed kill.  Only SIGKILL (watchdog or equivalent) keeps it.
+        "if [ \"$rc\" -ne 137 ]; then "
+        "  rm -f " + qstamp + " " + qtmp + "; "
+        "fi; "
         "exit $rc";
 }
 

@@ -60,6 +60,7 @@ Client::Client(ClientConfig cfg) : cfg_(std::move(cfg)) {
 Client::~Client() = default;
 
 bool Client::alive() const {
+    std::lock_guard<std::mutex> lk(rpc_mu_);
     return proc_ && proc_->alive();
 }
 
