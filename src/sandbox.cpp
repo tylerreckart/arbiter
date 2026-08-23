@@ -1264,9 +1264,11 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         rc = run_capture(argv, parent_timeout,
                           static_cast<size_t>(cfg_.output_max_bytes),
                           r.output, timed_out, &truncated, cancel, &canceled);
-        // GNU timeout exits 124 on deadline; treat that as a clean timeout
-        // even when the parent backstop did not fire.
-        if (!timed_out && !canceled && exec_timeout > 0 && rc == 124) {
+        // GNU timeout exits 124 on deadline (SIGTERM default) or 137 when
+        // -s KILL is used (wrap_exec_with_timeout).  Parent backstop sets
+        // timed_out directly; map container-side kills here too.
+        if (!timed_out && !canceled && exec_timeout > 0 &&
+            (rc == 124 || rc == 137 || rc == 143)) {
             timed_out = true;
         }
     }
@@ -1298,7 +1300,9 @@ SandboxExecResult SandboxManager::exec(int64_t tenant_id,
         const bool over_cap = used > cfg_.workspace_max_bytes;
         // Skip restore when we never ran the command (cancel during the
         // snapshot copy) — an incomplete snap must not clobber the live tree.
-        if (ran_command && (over_cap || canceled)) {
+        // Timed-out commands can mutate the workspace before the deadline;
+        // roll back under-quota partial writes the same way cancel does.
+        if (ran_command && (over_cap || canceled || timed_out)) {
             const bool restored = rollback_workspace_to_snap(ws_path, pre_exec);
             const int64_t used_after = measure_workspace_bytes(tenant_id);
             if (over_cap) {

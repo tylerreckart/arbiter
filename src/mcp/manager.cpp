@@ -244,7 +244,10 @@ std::vector<std::string> Manager::server_names() const {
 Client& Manager::client(const std::string& name) {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = clients_.find(name);
-    if (it != clients_.end()) return *it->second;
+    if (it != clients_.end()) {
+        if (it->second->alive()) return *it->second;
+        clients_.erase(it);
+    }
 
     // Find the spec.
     const ServerSpec* spec = nullptr;

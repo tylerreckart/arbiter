@@ -371,6 +371,36 @@ TEST_CASE("sandbox exec: cancel restores under-quota mutations") {
     fs::remove_all(root);
 }
 
+TEST_CASE("sandbox exec: timeout restores under-quota mutations") {
+    const std::string root = make_temp_root("quota-exec-timeout");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+    constexpr int64_t kQuota = 1000;
+
+    SandboxConfig cfg = make_quota_config(root, kQuota);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 15;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+    WorkspaceEnvGuard ws_env(ws);
+
+    std::string err;
+    REQUIRE(mgr.write_to_workspace(tid, "seed.txt", std::string(100, 'a'), err));
+
+    auto result = mgr.exec(
+        tid, "head -c 50 /dev/zero > partial.bin; sleep 5",
+        /*timeout_seconds_override=*/1);
+    CHECK(result.timed_out);
+    CHECK(result.output.find("[timed out") != std::string::npos);
+    CHECK_FALSE(fs::exists(fs::path(ws) / "partial.bin"));
+    CHECK(fs::exists(fs::path(ws) / "seed.txt"));
+    CHECK(mgr.measure_workspace_bytes(tid) == 100);
+
+    fs::remove_all(root);
+}
+
 TEST_CASE("sandbox exec: quota rollback removes chmod-locked overflow") {
     const std::string root = make_temp_root("quota-exec-chmod");
     install_docker_stub(root);

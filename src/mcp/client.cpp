@@ -58,6 +58,10 @@ Client::Client(ClientConfig cfg) : cfg_(std::move(cfg)) {
 
 Client::~Client() = default;
 
+bool Client::alive() const {
+    return proc_ && proc_->alive();
+}
+
 Response Client::rpc(const std::string& method,
                       std::shared_ptr<JsonValue> params,
                       std::chrono::milliseconds timeout,

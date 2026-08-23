@@ -6165,7 +6165,11 @@ MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
                         out << "\n";
                     }
                 } catch (const std::exception& e) {
-                    out << "  ERR: " << e.what() << "\n";
+                    Logger::global().warn("mcp_tools_list_failed", {
+                        {"server", s},
+                        {"error", e.what()},
+                    });
+                    out << "  ERR: MCP tools/list failed\n";
                 }
             }
             return out.str();
@@ -6218,7 +6222,12 @@ MCPInvoker make_mcp_invoker_callback(std::shared_ptr<mcp::Manager> mcp_mgr) {
                 auto result = cli.call_tool(tool, arg_obj, cancel);
                 return mcp::render_tool_result(result);
             } catch (const std::exception& e) {
-                return std::string("ERR: ") + e.what() + "\n";
+                Logger::global().warn("mcp_call_failed", {
+                    {"server", server},
+                    {"tool", tool},
+                    {"error", e.what()},
+                });
+                return "ERR: MCP tool call failed\n";
             }
         }
 

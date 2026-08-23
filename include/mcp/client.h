@@ -47,6 +47,9 @@ public:
 
     const std::string& name() const { return cfg_.name; }
 
+    // True while the subprocess is still running.
+    bool alive() const;
+
     // Cached after first call; refresh by recreating the Client.  The
     // MCP spec supports tools/list_changed notifications for hot-reload
     // but arbiter's per-request lifetime makes that moot.

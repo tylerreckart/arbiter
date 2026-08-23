@@ -151,17 +151,35 @@ std::string join_lines(const std::vector<std::string>& lines, bool trailing_nl) 
 }
 
 bool read_file_bytes(const fs::path& path, std::string& out, std::string& err) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in.is_open()) {
-        err = "cannot read " + path.string();
+    const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ELOOP)
+            err = "refusing to read through symlink: " + path.string();
+        else
+            err = "cannot read " + path.string();
         return false;
     }
-    out.assign(std::istreambuf_iterator<char>(in),
-               std::istreambuf_iterator<char>());
-    if (in.bad()) {
-        err = "read failed: " + path.string();
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(fd);
+        err = "read target is not a regular file: " + path.string();
         return false;
     }
+    out.resize(static_cast<std::size_t>(st.st_size));
+    std::size_t off = 0;
+    while (off < out.size()) {
+        const ssize_t n = ::read(fd, out.data() + off, out.size() - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ::close(fd);
+            err = "read failed: " + path.string();
+            return false;
+        }
+        if (n == 0) break;
+        off += static_cast<std::size_t>(n);
+    }
+    ::close(fd);
+    if (off != out.size()) out.resize(off);
     return true;
 }
 
@@ -466,6 +484,10 @@ resolve_workspace_path(std::string_view rel_path,
     fs::path canon_root(root_str);
 
     fs::path abs_target = canon_root / std::string(rel_path);
+    if (fs::is_symlink(abs_target, ec)) {
+        err = "refusing to apply through symlink: " + std::string(rel_path);
+        return std::nullopt;
+    }
     fs::path existing = abs_target;
     fs::path tail;
     while (!existing.empty()) {
