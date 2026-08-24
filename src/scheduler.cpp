@@ -4,6 +4,7 @@
 
 #include "scheduler.h"
 
+#include "api/in_flight_scope.h"
 #include "api_server.h"
 #include "orchestrator.h"
 #include "schedule_parser.h"
@@ -12,6 +13,7 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <limits>
 
 namespace arbiter {
 
@@ -24,6 +26,8 @@ int64_t now_epoch() {
 }
 
 constexpr size_t kResultSummaryMax = 4096;   // bytes; longer replies are tail-truncated
+constexpr char kTenantFacingRunError[] =
+    "the scheduled task failed";
 
 std::string truncate_summary(const std::string& s) {
     if (s.size() <= kResultSummaryMax) return s;
@@ -59,8 +63,9 @@ std::string short_request_id() {
 Scheduler::Scheduler(ApiServerOptions* opts,
                       TenantStore* tenants,
                       NotificationBus* bus,
+                      InFlightRegistry* in_flight,
                       int tick_interval_seconds)
-    : opts_(opts), tenants_(tenants), bus_(bus),
+    : opts_(opts), tenants_(tenants), bus_(bus), in_flight_(in_flight),
       interval_s_(tick_interval_seconds) {
     if (interval_s_ < 1) interval_s_ = 1;
 }
@@ -161,7 +166,22 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         return;
     }
 
-    const int64_t  started_at = now_epoch();
+    // Claim the task before any slow work so concurrent ticks cannot
+    // double-fire while orch->send() is still running.
+    const int64_t now = now_epoch();
+    int64_t claim_next = 0;
+    if (task.schedule_kind == "recurring") {
+        claim_next = next_fire_for_recur(task.recur_json, now);
+        if (claim_next == 0) claim_next = now + 3600;
+    } else {
+        claim_next = std::numeric_limits<int64_t>::max();
+    }
+    if (!tenants_->try_claim_scheduled_task(task.tenant_id, task.id,
+                                            now, claim_next)) {
+        return;
+    }
+
+    const int64_t  started_at = now;
     const std::string req_id  = short_request_id();
     auto run = tenants_->create_task_run(task.tenant_id, task.id,
                                           /*status=*/"running",
@@ -264,11 +284,25 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
     std::string err;
     bool ok = false;
     try {
-        resp = orch->send(task.agent_id, task.message);
+        if (in_flight_) {
+            InFlightScope in_flight_scope(*in_flight_, req_id, orch.get(),
+                                          task.tenant_id);
+            resp = orch->send(task.agent_id, task.message);
+        } else {
+            resp = orch->send(task.agent_id, task.message);
+        }
         ok = resp.ok;
-        if (!ok) err = resp.error;
+        if (!ok) {
+            std::fprintf(stderr,
+                "[scheduler] task %lld failed: %s\n",
+                (long long)task.id, resp.error.c_str());
+            err = kTenantFacingRunError;
+        }
     } catch (const std::exception& e) {
-        err = std::string("orchestrator threw: ") + e.what();
+        std::fprintf(stderr,
+            "[scheduler] task %lld threw: %s\n",
+            (long long)task.id, e.what());
+        err = kTenantFacingRunError;
         ok = false;
     }
 

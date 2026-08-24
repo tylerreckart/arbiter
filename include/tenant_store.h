@@ -878,6 +878,13 @@ public:
     std::vector<ScheduledTask>
     list_due_scheduled_tasks(int64_t cutoff_epoch, int limit) const;
 
+    // Atomically claim a due task by advancing next_fire_at so concurrent
+    // scheduler ticks cannot double-fire the same row.  Returns false when
+    // the row is missing, not due, or already claimed by another tick.
+    bool try_claim_scheduled_task(int64_t tenant_id, int64_t id,
+                                   int64_t cutoff_epoch,
+                                   int64_t claim_next_fire_at);
+
     // PATCH: any std::nullopt argument leaves the field untouched.  Bumps
     // updated_at on a successful change.  Returns false if the row is
     // missing or belongs to another tenant.
@@ -914,6 +921,14 @@ public:
     std::vector<TaskRun>
     list_task_runs(int64_t tenant_id, int64_t task_id,
                     int64_t since_epoch, int limit) const;
+
+    // Recovery sweep: every status='running' task_run row gets the new
+    // status (typically "failed"), completed_at, and error_message.
+    // Returns the list of (tenant_id, run_id) pairs touched.
+    std::vector<std::pair<int64_t, int64_t>>
+    recover_running_task_runs(const std::string& new_status,
+                               int64_t completed_at,
+                               const std::string& error_message);
 
     // ── A2A task store ──────────────────────────────────────────────────
     //

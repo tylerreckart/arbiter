@@ -4553,6 +4553,23 @@ TenantStore::list_due_scheduled_tasks(int64_t cutoff_epoch, int limit) const {
     return out;
 }
 
+bool TenantStore::try_claim_scheduled_task(int64_t tenant_id, int64_t id,
+                                            int64_t cutoff_epoch,
+                                            int64_t claim_next_fire_at) {
+    if (!db_) return false;
+    Stmt q(db_,
+        "UPDATE scheduled_tasks SET next_fire_at = ?, updated_at = ?"
+        " WHERE tenant_id = ? AND id = ?"
+        " AND status = 'active' AND next_fire_at <= ?;");
+    q.bind(1, claim_next_fire_at);
+    q.bind(2, now_epoch());
+    q.bind(3, tenant_id);
+    q.bind(4, id);
+    q.bind(5, cutoff_epoch);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
 bool TenantStore::update_scheduled_task(
         int64_t tenant_id, int64_t id,
         const std::optional<std::string>& status,
@@ -4688,6 +4705,30 @@ TenantStore::list_task_runs(int64_t tenant_id, int64_t task_id,
     if (since_epoch > 0) q.bind(idx++, since_epoch);
     q.bind(idx, static_cast<int64_t>(limit));
     while (q.step() == SQLITE_ROW) out.push_back(row_to_task_run(q));
+    return out;
+}
+
+std::vector<std::pair<int64_t, int64_t>>
+TenantStore::recover_running_task_runs(const std::string& new_status,
+                                        int64_t completed_at,
+                                        const std::string& error_message) {
+    std::vector<std::pair<int64_t, int64_t>> out;
+    if (!db_) return out;
+    {
+        Stmt q(db_,
+            "SELECT tenant_id, id FROM task_runs WHERE status = 'running';");
+        while (q.step() == SQLITE_ROW) {
+            out.emplace_back(q.column_int64(0), q.column_int64(1));
+        }
+    }
+    if (out.empty()) return out;
+    Stmt u(db_,
+        "UPDATE task_runs SET status = ?, completed_at = ?, "
+        "error_message = ? WHERE status = 'running';");
+    u.bind(1, new_status);
+    u.bind(2, completed_at);
+    u.bind(3, error_message);
+    u.step();
     return out;
 }
 

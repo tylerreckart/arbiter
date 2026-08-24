@@ -199,6 +199,54 @@ TEST_CASE("event seqs preserve insert order on read") {
     }
 }
 
+TEST_CASE("scheduled task claim: only one tick can claim a due row") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "every hour",
+        "recurring", 0, R"({"every":"hour"})", now - 10);
+
+    CHECK(s.try_claim_scheduled_task(tid, task.id, now, now + 3600));
+    CHECK_FALSE(s.try_claim_scheduled_task(tid, task.id, now, now + 7200));
+
+    auto due = s.list_due_scheduled_tasks(now, 10);
+    CHECK(due.empty());
+
+    auto row = s.get_scheduled_task(tid, task.id);
+    REQUIRE(row);
+    CHECK(row->next_fire_at == now + 3600);
+}
+
+TEST_CASE("task_run recovery sweep: marks orphaned running rows failed") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
+        "once", 0, "", 0);
+
+    auto run1 = s.create_task_run(tid, task.id, "running", 1000, "req-a");
+    auto run2 = s.create_task_run(tid, task.id, "running", 1100, "req-b");
+    s.update_task_run(tid, run1.id,
+        std::optional<std::string>("succeeded"),
+        std::optional<int64_t>(1200),
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+
+    auto orphans = s.recover_running_task_runs("failed", 9999, "interrupted");
+    CHECK(orphans.size() == 1);
+    CHECK(orphans[0].first == tid);
+    CHECK(orphans[0].second == run2.id);
+
+    auto got = s.get_task_run(tid, run2.id);
+    REQUIRE(got);
+    CHECK(got->status == "failed");
+    CHECK(got->completed_at == 9999);
+    CHECK(got->error_message == "interrupted");
+
+    auto settled = s.get_task_run(tid, run1.id);
+    REQUIRE(settled);
+    CHECK(settled->status == "succeeded");
+}
+
 TEST_CASE("idempotency_keys: put / get / race / ttl / prune") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");

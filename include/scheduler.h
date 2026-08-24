@@ -34,12 +34,14 @@
 namespace arbiter {
 
 struct ApiServerOptions;
+class InFlightRegistry;
 
 class Scheduler {
 public:
     Scheduler(ApiServerOptions* opts,
               TenantStore* tenants,
               NotificationBus* bus,
+              InFlightRegistry* in_flight = nullptr,
               int tick_interval_seconds = 30);
     ~Scheduler();
 
@@ -63,6 +65,7 @@ private:
     ApiServerOptions*       opts_      = nullptr;
     TenantStore*            tenants_   = nullptr;
     NotificationBus*        bus_       = nullptr;
+    InFlightRegistry*       in_flight_ = nullptr;
     int                     interval_s_ = 30;
 
     std::atomic<bool>       running_{false};

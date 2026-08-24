@@ -255,6 +255,9 @@ bool Subprocess::drain_into_buf(std::chrono::milliseconds timeout) {
     while (true) {
         ssize_t k = ::read(stdout_fd_, buf, sizeof(buf));
         if (k > 0) {
+            if (read_buf_.size() + static_cast<size_t>(k) > kReadBufMaxBytes) {
+                return false;
+            }
             read_buf_.append(buf, static_cast<size_t>(k));
             // Loop reads until EAGAIN — pulls everything currently
             // buffered without re-polling.
