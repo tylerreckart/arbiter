@@ -4421,6 +4421,13 @@ void handle_schedule_create(int fd, const HttpRequest& req,
         return;
     }
     if (agent.empty()) agent = "index";
+    if (!agent_id_is_safe(agent)) {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("agent id contains invalid characters");
+        write_json_response(fd, 400, err);
+        return;
+    }
 
     const int64_t now = static_cast<int64_t>(
         std::chrono::duration_cast<std::chrono::seconds>(
@@ -10546,7 +10553,7 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     notifications_   = std::make_unique<NotificationBus>();
     request_events_  = std::make_unique<RequestEventBus>();
     scheduler_       = std::make_unique<Scheduler>(
-        &opts_, &tenants_, notifications_.get());
+        &opts_, &tenants_, notifications_.get(), &in_flight_);
     // Per-tenant limiter: defaults from env (ARBITER_TENANT_MAX_CONCURRENT
     // / RATE_PER_MIN / BURST).  Zeroed defaults ⇒ unlimited; the limiter
     // grants every acquire without taking the lock.
@@ -10661,6 +10668,11 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
             "request was interrupted by a server restart; reconnect to retry");
         auto rec_orphans = tenants_.recover_running_reconcile_runs(
             now_s, "request was interrupted by a server restart; reconnect to retry");
+        auto task_orphans = tenants_.recover_running_task_runs(
+            "failed", now_s,
+            "task run was interrupted by a server restart");
+        // recover_running_task_runs also releases scheduled_tasks left
+        // in status='running' so a claimed one-shot is not stranded.
         for (const auto& rid : orphaned) {
             // Synthesise a terminal `done` event so resubscribe finds
             // a clean tail.  Use the next seq (last_seq+1) for a
@@ -10678,10 +10690,11 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
             // status flip and emits the terminal frame on demand.
             (void)status; (void)rid;
         }
-        if (!orphaned.empty() || !rec_orphans.empty()) {
+        if (!orphaned.empty() || !rec_orphans.empty() || !task_orphans.empty()) {
             Logger::global().info("recovery_sweep", {
                 {"orphaned_count", std::to_string(orphaned.size())},
                 {"reconcile_orphaned_count", std::to_string(rec_orphans.size())},
+                {"task_run_orphaned_count", std::to_string(task_orphans.size())},
                 {"new_state",      "failed"},
             });
         }

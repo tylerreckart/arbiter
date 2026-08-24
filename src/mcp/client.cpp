@@ -86,6 +86,7 @@ Response Client::rpc_unlocked(const std::string& method,
         throw std::runtime_error("MCP server pipe closed during '" + method + "' send");
 
     auto deadline = std::chrono::steady_clock::now() + timeout;
+    int parse_failures = 0;
     while (true) {
         if (cancel && cancel->load(std::memory_order_acquire)) {
             proc_->terminate();
@@ -110,8 +111,14 @@ Response Client::rpc_unlocked(const std::string& method,
         try { resp = parse_response(*line); }
         catch (const std::exception& e) {
             (void)e;
+            if (++parse_failures >= 5) {
+                proc_->terminate();
+                throw std::runtime_error(
+                    "MCP server sent unparseable protocol data during '" + method + "'");
+            }
             continue;
         }
+        parse_failures = 0;
         // Notifications carry no id; let them pass.
         if (resp.id == req.id) return resp;
     }

@@ -3,14 +3,19 @@
 //
 // Background scheduler subsystem owned by the API server.  Ticks every
 // `tick_interval_seconds` (default 30s), polls the DB for due ScheduledTask
-// rows (status='active' AND next_fire_at <= now), and fires each one
-// through a synchronous orchestrator turn.  A TaskRun row is appended for
-// every fire; the row reaches a terminal status before the tick returns.
+// rows (status='active' AND next_fire_at <= now), claims each one by
+// flipping status to 'running', and fires it through a synchronous
+// orchestrator turn.  A TaskRun row is appended for every fire; the row
+// reaches a terminal status before the tick returns.
 //
-// Recurring tasks have their `next_fire_at` advanced via the schedule_parser
-// helper; one-shot tasks transition to status='completed' after a successful
-// fire (or 'failed' if the orchestrator throws — operators can DELETE the
-// task to restart, or PATCH status back to 'active' after fixing the cause).
+// Claiming does not advance `next_fire_at`.  Recurring tasks stay
+// single-flight until the run finishes, then `next_fire_at` is advanced
+// via the schedule_parser helper and status returns to 'active'.  One-shot
+// tasks transition to status='completed' after a successful fire (or
+// 'failed' if the orchestrator throws — operators can DELETE the task to
+// restart, or PATCH status back to 'active' after fixing the cause).  A
+// crash mid-fire leaves the schedule 'running'; startup recovery releases
+// it back to 'active' so the original due time can fire again.
 //
 // Notifications: every terminal run (succeeded | failed) is published on
 // the NotificationBus passed at construction.  Subscribers (the SSE
@@ -34,12 +39,14 @@
 namespace arbiter {
 
 struct ApiServerOptions;
+class InFlightRegistry;
 
 class Scheduler {
 public:
     Scheduler(ApiServerOptions* opts,
               TenantStore* tenants,
               NotificationBus* bus,
+              InFlightRegistry* in_flight = nullptr,
               int tick_interval_seconds = 30);
     ~Scheduler();
 
@@ -63,6 +70,7 @@ private:
     ApiServerOptions*       opts_      = nullptr;
     TenantStore*            tenants_   = nullptr;
     NotificationBus*        bus_       = nullptr;
+    InFlightRegistry*       in_flight_ = nullptr;
     int                     interval_s_ = 30;
 
     std::atomic<bool>       running_{false};

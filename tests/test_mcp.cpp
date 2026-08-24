@@ -358,6 +358,29 @@ TEST_CASE("Subprocess: bad executable surfaces as immediate EOF") {
     CHECK_FALSE(got.has_value());
 }
 
+TEST_CASE("Subprocess: recv_line fails when unterminated line exceeds cap") {
+    // Child streams >kReadBufMaxBytes without a newline; recv_line must
+    // abort instead of growing read_buf_ without bound.
+    Subprocess proc({"/bin/sh", "-c",
+        "dd if=/dev/zero bs=4096 count=80 2>/dev/null | tr -d '\\0'"});
+    auto line = proc.recv_line(2s);
+    CHECK_FALSE(line.has_value());
+}
+
+TEST_CASE("Subprocess: recv_line accepts a burst of complete lines over the cap") {
+    // A single drain can exceed kReadBufMaxBytes when the child writes
+    // many valid newline-framed messages at once.  The cap applies only
+    // to an unterminated trailing fragment, so the first frame must land.
+    Subprocess proc({"/bin/sh", "-c",
+        "awk 'BEGIN{for(i=0;i<30000;i++) print \"{\\\"ok\\\":true}\"}'"});
+    auto line = proc.recv_line(5s);
+    REQUIRE(line.has_value());
+    CHECK(*line == "{\"ok\":true}");
+    auto second = proc.recv_line(2s);
+    REQUIRE(second.has_value());
+    CHECK(*second == "{\"ok\":true}");
+}
+
 TEST_CASE("Subprocess: strips secret-shaped parent env; keeps env_extra") {
     // Parent injects a fake provider key; child must not see it.  Registry
     // env_extra is still passed through (operator-opted).

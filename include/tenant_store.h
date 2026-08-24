@@ -808,9 +808,10 @@ public:
     // Tenant-scoped background work: an agent emits /schedule "<phrase>"
     // <message> and the row lives until the scheduler fires (one-shot)
     // or until canceled (recurring).  The scheduler tick thread polls
-    // by (status='active', next_fire_at <= now), runs the agent, writes
-    // a TaskRun row with the result, and either advances next_fire_at
-    // (recurring) or marks the task 'completed' (one-shot).
+    // by (status='active', next_fire_at <= now), claims the row
+    // (status='running'), runs the agent, writes a TaskRun row with the
+    // result, and either returns the row to 'active' with an advanced
+    // next_fire_at (recurring) or marks the task 'completed' (one-shot).
     struct ScheduledTask {
         int64_t     id              = 0;
         int64_t     tenant_id       = 0;
@@ -822,7 +823,7 @@ public:
         int64_t     fire_at         = 0;        // for kind=once
         std::string recur_json;                 // for kind=recurring (compact JSON)
         int64_t     next_fire_at    = 0;        // when scheduler picks it up
-        std::string status;                     // "active" | "paused" | "completed" | "canceled"
+        std::string status;                     // "active" | "running" | "paused" | "completed" | "canceled" | "failed"
         int64_t     created_at      = 0;
         int64_t     updated_at      = 0;
         int64_t     last_run_at     = 0;
@@ -874,9 +875,19 @@ public:
                           int limit) const;
 
     // Scheduler tick: tasks with status='active' AND next_fire_at <= cutoff.
-    // Cross-tenant — the scheduler runs at process scope.  Hard-capped.
+    // In-flight rows (status='running') are excluded so a long run cannot
+    // be re-claimed.  Cross-tenant — the scheduler runs at process scope.
+    // Hard-capped.
     std::vector<ScheduledTask>
     list_due_scheduled_tasks(int64_t cutoff_epoch, int limit) const;
+
+    // Atomically claim a due task by flipping status to 'running' without
+    // touching next_fire_at.  The fire time is advanced only when the run
+    // finishes, so a crash leaves the row recoverable and a long recurring
+    // run cannot overlap.  Returns false when the row is missing, not due,
+    // or already claimed.
+    bool try_claim_scheduled_task(int64_t tenant_id, int64_t id,
+                                   int64_t cutoff_epoch);
 
     // PATCH: any std::nullopt argument leaves the field untouched.  Bumps
     // updated_at on a successful change.  Returns false if the row is
@@ -914,6 +925,17 @@ public:
     std::vector<TaskRun>
     list_task_runs(int64_t tenant_id, int64_t task_id,
                     int64_t since_epoch, int limit) const;
+
+    // Recovery sweep: every status='running' task_run row gets the new
+    // status (typically "failed"), completed_at, and error_message.
+    // Parent schedules left in status='running' (claimed, then interrupted)
+    // are released back to 'active' so one-shots are not stranded and
+    // recurring work can fire again.  Returns the list of (tenant_id,
+    // run_id) pairs touched.
+    std::vector<std::pair<int64_t, int64_t>>
+    recover_running_task_runs(const std::string& new_status,
+                               int64_t completed_at,
+                               const std::string& error_message);
 
     // ── A2A task store ──────────────────────────────────────────────────
     //

@@ -1069,7 +1069,8 @@ void TenantStore::open(const std::string& path) {
 
     // Scheduled tasks: persistent agent-scheduled background work, fired
     // by the Scheduler tick thread.  Status-indexed for the tick query
-    // (which scans `status='active' AND next_fire_at <= now`); tenant-
+    // (which scans `status='active' AND next_fire_at <= now`; in-flight
+    // rows use status='running' so they cannot be re-claimed); tenant-
     // indexed for /v1/schedules listing.
     exec_sql(db_, R"SQL(
         CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -4553,6 +4554,21 @@ TenantStore::list_due_scheduled_tasks(int64_t cutoff_epoch, int limit) const {
     return out;
 }
 
+bool TenantStore::try_claim_scheduled_task(int64_t tenant_id, int64_t id,
+                                            int64_t cutoff_epoch) {
+    if (!db_) return false;
+    Stmt q(db_,
+        "UPDATE scheduled_tasks SET status = 'running', updated_at = ?"
+        " WHERE tenant_id = ? AND id = ?"
+        " AND status = 'active' AND next_fire_at <= ?;");
+    q.bind(1, now_epoch());
+    q.bind(2, tenant_id);
+    q.bind(3, id);
+    q.bind(4, cutoff_epoch);
+    q.step();
+    return sqlite3_changes(db_) > 0;
+}
+
 bool TenantStore::update_scheduled_task(
         int64_t tenant_id, int64_t id,
         const std::optional<std::string>& status,
@@ -4688,6 +4704,41 @@ TenantStore::list_task_runs(int64_t tenant_id, int64_t task_id,
     if (since_epoch > 0) q.bind(idx++, since_epoch);
     q.bind(idx, static_cast<int64_t>(limit));
     while (q.step() == SQLITE_ROW) out.push_back(row_to_task_run(q));
+    return out;
+}
+
+std::vector<std::pair<int64_t, int64_t>>
+TenantStore::recover_running_task_runs(const std::string& new_status,
+                                        int64_t completed_at,
+                                        const std::string& error_message) {
+    std::vector<std::pair<int64_t, int64_t>> out;
+    if (!db_) return out;
+    {
+        Stmt q(db_,
+            "SELECT tenant_id, id FROM task_runs WHERE status = 'running';");
+        while (q.step() == SQLITE_ROW) {
+            out.emplace_back(q.column_int64(0), q.column_int64(1));
+        }
+    }
+    if (!out.empty()) {
+        Stmt u(db_,
+            "UPDATE task_runs SET status = ?, completed_at = ?, "
+            "error_message = ? WHERE status = 'running';");
+        u.bind(1, new_status);
+        u.bind(2, completed_at);
+        u.bind(3, error_message);
+        u.step();
+    }
+    // Claim sets status='running' without moving next_fire_at.  Releasing
+    // the lease restores 'active' so a one-shot whose fire was interrupted
+    // is due again, and a recurring task cannot stay locked forever.
+    // Runs even when no task_run was inserted (crash between claim and
+    // create_task_run).
+    Stmt rel(db_,
+        "UPDATE scheduled_tasks SET status = 'active', updated_at = ? "
+        "WHERE status = 'running';");
+    rel.bind(1, completed_at);
+    rel.step();
     return out;
 }
 

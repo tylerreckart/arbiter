@@ -21,6 +21,11 @@
 
 namespace arbiter::mcp {
 
+// Cap unterminated-line accumulation so a misbehaving MCP server cannot
+// stream megabytes without newlines and OOM the host before timeout.
+// Complete newline-framed messages do not count against the cap.
+constexpr size_t kReadBufMaxBytes = 256 * 1024;
+
 class Subprocess {
 public:
     // Spawn `argv[0]` as the executable, with the remaining args.  `env_extra`
@@ -77,9 +82,11 @@ private:
     mutable bool exited_   = false;
     mutable int  exit_status_ = 0;
 
-    // Move all bytes available on stdout into read_buf_, blocking up to
-    // `timeout`.  Returns false on EOF / read error / timeout-with-no-bytes.
-    // Repeated calls drain bytes incrementally until a '\n' surfaces.
+    // Move bytes available on stdout into read_buf_, blocking up to
+    // `timeout`.  Returns false on EOF / read error / timeout-with-no-bytes
+    // / unterminated-line overflow.  Returns true as soon as a complete
+    // '\n'-framed line is buffered; leftover pipe bytes are drained on
+    // the next call so a burst of valid frames cannot trip the cap.
     bool drain_into_buf(std::chrono::milliseconds timeout);
 };
 
