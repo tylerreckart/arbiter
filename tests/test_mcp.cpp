@@ -367,6 +367,20 @@ TEST_CASE("Subprocess: recv_line fails when unterminated line exceeds cap") {
     CHECK_FALSE(line.has_value());
 }
 
+TEST_CASE("Subprocess: recv_line accepts a burst of complete lines over the cap") {
+    // A single drain can exceed kReadBufMaxBytes when the child writes
+    // many valid newline-framed messages at once.  The cap applies only
+    // to an unterminated trailing fragment, so the first frame must land.
+    Subprocess proc({"/bin/sh", "-c",
+        "awk 'BEGIN{for(i=0;i<30000;i++) print \"{\\\"ok\\\":true}\"}'"});
+    auto line = proc.recv_line(5s);
+    REQUIRE(line.has_value());
+    CHECK(*line == "{\"ok\":true}");
+    auto second = proc.recv_line(2s);
+    REQUIRE(second.has_value());
+    CHECK(*second == "{\"ok\":true}");
+}
+
 TEST_CASE("Subprocess: strips secret-shaped parent env; keeps env_extra") {
     // Parent injects a fake provider key; child must not see it.  Registry
     // env_extra is still passed through (operator-opted).

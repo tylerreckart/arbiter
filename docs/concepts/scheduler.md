@@ -18,12 +18,13 @@ Both are tenant-scoped, surface in the same `/v1/schedules` table, and produce a
 | State        | Meaning                                                                 |
 |--------------|--------------------------------------------------------------------------|
 | `active`     | Will fire on or after `next_fire_at`. Default for new schedules.         |
+| `running`    | Claimed by a tick; excluded from due queries until the run finishes or startup recovery releases the lease. |
 | `paused`     | Won't fire until PATCHed back to `active`. Operator or agent toggle.     |
 | `completed`  | Terminal for one-shot schedules after a successful fire.                 |
 | `failed`     | Terminal for one-shot schedules whose fire raised — the run row carries the error message. |
 | `canceled`   | Tombstone after explicit DELETE; rows are removed from the DB on cancel. |
 
-A recurring task stays `active` indefinitely; each fire updates `next_fire_at`, increments `run_count`, and stamps `last_run_at` / `last_run_id`.
+A recurring task stays `active` (or `running` while a fire is in flight) indefinitely; each completed fire updates `next_fire_at`, increments `run_count`, and stamps `last_run_at` / `last_run_id`. While `running`, another scheduler sharing the database cannot claim the same row, even if the recurrence interval has already elapsed.
 
 ## Natural-language phrases
 
@@ -69,14 +70,17 @@ OK: scheduled #17 — in 1 hour (2026-05-08 14:23) → scout
 
 ## Fire path
 
-When `next_fire_at <= now`:
+When `next_fire_at <= now` and `status='active'`:
 
-1. Scheduler creates a `task_runs` row with `status='running'` and a fresh `request_id`.
-2. Publishes a `run.started` notification.
-3. Constructs an Orchestrator with the same wiring `/v1/orchestrate` uses (tenant memory, structured memory graph, MCP, A2A, search), runs `Orchestrator::send(agent_id, message)` synchronously.
-4. Updates the run row with the final status (`succeeded` | `failed`), token counts, completed_at, and a truncated `result_summary`.
-5. Updates the parent task: increments `run_count`, sets `last_run_at` / `last_run_id`, and either advances `next_fire_at` (recurring) or marks `status='completed'` (one-shot).
-6. Publishes `run.completed` or `run.failed`.
+1. Scheduler atomically claims the row (`status='running'`). `next_fire_at` is left unchanged so a crash can recover the original due time.
+2. Creates a `task_runs` row with `status='running'` and a fresh `request_id`.
+3. Publishes a `run.started` notification.
+4. Constructs an Orchestrator with the same wiring `/v1/orchestrate` uses (tenant memory, structured memory graph, MCP, A2A, search), runs `Orchestrator::send(agent_id, message)` synchronously.
+5. Updates the run row with the final status (`succeeded` | `failed`), token counts, completed_at, and a truncated `result_summary`.
+6. Updates the parent task: increments `run_count`, sets `last_run_at` / `last_run_id`, and either returns `status='active'` with an advanced `next_fire_at` (recurring) or marks `status='completed'` (one-shot).
+7. Publishes `run.completed` or `run.failed`.
+
+Startup recovery marks orphaned `task_runs` failed and releases any `scheduled_tasks` still in `status='running'` back to `active`. One-shots therefore remain due after a crash instead of being stranded, and `/schedule resume` still works because `next_fire_at` was never pushed to infinity.
 
 A run that throws during orchestrator construction (missing tenant memory bridge, malformed config) marks the run failed but keeps recurring schedules active so transient init errors retry on the next tick. A missing target agent (`agent != "index"` and not in the catalog) pauses the schedule so the operator can fix the catalog before further fires.
 

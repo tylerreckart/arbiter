@@ -255,12 +255,19 @@ bool Subprocess::drain_into_buf(std::chrono::milliseconds timeout) {
     while (true) {
         ssize_t k = ::read(stdout_fd_, buf, sizeof(buf));
         if (k > 0) {
-            if (read_buf_.size() + static_cast<size_t>(k) > kReadBufMaxBytes) {
+            read_buf_.append(buf, static_cast<size_t>(k));
+            // Cap the unterminated suffix only.  Complete newline-framed
+            // messages are the protocol unit — a burst of valid lines
+            // must not fail the drain.  Stop once a frame is present so
+            // leftover bytes stay in the kernel pipe for the next read.
+            const auto last_nl = read_buf_.rfind('\n');
+            const size_t incomplete = (last_nl == std::string::npos)
+                ? read_buf_.size()
+                : read_buf_.size() - last_nl - 1;
+            if (incomplete > kReadBufMaxBytes) {
                 return false;
             }
-            read_buf_.append(buf, static_cast<size_t>(k));
-            // Loop reads until EAGAIN — pulls everything currently
-            // buffered without re-polling.
+            if (last_nl != std::string::npos) return true;
             continue;
         }
         if (k == 0) {

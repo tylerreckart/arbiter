@@ -13,7 +13,6 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
-#include <limits>
 
 namespace arbiter {
 
@@ -167,17 +166,10 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
     }
 
     // Claim the task before any slow work so concurrent ticks cannot
-    // double-fire while orch->send() is still running.
+    // double-fire while orch->send() is still running.  Status='running'
+    // is the lease; next_fire_at stays put until the run finishes.
     const int64_t now = now_epoch();
-    int64_t claim_next = 0;
-    if (task.schedule_kind == "recurring") {
-        claim_next = next_fire_for_recur(task.recur_json, now);
-        if (claim_next == 0) claim_next = now + 3600;
-    } else {
-        claim_next = std::numeric_limits<int64_t>::max();
-    }
-    if (!tenants_->try_claim_scheduled_task(task.tenant_id, task.id,
-                                            now, claim_next)) {
+    if (!tenants_->try_claim_scheduled_task(task.tenant_id, task.id, now)) {
         return;
     }
 
@@ -229,7 +221,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
             int64_t next = next_fire_for_recur(task.recur_json, now_epoch());
             if (next == 0) next = now_epoch() + 3600;
             tenants_->update_scheduled_task(task.tenant_id, task.id,
-                std::nullopt, next,
+                std::optional<std::string>("active"), next,
                 std::optional<int64_t>(started_at),
                 std::optional<int64_t>(run.id),
                 std::optional<int64_t>(1));
@@ -318,7 +310,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         std::optional<int64_t>(resp.output_tokens),
         std::optional<bool>(true));
 
-    // Advance the parent task.
+    // Advance the parent task and drop the in-flight lease.
     if (task.schedule_kind == "recurring") {
         int64_t next = next_fire_for_recur(task.recur_json, completed_at);
         if (next == 0) {
@@ -331,7 +323,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 std::optional<int64_t>(1));
         } else {
             tenants_->update_scheduled_task(task.tenant_id, task.id,
-                std::nullopt, next,
+                std::optional<std::string>("active"), next,
                 std::optional<int64_t>(completed_at),
                 std::optional<int64_t>(run.id),
                 std::optional<int64_t>(1));

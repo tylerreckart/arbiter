@@ -199,23 +199,74 @@ TEST_CASE("event seqs preserve insert order on read") {
     }
 }
 
-TEST_CASE("scheduled task claim: only one tick can claim a due row") {
+TEST_CASE("scheduled task claim: in-flight lease without moving next_fire_at") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+    const int64_t due_at = now - 10;
+
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "every hour",
+        "recurring", 0, R"({"every":"hour"})", due_at);
+
+    CHECK(s.try_claim_scheduled_task(tid, task.id, now));
+    CHECK_FALSE(s.try_claim_scheduled_task(tid, task.id, now));
+
+    auto row = s.get_scheduled_task(tid, task.id);
+    REQUIRE(row);
+    CHECK(row->status == "running");
+    CHECK(row->next_fire_at == due_at);
+
+    // Still due by the clock, but the running lease hides it from the
+    // tick query so a second scheduler cannot overlap the first run.
+    auto due = s.list_due_scheduled_tasks(now + 86400, 10);
+    CHECK(due.empty());
+}
+
+TEST_CASE("scheduled task recovery: releases claimed one-shot back to active") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+    const int64_t due_at = now - 5;
+
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
+        "once", due_at, "", due_at);
+    REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
+    auto run = s.create_task_run(tid, task.id, "running", now, "req-crash");
+
+    auto orphans = s.recover_running_task_runs("failed", 9999, "interrupted");
+    CHECK(orphans.size() == 1);
+    CHECK(orphans[0].second == run.id);
+
+    auto got_run = s.get_task_run(tid, run.id);
+    REQUIRE(got_run);
+    CHECK(got_run->status == "failed");
+
+    auto row = s.get_scheduled_task(tid, task.id);
+    REQUIRE(row);
+    CHECK(row->status == "active");
+    CHECK(row->next_fire_at == due_at);
+
+    auto due = s.list_due_scheduled_tasks(now, 10);
+    REQUIRE(due.size() == 1);
+    CHECK(due[0].id == task.id);
+}
+
+TEST_CASE("scheduled task recovery: claim without a task_run is still released") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");
     const int64_t now = 1'700'000'000;
 
-    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "every hour",
-        "recurring", 0, R"({"every":"hour"})", now - 10);
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
+        "once", now - 1, "", now - 1);
+    REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
 
-    CHECK(s.try_claim_scheduled_task(tid, task.id, now, now + 3600));
-    CHECK_FALSE(s.try_claim_scheduled_task(tid, task.id, now, now + 7200));
-
-    auto due = s.list_due_scheduled_tasks(now, 10);
-    CHECK(due.empty());
+    auto orphans = s.recover_running_task_runs("failed", 9999, "interrupted");
+    CHECK(orphans.empty());
 
     auto row = s.get_scheduled_task(tid, task.id);
     REQUIRE(row);
-    CHECK(row->next_fire_at == now + 3600);
+    CHECK(row->status == "active");
+    CHECK(s.list_due_scheduled_tasks(now, 10).size() == 1);
 }
 
 TEST_CASE("task_run recovery sweep: marks orphaned running rows failed") {

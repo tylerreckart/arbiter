@@ -10671,6 +10671,8 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         auto task_orphans = tenants_.recover_running_task_runs(
             "failed", now_s,
             "task run was interrupted by a server restart");
+        // recover_running_task_runs also releases scheduled_tasks left
+        // in status='running' so a claimed one-shot is not stranded.
         for (const auto& rid : orphaned) {
             // Synthesise a terminal `done` event so resubscribe finds
             // a clean tail.  Use the next seq (last_seq+1) for a
