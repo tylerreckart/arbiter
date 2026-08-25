@@ -165,6 +165,19 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         return;
     }
 
+    // Scoped schedules must reference a live HTTP conversation row.
+    if (task.conversation_id > 0 &&
+        !is_http_scoped_conversation(*tenants_, task.tenant_id,
+                                     task.conversation_id)) {
+        std::fprintf(stderr,
+            "[scheduler] task %lld references missing conversation %lld; pausing\n",
+            (long long)task.id, (long long)task.conversation_id);
+        tenants_->update_scheduled_task(task.tenant_id, task.id,
+            std::optional<std::string>("paused"),
+            std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        return;
+    }
+
     // Claim the task before any slow work so concurrent ticks cannot
     // double-fire while orch->send() is still running.  Status='running'
     // is the lease; next_fire_at stays put until the run finishes.
@@ -192,7 +205,8 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
     }
 
     std::string init_err;
-    auto orch = build_blocking_orchestrator(*opts_, *tenants_, *tenant_opt, init_err);
+    auto orch = build_blocking_orchestrator(*opts_, *tenants_, *tenant_opt,
+                                            init_err, task.conversation_id);
 
     if (!orch) {
         const int64_t completed_at = now_epoch();
@@ -269,6 +283,63 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         return;
     }
 
+    auto fail_run = [&](const std::string& err,
+                        const std::optional<std::string>& task_status) {
+        const int64_t completed_at = now_epoch();
+        tenants_->update_task_run(task.tenant_id, run.id,
+            std::optional<std::string>("failed"),
+            completed_at, std::nullopt, std::optional<std::string>(err),
+            std::nullopt, std::nullopt, std::optional<bool>(true));
+        if (task_status) {
+            tenants_->update_scheduled_task(task.tenant_id, task.id,
+                task_status, std::nullopt,
+                std::optional<int64_t>(started_at),
+                std::optional<int64_t>(run.id),
+                std::optional<int64_t>(1));
+        } else if (task.schedule_kind == "recurring") {
+            int64_t next = next_fire_for_recur(task.recur_json, completed_at);
+            if (next == 0) next = completed_at + 3600;
+            tenants_->update_scheduled_task(task.tenant_id, task.id,
+                std::optional<std::string>("active"), next,
+                std::optional<int64_t>(completed_at),
+                std::optional<int64_t>(run.id),
+                std::optional<int64_t>(1));
+        } else {
+            tenants_->update_scheduled_task(task.tenant_id, task.id,
+                std::optional<std::string>("failed"),
+                std::nullopt,
+                std::optional<int64_t>(completed_at),
+                std::optional<int64_t>(run.id),
+                std::optional<int64_t>(1));
+        }
+        if (bus_) {
+            Notification n;
+            n.kind          = Notification::Kind::RunFailed;
+            n.tenant_id     = task.tenant_id;
+            n.task_id       = task.id;
+            n.run_id        = run.id;
+            n.status        = "failed";
+            n.agent_id      = task.agent_id;
+            n.started_at    = started_at;
+            n.completed_at  = completed_at;
+            n.error_message = err;
+            bus_->publish(n);
+        }
+    };
+
+    if (task.conversation_id > 0) {
+        auto log_prepare = [](const std::string& msg) {
+            std::fprintf(stderr, "[scheduler] %s\n", msg.c_str());
+        };
+        if (!prepare_blocking_conversation_turn(
+                *orch, *tenants_, task.tenant_id, task.conversation_id,
+                task.agent_id, task.message, req_id, log_prepare)) {
+            fail_run("conversation history could not be loaded",
+                     std::optional<std::string>("paused"));
+            return;
+        }
+    }
+
     // Run one turn synchronously.  Sub-agent delegation, tool calls, and
     // memory bridges all execute inline; the call returns when the agent
     // hits a terminal turn (no more tool calls).
@@ -297,6 +368,13 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         err = kTenantFacingRunError;
         ok = false;
     }
+
+    persist_blocking_conversation_turn(
+        *orch, *tenants_, task.tenant_id, task.conversation_id,
+        task.agent_id, resp, req_id, true,
+        [](const std::string& msg) {
+            std::fprintf(stderr, "[scheduler] %s\n", msg.c_str());
+        });
 
     const int64_t completed_at = now_epoch();
     const std::string final_text = ok ? truncate_summary(resp.content) : "";

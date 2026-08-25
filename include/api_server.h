@@ -47,8 +47,11 @@
 // front of the server.  The bind defaults to 127.0.0.1 to make that
 // architecture the path of least resistance.
 
+#include "api_client.h"
+
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -208,7 +211,38 @@ std::unique_ptr<Orchestrator>
 build_blocking_orchestrator(const ApiServerOptions& opts,
                              TenantStore& tenants,
                              const Tenant& tenant,
-                             std::string& err_out);
+                             std::string& err_out,
+                             int64_t conversation_id = 0);
+
+// HTTP-visible conversation rows (excludes TUI-only sidebar threads).
+bool is_http_scoped_conversation(TenantStore& tenants,
+                                 int64_t tenant_id,
+                                 int64_t conversation_id);
+
+// Replay stored history into the agent and append the user turn.  Shared by
+// POST /v1/orchestrate and the background scheduler.  Returns false when
+// hydration or user-message persistence failed.
+bool prepare_blocking_conversation_turn(
+    Orchestrator& orch,
+    TenantStore& tenants,
+    int64_t tenant_id,
+    int64_t conversation_id,
+    const std::string& agent_id,
+    const std::string& user_message,
+    const std::string& request_id,
+    const std::function<void(const std::string&)>& log_error);
+
+// Persist assistant output + compaction after a blocking turn completes.
+void persist_blocking_conversation_turn(
+    Orchestrator& orch,
+    TenantStore& tenants,
+    int64_t tenant_id,
+    int64_t conversation_id,
+    const std::string& agent_id,
+    const ApiResponse& resp,
+    const std::string& request_id,
+    bool tenant_active,
+    const std::function<void(const std::string&)>& log_error);
 
 // Wire tool invokers (/mem, /search, /schedule, /todo, /mcp, /a2a, /exec,
 // artifacts) onto an existing Orchestrator without replacing its agent

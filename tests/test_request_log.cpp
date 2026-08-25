@@ -199,6 +199,21 @@ TEST_CASE("event seqs preserve insert order on read") {
     }
 }
 
+TEST_CASE("scheduled task stores conversation_id for scoped fires") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+    auto conv = s.create_conversation(tid, "daily digest", "index", "");
+    auto task = s.create_scheduled_task(tid, "index", conv.id, "summarize",
+        "every day", "recurring", 0, R"({"every":"day"})", now);
+    CHECK(task.conversation_id == conv.id);
+
+    s.append_message(tid, conv.id, "user", "prior context", 0, 0, "");
+    auto tail = s.list_messages_tail(tid, conv.id, 10);
+    REQUIRE(tail.size() == 1);
+    CHECK(tail[0].content == "prior context");
+}
+
 TEST_CASE("scheduled task claim: in-flight lease without moving next_fire_at") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");
