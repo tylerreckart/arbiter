@@ -334,8 +334,11 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         if (!prepare_blocking_conversation_turn(
                 *orch, *tenants_, task.tenant_id, task.conversation_id,
                 task.agent_id, task.message, req_id, log_prepare)) {
-            fail_run("conversation history could not be loaded",
-                     std::optional<std::string>("paused"));
+            const std::optional<std::string> task_status =
+                task.schedule_kind == "recurring"
+                    ? std::optional<std::string>("paused")
+                    : std::optional<std::string>("failed");
+            fail_run("conversation history could not be loaded", task_status);
             return;
         }
     }
