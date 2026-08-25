@@ -76,7 +76,9 @@ struct ConversationFolder {
     int64_t     updated_at  = 0;
 };
 
-// One row from the messages table.  Append-only; rows are never edited.
+// One row from the messages table.  Content is never updated in place.
+    // The newest row may be deleted to roll back a user turn whose assistant
+    // reply was never persisted (failed / crashed blocking runs).
 struct ConversationMessage {
     int64_t     id              = 0;
     int64_t     conversation_id = 0;
@@ -316,6 +318,14 @@ public:
                                         int64_t input_tokens,
                                         int64_t output_tokens,
                                         const std::string& request_id);
+
+    // Delete `message_id` only when it is still the newest row in the
+    // conversation.  Used to unwind a prepared user turn that never got an
+    // assistant reply.  Returns false when the conversation is missing,
+    // TUI-origin, owned by another tenant, or `message_id` is not latest.
+    bool delete_latest_conversation_message(int64_t tenant_id,
+                                            int64_t conversation_id,
+                                            int64_t message_id);
 
     // List messages in a conversation, oldest first (chat order).  Caller
     // can pass `after_id` for forward pagination; 0 = from the start.

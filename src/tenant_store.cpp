@@ -1604,6 +1604,49 @@ ConversationMessage TenantStore::append_message(int64_t tenant_id,
     return m;
 }
 
+bool TenantStore::delete_latest_conversation_message(int64_t tenant_id,
+                                                     int64_t conversation_id,
+                                                     int64_t message_id) {
+    if (!db_ || message_id <= 0 || conversation_id <= 0) return false;
+
+    auto conv = get_conversation(tenant_id, conversation_id);
+    if (!conv) return false;
+    if (conv->origin == "tui") return false;
+
+    ImmediateTx tx(db_, write_mu_);
+    int64_t latest = 0;
+    {
+        Stmt q(db_, "SELECT id FROM messages WHERE conversation_id = ? "
+                    "ORDER BY id DESC LIMIT 1;");
+        q.bind(1, conversation_id);
+        if (q.step() != SQLITE_ROW) return false;
+        latest = q.column_int64(0);
+    }
+    if (latest != message_id) return false;
+
+    {
+        Stmt del(db_,
+            "DELETE FROM messages WHERE id = ? AND conversation_id = ?;");
+        del.bind(1, message_id);
+        del.bind(2, conversation_id);
+        del.step();
+        if (sqlite3_changes(db_) <= 0) return false;
+    }
+    {
+        Stmt bump(db_,
+            "UPDATE conversations "
+            "   SET updated_at    = ?, "
+            "       message_count = CASE WHEN message_count > 0 "
+            "                            THEN message_count - 1 ELSE 0 END "
+            " WHERE id = ?;");
+        bump.bind(1, now_epoch());
+        bump.bind(2, conversation_id);
+        bump.step();
+    }
+    tx.commit();
+    return true;
+}
+
 std::vector<ConversationMessage>
 TenantStore::list_messages(int64_t tenant_id, int64_t conversation_id,
                             int64_t after_id, int limit) const {

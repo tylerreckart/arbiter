@@ -214,6 +214,68 @@ TEST_CASE("scheduled task stores conversation_id for scoped fires") {
     CHECK(tail[0].content == "prior context");
 }
 
+TEST_CASE("delete_latest_conversation_message rolls back only the newest row") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t other = make_tenant(s, "other");
+    auto conv = s.create_conversation(tid, "daily digest", "index", "");
+
+    auto prior = s.append_message(tid, conv.id, "user", "prior", 0, 0, "");
+    auto asst  = s.append_message(tid, conv.id, "assistant", "ok", 0, 0, "");
+    auto orphan = s.append_message(tid, conv.id, "user", "summarize", 0, 0, "req-1");
+
+    auto conv_before = s.get_conversation(tid, conv.id);
+    REQUIRE(conv_before);
+    CHECK(conv_before->message_count == 3);
+
+    // Not latest — must not punch a hole in history.
+    CHECK_FALSE(s.delete_latest_conversation_message(tid, conv.id, prior.id));
+    CHECK_FALSE(s.delete_latest_conversation_message(tid, conv.id, asst.id));
+    // Wrong tenant / missing ids.
+    CHECK_FALSE(s.delete_latest_conversation_message(other, conv.id, orphan.id));
+    CHECK_FALSE(s.delete_latest_conversation_message(tid, conv.id, 0));
+    CHECK_FALSE(s.delete_latest_conversation_message(tid, conv.id, 999999));
+
+    CHECK(s.delete_latest_conversation_message(tid, conv.id, orphan.id));
+    auto tail = s.list_messages_tail(tid, conv.id, 10);
+    REQUIRE(tail.size() == 2);
+    CHECK(tail[0].id == prior.id);
+    CHECK(tail[1].id == asst.id);
+
+    auto conv_after = s.get_conversation(tid, conv.id);
+    REQUIRE(conv_after);
+    CHECK(conv_after->message_count == 2);
+
+    // Idempotent: already not latest / gone.
+    CHECK_FALSE(s.delete_latest_conversation_message(tid, conv.id, orphan.id));
+
+    // A retry can append the same prompt once the orphan is gone.
+    auto retry = s.append_message(tid, conv.id, "user", "summarize", 0, 0, "req-2");
+    CHECK(s.delete_latest_conversation_message(tid, conv.id, retry.id));
+    auto tail2 = s.list_messages_tail(tid, conv.id, 10);
+    REQUIRE(tail2.size() == 2);
+}
+
+TEST_CASE("trailing unmatched user prompt is the latest row a retry would reuse") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    auto conv = s.create_conversation(tid, "daily digest", "index", "");
+    s.append_message(tid, conv.id, "user", "prior", 0, 0, "");
+    s.append_message(tid, conv.id, "assistant", "ok", 0, 0, "");
+    auto orphan = s.append_message(tid, conv.id, "user", "summarize", 0, 0, "req-crash");
+
+    auto tail = s.list_messages_tail(tid, conv.id, 10);
+    REQUIRE(tail.size() == 3);
+    CHECK(tail.back().role == "user");
+    CHECK(tail.back().content == "summarize");
+    CHECK(tail.back().id == orphan.id);
+    // Completing the turn (assistant persist) makes the user row not latest,
+    // so a later failed retry cannot delete history behind a success.
+    auto done = s.append_message(tid, conv.id, "assistant", "done", 0, 0, "req-ok");
+    CHECK_FALSE(s.delete_latest_conversation_message(tid, conv.id, orphan.id));
+    CHECK(s.delete_latest_conversation_message(tid, conv.id, done.id));
+}
+
 TEST_CASE("scheduled task claim: in-flight lease without moving next_fire_at") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");

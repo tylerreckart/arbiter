@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <optional>
 
 namespace arbiter {
 
@@ -327,13 +328,16 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         }
     };
 
+    std::optional<BlockingConversationTurnGuard> prepared_turn;
     if (task.conversation_id > 0) {
         auto log_prepare = [](const std::string& msg) {
             std::fprintf(stderr, "[scheduler] %s\n", msg.c_str());
         };
+        int64_t prepared_user_message_id = 0;
         if (!prepare_blocking_conversation_turn(
                 *orch, *tenants_, task.tenant_id, task.conversation_id,
-                task.agent_id, task.message, req_id, log_prepare)) {
+                task.agent_id, task.message, req_id, log_prepare,
+                &prepared_user_message_id)) {
             const std::optional<std::string> task_status =
                 task.schedule_kind == "recurring"
                     ? std::optional<std::string>("paused")
@@ -341,6 +345,8 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
             fail_run("conversation history could not be loaded", task_status);
             return;
         }
+        prepared_turn.emplace(*tenants_, task.tenant_id, task.conversation_id,
+                              prepared_user_message_id);
     }
 
     // Run one turn synchronously.  Sub-agent delegation, tool calls, and
@@ -378,6 +384,8 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         [](const std::string& msg) {
             std::fprintf(stderr, "[scheduler] %s\n", msg.c_str());
         });
+    if (ok && prepared_turn) prepared_turn->commit();
+    else prepared_turn.reset();
 
     const int64_t completed_at = now_epoch();
     const std::string final_text = ok ? truncate_summary(resp.content) : "";

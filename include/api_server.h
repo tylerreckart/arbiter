@@ -222,6 +222,13 @@ bool is_http_scoped_conversation(TenantStore& tenants,
 // Replay stored history into the agent and append the user turn.  Shared by
 // POST /v1/orchestrate and the background scheduler.  Returns false when
 // hydration or user-message persistence failed.
+//
+// When the conversation already ends in an unmatched user prompt with the
+// same content (a previous crash or failed send), that row is reused instead
+// of appending a duplicate, and it is omitted from hydrated history so
+// Orchestrator::send does not present the prompt twice.  On success,
+// `prepared_user_message_id` (when non-null) receives the user-row id so
+// callers can roll it back if the turn does not complete.
 bool prepare_blocking_conversation_turn(
     Orchestrator& orch,
     TenantStore& tenants,
@@ -230,7 +237,31 @@ bool prepare_blocking_conversation_turn(
     const std::string& agent_id,
     const std::string& user_message,
     const std::string& request_id,
-    const std::function<void(const std::string&)>& log_error);
+    const std::function<void(const std::string&)>& log_error,
+    int64_t* prepared_user_message_id = nullptr);
+
+// Rolls back a prepared user message unless commit() is called after a
+// successful assistant persist.  Recurring scheduler retries and failed
+// HTTP turns must not leave unmatched prompts in conversation history.
+class BlockingConversationTurnGuard {
+public:
+    BlockingConversationTurnGuard(TenantStore& tenants,
+                                  int64_t tenant_id,
+                                  int64_t conversation_id,
+                                  int64_t user_message_id);
+    ~BlockingConversationTurnGuard();
+    BlockingConversationTurnGuard(const BlockingConversationTurnGuard&) = delete;
+    BlockingConversationTurnGuard& operator=(const BlockingConversationTurnGuard&) = delete;
+    BlockingConversationTurnGuard(BlockingConversationTurnGuard&&) = delete;
+    BlockingConversationTurnGuard& operator=(BlockingConversationTurnGuard&&) = delete;
+    void commit() noexcept { committed_ = true; }
+private:
+    TenantStore* tenants_ = nullptr;
+    int64_t tenant_id_ = 0;
+    int64_t conversation_id_ = 0;
+    int64_t user_message_id_ = 0;
+    bool committed_ = false;
+};
 
 // Persist assistant output + compaction after a blocking turn completes.
 void persist_blocking_conversation_turn(

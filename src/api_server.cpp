@@ -9582,13 +9582,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // messages into the agent so the model sees the full history, then
     // append the user's new message to the DB.  Persistence of the
     // assistant's response happens after send_streaming returns (below).
+    // If the turn fails or returns early, the prepared-turn guard rolls
+    // the user row back so retries do not accumulate unmatched prompts.
+    int64_t prepared_user_message_id = 0;
     if (conversation_id > 0) {
         if (!prepare_blocking_conversation_turn(
                 *orch, tenants, tenant.id, conversation_id,
-                agent_id, message, request_id, log_error)) {
+                agent_id, message, request_id, log_error,
+                &prepared_user_message_id)) {
             return;
         }
     }
+    BlockingConversationTurnGuard prepared_turn(
+        tenants, tenant.id, conversation_id, prepared_user_message_id);
 
     // Helper: stamp every outbound event with the current turn's
     // (agent, stream_id, depth).  Read lazily at emit time because each
@@ -10174,6 +10180,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         persist_blocking_conversation_turn(
             *orch, tenants, tenant.id, conversation_id, agent_id,
             resp, request_id, !tenant_revoked, log_error);
+        if (!tenant_revoked && resp.ok) prepared_turn.commit();
     } catch (const std::exception& e) {
         log_error(std::string("orchestration failed: ") + e.what());
         if (request_status_created) {
@@ -10240,6 +10247,30 @@ bool is_http_scoped_conversation(TenantStore& tenants,
     return c && c->origin != "tui";
 }
 
+BlockingConversationTurnGuard::BlockingConversationTurnGuard(
+    TenantStore& tenants,
+    int64_t tenant_id,
+    int64_t conversation_id,
+    int64_t user_message_id)
+    : tenants_(&tenants),
+      tenant_id_(tenant_id),
+      conversation_id_(conversation_id),
+      user_message_id_(user_message_id),
+      committed_(user_message_id <= 0) {}
+
+BlockingConversationTurnGuard::~BlockingConversationTurnGuard() {
+    if (committed_ || !tenants_ || user_message_id_ <= 0 ||
+        conversation_id_ <= 0) {
+        return;
+    }
+    try {
+        tenants_->delete_latest_conversation_message(
+            tenant_id_, conversation_id_, user_message_id_);
+    } catch (...) {
+        // Best-effort rollback; never throw from a destructor.
+    }
+}
+
 bool prepare_blocking_conversation_turn(
     Orchestrator& orch,
     TenantStore& tenants,
@@ -10248,12 +10279,25 @@ bool prepare_blocking_conversation_turn(
     const std::string& agent_id,
     const std::string& user_message,
     const std::string& request_id,
-    const std::function<void(const std::string&)>& log_error) {
+    const std::function<void(const std::string&)>& log_error,
+    int64_t* prepared_user_message_id) {
+    if (prepared_user_message_id) *prepared_user_message_id = 0;
     if (conversation_id <= 0) return true;
+    int64_t reused_user_id = 0;
     try {
         const int kReplayCap = 100;
         auto prior = tenants.list_messages_tail(tenant_id, conversation_id,
                                                 kReplayCap);
+        // A previous failed/crashed send may have left this prompt as the
+        // last row with no assistant reply.  Reuse it instead of appending
+        // another copy, and keep it out of hydrated history so send() does
+        // not present the same user turn twice.
+        if (!prior.empty() &&
+            prior.back().role == "user" &&
+            prior.back().content == user_message) {
+            reused_user_id = prior.back().id;
+            prior.pop_back();
+        }
         std::vector<Message> hist;
         std::vector<int64_t> hist_ids;
         hist.reserve(prior.size());
@@ -10376,10 +10420,15 @@ bool prepare_blocking_conversation_turn(
         return false;
     }
     try {
-        tenants.append_message(tenant_id, conversation_id,
-                                "user", user_message,
-                                /*input=*/0, /*output=*/0,
-                                request_id);
+        int64_t user_id = reused_user_id;
+        if (user_id <= 0) {
+            auto row = tenants.append_message(tenant_id, conversation_id,
+                                              "user", user_message,
+                                              /*input=*/0, /*output=*/0,
+                                              request_id);
+            user_id = row.id;
+        }
+        if (prepared_user_message_id) *prepared_user_message_id = user_id;
     } catch (const std::exception& e) {
         log_error(std::string("could not persist user message: ") + e.what());
         return false;
