@@ -901,13 +901,17 @@ public:
 
     // PATCH: any std::nullopt argument leaves the field untouched.  Bumps
     // updated_at on a successful change.  Returns false if the row is
-    // missing or belongs to another tenant.
+    // missing or belongs to another tenant.  When `require_status` is
+    // set, the update is a no-op unless the row currently has that status
+    // (used by the scheduler to avoid clobbering a pause applied mid-run).
     bool update_scheduled_task(int64_t tenant_id, int64_t id,
                                 const std::optional<std::string>& status,
                                 const std::optional<int64_t>& next_fire_at,
                                 const std::optional<int64_t>& last_run_at,
                                 const std::optional<int64_t>& last_run_id,
-                                const std::optional<int64_t>& run_count_delta);
+                                const std::optional<int64_t>& run_count_delta,
+                                const std::optional<std::string>& require_status =
+                                    std::nullopt);
 
     bool delete_scheduled_task(int64_t tenant_id, int64_t id);
 

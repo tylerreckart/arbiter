@@ -189,6 +189,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
 
     const int64_t  started_at = now;
     const std::string req_id  = short_request_id();
+    const std::optional<std::string> k_running_lease("running");
     auto run = tenants_->create_task_run(task.tenant_id, task.id,
                                           /*status=*/"running",
                                           started_at, req_id);
@@ -239,14 +240,16 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 std::optional<std::string>("active"), next,
                 std::optional<int64_t>(started_at),
                 std::optional<int64_t>(run.id),
-                std::optional<int64_t>(1));
+                std::optional<int64_t>(1),
+                k_running_lease);
         } else {
             tenants_->update_scheduled_task(task.tenant_id, task.id,
                 std::optional<std::string>("failed"),
                 std::nullopt,
                 std::optional<int64_t>(started_at),
                 std::optional<int64_t>(run.id),
-                std::optional<int64_t>(1));
+                std::optional<int64_t>(1),
+                k_running_lease);
         }
         return;
     }
@@ -267,7 +270,8 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
             std::nullopt,
             std::optional<int64_t>(started_at),
             std::optional<int64_t>(run.id),
-            std::optional<int64_t>(1));
+            std::optional<int64_t>(1),
+            k_running_lease);
         if (bus_) {
             Notification n;
             n.kind          = Notification::Kind::RunFailed;
@@ -296,7 +300,8 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 task_status, std::nullopt,
                 std::optional<int64_t>(started_at),
                 std::optional<int64_t>(run.id),
-                std::optional<int64_t>(1));
+                std::optional<int64_t>(1),
+                k_running_lease);
         } else if (task.schedule_kind == "recurring") {
             int64_t next = next_fire_for_recur(task.recur_json, completed_at);
             if (next == 0) next = completed_at + 3600;
@@ -304,14 +309,16 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 std::optional<std::string>("active"), next,
                 std::optional<int64_t>(completed_at),
                 std::optional<int64_t>(run.id),
-                std::optional<int64_t>(1));
+                std::optional<int64_t>(1),
+                k_running_lease);
         } else {
             tenants_->update_scheduled_task(task.tenant_id, task.id,
                 std::optional<std::string>("failed"),
                 std::nullopt,
                 std::optional<int64_t>(completed_at),
                 std::optional<int64_t>(run.id),
-                std::optional<int64_t>(1));
+                std::optional<int64_t>(1),
+                k_running_lease);
         }
         if (bus_) {
             Notification n;
@@ -409,13 +416,15 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 std::nullopt,
                 std::optional<int64_t>(completed_at),
                 std::optional<int64_t>(run.id),
-                std::optional<int64_t>(1));
+                std::optional<int64_t>(1),
+                k_running_lease);
         } else {
             tenants_->update_scheduled_task(task.tenant_id, task.id,
                 std::optional<std::string>("active"), next,
                 std::optional<int64_t>(completed_at),
                 std::optional<int64_t>(run.id),
-                std::optional<int64_t>(1));
+                std::optional<int64_t>(1),
+                k_running_lease);
         }
     } else {
         tenants_->update_scheduled_task(task.tenant_id, task.id,
@@ -423,7 +432,8 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
             std::nullopt,
             std::optional<int64_t>(completed_at),
             std::optional<int64_t>(run.id),
-            std::optional<int64_t>(1));
+            std::optional<int64_t>(1),
+            k_running_lease);
     }
 
     if (bus_) {

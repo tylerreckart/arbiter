@@ -4618,7 +4618,8 @@ bool TenantStore::update_scheduled_task(
         const std::optional<int64_t>& next_fire_at,
         const std::optional<int64_t>& last_run_at,
         const std::optional<int64_t>& last_run_id,
-        const std::optional<int64_t>& run_count_delta) {
+        const std::optional<int64_t>& run_count_delta,
+        const std::optional<std::string>& require_status) {
     if (!db_) return false;
     std::string sql = "UPDATE scheduled_tasks SET updated_at = ?";
     if (status)        sql += ", status = ?";
@@ -4626,7 +4627,9 @@ bool TenantStore::update_scheduled_task(
     if (last_run_at)   sql += ", last_run_at = ?";
     if (last_run_id)   sql += ", last_run_id = ?";
     if (run_count_delta) sql += ", run_count = run_count + ?";
-    sql += " WHERE tenant_id = ? AND id = ?;";
+    sql += " WHERE tenant_id = ? AND id = ?";
+    if (require_status) sql += " AND status = ?";
+    sql += ";";
 
     Stmt q(db_, sql.c_str());
     int idx = 1;
@@ -4637,7 +4640,8 @@ bool TenantStore::update_scheduled_task(
     if (last_run_id)     q.bind(idx++, *last_run_id);
     if (run_count_delta) q.bind(idx++, *run_count_delta);
     q.bind(idx++, tenant_id);
-    q.bind(idx,   id);
+    q.bind(idx++, id);
+    if (require_status) q.bind(idx, *require_status);
     q.step();
     return sqlite3_changes(db_) > 0;
 }

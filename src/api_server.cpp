@@ -9509,6 +9509,27 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         o->as_object_mut()["message"] = jstr(msg);
         emit("error", o);
     };
+    auto abort_sse_turn = [&](const std::string& error_msg,
+                              const char* error_code = "failed") {
+        auto done = jobj();
+        auto& m = done->as_object_mut();
+        m["ok"]         = jbool(false);
+        m["error"]      = jstr(error_msg);
+        m["error_code"] = jstr(error_code);
+        m["tenant_id"]  = jnum(static_cast<double>(tenant.id));
+        m["request_id"] = jstr(request_id);
+        emit("done", done);
+        sse.close();
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>(error_msg), std::nullopt);
+        }
+    };
 
     // Memory is tenant-scoped so /mem commands can never leak between
     // accounts.  set_memory_dir is kept as a no-op fallback path for
@@ -9590,6 +9611,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 *orch, tenants, tenant.id, conversation_id,
                 agent_id, message, request_id, log_error,
                 &prepared_user_message_id)) {
+            abort_sse_turn("conversation history could not be loaded");
             return;
         }
     }

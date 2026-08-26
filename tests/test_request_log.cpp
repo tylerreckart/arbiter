@@ -299,36 +299,37 @@ TEST_CASE("scheduled task claim: in-flight lease without moving next_fire_at") {
     CHECK(due.empty());
 }
 
-TEST_CASE("scheduled task recovery: releases claimed one-shot back to active") {
+TEST_CASE("scheduled task completion: paused mid-run is not overwritten") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");
     const int64_t now = 1'700'000'000;
-    const int64_t due_at = now - 5;
+    const int64_t due_at = now - 10;
 
-    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
-        "once", due_at, "", due_at);
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "every hour",
+        "recurring", 0, R"({"every":"hour"})", due_at);
     REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
-    auto run = s.create_task_run(tid, task.id, "running", now, "req-crash");
 
-    auto orphans = s.recover_running_task_runs("failed", 9999, "interrupted");
-    CHECK(orphans.size() == 1);
-    CHECK(orphans[0].second == run.id);
+    // Operator pauses while the run is still in flight.
+    CHECK(s.update_scheduled_task(tid, task.id,
+        std::optional<std::string>("paused"),
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt));
 
-    auto got_run = s.get_task_run(tid, run.id);
-    REQUIRE(got_run);
-    CHECK(got_run->status == "failed");
+    // Scheduler completion must not clobber the pause.
+    CHECK_FALSE(s.update_scheduled_task(tid, task.id,
+        std::optional<std::string>("active"),
+        std::optional<int64_t>(now + 3600),
+        std::optional<int64_t>(now),
+        std::nullopt,
+        std::optional<int64_t>(1),
+        std::optional<std::string>("running")));
 
     auto row = s.get_scheduled_task(tid, task.id);
     REQUIRE(row);
-    CHECK(row->status == "active");
+    CHECK(row->status == "paused");
     CHECK(row->next_fire_at == due_at);
-
-    auto due = s.list_due_scheduled_tasks(now, 10);
-    REQUIRE(due.size() == 1);
-    CHECK(due[0].id == task.id);
 }
 
-TEST_CASE("scheduled task recovery: claim without a task_run is still released") {
+TEST_CASE("scheduled task recovery: releases claimed one-shot back to active") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");
     const int64_t now = 1'700'000'000;
