@@ -7815,7 +7815,8 @@ void wire_orch_tools_impl(Orchestrator& orch,
 std::unique_ptr<Orchestrator>
 build_a2a_orchestrator(const ApiServerOptions& opts,
                         TenantStore& tenants, const Tenant& tenant,
-                        std::string& err_out) {
+                        std::string& err_out,
+                        int64_t conversation_id = 0) {
     std::unique_ptr<Orchestrator> orch;
     try {
         orch = std::make_unique<Orchestrator>(opts.api_keys);
@@ -7841,7 +7842,10 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
     }
 
     wire_orch_tools_impl(*orch, opts, tenants, tenant.id,
-                         /*conversation_id=*/nullptr);
+                         conversation_id > 0
+                             ? std::make_shared<std::atomic<int64_t>>(
+                                   conversation_id)
+                             : nullptr);
     return orch;
 }
 
@@ -9505,6 +9509,27 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         o->as_object_mut()["message"] = jstr(msg);
         emit("error", o);
     };
+    auto abort_sse_turn = [&](const std::string& error_msg,
+                              const char* error_code = "failed") {
+        auto done = jobj();
+        auto& m = done->as_object_mut();
+        m["ok"]         = jbool(false);
+        m["error"]      = jstr(error_msg);
+        m["error_code"] = jstr(error_code);
+        m["tenant_id"]  = jnum(static_cast<double>(tenant.id));
+        m["request_id"] = jstr(request_id);
+        emit("done", done);
+        sse.close();
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>(error_msg), std::nullopt);
+        }
+    };
 
     // Memory is tenant-scoped so /mem commands can never leak between
     // accounts.  set_memory_dir is kept as a no-op fallback path for
@@ -9578,160 +9603,20 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // messages into the agent so the model sees the full history, then
     // append the user's new message to the DB.  Persistence of the
     // assistant's response happens after send_streaming returns (below).
+    // If the turn fails or returns early, the prepared-turn guard rolls
+    // the user row back so retries do not accumulate unmatched prompts.
+    int64_t prepared_user_message_id = 0;
     if (conversation_id > 0) {
-        try {
-            // Hard-cap history replay at 100 turns to keep token usage and
-            // request payload size bounded.  If a thread is older, the
-            // newest N messages are what get hydrated — older context falls
-            // off, which matches both Claude's and ChatGPT's default UX.
-            const int kReplayCap = 100;
-            auto prior = tenants.list_messages_tail(tenant.id, conversation_id,
-                                                    kReplayCap);
-            std::vector<Message> hist;
-            std::vector<int64_t> hist_ids;
-            hist.reserve(prior.size());
-            hist_ids.reserve(prior.size());
-            for (auto& pm : prior) {
-                hist.push_back({pm.role, pm.content});
-                hist_ids.push_back(pm.id);
-            }
-            orch->set_agent_history(agent_id, std::move(hist));
-            // Restore rolling summary across HTTP turns.  set_agent_history
-            // clears in-memory compaction; remap locates the saved boundary
-            // (prefer DB id) in the hydrated tail.  If the boundary fell off
-            // the newest-N window, fold the DB gap into the summary so
-            // unsummarized turns between the old cut and the replay window
-            // are not silently dropped.
-            try {
-                auto& agent = orch->get_agent(agent_id);
-                const std::string blob =
-                    tenants.get_conversation_compaction_json(
-                        tenant.id, conversation_id);
-                CompactionState st;
-                if (!blob.empty()) {
-                    auto parsed = json_parse(blob);
-                    st = compaction_from_json(parsed.get());
-                }
-                const size_t keep = agent.compaction_config().keep_messages;
-                remap_compaction_onto_history(st, agent.history(), keep,
-                                              &hist_ids);
-                // Boundary missing from the hydrated tail: fold the DB gap
-                // (messages from the saved boundary up to the replay window)
-                // into the rolling summary.  If boundary_db_id is unset,
-                // locate a unique content match older than the tail first.
-                if (!st.summary.empty() && st.covered_until == 0 &&
-                    !prior.empty()) {
-                    if (st.boundary_db_id <= 0 &&
-                        (!st.boundary_role.empty() ||
-                         !st.boundary_content.empty())) {
-                        int64_t cursor = prior.front().id;
-                        int64_t found_id = 0;
-                        int match_count = 0;
-                        // Page older messages (newest-first pages) looking
-                        // for a unique boundary content match.
-                        for (int page = 0; page < 20 && cursor > 1; ++page) {
-                            auto older = tenants.list_messages_before(
-                                tenant.id, conversation_id, cursor, 500);
-                            if (older.empty()) break;
-                            for (auto& m : older) {
-                                if (m.role != st.boundary_role) continue;
-                                if (!boundary_content_matches(
-                                        m.content, st.boundary_content))
-                                    continue;
-                                ++match_count;
-                                found_id = m.id;
-                            }
-                            if (match_count > 1) {
-                                found_id = 0;
-                                break;  // ambiguous — refuse
-                            }
-                            cursor = older.front().id;
-                            if (older.size() < 500) break;
-                        }
-                        if (match_count == 1) st.boundary_db_id = found_id;
-                    }
-                    if (st.boundary_db_id > 0 &&
-                        prior.front().id > st.boundary_db_id) {
-                        const std::string advisor =
-                            !agent.config().advisor.model.empty()
-                                ? agent.config().advisor.model
-                                : agent.config().advisor_model;
-                        const std::string model = resolve_summarize_model(
-                            advisor, agent.config().model);
-                        bool fold_ok = true;
-                        std::vector<Message> prepend_gap;
-                        int64_t from_id = st.boundary_db_id;
-                        const int64_t before_id = prior.front().id;
-                        while (from_id < before_id) {
-                            auto gap_rows = tenants.list_messages_range(
-                                tenant.id, conversation_id, from_id,
-                                before_id);
-                            if (gap_rows.empty()) break;
-                            std::vector<Message> gap;
-                            gap.reserve(gap_rows.size());
-                            for (auto& gm : gap_rows)
-                                gap.push_back({gm.role, gm.content});
-                            if (fold_ok) {
-                                if (!fold_compaction_gap(
-                                        orch->client(), model, gap, st,
-                                        agent.compaction_config(),
-                                        agent.compaction_pinned_facts())) {
-                                    fold_ok = false;
-                                    for (auto& m : gap)
-                                        prepend_gap.push_back(m);
-                                }
-                            } else {
-                                for (auto& m : gap) prepend_gap.push_back(m);
-                            }
-                            const int64_t last_id = gap_rows.back().id;
-                            if (last_id < from_id) break;
-                            from_id = last_id + 1;
-                            if (gap_rows.size() < 500) break;
-                        }
-                        if (fold_ok && prepend_gap.empty()) {
-                            st.boundary_role = prior.front().role;
-                            st.boundary_content = compaction_boundary_content(
-                                prior.front().content);
-                            st.boundary_db_id = prior.front().id;
-                            st.covered_until = 0;
-                        } else if (!prepend_gap.empty()) {
-                            std::vector<Message> expanded;
-                            expanded.reserve(prepend_gap.size() +
-                                             agent.history().size());
-                            for (auto& m : prepend_gap)
-                                expanded.push_back(m);
-                            for (auto& m : agent.history())
-                                expanded.push_back(m);
-                            orch->set_agent_history(agent_id,
-                                                    std::move(expanded));
-                            st.covered_until = 0;
-                        }
-                    }
-                }
-                agent.set_compaction_state(std::move(st));
-            } catch (...) {
-                // Best-effort — missing column / parse errors must not
-                // block the turn.
-            }
-        } catch (const std::out_of_range&) {
-            // Agent isn't loaded — surface as SSE error.
-            log_error("agent '" + agent_id + "' not loaded for "
-                      "conversation resumption");
-            return;
-        } catch (const std::exception& e) {
-            log_error(std::string("history load failed: ") + e.what());
-            return;
-        }
-        try {
-            tenants.append_message(tenant.id, conversation_id,
-                                    "user", message,
-                                    /*input=*/0, /*output=*/0,
-                                    request_id);
-        } catch (const std::exception& e) {
-            log_error(std::string("could not persist user message: ") + e.what());
+        if (!prepare_blocking_conversation_turn(
+                *orch, tenants, tenant.id, conversation_id,
+                agent_id, message, request_id, log_error,
+                &prepared_user_message_id)) {
+            abort_sse_turn("conversation history could not be loaded");
             return;
         }
     }
+    BlockingConversationTurnGuard prepared_turn(
+        tenants, tenant.id, conversation_id, prepared_user_message_id);
 
     // Helper: stamp every outbound event with the current turn's
     // (agent, stream_id, depth).  Read lazily at emit time because each
@@ -10314,87 +10199,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 std::nullopt);
         }
 
-        // Persist the assistant turn to the conversation thread.  resp's
-        // content + token counts are cumulative across all tool-call
-        // re-entry iterations (Orchestrator::send_streaming aggregates
-        // them before returning), so what we persist is the full
-        // multi-turn assistant response — not just the closing remark.
-        if (conversation_id > 0 && !tenant_revoked && resp.ok) {
-            try {
-                tenants.append_message(tenant.id, conversation_id,
-                                        "assistant", resp.content,
-                                        resp.input_tokens, resp.output_tokens,
-                                        request_id);
-            } catch (...) {
-                // Best-effort persistence; emit but don't fail the stream.
-                log_error("assistant message could not be persisted to "
-                          "conversation");
-            }
-            // Persist compaction so the next hydrate can resume the
-            // rolling summary.  Only write when we have live compaction
-            // state — never clear the DB blob on a failed restore (empty
-            // in-memory state after set_agent_history), which would erase
-            // the rolling summary across requests.
-            try {
-                auto& agent = orch->get_agent(agent_id);
-                auto st = agent.compaction_state();
-                if (!st.summary.empty() || st.covered_until > 0 ||
-                    st.generation > 0) {
-                    // Resolve a durable DB id for the boundary.
-                    // Unique recent match → adopt it.
-                    // Ambiguous recent matches → clear (do not keep a stale
-                    // prev_id that may point at an older duplicate "yes").
-                    // None in recent window → keep prev_id only if that row
-                    // still matches the current boundary text.
-                    if (!st.boundary_role.empty() ||
-                        !st.boundary_content.empty()) {
-                        const int64_t prev_id = st.boundary_db_id;
-                        auto recent = tenants.list_messages_tail(
-                            tenant.id, conversation_id, /*limit=*/200);
-                        std::vector<std::string> roles, contents;
-                        std::vector<int64_t> ids;
-                        roles.reserve(recent.size());
-                        contents.reserve(recent.size());
-                        ids.reserve(recent.size());
-                        for (auto& m : recent) {
-                            roles.push_back(m.role);
-                            contents.push_back(m.content);
-                            ids.push_back(m.id);
-                        }
-                        const auto resolved =
-                            resolve_boundary_db_id(roles, contents, ids, st);
-                        if (resolved.status ==
-                            BoundaryResolve::Status::Unique) {
-                            st.boundary_db_id = resolved.id;
-                        } else if (prev_id > 0) {
-                            // None or Ambiguous in the recent window: keep
-                            // prev_id only when that exact row still matches
-                            // the current boundary text.  Re-compaction
-                            // clears boundary_db_id to 0, so a moved cut
-                            // cannot reuse an older duplicate via this path.
-                            auto row = tenants.list_messages_range(
-                                tenant.id, conversation_id, prev_id,
-                                prev_id + 1);
-                            const bool still_matches =
-                                row.size() == 1 &&
-                                row[0].role == st.boundary_role &&
-                                boundary_content_matches(row[0].content,
-                                                         st.boundary_content);
-                            st.boundary_db_id = still_matches ? prev_id : 0;
-                        } else {
-                            st.boundary_db_id = 0;
-                        }
-                    } else {
-                        st.boundary_db_id = 0;
-                    }
-                    tenants.set_conversation_compaction_json(
-                        tenant.id, conversation_id,
-                        json_serialize(*compaction_to_json(st)));
-                }
-            } catch (...) {
-                log_error("conversation compaction could not be persisted");
-            }
-        }
+        persist_blocking_conversation_turn(
+            *orch, tenants, tenant.id, conversation_id, agent_id,
+            resp, request_id, !tenant_revoked, log_error);
+        if (!tenant_revoked && resp.ok) prepared_turn.commit();
     } catch (const std::exception& e) {
         log_error(std::string("orchestration failed: ") + e.what());
         if (request_status_created) {
@@ -10447,8 +10255,277 @@ std::unique_ptr<Orchestrator>
 build_blocking_orchestrator(const ApiServerOptions& opts,
                              TenantStore& tenants,
                              const Tenant& tenant,
-                             std::string& err_out) {
-    return build_a2a_orchestrator(opts, tenants, tenant, err_out);
+                             std::string& err_out,
+                             int64_t conversation_id) {
+    return build_a2a_orchestrator(opts, tenants, tenant, err_out,
+                                  conversation_id);
+}
+
+bool is_http_scoped_conversation(TenantStore& tenants,
+                                 int64_t tenant_id,
+                                 int64_t conversation_id) {
+    if (conversation_id <= 0) return false;
+    auto c = tenants.get_conversation(tenant_id, conversation_id);
+    return c && c->origin != "tui";
+}
+
+BlockingConversationTurnGuard::BlockingConversationTurnGuard(
+    TenantStore& tenants,
+    int64_t tenant_id,
+    int64_t conversation_id,
+    int64_t user_message_id)
+    : tenants_(&tenants),
+      tenant_id_(tenant_id),
+      conversation_id_(conversation_id),
+      user_message_id_(user_message_id),
+      committed_(user_message_id <= 0) {}
+
+BlockingConversationTurnGuard::~BlockingConversationTurnGuard() {
+    if (committed_ || !tenants_ || user_message_id_ <= 0 ||
+        conversation_id_ <= 0) {
+        return;
+    }
+    try {
+        tenants_->delete_latest_conversation_message(
+            tenant_id_, conversation_id_, user_message_id_);
+    } catch (...) {
+        // Best-effort rollback; never throw from a destructor.
+    }
+}
+
+bool prepare_blocking_conversation_turn(
+    Orchestrator& orch,
+    TenantStore& tenants,
+    int64_t tenant_id,
+    int64_t conversation_id,
+    const std::string& agent_id,
+    const std::string& user_message,
+    const std::string& request_id,
+    const std::function<void(const std::string&)>& log_error,
+    int64_t* prepared_user_message_id) {
+    if (prepared_user_message_id) *prepared_user_message_id = 0;
+    if (conversation_id <= 0) return true;
+    int64_t reused_user_id = 0;
+    try {
+        const int kReplayCap = 100;
+        auto prior = tenants.list_messages_tail(tenant_id, conversation_id,
+                                                kReplayCap);
+        // A previous failed/crashed send may have left this prompt as the
+        // last row with no assistant reply.  Reuse it instead of appending
+        // another copy, and keep it out of hydrated history so send() does
+        // not present the same user turn twice.
+        if (!prior.empty() &&
+            prior.back().role == "user" &&
+            prior.back().content == user_message) {
+            reused_user_id = prior.back().id;
+            prior.pop_back();
+        }
+        std::vector<Message> hist;
+        std::vector<int64_t> hist_ids;
+        hist.reserve(prior.size());
+        hist_ids.reserve(prior.size());
+        for (auto& pm : prior) {
+            hist.push_back({pm.role, pm.content});
+            hist_ids.push_back(pm.id);
+        }
+        orch.set_agent_history(agent_id, std::move(hist));
+        try {
+            auto& agent = orch.get_agent(agent_id);
+            const std::string blob =
+                tenants.get_conversation_compaction_json(
+                    tenant_id, conversation_id);
+            CompactionState st;
+            if (!blob.empty()) {
+                auto parsed = json_parse(blob);
+                st = compaction_from_json(parsed.get());
+            }
+            const size_t keep = agent.compaction_config().keep_messages;
+            remap_compaction_onto_history(st, agent.history(), keep,
+                                          &hist_ids);
+            if (!st.summary.empty() && st.covered_until == 0 &&
+                !prior.empty()) {
+                if (st.boundary_db_id <= 0 &&
+                    (!st.boundary_role.empty() ||
+                     !st.boundary_content.empty())) {
+                    int64_t cursor = prior.front().id;
+                    int64_t found_id = 0;
+                    int match_count = 0;
+                    for (int page = 0; page < 20 && cursor > 1; ++page) {
+                        auto older = tenants.list_messages_before(
+                            tenant_id, conversation_id, cursor, 500);
+                        if (older.empty()) break;
+                        for (auto& m : older) {
+                            if (m.role != st.boundary_role) continue;
+                            if (!boundary_content_matches(
+                                    m.content, st.boundary_content))
+                                continue;
+                            ++match_count;
+                            found_id = m.id;
+                        }
+                        if (match_count > 1) {
+                            found_id = 0;
+                            break;
+                        }
+                        cursor = older.front().id;
+                        if (older.size() < 500) break;
+                    }
+                    if (match_count == 1) st.boundary_db_id = found_id;
+                }
+                if (st.boundary_db_id > 0 &&
+                    prior.front().id > st.boundary_db_id) {
+                    const std::string advisor =
+                        !agent.config().advisor.model.empty()
+                            ? agent.config().advisor.model
+                            : agent.config().advisor_model;
+                    const std::string model = resolve_summarize_model(
+                        advisor, agent.config().model);
+                    bool fold_ok = true;
+                    std::vector<Message> prepend_gap;
+                    int64_t from_id = st.boundary_db_id;
+                    const int64_t before_id = prior.front().id;
+                    while (from_id < before_id) {
+                        auto gap_rows = tenants.list_messages_range(
+                            tenant_id, conversation_id, from_id,
+                            before_id);
+                        if (gap_rows.empty()) break;
+                        std::vector<Message> gap;
+                        gap.reserve(gap_rows.size());
+                        for (auto& gm : gap_rows)
+                            gap.push_back({gm.role, gm.content});
+                        if (fold_ok) {
+                            if (!fold_compaction_gap(
+                                    orch.client(), model, gap, st,
+                                    agent.compaction_config(),
+                                    agent.compaction_pinned_facts())) {
+                                fold_ok = false;
+                                for (auto& m : gap)
+                                    prepend_gap.push_back(m);
+                            }
+                        } else {
+                            for (auto& m : gap) prepend_gap.push_back(m);
+                        }
+                        const int64_t last_id = gap_rows.back().id;
+                        if (last_id < from_id) break;
+                        from_id = last_id + 1;
+                        if (gap_rows.size() < 500) break;
+                    }
+                    if (fold_ok && prepend_gap.empty()) {
+                        st.boundary_role = prior.front().role;
+                        st.boundary_content = compaction_boundary_content(
+                            prior.front().content);
+                        st.boundary_db_id = prior.front().id;
+                        st.covered_until = 0;
+                    } else if (!prepend_gap.empty()) {
+                        std::vector<Message> expanded;
+                        expanded.reserve(prepend_gap.size() +
+                                         agent.history().size());
+                        for (auto& m : prepend_gap)
+                            expanded.push_back(m);
+                        for (auto& m : agent.history())
+                            expanded.push_back(m);
+                        orch.set_agent_history(agent_id,
+                                               std::move(expanded));
+                        st.covered_until = 0;
+                    }
+                }
+            }
+            agent.set_compaction_state(std::move(st));
+        } catch (...) {
+            // Best-effort compaction restore.
+        }
+    } catch (const std::out_of_range&) {
+        log_error("agent '" + agent_id + "' not loaded for "
+                  "conversation resumption");
+        return false;
+    } catch (const std::exception& e) {
+        log_error(std::string("history load failed: ") + e.what());
+        return false;
+    }
+    try {
+        int64_t user_id = reused_user_id;
+        if (user_id <= 0) {
+            auto row = tenants.append_message(tenant_id, conversation_id,
+                                              "user", user_message,
+                                              /*input=*/0, /*output=*/0,
+                                              request_id);
+            user_id = row.id;
+        }
+        if (prepared_user_message_id) *prepared_user_message_id = user_id;
+    } catch (const std::exception& e) {
+        log_error(std::string("could not persist user message: ") + e.what());
+        return false;
+    }
+    return true;
+}
+
+void persist_blocking_conversation_turn(
+    Orchestrator& orch,
+    TenantStore& tenants,
+    int64_t tenant_id,
+    int64_t conversation_id,
+    const std::string& agent_id,
+    const ApiResponse& resp,
+    const std::string& request_id,
+    bool tenant_active,
+    const std::function<void(const std::string&)>& log_error) {
+    if (conversation_id <= 0 || !tenant_active || !resp.ok) return;
+    try {
+        tenants.append_message(tenant_id, conversation_id,
+                                "assistant", resp.content,
+                                resp.input_tokens, resp.output_tokens,
+                                request_id);
+    } catch (...) {
+        log_error("assistant message could not be persisted to "
+                  "conversation");
+    }
+    try {
+        auto& agent = orch.get_agent(agent_id);
+        auto st = agent.compaction_state();
+        if (!st.summary.empty() || st.covered_until > 0 ||
+            st.generation > 0) {
+            if (!st.boundary_role.empty() ||
+                !st.boundary_content.empty()) {
+                const int64_t prev_id = st.boundary_db_id;
+                auto recent = tenants.list_messages_tail(
+                    tenant_id, conversation_id, /*limit=*/200);
+                std::vector<std::string> roles, contents;
+                std::vector<int64_t> ids;
+                roles.reserve(recent.size());
+                contents.reserve(recent.size());
+                ids.reserve(recent.size());
+                for (auto& m : recent) {
+                    roles.push_back(m.role);
+                    contents.push_back(m.content);
+                    ids.push_back(m.id);
+                }
+                const auto resolved =
+                    resolve_boundary_db_id(roles, contents, ids, st);
+                if (resolved.status ==
+                    BoundaryResolve::Status::Unique) {
+                    st.boundary_db_id = resolved.id;
+                } else if (prev_id > 0) {
+                    auto row = tenants.list_messages_range(
+                        tenant_id, conversation_id, prev_id,
+                        prev_id + 1);
+                    const bool still_matches =
+                        row.size() == 1 &&
+                        row[0].role == st.boundary_role &&
+                        boundary_content_matches(row[0].content,
+                                                 st.boundary_content);
+                    st.boundary_db_id = still_matches ? prev_id : 0;
+                } else {
+                    st.boundary_db_id = 0;
+                }
+            } else {
+                st.boundary_db_id = 0;
+            }
+            tenants.set_conversation_compaction_json(
+                tenant_id, conversation_id,
+                json_serialize(*compaction_to_json(st)));
+        }
+    } catch (...) {
+        log_error("conversation compaction could not be persisted");
+    }
 }
 
 // POST /v1/events — hardware/software event ingestion.

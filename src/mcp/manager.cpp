@@ -259,11 +259,13 @@ std::shared_ptr<Client> Manager::client(const std::string& name) {
     if (it != clients_.end()) {
         if (!cached || it->second != cached) {
             // Another acquire installed a replacement while we waited.
-            return it->second;
+            if (it->second->alive()) return it->second;
+            clients_.erase(it);
+        } else {
+            // Drop the cache entry only.  Callers that already hold a
+            // shared_ptr keep the dead Client until they release it.
+            clients_.erase(it);
         }
-        // Drop the cache entry only.  Callers that already hold a
-        // shared_ptr keep the dead Client until they release it.
-        clients_.erase(it);
     }
 
     // Find the spec.
