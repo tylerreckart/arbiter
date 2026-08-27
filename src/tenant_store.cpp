@@ -4707,6 +4707,22 @@ TenantStore::list_task_runs(int64_t tenant_id, int64_t task_id,
     return out;
 }
 
+std::vector<TenantStore::ScheduledTask>
+TenantStore::list_all_scheduled_tasks_by_status(const std::string& status,
+                                                int limit) const {
+    std::vector<ScheduledTask> out;
+    if (!db_ || status.empty()) return out;
+    if (limit <= 0 || limit > 200) limit = 200;
+    std::string sql = std::string("SELECT ") + kScheduledTaskCols +
+        " FROM scheduled_tasks WHERE status = ?"
+        " ORDER BY updated_at ASC LIMIT ?;";
+    Stmt q(db_, sql.c_str());
+    q.bind(1, status);
+    q.bind(2, static_cast<int64_t>(limit));
+    while (q.step() == SQLITE_ROW) out.push_back(row_to_scheduled_task(q));
+    return out;
+}
+
 std::vector<std::pair<int64_t, int64_t>>
 TenantStore::recover_running_task_runs(const std::string& new_status,
                                         int64_t completed_at,
@@ -4729,16 +4745,6 @@ TenantStore::recover_running_task_runs(const std::string& new_status,
         u.bind(3, error_message);
         u.step();
     }
-    // Claim sets status='running' without moving next_fire_at.  Releasing
-    // the lease restores 'active' so a one-shot whose fire was interrupted
-    // is due again, and a recurring task cannot stay locked forever.
-    // Runs even when no task_run was inserted (crash between claim and
-    // create_task_run).
-    Stmt rel(db_,
-        "UPDATE scheduled_tasks SET status = 'active', updated_at = ? "
-        "WHERE status = 'running';");
-    rel.bind(1, completed_at);
-    rel.step();
     return out;
 }
 

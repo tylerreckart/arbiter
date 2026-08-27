@@ -14,8 +14,10 @@
 // tasks transition to status='completed' after a successful fire (or
 // 'failed' if the orchestrator throws — operators can DELETE the task to
 // restart, or PATCH status back to 'active' after fixing the cause).  A
-// crash mid-fire leaves the schedule 'running'; startup recovery releases
-// it back to 'active' so the original due time can fire again.
+// crash mid-fire leaves the schedule 'running'; startup recovery marks
+// orphaned task_runs failed and calls finalize_orphaned_scheduled_task_leases()
+// to release or finalize stranded schedule rows without refiring succeeded
+// one-shots.
 //
 // Notifications: every terminal run (succeeded | failed) is published on
 // the NotificationBus passed at construction.  Subscribers (the SSE

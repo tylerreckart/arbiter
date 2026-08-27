@@ -913,6 +913,19 @@ TEST_CASE("Manager: concurrent call_tool on one session serializes") {
     CHECK(ok.load() == kThreads);
 }
 
+TEST_CASE("Client: RPC timeout terminates the subprocess") {
+    ClientConfig cfg;
+    cfg.name = "stub";
+    cfg.argv = {this_executable(), "--mcp-stub", "--hang-on-call"};
+    cfg.init_timeout = 2s;
+    cfg.call_timeout = 200ms;
+    auto cli = std::make_shared<Client>(std::move(cfg));
+    REQUIRE(cli->alive());
+    CHECK_THROWS(cli->call_tool("ping", jobj()));
+    wait_until_dead(cli);
+    CHECK_FALSE(cli->alive());
+}
+
 TEST_CASE("Manager: acquire during cancelled RPC does not race reap") {
     Manager mgr({stub_spec({"--hang-on-call"})});
     auto cli = mgr.client("stub");

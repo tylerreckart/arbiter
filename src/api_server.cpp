@@ -36,6 +36,7 @@
 #include "request_event_bus.h"
 #include "schedule_parser.h"
 #include "scheduler.h"
+#include "scheduled_task_recovery.h"
 #include "circuit_breaker.h"
 #include "cors.h"
 #include "sse_mailbox.h"
@@ -9505,6 +9506,30 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         o->as_object_mut()["message"] = jstr(msg);
         emit("error", o);
     };
+    auto abort_orchestrate = [&](const std::string& user_msg,
+                                 const std::string& status_error,
+                                 const char* error_code = "invalid_request") {
+        log_error(user_msg);
+        auto done = jobj();
+        auto& m = done->as_object_mut();
+        m["ok"]         = jbool(false);
+        m["error"]      = jstr(status_error);
+        m["error_code"] = jstr(error_code);
+        m["tenant_id"]  = jnum(static_cast<double>(tenant.id));
+        m["request_id"] = jstr(request_id);
+        emit("done", done);
+        sse.close();
+        if (request_status_created) {
+            const int64_t completed = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            tenants.update_request_status(
+                request_id, std::optional<std::string>("failed"), completed,
+                std::optional<std::string>(status_error),
+                std::nullopt);
+        }
+    };
 
     // Memory is tenant-scoped so /mem commands can never leak between
     // accounts.  set_memory_dir is kept as a no-op fallback path for
@@ -9553,11 +9578,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         // No inline agent_def, no snapshot, no stored catalog row, and
         // the caller didn't ask for the master.  Surface a clean SSE
         // error so the caller knows what to send next time.
-        log_error("agent_def required for agent '" + agent_id + "' — no "
-                  "stored agent with this id for the tenant.  Send `agent_def` "
-                  "in the request body, POST it once to /v1/agents, or address "
-                  "'index' (the master orchestrator) instead.");
-        sse.close();
+        abort_orchestrate(
+            "agent_def required for agent '" + agent_id + "' — no "
+            "stored agent with this id for the tenant.  Send `agent_def` "
+            "in the request body, POST it once to /v1/agents, or address "
+            "'index' (the master orchestrator) instead.",
+            "agent not found",
+            "not_found");
         return;
     }
 
@@ -9714,12 +9741,15 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 // block the turn.
             }
         } catch (const std::out_of_range&) {
-            // Agent isn't loaded — surface as SSE error.
-            log_error("agent '" + agent_id + "' not loaded for "
-                      "conversation resumption");
+            abort_orchestrate(
+                "agent '" + agent_id + "' not loaded for "
+                "conversation resumption",
+                "agent not loaded for conversation resumption");
             return;
         } catch (const std::exception& e) {
             log_error(std::string("history load failed: ") + e.what());
+            abort_orchestrate("history load failed",
+                              "conversation history could not be loaded");
             return;
         }
         try {
@@ -9729,6 +9759,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                                     request_id);
         } catch (const std::exception& e) {
             log_error(std::string("could not persist user message: ") + e.what());
+            abort_orchestrate("could not persist user message",
+                              "conversation message could not be persisted");
             return;
         }
     }
@@ -10397,6 +10429,14 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         }
     } catch (const std::exception& e) {
         log_error(std::string("orchestration failed: ") + e.what());
+        auto done = jobj();
+        auto& m = done->as_object_mut();
+        m["ok"]         = jbool(false);
+        m["error"]      = jstr("internal error");
+        m["error_code"] = jstr("internal_error");
+        m["tenant_id"]  = jnum(static_cast<double>(tenant.id));
+        m["request_id"] = jstr(request_id);
+        emit("done", done);
         if (request_status_created) {
             const int64_t completed = static_cast<int64_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(
@@ -10671,8 +10711,9 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         auto task_orphans = tenants_.recover_running_task_runs(
             "failed", now_s,
             "task run was interrupted by a server restart");
-        // recover_running_task_runs also releases scheduled_tasks left
-        // in status='running' so a claimed one-shot is not stranded.
+        finalize_orphaned_scheduled_task_leases(tenants_, now_s);
+        // finalize_orphaned_scheduled_task_leases releases scheduled_tasks
+        // left in status='running' so a claimed one-shot is not stranded.
         for (const auto& rid : orphaned) {
             // Synthesise a terminal `done` event so resubscribe finds
             // a clean tail.  Use the next seq (last_seq+1) for a
