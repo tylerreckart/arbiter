@@ -62,17 +62,20 @@ static std::string this_executable() {
 }
 
 // Minimal stdio MCP server so Manager/Client tests do not need playwright.
-// argv: --mcp-stub [--exit-after-init] [--die-after=N] [--hang-on-call]
+// argv: --mcp-stub [--exit-after-init] [--die-after=N] [--hang-on-call] [--init-sleep-ms=N]
 static int mcp_stub_main(int argc, char** argv) {
     bool exit_after_init = false;
     bool hang_on_call = false;
     int die_after = 0;
+    int init_sleep_ms = 0;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--exit-after-init") exit_after_init = true;
         else if (a == "--hang-on-call") hang_on_call = true;
         else if (a.rfind("--die-after=", 0) == 0)
             die_after = std::atoi(a.c_str() + 12);
+        else if (a.rfind("--init-sleep-ms=", 0) == 0)
+            init_sleep_ms = std::atoi(a.c_str() + 16);
     }
 
     int tool_replies = 0;
@@ -100,6 +103,8 @@ static int mcp_stub_main(int argc, char** argv) {
         m["id"] = jnum(id);
 
         if (method == "initialize") {
+            if (init_sleep_ms > 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(init_sleep_ms));
             auto result = jobj();
             auto& rm = result->as_object_mut();
             rm["protocolVersion"] = jstr("2025-06-18");
@@ -888,6 +893,33 @@ TEST_CASE("Manager: concurrent acquire and RPC do not race the cache") {
 
     CHECK(ok.load() + failed.load() == kThreads);
     CHECK(ok.load() >= 1);
+}
+
+TEST_CASE("Manager: concurrent cold start shares one cached client") {
+    Manager mgr({stub_spec({"--init-sleep-ms=120"})});
+
+    constexpr int kThreads = 6;
+    std::mutex refs_mu;
+    std::vector<std::shared_ptr<Client>> refs;
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&] {
+            auto cli = mgr.client("stub");
+            std::lock_guard<std::mutex> lk(refs_mu);
+            refs.push_back(cli);
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    REQUIRE(refs.size() == kThreads);
+    std::shared_ptr<Client> canonical = refs.front();
+    REQUIRE(canonical);
+    for (const auto& cli : refs) {
+        REQUIRE(cli);
+        CHECK(cli == canonical);
+    }
+    CHECK(canonical->alive());
 }
 
 TEST_CASE("Manager: concurrent call_tool on one session serializes") {

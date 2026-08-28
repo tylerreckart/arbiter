@@ -93,8 +93,11 @@ public:
     std::shared_ptr<Client> client(const std::string& name);
 
 private:
+    std::shared_ptr<std::mutex> init_gate_for(const std::string& name);
+
     std::vector<ServerSpec>                                specs_;
     std::map<std::string, std::shared_ptr<Client>>         clients_;
+    std::map<std::string, std::shared_ptr<std::mutex>>     init_gates_;
     mutable std::mutex                                     mu_;
 };
 

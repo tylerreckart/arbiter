@@ -40,6 +40,7 @@ namespace arbiter {
 
 struct ApiServerOptions;
 class InFlightRegistry;
+class TenantLimiter;
 
 class Scheduler {
 public:
@@ -47,6 +48,7 @@ public:
               TenantStore* tenants,
               NotificationBus* bus,
               InFlightRegistry* in_flight = nullptr,
+              TenantLimiter* limiter = nullptr,
               int tick_interval_seconds = 30);
     ~Scheduler();
 
@@ -65,12 +67,13 @@ public:
 private:
     void tick_loop();
     void process_due_tasks();
-    void fire_task(const TenantStore::ScheduledTask& task);
+    bool fire_task(const TenantStore::ScheduledTask& task);
 
     ApiServerOptions*       opts_      = nullptr;
     TenantStore*            tenants_   = nullptr;
     NotificationBus*        bus_       = nullptr;
     InFlightRegistry*       in_flight_ = nullptr;
+    TenantLimiter*          limiter_   = nullptr;
     int                     interval_s_ = 30;
 
     std::atomic<bool>       running_{false};

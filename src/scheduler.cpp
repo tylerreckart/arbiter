@@ -8,6 +8,7 @@
 #include "api_server.h"
 #include "orchestrator.h"
 #include "schedule_parser.h"
+#include "tenant_limiter.h"
 #include "tenant_store.h"
 
 #include <chrono>
@@ -64,9 +65,10 @@ Scheduler::Scheduler(ApiServerOptions* opts,
                       TenantStore* tenants,
                       NotificationBus* bus,
                       InFlightRegistry* in_flight,
+                      TenantLimiter* limiter,
                       int tick_interval_seconds)
     : opts_(opts), tenants_(tenants), bus_(bus), in_flight_(in_flight),
-      interval_s_(tick_interval_seconds) {
+      limiter_(limiter), interval_s_(tick_interval_seconds) {
     if (interval_s_ < 1) interval_s_ = 1;
 }
 
@@ -96,8 +98,7 @@ int Scheduler::tick_once_for_test() {
     if (!tenants_) return 0;
     auto due = tenants_->list_due_scheduled_tasks(now_epoch(), /*limit=*/200);
     for (const auto& t : due) {
-        fire_task(t);
-        ++fired;
+        if (fire_task(t)) ++fired;
     }
     return fired;
 }
@@ -130,8 +131,8 @@ void Scheduler::process_due_tasks() {
     }
 }
 
-void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
-    if (!opts_ || !tenants_) return;
+bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
+    if (!opts_ || !tenants_) return false;
 
     // Resolve the tenant — needed for orchestrator construction and
     // notification delivery.  A scheduled task whose tenant has been
@@ -143,7 +144,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
             "[scheduler] task %lld references unknown tenant %lld; deleting\n",
             (long long)task.id, (long long)task.tenant_id);
         tenants_->delete_scheduled_task(task.tenant_id, task.id);
-        return;
+        return false;
     }
     if (tenant_opt->disabled) {
         // Don't fire; just push the next_fire_at out.  Operators flipping
@@ -163,7 +164,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 std::optional<std::string>("paused"),
                 std::nullopt, std::nullopt, std::nullopt, std::nullopt);
         }
-        return;
+        return false;
     }
 
     // Scoped schedules must reference a live HTTP conversation row.
@@ -176,7 +177,21 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         tenants_->update_scheduled_task(task.tenant_id, task.id,
             std::optional<std::string>("paused"),
             std::nullopt, std::nullopt, std::nullopt, std::nullopt);
-        return;
+        return false;
+    }
+
+    std::optional<TenantLimiter::Guard> limit_guard;
+    if (limiter_) {
+        auto lim = limiter_->acquire(task.tenant_id);
+        if (!lim.granted()) {
+            std::fprintf(stderr,
+                "[scheduler] task %lld deferred: tenant %lld at %s limit\n",
+                (long long)task.id, (long long)task.tenant_id,
+                lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
+                    ? "concurrent" : "rate");
+            return false;
+        }
+        limit_guard = std::move(lim.guard);
     }
 
     // Claim the task before any slow work so concurrent ticks cannot
@@ -184,7 +199,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
     // is the lease; next_fire_at stays put until the run finishes.
     const int64_t now = now_epoch();
     if (!tenants_->try_claim_scheduled_task(task.tenant_id, task.id, now)) {
-        return;
+        return false;
     }
 
     const int64_t  started_at = now;
@@ -251,7 +266,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 std::optional<int64_t>(1),
                 k_running_lease);
         }
-        return;
+        return true;
     }
 
     // Disallow targeting an unknown agent for non-`index` ids.  The master
@@ -285,7 +300,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
             n.error_message = err;
             bus_->publish(n);
         }
-        return;
+        return true;
     }
 
     auto fail_run = [&](const std::string& err,
@@ -350,7 +365,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                     ? std::optional<std::string>("paused")
                     : std::optional<std::string>("failed");
             fail_run("conversation history could not be loaded", task_status);
-            return;
+            return true;
         }
         prepared_turn.emplace(*tenants_, task.tenant_id, task.conversation_id,
                               prepared_user_message_id);
@@ -451,6 +466,7 @@ void Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         n.error_message  = err;
         bus_->publish(n);
     }
+    return true;
 }
 
 } // namespace arbiter

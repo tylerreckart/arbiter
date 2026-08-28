@@ -249,23 +249,23 @@ std::shared_ptr<Client> Manager::client(const std::string& name) {
         auto it = clients_.find(name);
         if (it != clients_.end()) cached = it->second;
     }
-    // Liveness (and in-flight cancel/reap) serialize on the Client's
-    // rpc_mu_.  Check it *outside* mu_ so a long tools/call cannot
-    // pin the whole Manager.
-    if (cached && cached->alive()) return cached;
+    // Liveness serializes on the Client's rpc_mu_.  Check it outside mu_
+    // so a long tools/call cannot pin the whole Manager.
+    if (cached && cached->alive()) {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = clients_.find(name);
+        if (it != clients_.end() && it->second == cached && it->second->alive())
+            return cached;
+    }
 
-    std::lock_guard<std::mutex> lk(mu_);
-    auto it = clients_.find(name);
-    if (it != clients_.end()) {
-        if (!cached || it->second != cached) {
-            // Another acquire installed a replacement while we waited.
-            if (it->second->alive()) return it->second;
-            clients_.erase(it);
-        } else {
-            // Drop the cache entry only.  Callers that already hold a
-            // shared_ptr keep the dead Client until they release it.
-            clients_.erase(it);
-        }
+    auto gate = init_gate_for(name);
+    std::lock_guard<std::mutex> init_lk(*gate);
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = clients_.find(name);
+        if (it != clients_.end() && it->second->alive()) return it->second;
+        if (it != clients_.end()) clients_.erase(it);
     }
 
     // Find the spec.
@@ -280,9 +280,24 @@ std::shared_ptr<Client> Manager::client(const std::string& name) {
     cfg.init_timeout = spec->init_timeout;
     cfg.call_timeout = spec->call_timeout;
 
+    // Spawn + handshake outside the Manager lock so one slow cold start
+    // does not block every other server name.
     auto cli = std::make_shared<Client>(std::move(cfg));
-    clients_[name] = cli;
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = clients_.find(name);
+        if (it != clients_.end() && it->second->alive()) return it->second;
+        clients_[name] = cli;
+    }
     return cli;
+}
+
+std::shared_ptr<std::mutex> Manager::init_gate_for(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto& gate = init_gates_[name];
+    if (!gate) gate = std::make_shared<std::mutex>();
+    return gate;
 }
 
 } // namespace arbiter::mcp
