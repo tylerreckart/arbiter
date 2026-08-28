@@ -192,6 +192,10 @@ void OutputQueue::push_prose(const std::vector<StyledLine>& lines) {
     std::function<void()> fn;
     {
         std::lock_guard<std::mutex> lk(mu_);
+        // Committed lines supersede a queued live tail in the same batch.
+        while (!items_.empty() && items_.back().kind == OutputItem::Kind::LiveProse) {
+            items_.pop_back();
+        }
         bool new_block = false;
         if (need_sep_) {
             new_block = true;
@@ -208,6 +212,43 @@ void OutputQueue::push_prose(const std::vector<StyledLine>& lines) {
         } else {
             items_.push_back(
                 {OutputItem::Kind::Prose, {}, lines, OutputItem::CodeOp::Open, 0, {}, new_block});
+        }
+        fn = notify_fn_;
+    }
+    if (fn) fn();
+}
+
+void OutputQueue::set_live_prose(const StyledLine& line) {
+    if (line.text.empty()) {
+        clear_live_prose();
+        return;
+    }
+    std::function<void()> fn;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!items_.empty() && items_.back().kind == OutputItem::Kind::LiveProse) {
+            items_.back().styled_lines = {line};
+        } else {
+            OutputItem item;
+            item.kind = OutputItem::Kind::LiveProse;
+            item.styled_lines = {line};
+            items_.push_back(std::move(item));
+        }
+        fn = notify_fn_;
+    }
+    if (fn) fn();
+}
+
+void OutputQueue::clear_live_prose() {
+    std::function<void()> fn;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!items_.empty() && items_.back().kind == OutputItem::Kind::LiveProse) {
+            items_.back().styled_lines.clear();
+        } else {
+            OutputItem item;
+            item.kind = OutputItem::Kind::LiveProse;
+            items_.push_back(std::move(item));
         }
         fn = notify_fn_;
     }

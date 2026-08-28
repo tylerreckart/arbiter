@@ -1,5 +1,9 @@
 #include "stream_renderer.h"
 
+#include <algorithm>
+#include <utility>
+#include <vector>
+
 namespace arbiter {
 
 StreamRenderer::StreamRenderer(RenderPolicy policy, OutputQueue& queue)
@@ -33,9 +37,26 @@ void StreamRenderer::emit_prose(std::vector<StyledLine> lines) {
     if (!lines.empty()) queue_.push_prose(lines);
 }
 
+void StreamRenderer::emit_live() {
+    auto live = md_.peek_live_styled();
+    if (!live) {
+        queue_.clear_live_prose();
+        return;
+    }
+    std::vector<StyledLine> one;
+    one.push_back(std::move(*live));
+    auto styled = apply_prose_policy(std::move(one), policy_);
+    if (styled.empty() || styled.front().text.empty()) {
+        queue_.clear_live_prose();
+        return;
+    }
+    queue_.set_live_prose(styled.front());
+}
+
 void StreamRenderer::on_passthrough(std::string_view bytes) {
     if (bytes.empty()) return;
     emit_prose(md_.feed_styled(std::string(bytes)));
+    emit_live();
 }
 
 void StreamRenderer::feed(std::string_view chunk) {
@@ -45,11 +66,13 @@ void StreamRenderer::feed(std::string_view chunk) {
 void StreamRenderer::flush() {
     parser_.flush();
     emit_prose(md_.flush_styled());
+    emit_live();
 }
 
 void StreamRenderer::reset() {
     parser_.reset();
     md_.reset();
+    queue_.clear_live_prose();
 }
 
 } // namespace arbiter

@@ -720,3 +720,36 @@ TEST_CASE("inline math does not close on escaped backslash-paren") {
     CHECK(out.find("a \\) b") != std::string::npos);
     CHECK(out.find("ok") != std::string::npos);
 }
+
+TEST_CASE("peek_live_styled exposes incomplete prose without committing") {
+    MarkdownRenderer md;
+    auto committed = md.feed_styled("Hello");
+    CHECK(committed.empty());
+    auto live = md.peek_live_styled();
+    REQUIRE(live.has_value());
+    CHECK(live->text == "Hello");
+
+    committed = md.feed_styled(" world");
+    CHECK(committed.empty());
+    live = md.peek_live_styled();
+    REQUIRE(live.has_value());
+    CHECK(live->text == "Hello world");
+
+    committed = md.feed_styled("!\nNext");
+    REQUIRE(committed.size() == 1);
+    CHECK(committed[0].text == "Hello world!");
+    live = md.peek_live_styled();
+    REQUIRE(live.has_value());
+    CHECK(live->text == "Next");
+
+    auto tail = md.flush_styled();
+    REQUIRE(tail.size() == 1);
+    CHECK(tail[0].text == "Next");
+    CHECK_FALSE(md.peek_live_styled().has_value());
+}
+
+TEST_CASE("peek_live_styled is silent inside fenced blocks") {
+    MarkdownRenderer md;
+    md.feed_styled("```go\nfmt");
+    CHECK_FALSE(md.peek_live_styled().has_value());
+}

@@ -48,7 +48,7 @@ Unchanged catalog. For speech:
 - `tool_call` — optional progress cue while tools run (fillers).
 - `done` — full `content` if you buffered rather than streaming TTS.
 
-Master text is suppressed during delegation iterations (status lines only) until the synthesis turn. That is the correct spoken behaviour: do not read routing chatter aloud.
+Master `text` deltas stream live (including before a later `/agent` writ). Skip `→ delegating: …` status lines — those are routing chrome, not spoken answer. If you only want the final synthesis spoken, wait until after the last `tool_call` on `stream_id=0` rather than voicing every delta.
 
 ## Registers (do not confuse “voice”)
 

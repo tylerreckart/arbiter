@@ -8258,14 +8258,19 @@ void handle_a2a_message_stream(int fd,
 
     // Drive the agentic loop.  send_streaming returns the final
     // ApiResponse once the dispatch loop terminates (success or fail).
-    // The StreamCallback we pass is intentionally a no-op — text deltas
-    // already flow through agent_stream_callback after StreamFilter
-    // strips slash commands, so feeding the raw chunks here would
-    // double-emit and surface unfiltered command text.
+    // Master text deltas now stream live through this callback (the
+    // orchestrator no longer buffers the iteration).  StreamFilter
+    // strips /cmd lines so artifact chunks stay clean.
+    Config filter_cfg;
+    StreamFilter filter(filter_cfg,
+        [&writer](const std::string& chunk) {
+            writer.emit_text_chunk(chunk, /*last_chunk=*/false);
+        });
     ApiResponse resp;
     try {
         resp = orch->send_streaming(agent_id, prompt,
-                                     [](const std::string&) {});
+            [&filter](const std::string& chunk) { filter.feed(chunk); });
+        filter.flush();
     } catch (const std::exception& e) {
         // Catastrophic failure during the loop.  Surface as a final
         // failed-status update so the client knows the stream is over.

@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **Live token streaming.** Master-turn provider deltas reach the TUI and SSE
+  `text` events as they arrive instead of waiting for the full LLM iteration.
+  Incomplete prose paints as a replaceable live tail (restyled when the line
+  completes); `/cmd` lines stay suppressed until a newline confirms them.
+  Delegation iterations still emit `→ delegating: …` after the writ is parsed.
+
 ## [0.12.16] — 2026-08-28
 
 

@@ -69,6 +69,9 @@ public:
 
     void append(std::string_view text, bool new_block = false);
     void append_prose(const std::vector<StyledLine>& lines, bool new_block = false);
+    // Replaceable in-progress markdown line (token-scale streaming tail).
+    void set_live_prose(const StyledLine& line);
+    void clear_live_prose();
     // Clear + rewrite the most recent ProseSegment (interactive card refresh).
     // Returns false when the last content segment is not prose.
     bool replace_last_prose(const std::vector<StyledLine>& lines);
@@ -489,6 +492,7 @@ private:
     void paint_selection(OpenTuiHandle frame, int first_visible) const;
 
     std::vector<std::unique_ptr<Segment>> segments_;
+    std::unique_ptr<ProseSegment> live_;
     TextSelection selection_{};
     int buf_x_{0};
     int buf_y_{0};

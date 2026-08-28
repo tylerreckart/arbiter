@@ -256,3 +256,49 @@ TEST_CASE("OutputQueue try_drop_last_user_echo removes an undrained echo") {
     CHECK(items[0].kind == OutputItem::Kind::UserEcho);
     CHECK(items[0].data == "kept");
 }
+
+TEST_CASE("StreamRenderer paints live tail before newline") {
+    OutputQueue queue;
+    StreamRenderer renderer(kMasterStream, queue);
+
+    renderer.feed("The quick");
+    auto items = queue.drain_items();
+    REQUIRE_FALSE(items.empty());
+    bool saw_live = false;
+    for (const auto& item : items) {
+        if (item.kind != OutputItem::Kind::LiveProse) continue;
+        REQUIRE_FALSE(item.styled_lines.empty());
+        CHECK(item.styled_lines.front().text == "The quick");
+        saw_live = true;
+    }
+    CHECK(saw_live);
+
+    renderer.feed(" brown fox");
+    items = queue.drain_items();
+    saw_live = false;
+    for (const auto& item : items) {
+        if (item.kind != OutputItem::Kind::LiveProse) continue;
+        REQUIRE_FALSE(item.styled_lines.empty());
+        CHECK(item.styled_lines.front().text == "The quick brown fox");
+        saw_live = true;
+    }
+    CHECK(saw_live);
+
+    renderer.feed(".\n");
+    items = queue.drain_items();
+    bool saw_prose = false;
+    saw_live = false;
+    for (const auto& item : items) {
+        if (item.kind == OutputItem::Kind::Prose) {
+            REQUIRE_FALSE(item.styled_lines.empty());
+            CHECK(item.styled_lines.front().text.find("The quick brown fox") !=
+                  std::string::npos);
+            saw_prose = true;
+        }
+        if (item.kind == OutputItem::Kind::LiveProse && !item.styled_lines.empty()) {
+            saw_live = true;
+        }
+    }
+    CHECK(saw_prose);
+    CHECK_FALSE(saw_live);
+}

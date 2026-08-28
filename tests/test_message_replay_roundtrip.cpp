@@ -51,6 +51,10 @@ void replay_into(PaneScrollView& view, const std::vector<Message>& history) {
             if (!item.styled_lines.empty())
                 view.append_prose(item.styled_lines, item.new_block);
             break;
+        case OutputItem::Kind::LiveProse:
+            if (item.styled_lines.empty()) view.clear_live_prose();
+            else view.set_live_prose(item.styled_lines.front());
+            break;
         case OutputItem::Kind::Code:
             if (item.code_op == OutputItem::CodeOp::Open) {
                 view.append_code_open(item.data, item.code_lang,

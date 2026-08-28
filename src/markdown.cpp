@@ -665,6 +665,25 @@ std::vector<StyledLine> MarkdownRenderer::feed_styled(const std::string& chunk) 
     return result;
 }
 
+std::optional<StyledLine> MarkdownRenderer::peek_live_styled() const {
+    if (line_buf_.empty()) return std::nullopt;
+    if (in_code_block_ || in_diff_block_ || in_indent_code_) return std::nullopt;
+    if (math_delim_ != MathDelim::None) return std::nullopt;
+    if (is_fence_line(line_buf_)) return std::nullopt;
+
+    const std::string_view trimmed = trim_view(line_buf_);
+    if (trimmed == "\\[" || trimmed == "$$") return std::nullopt;
+    if (trimmed.size() >= 2 &&
+        (trimmed.substr(0, 2) == "\\[" || trimmed.substr(0, 2) == "$$")) {
+        return std::nullopt;
+    }
+
+    StyledLine live;
+    render_inline_styled(live, line_buf_);
+    if (live.text.empty()) return std::nullopt;
+    return live;
+}
+
 std::string MarkdownRenderer::feed(const std::string& chunk) {
     const auto lines = feed_styled(chunk);
     std::string result;

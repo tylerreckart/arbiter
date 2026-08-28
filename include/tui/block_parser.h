@@ -7,10 +7,11 @@
 namespace arbiter {
 
 // Incremental line classifier for streaming agent output.  Swallows /writ
-// tool-call lines and framing markers when show_writs is false; passes
-// everything else through to the sink as coalesced byte chunks (preserving
-// newlines) so downstream markdown state stays consistent across chunk
-// boundaries.
+// tool-call lines and framing markers when show_writs is false.  Complete
+// lines and unambiguous incomplete prose (not a possible /cmd or framing
+// prefix) pass through immediately so the TUI can paint token-scale deltas.
+// Ambiguous prefixes (`/…`, `[…`, all-whitespace) stay buffered until a
+// newline decides swallow vs emit.
 class BlockParser {
 public:
     using Sink = std::function<void(std::string_view)>;
@@ -26,6 +27,7 @@ public:
 
 private:
     bool should_swallow(const std::string& line);
+    bool can_emit_partial(const std::string& buf) const;
 
     bool        show_writs_ = false;
     Sink        sink_;
