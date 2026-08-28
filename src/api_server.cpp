@@ -10629,14 +10629,14 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
     : opts_(std::move(opts)), tenants_(tenants) {
     notifications_   = std::make_unique<NotificationBus>();
     request_events_  = std::make_unique<RequestEventBus>();
-    scheduler_       = std::make_unique<Scheduler>(
-        &opts_, &tenants_, notifications_.get(), &in_flight_);
     // Per-tenant limiter: defaults from env (ARBITER_TENANT_MAX_CONCURRENT
     // / RATE_PER_MIN / BURST).  Zeroed defaults ⇒ unlimited; the limiter
     // grants every acquire without taking the lock.
     limiter_ = std::make_unique<TenantLimiter>(load_tenant_limits_from_env());
     intent_llm_limiter_ =
         std::make_unique<TenantLimiter>(load_intent_llm_limits_from_env());
+    scheduler_       = std::make_unique<Scheduler>(
+        &opts_, &tenants_, notifications_.get(), &in_flight_, limiter_.get());
 
     // Idempotency cache for retry-safe POSTs.  Always present; an
     // absent Idempotency-Key header on a request bypasses it entirely.
