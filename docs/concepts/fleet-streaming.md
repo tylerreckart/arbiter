@@ -63,9 +63,9 @@ done              ok=true
 - **Each parallel child gets its own dedup cache.** Sibling threads fetching the same URL both fetch — accept the duplicate over a `std::map` data race.
 - **SSE writes are serialized.** A shared mutex on the wire-writer means events interleave cleanly even when N threads emit at once.
 
-## Master text gating
+## Master text streaming
 
-The master orchestrator's text deltas during a delegation iteration are **suppressed** — only a one-line `→ delegating: …` status line is emitted, and the master's prose lands only in the final synthesis iteration (after all children complete). This keeps "the orchestrator is answering before its sub-agents finished" out of the live UI. Sub-agent text continues to stream live in their own slots.
+The master orchestrator's provider deltas stream live (same as sub-agents). Incomplete prose lines are forwarded as soon as they cannot be a `/cmd` or framing marker. When an iteration includes `/agent` or `/parallel`, Arbiter still emits a one-line `→ delegating: …` status after parsing the writs (the raw `/agent` lines remain filtered). Sub-agent text continues to stream live in their own slots.
 
 ## See also
 

@@ -11,8 +11,9 @@
 
 namespace arbiter {
 
-// Unified streaming pipeline: BlockParser (writ suppression) → MarkdownRenderer
-// (styled prose / diff / code) → RenderPolicy → OutputQueue sinks.
+// Unified streaming pipeline: BlockParser (writ suppression + live partials)
+// → MarkdownRenderer (committed lines + peek_live_styled tail)
+// → RenderPolicy → OutputQueue sinks.
 class StreamRenderer {
 public:
     StreamRenderer(RenderPolicy policy, OutputQueue& queue);
@@ -25,6 +26,7 @@ public:
 
 private:
     void emit_prose(std::vector<StyledLine> lines);
+    void emit_live();
     void on_passthrough(std::string_view bytes);
 
     RenderPolicy   policy_;

@@ -112,6 +112,14 @@ bool BlockParser::should_swallow(const std::string& line) {
     return false;
 }
 
+bool BlockParser::can_emit_partial(const std::string& buf) const {
+    if (in_write_block_ || in_todo_block_ || pending_todo_body_) return false;
+    const size_t lead = ltrim_idx(buf);
+    if (lead == buf.size()) return false;  // all whitespace — may precede a /cmd
+    const char c = buf[lead];
+    return c != '/' && c != '[';
+}
+
 void BlockParser::feed(std::string_view chunk) {
     if (show_writs_) {
         if (!chunk.empty()) sink_(chunk);
@@ -133,6 +141,12 @@ void BlockParser::feed(std::string_view chunk) {
 
     if (start > 0) buf_.erase(0, start);
     if (!passthrough.empty()) sink_(passthrough);
+
+    // Unambiguous incomplete prose — emit now so the live tail can paint.
+    if (!buf_.empty() && can_emit_partial(buf_)) {
+        sink_(buf_);
+        buf_.clear();
+    }
 }
 
 void BlockParser::flush() {

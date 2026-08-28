@@ -4,6 +4,7 @@
 #include "tui/stream_filter.h"
 
 #include <string>
+#include <vector>
 
 using namespace arbiter;
 
@@ -90,20 +91,45 @@ TEST_CASE("non-verbose swallows /write block including body and /endwrite") {
     CHECK(got == "before\nafter\n");
 }
 
-TEST_CASE("partial line is buffered until newline arrives") {
+TEST_CASE("unambiguous partial prose is emitted immediately") {
     Config cfg;
     std::string out;
     StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
 
-    // Split a single line across three chunks.
     f.feed("hel");
-    CHECK(out == "");          // buffered
+    CHECK(out == "hel");
     f.feed("lo wor");
-    CHECK(out == "");          // still buffered
+    CHECK(out == "hello wor");
     f.feed("ld\n");
     CHECK(out == "hello world\n");
     f.flush();
     CHECK(out == "hello world\n");
+}
+
+TEST_CASE("partial /cmd prefix is buffered until newline") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("/ex");
+    CHECK(out == "");          // ambiguous writ prefix
+    f.feed("ec ls\n");
+    CHECK(out == "");          // swallowed
+    f.feed("after\n");
+    f.flush();
+    CHECK(out == "after\n");
+}
+
+TEST_CASE("partial framing marker is buffered until newline") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("[TOOL");
+    CHECK(out == "");
+    f.feed(" RESULTS]\nkeep\n");
+    f.flush();
+    CHECK(out == "keep\n");
 }
 
 TEST_CASE("command split across chunks is still swallowed") {

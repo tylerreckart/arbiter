@@ -2,6 +2,7 @@
 #include "doctest.h"
 
 #include "commands.h"
+#include "render_policy.h"
 #include "styled_text.h"
 #include "tui/opentui/diff_panel.h"
 #include "tui/opentui/pane_scroll_view.h"
@@ -605,4 +606,26 @@ TEST_CASE("DiffSegment keeps parsed rows across bind/set_wrap_cols") {
     CHECK(panel.visual_rows() == 0);
     panel.set_patch(kPatch);
     CHECK(panel.visual_rows() == panel_rows);
+}
+
+TEST_CASE("live prose tail replaces in place then commits") {
+    TUI tui;
+    PaneScrollView view;
+    bind_view(view, tui, 80, 40);
+    const int baseline = view.total_visual_rows();
+
+    view.set_live_prose(styled_plain_line("Hel", StyleId::Default));
+    const int after_hel = view.total_visual_rows();
+    CHECK(after_hel > baseline);
+    CHECK_FALSE(view.find_rows("Hel").empty());
+
+    view.set_live_prose(styled_plain_line("Hello world", StyleId::Default));
+    CHECK(view.total_visual_rows() == after_hel);  // replace, don't stack
+    CHECK_FALSE(view.find_rows("Hello world").empty());
+    CHECK(view.find_rows("Hel").size() == 1);  // substring of the same line
+
+    view.append_prose({styled_plain_line("Hello world", StyleId::Default)});
+    CHECK_FALSE(view.find_rows("Hello world").empty());
+    // Committed line occupies the same slot the live tail used.
+    CHECK(view.total_visual_rows() == after_hel);
 }

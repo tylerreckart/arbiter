@@ -1493,25 +1493,19 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     StreamScope scope(sid, dispatch_id, 0);
     if (stream_start_cb_) stream_start_cb_(dispatch_id, sid, 0);
 
-    // ── Master text gating ────────────────────────────────────────────
-    // The orchestrator's freeform prose during an iteration that ALSO
-    // emits delegation calls is "premature synthesis" — the model
-    // narrates a plan and partial answer before sub-agents have produced
-    // anything.  Buffer per-iteration text and decide what to do with
-    // it after we've parsed the iteration's commands:
+    // ── Master text streaming ─────────────────────────────────────────
+    // Provider deltas reach `cb` as they arrive so TUI / SSE clients can
+    // paint token-scale updates.  After the iteration is parsed:
     //
-    //   • iteration includes /agent or /parallel ⇒ replace buffered
-    //     prose with a one-line "→ delegating: ..." status update.
-    //   • iteration has no delegations ⇒ flush the buffer as the
-    //     master's contribution (final synthesis or post-tool-result
-    //     framing).
+    //   • /agent or /parallel ⇒ also emit a one-line "→ delegating: ..."
+    //     status (BlockParser still swallows the raw writ lines).
+    //   • no delegations ⇒ nothing extra; the live stream *is* the
+    //     master's contribution.
     //
-    // Sub-agents are unaffected — their text streams live through
-    // agent_stream_cb_ in send_internal.  This gate only sits between
-    // the top-level master and the user-facing cb.
-    std::string iter_buffer;
-    auto gated_cb = [&iter_buffer](const std::string& chunk) {
-        iter_buffer += chunk;
+    // Sub-agents continue to stream independently through
+    // agent_stream_cb_ in send_internal.
+    auto gated_cb = [&cb](const std::string& chunk) {
+        if (cb && !chunk.empty()) cb(chunk);
     };
 
     auto summarise_delegations =
@@ -1555,28 +1549,12 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
 
     auto end_iteration = [&](const std::vector<AgentCommand>& cmds) {
         std::string status = summarise_delegations(cmds);
-        if (!status.empty()) {
-            // Delegation iteration — discard prose, emit status line.
-            iter_buffer.clear();
-            if (cb) cb(status);
-        } else {
-            // No delegation — flush buffered prose to the user.  Called
-            // exactly once per turn for the final iteration; intermediate
-            // tool-result-only iterations are rare but handled the same
-            // way (their prose is the model's continuation framing).
-            if (!iter_buffer.empty() && cb) cb(iter_buffer);
-            iter_buffer.clear();
-        }
+        if (!status.empty() && cb) cb(status);
     };
 
-    // First turn: stream into the gate (not directly to cb).
+    // First turn: stream live to cb.
     ApiResponse resp = agent_ptr->stream(std::move(current_parts), gated_cb);
     if (!resp.ok) {
-        // On failure, flush whatever the model produced so the user sees
-        // the partial — the gate's contract is to never silently swallow
-        // an error response.
-        if (!iter_buffer.empty() && cb) cb(iter_buffer);
-        iter_buffer.clear();
         if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
         return resp;
     }
@@ -1706,8 +1684,6 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             }
 
             if (sig.kind == AdvisorGateOutput::Kind::Halt) {
-                if (!iter_buffer.empty() && cb) cb(iter_buffer);
-                iter_buffer.clear();
                 if (escalation_cb_) escalation_cb_(dispatch_id, sid, sig.text);
                 if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
                 resp.ok           = false;
@@ -1792,8 +1768,6 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             resp = agent_ptr->stream(std::move(current_parts), gated_cb);
         }
         if (!resp.ok) {
-            if (!iter_buffer.empty() && cb) cb(iter_buffer);
-            iter_buffer.clear();
             if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
             resp.content        = std::move(total_content) + resp.content;
             resp.input_tokens   = total_input_tok  + resp.input_tokens;

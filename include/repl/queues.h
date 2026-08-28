@@ -70,7 +70,7 @@ private:
 };
 
 struct OutputItem {
-    enum class Kind : std::uint8_t { Text, Diff, Prose, Code, Tool, Thinking, UserEcho };
+    enum class Kind : std::uint8_t { Text, Diff, Prose, LiveProse, Code, Tool, Thinking, UserEcho };
     enum class CodeOp : std::uint8_t { Open, Line, Close };
 
     Kind kind = Kind::Text;
@@ -116,6 +116,11 @@ public:
 
     // Queue styled markdown lines (ProseSegment path — no ANSI round trip).
     void push_prose(const std::vector<StyledLine>& lines);
+
+    // Replaceable in-progress line while a markdown line is still open.
+    // Empty / clear_live_prose() dismisses the overlay.
+    void set_live_prose(const StyledLine& line);
+    void clear_live_prose();
 
     // Single styled status line (push_prose + end_message).
     void push_prose_msg(const std::string& text, StyleId id = StyleId::Default);

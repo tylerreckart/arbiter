@@ -1531,9 +1531,11 @@ void PaneScrollView::bind(const TUI& tui) {
 void PaneScrollView::set_wrap_cols(int cols) {
     wrap_cols_ = std::max(1, cols);
     for (auto& seg : segments_) seg->set_wrap_cols(wrap_cols_);
+    if (live_) live_->set_wrap_cols(wrap_cols_);
 }
 
 bool PaneScrollView::has_rendered_content() const {
+    if (live_ && !live_->is_empty()) return true;
     for (const auto& seg : segments_) {
         if (const auto* prose = dynamic_cast<const ProseSegment*>(seg.get())) {
             if (!prose->is_empty()) return true;
@@ -1549,6 +1551,7 @@ bool PaneScrollView::has_rendered_content() const {
 }
 
 PaneScrollView::SegmentKind PaneScrollView::last_content_kind() const {
+    if (live_ && !live_->is_empty()) return SegmentKind::Prose;
     for (auto it = segments_.rbegin(); it != segments_.rend(); ++it) {
         if (dynamic_cast<const BlankSegment*>(it->get())) continue;
         if (dynamic_cast<const HistoryGapSegment*>(it->get())) continue;
@@ -1708,6 +1711,7 @@ void PaneScrollView::start_block_gap(int gap_rows) {
 
 void PaneScrollView::append(std::string_view text, bool new_block) {
     if (text.empty()) return;
+    clear_live_prose();
     std::string chunk(text);
     const bool separate = new_block || last_content_kind() != SegmentKind::Text;
     if (separate) {
@@ -1721,9 +1725,12 @@ void PaneScrollView::append(std::string_view text, bool new_block) {
 }
 
 void PaneScrollView::append_prose(const std::vector<StyledLine>& lines, bool new_block) {
+    const bool continuing_live = live_ && !live_->is_empty();
+    clear_live_prose();
     if (lines.empty()) return;
     const TuiDesign& d = tui_design();
-    const bool separate = new_block || last_content_kind() != SegmentKind::Prose;
+    const bool separate = !continuing_live
+        && (new_block || last_content_kind() != SegmentKind::Prose);
     std::vector<StyledLine> incoming = lines;
     if (separate) {
         ensure_block_gap(SegmentKind::Prose, d.layout.block_gap, new_block);
@@ -1741,6 +1748,27 @@ void PaneScrollView::append_prose(const std::vector<StyledLine>& lines, bool new
                                         trailing_empty_count(prose.source_));
     if (prepared.empty()) return;
     prose.append(prepared);
+}
+
+void PaneScrollView::set_live_prose(const StyledLine& line) {
+    if (line.text.empty()) {
+        clear_live_prose();
+        return;
+    }
+    if (!live_) {
+        if (last_content_kind() != SegmentKind::Prose) {
+            ensure_block_gap(SegmentKind::Prose, tui_design().layout.block_gap, false);
+        }
+        live_ = std::make_unique<ProseSegment>();
+        live_->set_wrap_cols(wrap_cols_);
+    } else {
+        live_->clear();
+    }
+    live_->append({line});
+}
+
+void PaneScrollView::clear_live_prose() {
+    live_.reset();
 }
 
 bool PaneScrollView::replace_last_prose(const std::vector<StyledLine>& lines) {
@@ -1767,6 +1795,7 @@ void PaneScrollView::append_code_open(std::string_view open_fence,
                                       size_t preview_rows,
                                       bool new_block) {
     if (open_fence.empty()) return;
+    clear_live_prose();
     const TuiDesign& d = tui_design();
     const int gap = std::max(d.layout.block_gap, d.layout.panel_gap);
     ensure_block_gap(SegmentKind::Code, gap, new_block);
@@ -1883,6 +1912,7 @@ void PaneScrollView::append_diff(std::string_view patch) {
 }
 
 void PaneScrollView::clear() {
+    live_.reset();
     segments_.clear();
     segments_.push_back(std::make_unique<ProseSegment>());
     selection_ = {};
@@ -1957,6 +1987,7 @@ void PaneScrollView::retheme() {
             code->rehighlight();
         }
     }
+    if (live_) live_->retheme();
 }
 
 bool PaneScrollView::toggle_code_block_in_view(int scroll_offset) {
@@ -2117,6 +2148,9 @@ std::vector<std::string> PaneScrollView::build_visual_lines() const {
     for (const auto& seg : segments_) {
         seg->collect_visual_lines(out, wrap_cols_);
     }
+    if (live_ && !live_->is_empty()) {
+        live_->collect_visual_lines(out, wrap_cols_);
+    }
     return out;
 }
 
@@ -2190,6 +2224,9 @@ int PaneScrollView::total_visual_rows() const {
     int total = 0;
     for (const auto& seg : segments_) {
         total += seg->visual_rows(wrap_cols_);
+    }
+    if (live_ && !live_->is_empty()) {
+        total += live_->visual_rows(wrap_cols_);
     }
     return total;
 }
@@ -2275,6 +2312,20 @@ std::vector<int> PaneScrollView::find_rows(const std::string& term) const {
         }
         base += rows;
     }
+    if (live_ && !live_->is_empty()) {
+        const int rows = live_->visual_rows(wrap_cols_);
+        lines.clear();
+        live_->collect_visual_lines(lines, wrap_cols_);
+        for (size_t k = 0; k < lines.size(); ++k) {
+            std::string hay = lines[k];
+            for (char& c : hay) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            if (hay.find(needle) == std::string::npos) continue;
+            out.push_back(base + static_cast<int>(k));
+        }
+        base += rows;
+    }
     return out;
 }
 
@@ -2326,6 +2377,23 @@ void PaneScrollView::draw(OpenTuiHandle frame,
         screen_y += draw_h;
         global_row = seg_end;
         if (screen_y >= viewport_h_) break;
+    }
+    if (live_ && !live_->is_empty() && screen_y < viewport_h_) {
+        const int seg_h = live_->visual_rows(wrap_cols_);
+        const int seg_end = global_row + seg_h;
+        if (seg_end > first_visible) {
+            const int skip_rows = std::max(0, first_visible - global_row);
+            const int remaining = viewport_h_ - screen_y;
+            if (remaining > 0) {
+                const int draw_h = std::min(seg_h - skip_rows, remaining);
+                live_->draw(frame,
+                            buf_x_,
+                            buf_y_ + screen_y,
+                            viewport_w_,
+                            draw_h,
+                            skip_rows);
+            }
+        }
     }
 
     paint_selection(frame, first_visible);

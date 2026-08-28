@@ -38,6 +38,12 @@ void pane_history_drain_queue(Pane& pane) {
                 pane_history_push_prose(pane, item.styled_lines, item.new_block);
             }
             break;
+        case OutputItem::Kind::LiveProse:
+            if (pane.scroll) {
+                if (item.styled_lines.empty()) pane.scroll->clear_live_prose();
+                else pane.scroll->set_live_prose(item.styled_lines.front());
+            }
+            break;
         case OutputItem::Kind::Code:
             if (item.code_op == OutputItem::CodeOp::Open) {
                 pane_history_push_code_open(

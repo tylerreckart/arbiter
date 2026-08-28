@@ -14,7 +14,8 @@
 namespace arbiter {
 
 // Incremental renderer for streaming output.
-// Feed chunks as they arrive; prose and inline markdown emit as lines complete.
+// Feed chunks as they arrive; completed lines emit as `\n` arrives, and
+// peek_live_styled() exposes the in-progress line for a replaceable tail.
 // Fenced blocks (```diff and other languages) buffer until the closing fence
 // so long partial blocks do not flood scrollback mid-stream.
 // Display math (\[…\] / $$…$$) buffers until the closer, then emits Unicode
@@ -32,6 +33,12 @@ public:
 
     // Feed a streaming chunk. Returns styled lines ready to render.
     std::vector<StyledLine> feed_styled(const std::string& chunk);
+
+    // Incomplete current line as inline-styled prose, or nullopt when there
+    // is nothing safe to paint (empty, inside a fence/math/code block, or a
+    // fence/math opener). Does not mutate renderer state — the TUI uses this
+    // as a replaceable live tail until the line commits on `\n` / flush().
+    std::optional<StyledLine> peek_live_styled() const;
 
     // Feed a streaming chunk. Returns ANSI for non-TUI callers (loop logs, etc.).
     std::string feed(const std::string& chunk);
