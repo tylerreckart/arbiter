@@ -106,6 +106,21 @@ TEST_CASE("unambiguous partial prose is emitted immediately") {
     CHECK(out == "hello world\n");
 }
 
+TEST_CASE("partial emit does not split UTF-8 code points") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    const std::string cafe = "caf\u00E9";  // é is two bytes in UTF-8
+    f.feed("caf");
+    CHECK(out == "caf");
+    f.feed("\xC3");  // first byte of é
+    CHECK(out == "caf");
+    f.feed("\xA9\n");  // second byte + newline
+    f.flush();
+    CHECK(out == cafe + "\n");
+}
+
 TEST_CASE("partial /cmd prefix is buffered until newline") {
     Config cfg;
     std::string out;

@@ -10209,17 +10209,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             resp, request_id, !tenant_revoked, log_error);
         if (!tenant_revoked && resp.ok) prepared_turn.commit();
     } catch (const std::exception& e) {
-        log_error(std::string("orchestration failed: ") + e.what());
-        if (request_status_created) {
-            const int64_t completed = static_cast<int64_t>(
-                std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count());
-            tenants.update_request_status(request_id,
-                std::optional<std::string>("failed"),
-                completed,
-                std::optional<std::string>("internal error"),
-                std::nullopt);
-        }
+        log_operator_error("orchestration failed", e);
+        abort_sse_turn(kTenantInternalError);
+        return;
     }
 
     sse.close();

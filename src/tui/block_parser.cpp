@@ -36,6 +36,39 @@ size_t ltrim_idx(const std::string& s) {
     return i;
 }
 
+int utf8_code_unit_count(unsigned char lead) {
+    if (lead < 0x80) return 1;
+    if ((lead & 0xE0) == 0xC0) return 2;
+    if ((lead & 0xF0) == 0xE0) return 3;
+    if ((lead & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+// Hold back a trailing incomplete UTF-8 code point so partial emit does
+// not split multibyte characters across chunk boundaries.
+void peel_incomplete_utf8(std::string& text, std::string& hold) {
+    if (text.empty()) return;
+
+    const size_t n = text.size();
+    const size_t from = n > 4 ? n - 4 : 0;
+    for (size_t i = from; i < n; ) {
+        const unsigned char lead = static_cast<unsigned char>(text[i]);
+        const int need = utf8_code_unit_count(lead);
+        if (need == 1) {
+            ++i;
+            continue;
+        }
+        if (i + static_cast<size_t>(need) > n) {
+            hold.insert(hold.end(),
+                        text.begin() + static_cast<std::ptrdiff_t>(i),
+                        text.end());
+            text.resize(i);
+            return;
+        }
+        i += static_cast<size_t>(need);
+    }
+}
+
 // Agent writ prefixes swallowed in quiet mode (and styled when verbose).
 bool is_agent_writ_line(std::string_view s) {
     if (s.empty() || s[0] != '/') return false;
@@ -144,8 +177,10 @@ void BlockParser::feed(std::string_view chunk) {
 
     // Unambiguous incomplete prose — emit now so the live tail can paint.
     if (!buf_.empty() && can_emit_partial(buf_)) {
-        sink_(buf_);
+        std::string partial = buf_;
         buf_.clear();
+        peel_incomplete_utf8(partial, buf_);
+        if (!partial.empty()) sink_(partial);
     }
 }
 

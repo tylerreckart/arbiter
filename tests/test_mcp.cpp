@@ -843,6 +843,7 @@ TEST_CASE("Manager: evicting a dead client keeps in-flight shared_ptrs valid") {
     CHECK(first != second);
     CHECK_FALSE(first->alive());
     CHECK_THROWS(first->call_tool("ping", jobj()));
+    CHECK_THROWS(first->tools());
 
     const auto tools2 = second->tools();
     REQUIRE(tools2.size() == 1);

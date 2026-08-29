@@ -1761,6 +1761,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
             // in-flight turn, without stalling the input loop on JSON I/O.
             conversation_store.save_async(pane.conversation_id, orch);
         } catch (const std::exception& e) {
+            output_queue.clear_live_prose();
             output_queue.push_prose_msg("ERR: " + std::string(e.what()), StyleId::Error);
             pane.last_response = std::string("ERR: ") + e.what();
             conversation_store.save_async(pane.conversation_id, orch);

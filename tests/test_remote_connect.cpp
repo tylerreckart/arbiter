@@ -302,3 +302,19 @@ TEST_CASE("StreamRenderer paints live tail before newline") {
     CHECK(saw_prose);
     CHECK_FALSE(saw_live);
 }
+
+TEST_CASE("OutputQueue clear_live_prose is a no-op without a live tail") {
+    OutputQueue queue;
+    queue.push_prose({styled_plain_line("committed", StyleId::Default)});
+    queue.clear_live_prose();
+    auto items = queue.drain_items();
+    REQUIRE(items.size() == 1);
+    CHECK(items[0].kind == OutputItem::Kind::Prose);
+
+    queue.set_live_prose(styled_plain_line("live", StyleId::Default));
+    queue.clear_live_prose();
+    items = queue.drain_items();
+    REQUIRE(items.size() == 1);
+    CHECK(items[0].kind == OutputItem::Kind::LiveProse);
+    CHECK(items[0].styled_lines.empty());
+}
