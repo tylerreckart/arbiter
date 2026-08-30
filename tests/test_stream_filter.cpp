@@ -106,6 +106,21 @@ TEST_CASE("unambiguous partial prose is emitted immediately") {
     CHECK(out == "hello world\n");
 }
 
+TEST_CASE("partial UTF-8 code points are held across chunk boundaries") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    // U+1F600 GRINNING FACE is F0 9F 98 80 in UTF-8.
+    f.feed("hi \xF0\x9F");
+    CHECK(out == "hi ");
+    f.feed("\x98\x80");
+    CHECK(out == "hi \xF0\x9F\x98\x80");
+    f.feed("\n");
+    f.flush();
+    CHECK(out == "hi \xF0\x9F\x98\x80\n");
+}
+
 TEST_CASE("partial /cmd prefix is buffered until newline") {
     Config cfg;
     std::string out;

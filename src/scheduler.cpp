@@ -180,6 +180,14 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         return false;
     }
 
+    // Claim the task before any slow work so concurrent ticks cannot
+    // double-fire while orch->send() is still running.  Status='running'
+    // is the lease; next_fire_at stays put until the run finishes.
+    const int64_t now = now_epoch();
+    if (!tenants_->try_claim_scheduled_task(task.tenant_id, task.id, now)) {
+        return false;
+    }
+
     std::optional<TenantLimiter::Guard> limit_guard;
     if (limiter_) {
         auto lim = limiter_->acquire(task.tenant_id);
@@ -189,17 +197,13 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 (long long)task.id, (long long)task.tenant_id,
                 lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
                     ? "concurrent" : "rate");
+            tenants_->update_scheduled_task(task.tenant_id, task.id,
+                std::optional<std::string>("active"),
+                std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+                std::optional<std::string>("running"));
             return false;
         }
         limit_guard = std::move(lim.guard);
-    }
-
-    // Claim the task before any slow work so concurrent ticks cannot
-    // double-fire while orch->send() is still running.  Status='running'
-    // is the lease; next_fire_at stays put until the run finishes.
-    const int64_t now = now_epoch();
-    if (!tenants_->try_claim_scheduled_task(task.tenant_id, task.id, now)) {
-        return false;
     }
 
     const int64_t  started_at = now;

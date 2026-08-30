@@ -945,6 +945,19 @@ TEST_CASE("Manager: concurrent call_tool on one session serializes") {
     CHECK(ok.load() == kThreads);
 }
 
+TEST_CASE("Client::tools reloads when subprocess died after first list") {
+    Manager mgr({stub_spec({"--die-after=1"})});
+    auto cli = mgr.client("stub");
+    REQUIRE(cli);
+    const auto tools = cli->tools();
+    REQUIRE(tools.size() == 1);
+    CHECK(tools[0].name == "ping");
+    wait_until_dead(cli);
+    REQUIRE_FALSE(cli->alive());
+
+    CHECK_THROWS(cli->tools());
+}
+
 TEST_CASE("Manager: acquire during cancelled RPC does not race reap") {
     Manager mgr({stub_spec({"--hang-on-call"})});
     auto cli = mgr.client("stub");

@@ -126,7 +126,9 @@ Response Client::rpc_unlocked(const std::string& method,
 
 const std::vector<ToolDescriptor>& Client::tools() {
     std::lock_guard<std::mutex> lk(rpc_mu_);
-    if (tools_loaded_) return tools_cache_;
+    if (tools_loaded_ && proc_ && proc_->alive()) return tools_cache_;
+    tools_loaded_ = false;
+    tools_cache_.clear();
     auto resp = rpc_unlocked("tools/list", jobj(), cfg_.call_timeout, nullptr);
     tools_cache_ = parse_tools_list(resp);
     tools_loaded_ = true;

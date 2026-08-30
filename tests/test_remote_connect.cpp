@@ -302,3 +302,12 @@ TEST_CASE("StreamRenderer paints live tail before newline") {
     CHECK(saw_prose);
     CHECK_FALSE(saw_live);
 }
+
+TEST_CASE("OutputQueue clear_live_prose is a no-op without a live overlay") {
+    OutputQueue q;
+    q.push("committed prose");
+    q.clear_live_prose();
+    auto items = q.drain_items();
+    REQUIRE(items.size() == 1);
+    CHECK(items[0].kind == OutputItem::Kind::Text);
+}
