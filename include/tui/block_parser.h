@@ -35,6 +35,7 @@ private:
     bool        in_write_block_ = false;
     bool        in_todo_block_ = false;
     bool        pending_todo_body_ = false;
+    std::string utf8_hold_;
 };
 
 } // namespace arbiter

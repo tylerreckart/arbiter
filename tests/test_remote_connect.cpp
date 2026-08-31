@@ -257,6 +257,15 @@ TEST_CASE("OutputQueue try_drop_last_user_echo removes an undrained echo") {
     CHECK(items[0].data == "kept");
 }
 
+TEST_CASE("OutputQueue clear_live_prose does not push placeholder items") {
+    OutputQueue q;
+    q.push("done");
+    q.clear_live_prose();
+    auto items = q.drain_items();
+    REQUIRE(items.size() == 1);
+    CHECK(items[0].kind == OutputItem::Kind::Text);
+}
+
 TEST_CASE("StreamRenderer paints live tail before newline") {
     OutputQueue queue;
     StreamRenderer renderer(kMasterStream, queue);

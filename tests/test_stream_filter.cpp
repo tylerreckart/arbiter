@@ -219,3 +219,32 @@ TEST_CASE("in_write_block flag tracks /write state across feeds") {
     f.feed("/endwrite\n");
     CHECK_FALSE(f.in_write_block());
 }
+
+TEST_CASE("partial fence opener is buffered until newline") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("prose ");
+    CHECK(out == "prose ");
+    f.feed("``");
+    CHECK(out == "prose ");
+    f.feed("`");
+    CHECK(out == "prose ");
+    f.feed(" still\n");
+    f.flush();
+    CHECK(out == "prose ``` still\n");
+}
+
+TEST_CASE("partial UTF-8 code point is held across feed chunks") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    // é = 0xC3 0xA9
+    f.feed("caf\xC3");
+    CHECK(out == "caf");
+    f.feed("\xA9\n");
+    f.flush();
+    CHECK(out == "café\n");
+}
