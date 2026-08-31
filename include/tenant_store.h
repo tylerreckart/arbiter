@@ -942,14 +942,18 @@ public:
 
     // Recovery sweep: every status='running' task_run row gets the new
     // status (typically "failed"), completed_at, and error_message.
-    // Parent schedules left in status='running' (claimed, then interrupted)
-    // are released back to 'active' so one-shots are not stranded and
-    // recurring work can fire again.  Returns the list of (tenant_id,
-    // run_id) pairs touched.
+    // Returns the list of (tenant_id, run_id) pairs touched.  Pair with
+    // finalize_orphaned_scheduled_task_leases() to release stranded
+    // schedule leases.
     std::vector<std::pair<int64_t, int64_t>>
     recover_running_task_runs(const std::string& new_status,
                                int64_t completed_at,
                                const std::string& error_message);
+
+    // Cross-tenant browse for scheduler recovery.  Hard-capped at 200.
+    std::vector<ScheduledTask>
+    list_all_scheduled_tasks_by_status(const std::string& status,
+                                        int limit) const;
 
     // ── A2A task store ──────────────────────────────────────────────────
     //
