@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-31
+
 ### Changed
 - **Live token streaming.** Master-turn provider deltas reach the TUI and SSE
   `text` events as they arrive instead of waiting for the full LLM iteration.
