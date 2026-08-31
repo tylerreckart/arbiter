@@ -180,6 +180,14 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         return false;
     }
 
+    // Claim the task before limiter acquire so a lost claim race does not
+    // burn a rate token.  Status='running' is the lease; next_fire_at
+    // stays put until the run finishes.
+    const int64_t now = now_epoch();
+    if (!tenants_->try_claim_scheduled_task(task.tenant_id, task.id, now)) {
+        return false;
+    }
+
     std::optional<TenantLimiter::Guard> limit_guard;
     if (limiter_) {
         auto lim = limiter_->acquire(task.tenant_id);
@@ -189,17 +197,13 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 (long long)task.id, (long long)task.tenant_id,
                 lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
                     ? "concurrent" : "rate");
+            tenants_->update_scheduled_task(task.tenant_id, task.id,
+                std::optional<std::string>("active"),
+                std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+                std::optional<std::string>("running"));
             return false;
         }
         limit_guard = std::move(lim.guard);
-    }
-
-    // Claim the task before any slow work so concurrent ticks cannot
-    // double-fire while orch->send() is still running.  Status='running'
-    // is the lease; next_fire_at stays put until the run finishes.
-    const int64_t now = now_epoch();
-    if (!tenants_->try_claim_scheduled_task(task.tenant_id, task.id, now)) {
-        return false;
     }
 
     const int64_t  started_at = now;
@@ -422,33 +426,35 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         std::optional<bool>(true));
 
     // Advance the parent task and drop the in-flight lease.
+    auto finalize_parent = [&](const std::optional<std::string>& status,
+                               const std::optional<int64_t>& next_fire) {
+        if (tenants_->update_scheduled_task(
+                task.tenant_id, task.id, status, next_fire,
+                std::optional<int64_t>(completed_at),
+                std::optional<int64_t>(run.id),
+                std::optional<int64_t>(1),
+                k_running_lease)) {
+            return;
+        }
+        std::fprintf(stderr,
+            "[scheduler] task %lld finalize CAS miss (tenant=%lld no longer running)\n",
+            static_cast<long long>(task.id),
+            static_cast<long long>(task.tenant_id));
+    };
+
     if (task.schedule_kind == "recurring") {
         int64_t next = next_fire_for_recur(task.recur_json, completed_at);
         if (next == 0) {
             // Unparseable recur — pause to surface to the operator.
-            tenants_->update_scheduled_task(task.tenant_id, task.id,
-                std::optional<std::string>("paused"),
-                std::nullopt,
-                std::optional<int64_t>(completed_at),
-                std::optional<int64_t>(run.id),
-                std::optional<int64_t>(1),
-                k_running_lease);
+            finalize_parent(std::optional<std::string>("paused"), std::nullopt);
         } else {
-            tenants_->update_scheduled_task(task.tenant_id, task.id,
-                std::optional<std::string>("active"), next,
-                std::optional<int64_t>(completed_at),
-                std::optional<int64_t>(run.id),
-                std::optional<int64_t>(1),
-                k_running_lease);
+            finalize_parent(std::optional<std::string>("active"),
+                            std::optional<int64_t>(next));
         }
     } else {
-        tenants_->update_scheduled_task(task.tenant_id, task.id,
+        finalize_parent(
             std::optional<std::string>(ok ? "completed" : "failed"),
-            std::nullopt,
-            std::optional<int64_t>(completed_at),
-            std::optional<int64_t>(run.id),
-            std::optional<int64_t>(1),
-            k_running_lease);
+            std::nullopt);
     }
 
     if (bus_) {

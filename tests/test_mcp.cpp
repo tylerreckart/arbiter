@@ -843,6 +843,7 @@ TEST_CASE("Manager: evicting a dead client keeps in-flight shared_ptrs valid") {
     CHECK(first != second);
     CHECK_FALSE(first->alive());
     CHECK_THROWS(first->call_tool("ping", jobj()));
+    CHECK_THROWS(first->tools());
 
     const auto tools2 = second->tools();
     REQUIRE(tools2.size() == 1);
@@ -943,6 +944,32 @@ TEST_CASE("Manager: concurrent call_tool on one session serializes") {
     }
     for (auto& t : threads) t.join();
     CHECK(ok.load() == kThreads);
+}
+
+TEST_CASE("Client::tools reloads when subprocess died after first list") {
+    Manager mgr({stub_spec({"--die-after=1"})});
+    auto cli = mgr.client("stub");
+    REQUIRE(cli);
+    const auto tools = cli->tools();
+    REQUIRE(tools.size() == 1);
+    CHECK(tools[0].name == "ping");
+    wait_until_dead(cli);
+    REQUIRE_FALSE(cli->alive());
+
+    CHECK_THROWS(cli->tools());
+}
+
+TEST_CASE("Client: RPC timeout terminates the subprocess") {
+    ClientConfig cfg;
+    cfg.name = "stub";
+    cfg.argv = {this_executable(), "--mcp-stub", "--hang-on-call"};
+    cfg.init_timeout = 2s;
+    cfg.call_timeout = 200ms;
+    auto cli = std::make_shared<Client>(std::move(cfg));
+    REQUIRE(cli->alive());
+    CHECK_THROWS(cli->call_tool("ping", jobj()));
+    wait_until_dead(cli);
+    CHECK_FALSE(cli->alive());
 }
 
 TEST_CASE("Manager: acquire during cancelled RPC does not race reap") {

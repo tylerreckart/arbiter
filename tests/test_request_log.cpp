@@ -5,6 +5,7 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "scheduled_task_recovery.h"
 #include "tenant_store.h"
 
 #include <chrono>
@@ -339,12 +340,40 @@ TEST_CASE("scheduled task recovery: releases claimed one-shot back to active") {
     REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
 
     auto orphans = s.recover_running_task_runs("failed", 9999, "interrupted");
+    finalize_orphaned_scheduled_task_leases(s, 9999);
     CHECK(orphans.empty());
 
     auto row = s.get_scheduled_task(tid, task.id);
     REQUIRE(row);
     CHECK(row->status == "active");
     CHECK(s.list_due_scheduled_tasks(now, 10).size() == 1);
+}
+
+TEST_CASE("scheduled task recovery: succeeded run with stranded lease is finalized") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+    const int64_t due_at = now - 5;
+
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
+        "once", due_at, "", due_at);
+    REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
+    auto run = s.create_task_run(tid, task.id, "running", now, "req-done");
+    s.update_task_run(tid, run.id,
+        std::optional<std::string>("succeeded"),
+        std::optional<int64_t>(now + 10),
+        std::optional<std::string>("done"),
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+
+    auto orphans = s.recover_running_task_runs("failed", 9999, "interrupted");
+    finalize_orphaned_scheduled_task_leases(s, 9999);
+    CHECK(orphans.empty());
+
+    auto row = s.get_scheduled_task(tid, task.id);
+    REQUIRE(row);
+    CHECK(row->status == "completed");
+    CHECK(row->last_run_id == run.id);
+    CHECK(s.list_due_scheduled_tasks(now, 10).empty());
 }
 
 TEST_CASE("task_run recovery sweep: marks orphaned running rows failed") {

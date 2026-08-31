@@ -10,8 +10,10 @@ namespace arbiter {
 // tool-call lines and framing markers when show_writs is false.  Complete
 // lines and unambiguous incomplete prose (not a possible /cmd or framing
 // prefix) pass through immediately so the TUI can paint token-scale deltas.
-// Ambiguous prefixes (`/…`, `[…`, all-whitespace) stay buffered until a
-// newline decides swallow vs emit.
+// Ambiguous prefixes (`/…`, `[…`, `` ` ``, `$`, `\`, all-whitespace) stay
+// buffered until a newline decides swallow vs emit.  Incomplete UTF-8
+// code points are held across feed chunks so token-scale emit does not
+// split multibyte characters.
 class BlockParser {
 public:
     using Sink = std::function<void(std::string_view)>;
@@ -35,6 +37,7 @@ private:
     bool        in_write_block_ = false;
     bool        in_todo_block_ = false;
     bool        pending_todo_body_ = false;
+    std::string utf8_hold_;
 };
 
 } // namespace arbiter

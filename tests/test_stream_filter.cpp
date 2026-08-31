@@ -219,3 +219,47 @@ TEST_CASE("in_write_block flag tracks /write state across feeds") {
     f.feed("/endwrite\n");
     CHECK_FALSE(f.in_write_block());
 }
+
+TEST_CASE("partial fence opener is buffered until newline") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("prose ");
+    CHECK(out == "prose ");
+    f.feed("``");
+    CHECK(out == "prose ");
+    f.feed("`");
+    CHECK(out == "prose ");
+    f.feed(" still\n");
+    f.flush();
+    CHECK(out == "prose ``` still\n");
+}
+
+TEST_CASE("partial UTF-8 code point is held across feed chunks") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    // é = 0xC3 0xA9
+    f.feed("caf\xC3");
+    CHECK(out == "caf");
+    f.feed("\xA9\n");
+    f.flush();
+    CHECK(out == "café\n");
+}
+
+TEST_CASE("partial UTF-8 code points are held across 4-byte chunk boundaries") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    // U+1F600 GRINNING FACE is F0 9F 98 80 in UTF-8.
+    f.feed("hi \xF0\x9F");
+    CHECK(out == "hi ");
+    f.feed("\x98\x80");
+    CHECK(out == "hi \xF0\x9F\x98\x80");
+    f.feed("\n");
+    f.flush();
+    CHECK(out == "hi \xF0\x9F\x98\x80\n");
+}

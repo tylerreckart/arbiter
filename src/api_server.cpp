@@ -36,6 +36,7 @@
 #include "request_event_bus.h"
 #include "schedule_parser.h"
 #include "scheduler.h"
+#include "scheduled_task_recovery.h"
 #include "circuit_breaker.h"
 #include "cors.h"
 #include "sse_mailbox.h"
@@ -9587,7 +9588,7 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                   "stored agent with this id for the tenant.  Send `agent_def` "
                   "in the request body, POST it once to /v1/agents, or address "
                   "'index' (the master orchestrator) instead.");
-        sse.close();
+        abort_sse_turn("agent not found", "not_found");
         return;
     }
 
@@ -10222,17 +10223,9 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             resp, request_id, !tenant_revoked, log_error);
         if (!tenant_revoked && resp.ok) prepared_turn.commit();
     } catch (const std::exception& e) {
-        log_error(std::string("orchestration failed: ") + e.what());
-        if (request_status_created) {
-            const int64_t completed = static_cast<int64_t>(
-                std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count());
-            tenants.update_request_status(request_id,
-                std::optional<std::string>("failed"),
-                completed,
-                std::optional<std::string>("internal error"),
-                std::nullopt);
-        }
+        log_operator_error("orchestration failed", e);
+        abort_sse_turn(kTenantInternalError);
+        return;
     }
 
     sse.close();
@@ -10766,8 +10759,10 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         auto task_orphans = tenants_.recover_running_task_runs(
             "failed", now_s,
             "task run was interrupted by a server restart");
-        // recover_running_task_runs also releases scheduled_tasks left
-        // in status='running' so a claimed one-shot is not stranded.
+        finalize_orphaned_scheduled_task_leases(tenants_, now_s);
+        // finalize_orphaned_scheduled_task_leases releases or completes
+        // scheduled_tasks left in status='running' so a claimed one-shot
+        // is not stranded or refired after a succeeded run.
         for (const auto& rid : orphaned) {
             // Synthesise a terminal `done` event so resubscribe finds
             // a clean tail.  Use the next seq (last_seq+1) for a

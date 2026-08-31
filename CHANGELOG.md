@@ -16,6 +16,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   Bundled starter: `jules` (pair colleague at the active agent's shoulder).
   See [Presence](docs/concepts/presence.md).
 
+## [0.13.1] — 2026-08-31
+
+
+## [0.13.0] — 2026-08-31
+
 ### Changed
 - **Live token streaming.** Master-turn provider deltas reach the TUI and SSE
   `text` events as they arrive instead of waiting for the full LLM iteration.
