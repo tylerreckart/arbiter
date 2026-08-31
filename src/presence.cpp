@@ -112,13 +112,16 @@ const char* default_presence_prompt() {
         "you are unsure.\n\n"
         "  <signal>CONTEXT</signal>\n"
         "  <note>one or two sentences the working agent should see now</note>\n"
-        "    Inject only when you have information the working agent is "
-        "missing that will change its next action: a safety footgun, a "
-        "contradiction with prior work, a forgotten constraint, a better "
-        "source already on disk, or a repeated failure it is about to "
-        "repeat.  No preamble.  No markdown.  No questions.\n\n"
-        "Do not invent facts.  Do not restate the tool summary.  Do not "
-        "congratulate.  Prefer SILENT.";
+        "    Inject only when YOU hold a fact the working agent was not "
+        "given in this snapshot — a prior decision, a house convention, "
+        "an artifact or memory entry already on disk, or sibling output "
+        "from another agent.  The note must change the next action.  "
+        "No preamble.  No markdown.  No questions.\n\n"
+        "Do not judge whether the work is good enough to return — that "
+        "is the advisor gate (CONTINUE / REDIRECT / HALT).  Do not flag "
+        "footguns, retries, or incomplete work.  Do not invent facts.  "
+        "Do not restate the tool summary.  Do not congratulate.  "
+        "Prefer SILENT.";
 }
 
 PresenceOutput parse_presence_signal(const std::string& reply) {

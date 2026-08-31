@@ -21,7 +21,7 @@ arbiter --init --force     # overwrite every starter back to the embedded defaul
 │   ├── loom.json       Loom — UI/a11y (Claude Sonnet 5 + Opus advisor)
 │   ├── beacon.json     Beacon — strategy/campaigns (GPT-5.5)
 │   ├── echo.json       Echo — platform-native content (Grok 4.5)
-│   └── warden.json     Warden — always-on presence (Haiku; watches peers)
+│   └── anchor.json     Anchor — always-on continuity (Haiku; missing context)
 ```
 
 The master orchestrator (`index`) is not written to disk — it ships as a compiled-in constitution and is loaded automatically. Only sub-agent definitions live in `~/.arbiter/agents/`.
@@ -32,7 +32,7 @@ Index speaks in a **conversational** register (complete sentences, collaborative
 
 The starter JSON files are the **single source of truth** for what gets written. They live in `agents/` in the source tree and are embedded into the binary at build time. `--init` writes them verbatim — pretty-printed, in source order, byte-identical to the source tree — so the file you see on disk matches what a maintainer would see in the repo.
 
-Each file is a plain JSON document — a model id, system prompt, tool allowlist, optional advisor block, optional `presence` residency, optional cost-attribution metadata. `warden` is the bundled [always-on presence](../concepts/presence.md) example. Edit them in place, or copy one as the basis for your own agent. Drop a new `agents/<id>.json` into the source tree and it'll show up in `--init` automatically on the next build (no code changes required).
+Each file is a plain JSON document — a model id, system prompt, tool allowlist, optional advisor block, optional `presence` residency, optional cost-attribution metadata. `anchor` is the bundled [always-on presence](../concepts/presence.md) example (continuity, not a second advisor). Edit them in place, or copy one as the basis for your own agent. Drop a new `agents/<id>.json` into the source tree and it'll show up in `--init` automatically on the next build (no code changes required).
 
 ## Re-seeding from defaults
 

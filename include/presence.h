@@ -6,6 +6,9 @@
 // tool batch), reviews a snapshot of that peer's live work.  It may inject
 // a CONTEXT note into the peer's next model turn, or stay SILENT.
 //
+// Job: add a fact the peer was not given.  Not a second advisor — presence
+// cannot CONTINUE/REDIRECT/HALT and must not be used as a safety cop.
+//
 // Distinct from:
 //   • Advisor gate — terminating-turn CONTINUE/REDIRECT/HALT; fail-closed.
 //     Presence cannot halt or redirect; it is fail-open additive context.

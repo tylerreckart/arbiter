@@ -48,7 +48,7 @@ Absent / `"off"` (the default) keeps today's request-scoped specialist.
 | `prompt` | string | built-in | Override the review system prompt. Capped at 8 KiB. |
 | `max_notes_per_turn` | int | `1` | Cap on `CONTEXT` notes this watcher may inject per working-agent `stream_id`. Clamped to 1–4. |
 
-The bundled [`warden`](../../agents/warden.json) starter is the canonical example: cheap model, `watch: ["*"]`, silent unless the next action would be worse without the note.
+The bundled [`anchor`](../../agents/anchor.json) starter is the canonical example: cheap model, `watch: ["*"]`, silent unless a peer is about to act without a fact Anchor already holds (a prior decision, a house convention, a sibling artifact). Anchor does **not** grade the work.
 
 ## Signal grammar
 
@@ -81,8 +81,8 @@ Where presence fires inside the dispatch loop:
 5. Each `CONTEXT` note is prepended to the tool-result envelope as:
 
    ```
-   [PRESENCE: Warden]
-   Do not commit the dumped .env.
+   [PRESENCE: Anchor]
+   Memory #47 already pinned the sandbox path — do not re-derive it.
    [END PRESENCE]
    ```
 
@@ -99,9 +99,25 @@ Presence does **not** fire on a terminating turn with no tools — that is the a
 | TUI | `CONTEXT` paints `◎ presence · <watcher> <note>`. `SILENT` is quiet. |
 | Roster | Always-on agents show `+presence` on the master's `AGENTS` line so index does not treat them as ordinary specialists. |
 
+## Presence is not a second advisor
+
+The advisor is bound to **the same agent** and answers *may this turn return?* Presence is a **different catalog identity** and answers *does this peer lack a fact I hold?*
+
+| | Advisor | Presence |
+|---|---|---|
+| Subject | The executor it is configured on | A *peer* (never self) |
+| When | Terminating turn (`cmds.empty()`) | After that peer's tool batch |
+| Power | `CONTINUE` / `REDIRECT` / `HALT` | `SILENT` / `CONTEXT` only |
+| Failure | Fail-closed by default | Fail-open (`SILENT`) |
+| Job | Judgment — is the work acceptable? | Context — a fact, decision, or sibling result the peer was not given |
+
+If you would halt, redirect, or score the turn, that is the [advisor](advisor.md). If you would tell the working agent something they were never handed in this snapshot, that is presence.
+
+A safety-cop resident (flag footguns, retries, dropped constraints) *looks* like presence but is a weaker gate: it fires at the wrong time for a hard stop and duplicates `LOOP DETECTED` plus `advisor.mode: "gate"`. Do not use the class that way. Pair them: presence adds missing context mid-loop; the gate still owns the terminating verdict.
+
 ## What this is not
 
-- **Not a second advisor.** Presence cannot stop the turn. Pair with `advisor.mode: "gate"` when you need a hard halt.
+- **Not a second advisor.** See above. Pair with `advisor.mode: "gate"` when you need a hard halt.
 - **Not a loop.** `/loop` still exists for "keep doing this." Presence watches *someone else*.
 - **Not JIT.** Reconcile still owns spawn-for-delta / teardown-on-satisfy. A catalog can hold both classes.
 - **Not cross-request in v1.** A watcher sees peers inside the same orchestrator (the in-flight turn and its `/agent` / `/parallel` children). Cross-request observation over `RequestEventBus` is a later hub.

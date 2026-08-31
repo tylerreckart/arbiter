@@ -13,7 +13,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   and may inject a `[PRESENCE: Name]` note into that agent's next model turn.
   Fail-open (`SILENT` on error); cannot halt or redirect — that stays the advisor
   gate. SSE `presence` events, TUI `◎ presence · watcher`, roster `+presence`.
-  Bundled starter: `warden`. See [Presence](docs/concepts/presence.md).
+  Bundled starter: `anchor` (continuity — not a second advisor). See
+  [Presence](docs/concepts/presence.md).
 
 ### Changed
 - **Live token streaming.** Master-turn provider deltas reach the TUI and SSE

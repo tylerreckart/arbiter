@@ -294,7 +294,7 @@ TEST_CASE("presence: absent yields off") {
 
 TEST_CASE("presence: string shorthand always_on") {
     std::string js = R"({
-        "name": "warden",
+        "name": "anchor",
         "model": "claude-haiku-4-5",
         "presence": "always_on"
     })";
@@ -306,7 +306,7 @@ TEST_CASE("presence: string shorthand always_on") {
 
 TEST_CASE("presence: object form round-trips") {
     std::string js = R"({
-        "name": "warden",
+        "name": "anchor",
         "model": "claude-haiku-4-5",
         "presence": {
             "mode": "always_on",
@@ -332,7 +332,7 @@ TEST_CASE("presence: object form round-trips") {
 
 TEST_CASE("presence: unknown mode falls back to off") {
     std::string js = R"({
-        "name": "warden",
+        "name": "anchor",
         "model": "claude-haiku-4-5",
         "presence": { "mode": "banana" }
     })";
