@@ -22,6 +22,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   Incomplete prose paints as a replaceable live tail (restyled when the line
   completes); `/cmd` lines stay suppressed until a newline confirms them.
   Delegation iterations still emit `→ delegating: …` after the writ is parsed.
+  
+## [0.13.0] — 2026-08-31
 
 ## [0.12.16] — 2026-08-28
 
