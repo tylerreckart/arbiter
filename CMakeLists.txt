@@ -222,6 +222,7 @@ set(ARBITER_SOURCES
     src/notification_bus.cpp
     src/request_event_bus.cpp
     src/scheduler.cpp
+    src/scheduled_task_recovery.cpp
     src/json.cpp
     src/message_codec.cpp
     src/commands.cpp
@@ -1192,6 +1193,8 @@ if(INDEX_BUILD_TESTS)
     add_executable(unit_request_log
         tests/test_request_log.cpp
         src/tenant_store.cpp
+        src/scheduled_task_recovery.cpp
+        src/schedule_parser.cpp
     )
     target_include_directories(unit_request_log PRIVATE
         ${CMAKE_SOURCE_DIR}/include

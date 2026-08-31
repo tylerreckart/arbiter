@@ -245,12 +245,8 @@ void OutputQueue::clear_live_prose() {
         std::lock_guard<std::mutex> lk(mu_);
         if (!items_.empty() && items_.back().kind == OutputItem::Kind::LiveProse) {
             items_.back().styled_lines.clear();
-        } else {
-            OutputItem item;
-            item.kind = OutputItem::Kind::LiveProse;
-            items_.push_back(std::move(item));
+            fn = notify_fn_;
         }
-        fn = notify_fn_;
     }
     if (fn) fn();
 }

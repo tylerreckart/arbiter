@@ -94,8 +94,10 @@ Response Client::rpc_unlocked(const std::string& method,
         }
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
-        if (remaining.count() <= 0)
+        if (remaining.count() <= 0) {
+            proc_->terminate();
             throw std::runtime_error("MCP '" + method + "' timed out");
+        }
 
         auto line = proc_->recv_line(remaining, cancel);
         if (!line) {
@@ -103,6 +105,7 @@ Response Client::rpc_unlocked(const std::string& method,
                 proc_->terminate();
                 throw std::runtime_error("MCP '" + method + "' cancelled");
             }
+            proc_->terminate();
             throw std::runtime_error("MCP server stopped responding during '" + method + "'");
         }
         if (line->empty()) continue;   // tolerate blank-line keepalives
@@ -126,7 +129,9 @@ Response Client::rpc_unlocked(const std::string& method,
 
 const std::vector<ToolDescriptor>& Client::tools() {
     std::lock_guard<std::mutex> lk(rpc_mu_);
-    if (tools_loaded_) return tools_cache_;
+    if (tools_loaded_ && proc_ && proc_->alive()) return tools_cache_;
+    tools_loaded_ = false;
+    tools_cache_.clear();
     auto resp = rpc_unlocked("tools/list", jobj(), cfg_.call_timeout, nullptr);
     tools_cache_ = parse_tools_list(resp);
     tools_loaded_ = true;

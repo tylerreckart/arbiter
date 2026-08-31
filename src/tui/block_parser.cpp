@@ -1,5 +1,6 @@
 #include "tui/block_parser.h"
 
+#include <cstddef>
 #include <cstring>
 #include <string_view>
 
@@ -34,6 +35,38 @@ size_t ltrim_idx(const std::string& s) {
     size_t i = 0;
     while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
     return i;
+}
+
+bool is_utf8_continuation(unsigned char c) {
+    return (c & 0xC0) == 0x80;
+}
+
+int utf8_code_unit_count(unsigned char lead) {
+    if (lead < 0x80) return 1;
+    if ((lead & 0xE0) == 0xC0) return 2;
+    if ((lead & 0xF0) == 0xE0) return 3;
+    if ((lead & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+void peel_incomplete_utf8(std::string& text, std::string& hold) {
+    if (text.empty()) return;
+
+    size_t i = text.size();
+    while (i > 0) {
+        --i;
+        if (!is_utf8_continuation(static_cast<unsigned char>(text[i]))) break;
+    }
+
+    const unsigned char lead = static_cast<unsigned char>(text[i]);
+    const int need = utf8_code_unit_count(lead);
+    if (need <= 1) return;
+
+    const size_t have = text.size() - i;
+    if (have >= static_cast<size_t>(need)) return;
+
+    hold.insert(hold.end(), text.begin() + static_cast<std::ptrdiff_t>(i), text.end());
+    text.resize(i);
 }
 
 // Agent writ prefixes swallowed in quiet mode (and styled when verbose).
@@ -117,13 +150,19 @@ bool BlockParser::can_emit_partial(const std::string& buf) const {
     const size_t lead = ltrim_idx(buf);
     if (lead == buf.size()) return false;  // all whitespace — may precede a /cmd
     const char c = buf[lead];
-    return c != '/' && c != '[';
+    // Hold back markdown/cmd openers until a newline resolves them.
+    return c != '/' && c != '[' && c != '`' && c != '$' && c != '\\';
 }
 
 void BlockParser::feed(std::string_view chunk) {
     if (show_writs_) {
         if (!chunk.empty()) sink_(chunk);
         return;
+    }
+
+    if (!utf8_hold_.empty()) {
+        buf_.insert(0, utf8_hold_);
+        utf8_hold_.clear();
     }
 
     buf_.append(chunk.data(), chunk.size());
@@ -144,12 +183,20 @@ void BlockParser::feed(std::string_view chunk) {
 
     // Unambiguous incomplete prose — emit now so the live tail can paint.
     if (!buf_.empty() && can_emit_partial(buf_)) {
-        sink_(buf_);
+        std::string emit = utf8_hold_;
+        emit += buf_;
+        utf8_hold_.clear();
+        peel_incomplete_utf8(emit, utf8_hold_);
+        if (!emit.empty()) sink_(emit);
         buf_.clear();
     }
 }
 
 void BlockParser::flush() {
+    if (!utf8_hold_.empty()) {
+        buf_.insert(0, utf8_hold_);
+        utf8_hold_.clear();
+    }
     if (buf_.empty()) return;
     if (show_writs_ || !should_swallow(buf_)) {
         sink_(buf_);
@@ -159,6 +206,7 @@ void BlockParser::flush() {
 
 void BlockParser::reset() {
     buf_.clear();
+    utf8_hold_.clear();
     in_write_block_ = false;
     in_todo_block_ = false;
     pending_todo_body_ = false;
