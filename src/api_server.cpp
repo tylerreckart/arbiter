@@ -10068,6 +10068,19 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             emit("advisor", p);
         });
 
+    orch->set_presence_event_callback(
+        [&emit](const Orchestrator::PresenceEvent& ev) {
+            auto p = jobj();
+            auto& m = p->as_object_mut();
+            m["watcher"] = jstr(ev.watcher_id);
+            m["agent"]   = jstr(ev.working_agent_id);
+            m["stream_id"] = jnum(static_cast<double>(ev.stream_id));
+            m["kind"]    = jstr(ev.kind);
+            if (!ev.detail.empty()) m["detail"] = jstr(ev.detail);
+            if (ev.malformed)       m["malformed"] = jbool(true);
+            emit("presence", p);
+        });
+
     orch->set_intent_callback(
         [&emit](const Orchestrator::IntentEvent& ev) {
             auto p = jobj();

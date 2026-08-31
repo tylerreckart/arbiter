@@ -46,6 +46,8 @@ flowchart LR
 
             ADVISOR{"Optional advisor<br/>consult or gate"}
 
+            PRESENCE{"Always-on presence<br/>watch · interject"}
+
             EVENTS(("Streaming<br/>events"))
 
             EVENT_BUS["Event bus<br/>same event model everywhere"]
@@ -63,6 +65,10 @@ flowchart LR
             AGENT -. optional supervision .-> ADVISOR
             ADVISOR -. continue · redirect · halt .-> ORCHESTRATION
             ADVISOR --> EVENTS
+
+            PRESENCE -. observe peer snapshot .-> AGENT
+            PRESENCE -. context note .-> ORCHESTRATION
+            PRESENCE --> EVENTS
             INTENT --> EVENTS
 
             EVENTS --> EVENT_BUS
@@ -117,6 +123,7 @@ For implementation details and deeper explanations, see:
 - [Intent](intent.md)
 - [Reconcile](reconcile.md)
 - [Advisor](advisor.md)
+- [Presence](presence.md)
 - [Structured memory](structured-memory.md)
 - [MCP](mcp.md)
 - [A2A](a2a.md)

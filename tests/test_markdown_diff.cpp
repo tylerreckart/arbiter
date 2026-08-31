@@ -478,6 +478,15 @@ TEST_CASE("styled_advisor_event lines use distinct glyphs") {
     CHECK(halt.spans[0].id == StyleId::Error);
 }
 
+TEST_CASE("styled_presence_line uses bullseye glyph") {
+    auto line = styled_presence_line("warden", "Do not commit the dumped .env.");
+    CHECK(line.text.find("\u25ce ") == 0);  // ◎
+    CHECK(line.text.find("presence") != std::string::npos);
+    CHECK(line.text.find("warden") != std::string::npos);
+    CHECK(line.text.find("dumped .env") != std::string::npos);
+    CHECK(line.spans[0].id == StyleId::Info);
+}
+
 TEST_CASE("styled_delegation_line highlights routing status") {
     auto line = styled_delegation_line("/agent scout GOAL: dig");
     CHECK(line.text.find("\u2192 ") == 0);

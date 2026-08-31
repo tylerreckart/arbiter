@@ -56,7 +56,7 @@ arbiter --init                          # seed ~/.arbiter/ with starter agents
 arbiter                                 # launch the terminal client
 ```
 
-`--init` writes nine starter agents into `~/.arbiter/agents/*.json` (vera, scout, quill, forge, compass, nexus, loom, beacon, echo) and is safe to re-run — existing files are preserved unless you pass `--force`. See [`cli/init.md`](../cli/init.md) for the full layout.
+`--init` writes ten starter agents into `~/.arbiter/agents/*.json` (vera, scout, quill, forge, compass, nexus, loom, beacon, echo, warden) and is safe to re-run — existing files are preserved unless you pass `--force`. See [`cli/init.md`](../cli/init.md) for the full layout. `warden` is an [always-on presence](../concepts/presence.md) agent — it watches peers and may inject context mid-turn.
 
 `arbiter` opens the interactive TUI. Type a message and the master agent (`index`) decides whether to answer directly or delegate. Switch agents with `/use <name>`; send a one-off to a specific agent with `/send <name> <message>`. Full TUI reference: [`tui/`](../tui/index.md).
 

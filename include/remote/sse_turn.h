@@ -40,6 +40,11 @@ struct RemoteTurnHooks {
     std::function<void(const std::string& kind,
                        const std::string& agent,
                        const std::string& detail)> on_advisor;
+    // Presence CONTEXT (SSE `presence`); SILENT is suppressed by the
+    // session hook the same way gate_continue is.
+    std::function<void(const std::string& kind,
+                       const std::string& watcher,
+                       const std::string& detail)> on_presence;
 };
 
 struct RemoteTurnResult {
@@ -76,6 +81,7 @@ private:
     void handle_escalation(const JsonValue& payload);
     void handle_intent(const JsonValue& payload);
     void handle_advisor(const JsonValue& payload);
+    void handle_presence(const JsonValue& payload);
 
     StreamRenderer& renderer_;
     OutputQueue&    queue_;

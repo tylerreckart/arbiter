@@ -5,6 +5,7 @@
 // Spoken mode is the TTS / Intercom register (see docs/concepts/voice.md).
 
 #include "intent.h"
+#include "presence.h"
 #include <string>
 #include <string_view>
 #include <vector>
@@ -128,6 +129,12 @@ struct Constitution {
     // type-boosts).  File-backed agents default off; master_constitution()
     // enables hybrid classify/route on index.  See docs/concepts/intent.md.
     IntentConfig intent;
+
+    // Always-on presence.  When mode is "always_on", the runtime reviews
+    // matching peers' tool-batch checkpoints and may inject a CONTEXT note
+    // into the working agent's next turn.  Defaults off.  See
+    // docs/concepts/presence.md.
+    PresenceConfig presence;
 
     // --- System prompt pieces ---
     std::string goal;               // what this agent is trying to accomplish

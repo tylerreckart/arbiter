@@ -54,6 +54,10 @@ void RemoteSseTurnConsumer::on_event(const std::string& event_name,
         if (payload) handle_advisor(*payload);
         return;
     }
+    if (event_name == "presence") {
+        if (payload) handle_presence(*payload);
+        return;
+    }
     if (event_name == "error") {
         if (payload) handle_error(*payload);
         return;
@@ -166,6 +170,19 @@ void RemoteSseTurnConsumer::handle_intent(const JsonValue& payload) {
     auto line = styled_intent_event_line(kind, source, target, applied);
     if (!line) return;
     queue_.push_prose({std::move(*line)});
+    queue_.end_message();
+}
+
+void RemoteSseTurnConsumer::handle_presence(const JsonValue& payload) {
+    const std::string kind = payload.get_string("kind");
+    const std::string watcher = payload.get_string("watcher");
+    const std::string detail = payload.get_string("detail");
+    if (hooks_.on_presence) {
+        hooks_.on_presence(kind, watcher, detail);
+        return;
+    }
+    if (kind != "context") return;
+    queue_.push_prose({styled_presence_line(watcher, detail)});
     queue_.end_message();
 }
 

@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Always-on presence.** Constitutions accept a `presence` block (`mode: "always_on"`,
+  `watch` globs, `interject`). Resident agents review a peer's tool-batch snapshot
+  and may inject a `[PRESENCE: Name]` note into that agent's next model turn.
+  Fail-open (`SILENT` on error); cannot halt or redirect — that stays the advisor
+  gate. SSE `presence` events, TUI `◎ presence · watcher`, roster `+presence`.
+  Bundled starter: `warden`. See [Presence](docs/concepts/presence.md).
+
 ### Changed
 - **Live token streaming.** Master-turn provider deltas reach the TUI and SSE
   `text` events as they arrive instead of waiting for the full LLM iteration.

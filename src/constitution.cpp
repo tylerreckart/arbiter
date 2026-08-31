@@ -928,6 +928,30 @@ std::string Constitution::build_system_prompt() const {
             ss << "- " << r << "\n";
     }
 
+    // Layer 3b: always-on presence.  The dedicated review prompt is what
+    // the runtime actually calls; this block tells a directly-addressed
+    // presence agent what its residency means so it does not start acting
+    // like a specialist.
+    if (presence.mode == "always_on") {
+        ss << "\nPRESENCE:\n";
+        ss << "You are an always-on resident.  The runtime invokes you on "
+              "peer tool-batch checkpoints with a snapshot of their live "
+              "work.  You reply SILENT or CONTEXT — you cannot halt, "
+              "redirect, or take over the turn.  Default to silence.  "
+              "When someone addresses you directly, stay in that register: "
+              "short, factual, no narration.\n";
+        if (!presence.watch.empty()) {
+            ss << "You watch: ";
+            for (size_t i = 0; i < presence.watch.size(); ++i) {
+                if (i) ss << ", ";
+                ss << presence.watch[i];
+            }
+            ss << ".\n";
+        } else {
+            ss << "You watch every peer.\n";
+        }
+    }
+
     // Layer 4: advisor affordance.  When advisor_model is set, the executor
     // has access to /advise <question> — a one-shot consult against a more
     // capable model (and potentially a different provider, e.g. ollama
@@ -1184,6 +1208,36 @@ std::string Constitution::to_json() const {
         m["memory"] = mc;
     }
 
+    // Presence block — only emit when always-on residency is configured.
+    PresenceConfig presence_defaults;
+    if (presence.mode != presence_defaults.mode ||
+        !presence.watch.empty() ||
+        presence.interject != presence_defaults.interject ||
+        !presence.model.empty() ||
+        !presence.prompt.empty() ||
+        presence.max_notes_per_turn != presence_defaults.max_notes_per_turn) {
+        auto pc = jobj();
+        auto& pco = pc->as_object_mut();
+        if (presence.mode != presence_defaults.mode)
+            pco["mode"] = jstr(presence.mode);
+        if (!presence.watch.empty()) {
+            auto w = jarr();
+            for (auto& pat : presence.watch)
+                w->as_array_mut().push_back(jstr(pat));
+            pco["watch"] = w;
+        }
+        if (presence.interject != presence_defaults.interject)
+            pco["interject"] = jstr(presence.interject);
+        if (!presence.model.empty())
+            pco["model"] = jstr(presence.model);
+        if (!presence.prompt.empty())
+            pco["prompt"] = jstr(presence.prompt);
+        if (presence.max_notes_per_turn != presence_defaults.max_notes_per_turn)
+            pco["max_notes_per_turn"] =
+                jnum(static_cast<double>(presence.max_notes_per_turn));
+        m["presence"] = pc;
+    }
+
     // Intent block — only emit when it deviates from file-agent defaults
     // (mode off, min_confidence 0.8, apply_routing true, empty model).
     IntentConfig intent_defaults;
@@ -1309,6 +1363,50 @@ Constitution Constitution::from_json(const std::string& json_str) {
         }
         if (c.intent.min_confidence < 0.0) c.intent.min_confidence = 0.0;
         if (c.intent.min_confidence > 1.0) c.intent.min_confidence = 1.0;
+    }
+
+    // Always-on presence.  Absent → off.  String shorthand
+    // `"presence": "always_on"` maps to {mode: always_on}.
+    auto presence_val = root->get("presence");
+    if (presence_val && presence_val->is_object()) {
+        c.presence.mode = presence_val->get_string("mode", c.presence.mode);
+        c.presence.interject =
+            presence_val->get_string("interject", c.presence.interject);
+        c.presence.model = presence_val->get_string("model", c.presence.model);
+        c.presence.prompt = presence_val->get_string("prompt", c.presence.prompt);
+        c.presence.max_notes_per_turn =
+            presence_val->get_int("max_notes_per_turn",
+                                  c.presence.max_notes_per_turn);
+        auto watch_val = presence_val->get("watch");
+        if (watch_val && watch_val->is_array()) {
+            for (auto& v : watch_val->as_array()) {
+                if (v && v->is_string())
+                    c.presence.watch.push_back(v->as_string());
+            }
+        }
+        if (c.presence.mode != "off" && c.presence.mode != "always_on") {
+            fprintf(stderr,
+                "WARN: agent '%s' has unknown presence.mode '%s' — treating as off.\n",
+                c.name.c_str(), c.presence.mode.c_str());
+            c.presence.mode = "off";
+        }
+        if (c.presence.interject != "off" && c.presence.interject != "context") {
+            fprintf(stderr,
+                "WARN: agent '%s' has unknown presence.interject '%s' — treating as context.\n",
+                c.name.c_str(), c.presence.interject.c_str());
+            c.presence.interject = "context";
+        }
+        if (c.presence.max_notes_per_turn < 1) c.presence.max_notes_per_turn = 1;
+        if (c.presence.max_notes_per_turn > 4) c.presence.max_notes_per_turn = 4;
+    } else if (presence_val && presence_val->is_string()) {
+        std::string tok = presence_val->as_string();
+        if (tok == "always_on") {
+            c.presence.mode = "always_on";
+        } else if (tok != "off") {
+            fprintf(stderr,
+                "WARN: agent '%s' has unknown presence shorthand '%s' — treating as off.\n",
+                c.name.c_str(), tok.c_str());
+        }
     }
 
     auto rules_val = root->get("rules");

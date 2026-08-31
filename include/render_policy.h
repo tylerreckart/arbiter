@@ -83,6 +83,11 @@ void apply_base_style(StyledLine& line, StyleId base);
 [[nodiscard]] StyledLine styled_advisor_halt_line(std::string_view agent_id,
                                                   std::string_view reason);
 
+// Always-on presence CONTEXT (`◎ presence · watcher`): note injected into
+// a peer's in-flight turn. SILENT reviews stay quiet (no scrollback line).
+[[nodiscard]] StyledLine styled_presence_line(std::string_view watcher_id,
+                                              std::string_view detail);
+
 // Sub-agent interim header (`→ agent_id`) drawn before truncated progress.
 [[nodiscard]] StyledLine styled_interim_header(const std::string& agent_id);
 
