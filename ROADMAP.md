@@ -59,7 +59,7 @@ calendar commitments.
 ### Phase 5 — Multi-agent mission control
 - [x] **Intent engine foundations-** Hybrid classify/route before dispatch (heuristic, then advisor-model LLM); seed slots for plans/todos; fail-open into index; `POST /v1/intent` + SSE `intent` event
 - [x] **Intent reconcile (Phase A)-** `POST /v1/reconcile`: compile `target_state` + invariants into a state contract, observe a bound workspace, require verification, optional snapshot rollback; `@arbiter/sdk` `IntentClient`; durable `reconcile_runs` + SSE. JIT $\Delta S$ waves remain [#208](https://github.com/tylerreckart/arbiter/issues/208) / Phase B
-- [x] **Always-on presence-** Constitution `presence.mode: always_on`; residents review peer tool-batch snapshots and may inject `[PRESENCE: …]` context. Fail-open; cannot halt. SSE `presence` + TUI `◎ presence`. Opposite lifetime of JIT (#208).
+- [x] **Always-on presence-** Constitution `presence.mode: always_on`; a pair colleague looks over a peer's shoulder after each tool batch and may inject `[PRESENCE: …]` context. Fail-open; cannot halt. SSE `presence` + TUI `◎ presence`. Opposite lifetime of JIT (#208).
 - [ ] **Fleet dashboard pane-** Live tree of depth, agent, tools, tokens; click-to-focus/Ctrl-W bindings
 - [ ] **Plan to execution observability-** Planner plans as first-class objects with progress against todos
 - [ ] **Delegation policies-** Consitutions declare max depth, allowed callees, budget caps (tokens/$)

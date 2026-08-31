@@ -124,7 +124,7 @@ Same glyph dialect as consult/redirect (`◇` / `↻`); halt uses text `×` (not
 
 - [Philosophy](../philosophy.md) — the structural-separation argument.
 - [SSE events](sse-events.md) — `advisor` and `escalation` event payloads.
-- [Presence](presence.md) — a different agent adding facts a peer was not given. Not a second gate: presence cannot halt, and must not be used as a safety cop.
+- [Presence](presence.md) — a pair colleague at a peer's shoulder. Not a second gate: presence cannot halt, and must not grade the turn.
 - [Agent data model](data-model.md) — where the advisor block lives.
 - [`POST /v1/agents`](../api/agents/create.md) — create an agent with an advisor configured.
 - [`POST /v1/advise/gate`](../api/advise-gate.md) — standalone gate verdict for external executor loops.

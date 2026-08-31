@@ -1,8 +1,10 @@
 # Presence (always-on agents)
 
-Presence is a constitution-declared **residency class**. An always-on agent stays loaded and, while another agent is working, reviews a snapshot of that peer's live turn. It may inject a short context note into whatever that agent is about to do next — or stay silent.
+Presence is a constitution-declared **residency class**. An always-on agent stays loaded and sits beside whoever is working — a pair colleague looking over the shoulder. After a tool batch, it may inject a short note that helps finish the task at hand, or stay silent.
 
-This is the opposite lifetime of [JIT / reconcile](reconcile.md): JIT agents spawn for a $\Delta S$ slice and tear down when the clause is satisfied. Presence agents **stay resident**, observe, and interject.
+The stance is pairing, not review. Jules (or any presence agent) is not specialized in programming unless the active agent is programming: editor at the elbow for prose, fellow analyst for research, teammate who remembers the house setup for ops.
+
+This is the opposite lifetime of [JIT / reconcile](reconcile.md): JIT agents spawn for a $\Delta S$ slice and tear down when the clause is satisfied. Presence agents **stay in the room**.
 
 ## Why a runtime-owned resident
 
@@ -48,7 +50,7 @@ Absent / `"off"` (the default) keeps today's request-scoped specialist.
 | `prompt` | string | built-in | Override the review system prompt. Capped at 8 KiB. |
 | `max_notes_per_turn` | int | `1` | Cap on `CONTEXT` notes this watcher may inject per working-agent `stream_id`. Clamped to 1–4. |
 
-The bundled [`anchor`](../../agents/anchor.json) starter is the canonical example: cheap model, `watch: ["*"]`, silent unless a peer is about to act without a fact Anchor already holds (a prior decision, a house convention, a sibling artifact). Anchor does **not** grade the work.
+The bundled [`jules`](../../agents/jules.json) starter is the canonical example: cheap model, `watch: ["*"]`, silent unless a note would save the active agent a step. Jules does **not** grade the work or take the keyboard.
 
 ## Signal grammar
 
@@ -81,8 +83,8 @@ Where presence fires inside the dispatch loop:
 5. Each `CONTEXT` note is prepended to the tool-result envelope as:
 
    ```
-   [PRESENCE: Anchor]
-   Memory #47 already pinned the sandbox path — do not re-derive it.
+   [PRESENCE: Jules]
+   Scout already fetched the v2 contract — reuse that instead of searching again.
    [END PRESENCE]
    ```
 
@@ -101,19 +103,20 @@ Presence does **not** fire on a terminating turn with no tools — that is the a
 
 ## Presence is not a second advisor
 
-The advisor is bound to **the same agent** and answers *may this turn return?* Presence is a **different catalog identity** and answers *does this peer lack a fact I hold?*
+The advisor is bound to **the same agent** and answers *may this turn return?* Presence is a **colleague in the room** and answers *can I save them a step on this task?*
 
 | | Advisor | Presence |
 |---|---|---|
+| Stance | Supervisor / gate | Pair colleague at the shoulder |
 | Subject | The executor it is configured on | A *peer* (never self) |
 | When | Terminating turn (`cmds.empty()`) | After that peer's tool batch |
 | Power | `CONTINUE` / `REDIRECT` / `HALT` | `SILENT` / `CONTEXT` only |
 | Failure | Fail-closed by default | Fail-open (`SILENT`) |
-| Job | Judgment — is the work acceptable? | Context — a fact, decision, or sibling result the peer was not given |
+| Job | Judgment — is the work acceptable? | Context that helps finish the task |
 
-If you would halt, redirect, or score the turn, that is the [advisor](advisor.md). If you would tell the working agent something they were never handed in this snapshot, that is presence.
+If you would halt, redirect, or score the turn, that is the [advisor](advisor.md). If you would lean over and say “we already have that” or “the ask also wanted X,” that is presence.
 
-A safety-cop resident (flag footguns, retries, dropped constraints) *looks* like presence but is a weaker gate: it fires at the wrong time for a hard stop and duplicates `LOOP DETECTED` plus `advisor.mode: "gate"`. Do not use the class that way. Pair them: presence adds missing context mid-loop; the gate still owns the terminating verdict.
+A safety-cop resident (flag footguns, retries, dropped constraints as a verdict) *looks* like presence but is a weaker gate. Do not use the class that way. Pair them: presence helps mid-loop; the gate still owns the terminating verdict.
 
 ## What this is not
 

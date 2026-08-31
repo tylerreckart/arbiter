@@ -294,7 +294,7 @@ TEST_CASE("presence: absent yields off") {
 
 TEST_CASE("presence: string shorthand always_on") {
     std::string js = R"({
-        "name": "anchor",
+        "name": "jules",
         "model": "claude-haiku-4-5",
         "presence": "always_on"
     })";
@@ -306,7 +306,7 @@ TEST_CASE("presence: string shorthand always_on") {
 
 TEST_CASE("presence: object form round-trips") {
     std::string js = R"({
-        "name": "anchor",
+        "name": "jules",
         "model": "claude-haiku-4-5",
         "presence": {
             "mode": "always_on",
@@ -332,7 +332,7 @@ TEST_CASE("presence: object form round-trips") {
 
 TEST_CASE("presence: unknown mode falls back to off") {
     std::string js = R"({
-        "name": "anchor",
+        "name": "jules",
         "model": "claude-haiku-4-5",
         "presence": { "mode": "banana" }
     })";
@@ -346,7 +346,7 @@ TEST_CASE("presence: always_on prompt mentions residency") {
     c.presence.watch = {"*"};
     auto prompt = c.build_system_prompt();
     CHECK(prompt.find("PRESENCE:") != std::string::npos);
-    CHECK(prompt.find("always-on resident") != std::string::npos);
+    CHECK(prompt.find("pair colleague") != std::string::npos);
     CHECK(prompt.find("You watch: *.") != std::string::npos);
 }
 

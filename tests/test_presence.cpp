@@ -95,7 +95,7 @@ TEST_CASE("watch: star matches all") {
     PresenceConfig cfg;
     cfg.watch = {"*"};
     CHECK(presence_watch_matches(cfg, "index"));
-    CHECK(presence_watch_matches(cfg, "anchor"));
+    CHECK(presence_watch_matches(cfg, "jules"));
 }
 
 TEST_CASE("active: always_on + context is active; off is not") {
@@ -109,9 +109,9 @@ TEST_CASE("active: always_on + context is active; off is not") {
 
 TEST_CASE("format: injection block uses watcher name") {
     auto block = format_presence_injection(
-        "Anchor", "Memory #47 already pinned the sandbox path.");
-    CHECK(block.find("[PRESENCE: Anchor]\n") == 0);
-    CHECK(block.find("Memory #47 already pinned the sandbox path.") != std::string::npos);
+        "Jules", "Scout already fetched the v2 contract — reuse that.");
+    CHECK(block.find("[PRESENCE: Jules]\n") == 0);
+    CHECK(block.find("Scout already fetched the v2 contract") != std::string::npos);
     CHECK(block.find("[END PRESENCE]\n\n") != std::string::npos);
 }
 

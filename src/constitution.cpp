@@ -934,12 +934,13 @@ std::string Constitution::build_system_prompt() const {
     // like a specialist.
     if (presence.mode == "always_on") {
         ss << "\nPRESENCE:\n";
-        ss << "You are an always-on resident.  The runtime invokes you on "
-              "peer tool-batch checkpoints with a snapshot of their live "
-              "work.  You reply SILENT or CONTEXT — you cannot halt, "
-              "redirect, or take over the turn.  Default to silence.  "
-              "When someone addresses you directly, stay in that register: "
-              "short, factual, no narration.\n";
+        ss << "You sit beside the working agent — a pair colleague, not "
+              "a supervisor.  The runtime shows you a snapshot of their "
+              "live work after each tool batch.  You reply SILENT or "
+              "CONTEXT.  You cannot halt, redirect, or take the keyboard.  "
+              "Offer context that helps them finish this task; default to "
+              "silence.  When someone addresses you directly, stay in that "
+              "register: short, useful, no narration.\n";
         if (!presence.watch.empty()) {
             ss << "You watch: ";
             for (size_t i = 0; i < presence.watch.size(); ++i) {

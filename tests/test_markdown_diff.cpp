@@ -479,11 +479,11 @@ TEST_CASE("styled_advisor_event lines use distinct glyphs") {
 }
 
 TEST_CASE("styled_presence_line uses bullseye glyph") {
-    auto line = styled_presence_line("anchor", "Memory #47 already pinned the sandbox path.");
+    auto line = styled_presence_line("jules", "Scout already fetched the v2 contract.");
     CHECK(line.text.find("\u25ce ") == 0);  // ◎
     CHECK(line.text.find("presence") != std::string::npos);
-    CHECK(line.text.find("anchor") != std::string::npos);
-    CHECK(line.text.find("sandbox path") != std::string::npos);
+    CHECK(line.text.find("jules") != std::string::npos);
+    CHECK(line.text.find("v2 contract") != std::string::npos);
     CHECK(line.spans[0].id == StyleId::Info);
 }
 

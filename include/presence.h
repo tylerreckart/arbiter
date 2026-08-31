@@ -6,8 +6,9 @@
 // tool batch), reviews a snapshot of that peer's live work.  It may inject
 // a CONTEXT note into the peer's next model turn, or stay SILENT.
 //
-// Job: add a fact the peer was not given.  Not a second advisor — presence
-// cannot CONTINUE/REDIRECT/HALT and must not be used as a safety cop.
+// Job: pair over the shoulder — useful context for finishing the task
+// at hand.  Not a second advisor: presence cannot CONTINUE/REDIRECT/HALT
+// and must not grade or halt the turn.
 //
 // Distinct from:
 //   • Advisor gate — terminating-turn CONTINUE/REDIRECT/HALT; fail-closed.
