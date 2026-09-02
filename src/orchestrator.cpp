@@ -972,6 +972,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     // envelope) so the next model call must use send/stream_continue.
     bool user_already_committed = false;
 
+    // Last parsed tool commands — used to detect iteration-budget exhaustion.
+    std::vector<AgentCommand> pending_cmds;
+
     for (int i = 0; i < kMaxTurns; ++i) {
         if (turn_is_cancelled()) {
             ApiResponse r;
@@ -1032,6 +1035,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         total_output_tok += resp.output_tokens;
 
         auto cmds = parse_agent_commands(resp.content);
+        pending_cmds = cmds;
         recover_truncated_writes(agent_ptr, resp, cmds, nullptr);
 
         // Terminating branch.  If gate-mode is off, this is identical to
@@ -1241,7 +1245,15 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     resp.content       = std::move(total_content);
     resp.input_tokens  = total_input_tok;
     resp.output_tokens = total_output_tok;
-    if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
+    if (!pending_cmds.empty()) {
+        resp.ok         = false;
+        resp.error_type = "iteration_limit";
+        resp.error      = "tool loop iteration limit reached (max " +
+                          std::to_string(kMaxTurns) + ")";
+        if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+    } else if (stream_end_cb_) {
+        stream_end_cb_(agent_id, sid, resp.ok);
+    }
     return resp;
 }
 
@@ -1794,7 +1806,15 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     resp.input_tokens   = total_input_tok;
     resp.output_tokens  = total_output_tok;
     resp.had_tool_calls = had_any_tool_calls;
-    if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, resp.ok);
+    if (!cmds.empty()) {
+        resp.ok         = false;
+        resp.error_type = "iteration_limit";
+        resp.error      = "tool loop iteration limit reached (max " +
+                          std::to_string(kMaxIters) + ")";
+        if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
+    } else if (stream_end_cb_) {
+        stream_end_cb_(dispatch_id, sid, resp.ok);
+    }
     return resp;
 }
 

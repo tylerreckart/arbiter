@@ -330,6 +330,22 @@ TEST_CASE("scheduled task completion: paused mid-run is not overwritten") {
     CHECK(row->next_fire_at == due_at);
 }
 
+TEST_CASE("scheduled task: clearing running lease via active would allow re-claim") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
+        "once", now - 1, "", now - 1);
+    REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
+
+    // Store layer allows this; API PATCH/resume must reject it (409).
+    CHECK(s.update_scheduled_task(tid, task.id,
+        std::optional<std::string>("active"),
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+    CHECK(s.try_claim_scheduled_task(tid, task.id, now));
+}
+
 TEST_CASE("scheduled task recovery: releases claimed one-shot back to active") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");

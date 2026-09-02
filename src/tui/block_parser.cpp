@@ -199,7 +199,9 @@ void BlockParser::flush() {
     }
     if (buf_.empty()) return;
     if (show_writs_ || !should_swallow(buf_)) {
-        sink_(buf_);
+        std::string emit = buf_;
+        peel_incomplete_utf8(emit, utf8_hold_);
+        if (!emit.empty()) sink_(emit);
     }
     buf_.clear();
 }

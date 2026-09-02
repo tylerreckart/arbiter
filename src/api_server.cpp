@@ -4544,6 +4544,23 @@ void handle_schedule_patch(int fd, int64_t id, const HttpRequest& req,
         }
         status_opt = s;
     }
+    auto current = tenants.get_scheduled_task(tenant.id, id);
+    if (!current) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("schedule not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    // Status='running' is the in-flight lease.  Only allow pausing a live
+    // run; other transitions would clear the lease and permit double-fire.
+    if (current->status == "running" && status_opt &&
+        *status_opt != "paused") {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("schedule is running; pause it first or wait for completion");
+        write_json_response(fd, 409, err);
+        return;
+    }
     bool ok = tenants.update_scheduled_task(tenant.id, id,
         status_opt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
     if (!ok) {
@@ -5689,6 +5706,10 @@ SchedulerInvoker make_scheduler_invoker_callback(
             if (kind == "resume") {
                 auto row = tenants.get_scheduled_task(tenant_id, id);
                 if (!row) return "ERR: schedule #" + std::to_string(id) + " not found";
+                if (row->status == "running") {
+                    return "ERR: schedule #" + std::to_string(id) +
+                           " is running; wait for completion before resuming";
+                }
                 if (row->next_fire_at <= now) {
                     if (row->schedule_kind == "recurring") {
                         int64_t n = next_fire_for_recur(row->recur_json, now);

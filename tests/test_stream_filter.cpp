@@ -263,3 +263,15 @@ TEST_CASE("partial UTF-8 code points are held across 4-byte chunk boundaries") {
     f.flush();
     CHECK(out == "hi \xF0\x9F\x98\x80\n");
 }
+
+TEST_CASE("flush holds incomplete UTF-8 without emitting a split code point") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    // é = 0xC3 0xA9 — feed only the lead byte, then flush at end-of-stream.
+    f.feed("caf\xC3");
+    CHECK(out == "caf");
+    f.flush();
+    CHECK(out == "caf");
+}
