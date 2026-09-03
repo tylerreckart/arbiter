@@ -364,9 +364,11 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 *orch, *tenants_, task.tenant_id, task.conversation_id,
                 task.agent_id, task.message, req_id, log_prepare,
                 &prepared_user_message_id)) {
+            // Transient hydration failures should retry — mirror init-failure
+            // handling (keep recurring schedules active with next_fire_at).
             const std::optional<std::string> task_status =
                 task.schedule_kind == "recurring"
-                    ? std::optional<std::string>("paused")
+                    ? std::nullopt
                     : std::optional<std::string>("failed");
             fail_run("conversation history could not be loaded", task_status);
             return true;

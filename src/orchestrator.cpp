@@ -1288,7 +1288,9 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
         }
         if (trunc_path.empty()) return;   // no unclosed /write — done
 
-        if (cb) cb("\n\033[2m[resuming truncated /write " + trunc_path + "]\033[0m\n");
+        // Plain text — cb feeds API/SSE clients that must not receive TUI
+        // ANSI escapes (TUI paths pass cb=nullptr and use local styling).
+        if (cb) cb("\n[resuming truncated /write " + trunc_path + "]\n");
 
         // The previous assistant turn (with the partial /write body) is
         // already in agent history. We  just nudge it to emit the
@@ -1550,6 +1552,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     auto end_iteration = [&](const std::vector<AgentCommand>& cmds) {
         std::string status = summarise_delegations(cmds);
         if (!status.empty() && cb) cb(status);
+        if (stream_iteration_boundary_cb_) stream_iteration_boundary_cb_();
     };
 
     // First turn: stream live to cb.

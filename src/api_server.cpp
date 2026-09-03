@@ -8267,6 +8267,10 @@ void handle_a2a_message_stream(int fd,
         [&writer](const std::string& chunk) {
             writer.emit_text_chunk(chunk, /*last_chunk=*/false);
         });
+    orch->set_stream_iteration_boundary_callback([&filter]() {
+        filter.flush();
+        filter.reset();
+    });
     ApiResponse resp;
     try {
         resp = orch->send_streaming(agent_id, prompt,
@@ -10024,6 +10028,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             m["delta"]     = jstr(chunk);
             emit("text", p);
         });
+    orch->set_stream_iteration_boundary_callback([&filter]() {
+        filter.flush();
+        filter.reset();
+    });
 
     // Wired here (not further up) so the handler can drain the master's
     // line buffer before stream_end lands on the wire.  Non-master streams

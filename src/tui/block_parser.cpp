@@ -8,6 +8,9 @@ namespace arbiter {
 
 namespace {
 
+// Bound memory when a model streams an ambiguous prefix without newlines.
+static constexpr size_t kMaxHoldBytes = 65536;
+
 bool starts_with_cmd(std::string_view s, const char* prefix, size_t plen) {
     if (s.size() < plen) return false;
     if (std::memcmp(s.data(), prefix, plen) != 0) return false;
@@ -167,6 +170,15 @@ void BlockParser::feed(std::string_view chunk) {
 
     buf_.append(chunk.data(), chunk.size());
 
+    if (buf_.size() + utf8_hold_.size() > kMaxHoldBytes) {
+        std::string emit = utf8_hold_;
+        emit += buf_;
+        utf8_hold_.clear();
+        buf_.clear();
+        peel_incomplete_utf8(emit, utf8_hold_);
+        if (!emit.empty()) sink_(emit);
+    }
+
     std::string passthrough;
     size_t start = 0;
     for (size_t i = 0; i < buf_.size(); ++i) {
@@ -199,7 +211,9 @@ void BlockParser::flush() {
     }
     if (buf_.empty()) return;
     if (show_writs_ || !should_swallow(buf_)) {
-        sink_(buf_);
+        std::string emit = buf_;
+        peel_incomplete_utf8(emit, utf8_hold_);
+        if (!emit.empty()) sink_(emit);
     }
     buf_.clear();
 }

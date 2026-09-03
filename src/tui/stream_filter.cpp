@@ -19,6 +19,10 @@ void StreamFilter::flush() {
     parser_.flush();
 }
 
+void StreamFilter::reset() {
+    parser_.reset();
+}
+
 bool StreamFilter::in_write_block() const {
     return parser_.in_write_block();
 }
