@@ -264,7 +264,7 @@ TEST_CASE("partial UTF-8 code points are held across 4-byte chunk boundaries") {
     CHECK(out == "hi \xF0\x9F\x98\x80\n");
 }
 
-TEST_CASE("flush peels incomplete UTF-8 without trailing newline") {
+TEST_CASE("flush emits trailing incomplete UTF-8 bytes at stream end") {
     Config cfg;
     std::string out;
     StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
@@ -272,7 +272,7 @@ TEST_CASE("flush peels incomplete UTF-8 without trailing newline") {
     f.feed("caf\xC3");
     CHECK(out == "caf");
     f.flush();
-    CHECK(out == std::string("caf") + "\xC3\xA9");
+    CHECK(out == std::string("caf") + "\xC3");
 }
 
 TEST_CASE("ambiguous prefix hold buffer is capped") {
