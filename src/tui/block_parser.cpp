@@ -214,6 +214,12 @@ void BlockParser::flush() {
         std::string emit = buf_;
         peel_incomplete_utf8(emit, utf8_hold_);
         if (!emit.empty()) sink_(emit);
+        // Stream is done — emit any trailing partial code point rather than
+        // holding it forever (feed() keeps incomplete bytes for the next chunk).
+        if (!utf8_hold_.empty()) {
+            sink_(utf8_hold_);
+            utf8_hold_.clear();
+        }
     }
     buf_.clear();
 }

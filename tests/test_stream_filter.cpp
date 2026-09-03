@@ -272,7 +272,7 @@ TEST_CASE("flush peels incomplete UTF-8 without trailing newline") {
     f.feed("caf\xC3");
     CHECK(out == "caf");
     f.flush();
-    CHECK(out == "café");
+    CHECK(out == std::string("caf") + "\xC3\xA9");
 }
 
 TEST_CASE("ambiguous prefix hold buffer is capped") {
