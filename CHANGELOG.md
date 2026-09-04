@@ -7,6 +7,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.3] — 2026-09-04
+
+
 ## [0.13.2] — 2026-09-04
 
 ### Added
