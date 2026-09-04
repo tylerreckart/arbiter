@@ -771,10 +771,9 @@ void MarkdownRenderer::reset() {
     code_buf_.clear();
     math_buf_.clear();
     code_open_fence_.clear();
-    code_open_ = nullptr;
-    code_line_ = nullptr;
-    code_close_ = nullptr;
     seen_content_ = false;
+    // Keep diff/code sinks — those are configuration, not parse state.
+    // Iteration-boundary reset must not drop TUI code-panel wiring.
 }
 
 std::string render_markdown(const std::string& text) {

@@ -94,6 +94,24 @@ TEST_CASE("MarkdownRenderer code_sink receives fence lang tag") {
     CHECK(captured_lang == "rust");
 }
 
+TEST_CASE("MarkdownRenderer reset keeps code sinks") {
+    std::vector<std::string> captured;
+    MarkdownRenderer md;
+    md.set_code_sink(
+        [](std::string /*open*/, std::string /*lang*/) {},
+        [&](const std::string& line) { captured.push_back(line); },
+        [](std::string /*close*/) {});
+
+    md.feed("```txt\nbefore\n```\n");
+    md.flush();
+    md.reset();
+    md.feed("```txt\nafter\n```\n");
+    md.flush();
+    REQUIRE(captured.size() == 2u);
+    CHECK(captured[0] == "before");
+    CHECK(captured[1] == "after");
+}
+
 TEST_CASE("MarkdownRenderer streams code body through code_sink") {
     std::vector<std::string> captured;
     MarkdownRenderer md;

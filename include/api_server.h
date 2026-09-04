@@ -263,6 +263,12 @@ private:
     bool committed_ = false;
 };
 
+// Iteration-limit turns produced real assistant output; persist them
+// even though ok=false so HTTP/scheduler conversations do not lose work.
+inline bool should_persist_conversation_turn(const ApiResponse& resp) {
+    return resp.ok || resp.error_type == "iteration_limit";
+}
+
 // Persist assistant output + compaction after a blocking turn completes.
 void persist_blocking_conversation_turn(
     Orchestrator& orch,

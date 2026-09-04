@@ -81,8 +81,9 @@ namespace arbiter {
 
 namespace {
 
-// Reset BlockParser state between send_streaming iterations (mirrors
-// send_internal's fresh StreamFilter per turn).
+// Flush + reset parser state between send_streaming iterations (mirrors
+// send_internal's fresh StreamFilter per turn).  Markdown sinks stay
+// wired — reset() must not drop TUI code-panel callbacks.
 struct StreamIterationGuard {
     Orchestrator&     orch;
     StreamRenderer&   renderer;

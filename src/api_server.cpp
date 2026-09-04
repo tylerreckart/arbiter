@@ -5508,6 +5508,7 @@ const char* sanitised_provider_error_code(const std::string& error_type) {
     if (error_type == "invalid_request_error")return "invalid_request";
     if (error_type == "not_found_error")      return "not_found";
     if (error_type == "request_too_large")    return "request_too_large";
+    if (error_type == "iteration_limit")     return "iteration_limit";
     return "provider_error";
 }
 
@@ -5526,6 +5527,8 @@ const char* sanitised_provider_error_message(const char* code) {
         return "the configured model or resource is unavailable";
     if (std::strcmp(code, "request_too_large") == 0)
         return "the request exceeded the provider's size limit";
+    if (std::strcmp(code, "iteration_limit") == 0)
+        return "the tool-call iteration limit was reached";
     return "the upstream provider returned an error";
 }
 
@@ -10235,7 +10238,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         persist_blocking_conversation_turn(
             *orch, tenants, tenant.id, conversation_id, agent_id,
             resp, request_id, !tenant_revoked, log_error);
-        if (!tenant_revoked && resp.ok) prepared_turn.commit();
+        if (!tenant_revoked && should_persist_conversation_turn(resp))
+            prepared_turn.commit();
     } catch (const std::exception& e) {
         log_operator_error("orchestration failed", e);
         abort_sse_turn(kTenantInternalError);
@@ -10493,7 +10497,8 @@ void persist_blocking_conversation_turn(
     const std::string& request_id,
     bool tenant_active,
     const std::function<void(const std::string&)>& log_error) {
-    if (conversation_id <= 0 || !tenant_active || !resp.ok) return;
+    if (conversation_id <= 0 || !tenant_active ||
+        !should_persist_conversation_turn(resp)) return;
     try {
         tenants.append_message(tenant_id, conversation_id,
                                 "assistant", resp.content,

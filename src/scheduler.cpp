@@ -412,7 +412,8 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         [](const std::string& msg) {
             std::fprintf(stderr, "[scheduler] %s\n", msg.c_str());
         });
-    if (ok && prepared_turn) prepared_turn->commit();
+    if (should_persist_conversation_turn(resp) && prepared_turn)
+        prepared_turn->commit();
     else prepared_turn.reset();
 
     const int64_t completed_at = now_epoch();
