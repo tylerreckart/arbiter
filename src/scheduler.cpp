@@ -364,9 +364,11 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 *orch, *tenants_, task.tenant_id, task.conversation_id,
                 task.agent_id, task.message, req_id, log_prepare,
                 &prepared_user_message_id)) {
+            // Transient hydration failures should retry — mirror init-failure
+            // handling (keep recurring schedules active with next_fire_at).
             const std::optional<std::string> task_status =
                 task.schedule_kind == "recurring"
-                    ? std::optional<std::string>("paused")
+                    ? std::nullopt
                     : std::optional<std::string>("failed");
             fail_run("conversation history could not be loaded", task_status);
             return true;
@@ -440,6 +442,15 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
             "[scheduler] task %lld finalize CAS miss (tenant=%lld no longer running)\n",
             static_cast<long long>(task.id),
             static_cast<long long>(task.tenant_id));
+        // If the lease is still held, release it so the schedule is not
+        // stuck invisible to the tick query until the next restart.
+        auto row = tenants_->get_scheduled_task(task.tenant_id, task.id);
+        if (!row || row->status != "running") return;
+        tenants_->update_scheduled_task(
+            task.tenant_id, task.id, status, next_fire,
+            std::optional<int64_t>(completed_at),
+            std::optional<int64_t>(run.id),
+            std::optional<int64_t>(1));
     };
 
     if (task.schedule_kind == "recurring") {

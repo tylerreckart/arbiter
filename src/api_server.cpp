@@ -4544,6 +4544,21 @@ void handle_schedule_patch(int fd, int64_t id, const HttpRequest& req,
         }
         status_opt = s;
     }
+    auto existing = tenants.get_scheduled_task(tenant.id, id);
+    if (!existing) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("schedule not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    if (status_opt && existing->status == "running" &&
+        *status_opt != "paused" && *status_opt != "canceled") {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("schedule is running; pause or cancel to change status");
+        write_json_response(fd, 409, err);
+        return;
+    }
     bool ok = tenants.update_scheduled_task(tenant.id, id,
         status_opt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
     if (!ok) {
@@ -5689,6 +5704,10 @@ SchedulerInvoker make_scheduler_invoker_callback(
             if (kind == "resume") {
                 auto row = tenants.get_scheduled_task(tenant_id, id);
                 if (!row) return "ERR: schedule #" + std::to_string(id) + " not found";
+                if (row->status == "running") {
+                    return "ERR: schedule #" + std::to_string(id) +
+                           " is running; wait for completion before resuming";
+                }
                 if (row->next_fire_at <= now) {
                     if (row->schedule_kind == "recurring") {
                         int64_t n = next_fire_for_recur(row->recur_json, now);
@@ -8267,6 +8286,10 @@ void handle_a2a_message_stream(int fd,
         [&writer](const std::string& chunk) {
             writer.emit_text_chunk(chunk, /*last_chunk=*/false);
         });
+    orch->set_stream_iteration_boundary_callback([&filter]() {
+        filter.flush();
+        filter.reset();
+    });
     ApiResponse resp;
     try {
         resp = orch->send_streaming(agent_id, prompt,
@@ -10024,6 +10047,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             m["delta"]     = jstr(chunk);
             emit("text", p);
         });
+    orch->set_stream_iteration_boundary_callback([&filter]() {
+        filter.flush();
+        filter.reset();
+    });
 
     // Wired here (not further up) so the handler can drain the master's
     // line buffer before stream_end lands on the wire.  Non-master streams

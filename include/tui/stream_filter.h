@@ -17,6 +17,7 @@ public:
 
     void feed(const std::string& chunk);
     void flush();
+    void reset();
 
     bool in_write_block() const;
 
