@@ -20,9 +20,13 @@ bool task_run_was_interrupted(const TenantStore::TaskRun& run) {
 
 void finalize_orphaned_scheduled_task_leases(TenantStore& tenants,
                                             int64_t completed_at) {
-    while (true) {
+    // list_all_scheduled_tasks_by_status clamps to 200.  Bound the page
+    // walk so a row that fails to leave 'running' cannot spin forever.
+    constexpr int kPage = 200;
+    constexpr int kMaxPages = 64;
+    for (int page = 0; page < kMaxPages; ++page) {
         const auto stuck =
-            tenants.list_all_scheduled_tasks_by_status("running", 200);
+            tenants.list_all_scheduled_tasks_by_status("running", kPage);
         if (stuck.empty()) break;
 
         for (const auto& task : stuck) {
@@ -96,7 +100,7 @@ void finalize_orphaned_scheduled_task_leases(TenantStore& tenants,
             }
         }
 
-        if (stuck.size() < 200) break;
+        if (stuck.size() < static_cast<size_t>(kPage)) break;
     }
 }
 

@@ -170,15 +170,6 @@ void BlockParser::feed(std::string_view chunk) {
 
     buf_.append(chunk.data(), chunk.size());
 
-    if (buf_.size() + utf8_hold_.size() > kMaxHoldBytes) {
-        std::string emit = utf8_hold_;
-        emit += buf_;
-        utf8_hold_.clear();
-        buf_.clear();
-        peel_incomplete_utf8(emit, utf8_hold_);
-        if (!emit.empty()) sink_(emit);
-    }
-
     std::string passthrough;
     size_t start = 0;
     for (size_t i = 0; i < buf_.size(); ++i) {
@@ -201,6 +192,17 @@ void BlockParser::feed(std::string_view chunk) {
         peel_incomplete_utf8(emit, utf8_hold_);
         if (!emit.empty()) sink_(emit);
         buf_.clear();
+    }
+
+    // Cap only the leftover held prefix.  Running this after line swallow
+    // keeps a large chunk from leaking /write bodies past the filter.
+    if (buf_.size() + utf8_hold_.size() > kMaxHoldBytes) {
+        std::string emit = utf8_hold_;
+        emit += buf_;
+        utf8_hold_.clear();
+        buf_.clear();
+        peel_incomplete_utf8(emit, utf8_hold_);
+        if (!emit.empty()) sink_(emit);
     }
 }
 
