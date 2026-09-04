@@ -405,8 +405,7 @@ TEST_CASE("scheduled task recovery: interrupted run is released to active") {
         std::optional<std::string>("failed"),
         std::optional<int64_t>(now),
         std::nullopt,
-        std::optional<std::string>(
-            "task run was interrupted by a server restart"),
+        std::optional<std::string>(kTaskRunInterruptedMsg),
         std::nullopt, std::nullopt, std::nullopt);
 
     finalize_orphaned_scheduled_task_leases(s, now);

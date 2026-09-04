@@ -5509,6 +5509,8 @@ const char* sanitised_provider_error_code(const std::string& error_type) {
     if (error_type == "not_found_error")      return "not_found";
     if (error_type == "request_too_large")    return "request_too_large";
     if (error_type == "iteration_limit")     return "iteration_limit";
+    if (error_type == "advisor_halt")        return "advisor_halt";
+    if (error_type == "circuit_open")        return "circuit_open";
     return "provider_error";
 }
 
@@ -5529,6 +5531,10 @@ const char* sanitised_provider_error_message(const char* code) {
         return "the request exceeded the provider's size limit";
     if (std::strcmp(code, "iteration_limit") == 0)
         return "the tool-call iteration limit was reached";
+    if (std::strcmp(code, "advisor_halt") == 0)
+        return "the advisor halted the turn";
+    if (std::strcmp(code, "circuit_open") == 0)
+        return "the provider circuit breaker is open — retry after cooldown";
     return "the upstream provider returned an error";
 }
 
@@ -10776,8 +10782,7 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         auto rec_orphans = tenants_.recover_running_reconcile_runs(
             now_s, "request was interrupted by a server restart; reconnect to retry");
         auto task_orphans = tenants_.recover_running_task_runs(
-            "failed", now_s,
-            "task run was interrupted by a server restart");
+            "failed", now_s, kTaskRunInterruptedMsg);
         finalize_orphaned_scheduled_task_leases(tenants_, now_s);
         // finalize_orphaned_scheduled_task_leases releases or completes
         // scheduled_tasks left in status='running' so a claimed one-shot

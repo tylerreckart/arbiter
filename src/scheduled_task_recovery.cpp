@@ -8,9 +8,6 @@ namespace arbiter {
 
 namespace {
 
-constexpr const char kTaskRunInterruptedMsg[] =
-    "task run was interrupted by a server restart";
-
 bool task_run_was_interrupted(const TenantStore::TaskRun& run) {
     return run.status == "failed" &&
            run.error_message == kTaskRunInterruptedMsg;

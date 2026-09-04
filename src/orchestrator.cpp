@@ -1133,6 +1133,13 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             return resp;
         }
 
+        // Last iteration — do not execute tools we cannot follow up on.
+        // Matches send_streaming, which runs tools at the start of the
+        // next loop trip and therefore drops the leftover cmds at the cap.
+        if (i == kMaxTurns - 1) {
+            break;
+        }
+
         resp.had_tool_calls = true;
         {
             CommandCancelScope cancel_scope([this] { return turn_is_cancelled(); });
@@ -1250,6 +1257,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         resp.error_type = "iteration_limit";
         resp.error      = "tool loop iteration limit reached (max " +
                           std::to_string(kMaxTurns) + ")";
+        resp.had_tool_calls = true;
         if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
     } else if (stream_end_cb_) {
         stream_end_cb_(agent_id, sid, resp.ok);
