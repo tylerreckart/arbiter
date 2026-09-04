@@ -330,6 +330,22 @@ TEST_CASE("scheduled task completion: paused mid-run is not overwritten") {
     CHECK(row->next_fire_at == due_at);
 }
 
+TEST_CASE("scheduled task: clearing running lease via active would allow re-claim") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
+        "once", now - 1, "", now - 1);
+    REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
+
+    // Store layer allows this; API PATCH/resume must reject it (409).
+    CHECK(s.update_scheduled_task(tid, task.id,
+        std::optional<std::string>("active"),
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+    CHECK(s.try_claim_scheduled_task(tid, task.id, now));
+}
+
 TEST_CASE("scheduled task recovery: releases claimed one-shot back to active") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");
@@ -374,6 +390,75 @@ TEST_CASE("scheduled task recovery: succeeded run with stranded lease is finaliz
     CHECK(row->status == "completed");
     CHECK(row->last_run_id == run.id);
     CHECK(s.list_due_scheduled_tasks(now, 10).empty());
+}
+
+TEST_CASE("scheduled task recovery: interrupted run is released to active") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
+        "once", now - 1, "", now - 1);
+    REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
+    auto run = s.create_task_run(tid, task.id, "running", now, "req-crash");
+    s.update_task_run(tid, run.id,
+        std::optional<std::string>("failed"),
+        std::optional<int64_t>(now),
+        std::nullopt,
+        std::optional<std::string>(kTaskRunInterruptedMsg),
+        std::nullopt, std::nullopt, std::nullopt);
+
+    finalize_orphaned_scheduled_task_leases(s, now);
+
+    auto row = s.get_scheduled_task(tid, task.id);
+    REQUIRE(row);
+    CHECK(row->status == "active");
+}
+
+TEST_CASE("scheduled task recovery: normal failure is not misclassified") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
+        "once", now - 1, "", now - 1);
+    REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
+    auto run = s.create_task_run(tid, task.id, "running", now, "req-fail");
+    s.update_task_run(tid, run.id,
+        std::optional<std::string>("failed"),
+        std::optional<int64_t>(now),
+        std::nullopt,
+        std::optional<std::string>("agent not found"),
+        std::nullopt, std::nullopt, std::nullopt);
+
+    finalize_orphaned_scheduled_task_leases(s, now);
+
+    auto row = s.get_scheduled_task(tid, task.id);
+    REQUIRE(row);
+    CHECK(row->status == "failed");
+}
+
+TEST_CASE("scheduled task recovery: paginates past 200 stuck leases") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+
+    for (int i = 0; i < 205; ++i) {
+        auto task = s.create_scheduled_task(
+            tid, "index", 0, "hello", "once", "once", now - 1, "", now - 1);
+        REQUIRE(s.try_claim_scheduled_task(tid, task.id, now));
+        auto run = s.create_task_run(tid, task.id, "running", now, "req");
+        s.update_task_run(tid, run.id,
+            std::optional<std::string>("succeeded"),
+            std::optional<int64_t>(now),
+            std::optional<std::string>("ok"),
+            std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+    }
+
+    finalize_orphaned_scheduled_task_leases(s, now);
+
+    auto stuck = s.list_all_scheduled_tasks_by_status("running", 300);
+    CHECK(stuck.empty());
 }
 
 TEST_CASE("task_run recovery sweep: marks orphaned running rows failed") {

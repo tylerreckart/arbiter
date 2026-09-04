@@ -1075,6 +1075,9 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     // envelope) so the next model call must use send/stream_continue.
     bool user_already_committed = false;
 
+    // Last parsed tool commands — used to detect iteration-budget exhaustion.
+    std::vector<AgentCommand> pending_cmds;
+
     for (int i = 0; i < kMaxTurns; ++i) {
         if (turn_is_cancelled()) {
             ApiResponse r;
@@ -1136,6 +1139,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
 
         auto cmds = parse_agent_commands(resp.content);
         recover_truncated_writes(agent_ptr, resp, cmds, nullptr);
+        pending_cmds = cmds;
 
         // Terminating branch.  If gate-mode is off, this is identical to
         // pre-gate behaviour: cmds.empty() means we're done.  With gate-
@@ -1230,6 +1234,13 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             resp.input_tokens = total_input_tok;
             resp.output_tokens = total_output_tok;
             return resp;
+        }
+
+        // Last iteration — do not execute tools we cannot follow up on.
+        // Matches send_streaming, which runs tools at the start of the
+        // next loop trip and therefore drops the leftover cmds at the cap.
+        if (i == kMaxTurns - 1) {
+            break;
         }
 
         resp.had_tool_calls = true;
@@ -1354,7 +1365,16 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     resp.content       = std::move(total_content);
     resp.input_tokens  = total_input_tok;
     resp.output_tokens = total_output_tok;
-    if (stream_end_cb_) stream_end_cb_(agent_id, sid, resp.ok);
+    if (!pending_cmds.empty()) {
+        resp.ok         = false;
+        resp.error_type = "iteration_limit";
+        resp.error      = "tool loop iteration limit reached (max " +
+                          std::to_string(kMaxTurns) + ")";
+        resp.had_tool_calls = true;
+        if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+    } else if (stream_end_cb_) {
+        stream_end_cb_(agent_id, sid, resp.ok);
+    }
     return resp;
 }
 
@@ -1401,7 +1421,9 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
         }
         if (trunc_path.empty()) return;   // no unclosed /write — done
 
-        if (cb) cb("\n\033[2m[resuming truncated /write " + trunc_path + "]\033[0m\n");
+        // Plain text — cb feeds API/SSE clients that must not receive TUI
+        // ANSI escapes (TUI paths pass cb=nullptr and use local styling).
+        if (cb) cb("\n[resuming truncated /write " + trunc_path + "]\n");
 
         // The previous assistant turn (with the partial /write body) is
         // already in agent history. We  just nudge it to emit the
@@ -1663,6 +1685,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     auto end_iteration = [&](const std::vector<AgentCommand>& cmds) {
         std::string status = summarise_delegations(cmds);
         if (!status.empty() && cb) cb(status);
+        if (stream_iteration_boundary_cb_) stream_iteration_boundary_cb_();
     };
 
     // First turn: stream live to cb.
@@ -1915,7 +1938,15 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     resp.input_tokens   = total_input_tok;
     resp.output_tokens  = total_output_tok;
     resp.had_tool_calls = had_any_tool_calls;
-    if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, resp.ok);
+    if (!cmds.empty()) {
+        resp.ok         = false;
+        resp.error_type = "iteration_limit";
+        resp.error      = "tool loop iteration limit reached (max " +
+                          std::to_string(kMaxIters) + ")";
+        if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
+    } else if (stream_end_cb_) {
+        stream_end_cb_(dispatch_id, sid, resp.ok);
+    }
     return resp;
 }
 

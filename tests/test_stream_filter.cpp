@@ -263,3 +263,49 @@ TEST_CASE("partial UTF-8 code points are held across 4-byte chunk boundaries") {
     f.flush();
     CHECK(out == "hi \xF0\x9F\x98\x80\n");
 }
+
+TEST_CASE("flush emits trailing incomplete UTF-8 bytes at stream end") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("caf\xC3");
+    CHECK(out == "caf");
+    f.flush();
+    CHECK(out == std::string("caf") + "\xC3");
+}
+
+TEST_CASE("ambiguous prefix hold buffer is capped") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    std::string long_ticks(70000, '`');
+    f.feed(long_ticks);
+    CHECK(out.size() > 65536);
+    CHECK(out.size() <= 70000);
+}
+
+TEST_CASE("hold cap does not bypass /write swallow in a large chunk") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("/write secret.txt\n" + std::string(70000, 'x') + "\n/endwrite\nvisible\n");
+    f.flush();
+    CHECK(out == "visible\n");
+}
+
+TEST_CASE("reset clears in_write_block state") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("/write foo.txt\nbody\n");
+    CHECK(f.in_write_block());
+    f.reset();
+    CHECK_FALSE(f.in_write_block());
+    f.feed("after\n");
+    f.flush();
+    CHECK(out == "after\n");
+}

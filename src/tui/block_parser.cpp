@@ -8,6 +8,9 @@ namespace arbiter {
 
 namespace {
 
+// Bound memory when a model streams an ambiguous prefix without newlines.
+static constexpr size_t kMaxHoldBytes = 65536;
+
 bool starts_with_cmd(std::string_view s, const char* prefix, size_t plen) {
     if (s.size() < plen) return false;
     if (std::memcmp(s.data(), prefix, plen) != 0) return false;
@@ -190,6 +193,17 @@ void BlockParser::feed(std::string_view chunk) {
         if (!emit.empty()) sink_(emit);
         buf_.clear();
     }
+
+    // Cap only the leftover held prefix.  Running this after line swallow
+    // keeps a large chunk from leaking /write bodies past the filter.
+    if (buf_.size() + utf8_hold_.size() > kMaxHoldBytes) {
+        std::string emit = utf8_hold_;
+        emit += buf_;
+        utf8_hold_.clear();
+        buf_.clear();
+        peel_incomplete_utf8(emit, utf8_hold_);
+        if (!emit.empty()) sink_(emit);
+    }
 }
 
 void BlockParser::flush() {
@@ -199,7 +213,15 @@ void BlockParser::flush() {
     }
     if (buf_.empty()) return;
     if (show_writs_ || !should_swallow(buf_)) {
-        sink_(buf_);
+        std::string emit = buf_;
+        peel_incomplete_utf8(emit, utf8_hold_);
+        if (!emit.empty()) sink_(emit);
+        // Stream is done — emit any trailing partial code point rather than
+        // holding it forever (feed() keeps incomplete bytes for the next chunk).
+        if (!utf8_hold_.empty()) {
+            sink_(utf8_hold_);
+            utf8_hold_.clear();
+        }
     }
     buf_.clear();
 }

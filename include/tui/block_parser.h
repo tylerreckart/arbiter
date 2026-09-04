@@ -13,7 +13,9 @@ namespace arbiter {
 // Ambiguous prefixes (`/…`, `[…`, `` ` ``, `$`, `\`, all-whitespace) stay
 // buffered until a newline decides swallow vs emit.  Incomplete UTF-8
 // code points are held across feed chunks so token-scale emit does not
-// split multibyte characters.
+// split multibyte characters.  The hold buffer is capped so adversarial
+// streams cannot accumulate unbounded memory on a prefix that never
+// resolves.
 class BlockParser {
 public:
     using Sink = std::function<void(std::string_view)>;

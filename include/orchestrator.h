@@ -146,6 +146,16 @@ public:
     void set_agent_stream_callback(AgentStreamCallback  cb) { agent_stream_cb_ = std::move(cb); }
     void set_stream_end_callback  (StreamEndCallback    cb) { stream_end_cb_   = std::move(cb); }
 
+    // Fired at the end of each master send_streaming iteration, after
+    // delegation status is emitted and before tool execution or the next
+    // model call.  Lets StreamFilter / StreamRenderer flush + reset so
+    // BlockParser state (held prefixes, /write blocks) does not bleed
+    // across iterations — send_internal already uses a fresh filter per turn.
+    using StreamIterationBoundaryCallback = std::function<void()>;
+    void set_stream_iteration_boundary_callback(StreamIterationBoundaryCallback cb) {
+        stream_iteration_boundary_cb_ = std::move(cb);
+    }
+
     // Fired when an agent's gate-mode advisor returns HALT (or when the
     // redirect budget is exhausted and the runtime synthesises one).  Sibling
     // of stream_end_cb_, NOT a replacement — escalation_cb_ fires first with
@@ -519,6 +529,7 @@ private:
     StreamStartCallback stream_start_cb_;
     AgentStreamCallback agent_stream_cb_;
     StreamEndCallback   stream_end_cb_;
+    StreamIterationBoundaryCallback stream_iteration_boundary_cb_;
     EscalationCallback  escalation_cb_;
     AdvisorEventCallback advisor_event_cb_;
     IntentCallback      intent_cb_;

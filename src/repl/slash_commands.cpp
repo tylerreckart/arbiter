@@ -79,6 +79,27 @@ namespace fs = std::filesystem;
 
 namespace arbiter {
 
+namespace {
+
+// Flush + reset parser state between send_streaming iterations (mirrors
+// send_internal's fresh StreamFilter per turn).  Markdown sinks stay
+// wired — reset() must not drop TUI code-panel callbacks.
+struct StreamIterationGuard {
+    Orchestrator&     orch;
+    StreamRenderer&   renderer;
+    StreamIterationGuard(Orchestrator& o, StreamRenderer& r) : orch(o), renderer(r) {
+        orch.set_stream_iteration_boundary_callback([this]() {
+            renderer.flush();
+            renderer.reset();
+        });
+    }
+    ~StreamIterationGuard() {
+        orch.set_stream_iteration_boundary_callback({});
+    }
+};
+
+} // namespace
+
 void ReplSession::handle_line(Pane& pane, const std::string& line,
                               std::vector<PromptAttachment> attachments) {
 
@@ -318,6 +339,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                         }
                     } else {
                         arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
+                        StreamIterationGuard stream_guard(orch, renderer);
                         ApiResponse resp;
                         if (attachments.empty()) {
                             resp = orch.send_streaming(id, msg, [&](const std::string& chunk) {
@@ -405,6 +427,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
                         }
                     } else {
                         arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
+                        StreamIterationGuard stream_guard(orch, renderer);
                         ApiResponse resp;
                         if (attachments.empty()) {
                             resp = orch.send_streaming("index", query,
@@ -1704,6 +1727,7 @@ void ReplSession::handle_line(Pane& pane, const std::string& line,
             }
 
             arbiter::StreamRenderer renderer(master_stream_policy(cfg), output_queue);
+            StreamIterationGuard stream_guard(orch, renderer);
             ApiResponse resp;
             if (attachments.empty()) {
                 resp = orch.send_streaming(current_agent, line,

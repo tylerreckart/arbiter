@@ -4544,6 +4544,21 @@ void handle_schedule_patch(int fd, int64_t id, const HttpRequest& req,
         }
         status_opt = s;
     }
+    auto existing = tenants.get_scheduled_task(tenant.id, id);
+    if (!existing) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("schedule not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    if (status_opt && existing->status == "running" &&
+        *status_opt != "paused" && *status_opt != "canceled") {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("schedule is running; pause or cancel to change status");
+        write_json_response(fd, 409, err);
+        return;
+    }
     bool ok = tenants.update_scheduled_task(tenant.id, id,
         status_opt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
     if (!ok) {
@@ -5493,6 +5508,9 @@ const char* sanitised_provider_error_code(const std::string& error_type) {
     if (error_type == "invalid_request_error")return "invalid_request";
     if (error_type == "not_found_error")      return "not_found";
     if (error_type == "request_too_large")    return "request_too_large";
+    if (error_type == "iteration_limit")     return "iteration_limit";
+    if (error_type == "advisor_halt")        return "advisor_halt";
+    if (error_type == "circuit_open")        return "circuit_open";
     return "provider_error";
 }
 
@@ -5511,6 +5529,12 @@ const char* sanitised_provider_error_message(const char* code) {
         return "the configured model or resource is unavailable";
     if (std::strcmp(code, "request_too_large") == 0)
         return "the request exceeded the provider's size limit";
+    if (std::strcmp(code, "iteration_limit") == 0)
+        return "the tool-call iteration limit was reached";
+    if (std::strcmp(code, "advisor_halt") == 0)
+        return "the advisor halted the turn";
+    if (std::strcmp(code, "circuit_open") == 0)
+        return "the provider circuit breaker is open — retry after cooldown";
     return "the upstream provider returned an error";
 }
 
@@ -5689,6 +5713,10 @@ SchedulerInvoker make_scheduler_invoker_callback(
             if (kind == "resume") {
                 auto row = tenants.get_scheduled_task(tenant_id, id);
                 if (!row) return "ERR: schedule #" + std::to_string(id) + " not found";
+                if (row->status == "running") {
+                    return "ERR: schedule #" + std::to_string(id) +
+                           " is running; wait for completion before resuming";
+                }
                 if (row->next_fire_at <= now) {
                     if (row->schedule_kind == "recurring") {
                         int64_t n = next_fire_for_recur(row->recur_json, now);
@@ -8267,6 +8295,10 @@ void handle_a2a_message_stream(int fd,
         [&writer](const std::string& chunk) {
             writer.emit_text_chunk(chunk, /*last_chunk=*/false);
         });
+    orch->set_stream_iteration_boundary_callback([&filter]() {
+        filter.flush();
+        filter.reset();
+    });
     ApiResponse resp;
     try {
         resp = orch->send_streaming(agent_id, prompt,
@@ -10024,6 +10056,10 @@ void handle_orchestrate(int fd, const HttpRequest& req,
             m["delta"]     = jstr(chunk);
             emit("text", p);
         });
+    orch->set_stream_iteration_boundary_callback([&filter]() {
+        filter.flush();
+        filter.reset();
+    });
 
     // Wired here (not further up) so the handler can drain the master's
     // line buffer before stream_end lands on the wire.  Non-master streams
@@ -10221,7 +10257,8 @@ void handle_orchestrate(int fd, const HttpRequest& req,
         persist_blocking_conversation_turn(
             *orch, tenants, tenant.id, conversation_id, agent_id,
             resp, request_id, !tenant_revoked, log_error);
-        if (!tenant_revoked && resp.ok) prepared_turn.commit();
+        if (!tenant_revoked && should_persist_conversation_turn(resp))
+            prepared_turn.commit();
     } catch (const std::exception& e) {
         log_operator_error("orchestration failed", e);
         abort_sse_turn(kTenantInternalError);
@@ -10479,7 +10516,8 @@ void persist_blocking_conversation_turn(
     const std::string& request_id,
     bool tenant_active,
     const std::function<void(const std::string&)>& log_error) {
-    if (conversation_id <= 0 || !tenant_active || !resp.ok) return;
+    if (conversation_id <= 0 || !tenant_active ||
+        !should_persist_conversation_turn(resp)) return;
     try {
         tenants.append_message(tenant_id, conversation_id,
                                 "assistant", resp.content,
@@ -10757,8 +10795,7 @@ ApiServer::ApiServer(ApiServerOptions opts, TenantStore& tenants)
         auto rec_orphans = tenants_.recover_running_reconcile_runs(
             now_s, "request was interrupted by a server restart; reconnect to retry");
         auto task_orphans = tenants_.recover_running_task_runs(
-            "failed", now_s,
-            "task run was interrupted by a server restart");
+            "failed", now_s, kTaskRunInterruptedMsg);
         finalize_orphaned_scheduled_task_leases(tenants_, now_s);
         // finalize_orphaned_scheduled_task_leases releases or completes
         // scheduled_tasks left in status='running' so a claimed one-shot
