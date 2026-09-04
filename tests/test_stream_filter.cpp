@@ -263,3 +263,23 @@ TEST_CASE("partial UTF-8 code points are held across 4-byte chunk boundaries") {
     f.flush();
     CHECK(out == "hi \xF0\x9F\x98\x80\n");
 }
+
+TEST_CASE("flush peels incomplete UTF-8 at stream end") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("caf\xC3");
+    f.flush();
+    CHECK(out == "caf");
+}
+
+TEST_CASE("hold buffer is capped on unterminated ambiguous prefix") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed(std::string(70000, '['));
+    CHECK(out.size() <= 65536);
+    f.flush();
+}

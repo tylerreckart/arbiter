@@ -4544,6 +4544,21 @@ void handle_schedule_patch(int fd, int64_t id, const HttpRequest& req,
         }
         status_opt = s;
     }
+    auto existing = tenants.get_scheduled_task(tenant.id, id);
+    if (!existing) {
+        auto err = jobj();
+        err->as_object_mut()["error"] = jstr("schedule not found");
+        write_json_response(fd, 404, err);
+        return;
+    }
+    if (status_opt && existing->status == "running" &&
+        *status_opt != "paused" && *status_opt != "canceled") {
+        auto err = jobj();
+        err->as_object_mut()["error"] =
+            jstr("schedule is running; pause or cancel to change status");
+        write_json_response(fd, 409, err);
+        return;
+    }
     bool ok = tenants.update_scheduled_task(tenant.id, id,
         status_opt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
     if (!ok) {

@@ -8,6 +8,8 @@ namespace arbiter {
 
 namespace {
 
+constexpr size_t kMaxHoldBytes = 65536;
+
 bool starts_with_cmd(std::string_view s, const char* prefix, size_t plen) {
     if (s.size() < plen) return false;
     if (std::memcmp(s.data(), prefix, plen) != 0) return false;
@@ -166,6 +168,11 @@ void BlockParser::feed(std::string_view chunk) {
     }
 
     buf_.append(chunk.data(), chunk.size());
+    if (buf_.size() > kMaxHoldBytes) {
+        std::string emit = buf_.substr(0, kMaxHoldBytes);
+        buf_.erase(0, kMaxHoldBytes);
+        if (!emit.empty()) sink_(emit);
+    }
 
     std::string passthrough;
     size_t start = 0;
@@ -199,7 +206,9 @@ void BlockParser::flush() {
     }
     if (buf_.empty()) return;
     if (show_writs_ || !should_swallow(buf_)) {
-        sink_(buf_);
+        std::string emit = buf_;
+        peel_incomplete_utf8(emit, utf8_hold_);
+        if (!emit.empty()) sink_(emit);
     }
     buf_.clear();
 }

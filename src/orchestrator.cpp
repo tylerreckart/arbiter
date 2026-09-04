@@ -1129,6 +1129,15 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             return resp;
         }
 
+        if (i == kMaxTurns - 1) {
+            resp.ok          = false;
+            resp.error_type  = "iteration_limit";
+            resp.error       = "max tool-call iterations reached (" +
+                               std::to_string(kMaxTurns) + ")";
+            resp.had_tool_calls = true;
+            break;
+        }
+
         resp.had_tool_calls = true;
         {
             CommandCancelScope cancel_scope([this] { return turn_is_cancelled(); });
@@ -1288,7 +1297,7 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
         }
         if (trunc_path.empty()) return;   // no unclosed /write — done
 
-        if (cb) cb("\n\033[2m[resuming truncated /write " + trunc_path + "]\033[0m\n");
+        if (cb) cb("\n[resuming truncated /write " + trunc_path + "]\n");
 
         // The previous assistant turn (with the partial /write body) is
         // already in agent history. We  just nudge it to emit the
@@ -1785,6 +1794,13 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         recover_truncated_writes(agent_ptr, resp, cmds, gated_cb);
         end_iteration(cmds);
         if (!cmds.empty()) had_any_tool_calls = true;
+        if (!cmds.empty() && i == kMaxIters - 1) {
+            resp.ok         = false;
+            resp.error_type = "iteration_limit";
+            resp.error      = "max tool-call iterations reached (" +
+                              std::to_string(kMaxIters) + ")";
+            break;
+        }
     }
 
     // Replace per-iteration content/token counts with the cumulative values
