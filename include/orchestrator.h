@@ -195,6 +195,25 @@ public:
     using IntentCallback = std::function<void(const IntentEvent&)>;
     void set_intent_callback(IntentCallback cb) { intent_cb_ = std::move(cb); }
 
+    // Always-on presence review.  Fires after each watcher is consulted at
+    // a tool-batch checkpoint (even on SILENT) so SSE / TUI can show the
+    // resident without waiting for an injection.
+    //
+    //   kind="silent"   watcher stayed quiet
+    //   kind="context"  watcher produced a note; `detail` is the note body
+    struct PresenceEvent {
+        std::string watcher_id;
+        std::string working_agent_id;
+        int         stream_id = 0;
+        std::string kind;
+        std::string detail;
+        bool        malformed = false;
+    };
+    using PresenceEventCallback = std::function<void(const PresenceEvent&)>;
+    void set_presence_event_callback(PresenceEventCallback cb) {
+        presence_event_cb_ = std::move(cb);
+    }
+
     // One-shot hint consumed by the next depth-0 send.  Event ingest sets
     // "event" so Intent.source is event rather than heuristic/llm.
     void set_intent_source_hint(std::string hint) {
@@ -503,6 +522,7 @@ private:
     EscalationCallback  escalation_cb_;
     AdvisorEventCallback advisor_event_cb_;
     IntentCallback      intent_cb_;
+    PresenceEventCallback presence_event_cb_;
     std::string         intent_source_hint_;
     std::string         ingress_channel_;
     HistoryCheckpointCallback history_checkpoint_cb_;
@@ -573,6 +593,16 @@ private:
     // turn until every child completes.
     ParallelInvoker make_parallel_invoker(const std::string& caller_id, int depth,
                                           const std::string& original_query);
+
+    // Consult always-on watchers whose `watch` globs match `working_agent_id`
+    // and prepend any CONTEXT notes.  Fail-open; budget-capped.  `notes_used`
+    // tracks injections per watcher for this stream_id.
+    std::string collect_presence_notes(const std::string& working_agent_id,
+                                       const std::string& original_task,
+                                       const std::string& recent_text,
+                                       const std::string& tool_summary,
+                                       int stream_id,
+                                       std::map<std::string, int>& notes_used);
 
     // Truncation recovery.  If `cmds` contains an unclosed /write block
     // (body ended before /endwrite, typically because the model stopped

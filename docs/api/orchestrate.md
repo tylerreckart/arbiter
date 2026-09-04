@@ -124,7 +124,7 @@ curl -N \
 
 `Content-Type: text/event-stream`. `Connection: close`. One request per connection (no multiplexing).
 
-The stream begins with `request_received`, may emit an `intent` classify/route event (when the ingress agent's `intent.mode` is not `off`), then a sequence of `stream_start` / `text` / `tool_call` / `file` / `token_usage` / `sub_agent_response` / `stream_end` events for the master and any delegated sub-agents, and ends with exactly one `done` event (or, on fatal error, an `error` event followed by `done` with `ok: false`). When the request addresses `index` and intent is confident, the runtime may short-circuit to a loaded specialist before the first `stream_start`. See [Intent](../concepts/intent.md).
+The stream begins with `request_received`, may emit an `intent` classify/route event (when the ingress agent's `intent.mode` is not `off`), then a sequence of `stream_start` / `text` / `tool_call` / `file` / `token_usage` / `sub_agent_response` / `advisor` / `presence` / `stream_end` events for the master and any delegated sub-agents, and ends with exactly one `done` event (or, on fatal error, an `error` event followed by `done` with `ok: false`). When the request addresses `index` and intent is confident, the runtime may short-circuit to a loaded specialist before the first `stream_start`. Always-on residents emit `presence` after a tool batch they reviewed. See [Intent](../concepts/intent.md) and [Presence](../concepts/presence.md).
 
 `duration_ms` on `done` is wall-clock from request receipt to stream close. See the [SSE event catalog](../concepts/sse-events.md) for full event-by-event field schemas, and [Fleet streaming](../concepts/fleet-streaming.md) for the routing rules when `/parallel` is in play.
 

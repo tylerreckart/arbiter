@@ -1,6 +1,7 @@
 // arbiter/src/orchestrator.cpp
 #include "orchestrator.h"
 #include "advisor.h"
+#include "presence.h"
 #include "intent.h"
 #include "intent_history_mirror.h"
 #include "atomic_file.h"
@@ -597,6 +598,107 @@ AdvisorGateInvoker Orchestrator::make_advisor_gate_invoker(const std::string& ca
     };
 }
 
+std::string Orchestrator::collect_presence_notes(
+    const std::string& working_agent_id,
+    const std::string& original_task,
+    const std::string& recent_text,
+    const std::string& tool_summary,
+    int stream_id,
+    std::map<std::string, int>& notes_used) {
+
+    struct Watcher {
+        std::string id;
+        std::string name;
+        std::string goal;
+        std::string rules;
+        std::string model;
+        PresenceConfig cfg;
+    };
+    std::vector<Watcher> watchers;
+    std::string working_role;
+    {
+        std::lock_guard<std::mutex> lock(agents_mutex_);
+        auto take = [&](const std::string& id, const Constitution& c) {
+            if (id == working_agent_id) return;
+            if (!presence_is_active(c.presence)) return;
+            if (!presence_watch_matches(c.presence, working_agent_id)) return;
+            Watcher w;
+            w.id = id;
+            w.name = c.name.empty() ? id : c.name;
+            w.goal = c.goal;
+            if (!c.rules.empty()) {
+                std::ostringstream rs;
+                for (const auto& r : c.rules) rs << "- " << r << "\n";
+                w.rules = rs.str();
+            }
+            w.model = presence_model(c.presence, c.model);
+            w.cfg = c.presence;
+            watchers.push_back(std::move(w));
+        };
+        if (working_agent_id == "index" && index_master_) {
+            working_role = index_master_->config().role;
+        } else {
+            auto it = agents_.find(working_agent_id);
+            if (it != agents_.end())
+                working_role = it->second->config().role;
+        }
+        if (index_master_) take("index", index_master_->config());
+        for (auto& [id, agent] : agents_) take(id, agent->config());
+    }
+
+    if (watchers.size() > static_cast<size_t>(kMaxPresenceWatchersPerCheckpoint))
+        watchers.resize(static_cast<size_t>(kMaxPresenceWatchersPerCheckpoint));
+
+    std::string notes;
+    for (auto& w : watchers) {
+        if (turn_is_cancelled()) break;
+        if (w.model.empty()) continue;
+        const int used = notes_used[w.id];
+        if (used >= w.cfg.max_notes_per_turn) continue;
+
+        PresenceInput in;
+        in.watcher_id = w.id;
+        in.watcher_name = w.name;
+        in.watcher_goal = w.goal;
+        in.watcher_rules = w.rules;
+        in.working_agent_id = working_agent_id;
+        in.working_agent_role = working_role;
+        in.original_task = original_task;
+        in.recent_text = recent_text;
+        in.tool_summary = tool_summary;
+
+        PresenceOutput out;
+        try {
+            out = run_presence_review(
+                client_, w.model, w.cfg.prompt, in,
+                [this, wid = w.id, model = w.model](const ApiResponse& resp) {
+                    if (cost_cb_) cost_cb_(wid, model, resp);
+                });
+        } catch (...) {
+            out.kind = PresenceOutput::Kind::Silent;
+            out.malformed = true;
+        }
+
+        if (presence_event_cb_) {
+            PresenceEvent ev;
+            ev.watcher_id = w.id;
+            ev.working_agent_id = working_agent_id;
+            ev.stream_id = stream_id;
+            ev.kind = (out.kind == PresenceOutput::Kind::Context)
+                          ? "context" : "silent";
+            ev.detail = out.text;
+            ev.malformed = out.malformed;
+            presence_event_cb_(ev);
+        }
+
+        if (out.kind == PresenceOutput::Kind::Context && !out.text.empty()) {
+            notes += format_presence_injection(w.name, out.text);
+            ++notes_used[w.id];
+        }
+    }
+    return notes;
+}
+
 // Build a one-line summary of the tool calls executed this turn for the
 // advisor gate.  Format per call:
 //
@@ -967,6 +1069,7 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
     // injected warning at the top of the next user-role tool-result
     // block is usually enough to get it to break out.
     std::vector<std::pair<std::string, std::string>> prev_failed_signatures;
+    std::map<std::string, int> presence_notes_used;
 
     // When true, current_msg was already commit_user_message'd (tool-result
     // envelope) so the next model call must use send/stream_continue.
@@ -1228,6 +1331,16 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
         // Stash for the gate's tool summary on the eventual terminating turn.
         last_cmds         = cmds;
         last_tool_results = current_msg;
+
+        // Always-on residents review this tool batch and may prepend a
+        // CONTEXT note.  Fail-open; advisor still sees the raw tools.
+        {
+            std::string presence = collect_presence_notes(
+                agent_id, orig_q, resp.content,
+                summarize_tool_calls(cmds, current_msg),
+                sid, presence_notes_used);
+            if (!presence.empty()) current_msg = presence + current_msg;
+        }
 
         // Commit tool envelopes before the next LLM wait so quit/cancel
         // cannot drop completed tool work from the model-facing history.
@@ -1604,6 +1717,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     int                       redirects_used = 0;
     const int                 max_redirects  = gate_cfg.max_redirects;
     bool                      had_any_tool_calls = !cmds.empty();
+    std::map<std::string, int> presence_notes_used;
 
     // Iter 0 already committed its assistant turn into histories_.
     fire_history_checkpoint();
@@ -1743,6 +1857,13 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             }
             last_cmds         = cmds;
             last_tool_results = tool_envelope;
+            {
+                std::string presence = collect_presence_notes(
+                    dispatch_id, orig_q, resp.content,
+                    summarize_tool_calls(cmds, tool_envelope),
+                    sid, presence_notes_used);
+                if (!presence.empty()) tool_envelope = presence + tool_envelope;
+            }
             if (image_parts.empty()) {
                 set_current_text(std::move(tool_envelope));
             } else {
@@ -1907,6 +2028,8 @@ std::string Orchestrator::global_status() const {
             ss << " " << short_model(cfg.model);
             if (!cfg.advisor_model.empty())
                 ss << "+advisor:" << short_model(cfg.advisor_model);
+            if (cfg.presence.mode == "always_on")
+                ss << "+presence";
             if (!cfg.goal.empty())
                 ss << " — " << cfg.goal;
             ss << "\n";

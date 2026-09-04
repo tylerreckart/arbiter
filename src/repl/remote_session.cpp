@@ -241,6 +241,14 @@ ApiResponse ReplSession::run_remote_turn(Pane& pane, const std::string& line,
             return;
         }
     };
+    hooks.on_presence = [&](const std::string& kind,
+                              const std::string& watcher,
+                              const std::string& detail) {
+        if (kind != "context") return;
+        pane.output_queue.push_prose(
+            {styled_presence_line(watcher, detail)});
+        pane.output_queue.end_message();
+    };
 
     RemoteSseTurnConsumer consumer(renderer, pane.output_queue, std::move(hooks));
 

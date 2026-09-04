@@ -21,6 +21,7 @@ Every event on the `/v1/orchestrate` stream has an `event:` line and a `data:` l
 | `sub_agent_response` | After a delegated turn completes (depth > 0). The full turn body in one payload — useful for consumers that don't want to reconstruct from deltas. | `agent`, `stream_id`, `depth`, `content`. |
 | `token_usage` | After each turn completes. | `agent`, `stream_id`, `depth`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens?`, `cache_create_tokens?`. |
 | `advisor` | Every advisor interaction. Independent of `tool_call` — fires for the runtime's gate decisions (which the executor never invokes directly) and for the executor's own `/advise` consults. See [Advisor concept](advisor.md). | `agent`, `stream_id`, `kind`, `detail?`, `preview?`, `malformed?`. |
+| `presence` | Always-on watcher consult after a peer's tool batch. Fires for `SILENT` and `CONTEXT`. See [Presence](presence.md). | `watcher`, `agent` (the working agent), `stream_id`, `kind` (`silent` \| `context`), `detail?`, `malformed?`. |
 | `escalation` | Out-of-band advisor halt. Fires before the corresponding `stream_end` (which arrives with `ok: false`). Only fires at the originating depth — sub-agent halts bubble up via the parent's response, not via duplicate escalation events. | `agent`, `stream_id`, `reason`. |
 | `stream_end` | Closes each turn. Any remaining partial line is flushed before this fires, so no `text` events arrive with this `stream_id` after. | `agent`, `stream_id`, `ok`. |
 | `error` | Recoverable errors during the request (transient upstream issue). The stream continues or terminates depending on severity. | `message`, plus optional context fields (e.g. `reason`). |
@@ -45,7 +46,8 @@ The `kind` field disambiguates which advisor interaction fired:
 - `request_received` is always first.
 - When intent classification runs, `intent` follows `request_received` and precedes `stream_start`.
 - `done` is always last.
-- For any given `stream_id`: `stream_start` precedes every `text` / `tool_call` / `token_usage` / `sub_agent_response` / `advisor` carrying it, and `stream_end` follows every one of them.
+- For any given `stream_id`: `stream_start` precedes every `text` / `tool_call` / `token_usage` / `sub_agent_response` / `advisor` / `presence` carrying it, and `stream_end` follows every one of them.
+- `presence` events (when any) arrive after the tool batch they reviewed and before the working agent's next `text` deltas.
 - For an advisor halt, the order on a given `stream_id` is: `advisor` (`kind: gate_halt`) → `escalation` → `stream_end` (`ok: false`).
 - Between streams: events interleave by wall-clock. A `text` event from `stream_id: 2` may arrive between two `text` events from `stream_id: 1` if both agents are running in parallel.
 
@@ -58,6 +60,7 @@ Spec-compatible A2A clients hit [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.
 - [A2A protocol](a2a.md) — the Agent2Agent counterpart to this catalog.
 - [Fleet streaming](fleet-streaming.md)
 - [Advisor](advisor.md) — gate signal grammar, modes, redirect budget.
+- [Presence](presence.md) — always-on peer review and mid-turn injection.
 - [Intent](intent.md) — pre-dispatch classify/route.
 - [Reconcile](reconcile.md) — desired-end-state contract, tests, rollback.
 - [Voice](voice.md) — spoken constitution register and `channel: "voice"` for TTS bridges.

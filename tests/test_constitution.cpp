@@ -10,6 +10,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "constitution.h"
+#include "presence.h"
 
 using namespace arbiter;
 
@@ -276,6 +277,77 @@ TEST_CASE("intent: round-trip hybrid block") {
     CHECK(again.intent.mode == "hybrid");
     CHECK(again.intent.apply_routing == false);
     CHECK(again.intent.model == "anthropic/claude-haiku-4-5");
+}
+
+TEST_CASE("presence: absent yields off") {
+    std::string js = R"({
+        "name": "research",
+        "model": "claude-sonnet-4-6"
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.presence.mode == "off");
+    CHECK(c.presence.interject == "context");
+    CHECK(c.presence.watch.empty());
+    CHECK(c.presence.max_notes_per_turn == 1);
+    CHECK_FALSE(presence_is_active(c.presence));
+}
+
+TEST_CASE("presence: string shorthand always_on") {
+    std::string js = R"({
+        "name": "jules",
+        "model": "claude-haiku-4-5",
+        "presence": "always_on"
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.presence.mode == "always_on");
+    CHECK(c.presence.interject == "context");
+    CHECK(presence_is_active(c.presence));
+}
+
+TEST_CASE("presence: object form round-trips") {
+    std::string js = R"({
+        "name": "jules",
+        "model": "claude-haiku-4-5",
+        "presence": {
+            "mode": "always_on",
+            "watch": ["index", "forge*"],
+            "interject": "context",
+            "model": "anthropic/claude-haiku-4-5",
+            "max_notes_per_turn": 2
+        }
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.presence.mode == "always_on");
+    CHECK(c.presence.watch.size() == 2);
+    CHECK(c.presence.watch[0] == "index");
+    CHECK(c.presence.watch[1] == "forge*");
+    CHECK(c.presence.max_notes_per_turn == 2);
+    CHECK(c.presence.model == "anthropic/claude-haiku-4-5");
+    auto again = Constitution::from_json(c.to_json());
+    CHECK(again.presence.mode == "always_on");
+    CHECK(again.presence.watch == c.presence.watch);
+    CHECK(again.presence.max_notes_per_turn == 2);
+    CHECK(again.presence.model == c.presence.model);
+}
+
+TEST_CASE("presence: unknown mode falls back to off") {
+    std::string js = R"({
+        "name": "jules",
+        "model": "claude-haiku-4-5",
+        "presence": { "mode": "banana" }
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.presence.mode == "off");
+}
+
+TEST_CASE("presence: always_on prompt mentions residency") {
+    auto c = make_agent({"/exec"});
+    c.presence.mode = "always_on";
+    c.presence.watch = {"*"};
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("PRESENCE:") != std::string::npos);
+    CHECK(prompt.find("pair colleague") != std::string::npos);
+    CHECK(prompt.find("You watch: *.") != std::string::npos);
 }
 
 TEST_CASE("intent: unknown mode falls back to off") {

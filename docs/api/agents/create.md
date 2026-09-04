@@ -46,6 +46,7 @@ Either a bare constitution or wrapped under `agent_def`:
 | `advisor_model` | string | no  | **Legacy.** Higher-capability model for `/advise` consults. New configurations should use `advisor.model` instead. If both `advisor` and `advisor_model` are present, the structured `advisor` block wins. |
 | `memory`        | object | no  | Per-agent memory enrichment toggles for `/mem search` and `/mem add entry`. See schema below and [Memory enrichment](../../concepts/structured-memory.md#memory-enrichment) in the structured-memory concept. |
 | `intent`        | object | no  | Pre-dispatch classify/route. Distinct from `memory.intent_routing`. File agents default `mode: "off"`; the built-in `index` master defaults `hybrid`. See [Intent](../../concepts/intent.md). |
+| `presence`      | object \| string | no | Always-on residency. Object form: `{mode?, watch?, interject?, model?, prompt?, max_notes_per_turn?}`. String `"always_on"` is `{mode: "always_on"}`. See [Presence](../../concepts/presence.md). |
 | `personality`   | string | no  | Free-form personality overlay. |
 
 #### `advisor` object schema
@@ -79,6 +80,19 @@ Ingress classify/route for this agent when it is the **requested** (depth-0) age
 | `min_confidence` | number | `0.8` | Reroute threshold (0..1). |
 | `apply_routing` | bool | `true` | `false` = observe only (SSE + preamble, no agent change). |
 | `model` | string | `""` | LLM classifier. Empty → `advisor.model`. |
+
+#### `presence` object schema
+
+Always-on peer observation. Absent / `mode: "off"` keeps a request-scoped specialist. See [Presence](../../concepts/presence.md).
+
+| Sub-field | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `mode` | string | `"off"` | `"off"` or `"always_on"`. |
+| `watch` | array\<string\> | `[]` | Agent-id globs (`fnmatch`). Empty ≡ every peer. Never matches self. |
+| `interject` | string | `"context"` | `"context"` reviews and may inject; `"off"` is a residency kill switch. |
+| `model` | string | watcher's `model` | Optional review-call override. |
+| `prompt` | string | built-in | Override the review system prompt. |
+| `max_notes_per_turn` | int | `1` | Cap on `CONTEXT` notes per working-agent `stream_id` (1–4). |
 
 ```bash
 curl -X POST \

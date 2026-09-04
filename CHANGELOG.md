@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Always-on presence.** Constitutions accept a `presence` block (`mode: "always_on"`,
+  `watch` globs, `interject`). Resident agents review a peer's tool-batch snapshot
+  and may inject a `[PRESENCE: Name]` note into that agent's next model turn.
+  Fail-open (`SILENT` on error); cannot halt or redirect — that stays the advisor
+  gate. SSE `presence` events, TUI `◎ presence · watcher`, roster `+presence`.
+  Bundled starter: `jules` (pair colleague at the active agent's shoulder).
+  See [Presence](docs/concepts/presence.md).
+
 ## [0.13.1] — 2026-08-31
 
 
@@ -18,6 +27,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   Incomplete prose paints as a replaceable live tail (restyled when the line
   completes); `/cmd` lines stay suppressed until a newline confirms them.
   Delegation iterations still emit `→ delegating: …` after the writ is parsed.
+  
+## [0.13.0] — 2026-08-31
 
 ## [0.12.16] — 2026-08-28
 

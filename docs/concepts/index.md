@@ -9,6 +9,7 @@ Start here if you want the model before the reference material.
 | [High-level architecture](architecture.md) | Conceptual overview of Arbiter's major architectural components |
 | [Voice](voice.md) | Spoken register + `channel: "voice"` for Intercom-style bridges |
 | [Advisor](advisor.md) | Structural supervision gates (`CONTINUE` / `REDIRECT` / `HALT`) |
+| [Presence](presence.md) | Pair colleague at a peer's shoulder — useful context mid-turn |
 | [Intent](intent.md) | Pre-dispatch classify/route (heuristic + optional LLM) |
 | [Reconcile](reconcile.md) | Desired end state → workspace contract, tests, rollback |
 | [SSE events](sse-events.md) | The stream contract shared by TUI and HTTP |

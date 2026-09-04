@@ -451,6 +451,15 @@ void ReplSession::install_orch_callbacks() {
         p->output_queue.end_message();
     });
 
+    orch.set_presence_event_callback([&](const arbiter::Orchestrator::PresenceEvent& ev) {
+        Pane* p = g_active_pane;
+        if (!p) return;
+        if (ev.kind != "context") return;  // silent reviews stay quiet
+        p->output_queue.push_prose(
+            {arbiter::styled_presence_line(ev.watcher_id, ev.detail)});
+        p->output_queue.end_message();
+    });
+
     orch.set_advisor_event_callback([&](const arbiter::Orchestrator::AdvisorEvent& ev) {
         Pane* p = g_active_pane;
         if (!p) return;

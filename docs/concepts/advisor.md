@@ -116,12 +116,15 @@ The consult path doesn't constrain the executor — it's an affordance, not a ga
 | `gate_redirect` | Warning `↻ redirect · <agent> <guidance>` |
 | `gate_halt` / `gate_budget` | Error `× halt · <agent> <reason>` once via the escalation path (advisor event itself is not double-painted) |
 
+Presence `CONTEXT` notes use a separate glyph (`◎ presence · <watcher>`). See [Presence](presence.md).
+
 Same glyph dialect as consult/redirect (`◇` / `↻`); halt uses text `×` (not emoji, distinct from tool-fail `✗`). Distinct from `·` system activity and from `→ delegating:`.
 
 ## See also
 
 - [Philosophy](../philosophy.md) — the structural-separation argument.
 - [SSE events](sse-events.md) — `advisor` and `escalation` event payloads.
+- [Presence](presence.md) — a pair colleague at a peer's shoulder. Not a second gate: presence cannot halt, and must not grade the turn.
 - [Agent data model](data-model.md) — where the advisor block lives.
 - [`POST /v1/agents`](../api/agents/create.md) — create an agent with an advisor configured.
 - [`POST /v1/advise/gate`](../api/advise-gate.md) — standalone gate verdict for external executor loops.

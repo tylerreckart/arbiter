@@ -41,6 +41,7 @@ constexpr StarterMeta kCuratedOrder[] = {
     { "loom",    "Loom — components, state, accessibility, perf"   },
     { "beacon",  "Beacon — strategy, positioning, campaigns"       },
     { "echo",    "Echo — platform-native content and growth"       },
+    { "jules",   "Jules — pair colleague, looks over the shoulder" },
 };
 
 // A starter that's in the embedded JSON table but not in kCuratedOrder

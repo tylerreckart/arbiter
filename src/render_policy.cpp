@@ -236,6 +236,24 @@ StyledLine styled_advisor_consult_line(std::string_view agent_id,
     return line;
 }
 
+StyledLine styled_presence_line(std::string_view watcher_id,
+                               std::string_view detail) {
+    StyledLine line = styled_runtime_event(
+        "\u25ce",  // ◎
+        StyleId::Info,
+        "presence",
+        StyleId::Info,
+        {},
+        StyleId::System);
+    append_agent_suffix(line, watcher_id, StyleId::System);
+    const std::string clipped = truncate_detail(detail, 120);
+    if (!clipped.empty()) {
+        styled_append(line, StyleId::System, " ");
+        styled_append(line, StyleId::Dim, clipped);
+    }
+    return line;
+}
+
 StyledLine styled_advisor_redirect_line(std::string_view agent_id,
                                         std::string_view detail) {
     StyledLine line = styled_runtime_event(

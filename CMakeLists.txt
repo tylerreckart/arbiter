@@ -197,6 +197,7 @@ set(ARBITER_SOURCES
     src/reconcile.cpp
     src/advisor_gate.cpp
     src/advisor.cpp
+    src/presence.cpp
     src/api/auth.cpp
     src/api/event_logger.cpp
     src/api/http_request.cpp
@@ -1618,6 +1619,28 @@ if(INDEX_BUILD_TESTS)
     )
     target_link_libraries(unit_advisor_gate PRIVATE CURL::libcurl)
     add_test(NAME unit_advisor_gate COMMAND unit_advisor_gate)
+
+    # Always-on presence: signal parser, watch globs, injection framing.
+    # Tiny target — run_presence_review is linked but not exercised here.
+    add_executable(unit_presence
+        tests/test_presence.cpp
+        src/presence.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_presence PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_presence PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+    )
+    add_test(NAME unit_presence COMMAND unit_presence)
 
     # Pre-dispatch intent classifier: cue matcher, LLM signal parser,
     # fail-open, apply_routing.  Tiny target — no provider client.
