@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.2] — 2026-09-04
+
 ### Added
 - **Always-on presence.** Constitutions accept a `presence` block (`mode: "always_on"`,
   `watch` globs, `interject`). Resident agents review a peer's tool-batch snapshot
