@@ -296,6 +296,26 @@ TEST_CASE("hold cap does not bypass /write swallow in a large chunk") {
     CHECK(out == "visible\n");
 }
 
+TEST_CASE("hold cap inside active /write block drops body instead of leaking") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("/write secret.txt\n" + std::string(70000, 'x'));
+    f.flush();
+    CHECK(out.empty());
+}
+
+TEST_CASE("hold cap inside active /todo block drops body instead of leaking") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("/todo add item\n" + std::string(70000, 'x'));
+    f.flush();
+    CHECK(out.empty());
+}
+
 TEST_CASE("reset clears in_write_block state") {
     Config cfg;
     std::string out;

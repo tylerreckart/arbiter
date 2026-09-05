@@ -1629,18 +1629,18 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     if (stream_start_cb_) stream_start_cb_(dispatch_id, sid, 0);
 
     // ── Master text streaming ─────────────────────────────────────────
-    // Provider deltas reach `cb` as they arrive so TUI / SSE clients can
-    // paint token-scale updates.  After the iteration is parsed:
+    // Buffer per-iteration text and decide what to emit after parsing:
     //
-    //   • /agent or /parallel ⇒ also emit a one-line "→ delegating: ..."
-    //     status (BlockParser still swallows the raw writ lines).
-    //   • no delegations ⇒ nothing extra; the live stream *is* the
-    //     master's contribution.
+    //   • iteration includes /agent or /parallel ⇒ discard buffered prose
+    //     and emit a one-line "→ delegating: …" status update.
+    //   • no delegations ⇒ flush the buffer as the master's contribution.
     //
-    // Sub-agents continue to stream independently through
-    // agent_stream_cb_ in send_internal.
-    auto gated_cb = [&cb](const std::string& chunk) {
-        if (cb && !chunk.empty()) cb(chunk);
+    // Sub-agents stream independently through agent_stream_cb_ in
+    // send_internal.  This gate only sits between the top-level master
+    // and the user-facing cb.
+    std::string iter_buffer;
+    auto gated_cb = [&iter_buffer](const std::string& chunk) {
+        iter_buffer += chunk;
     };
 
     auto summarise_delegations =
@@ -1684,13 +1684,26 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
 
     auto end_iteration = [&](const std::vector<AgentCommand>& cmds) {
         std::string status = summarise_delegations(cmds);
-        if (!status.empty() && cb) cb(status);
+        if (!status.empty()) {
+            // Delegation iteration — discard prose, emit status line.
+            iter_buffer.clear();
+            if (cb) cb(status);
+        } else {
+            // No delegation — flush buffered prose to the user.
+            if (!iter_buffer.empty() && cb) cb(iter_buffer);
+            iter_buffer.clear();
+        }
         if (stream_iteration_boundary_cb_) stream_iteration_boundary_cb_();
     };
 
-    // First turn: stream live to cb.
+    // First turn: stream into the gate (not directly to cb).
     ApiResponse resp = agent_ptr->stream(std::move(current_parts), gated_cb);
     if (!resp.ok) {
+        // On failure, flush whatever the model produced so the user sees
+        // the partial — the gate's contract is to never silently swallow
+        // an error response.
+        if (!iter_buffer.empty() && cb) cb(iter_buffer);
+        iter_buffer.clear();
         if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
         return resp;
     }
@@ -1769,7 +1782,10 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             return r;
         }
         if (cmds.empty()) {
-            if (!gate_active) break;
+            if (!gate_active) {
+                end_iteration(cmds);
+                break;
+            }
 
             AdvisorGateOutput sig;
             bool budget_exhausted = (redirects_used >= max_redirects);
@@ -1817,10 +1833,13 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
 
             if (sig.kind == AdvisorGateOutput::Kind::Continue) {
                 resp.gate_approved = true;
+                end_iteration(cmds);
                 break;
             }
 
             if (sig.kind == AdvisorGateOutput::Kind::Halt) {
+                if (!iter_buffer.empty() && cb) cb(iter_buffer);
+                iter_buffer.clear();
                 if (escalation_cb_) escalation_cb_(dispatch_id, sid, sig.text);
                 if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
                 resp.ok           = false;
