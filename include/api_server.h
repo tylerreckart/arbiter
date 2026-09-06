@@ -273,7 +273,11 @@ inline bool should_persist_conversation_turn(const ApiResponse& resp) {
 }
 
 // Persist assistant output + compaction after a blocking turn completes.
-void persist_blocking_conversation_turn(
+// Returns true when the assistant row was written (or persistence was
+// skipped because the turn should not be stored).  Callers must gate
+// BlockingConversationTurnGuard::commit() on this result so a failed
+// assistant append rolls back the prepared user row.
+bool persist_blocking_conversation_turn(
     Orchestrator& orch,
     TenantStore& tenants,
     int64_t tenant_id,

@@ -10254,11 +10254,13 @@ void handle_orchestrate(int fd, const HttpRequest& req,
                 std::nullopt);
         }
 
-        persist_blocking_conversation_turn(
+        const bool assistant_persisted = persist_blocking_conversation_turn(
             *orch, tenants, tenant.id, conversation_id, agent_id,
             resp, request_id, !tenant_revoked, log_error);
-        if (!tenant_revoked && should_persist_conversation_turn(resp))
+        if (!tenant_revoked && should_persist_conversation_turn(resp) &&
+            assistant_persisted) {
             prepared_turn.commit();
+        }
     } catch (const std::exception& e) {
         log_operator_error("orchestration failed", e);
         abort_sse_turn(kTenantInternalError);
@@ -10506,7 +10508,7 @@ bool prepare_blocking_conversation_turn(
     return true;
 }
 
-void persist_blocking_conversation_turn(
+bool persist_blocking_conversation_turn(
     Orchestrator& orch,
     TenantStore& tenants,
     int64_t tenant_id,
@@ -10517,7 +10519,7 @@ void persist_blocking_conversation_turn(
     bool tenant_active,
     const std::function<void(const std::string&)>& log_error) {
     if (conversation_id <= 0 || !tenant_active ||
-        !should_persist_conversation_turn(resp)) return;
+        !should_persist_conversation_turn(resp)) return true;
     try {
         tenants.append_message(tenant_id, conversation_id,
                                 "assistant", resp.content,
@@ -10526,6 +10528,7 @@ void persist_blocking_conversation_turn(
     } catch (...) {
         log_error("assistant message could not be persisted to "
                   "conversation");
+        return false;
     }
     try {
         auto& agent = orch.get_agent(agent_id);
@@ -10575,6 +10578,7 @@ void persist_blocking_conversation_turn(
     } catch (...) {
         log_error("conversation compaction could not be persisted");
     }
+    return true;
 }
 
 // POST /v1/events — hardware/software event ingestion.

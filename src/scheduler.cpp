@@ -406,15 +406,18 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
         ok = false;
     }
 
-    persist_blocking_conversation_turn(
+    const bool assistant_persisted = persist_blocking_conversation_turn(
         *orch, *tenants_, task.tenant_id, task.conversation_id,
         task.agent_id, resp, req_id, true,
         [](const std::string& msg) {
             std::fprintf(stderr, "[scheduler] %s\n", msg.c_str());
         });
-    if (should_persist_conversation_turn(resp) && prepared_turn)
+    if (should_persist_conversation_turn(resp) && assistant_persisted &&
+        prepared_turn) {
         prepared_turn->commit();
-    else prepared_turn.reset();
+    } else {
+        prepared_turn.reset();
+    }
 
     const int64_t completed_at = now_epoch();
     const std::string final_text = ok ? truncate_summary(resp.content) : "";
