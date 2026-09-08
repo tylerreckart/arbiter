@@ -296,6 +296,18 @@ TEST_CASE("hold cap does not bypass /write swallow in a large chunk") {
     CHECK(out == "visible\n");
 }
 
+TEST_CASE("hold cap does not leak /write body across chunked feeds") {
+    Config cfg;
+    std::string out;
+    StreamFilter f(cfg, [&out](const std::string& s) { out += s; });
+
+    f.feed("/write secret.txt\n");
+    f.feed(std::string(70000, 'x'));
+    f.feed("\n/endwrite\nvisible\n");
+    f.flush();
+    CHECK(out == "visible\n");
+}
+
 TEST_CASE("reset clears in_write_block state") {
     Config cfg;
     std::string out;
