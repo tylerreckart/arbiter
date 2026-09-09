@@ -149,7 +149,7 @@ PresenceOutput parse_presence_signal(const std::string& reply) {
             return out;
         }
         if (note.size() > kPresenceMaxNote) {
-            note.resize(kPresenceMaxNote);
+            truncate_field(note, kPresenceMaxNote);
         }
         out.kind = PresenceOutput::Kind::Context;
         out.text = std::move(note);
@@ -181,7 +181,6 @@ PresenceOutput run_presence_review(
     if (model.empty()) {
         out.kind = PresenceOutput::Kind::Silent;
         out.malformed = true;
-        out.text = "no presence model configured";
         return out;
     }
 
@@ -224,10 +223,10 @@ PresenceOutput run_presence_review(
     if (on_response) on_response(resp);
     if (!resp.ok) {
         // Fail-open: a dead watcher must not stall the working agent.
+        // Do not copy provider errors into out.text — SSE presence events
+        // would leak them to tenants (same policy as sanitised_api_response_error).
         out.kind = PresenceOutput::Kind::Silent;
         out.malformed = true;
-        out.raw = resp.error;
-        out.text = "presence API error: " + resp.error;
         return out;
     }
     return parse_presence_signal(resp.content);

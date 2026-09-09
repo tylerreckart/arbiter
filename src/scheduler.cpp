@@ -197,9 +197,20 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
                 (long long)task.id, (long long)task.tenant_id,
                 lim.kind == TenantLimiter::Result::Kind::ConcurrentExceeded
                     ? "concurrent" : "rate");
+            // Rate-limit deferral: bump next_fire_at so the task is not
+            // re-claimed every tick while the bucket is empty (#304).
+            // Concurrent deferral keeps next_fire_at unchanged for a fast
+            // retry once a slot frees.
+            std::optional<int64_t> defer_next;
+            if (lim.kind == TenantLimiter::Result::Kind::RateExceeded) {
+                const int retry = lim.retry_after_seconds > 0
+                                      ? lim.retry_after_seconds
+                                      : 60;
+                defer_next = now + retry;
+            }
             tenants_->update_scheduled_task(task.tenant_id, task.id,
                 std::optional<std::string>("active"),
-                std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+                defer_next, std::nullopt, std::nullopt, std::nullopt,
                 std::optional<std::string>("running"));
             return false;
         }
