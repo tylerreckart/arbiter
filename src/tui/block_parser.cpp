@@ -196,13 +196,19 @@ void BlockParser::feed(std::string_view chunk) {
 
     // Cap only the leftover held prefix.  Running this after line swallow
     // keeps a large chunk from leaking /write bodies past the filter.
+    // Never force-emit swallowed /write or /todo bodies — drop them instead.
     if (buf_.size() + utf8_hold_.size() > kMaxHoldBytes) {
-        std::string emit = utf8_hold_;
-        emit += buf_;
-        utf8_hold_.clear();
-        buf_.clear();
-        peel_incomplete_utf8(emit, utf8_hold_);
-        if (!emit.empty()) sink_(emit);
+        if (in_write_block_ || in_todo_block_ || pending_todo_body_) {
+            buf_.clear();
+            utf8_hold_.clear();
+        } else {
+            std::string emit = utf8_hold_;
+            emit += buf_;
+            utf8_hold_.clear();
+            buf_.clear();
+            peel_incomplete_utf8(emit, utf8_hold_);
+            if (!emit.empty()) sink_(emit);
+        }
     }
 }
 
