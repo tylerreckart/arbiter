@@ -215,6 +215,20 @@ TEST_CASE("scheduled task stores conversation_id for scoped fires") {
     CHECK(tail[0].content == "prior context");
 }
 
+TEST_CASE("blocking turn: orphan user row rolls back when assistant not committed") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    auto conv = s.create_conversation(tid, "thread", "http");
+
+    auto user = s.append_message(tid, conv.id, "user", "hello", 0, 0, "req-1");
+    // persist_blocking_conversation_turn failure path: prepared_turn not
+    // committed, so the guard deletes the latest user row on teardown.
+    CHECK(s.delete_latest_conversation_message(tid, conv.id, user.id));
+
+    auto tail = s.list_messages_tail(tid, conv.id, 10);
+    CHECK(tail.empty());
+}
+
 TEST_CASE("delete_latest_conversation_message rolls back only the newest row") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");
