@@ -14,6 +14,9 @@
 #include "api_client.h"
 #include "commands.h"
 
+#include <map>
+#include <string>
+
 using namespace arbiter;
 
 TEST_CASE("parse: bare CONTINUE") {
@@ -171,7 +174,9 @@ TEST_CASE("run_advisor_gate: provider failure does not echo raw error") {
     // auth body that historically mentioned "Authentication header".
     // Gate text/raw must stay on the fixed taxonomy — same leak class
     // as sanitised_api_response_error on orchestrate `done`.
-    ApiClient client({{"openrouter", "dummy-key-no-network"}});
+    std::map<std::string, std::string> keys{
+        {"openrouter", "dummy-key-no-network"}};
+    ApiClient client(std::move(keys));
     AdvisorGateInput in;
     in.original_task = "do the thing";
     in.terminating_text = "done";
