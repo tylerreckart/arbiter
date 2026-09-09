@@ -1762,12 +1762,16 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     bool user_already_committed = false;
 
     // Unified main loop — kMaxIters bounds total trips through stream(),
-    // including iter 0 (already done above).  Loop body branches on
-    // (cmds.empty + gate state) into one of: terminate, halt, redirect,
-    // or execute-tool-results-and-stream.  Pre-gate behaviour (gate
-    // inactive) is preserved exactly: cmds.empty terminates immediately.
+    // including iter 0 (already done above).  `i` is the number of
+    // stream() calls already completed, so the loop must reach
+    // i == kMaxIters to gate the last trip (unlike run_dispatch, which
+    // streams first and therefore uses a 0-based i == kMaxTurns - 1).
+    // Loop body branches on (cmds.empty + gate state) into one of:
+    // terminate, halt, redirect, or execute-tool-results-and-stream.
+    // Pre-gate behaviour (gate inactive) is preserved exactly:
+    // cmds.empty terminates immediately.
     static constexpr int kMaxIters = 6;
-    for (int i = 1; i < kMaxIters; ++i) {
+    for (int i = 1; i <= kMaxIters; ++i) {
         if (turn_is_cancelled()) {
             ApiResponse r;
             r.ok         = false;
@@ -1846,9 +1850,11 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                 return resp;
             }
 
-            // REDIRECT on the final loop slot cannot be gated again — match
-            // run_dispatch and fail closed with iteration_limit (#307).
-            if (i == kMaxIters - 1) {
+            // REDIRECT after kMaxIters streams cannot be followed by
+            // another gated turn — match run_dispatch and fail closed
+            // with iteration_limit (#307).  `i` counts completed streams
+            // (iter 0 ran outside), so the last slot is i == kMaxIters.
+            if (i == kMaxIters) {
                 resp.ok            = false;
                 resp.error_type    = "iteration_limit";
                 resp.error         = "advisor redirect at iteration limit (max " +
@@ -1869,6 +1875,9 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                 "\n[end advisor redirect]");
             if (cb) cb("\n");
         } else {
+            // Last completed stream still has tools we cannot follow up
+            // on — same as run_dispatch dropping leftover cmds at the cap.
+            if (i == kMaxIters) break;
             // Tool-call iteration — assemble tool results and re-enter.
             if (cb) cb("\n");
             // Image-bearing tool results (/fetch on image/*, /read on image
@@ -1931,6 +1940,8 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             user_already_committed = true;
             fire_history_checkpoint();
         }
+
+        if (i == kMaxIters) break;
 
         if (user_already_committed) {
             resp = agent_ptr->stream_continue(gated_cb);
