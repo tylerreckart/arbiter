@@ -150,3 +150,26 @@ TEST_CASE("presence_model falls back to the watcher's model") {
     CHECK(presence_model(cfg, "anthropic/claude-haiku-4-5") ==
           "anthropic/claude-sonnet-4-6");
 }
+
+TEST_CASE("parse: note longer than cap truncates with marker") {
+    std::string body(kPresenceMaxNote + 40, 'n');
+    auto out = parse_presence_signal(
+        "<signal>CONTEXT</signal><note>" + body + "</note>");
+    CHECK(out.kind == PresenceOutput::Kind::Context);
+    CHECK(out.text.size() <= kPresenceMaxNote);
+    CHECK(out.text.find("[truncated]") != std::string::npos);
+}
+
+TEST_CASE("parse: note cap does not split trailing UTF-8") {
+    // U+00E9 (é) is two bytes in UTF-8: 0xC3 0xA9
+    std::string body(kPresenceMaxNote - 1, 'a');
+    body.push_back(static_cast<char>(0xC3));
+    body.push_back(static_cast<char>(0xA9));
+    body.append(20, 'z');
+    auto out = parse_presence_signal(
+        "<signal>CONTEXT</signal><note>" + body + "</note>");
+    CHECK(out.kind == PresenceOutput::Kind::Context);
+    CHECK(out.text.size() <= kPresenceMaxNote);
+    const unsigned char last = static_cast<unsigned char>(out.text.back());
+    CHECK((last & 0xC0) != 0x80);  // not a continuation byte
+}

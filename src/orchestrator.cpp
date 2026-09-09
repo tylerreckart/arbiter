@@ -686,7 +686,8 @@ std::string Orchestrator::collect_presence_notes(
             ev.stream_id = stream_id;
             ev.kind = (out.kind == PresenceOutput::Kind::Context)
                           ? "context" : "silent";
-            ev.detail = out.text;
+            if (out.kind == PresenceOutput::Kind::Context && !out.text.empty())
+                ev.detail = out.text;
             ev.malformed = out.malformed;
             presence_event_cb_(ev);
         }
@@ -1209,6 +1210,17 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             }
 
             if (sig.kind == AdvisorGateOutput::Kind::Redirect) {
+                if (i == kMaxTurns - 1) {
+                    resp.ok         = false;
+                    resp.error_type = "iteration_limit";
+                    resp.error      = "advisor redirect at iteration limit (max " +
+                                      std::to_string(kMaxTurns) + ")";
+                    resp.content       = std::move(total_content);
+                    resp.input_tokens  = total_input_tok;
+                    resp.output_tokens = total_output_tok;
+                    if (stream_end_cb_) stream_end_cb_(agent_id, sid, false);
+                    return resp;
+                }
                 ++redirects_used;
                 current_msg =
                     "[advisor redirect — synthetic user turn]\n" +
