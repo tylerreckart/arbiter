@@ -9,6 +9,28 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.13.3] — 2026-09-09
 
+### Fixed
+- **Tool-loop iteration limit.** Exhausting `kMaxTurns` / `kMaxIters` with
+  pending tool calls now returns `iteration_limit` (not a silent success) and
+  skips leftover tools on the final iteration so `run_dispatch` matches
+  `send_streaming` (#280, #294).
+- **SSE / HTTP error taxonomy.** `advisor_halt`, `circuit_open`, and
+  `iteration_limit` surface as dedicated `error_code` values instead of falling
+  through to `provider_error`. Advisor-halt and iteration-limit turns still
+  persist conversation messages like successful ones.
+- **Streaming parser across tool iterations.** Master `send_streaming` flushes
+  and resets `StreamFilter` / `StreamRenderer` at each iteration boundary so
+  held `/write` prefixes and BlockParser state do not bleed into the next model
+  turn. Markdown diff/code sinks stay wired across reset.
+- **BlockParser hold cap and UTF-8 flush.** Ambiguous streamed prefixes are
+  capped at 64 KiB (force-emit after line swallow so large chunks cannot leak
+  `/write` bodies); `flush` peels incomplete UTF-8 like `feed`. Truncated
+  `/write` resume lines sent to SSE are plain text (no TUI ANSI) (#286).
+- **Scheduler lease and recovery.** Recurring schedules stay active on
+  transient conversation hydration failure; stuck `running` leases release after
+  a finalize CAS miss; orphan recovery paginates past 200 rows and matches
+  restart-interrupted task runs by error message. PATCH/resume of an in-flight
+  schedule returns `409` instead of clearing the lease (#287, #288, #294).
 
 ## [0.13.2] — 2026-09-04
 
