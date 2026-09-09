@@ -10,6 +10,8 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "advisor.h"
+#include "api_client.h"
 #include "commands.h"
 
 using namespace arbiter;
@@ -162,4 +164,22 @@ TEST_CASE("cap: does not split a UTF-8 sequence") {
     CHECK(in.original_task.find("[truncated]") != std::string::npos);
     CHECK(in.original_task.find(dash) == std::string::npos);
     CHECK(in.original_task.find('\xE2') == std::string::npos);
+}
+
+TEST_CASE("run_advisor_gate: provider failure does not echo raw error") {
+    // dummy-key-no-network short-circuits complete() with an offline
+    // auth body that historically mentioned "Authentication header".
+    // Gate text/raw must stay on the fixed taxonomy — same leak class
+    // as sanitised_api_response_error on orchestrate `done`.
+    ApiClient client({{"openrouter", "dummy-key-no-network"}});
+    AdvisorGateInput in;
+    in.original_task = "do the thing";
+    in.terminating_text = "done";
+    auto out = run_advisor_gate(client, "openrouter/test-model", "", in);
+    CHECK(out.kind == AdvisorGateOutput::Kind::Halt);
+    CHECK(out.malformed == true);
+    CHECK(out.text == kAdvisorProviderError);
+    CHECK(out.raw.empty());
+    CHECK(out.text.find("Authentication") == std::string::npos);
+    CHECK(out.text.find("offline") == std::string::npos);
 }

@@ -535,7 +535,7 @@ AdvisorInvoker Orchestrator::make_advisor_invoker(const std::string& caller_id) 
         req.messages = {{"user", question}};
 
         ApiResponse resp = client_.complete(req);
-        if (!resp.ok) return "ERR: " + resp.error;
+        if (!resp.ok) return std::string("ERR: ") + kAdvisorProviderError;
 
         // Attribute the advisor's cost to the caller's ledger but use the
         // advisor model's pricing.  Accurate per-caller spend attribution
