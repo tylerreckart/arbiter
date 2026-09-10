@@ -373,6 +373,57 @@ TEST_CASE("parse_agent_commands recognises /help with and without topic") {
     }
 }
 
+TEST_CASE("parse_agent_commands keeps slash-prefixed /todo add body") {
+    // Regression: early block peek bailed on ANY `/` line, dropping
+    // paths/URLs.  Non-writ slash lines must stay in the body.
+    std::string response =
+        "/todo add Restore /Users path handling\n"
+        "/Users/me/.arbiter/config.json is the live file\n"
+        "/v1/orchestrate must stay tenant-scoped\n"
+        "/endtodo\n";
+    auto cmds = parse_agent_commands(response);
+    REQUIRE(cmds.size() == 1);
+    CHECK(cmds[0].name == "todo");
+    CHECK(cmds[0].args.find("add Restore /Users path handling") != std::string::npos);
+    CHECK(cmds[0].content.find("/Users/me/.arbiter/config.json") != std::string::npos);
+    CHECK(cmds[0].content.find("/v1/orchestrate") != std::string::npos);
+    CHECK(cmds[0].content.find("/endtodo") == std::string::npos);
+    CHECK(cmds[0].truncated == false);
+}
+
+TEST_CASE("parse_agent_commands keeps slash-prefixed /lesson block body") {
+    // Same bail-on-any-slash bug as /todo add.  A lesson about a host
+    // path or HTTP route must not collapse to signature-only.
+    std::string response =
+        "/lesson Don't GET /v1/health without a token\n"
+        "/usr/bin/curl needs -H Authorization\n"
+        "/v1/health is tenant-gated; unsigned calls 401\n"
+        "/endlesson\n";
+    auto cmds = parse_agent_commands(response);
+    REQUIRE(cmds.size() == 1);
+    CHECK(cmds[0].name == "lesson");
+    CHECK(cmds[0].args == "Don't GET /v1/health without a token");
+    CHECK(cmds[0].content.find("/usr/bin/curl") != std::string::npos);
+    CHECK(cmds[0].content.find("/v1/health") != std::string::npos);
+    CHECK(cmds[0].content.find("/endlesson") == std::string::npos);
+    CHECK(cmds[0].truncated == false);
+}
+
+TEST_CASE("parse_agent_commands /lesson block still yields to a following writ") {
+    // First peeked line is a real writ — stay in single-line mode so
+    // /exec is parsed as its own command, not swallowed as lesson body.
+    std::string response =
+        "/lesson remember to check workspace\n"
+        "/exec ls\n";
+    auto cmds = parse_agent_commands(response);
+    REQUIRE(cmds.size() == 2);
+    CHECK(cmds[0].name == "lesson");
+    CHECK(cmds[0].args == "remember to check workspace");
+    CHECK(cmds[0].content.empty());
+    CHECK(cmds[1].name == "exec");
+    CHECK(cmds[1].args == "ls");
+}
+
 TEST_CASE("parse_agent_commands handles /mem add entry as a /endmem-terminated block") {
     {
         // Happy path: header line, body, /endmem.

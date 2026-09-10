@@ -131,6 +131,36 @@ std::string first_token(const std::string& s) {
     return tok;
 }
 
+// True when `line` is itself a recognised writ (or its no-arg form),
+// not merely `/`-prefixed prose.  Block-form /todo add and /lesson used
+// to bail on ANY slash line, which dropped legitimate bodies that start
+// with a path, URL, or shell example (`/Users/...`, `/v1/...`, `/opt/...`).
+bool starts_with_writ(const std::string& l) {
+    static const char* kWritPrefixes[] = {
+        "/todo", "/endtodo",
+        "/agent ", "/parallel", "/endparallel", "/pane ",
+        "/write", "/endwrite",
+        "/read ", "/list", "/map",
+        "/search ", "/fetch ", "/browse ",
+        "/exec ",
+        "/mem", "/endmem",
+        "/mcp ",
+        "/a2a", "/schedule",
+        "/lesson", "/endlesson",
+        "/advise", "/help",
+    };
+    for (const char* p : kWritPrefixes) {
+        size_t n = std::strlen(p);
+        if (l.size() >= n && l.compare(0, n, p) == 0) return true;
+        // Trailing-space-only forms ("/agent " etc.) also match the
+        // exact no-arg line ("/agent").
+        if (n > 0 && p[n - 1] == ' ' &&
+            l.size() == n - 1 && l.compare(0, n - 1, p, n - 1) == 0)
+            return true;
+    }
+    return false;
+}
+
 // Collapse whitespace runs and newlines so tool previews stay one line.
 std::string collapse_ws_preview(std::string s, size_t max_chars) {
     std::string out;
@@ -421,37 +451,8 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
             cmd.args = head;
 
             // Peek ahead: enter block mode unless the next line is plainly
-            // another writ.  Earlier versions bailed on ANY `/`-prefixed
-            // line, which dropped legitimate body content beginning with a
-            // slash (file paths, shell commands, URLs).  We now narrow the
-            // check to recognised writ prefixes — a `/Users/...` or `/v1/`
-            // in the body sails through.
-            auto starts_with_writ = [](const std::string& l) {
-                static const char* kWritPrefixes[] = {
-                    "/todo", "/endtodo",
-                    "/agent ", "/parallel", "/endparallel", "/pane ",
-                    "/write", "/endwrite",
-                    "/read ", "/list", "/map",
-                    "/search ", "/fetch ", "/browse ",
-                    "/exec ",
-                    "/mem", "/endmem",
-                    "/mcp ",
-                    "/a2a", "/schedule",
-                    "/lesson", "/endlesson",
-                    "/advise", "/help",
-                };
-                for (const char* p : kWritPrefixes) {
-                    size_t n = std::strlen(p);
-                    if (l.size() >= n && l.compare(0, n, p) == 0) return true;
-                    // Trailing-space-only forms ("/agent " etc.) also
-                    // match exact line == "/agent" (no args).
-                    if (n > 0 && p[n - 1] == ' ' &&
-                        l.size() == n - 1 && l.compare(0, n - 1, p, n - 1) == 0)
-                        return true;
-                }
-                return false;
-            };
-
+            // another writ.  Non-writ `/`-prefixed lines (paths, URLs)
+            // are body content — see starts_with_writ.
             std::streampos pos = ss.tellg();
             std::string next;
             std::ostringstream body;
@@ -533,8 +534,10 @@ std::vector<AgentCommand> parse_agent_commands(const std::string& response) {
                 while (std::getline(ss, next)) {
                     if (!next.empty() && next.back() == '\r') next.pop_back();
                     if (!any_body) {
-                        if (next.empty() ||
-                            (!next.empty() && next.front() == '/')) {
+                        // Same bail policy as /todo add: empty line or a
+                        // recognised writ ends peek (single-line lesson).
+                        // A `/Users/...` or `/v1/` body line is content.
+                        if (next.empty() || starts_with_writ(next)) {
                             ss.clear();
                             ss.seekg(pos);
                             break;
