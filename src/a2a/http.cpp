@@ -74,7 +74,8 @@ struct StreamCtx {
     SseReader*           reader;
     std::atomic<bool>*   cancel;
     std::string*         raw_body;
-    bool                 aborted = false;
+    bool                 aborted  = false;
+    bool                 overflow = false;
 };
 
 size_t write_to_sse(char* ptr, size_t size, size_t nmemb, void* userdata) {
@@ -98,7 +99,13 @@ size_t write_to_sse(char* ptr, size_t size, size_t nmemb, void* userdata) {
         return 0;
     }
 
-    if (ctx->reader) ctx->reader->feed(ptr, n);
+    if (ctx->reader) {
+        if (!ctx->reader->feed(ptr, n) || ctx->reader->overflowed()) {
+            ctx->aborted = true;
+            ctx->overflow = true;
+            return 0;
+        }
+    }
     return n;
 }
 
@@ -191,7 +198,7 @@ HttpResponse rpc_stream(const std::string& url,
     }
 
     SseReader  reader(std::move(on_event));
-    StreamCtx  ctx{&reader, &cancel, &out.body, false};
+    StreamCtx  ctx{&reader, &cancel, &out.body, false, false};
 
     struct curl_slist* headers = build_headers(extra_headers,
                                                 /*json_content=*/true,
@@ -223,8 +230,12 @@ HttpResponse rpc_stream(const std::string& url,
     curl_easy_cleanup(curl);
 
     if (rc == CURLE_ABORTED_BY_CALLBACK && ctx.aborted) {
-        // Caller-initiated cancel; not really an error.
-        out.error = "canceled";
+        if (ctx.overflow) {
+            out.error = "sse event exceeded size limit";
+        } else {
+            // Caller-initiated cancel; not really an error.
+            out.error = "canceled";
+        }
     } else if (rc != CURLE_OK) {
         out.error = curl_easy_strerror(rc);
     }

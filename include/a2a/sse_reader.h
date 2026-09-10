@@ -17,10 +17,19 @@
 // Events with no `event:` line default to "message" per the spec.
 // Empty data is allowed (yields data="").
 
+#include <cstddef>
 #include <functional>
 #include <string>
 
 namespace arbiter::a2a {
+
+// Caps so a remote that never sends a newline (or concatenates huge
+// `data:` fields) cannot grow the parser buffers without bound.  2 MiB
+// is well above a legitimate JSON-RPC SSE line; 16 MiB matches the HTTP
+// API body cap so a full-size task payload still fits in one event.
+inline constexpr size_t kSseMaxLineBytes      = 2 * 1024 * 1024;
+inline constexpr size_t kSseMaxEventBytes     = 16 * 1024 * 1024;
+inline constexpr size_t kSseMaxEventNameBytes = 256;
 
 class SseReader {
 public:
@@ -32,7 +41,11 @@ public:
     // Feed `n` bytes of raw response body.  Safe to call repeatedly with
     // any chunking; no thread-safety promises beyond what the caller
     // arranges (libcurl's write callback is single-threaded per handle).
-    void feed(const char* data, size_t n);
+    // Returns false once a size cap is exceeded; further feeds stay
+    // false and no additional events are dispatched.
+    bool feed(const char* data, size_t n);
+
+    bool overflowed() const { return overflowed_; }
 
     // Flush any in-progress event with its current data.  Call when the
     // upstream connection closes mid-event.  Per spec, an unterminated
@@ -43,14 +56,15 @@ public:
     void flush(bool force_dispatch = false);
 
 private:
-    void process_line(const std::string& line);
+    bool process_line(const std::string& line);
     void dispatch();
 
     EventCallback cb_;
     std::string   buf_;          // unread bytes pending newline
     std::string   event_name_;   // current event's name (default "message")
     std::string   data_;         // accumulated data lines, '\n' joined
-    bool          have_event_ = false;
+    bool          have_event_  = false;
+    bool          overflowed_  = false;
 };
 
 } // namespace arbiter::a2a
