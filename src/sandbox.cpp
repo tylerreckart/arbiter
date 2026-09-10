@@ -6,7 +6,6 @@
 #include "workspace_root.h"
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
@@ -1664,54 +1663,69 @@ bool SandboxManager::read_from_workspace(int64_t tenant_id,
         err_out = "no such file in workspace: " + clean;
         return false;
     }
-    // Regular files only — refuse to read through a symlink leaf that
-    // somehow still points outside after the prefix check (defense in depth).
-    if (fs::is_symlink(target, ec)) {
-        fs::path again;
-        std::string again_err;
-        if (!resolve_within_workspace(fs::path(workspace_path_for(tenant_id)),
-                                      clean, again, again_err)) {
-            err_out = again_err;
+    if (cfg_.read_check_pause_ms > 0) {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(cfg_.read_check_pause_ms));
+    }
+
+    // Open the *resolved* path with O_NOFOLLOW.  resolve_within_workspace
+    // already canonicalises in-workspace symlink leaves (so alias → ok.txt
+    // still works); this open refuses a leaf that was swapped for a
+    // symlink after that check — the same TOCTOU write_to_workspace
+    // closed.  ifstream follows, so a concurrent /exec `ln -sf` could
+    // otherwise leak a host or sibling-tenant file.
+    const int fd = ::open(target.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ELOOP) {
+            err_out = "refusing to read through symlink: " + clean;
             return false;
         }
-        target = std::move(again);
+        if (errno == ENOENT) {
+            err_out = "no such file in workspace: " + clean;
+            return false;
+        }
+        err_out = std::string("open for reading failed: ") + std::strerror(errno);
+        return false;
     }
-    std::ifstream f(target, std::ios::in | std::ios::binary);
-    if (!f.is_open()) { err_out = "open for reading failed"; return false; }
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(fd);
+        err_out = "no such file in workspace: " + clean;
+        return false;
+    }
 
     const int cap = cfg_.read_max_bytes;
-    if (cap > 0) {
-        std::error_code sz_ec;
-        const auto fsz = fs::file_size(target, sz_ec);
-        if (!sz_ec && fsz > static_cast<uintmax_t>(cap)) {
-            err_out = "file too large to read (" +
-                      std::to_string(static_cast<int64_t>(fsz)) +
-                      " bytes; limit " + std::to_string(cap) + ")";
+    if (cap > 0 && st.st_size > static_cast<off_t>(cap)) {
+        ::close(fd);
+        err_out = "file too large to read (" +
+                  std::to_string(static_cast<int64_t>(st.st_size)) +
+                  " bytes; limit " + std::to_string(cap) + ")";
+        return false;
+    }
+
+    std::string buf;
+    if (st.st_size > 0) buf.resize(static_cast<size_t>(st.st_size));
+    std::size_t off = 0;
+    while (off < buf.size()) {
+        const ssize_t n = ::read(fd, buf.data() + off, buf.size() - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            err_out = std::string("read failed: ") + std::strerror(errno);
+            ::close(fd);
             return false;
         }
-        std::array<char, 65536> buf{};
-        std::ostringstream ss;
-        std::ios::off_type total = 0;
-        while (f) {
-            f.read(buf.data(), static_cast<std::streamsize>(buf.size()));
-            const auto n = static_cast<size_t>(f.gcount());
-            if (n == 0) break;
-            if (total < 0 ||
-                static_cast<int64_t>(n) >
-                    static_cast<int64_t>(cap) - total) {
-                err_out = "file too large to read (limit " +
-                          std::to_string(cap) + " bytes)";
-                return false;
-            }
-            ss.write(buf.data(), static_cast<std::streamsize>(n));
-            total += static_cast<std::ios::off_type>(n);
+        if (n == 0) break;
+        off += static_cast<size_t>(n);
+        if (cap > 0 && static_cast<int64_t>(off) > cap) {
+            ::close(fd);
+            err_out = "file too large to read (limit " +
+                      std::to_string(cap) + " bytes)";
+            return false;
         }
-        content_out = ss.str();
-    } else {
-        std::ostringstream ss;
-        ss << f.rdbuf();
-        content_out = ss.str();
     }
+    ::close(fd);
+    if (off != buf.size()) buf.resize(off);
+    content_out = std::move(buf);
     mime_out    = mime_for(clean);
     touch_access(tenant_id);
     return true;
