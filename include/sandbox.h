@@ -26,7 +26,10 @@
 //            sees it on next /exec via the bind mount); the SSE `file`
 //            event still fires for the live UI
 //   /read    falls back to the host workspace dir when no DB artifact
-//            matches the path
+            //            matches the path.  Opens the resolved leaf with
+            //            O_NOFOLLOW so a concurrent /exec cannot swap in a
+            //            symlink and escape the workspace (write already
+            //            used this; ifstream followed the swapped leaf).
 //
 // Resource caps (memory, cpus, pids, --network=none) are applied at
 // container start.  Per-exec wall-clock is enforced two ways: the command
@@ -128,6 +131,11 @@ struct SandboxConfig {
     // per-tenant quota mutex is still held.  Unit tests use this to prove
     // parallel /write cannot interleave with /exec (#136).  0 in production.
     int quota_exec_pause_ms = 0;
+
+    // Test-only: milliseconds to sleep after path resolve and before the
+    // O_NOFOLLOW open in read_from_workspace.  Unit tests use this to
+    // plant a leaf symlink swap in the TOCTOU window.  0 in production.
+    int read_check_pause_ms = 0;
 
     // Idle-reaping threshold, seconds.  A background reaper stops
     // tenant containers whose last sandbox operation (/exec, /write,
