@@ -315,6 +315,23 @@ TEST_CASE("scheduled task claim: in-flight lease without moving next_fire_at") {
     CHECK(due.empty());
 }
 
+TEST_CASE("list_task_runs ties same started_at by id DESC") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t now = 1'700'000'000;
+
+    auto task = s.create_scheduled_task(tid, "index", 0, "hello", "once",
+        "once", now - 1, "", now - 1);
+    auto older = s.create_task_run(tid, task.id, "failed", now, "req-old");
+    auto newer = s.create_task_run(tid, task.id, "succeeded", now, "req-new");
+    REQUIRE(newer.id > older.id);
+
+    auto listed = s.list_task_runs(tid, task.id, /*since=*/0, /*limit=*/1);
+    REQUIRE(listed.size() == 1);
+    CHECK(listed[0].id == newer.id);
+    CHECK(listed[0].request_id == "req-new");
+}
+
 TEST_CASE("scheduled task completion: paused mid-run is not overwritten") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");

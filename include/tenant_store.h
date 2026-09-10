@@ -934,7 +934,8 @@ public:
     std::optional<TaskRun>
     get_task_run(int64_t tenant_id, int64_t id) const;
 
-    // Newest started_at first.  `task_id == 0` ⇒ tenant-wide.
+    // Newest started_at first, then id DESC so same-second runs have a
+    // stable "latest" (recovery uses limit=1).  `task_id == 0` ⇒ tenant-wide.
     // `since_epoch == 0` ⇒ no time filter.  Hard-capped at 200.
     std::vector<TaskRun>
     list_task_runs(int64_t tenant_id, int64_t task_id,

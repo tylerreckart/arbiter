@@ -4743,7 +4743,7 @@ TenantStore::list_task_runs(int64_t tenant_id, int64_t task_id,
         " FROM task_runs WHERE tenant_id = ?";
     if (task_id    > 0) sql += " AND task_id = ?";
     if (since_epoch > 0) sql += " AND started_at >= ?";
-    sql += " ORDER BY started_at DESC LIMIT ?;";
+    sql += " ORDER BY started_at DESC, id DESC LIMIT ?;";
     Stmt q(db_, sql.c_str());
     int idx = 1;
     q.bind(idx++, tenant_id);
