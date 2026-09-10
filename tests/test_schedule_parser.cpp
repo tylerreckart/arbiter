@@ -186,4 +186,40 @@ TEST_CASE("next_fire_for_recur: advances daily, hourly, weekly correctly") {
         int64_t n = next_fire_for_recur("{not json", now);
         CHECK(n == 0);
     }
+
+    SUBCASE("overflowing every_minutes returns 0 rather than wrapping") {
+        int64_t n = next_fire_for_recur(
+            R"({"every_minutes":200000000000000000})", now);
+        CHECK(n == 0);
+    }
+}
+
+TEST_CASE("parse: huge intervals fail closed without throwing") {
+    const int64_t now = kNow();
+
+    SUBCASE("digit run exceeds int64") {
+        auto r = parse_schedule_phrase(
+            "in 99999999999999999999 weeks", now);
+        CHECK_FALSE(r.ok);
+        CHECK(r.error.message.find("too large") != std::string::npos);
+    }
+
+    SUBCASE("product overflows int64") {
+        auto r = parse_schedule_phrase("in 20000000000000 weeks", now);
+        CHECK_FALSE(r.ok);
+        CHECK(r.error.message.find("too large") != std::string::npos);
+    }
+
+    SUBCASE("every N hours overflow") {
+        auto r = parse_schedule_phrase(
+            "every 99999999999999999999 hours", now);
+        CHECK_FALSE(r.ok);
+        CHECK(r.error.message.find("too large") != std::string::npos);
+    }
+
+    SUBCASE("ordinary values still parse") {
+        auto r = parse_schedule_phrase("in 2 hours", now);
+        CHECK(r.ok);
+        CHECK(r.spec.fire_at == now + 2 * 3600);
+    }
 }
