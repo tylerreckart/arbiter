@@ -22,6 +22,7 @@
 #include "json.h"
 
 #include <atomic>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -291,9 +292,41 @@ TEST_CASE("SseReader handles arbitrary chunking") {
     const std::string stream =
         "event: message\ndata: {\"hello\":\"world\"}\n\n";
     // Feed one byte at a time.
-    for (char c : stream) r.feed(&c, 1);
+    for (char c : stream) CHECK(r.feed(&c, 1));
     REQUIRE(got.size() == 1);
     CHECK(got[0] == "{\"hello\":\"world\"}");
+    CHECK_FALSE(r.overflowed());
+}
+
+TEST_CASE("SseReader refuses an unterminated line past the size cap") {
+    std::vector<std::pair<std::string, std::string>> got;
+    SseReader r([&](const std::string& ev, const std::string& data) {
+        got.push_back({ev, data});
+    });
+    const std::string huge(kSseMaxLineBytes + 1, 'x');
+    CHECK_FALSE(r.feed(huge.data(), huge.size()));
+    CHECK(r.overflowed());
+    CHECK(got.empty());
+    // Further bytes, including a well-formed event, stay rejected so a
+    // hostile stream cannot resume after blowing the cap.
+    const char* ok = "data: later\n\n";
+    CHECK_FALSE(r.feed(ok, std::strlen(ok)));
+    CHECK(got.empty());
+}
+
+TEST_CASE("SseReader refuses accumulated data past the event cap") {
+    std::vector<std::string> got;
+    SseReader r([&](const std::string&, const std::string& d) {
+        got.push_back(d);
+    });
+    const std::string line = "data: " + std::string(1024 * 1024, 'x') + "\n";
+    bool accepted = true;
+    for (int i = 0; i < 20 && accepted; ++i) {
+        accepted = r.feed(line.data(), line.size());
+    }
+    CHECK_FALSE(accepted);
+    CHECK(r.overflowed());
+    CHECK(got.empty());
 }
 
 // ── 4. Agent-card builder ─────────────────────────────────────────────
