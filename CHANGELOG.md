@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Delegation / `/parallel` provider errors.** Sub-agent failures no longer
+  copy the upstream `error.message` into the parent tool envelope. Provider
+  bodies can quote Authorization headers; the parent now sees a fixed
+  `ERR: upstream provider error` (loop-control types such as `cancelled`
+  and `advisor_halt` keep their own text).
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed

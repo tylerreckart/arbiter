@@ -156,6 +156,17 @@ struct ApiResponse {
     bool gate_approved = false;
 };
 
+// Provider error.message can quote Authorization headers or request data.
+// Surfaces that feed another model (delegation / /parallel tool envelopes)
+// or a tenant must never copy that field — same leak class as
+// kAdvisorProviderError and sanitised_api_response_error.
+inline constexpr const char kUpstreamProviderError[] = "upstream provider error";
+
+// Loop-control types (cancel, iteration_limit, advisor_halt, circuit_open,
+// continuation_failed) keep our own generated `error` text.  Every other
+// failure maps to kUpstreamProviderError.
+std::string sanitized_upstream_error(const ApiResponse& resp);
+
 using StreamCallback = std::function<void(const std::string& chunk)>;
 // Optional side-channel for provider reasoning/thinking deltas (Anthropic
 // thinking_delta, OpenAI reasoning_content, Gemini thought parts).  Not mixed

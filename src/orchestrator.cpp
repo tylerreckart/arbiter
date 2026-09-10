@@ -257,7 +257,10 @@ AgentInvoker Orchestrator::make_invoker(const std::string& caller_id, int depth,
         // Shared cache propagates so sub-agents don't re-fetch URLs.
         auto resp = send_internal(sub_id, enriched_msg, depth + 1,
                                   shared_cache, original_query);
-        return resp.ok ? resp.content : "ERR: " + resp.error;
+        // Never copy provider error.message into the parent tool envelope —
+        // that field can quote Authorization headers (see #311).
+        return resp.ok ? resp.content
+                       : std::string("ERR: ") + sanitized_upstream_error(resp);
     };
 }
 
@@ -444,9 +447,10 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
                 try {
                     auto resp = run_dispatch(ephemeral, sub_id, enriched_msg,
                                               depth + 1, &local_cache, orig_q);
-                    results[i] = resp.ok ? resp.content : "ERR: " + resp.error;
-                } catch (const std::exception& e) {
-                    results[i] = std::string("ERR: ") + e.what();
+                    results[i] = resp.ok ? resp.content
+                        : std::string("ERR: ") + sanitized_upstream_error(resp);
+                } catch (const std::exception&) {
+                    results[i] = std::string("ERR: ") + kUpstreamProviderError;
                 }
             });
         }
