@@ -1441,11 +1441,13 @@ Conversation TenantStore::create_conversation(int64_t tenant_id,
 
 std::vector<Conversation>
 TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
-                                 int limit, int64_t folder_id_filter) const {
+                                 int limit, int64_t folder_id_filter,
+                                 int64_t before_id) const {
     std::vector<Conversation> out;
     if (!db_) return out;
 
     const int cap = (limit > 0 && limit <= 200) ? limit : 50;
+    const bool keyed = before_updated_at > 0 && before_id > 0;
 
     std::string sql = std::string("SELECT ") + kConvCols +
                        " FROM conversations WHERE tenant_id = ?"
@@ -1453,14 +1455,26 @@ TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
                        " AND origin != 'tui'";
     if (folder_id_filter == 0) sql += " AND folder_id = 0";
     else if (folder_id_filter > 0) sql += " AND folder_id = ?";
-    if (before_updated_at > 0) sql += " AND updated_at < ?";
-    sql += " ORDER BY updated_at DESC LIMIT ?;";
+    if (keyed) {
+        // Composite cursor: same-second siblings after the last id stay
+        // visible.  Timestamp-only `updated_at < ?` skips them.
+        sql += " AND (updated_at < ? OR (updated_at = ? AND id < ?))";
+    } else if (before_updated_at > 0) {
+        sql += " AND updated_at < ?";
+    }
+    sql += " ORDER BY updated_at DESC, id DESC LIMIT ?;";
 
     Stmt q(db_, sql.c_str());
     int idx = 1;
     q.bind(idx++, tenant_id);
     if (folder_id_filter > 0) q.bind(idx++, folder_id_filter);
-    if (before_updated_at > 0) q.bind(idx++, before_updated_at);
+    if (keyed) {
+        q.bind(idx++, before_updated_at);
+        q.bind(idx++, before_updated_at);
+        q.bind(idx++, before_id);
+    } else if (before_updated_at > 0) {
+        q.bind(idx++, before_updated_at);
+    }
     q.bind(idx, static_cast<int64_t>(cap));
 
     while (q.step() == SQLITE_ROW) out.push_back(row_to_conversation(q));
