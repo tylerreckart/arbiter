@@ -1858,6 +1858,87 @@ bool is_tool_result_failure(const std::string& block) {
     return false;
 }
 
+std::vector<std::pair<std::string, std::string>>
+failed_tool_signatures(const std::vector<AgentCommand>& cmds,
+                       const std::string& envelope) {
+    std::vector<std::pair<std::string, std::string>> failed;
+    for (const auto& c : cmds) {
+        // Look for the block header "[/<name> ..." and find the next
+        // "[END <UPPERNAME>]" marker; if any "ERR:" sits at the start
+        // of a line between them, the cmd failed.  Cheap string scan;
+        // bounded by the tool-result budget.
+        std::string head = "[/" + c.name;
+        auto h = envelope.find(head);
+        if (h == std::string::npos) continue;
+        std::string upper;
+        upper.reserve(c.name.size());
+        for (char ch : c.name) upper.push_back(static_cast<char>(
+            std::toupper(static_cast<unsigned char>(ch))));
+        std::string end_marker = "[END " + upper + "]";
+        auto e = envelope.find(end_marker, h);
+        if (e == std::string::npos) e = envelope.size();
+        auto body_start = envelope.find('\n', h);
+        if (body_start == std::string::npos || body_start >= e) continue;
+        bool is_failed = false;
+        size_t scan = body_start;
+        while (scan < e) {
+            auto nl = envelope.find('\n', scan + 1);
+            if (nl == std::string::npos || nl >= e) nl = e;
+            size_t line_start = scan + 1;
+            if (line_start + 4 <= e &&
+                envelope.compare(line_start, 4, "ERR:") == 0) {
+                is_failed = true;
+                break;
+            }
+            scan = nl;
+        }
+        if (is_failed) failed.emplace_back(c.name, c.args);
+    }
+    return failed;
+}
+
+std::vector<std::string>
+repeated_failed_tool_signatures(
+    const std::vector<std::pair<std::string, std::string>>& current,
+    const std::vector<std::pair<std::string, std::string>>& previous) {
+    std::vector<std::string> repeats;
+    for (const auto& [name, args] : current) {
+        for (const auto& [pname, pargs] : previous) {
+            if (name == pname && args == pargs) {
+                std::string sig = "/" + name + " " + args;
+                if (sig.size() > 200) sig.resize(200);
+                bool already = false;
+                for (auto& r : repeats) if (r == sig) { already = true; break; }
+                if (!already) repeats.push_back(std::move(sig));
+                break;
+            }
+        }
+    }
+    return repeats;
+}
+
+std::string format_loop_detected_warning(const std::vector<std::string>& repeats) {
+    if (repeats.empty()) return {};
+    std::ostringstream warn;
+    warn << "[LOOP DETECTED]\n"
+            "The following tool calls have ERR'd twice in a row — "
+            "repeating them won't change the result.  Change "
+            "argument, change tool, ask for help, or stop trying:\n";
+    for (const auto& r : repeats) warn << "  " << r << "\n";
+    warn << "[END LOOP DETECTED]\n\n";
+    return warn.str();
+}
+
+std::string maybe_loop_detected_preamble(
+    const std::vector<AgentCommand>& cmds,
+    const std::string& envelope,
+    std::vector<std::pair<std::string, std::string>>& prev_failed) {
+    auto curr = failed_tool_signatures(cmds, envelope);
+    auto repeats = repeated_failed_tool_signatures(curr, prev_failed);
+    prev_failed = std::move(curr);
+    return format_loop_detected_warning(repeats);
+}
+
 std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                                    const std::string& agent_id,
                                    const std::string& memory_dir,

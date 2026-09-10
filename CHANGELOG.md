@@ -13,6 +13,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `error_type=continuation_failed` (or `cancelled`) instead of returning
   success with a leftover `error`. Partial content is still kept and
   persisted. SSE `done.error_code` is `continuation_failed`.
+- **Streaming tool-loop detection.** `send_streaming` (TUI / HTTP) now
+  injects the same `[LOOP DETECTED]` warning as `run_dispatch` when the
+  same tool signature `ERR`s twice in a row, so the primary path can
+  change course instead of burning all six iterations.
 
 ## [0.13.3] — 2026-09-09
 

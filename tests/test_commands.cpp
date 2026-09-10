@@ -107,6 +107,59 @@ TEST_CASE("is_tool_result_failure allows clean output") {
     CHECK_FALSE(is_tool_result_failure("Discussing errors in general."));
 }
 
+TEST_CASE("failed_tool_signatures finds ERR: lines inside a result block") {
+    AgentCommand fetch{"fetch", "https://example.com", "", false};
+    const std::string env =
+        "[/fetch https://example.com]\n"
+        "ERR: connection refused\n"
+        "[END FETCH]\n";
+    auto failed = failed_tool_signatures({fetch}, env);
+    REQUIRE(failed.size() == 1);
+    CHECK(failed[0].first == "fetch");
+    CHECK(failed[0].second == "https://example.com");
+}
+
+TEST_CASE("failed_tool_signatures ignores ERR: mentioned in prose") {
+    AgentCommand exec{"exec", "echo hi", "", false};
+    const std::string env =
+        "[/exec echo hi]\n"
+        "Discussing ERR: as prose is fine\n"
+        "[END EXEC]\n";
+    CHECK(failed_tool_signatures({exec}, env).empty());
+}
+
+TEST_CASE("failed_tool_signatures ignores successful blocks") {
+    AgentCommand exec{"exec", "ls", "", false};
+    const std::string env =
+        "[/exec ls]\n"
+        "foo.cpp\n"
+        "[END EXEC]\n";
+    CHECK(failed_tool_signatures({exec}, env).empty());
+}
+
+TEST_CASE("maybe_loop_detected_preamble warns only on a repeated failure") {
+    AgentCommand fetch{"fetch", "https://down.example", "", false};
+    const std::string env =
+        "[/fetch https://down.example]\n"
+        "ERR: timeout\n"
+        "[END FETCH]\n";
+    std::vector<std::pair<std::string, std::string>> prev;
+    CHECK(maybe_loop_detected_preamble({fetch}, env, prev).empty());
+    REQUIRE(prev.size() == 1);
+
+    std::string warn = maybe_loop_detected_preamble({fetch}, env, prev);
+    CHECK(warn.find("[LOOP DETECTED]") == 0);
+    CHECK(warn.find("/fetch https://down.example") != std::string::npos);
+    CHECK(warn.find("[END LOOP DETECTED]") != std::string::npos);
+
+    AgentCommand other{"fetch", "https://other.example", "", false};
+    const std::string other_env =
+        "[/fetch https://other.example]\n"
+        "ERR: timeout\n"
+        "[END FETCH]\n";
+    CHECK(maybe_loop_detected_preamble({other}, other_env, prev).empty());
+}
+
 TEST_CASE("cmd_exec blocks destructive commands by default") {
     std::string result = cmd_exec("rm -rf /tmp/test_nonexistent_dir_xyz");
     CHECK(result.find("ERR:") == 0);
