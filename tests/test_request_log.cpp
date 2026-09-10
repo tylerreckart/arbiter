@@ -5,6 +5,7 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "api_server.h"
 #include "scheduled_task_recovery.h"
 #include "tenant_store.h"
 
@@ -638,5 +639,34 @@ TEST_CASE("reconcile_runs recovery sweep flips running rows") {
     auto kept = s.get_reconcile_run(tid, "rec-done");
     REQUIRE(kept);
     CHECK(kept->status == "satisfied");
+}
+
+TEST_CASE("should_persist_conversation_turn keeps unfinished-but-useful turns") {
+    ApiResponse ok;
+    ok.ok = true;
+    CHECK(should_persist_conversation_turn(ok));
+
+    ApiResponse iter;
+    iter.error_type = "iteration_limit";
+    CHECK(should_persist_conversation_turn(iter));
+
+    ApiResponse halt;
+    halt.error_type = "advisor_halt";
+    CHECK(should_persist_conversation_turn(halt));
+
+    ApiResponse cont;
+    cont.error_type = "continuation_failed";
+    cont.content = "partial assistant text";
+    CHECK(should_persist_conversation_turn(cont));
+
+    ApiResponse cancelled;
+    cancelled.error_type = "cancelled";
+    cancelled.content = "partial";
+    CHECK_FALSE(should_persist_conversation_turn(cancelled));
+
+    ApiResponse provider;
+    provider.error_type = "rate_limit_error";
+    provider.content = "partial";
+    CHECK_FALSE(should_persist_conversation_turn(provider));
 }
 

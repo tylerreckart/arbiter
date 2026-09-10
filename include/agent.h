@@ -183,7 +183,9 @@ private:
     // them before returning so the caller can commit a single merged
     // assistant turn.  `cb` may be null — null triggers the blocking
     // client_.complete() path, non-null triggers client_.stream() so
-    // additional chunks flow through.
+    // additional chunks flow through.  A failed continuation sets
+    // resp.ok=false and error_type continuation_failed (or cancelled)
+    // while leaving the accumulated content and stop_reason=max_tokens.
     void continue_until_done(ApiResponse& resp, StreamCallback cb);
 };
 
