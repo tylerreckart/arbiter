@@ -21,6 +21,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   unchanged. See [`docs/concepts/reconcile.md`](docs/concepts/reconcile.md)
   and [#208](https://github.com/tylerreckart/arbiter/issues/208).
 ### Fixed
+- **Conversation list cursor.** `GET /v1/conversations` now orders by
+  `updated_at DESC, id DESC` and accepts `before_id` so pages that share
+  an epoch second no longer skip or duplicate rows. Timestamp-only
+  `before_updated_at` stays valid for old clients.
 - **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
   the remote response body into `err_out`. `/a2a call` copies that string into
   the calling agent's tool envelope, so a verbose or hostile remote could dump
