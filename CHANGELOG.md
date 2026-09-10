@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Conversation list cursor.** `GET /v1/conversations` now orders by
+  `updated_at DESC, id DESC` and accepts `before_id` so pages that share
+  an epoch second no longer skip or duplicate rows. Timestamp-only
+  `before_updated_at` stays valid for old clients.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed

@@ -1170,6 +1170,7 @@ void handle_conversation_list(int fd, const HttpRequest& req,
         try { return std::stoll(it->second); } catch (...) { return 0; }
     };
     const int64_t before = as_int64("before_updated_at");
+    const int64_t before_id = as_int64("before_id");
     const int     limit  = static_cast<int>(as_int64("limit"));
 
     // folder_id query: absent → no filter; "null"/empty/0 → unfiled;
@@ -1203,7 +1204,7 @@ void handle_conversation_list(int fd, const HttpRequest& req,
     }
 
     auto convs = tenants.list_conversations(tenant.id, before, limit,
-                                            folder_filter);
+                                            folder_filter, before_id);
     auto arr = jarr();
     auto& a = arr->as_array_mut();
     for (auto& c : convs) a.push_back(conversation_to_json(c));
