@@ -141,11 +141,21 @@ void Agent::continue_until_done(ApiResponse& resp, StreamCallback cb) {
         }
 
         if (!more.ok) {
-            // Keep whatever we already accumulated; stop_reason stays
-            // "max_tokens" so the caller knows the response is unfinished,
-            // and resp.error surfaces the continuation failure.
-            resp.error = more.error.empty() ? "continuation failed"
-                                            : "continuation failed: " + more.error;
+            // First segment is still in resp.content.  Fail the turn so
+            // send_streaming / run_dispatch do not treat a truncated
+            // reply as a successful terminal (which would parse and
+            // execute a half-written /write).  Preserve cancel so Esc
+            // does not become a generic provider error.  Other failures
+            // use a fixed type — do not copy more.error (provider bodies
+            // can quote Authorization).  stop_reason stays max_tokens.
+            resp.ok = false;
+            if (more.error_type == "cancelled") {
+                resp.error_type = "cancelled";
+                resp.error      = "cancelled";
+            } else {
+                resp.error_type = "continuation_failed";
+                resp.error      = "continuation failed";
+            }
             break;
         }
 

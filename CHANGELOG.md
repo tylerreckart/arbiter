@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Continuation failure is a failed turn.** When auto-continue after a
+  `max_tokens` cut-off fails, `continue_until_done` now sets `ok=false` and
+  `error_type=continuation_failed` (or `cancelled`) instead of returning
+  success with a leftover `error`. Partial content is still kept and
+  persisted. SSE `done.error_code` is `continuation_failed`.
+
 ## [0.13.3] — 2026-09-09
 
 ### Fixed

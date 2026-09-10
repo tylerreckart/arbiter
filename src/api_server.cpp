@@ -5511,6 +5511,7 @@ const char* sanitised_provider_error_code(const std::string& error_type) {
     if (error_type == "iteration_limit")     return "iteration_limit";
     if (error_type == "advisor_halt")        return "advisor_halt";
     if (error_type == "circuit_open")        return "circuit_open";
+    if (error_type == "continuation_failed") return "continuation_failed";
     return "provider_error";
 }
 
@@ -5533,6 +5534,8 @@ const char* sanitised_provider_error_message(const char* code) {
         return "the tool-call iteration limit was reached";
     if (std::strcmp(code, "advisor_halt") == 0)
         return "the advisor halted the turn";
+    if (std::strcmp(code, "continuation_failed") == 0)
+        return "the model response was cut off and could not be continued";
     if (std::strcmp(code, "circuit_open") == 0)
         return "the provider circuit breaker is open — retry after cooldown";
     return "the upstream provider returned an error";
