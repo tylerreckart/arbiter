@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <limits>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -187,10 +188,42 @@ int64_t parse_json_int_field(const std::string& obj, const std::string& key) {
     if (p < obj.size() && obj[p] == '-') { sign = -1; ++p; }
     int64_t v = 0;
     while (p < obj.size() && std::isdigit(static_cast<unsigned char>(obj[p]))) {
-        v = v * 10 + (obj[p] - '0');
+        const int digit = obj[p] - '0';
+        if (v > (std::numeric_limits<int64_t>::max() - digit) / 10) return 0;
+        v = v * 10 + digit;
         ++p;
     }
     return v * sign;
+}
+
+// Regex captures are decimal digit runs; std::stoll throws out_of_range
+// when they exceed int64.  The /schedule writ and POST /v1/schedules
+// call this on agent- or tenant-supplied phrases — do not throw.
+bool parse_count(const std::string& s, int64_t& out) {
+    if (s.empty()) return false;
+    try {
+        size_t idx = 0;
+        const long long v = std::stoll(s, &idx, 10);
+        if (idx != s.size() || v < 0) return false;
+        out = static_cast<int64_t>(v);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool add_seconds(int64_t now, int64_t n, int64_t unit, int64_t& out) {
+    if (n < 0 || unit <= 0) return false;
+    if (n == 0) {
+        out = now;
+        return true;
+    }
+    if (n > std::numeric_limits<int64_t>::max() / unit) return false;
+    const int64_t delta = n * unit;
+    if (now > 0 && delta > std::numeric_limits<int64_t>::max() - now) return false;
+    if (now < 0 && delta < std::numeric_limits<int64_t>::min() - now) return false;
+    out = now + delta;
+    return true;
 }
 
 } // namespace
@@ -208,16 +241,25 @@ ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
         std::regex re(R"(^in\s+(\d+)\s+(minute|min|m|hour|h|day|d|week|w)s?$)");
         std::smatch m;
         if (std::regex_match(phrase, m, re)) {
-            int64_t n = std::stoll(m[1].str());
+            int64_t n = 0;
+            if (!parse_count(m[1].str(), n)) {
+                r.error.message = "interval too large";
+                return r;
+            }
             std::string u = m[2].str();
             int64_t mult = 60;
             std::string unit_word = "minutes";
             if (u == "hour" || u == "h") { mult = 3600; unit_word = "hours"; }
             else if (u == "day" || u == "d") { mult = 86400; unit_word = "days"; }
             else if (u == "week" || u == "w") { mult = 7 * 86400; unit_word = "weeks"; }
+            int64_t fire_at = 0;
+            if (!add_seconds(now, n, mult, fire_at)) {
+                r.error.message = "interval too large";
+                return r;
+            }
             r.ok                = true;
             r.spec.kind         = ScheduleSpec::Kind::Once;
-            r.spec.fire_at      = now + n * mult;
+            r.spec.fire_at      = fire_at;
             r.spec.next_fire_at = r.spec.fire_at;
             std::ostringstream oss;
             oss << "in " << n << " " << unit_word << " (" << format_local(r.spec.fire_at) << ")";
@@ -309,19 +351,27 @@ ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
         std::regex re(R"(^every\s+(\d+)\s+(minute|min|m|hour|h)s?$)");
         std::smatch m;
         if (std::regex_match(phrase, m, re)) {
-            int64_t n = std::stoll(m[1].str());
-            if (n < 1) {
-                r.error.message = "interval must be >= 1";
+            int64_t n = 0;
+            const bool parsed = parse_count(m[1].str(), n);
+            if (!parsed || n < 1) {
+                r.error.message = parsed ? "interval must be >= 1"
+                                         : "interval too large";
                 return r;
             }
             std::string u = m[2].str();
             bool is_hour = (u == "hour" || u == "h");
+            const int64_t unit = is_hour ? 3600 : 60;
+            int64_t next = 0;
+            if (!add_seconds(now, n, unit, next)) {
+                r.error.message = "interval too large";
+                return r;
+            }
             r.ok          = true;
             r.spec.kind   = ScheduleSpec::Kind::Recurring;
             std::ostringstream js;
             js << "{\"" << (is_hour ? "every_hours" : "every_minutes") << "\":" << n << "}";
             r.spec.recur_json   = js.str();
-            r.spec.next_fire_at = now + n * (is_hour ? 3600 : 60);
+            r.spec.next_fire_at = next;
             std::ostringstream oss;
             oss << "every " << n << " " << (is_hour ? "hours" : "minutes");
             r.spec.normalized = oss.str();
@@ -405,9 +455,17 @@ int64_t next_fire_for_recur(const std::string& recur_json, int64_t after) {
     if (recur_json.empty()) return 0;
 
     int64_t ev_min = parse_json_int_field(recur_json, "every_minutes");
-    if (ev_min > 0) return after + ev_min * 60;
+    if (ev_min > 0) {
+        int64_t next = 0;
+        if (!add_seconds(after, ev_min, 60, next)) return 0;
+        return next;
+    }
     int64_t ev_hr = parse_json_int_field(recur_json, "every_hours");
-    if (ev_hr > 0) return after + ev_hr * 3600;
+    if (ev_hr > 0) {
+        int64_t next = 0;
+        if (!add_seconds(after, ev_hr, 3600, next)) return 0;
+        return next;
+    }
 
     std::string every = parse_json_str_field(recur_json, "every");
     std::string at    = parse_json_str_field(recur_json, "at");
