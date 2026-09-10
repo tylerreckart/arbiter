@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace arbiter {
@@ -526,6 +527,30 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
 // Exposed for testing; callers normally just wire a ToolStatusFn and let
 // execute_agent_commands invoke it.
 bool is_tool_result_failure(const std::string& block);
+
+// Intra-turn loop detector.  Scans each command's result block in `envelope`
+// for a line starting with "ERR:" (same scan run_dispatch historically
+// inlined).  Returns (name, args) pairs for those failures.
+std::vector<std::pair<std::string, std::string>>
+failed_tool_signatures(const std::vector<AgentCommand>& cmds,
+                       const std::string& envelope);
+
+// Signatures that failed this iteration and last.  Deduped, each capped
+// at 200 chars as "/name args".
+std::vector<std::string>
+repeated_failed_tool_signatures(
+    const std::vector<std::pair<std::string, std::string>>& current,
+    const std::vector<std::pair<std::string, std::string>>& previous);
+
+// "[LOOP DETECTED]...[END LOOP DETECTED]\n\n" preamble, or empty.
+std::string format_loop_detected_warning(const std::vector<std::string>& repeats);
+
+// Run the detector, update `prev_failed`, and return the warning to
+// prepend (empty when there is no repeat).
+std::string maybe_loop_detected_preamble(
+    const std::vector<AgentCommand>& cmds,
+    const std::string& envelope,
+    std::vector<std::pair<std::string, std::string>>& prev_failed);
 
 // Human-readable label for tool-status / sidebar activity (e.g. "exec: git status",
 // "mcp:playwright.browser_navigate").  Exposed for unit tests.

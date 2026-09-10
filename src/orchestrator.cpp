@@ -1283,73 +1283,14 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
                                               workspace_root_provider_cb_);
         }
 
-        // Loop detection.  For each cmd this iteration, find its result
-        // block in current_msg and check whether the body contained
-        // "ERR:".  If the same (name, args) signature was a failure
-        // last iteration, prepend a warning to current_msg so the
-        // agent's next turn sees it and can change course.  We treat
-        // a duplicate of a duplicate the same as a single duplicate —
-        // one warning is enough; piling on doesn't help.
-        std::vector<std::pair<std::string, std::string>> curr_failed;
-        for (const auto& c : cmds) {
-            // Look for the block header "[/<name> ..." and find the next
-            // "[END <UPPERNAME>]" marker; if any "ERR:" sits between
-            // them, the cmd failed.  Cheap string scan; bounded by the
-            // tool-result budget.
-            std::string head = "[/" + c.name;
-            auto h = current_msg.find(head);
-            if (h == std::string::npos) continue;
-            std::string upper;
-            upper.reserve(c.name.size());
-            for (char ch : c.name) upper.push_back(static_cast<char>(
-                std::toupper(static_cast<unsigned char>(ch))));
-            std::string end_marker = "[END " + upper + "]";
-            auto e = current_msg.find(end_marker, h);
-            if (e == std::string::npos) e = current_msg.size();
-            // ERR: must appear at the start of a line within the block.
-            // Scan from the first newline after head to e.
-            auto body_start = current_msg.find('\n', h);
-            if (body_start == std::string::npos || body_start >= e) continue;
-            bool failed = false;
-            size_t scan = body_start;
-            while (scan < e) {
-                auto nl = current_msg.find('\n', scan + 1);
-                if (nl == std::string::npos || nl >= e) nl = e;
-                size_t line_start = scan + 1;
-                if (line_start + 4 <= e &&
-                    current_msg.compare(line_start, 4, "ERR:") == 0) {
-                    failed = true;
-                    break;
-                }
-                scan = nl;
-            }
-            if (failed) curr_failed.emplace_back(c.name, c.args);
+        // Loop detection — same helper as send_streaming.  A repeated
+        // (name, args) ERR prepends a warning so the next model turn
+        // can change course instead of burning the remaining iters.
+        if (std::string warn = maybe_loop_detected_preamble(
+                cmds, current_msg, prev_failed_signatures);
+            !warn.empty()) {
+            current_msg = warn + current_msg;
         }
-
-        std::vector<std::string> repeats;
-        for (const auto& [name, args] : curr_failed) {
-            for (const auto& [pname, pargs] : prev_failed_signatures) {
-                if (name == pname && args == pargs) {
-                    std::string sig = "/" + name + " " + args;
-                    if (sig.size() > 200) sig.resize(200);
-                    bool already = false;
-                    for (auto& r : repeats) if (r == sig) { already = true; break; }
-                    if (!already) repeats.push_back(std::move(sig));
-                    break;
-                }
-            }
-        }
-        if (!repeats.empty()) {
-            std::ostringstream warn;
-            warn << "[LOOP DETECTED]\n"
-                    "The following tool calls have ERR'd twice in a row — "
-                    "repeating them won't change the result.  Change "
-                    "argument, change tool, ask for help, or stop trying:\n";
-            for (auto& r : repeats) warn << "  " << r << "\n";
-            warn << "[END LOOP DETECTED]\n\n";
-            current_msg = warn.str() + current_msg;
-        }
-        prev_failed_signatures = std::move(curr_failed);
 
         // Stash for the gate's tool summary on the eventual terminating turn.
         last_cmds         = cmds;
@@ -1753,6 +1694,7 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     const int                 max_redirects  = gate_cfg.max_redirects;
     bool                      had_any_tool_calls = !cmds.empty();
     std::map<std::string, int> presence_notes_used;
+    std::vector<std::pair<std::string, std::string>> prev_failed_signatures;
 
     // Iter 0 already committed its assistant turn into histories_.
     fire_history_checkpoint();
@@ -1913,6 +1855,13 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
                                                   agent_ptr->config().capabilities,
                                                   &image_parts,
                                                   workspace_root_provider_cb_);
+            }
+            // Same loop detector as run_dispatch, before presence notes
+            // so the warning sits under any CONTEXT preamble.
+            if (std::string warn = maybe_loop_detected_preamble(
+                    cmds, tool_envelope, prev_failed_signatures);
+                !warn.empty()) {
+                tool_envelope = warn + tool_envelope;
             }
             last_cmds         = cmds;
             last_tool_results = tool_envelope;
