@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.4] — 2026-09-10
+
 ### Fixed
 - **Continuation failure is a failed turn.** When auto-continue after a
   `max_tokens` cut-off fails, `continue_until_done` now sets `ok=false` and
