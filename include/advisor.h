@@ -49,12 +49,18 @@ const char* default_gate_prompt();
 //                    caller's ledger.  A standalone deployment wires its own
 //                    metering here (the runtime keeps no usage ledger).
 //
-// On transport/model error returns kind=Halt, malformed=true, with the
-// provider error in `text`/`raw`.  This function applies NO fail-open /
-// fail-closed policy on a *parseable-but-malformed* reply — it returns the
-// parser's verdict (which may be kind=Continue with malformed=true) and lets
-// the caller apply its own `malformed_halts` policy, exactly as the in-loop
-// gate does.
+// Fixed tenant-facing text when the advisor provider call fails.  Provider
+// error bodies can quote Authorization headers or request data; never copy
+// them into gate `text`/`raw`, SSE advisor/escalation events, or
+// POST /v1/advise/gate.
+inline constexpr const char kAdvisorProviderError[] = "advisor API error";
+
+// On transport/model error returns kind=Halt, malformed=true, with
+// kAdvisorProviderError in `text` (raw left empty).  This function applies
+// NO fail-open / fail-closed policy on a *parseable-but-malformed* reply —
+// it returns the parser's verdict (which may be kind=Continue with
+// malformed=true) and lets the caller apply its own `malformed_halts`
+// policy, exactly as the in-loop gate does.
 AdvisorGateOutput run_advisor_gate(
     ApiClient& client,
     const std::string& advisor_model,

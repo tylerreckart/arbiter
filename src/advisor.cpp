@@ -91,10 +91,12 @@ AdvisorGateOutput run_advisor_gate(
     ApiResponse resp = client.complete(req);
     if (on_response) on_response(resp);
     if (!resp.ok) {
+        // Fail closed, but do not echo the provider body.  Presence
+        // already follows this policy; the main orchestrate `done`
+        // event uses sanitised_api_response_error for the same reason.
         out.kind = AdvisorGateOutput::Kind::Halt;
-        out.text = "advisor API error: " + resp.error;
+        out.text = kAdvisorProviderError;
         out.malformed = true;
-        out.raw  = resp.error;
         return out;
     }
 

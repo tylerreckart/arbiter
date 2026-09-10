@@ -1604,20 +1604,31 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_model_catalog COMMAND unit_model_catalog)
 
-    # Advisor gate signal parser.  The parser is the only thing translating
-    # an advisor's reply into a CONTINUE/REDIRECT/HALT decision; format
-    # drift here means the runtime gate silently misroutes.  Kept as a
-    # dedicated tiny target so the parser lives independently of the
-    # orchestrator's heavy dependency graph.
+    # Advisor gate signal parser + provider-error sanitization.  The
+    # parser is the only thing translating an advisor's reply into a
+    # CONTINUE/REDIRECT/HALT decision; format drift here means the
+    # runtime gate silently misroutes.  run_advisor_gate is linked so
+    # the offline/dummy-key path can pin that provider bodies never
+    # leak into gate text/raw.
     add_executable(unit_advisor_gate
         tests/test_advisor_gate.cpp
         src/advisor_gate.cpp
+        src/advisor.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
     )
     target_include_directories(unit_advisor_gate PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
     )
-    target_link_libraries(unit_advisor_gate PRIVATE CURL::libcurl)
+    target_link_libraries(unit_advisor_gate PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+    )
     add_test(NAME unit_advisor_gate COMMAND unit_advisor_gate)
 
     # Always-on presence: signal parser, watch globs, injection framing.
