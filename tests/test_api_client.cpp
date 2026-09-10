@@ -495,6 +495,60 @@ TEST_CASE("current_request_cancel_token tracks RequestCancelScope nesting") {
     CHECK(current_request_cancel_token() == nullptr);
 }
 
+TEST_CASE("sanitized_upstream_error never copies provider error.message") {
+    using arbiter::ApiResponse;
+    using arbiter::kUpstreamProviderError;
+    using arbiter::sanitized_upstream_error;
+
+    ApiResponse leaked;
+    leaked.ok = false;
+    leaked.error_type = "authentication_error";
+    leaked.error = "Authentication header invalid: Bearer sk-secret";
+    CHECK(sanitized_upstream_error(leaked) == kUpstreamProviderError);
+    CHECK(sanitized_upstream_error(leaked).find("Bearer") == std::string::npos);
+    CHECK(sanitized_upstream_error(leaked).find("sk-secret") == std::string::npos);
+    CHECK(sanitized_upstream_error(leaked).find("Authentication") == std::string::npos);
+
+    ApiResponse rate;
+    rate.error_type = "rate_limit_error";
+    rate.error = "rate limit: retry-after Authorization: xyz";
+    CHECK(sanitized_upstream_error(rate) == kUpstreamProviderError);
+
+    ApiResponse parse_err;
+    parse_err.error_type = "";
+    parse_err.error = "Parse error: unexpected token near Authorization";
+    CHECK(sanitized_upstream_error(parse_err) == kUpstreamProviderError);
+
+    ApiResponse cancelled;
+    cancelled.error_type = "cancelled";
+    cancelled.error = "request cancelled";
+    CHECK(sanitized_upstream_error(cancelled) == "request cancelled");
+
+    ApiResponse empty_cancel;
+    empty_cancel.error_type = "cancelled";
+    CHECK(sanitized_upstream_error(empty_cancel) == "cancelled");
+
+    ApiResponse halt;
+    halt.error_type = "advisor_halt";
+    halt.error = "do not proceed with the purchase";
+    CHECK(sanitized_upstream_error(halt) == "do not proceed with the purchase");
+
+    ApiResponse limit;
+    limit.error_type = "iteration_limit";
+    limit.error = "tool loop iteration limit reached (max 6)";
+    CHECK(sanitized_upstream_error(limit) == limit.error);
+
+    ApiResponse circuit;
+    circuit.error_type = "circuit_open";
+    circuit.error = "circuit breaker open for provider 'openrouter'";
+    CHECK(sanitized_upstream_error(circuit) == circuit.error);
+
+    ApiResponse cont;
+    cont.error_type = "continuation_failed";
+    cont.error = "continuation failed";
+    CHECK(sanitized_upstream_error(cont) == "continuation failed");
+}
+
 TEST_CASE("ARBITER_OFFLINE short-circuits complete/stream without touching the wire") {
     using arbiter::ApiClient;
     using arbiter::ApiRequest;

@@ -22,6 +22,17 @@
 
 namespace arbiter {
 
+std::string sanitized_upstream_error(const ApiResponse& resp) {
+    if (resp.error_type == "cancelled" ||
+        resp.error_type == "iteration_limit" ||
+        resp.error_type == "advisor_halt" ||
+        resp.error_type == "circuit_open" ||
+        resp.error_type == "continuation_failed") {
+        return resp.error.empty() ? resp.error_type : resp.error;
+    }
+    return kUpstreamProviderError;
+}
+
 // ─── Provider registry ────────────────────────────────────────────────────────
 // First entry whose `prefix` matches the model string wins; empty prefix = catch-all.
 // Ollama stays local via OLLAMA_HOST (default http://localhost:11434); hosted
