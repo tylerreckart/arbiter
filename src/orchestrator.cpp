@@ -1123,24 +1123,29 @@ ApiResponse Orchestrator::run_dispatch(Agent& agent,
             return resp;
         }
         // Assistant turn (and any prior tool envelopes) are in histories_ —
-        // checkpoint before the next long wait (tools or another LLM call).
+        // checkpoint before the next long wait (tools or another LLM call,
+        // including recover_truncated_writes).
         fire_history_checkpoint();
-
-        if (depth > 0 && resp.ok) {
-            // Notify the UI (progress) and record cost for sub-agent turns.
-            // Top-level cost is recorded by the REPL after send() returns.
-            if (progress_cb_) progress_cb_(agent_id, resp.content);
-            if (cost_cb_)     cost_cb_(agent_id, agent_ptr->config().model, resp);
-        }
-
-        if (!total_content.empty() && total_content.back() != '\n') total_content += "\n";
-        total_content    += resp.content;
-        total_input_tok  += resp.input_tokens;
-        total_output_tok += resp.output_tokens;
 
         auto cmds = parse_agent_commands(resp.content);
         recover_truncated_writes(agent_ptr, resp, cmds, nullptr);
         pending_cmds = cmds;
+
+        if (depth > 0 && resp.ok) {
+            // Notify the UI (progress) and record cost for sub-agent turns.
+            // Top-level cost is recorded by the REPL after send() returns.
+            // After recover so resumed /write bytes and tokens are included.
+            if (progress_cb_) progress_cb_(agent_id, resp.content);
+            if (cost_cb_)     cost_cb_(agent_id, agent_ptr->config().model, resp);
+        }
+
+        // Fold AFTER recover: recover_truncated_writes appends to resp in
+        // place.  Folding first dropped resumed /write bytes from the
+        // persisted sub-agent turn and undercounted tokens/cost.
+        if (!total_content.empty() && total_content.back() != '\n') total_content += "\n";
+        total_content    += resp.content;
+        total_input_tok  += resp.input_tokens;
+        total_output_tok += resp.output_tokens;
 
         // Terminating branch.  If gate-mode is off, this is identical to
         // pre-gate behaviour: cmds.empty() means we're done.  With gate-
@@ -1396,6 +1401,8 @@ void Orchestrator::recover_truncated_writes(Agent* agent,
         ApiResponse more = cb ? agent->stream(prompt, cb) : agent->send(prompt);
         if (!more.ok) return;
 
+        // Appended in place.  Callers that keep a separate total_content
+        // must fold AFTER this function — see send_internal / send_streaming.
         resp.content               += more.content;
         resp.reasoning             += more.reasoning;
         resp.input_tokens          += more.input_tokens;
@@ -1647,10 +1654,14 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
         if (stream_end_cb_) stream_end_cb_(dispatch_id, sid, false);
         return resp;
     }
+    auto cmds = parse_agent_commands(resp.content);
+    recover_truncated_writes(agent_ptr, resp, cmds, gated_cb);
+
     // Bill the master's turn the same way send_internal bills delegated
     // turns.  Without this the API tenant is undercharged by the master's
     // share of provider cost; the REPL had its own post-call accounting
     // but SSE clients rely on cost_cb_ firing for every turn at every depth.
+    // After recover so resumed /write bytes are in the billed totals.
     if (cost_cb_) cost_cb_(dispatch_id, agent_ptr->config().model, resp);
 
     // Carry the cumulative response across tool-call re-entry iterations.
@@ -1661,12 +1672,11 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
     // the prior research entirely.  Tokens get accumulated for the same
     // reason: per-iteration `resp.input_tokens`/`output_tokens` would
     // otherwise undercount the persisted turn relative to its real cost.
+    // Seeded AFTER recover so resumed /write bytes are not dropped when
+    // the final `resp.content = total_content` overwrite runs.
     std::string total_content   = resp.content;
     int         total_input_tok = resp.input_tokens;
     int         total_output_tok = resp.output_tokens;
-
-    auto cmds = parse_agent_commands(resp.content);
-    recover_truncated_writes(agent_ptr, resp, cmds, gated_cb);
 
     // Apply the gate decision for iteration 0 (delegation status / prose flush).
     end_iteration(cmds);
@@ -1906,14 +1916,16 @@ ApiResponse Orchestrator::send_streaming(const std::string& agent_id,
             resp.had_tool_calls = had_any_tool_calls;
             return resp;
         }
-        if (cost_cb_) cost_cb_(dispatch_id, agent_ptr->config().model, resp);
         fire_history_checkpoint();
+        cmds = parse_agent_commands(resp.content);
+        recover_truncated_writes(agent_ptr, resp, cmds, gated_cb);
+        if (cost_cb_) cost_cb_(dispatch_id, agent_ptr->config().model, resp);
+        // Fold AFTER recover so resumed /write bytes survive the final
+        // `resp.content = total_content` overwrite (and token/cost match).
         if (!total_content.empty() && total_content.back() != '\n') total_content += "\n";
         total_content   += resp.content;
         total_input_tok += resp.input_tokens;
         total_output_tok += resp.output_tokens;
-        cmds = parse_agent_commands(resp.content);
-        recover_truncated_writes(agent_ptr, resp, cmds, gated_cb);
         end_iteration(cmds);
         if (!cmds.empty()) had_any_tool_calls = true;
     }

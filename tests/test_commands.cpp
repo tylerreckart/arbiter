@@ -462,6 +462,32 @@ TEST_CASE("parse_agent_commands keeps slash-prefixed /lesson block body") {
     CHECK(cmds[0].truncated == false);
 }
 
+TEST_CASE("parse_agent_commands concatenating truncated /write + resume closes the block") {
+    // recover_truncated_writes appends the continuation onto resp.content
+    // and re-parses.  The fold-after-recover contract depends on this
+    // concat parsing as one closed write — otherwise the dispatcher
+    // still sees truncated=true and refuses to persist the file.
+    const std::string first =
+        "/write notes.md\n"
+        "# Title\n"
+        "partial line";
+    auto truncated = parse_agent_commands(first);
+    REQUIRE(truncated.size() == 1);
+    CHECK(truncated[0].name == "write");
+    CHECK(truncated[0].args == "notes.md");
+    CHECK(truncated[0].truncated == true);
+    CHECK(truncated[0].content.find("partial line") != std::string::npos);
+
+    const std::string resume = " that finishes\nmore body\n/endwrite\n";
+    auto closed = parse_agent_commands(first + resume);
+    REQUIRE(closed.size() == 1);
+    CHECK(closed[0].name == "write");
+    CHECK(closed[0].truncated == false);
+    CHECK(closed[0].content.find("partial line that finishes") != std::string::npos);
+    CHECK(closed[0].content.find("more body") != std::string::npos);
+    CHECK(closed[0].content.find("/endwrite") == std::string::npos);
+}
+
 TEST_CASE("parse_agent_commands /lesson block still yields to a following writ") {
     // First peeked line is a real writ — stay in single-line mode so
     // /exec is parsed as its own command, not swallowed as lesson body.
