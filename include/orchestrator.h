@@ -623,6 +623,11 @@ private:
     // of persisting a half-written file.  Bounded retry count — if the
     // model can't close the block after a few tries, we give up and let
     // the caller execute whatever it has (with the truncation note).
+    //
+    // Callers that accumulate `resp` into a cumulative turn (content,
+    // tokens, cost_cb_) MUST fold AFTER this returns.  Folding first
+    // drops recovered bytes from the persisted assistant message and
+    // undercounts token/cost for the resume call.
     void recover_truncated_writes(Agent* agent,
                                   ApiResponse& resp,
                                   std::vector<AgentCommand>& cmds,
