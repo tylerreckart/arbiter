@@ -197,7 +197,8 @@ bool write_file_bytes(const fs::path& path, const std::string& bytes,
     const fs::path tmp = path.string() + ".arbiter-diff.tmp";
     {
         const int fd = ::open(tmp.c_str(),
-                              O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+                              O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+                              0644);
         if (fd < 0) {
             if (errno == ELOOP)
                 err = "refusing to write through symlink: " + tmp.string();
@@ -226,15 +227,48 @@ bool write_file_bytes(const fs::path& path, const std::string& bytes,
         ::close(fd);
     }
     fs::rename(tmp, path, ec);
-    if (ec) {
-        // Cross-device rename can fail; fall back to copy+remove.
-        fs::copy_file(tmp, path, fs::copy_options::overwrite_existing, ec);
+    if (!ec) return true;
+
+    // rename fails on EXDEV (cross-device) and when dest is a directory.
+    // Do not use copy_file: it follows a dest symlink (workspace escape)
+    // and the previous copy+remove sequence treated a successful tmp
+    // unlink as success even when the dest write failed.
+    const int dest_fd = ::open(path.c_str(),
+                               O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+                               0644);
+    if (dest_fd < 0) {
+        const int e = errno;
         fs::remove(tmp, ec);
-        if (ec) {
-            err = "cannot replace file: " + ec.message();
+        if (e == ELOOP)
+            err = "refusing to write through symlink: " + path.string();
+        else if (e == EISDIR)
+            err = "write target is a directory: " + path.string();
+        else
+            err = "cannot replace file: " + path.string();
+        return false;
+    }
+    struct stat dest_st{};
+    if (::fstat(dest_fd, &dest_st) != 0 || !S_ISREG(dest_st.st_mode)) {
+        ::close(dest_fd);
+        fs::remove(tmp, ec);
+        err = "write target is not a regular file: " + path.string();
+        return false;
+    }
+    std::size_t dest_off = 0;
+    while (dest_off < bytes.size()) {
+        const ssize_t n = ::write(dest_fd, bytes.data() + dest_off,
+                                  bytes.size() - dest_off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ::close(dest_fd);
+            fs::remove(tmp, ec);
+            err = "write failed: " + path.string();
             return false;
         }
+        dest_off += static_cast<std::size_t>(n);
     }
+    ::close(dest_fd);
+    fs::remove(tmp, ec);
     return true;
 }
 
@@ -558,11 +592,15 @@ DiffApplyResult apply_unified_diff(std::string_view patch,
     const fs::path path(*resolved);
 
     std::error_code ec;
-    const bool exists = fs::exists(path, ec) && fs::is_regular_file(path, ec);
-    if (exists && fs::is_directory(path, ec)) {
+    // Check directory independently of "exists as regular file" — the
+    // previous `exists && is_directory` guard was unreachable because
+    // `exists` already required is_regular_file, so a directory target
+    // was treated as a missing file and "created" on top.
+    if (fs::is_directory(path, ec)) {
         result.error = "target is a directory: " + rel;
         return result;
     }
+    const bool exists = fs::exists(path, ec) && fs::is_regular_file(path, ec);
 
     std::string pre;
     if (exists) {

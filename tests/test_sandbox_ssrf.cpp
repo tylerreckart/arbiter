@@ -6,14 +6,11 @@
 #include "ssrf_guard.h"
 
 #include <arpa/inet.h>
-#include <atomic>
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <netinet/in.h>
 #include <sys/stat.h>
-#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -165,7 +162,16 @@ TEST_CASE("sandbox read: O_NOFOLLOW refuses leaf symlink swap after resolve") {
     cfg.workspaces_root = root + "/workspaces";
     cfg.runtime = "docker";
     cfg.idle_seconds = 0;
-    cfg.read_check_pause_ms = 80;
+
+    const int64_t tid = 8;
+    const std::string decoy = cfg.workspaces_root + "/t" +
+                              std::to_string(tid) + "/decoy.txt";
+    bool swapped = false;
+    cfg.read_check_hook = [&]() {
+        ::unlink(decoy.c_str());
+        REQUIRE(::symlink(outside.c_str(), decoy.c_str()) == 0);
+        swapped = true;
+    };
 
     const std::string bin = root + "/bin";
     fs::create_directories(bin);
@@ -182,26 +188,15 @@ TEST_CASE("sandbox read: O_NOFOLLOW refuses leaf symlink swap after resolve") {
     SandboxManager mgr(cfg);
     REQUIRE(mgr.usable());
 
-    const int64_t tid = 8;
     std::string ws = mgr.ensure_workspace(tid);
     REQUIRE_FALSE(ws.empty());
 
     std::string werr;
     REQUIRE(mgr.write_to_workspace(tid, "decoy.txt", "workspace-bytes", werr));
-    const std::string decoy = ws + "/decoy.txt";
-
-    std::atomic<bool> swapped{false};
-    std::thread planter([&]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        ::unlink(decoy.c_str());
-        REQUIRE(::symlink(outside.c_str(), decoy.c_str()) == 0);
-        swapped.store(true);
-    });
 
     std::string content, mime, err;
     const bool ok = mgr.read_from_workspace(tid, "decoy.txt", content, mime, err);
-    planter.join();
-    REQUIRE(swapped.load());
+    REQUIRE(swapped);
     CHECK_FALSE(ok);
     CHECK(content.find("secret-host-bytes") == std::string::npos);
     CHECK((err.find("symlink") != std::string::npos ||

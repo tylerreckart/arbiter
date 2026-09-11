@@ -50,6 +50,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -136,6 +137,12 @@ struct SandboxConfig {
     // O_NOFOLLOW open in read_from_workspace.  Unit tests use this to
     // plant a leaf symlink swap in the TOCTOU window.  0 in production.
     int read_check_pause_ms = 0;
+
+    // Test-only: runs after path resolve and before the O_NOFOLLOW open,
+    // when set.  Takes precedence over read_check_pause_ms so a TOCTOU
+    // test can plant a leaf symlink without a thread-scheduling race.
+    // Empty in production.
+    std::function<void()> read_check_hook;
 
     // Idle-reaping threshold, seconds.  A background reaper stops
     // tenant containers whose last sandbox operation (/exec, /write,
