@@ -55,12 +55,15 @@ struct HoldServer {
         REQUIRE(::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
         port = ntohs(addr.sin_port);
 
-        acceptor = std::thread([this] { accept_loop(); });
+        // Copy the fd into the acceptor so stop() can close it (to unblock
+        // accept) and then zero the member without a TSan race on listen_fd.
+        const int fd = listen_fd;
+        acceptor = std::thread([this, fd] { accept_loop(fd); });
     }
 
-    void accept_loop() {
+    void accept_loop(int fd) {
         while (!stop_accept.load(std::memory_order_acquire)) {
-            int cs = ::accept(listen_fd, nullptr, nullptr);
+            int cs = ::accept(fd, nullptr, nullptr);
             if (cs < 0) break;
             handlers.emplace_back([this, cs] { handle(cs); });
         }
@@ -99,10 +102,10 @@ struct HoldServer {
         if (listen_fd >= 0) {
             ::shutdown(listen_fd, SHUT_RDWR);
             ::close(listen_fd);
-            listen_fd = -1;
         }
         release_all();
         if (acceptor.joinable()) acceptor.join();
+        listen_fd = -1;
         for (auto& h : handlers)
             if (h.joinable()) h.join();
     }
