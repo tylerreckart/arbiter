@@ -416,8 +416,14 @@ thread_local std::shared_ptr<CancelToken> tls_request_token;
 void CancelToken::request_cancel() {
     cancelled_.store(true, std::memory_order_release);
     std::lock_guard<std::mutex> lk(mu_);
-    if (owner_ && conn_) {
-        owner_->shutdown_conn(static_cast<ApiClient::Conn*>(conn_));
+    if (owner_) {
+        if (conn_) {
+            owner_->shutdown_conn(static_cast<ApiClient::Conn*>(conn_));
+        }
+        // Wake pool waiters even when no Conn is bound yet — ConnLease
+        // parks on the CV *before* bind_token_conn, so Esc on a saturated
+        // pool would otherwise hang until some other lease returned.
+        owner_->wake_all_pool_waiters();
     }
 }
 
@@ -439,7 +445,12 @@ std::shared_ptr<CancelToken> current_request_cancel_token() {
 
 void ApiClient::register_token(CancelToken* token) {
     if (!token) return;
+    // tokens_mu_ before token->mu_ — same order as cancel() → request_cancel.
     std::lock_guard<std::mutex> lk(tokens_mu_);
+    {
+        std::lock_guard<std::mutex> tlk(token->mu_);
+        token->owner_ = this;
+    }
     active_tokens_.push_back(token);
 }
 
@@ -449,6 +460,11 @@ void ApiClient::unregister_token(CancelToken* token) {
     active_tokens_.erase(
         std::remove(active_tokens_.begin(), active_tokens_.end(), token),
         active_tokens_.end());
+    std::lock_guard<std::mutex> tlk(token->mu_);
+    if (token->owner_ == this) {
+        token->owner_ = nullptr;
+        token->conn_ = nullptr;
+    }
 }
 
 void ApiClient::shutdown_conn(Conn* conn) {
@@ -471,7 +487,8 @@ void ApiClient::unbind_token_conn(CancelToken* token, Conn* conn) {
     std::lock_guard<std::mutex> lk(token->mu_);
     if (token->conn_ == conn) {
         token->conn_ = nullptr;
-        token->owner_ = nullptr;
+        // Keep owner_ so a late request_cancel can still notify pool CVs
+        // (owner_ is cleared in unregister_token when the scope ends).
     }
 }
 
@@ -505,9 +522,13 @@ ApiClient::ConnLease::ConnLease(ApiClient& owner, const std::string& provider)
     : owner_(owner), pool_(owner.pool_for(provider)), conn_(nullptr) {
     std::unique_lock<std::mutex> lk(pool_.mu);
     pool_.cv.wait(lk, [&] {
+        if (owner_.is_request_cancelled()) return true;
         return !pool_.idle.empty() ||
                static_cast<int>(pool_.conns.size()) < kMaxConnsPerProvider;
     });
+    if (owner_.is_request_cancelled()) {
+        return;
+    }
     if (!pool_.idle.empty()) {
         conn_ = pool_.idle.back();
         pool_.idle.pop_back();
@@ -522,6 +543,7 @@ ApiClient::ConnLease::ConnLease(ApiClient& owner, const std::string& provider)
 }
 
 ApiClient::ConnLease::~ConnLease() {
+    if (!conn_) return;
     if (tls_request_token) {
         owner_.unbind_token_conn(tls_request_token.get(), conn_);
     }
@@ -530,6 +552,13 @@ ApiClient::ConnLease::~ConnLease() {
         pool_.idle.push_back(conn_);
     }
     pool_.cv.notify_one();
+}
+
+void ApiClient::wake_all_pool_waiters() {
+    std::lock_guard<std::mutex> lk(pool_mutex_);
+    for (auto& [_, pool] : pools_) {
+        pool->cv.notify_all();
+    }
 }
 
 void ApiClient::cancel(CancelToken& token) {
@@ -557,6 +586,7 @@ void ApiClient::cancel() {
         for (auto& c : pool->conns) {
             if (c->sock >= 0) ::shutdown(c->sock, SHUT_RDWR);
         }
+        pool->cv.notify_all();
     }
 }
 
@@ -1296,6 +1326,15 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     // lock is held around the socket I/O below — concurrent callers on other
     // leased Conns run fully in parallel.
     ConnLease lease(*this, prov.name);
+    if (!lease.valid()) {
+        hard_cancelled_.store(true, std::memory_order_release);
+        if (breaker_) breaker_->record_abandoned(prov.name);
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "request cancelled";
+        return r;
+    }
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
@@ -1767,6 +1806,15 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     // no shared lock held — other panes streaming from their own leased Conns
     // proceed concurrently instead of blocking behind a single mutex.
     ConnLease lease(*this, prov.name);
+    if (!lease.valid()) {
+        hard_cancelled_.store(true, std::memory_order_release);
+        if (breaker_) breaker_->record_abandoned(prov.name);
+        ApiResponse r;
+        r.ok         = false;
+        r.error_type = "cancelled";
+        r.error      = "request cancelled";
+        return r;
+    }
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
