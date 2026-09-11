@@ -21,10 +21,40 @@ namespace {
 
 // libcurl write callback for buffering a complete response body.
 // CURL signals EOF by closing; our caller reads `body` after perform().
+// Returning 0 aborts with CURLE_WRITE_ERROR once the unary size cap
+// is hit so a remote without Content-Length cannot grow `body` without
+// bound (the SSE path already caps via SseReader + kRawCap).
+struct BodyBuf {
+    std::string* body     = nullptr;
+    bool         overflow = false;
+};
+
 size_t write_to_string(char* ptr, size_t size, size_t nmemb, void* userdata) {
-    auto* dst = static_cast<std::string*>(userdata);
-    dst->append(ptr, size * nmemb);
-    return size * nmemb;
+    auto* buf = static_cast<BodyBuf*>(userdata);
+    const size_t n = size * nmemb;
+    if (!buf || !buf->body || buf->overflow) return 0;
+    if (n > kHttpMaxBodyBytes || buf->body->size() > kHttpMaxBodyBytes - n) {
+        buf->overflow = true;
+        return 0;
+    }
+    buf->body->append(ptr, n);
+    return n;
+}
+
+void apply_unary_size_cap(CURL* curl) {
+    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE,
+                     static_cast<curl_off_t>(kHttpMaxBodyBytes));
+}
+
+void finish_unary(HttpResponse& out, CURLcode rc, const BodyBuf& buf) {
+    if (buf.overflow || rc == CURLE_FILESIZE_EXCEEDED) {
+        out.error = "response exceeded size limit";
+        out.body.clear();
+        return;
+    }
+    if (rc != CURLE_OK) {
+        out.error = curl_easy_strerror(rc);
+    }
 }
 
 // Build a curl_slist from our HttpHeader vector.  Caller frees with
@@ -132,18 +162,18 @@ HttpResponse rpc_call(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_POST,          1L);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS,    body.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    BodyBuf buf{&out.body, false};
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &out.body);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &buf);
     apply_common_opts(curl, timeout_secs, ssrf_guard);
+    apply_unary_size_cap(curl);
 
     CURLcode rc = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &out.status_code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    if (rc != CURLE_OK) {
-        out.error = curl_easy_strerror(rc);
-    }
+    finish_unary(out, rc, buf);
     return out;
 }
 
@@ -165,21 +195,21 @@ HttpResponse http_get(const std::string& url,
                                                 /*accept_sse=*/false);
     headers = curl_slist_append(headers, "Accept: application/json");
 
+    BodyBuf buf{&out.body, false};
     curl_easy_setopt(curl, CURLOPT_URL,           url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    headers);
     curl_easy_setopt(curl, CURLOPT_HTTPGET,       1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &out.body);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &buf);
     apply_common_opts(curl, timeout_secs, ssrf_guard);
+    apply_unary_size_cap(curl);
 
     CURLcode rc = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &out.status_code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    if (rc != CURLE_OK) {
-        out.error = curl_easy_strerror(rc);
-    }
+    finish_unary(out, rc, buf);
     return out;
 }
 
