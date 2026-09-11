@@ -1299,11 +1299,19 @@ ApiResponse ApiClient::complete(const ApiRequest& req) {
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (is_request_cancelled() || !run_preflight()) {
+        // Kill-switch / preflight → sticky hard-cancel.  A per-request
+        // CancelToken must not promote: TUI panes and /loop share one
+        // ApiClient, and Esc / /kill are scoped (#46 / #48).
+        if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
             hard_cancelled_.store(true, std::memory_order_release);
-            // record_abandoned (not record_failure): the provider wasn't
-            // proven bad, and a leaked HalfOpen probe would otherwise
-            // reject the provider forever.
+            if (breaker_) breaker_->record_abandoned(prov.name);
+            ApiResponse r;
+            r.ok         = false;
+            r.error_type = "cancelled";
+            r.error      = "request cancelled";
+            return r;
+        }
+        if (is_request_cancelled()) {
             if (breaker_) breaker_->record_abandoned(prov.name);
             ApiResponse r;
             r.ok         = false;
@@ -1770,8 +1778,19 @@ ApiResponse ApiClient::stream(const ApiRequest& req, StreamCallback cb) {
     Conn& c = lease.conn();
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (is_request_cancelled() || !run_preflight()) {
+        // Same split as complete(): token cancel is per-request, not a
+        // client-wide kill-switch.  Promoting it here aborts sibling
+        // pane /loop streams that share this ApiClient.
+        if (hard_cancelled_.load(std::memory_order_acquire) || !run_preflight()) {
             hard_cancelled_.store(true, std::memory_order_release);
+            if (breaker_) breaker_->record_abandoned(prov.name);
+            ApiResponse r;
+            r.ok         = false;
+            r.error_type = "cancelled";
+            r.error      = "request cancelled";
+            return r;
+        }
+        if (is_request_cancelled()) {
             if (breaker_) breaker_->record_abandoned(prov.name);
             ApiResponse r;
             r.ok         = false;

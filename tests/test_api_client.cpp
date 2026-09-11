@@ -444,6 +444,38 @@ TEST_CASE("CancelToken::cancel_flag polls same state as is_cancelled") {
     CHECK(token->cancel_flag()->load());
 }
 
+TEST_CASE("per-request CancelToken does not promote to hard_cancelled") {
+    using arbiter::ApiClient;
+    using arbiter::ApiRequest;
+    using arbiter::CancelToken;
+    using arbiter::RequestCancelScope;
+
+    // complete() short-circuits on ARBITER_OFFLINE before the attempt
+    // loop that used to promote token cancel → hard_cancelled_.
+    const char* prev = std::getenv("ARBITER_OFFLINE");
+    ::unsetenv("ARBITER_OFFLINE");
+
+    ApiClient client({});
+    auto token = std::make_shared<CancelToken>();
+    token->request_cancel();
+    {
+        RequestCancelScope scope(client, token);
+        ApiRequest req;
+        req.model = "claude-haiku-4-5-20251001";
+        req.messages = {{"user", "hi"}};
+        auto resp = client.complete(req);
+        CHECK_FALSE(resp.ok);
+        CHECK(resp.error_type == "cancelled");
+        auto streamed = client.stream(req, [](const std::string&) {});
+        CHECK_FALSE(streamed.ok);
+        CHECK(streamed.error_type == "cancelled");
+    }
+    CHECK_FALSE(client.hard_cancelled());
+
+    if (prev) ::setenv("ARBITER_OFFLINE", prev, 1);
+    else ::unsetenv("ARBITER_OFFLINE");
+}
+
 TEST_CASE("ApiClient::cancel hard-cancel survives stream/complete entry clear") {
     using arbiter::ApiClient;
     using arbiter::ApiRequest;

@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Token cancel is not a client-wide kill-switch.** `complete()` /
+  `stream()` no longer set `hard_cancelled_` when only the thread's
+  `CancelToken` is set. Esc on one TUI pane or `/kill` of a `/loop`
+  was aborting sibling streams that share the same `ApiClient`
+  (#46 / #48). `cancel()` and kill-switch preflight stay sticky.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
