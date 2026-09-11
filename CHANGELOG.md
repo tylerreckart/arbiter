@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **A2A unary HTTP body cap.** `rpc_call` / `http_get` now refuse
+  responses over 16 MiB (same ceiling as the inbound HTTP API and
+  `kSseMaxEventBytes`). A remote that omitted `Content-Length` could
+  previously grow the client buffer without bound; SSE was already
+  capped (#317).
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed

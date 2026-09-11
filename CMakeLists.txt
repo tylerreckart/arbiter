@@ -1491,6 +1491,24 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_a2a COMMAND unit_a2a)
 
+    # Unary A2A HTTP body cap.  Separate binary so the in-process unit_a2a
+    # suite stays network-free; this one stands up a loopback server.
+    add_executable(unit_a2a_http
+        tests/test_a2a_http.cpp
+        src/a2a/http.cpp
+        src/a2a/sse_reader.cpp
+        src/ssrf_guard.cpp
+    )
+    target_include_directories(unit_a2a_http PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_a2a_http PRIVATE
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_a2a_http COMMAND unit_a2a_http)
+
     # Constitution / prompt composer.  Pins the capability-bundle resolution
     # and verifies that empty-capabilities still emits the legacy surface
     # (back-compat for the master orchestrator).
