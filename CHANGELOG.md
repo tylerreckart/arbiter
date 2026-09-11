@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **`/diff apply` directory and cross-device writes.** A directory at the
+  patch target is rejected instead of being treated as a missing file.
+  The rename fallback no longer uses `copy_file` (which followed a dest
+  symlink and reported success when only the temp file was removed).
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
