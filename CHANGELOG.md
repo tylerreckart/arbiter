@@ -13,6 +13,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `kSseMaxEventBytes`). A remote that omitted `Content-Length` could
   previously grow the client buffer without bound; SSE was already
   capped (#317).
+- **Sandbox `/read` TOCTOU test is deterministic.** The leaf-symlink-swap
+  case plants the swap via a post-resolve hook instead of a timed helper
+  thread (macos-arm64 CI was racing the 80 ms pause).
 
 ## [0.13.4] — 2026-09-10
 
