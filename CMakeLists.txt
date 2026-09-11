@@ -595,6 +595,27 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_api_client_pool COMMAND unit_api_client_pool)
 
+    # Pool-cap cancel: own binary so provider_for() pins OLLAMA_HOST to this
+    # file's HoldServer rather than unit_api_client_pool's overlap port.
+    add_executable(unit_api_client_pool_cancel
+        tests/test_api_client_pool_cancel.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_api_client_pool_cancel PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_api_client_pool_cancel PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+    )
+    add_test(NAME unit_api_client_pool_cancel COMMAND unit_api_client_pool_cancel)
+
     # --- Unit tests for the tool-call stream filter ---
     # Exercises line-buffered reassembly, /cmd swallow rules, and the
     # verbose pass-through path without needing a TUI or the real orchestrator.
