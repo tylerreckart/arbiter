@@ -986,7 +986,9 @@ public:
                           const std::string& state);
 
     // Update state + payload columns.  No-op if the row is missing for
-    // this tenant; returns true on actual change.
+    // this tenant, or if the row is already `canceled` and `state` is
+    // not `canceled` (tasks/cancel must win over an in-flight
+    // message/send terminal persist).  Returns true on actual change.
     bool update_a2a_task(int64_t tenant_id,
                           const std::string& task_id,
                           const std::string& state,

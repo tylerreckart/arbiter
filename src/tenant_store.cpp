@@ -3073,17 +3073,27 @@ bool TenantStore::update_a2a_task(int64_t tenant_id,
                                     const std::string& error_message) {
     if (!db_) return false;
     const int64_t ts = now_epoch();
+    // `canceled` is sticky: message/send and message/stream persist
+    // completed/failed after the RPC returns, and that write races
+    // tasks/cancel.  The stream path already refused the overwrite
+    // after a GET; the unary path did not.  Enforcing it here so
+    // every caller (including exception / tenant-disabled paths)
+    // keeps cancel as the durable outcome.  Re-writing canceled
+    // (tasks/cancel itself) is still allowed so updated_at / error
+    // stay current.
     Stmt q(db_,
         "UPDATE a2a_tasks "
         "   SET state = ?, updated_at = ?, "
         "       final_message_json = ?, error_message = ? "
-        " WHERE tenant_id = ? AND task_id = ?;");
+        " WHERE tenant_id = ? AND task_id = ? "
+        "   AND (state != 'canceled' OR ? = 'canceled');");
     q.bind(1, state);
     q.bind(2, ts);
     q.bind(3, final_message_json);
     q.bind(4, error_message);
     q.bind(5, tenant_id);
     q.bind(6, task_id);
+    q.bind(7, state);
     q.step();
     return sqlite3_changes(db_) > 0;
 }

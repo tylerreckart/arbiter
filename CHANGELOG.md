@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **A2A `tasks/cancel` survives `message/send`.** `update_a2a_task` no
+  longer overwrites a persisted `canceled` row with `completed`/`failed`
+  when an in-flight unary send finishes after `tasks/cancel`. The stream
+  path already refused that overwrite; the send path now matches, and the
+  RPC returns `request cancelled` instead of a completed Task that
+  `tasks/get` would contradict.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed

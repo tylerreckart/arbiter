@@ -687,3 +687,42 @@ TEST_CASE("should_persist_conversation_turn keeps unfinished-but-useful turns") 
     CHECK_FALSE(should_persist_conversation_turn(provider));
 }
 
+TEST_CASE("a2a task: canceled is not overwritten by completed or failed") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+
+    s.create_a2a_task(tid, "task-send", "index", "ctx-1", "working");
+    CHECK(s.update_a2a_task(tid, "task-send", "canceled", "",
+                            "canceled by tasks/cancel"));
+
+    // Unary message/send finishing after tasks/cancel must not revive
+    // the row as completed/failed — same contract the stream path
+    // already enforced in the handler.
+    CHECK_FALSE(s.update_a2a_task(tid, "task-send", "completed",
+                                  R"({"role":"agent"})", ""));
+    CHECK_FALSE(s.update_a2a_task(tid, "task-send", "failed", "",
+                                  "internal error"));
+
+    auto rec = s.get_a2a_task(tid, "task-send");
+    REQUIRE(rec);
+    CHECK(rec->state == "canceled");
+    CHECK(rec->error_message == "canceled by tasks/cancel");
+    CHECK(rec->final_message_json.empty());
+
+    // Re-writing canceled (tasks/cancel itself) still lands so
+    // updated_at / error stay current.
+    CHECK(s.update_a2a_task(tid, "task-send", "canceled", "",
+                            "canceled by tasks/cancel"));
+    rec = s.get_a2a_task(tid, "task-send");
+    REQUIRE(rec);
+    CHECK(rec->state == "canceled");
+
+    // Working → completed still works when cancel never landed.
+    s.create_a2a_task(tid, "task-ok", "index", "ctx-2", "working");
+    CHECK(s.update_a2a_task(tid, "task-ok", "completed", "{}", ""));
+    auto ok = s.get_a2a_task(tid, "task-ok");
+    REQUIRE(ok);
+    CHECK(ok->state == "completed");
+    CHECK(ok->final_message_json == "{}");
+}
+
