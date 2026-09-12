@@ -1582,11 +1582,20 @@ bool SandboxManager::write_to_workspace(int64_t tenant_id,
         }
         target = std::move(again);
     }
+    // O_NONBLOCK so a workspace FIFO (mkfifo hang.txt) returns ENXIO
+    // instead of blocking forever.  This lock is the per-tenant mutex
+    // shared with /exec; a hung open here stalls every same-tenant
+    // sandbox write and exec until process restart.
     const int fd = ::open(target.c_str(),
-                          O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+                          O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK,
+                          0644);
     if (fd < 0) {
         if (errno == ELOOP) {
             err_out = "refusing to write through symlink: " + target.string();
+            return false;
+        }
+        if (errno == ENXIO) {
+            err_out = "write target is not a regular file";
             return false;
         }
         err_out = std::string("open for writing failed: ") + std::strerror(errno);
@@ -1674,7 +1683,11 @@ bool SandboxManager::read_from_workspace(int64_t tenant_id,
     // symlink after that check — the same TOCTOU write_to_workspace
     // closed.  ifstream follows, so a concurrent /exec `ln -sf` could
     // otherwise leak a host or sibling-tenant file.
-    const int fd = ::open(target.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    // O_NONBLOCK: a reader-less FIFO would otherwise block here forever
+    // (request hang; unlike write_to_workspace this path does not hold
+    // tenant_mu).  fstat S_ISREG below then rejects the pipe.
+    const int fd = ::open(target.c_str(),
+                          O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         if (errno == ELOOP) {
             err_out = "refusing to read through symlink: " + clean;
