@@ -4,11 +4,14 @@
 #include "commands.h"
 #include "styled_text.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <string>
+#include <sys/stat.h>
+#include <thread>
 #include <vector>
 #include <unistd.h>
 
@@ -288,6 +291,73 @@ TEST_CASE("cmd_write refuses a dangling symlink leaf") {
     CHECK(result.find("ERR:") == 0);
     CHECK(result.find("symlink") != std::string::npos);
     CHECK_FALSE(fs::exists(root / "missing.txt"));
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("cmd_write backup skips a dest symlink at path.bak") {
+    const auto pid = static_cast<long long>(::getpid());
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path base = fs::temp_directory_path() /
+        ("arbiter_write_bak_" + std::to_string(pid) + "_" +
+         std::to_string(stamp));
+    const fs::path root = base / "ws";
+    const fs::path victim = base / "victim.txt";
+    fs::create_directories(root);
+    {
+        std::ofstream f(root / "notes.md");
+        f << "workspace-pre\n";
+    }
+    {
+        std::ofstream f(victim);
+        f << "secret-host-bytes\n";
+    }
+    fs::create_symlink(victim, root / "notes.md.bak");
+
+    std::string result = cmd_write("notes.md", "new-content", root.string());
+    CHECK(result.find("OK:") == 0);
+    CHECK(result.find("notes.md.bak") == std::string::npos);
+
+    std::ifstream vf(victim);
+    std::string victim_body;
+    std::getline(vf, victim_body);
+    CHECK(victim_body == "secret-host-bytes");
+
+    std::ifstream nf(root / "notes.md");
+    std::string notes_body;
+    std::getline(nf, notes_body);
+    CHECK(notes_body == "new-content");
+
+    CHECK(fs::is_symlink(root / "notes.md.bak"));
+
+    fs::remove_all(base);
+}
+
+TEST_CASE("cmd_write refuses a FIFO without hanging") {
+    const auto pid = static_cast<long long>(::getpid());
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path root = fs::temp_directory_path() /
+        ("arbiter_write_fifo_" + std::to_string(pid) + "_" +
+         std::to_string(stamp));
+    fs::create_directories(root);
+    REQUIRE(::mkfifo((root / "hang.txt").c_str(), 0644) == 0);
+
+    std::atomic<bool> finished{false};
+    std::string result;
+    std::thread thr([&]() {
+        result = cmd_write("hang.txt", "hello", root.string());
+        finished.store(true, std::memory_order_release);
+    });
+    for (int i = 0; i < 50 && !finished.load(std::memory_order_acquire); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (!finished.load(std::memory_order_acquire)) {
+        thr.detach();
+        fs::remove_all(root);
+        FAIL("cmd_write hung on a FIFO");
+    }
+    thr.join();
+    CHECK(result.find("ERR:") == 0);
+    CHECK(result.find("regular file") != std::string::npos);
 
     fs::remove_all(root);
 }
