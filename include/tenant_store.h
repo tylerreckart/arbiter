@@ -1023,14 +1023,20 @@ public:
                                     const std::string& mime_type);
 
     // Metadata-only fetch — does NOT load the BLOB.  Use this for list
-    // pages, the JSON metadata endpoint, agent /list, etc.
+    // pages, the JSON metadata endpoint, agent /list, etc.  When
+    // `conversation_id > 0`, the row must also belong to that
+    // conversation (nested /v1/conversations/:cid/artifacts/:aid).
+    // `conversation_id == 0` is tenant-wide by id.
     std::optional<ArtifactRecord>
-    get_artifact_meta(int64_t tenant_id, int64_t id) const;
+    get_artifact_meta(int64_t tenant_id, int64_t id,
+                      int64_t conversation_id = 0) const;
 
     // BLOB fetch — separate so list paths don't pull megabytes.  Returns
-    // nullopt if the row doesn't exist for this tenant.
+    // nullopt if the row doesn't exist for this tenant (and, when
+    // `conversation_id > 0`, for that conversation).
     std::optional<std::string>
-    get_artifact_content(int64_t tenant_id, int64_t id) const;
+    get_artifact_content(int64_t tenant_id, int64_t id,
+                         int64_t conversation_id = 0) const;
 
     // Lookup by (tenant, conversation, path) — used by the agent
     // /read slash command to address artifacts the way they were
@@ -1049,7 +1055,12 @@ public:
     std::vector<ArtifactRecord>
     list_artifacts_tenant(int64_t tenant_id, int limit) const;
 
-    bool delete_artifact(int64_t tenant_id, int64_t id);
+    // Tenant-scoped by default.  When `conversation_id > 0`, refuse (and
+    // do not nullify memory links) unless the row belongs to that
+    // conversation — so DELETE /v1/conversations/:cid/artifacts/:aid
+    // cannot remove a sibling thread's blob.
+    bool delete_artifact(int64_t tenant_id, int64_t id,
+                         int64_t conversation_id = 0);
 
     // SUM(size) — used by put_artifact for quota math and by HTTP
     // callers exposing "you have used X of Y" surfaces.

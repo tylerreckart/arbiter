@@ -43,7 +43,8 @@ When `If-None-Match` matches. Empty body, includes the same `ETag`.
 | Status | When | Body |
 |--------|------|------|
 | 401    | Missing / invalid bearer. | `{"error": "..."}` |
-| 404    | Id doesn't exist for this tenant + conversation pair, or the row's content is missing (data corruption — defensive). | `{"error": "artifact not found"}` or `{"error": "artifact content missing"}` |
+| 404    | Conversation is missing or TUI-origin. | `{"error": "conversation not found"}` |
+| 404    | Artifact missing, belongs to another conversation, or the row's content is missing (data corruption — defensive). | `{"error": "artifact not found"}` or `{"error": "artifact content missing"}` |
 
 ## See also
 

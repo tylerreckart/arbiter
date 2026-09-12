@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Nested artifact routes honor `:cid`.** `GET`/`DELETE`
+  `/v1/conversations/:id/artifacts/:aid` (and `/raw`) 404 when the
+  conversation is missing or TUI-origin, or when the artifact belongs
+  to a different conversation. Matches the documented tenant+conversation
+  pair and the list/create prefix. Tenant-wide `/v1/artifacts/:aid`
+  is unchanged.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
