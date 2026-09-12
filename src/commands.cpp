@@ -1435,25 +1435,40 @@ std::string cmd_write(const std::string& path, const std::string& content,
             return "ERR: refusing to write through symlink: " + path;
     }
 
-    // Back up existing file before overwriting.
+    // Back up existing file before overwriting.  lstat so a FIFO is
+    // rejected instead of hanging in copy_file/open, and so a planted
+    // dest symlink at path.bak is not followed (copy_file would write
+    // the pre-image through notes.md.bak -> /etc/passwd).
     bool overwrite = false;
     std::string bak_note;
-    if (fs::exists(resolved)) {
+    struct stat src_st{};
+    if (::lstat(resolved.c_str(), &src_st) == 0) {
+        if (!S_ISREG(src_st.st_mode))
+            return "ERR: write target is not a regular file: " + path;
         overwrite = true;
         fs::path bak = resolved;
         bak += ".bak";
-        std::error_code ec;
-        fs::copy_file(resolved, bak, fs::copy_options::overwrite_existing, ec);
-        if (!ec) bak_note = " (previous saved to " + bak.string() + ")";
+        struct stat bak_st{};
+        if (::lstat(bak.c_str(), &bak_st) == 0 && !S_ISREG(bak_st.st_mode)) {
+            // Skip backup — dest is a symlink, fifo, or other special.
+        } else {
+            std::error_code ec;
+            fs::copy_file(resolved, bak, fs::copy_options::overwrite_existing, ec);
+            if (!ec) bak_note = " (previous saved to " + bak.string() + ")";
+        }
     }
 
     // O_NOFOLLOW so a symlink swap between the prefix check and open
-    // cannot redirect the write outside the workspace.
+    // cannot redirect the write outside the workspace.  O_NONBLOCK so a
+    // FIFO swapped in after the lstat returns ENXIO instead of hanging.
     const int fd = ::open(resolved.c_str(),
-                          O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+                          O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK,
+                          0644);
     if (fd < 0) {
         if (errno == ELOOP)
             return "ERR: refusing to write through symlink: " + path;
+        if (errno == ENXIO)
+            return "ERR: write target is not a regular file: " + path;
         int err = errno;
         return std::string("ERR: cannot open for writing: ") + path
              + " (" + std::strerror(err) + ")";
