@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Sandbox FIFO no longer deadlocks a tenant.** `/write` and `/read` of a
+  named pipe used to block forever in `open()`. `/write` holds the
+  per-tenant sandbox mutex across that open, so a workspace `mkfifo`
+  stalled every same-tenant `/exec` and `/write` until restart. Both
+  paths now open `O_NONBLOCK` and reject non-regular files.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
