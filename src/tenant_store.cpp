@@ -3534,23 +3534,33 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
 }
 
 std::optional<ArtifactRecord>
-TenantStore::get_artifact_meta(int64_t tenant_id, int64_t id) const {
+TenantStore::get_artifact_meta(int64_t tenant_id, int64_t id,
+                                int64_t conversation_id) const {
     if (!db_) return std::nullopt;
-    Stmt q(db_, (std::string("SELECT ") + kArtifactMetaCols +
-                 " FROM tenant_artifacts WHERE tenant_id = ? AND id = ?;").c_str());
+    std::string sql = std::string("SELECT ") + kArtifactMetaCols +
+                      " FROM tenant_artifacts WHERE tenant_id = ? AND id = ?";
+    if (conversation_id > 0) sql += " AND conversation_id = ?";
+    sql += ";";
+    Stmt q(db_, sql.c_str());
     q.bind(1, tenant_id);
     q.bind(2, id);
+    if (conversation_id > 0) q.bind(3, conversation_id);
     if (q.step() != SQLITE_ROW) return std::nullopt;
     return row_to_artifact(q);
 }
 
 std::optional<std::string>
-TenantStore::get_artifact_content(int64_t tenant_id, int64_t id) const {
+TenantStore::get_artifact_content(int64_t tenant_id, int64_t id,
+                                   int64_t conversation_id) const {
     if (!db_) return std::nullopt;
-    Stmt q(db_, "SELECT content FROM tenant_artifacts "
-                 "WHERE tenant_id = ? AND id = ?;");
+    std::string sql = "SELECT content FROM tenant_artifacts "
+                      "WHERE tenant_id = ? AND id = ?";
+    if (conversation_id > 0) sql += " AND conversation_id = ?";
+    sql += ";";
+    Stmt q(db_, sql.c_str());
     q.bind(1, tenant_id);
     q.bind(2, id);
+    if (conversation_id > 0) q.bind(3, conversation_id);
     if (q.step() != SQLITE_ROW) return std::nullopt;
     const void* blob = sqlite3_column_blob(q.raw(), 0);
     int n = sqlite3_column_bytes(q.raw(), 0);
@@ -3606,8 +3616,15 @@ TenantStore::list_artifacts_tenant(int64_t tenant_id, int limit) const {
     return out;
 }
 
-bool TenantStore::delete_artifact(int64_t tenant_id, int64_t id) {
+bool TenantStore::delete_artifact(int64_t tenant_id, int64_t id,
+                                  int64_t conversation_id) {
     if (!db_) return false;
+    // Nested HTTP routes pass conversation_id so a mismatched :cid
+    // cannot nullify memory links or drop a sibling conversation's row.
+    if (conversation_id > 0 &&
+        !get_artifact_meta(tenant_id, id, conversation_id)) {
+        return false;
+    }
     // Soft cascade: nullify memory_entries.artifact_id referencing this
     // row before deleting it.  The schema-level FK couldn't be added by
     // ALTER TABLE (SQLite limitation), so we do the SET NULL ourselves.

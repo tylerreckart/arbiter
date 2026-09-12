@@ -3465,20 +3465,35 @@ void handle_artifact_list_tenant(int fd, TenantStore& tenants, const Tenant& ten
     write_json_response(fd, 200, body);
 }
 
+// conversation_id == 0 is the tenant-wide /v1/artifacts/:aid surface.
+// Nested /v1/conversations/:cid/artifacts/:aid passes :cid so a
+// sibling-thread (or TUI-origin) id cannot be read or deleted through
+// the conversation-scoped path.  Missing / TUI conversations 404 like
+// list/create on the same prefix.
 void handle_artifact_get_meta(int fd, int64_t artifact_id,
-                                TenantStore& tenants, const Tenant& tenant) {
-    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id);
+                                TenantStore& tenants, const Tenant& tenant,
+                                int64_t conversation_id = 0) {
+    if (conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conversation_id)) {
+        return write_artifact_error(fd, 404, "conversation not found");
+    }
+    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id, conversation_id);
     if (!rec) return write_artifact_error(fd, 404, "artifact not found");
     write_json_response(fd, 200, artifact_to_json(*rec));
 }
 
 // GET /v1/artifacts/:id/raw — content body with proper Content-Type +
 // ETag (= sha256) for conditional GETs.  Tenant-scoped lookup; cross-
-// tenant id surfaces as 404.
+// tenant id surfaces as 404.  Nested callers pass conversation_id.
 void handle_artifact_get_raw(int fd, int64_t artifact_id,
                               const HttpRequest& req,
-                              TenantStore& tenants, const Tenant& tenant) {
-    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id);
+                              TenantStore& tenants, const Tenant& tenant,
+                              int64_t conversation_id = 0) {
+    if (conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conversation_id)) {
+        return write_artifact_error(fd, 404, "conversation not found");
+    }
+    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id, conversation_id);
     if (!rec) return write_artifact_error(fd, 404, "artifact not found");
 
     // ETag honors the strong-validator semantics — sha256 of the bytes.
@@ -3496,7 +3511,8 @@ void handle_artifact_get_raw(int fd, int64_t artifact_id,
         return;
     }
 
-    auto blob = tenants.get_artifact_content(tenant.id, artifact_id);
+    auto blob = tenants.get_artifact_content(tenant.id, artifact_id,
+                                              conversation_id);
     if (!blob) return write_artifact_error(fd, 404, "artifact content missing");
 
     std::ostringstream ss;
@@ -3511,8 +3527,13 @@ void handle_artifact_get_raw(int fd, int64_t artifact_id,
 }
 
 void handle_artifact_delete(int fd, int64_t artifact_id,
-                              TenantStore& tenants, const Tenant& tenant) {
-    if (!tenants.delete_artifact(tenant.id, artifact_id))
+                              TenantStore& tenants, const Tenant& tenant,
+                              int64_t conversation_id = 0) {
+    if (conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conversation_id)) {
+        return write_artifact_error(fd, 404, "conversation not found");
+    }
+    if (!tenants.delete_artifact(tenant.id, artifact_id, conversation_id))
         return write_artifact_error(fd, 404, "artifact not found");
     auto body = jobj();
     body->as_object_mut()["deleted"] = jbool(true);
@@ -11367,13 +11388,16 @@ void ApiServer::handle_connection(int fd) {
                                                   "method not allowed\n");
                             return;
                         }
-                        return handle_artifact_get_raw(fd, aid, req, tenants_, *tenant);
+                        return handle_artifact_get_raw(fd, aid, req, tenants_,
+                                                       *tenant, id);
                     }
                     if (segs.size() == 5) {
                         if (req.method == "GET")
-                            return handle_artifact_get_meta(fd, aid, tenants_, *tenant);
+                            return handle_artifact_get_meta(fd, aid, tenants_,
+                                                           *tenant, id);
                         if (req.method == "DELETE")
-                            return handle_artifact_delete(fd, aid, tenants_, *tenant);
+                            return handle_artifact_delete(fd, aid, tenants_,
+                                                          *tenant, id);
                         write_plain_response(fd, 405, "Method Not Allowed",
                                               "method not allowed\n");
                         return;
