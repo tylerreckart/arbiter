@@ -1152,6 +1152,14 @@ public:
         // unscoped (`conversation_id IS NULL`); the OR-NULL fallback
         // keeps pre-migration entries visible everywhere.
         int64_t                  conversation_id       = 0;
+        // When true, a positive `conversation_id` matches only that
+        // conversation (`conversation_id = ?`).  The default OR-NULL
+        // fallback is for agent /mem browse and HTTP list, where
+        // unscoped / pre-migration rows should stay visible.  The
+        // delegation pipeline snapshot must opt out: HTTP `/v1/memory`
+        // and CLI `/mem add` rows with NULL conversation_id would
+        // otherwise be injected as "what siblings just wrote."
+        bool                     exact_conversation    = false;
         // Age-decay multiplier on BM25 scores.  When `age_now_epoch`
         // is non-zero, the search SQL multiplies each row's score by
         // a piecewise factor that drops from 1.0 at `valid_from = now`
