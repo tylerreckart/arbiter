@@ -2523,11 +2523,16 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
             sql += " AND e.valid_to IS NULL";
         }
         if (f.conversation_id > 0) {
-            // OR-NULL fallback: rows pinned to this conversation OR rows
-            // that are unscoped stay reachable.  Pre-migration entries
-            // (NULL conversation_id) are visible from every conversation.
-            sql += " AND (e.conversation_id = ? "
-                   "      OR e.conversation_id IS NULL)";
+            if (f.exact_conversation) {
+                sql += " AND e.conversation_id = ?";
+            } else {
+                // OR-NULL fallback: rows pinned to this conversation OR
+                // rows that are unscoped stay reachable.  Pre-migration
+                // entries (NULL conversation_id) are visible from every
+                // conversation.
+                sql += " AND (e.conversation_id = ? "
+                       "      OR e.conversation_id IS NULL)";
+            }
         }
         if (f.since > 0)             sql += " AND e.created_at >= ?";
         if (f.before_updated_at > 0) sql += " AND e.updated_at < ?";
@@ -2599,7 +2604,11 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         sql += " AND valid_to IS NULL";
     }
     if (f.conversation_id > 0) {
-        sql += " AND (conversation_id = ? OR conversation_id IS NULL)";
+        if (f.exact_conversation) {
+            sql += " AND conversation_id = ?";
+        } else {
+            sql += " AND (conversation_id = ? OR conversation_id IS NULL)";
+        }
     }
     if (f.since > 0)             sql += " AND created_at >= ?";
     if (f.before_updated_at > 0) sql += " AND updated_at < ?";

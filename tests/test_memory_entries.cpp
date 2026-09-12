@@ -681,6 +681,48 @@ TEST_CASE("conversation_id filter includes unscoped rows (OR-NULL fallback)") {
     }
 }
 
+TEST_CASE("exact_conversation excludes unscoped rows from pipeline snapshot") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "pipeline-exact");
+    auto conv = s.create_conversation(tid, "delegating", "index", "");
+    auto other_conv = s.create_conversation(tid, "other", "index", "");
+
+    auto sibling = s.create_entry(tid, "project", "sibling scout notes",
+        "Fresh sibling output.", "", "[]", /*artifact=*/0, conv.id);
+    s.create_entry(tid, "project", "http admin import",
+        "Unscoped residue that must not look like a sibling.", "", "[]",
+        /*artifact=*/0, /*conversation_id=*/0);
+    s.create_entry(tid, "project", "other thread",
+        "Pinned elsewhere.", "", "[]", /*artifact=*/0, other_conv.id);
+
+    TenantStore::EntryFilter f;
+    f.conversation_id = conv.id;
+    f.exact_conversation = true;
+    auto rows = s.list_entries(tid, f);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].id == sibling.id);
+
+    // Recency LIMIT must not hide the sibling behind a flood of unscoped
+    // rows — the reason this is a SQL predicate, not a post-filter.
+    for (int i = 0; i < 20; ++i) {
+        s.create_entry(tid, "project", "flood " + std::to_string(i),
+            "Unscoped flood.", "", "[]");
+    }
+    f.limit = 5;
+    auto capped = s.list_entries(tid, f);
+    REQUIRE(capped.size() == 1);
+    CHECK(capped[0].id == sibling.id);
+
+    // FTS path uses the same exact predicate.
+    f.q = "sibling";
+    f.limit = 15;
+    auto hits = s.list_entries(tid, f);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].id == sibling.id);
+}
+
 TEST_CASE("graduated search prefers conversation hits, fills from tenant-wide") {
     TempDb db;
     TenantStore s;

@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Delegation pipeline memory is sibling-only.** The orchestrator's
+  `pipeline-entries` probe now lists rows pinned to the active conversation
+  (`conversation_id = ?`). Default `list_entries` still ORs in unscoped
+  (`NULL`) rows for agent `/mem` browse; that fallback was injecting HTTP
+  `/v1/memory` and CLI `/mem add` residue into sub-agent context as if
+  siblings had just written it.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed

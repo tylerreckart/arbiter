@@ -6601,6 +6601,14 @@ StructuredMemoryReader make_structured_memory_reader_callback(
                 TenantStore::EntryFilter f;
                 f.limit = 15;
                 f.conversation_id = reader_conversation_id;
+                // Sibling snapshot only.  Default list_entries ORs in
+                // NULL conversation_id (HTTP admin / CLI unscoped
+                // rows, pre-migration residue).  Those are not sibling
+                // output; including them reintroduces the tenant-wide
+                // bleed this probe exists to prevent.  Must be in the
+                // SQL WHERE — post-filtering after LIMIT 15 can drop
+                // the actual sibling rows behind unscoped recency.
+                f.exact_conversation = true;
                 auto entries = tenants.list_entries(reader_tenant_id, f);
                 if (entries.empty()) return "(no entries)";
                 std::ostringstream out;
