@@ -223,3 +223,31 @@ TEST_CASE("parse: huge intervals fail closed without throwing") {
         CHECK(r.spec.fire_at == now + 2 * 3600);
     }
 }
+
+TEST_CASE("/schedule pause/resume refuse terminal statuses") {
+    CHECK(schedule_resume_block_reason("paused").empty());
+    CHECK(schedule_pause_block_reason("paused").empty());
+    CHECK(schedule_pause_block_reason("active").empty());
+    CHECK(schedule_pause_block_reason("running").empty());
+
+    CHECK(schedule_resume_block_reason("completed").find("completed")
+          != std::string::npos);
+    CHECK(schedule_pause_block_reason("completed").find("completed")
+          != std::string::npos);
+    CHECK(schedule_resume_block_reason("failed").find("failed")
+          != std::string::npos);
+    CHECK(schedule_pause_block_reason("failed").find("failed")
+          != std::string::npos);
+    CHECK(schedule_resume_block_reason("canceled").find("canceled")
+          != std::string::npos);
+    CHECK(schedule_pause_block_reason("canceled").find("canceled")
+          != std::string::npos);
+    CHECK(schedule_resume_block_reason("active").find("already active")
+          != std::string::npos);
+    CHECK(schedule_resume_block_reason("running").find("running")
+          != std::string::npos);
+    CHECK(schedule_resume_block_reason("bogus").find("cannot be resumed")
+          != std::string::npos);
+    CHECK(schedule_pause_block_reason("bogus").find("cannot be paused")
+          != std::string::npos);
+}
