@@ -23,6 +23,7 @@
 #include "commands.h"
 #include "config.h"
 #include "constitution.h"
+#include "event_routing.h"
 #include "context_compaction.h"
 #include "file_cap.h"
 #include "json.h"
@@ -10632,10 +10633,17 @@ void handle_event_ingest(int fd, HttpRequest req,
 
     // Route: explicit override wins; otherwise file-backed agents first,
     // then tenant-stored agents (POST /v1/agents) by stable agent_id order.
+    // Remember which tier won so we hydrate *that* constitution — a
+    // file-backed id can collide with a tenant row that handle_orchestrate
+    // would otherwise install from the newest-200 catalog.
     std::string agent_id = agent;
+    std::string tenant_def_json;
+    bool routed_from_file = false;
     if (agent_id.empty()) {
         agent_id = route_event(opts.agents_dir, event_type);
-        if (agent_id.empty()) {
+        if (!agent_id.empty()) {
+            routed_from_file = true;
+        } else {
             // Full scan ordered by agent_id — not the newest-200 REST page.
             auto records = tenants.list_agent_records_for_routing(tenant.id);
             std::vector<std::pair<std::string, std::vector<std::string>>>
@@ -10655,8 +10663,17 @@ void handle_event_ingest(int fd, HttpRequest req,
                 }
             }
             std::string matched = route_event(tenant_agents, event_type);
-            agent_id = matched.empty() ? std::string("index") : matched;
+            if (matched.empty()) {
+                agent_id = "index";
+            } else {
+                agent_id = matched;
+                if (auto rec = tenants.get_agent_record(tenant.id, agent_id)) {
+                    tenant_def_json = rec->agent_def_json;
+                }
+            }
         }
+    } else if (auto rec = tenants.get_agent_record(tenant.id, agent_id)) {
+        tenant_def_json = rec->agent_def_json;
     }
 
     // Format event as a natural-language message the agent can reason about.
@@ -10668,9 +10685,26 @@ void handle_event_ingest(int fd, HttpRequest req,
     // handle_orchestrate reads req.body["message"] and uses agent_override
     // to target the routed agent; everything else (SSE, auth, writ execution)
     // flows through the existing path unchanged.
+    //
+    // Attach the routed constitution as inline agent_def. Orchestrate only
+    // preloads list_agent_records(..., 200) and never reads agents_dir, so
+    // a file-backed match or a tenant agent off that page would otherwise
+    // 404 "agent not found" — or, on an id clash, run the tenant blob.
     auto synth = jobj();
     synth->as_object_mut()["message"] = jstr(message);
     synth->as_object_mut()["intent_source"] = jstr("event");
+    const std::string def_json = event_ingest_agent_def_json(
+        agent_id, opts.agents_dir, tenant_def_json, routed_from_file);
+    if (!def_json.empty()) {
+        try {
+            auto def = json_parse(def_json);
+            if (def && def->is_object()) {
+                synth->as_object_mut()["agent_def"] = def;
+            }
+        } catch (...) {
+            // Leave unhydrated; orchestrate reports agent not found.
+        }
+    }
     req.body = json_serialize(*synth);
 
     handle_orchestrate(fd, req, opts, tenants, in_flight,
