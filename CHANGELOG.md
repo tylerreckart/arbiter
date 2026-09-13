@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **List-query URL decoding.** Lesson, todo, schedule, request, run,
+  and admin-audit list handlers now go through `parse_query()` (same as
+  conversation list). Encoded spaces (`q=rate%20limit`, `+`) and
+  percent-encoded filter values no longer miss rows.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
