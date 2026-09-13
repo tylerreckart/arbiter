@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Compaction boundary vs user `QUERY:` / `[` text.**
+  `strip_compaction_preambles` now takes the first orchestrator
+  `\n\nQUERY: ` wrapper (not the last) and strips only known
+  `[OPEN TODOS]` / `[KNOWN PITFALLS]` / `[INTENT]` envelopes. A user
+  turn that embeds that delimiter or starts with `[` no longer stores a
+  truncated boundary that fails remap after reload.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
