@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **`/schedule resume` is paused-only.** The writ no longer flips
+  `completed`, `failed`, `canceled`, `running`, or already-`active` rows
+  back to `active`, and `/schedule pause` refuses those terminal
+  statuses so pause-then-resume cannot re-queue a finished one-shot
+  (`next_fire_at` is still in the past after a successful fire; the old
+  resume path set `next=now+1`). Recreate a finished one-shot to run it
+  again; operators still PATCH failed one-shots to `active` to retry.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed

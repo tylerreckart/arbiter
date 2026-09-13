@@ -5708,19 +5708,23 @@ SchedulerInvoker make_scheduler_invoker_callback(
                 return "ERR: schedule #" + std::to_string(id) + " not found";
             }
 
-            // Pause or resume: PATCH status.  Resume also recomputes
-            // next_fire_at for a recurring task whose previous fire is
-            // now in the past.
+            // Pause or resume: PATCH status.  Terminal one-shots stay
+            // terminal so pause-then-resume cannot re-queue them
+            // (next_fire_at is still in the past after a successful
+            // fire).  Recurring resume still recomputes next_fire_at
+            // when the previous fire is now in the past.
             std::string new_status = (kind == "pause") ? "paused" : "active";
             std::optional<int64_t> next;
-            if (kind == "resume") {
+            if (kind == "pause" || kind == "resume") {
                 auto row = tenants.get_scheduled_task(tenant_id, id);
                 if (!row) return "ERR: schedule #" + std::to_string(id) + " not found";
-                if (row->status == "running") {
-                    return "ERR: schedule #" + std::to_string(id) +
-                           " is running; wait for completion before resuming";
+                const std::string reason = (kind == "pause")
+                    ? schedule_pause_block_reason(row->status)
+                    : schedule_resume_block_reason(row->status);
+                if (!reason.empty()) {
+                    return "ERR: schedule #" + std::to_string(id) + " " + reason;
                 }
-                if (row->next_fire_at <= now) {
+                if (kind == "resume" && row->next_fire_at <= now) {
                     if (row->schedule_kind == "recurring") {
                         int64_t n = next_fire_for_recur(row->recur_json, now);
                         if (n > 0) next = n;

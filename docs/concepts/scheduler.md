@@ -57,6 +57,8 @@ Agents emit:
 /schedule resume 42
 ```
 
+`/schedule resume` only reactivates a `paused` row, and `/schedule pause` refuses `completed` / `failed` / `canceled` so pause-then-resume cannot re-queue a finished one-shot. Recreate it to run again (operators can still `PATCH` a failed one-shot back to `active`).
+
 The `:` separates the schedule phrase from the message that the agent will see when the task fires. The scheduled task targets the calling agent by default — a `scout` agent emitting `/schedule …` queues work for `scout`. Other agents are addressable via the HTTP `POST /v1/schedules` endpoint with an `agent` field.
 
 A successful create returns:
