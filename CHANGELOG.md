@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **SSE mailbox terminal after overflow.** `sse_mailbox_push(...,
+  force_deliver=true)` now evicts oldest events and delivers a terminal
+  envelope even when a prior push already set `overflowed`. Request-event
+  replay and A2A resubscribe close with the real `done` / task-status
+  frame instead of dropping it for `slow_consumer`.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
