@@ -59,11 +59,17 @@ Response parse_response(const std::string& line) {
 
     auto res_v = v->get("result");
     auto err_v = v->get("error");
-    if (res_v && err_v)
+    // JSON-RPC 2.0 allows only one of result/error. Serializers (and
+    // A2A's parser) still emit the other member as JSON null. Treat
+    // null as omitted so `"result":{...},"error":null` is success and
+    // `"result":null,"error":{...}` is an error. Otherwise Client::rpc
+    // counts the throw as a parse failure and kills the MCP subprocess
+    // after five such lines.
+    const bool have_result = res_v && !res_v->is_null();
+    const bool have_error  = err_v && !err_v->is_null();
+    if (have_result && have_error)
         throw std::runtime_error("response has both 'result' and 'error'");
-    if (res_v) {
-        r.result = res_v;
-    } else if (err_v) {
+    if (have_error) {
         if (!err_v->is_object())
             throw std::runtime_error("'error' is not a JSON object");
         RpcError e;
@@ -73,8 +79,12 @@ Response parse_response(const std::string& line) {
             e.message = m->as_string();
         if (auto d = err_v->get("data")) e.data = d;
         r.error = std::move(e);
+    } else if (res_v) {
+        // Keep JSON-null `result` so a successful method that returns
+        // null is distinct from a notification (no result member).
+        r.result = res_v;
     }
-    // Empty result + empty error is allowed (e.g. notifications/initialized
+    // Empty result + empty error is allowed (e.g. notifications/initialized)
     // ack from some servers); leaves result null and error empty.
     return r;
 }
