@@ -1280,6 +1280,17 @@ if(INDEX_BUILD_TESTS)
     target_link_libraries(unit_sse_mailbox PRIVATE Threads::Threads)
     add_test(NAME unit_sse_mailbox COMMAND unit_sse_mailbox)
 
+    # --- Unit tests for RFC 6750 / RFC 9110 Bearer field parsing ---
+    add_executable(unit_auth
+        tests/test_auth.cpp
+        src/api/http_util.cpp
+    )
+    target_include_directories(unit_auth PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_auth COMMAND unit_auth)
+
     # --- Unit tests for /v1/events agent routing ---
     add_executable(unit_route_event
         tests/test_route_event.cpp
