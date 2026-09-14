@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Inbound HTTP body honors Content-Length.** `parse_http_request` now
+  takes at most `Content-Length` bytes from the header-read leftover, so
+  `Content-Length: 0` stays empty and extra pipelined or smuggled bytes
+  past the declared length are not adopted as this request's body.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
