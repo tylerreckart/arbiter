@@ -7,6 +7,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **TUI replay QUERY boundary.** `replay_user_echo_text` now strips the
+  first `\n\nQUERY: ` after the AGENTS roster (not the last). User text
+  that embeds that marker no longer replays as only the suffix after it.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
