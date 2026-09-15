@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+  `id` (`"1"`) in addition to a JSON number. JSON-RPC 2.0 allows both; JS
+  MCP servers commonly echo the integer we sent as a string. The old path
+  left `Response::id` at 0, so `Client::rpc` treated a valid reply as a
+  notification and hung until `init_timeout` / `call_timeout` then killed
+  the subprocess.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
