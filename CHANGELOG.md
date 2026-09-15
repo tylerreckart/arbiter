@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
+  secret-shaped parent keys then appended `env_extra`, leaving duplicate
+  `KEY=` entries. glibc/macOS `getenv` (and `execvp` PATH search) use the
+  first match, so registry `PATH` / `NODE_ENV` / `HTTP_PROXY` / non-secret
+  keys were ignored. Inherited keys that `env` sets are now omitted so
+  the registry value is the only copy.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
