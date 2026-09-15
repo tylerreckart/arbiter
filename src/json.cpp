@@ -162,6 +162,44 @@ struct Parser {
             std::string("JSON parse error at pos ") + std::to_string(pos) + ": " + msg);
     }
 
+    unsigned parse_hex4() {
+        unsigned cp = 0;
+        for (int i = 0; i < 4; ++i) {
+            char h = advance();
+            cp <<= 4;
+            if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
+            else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
+            else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
+            else error("invalid hex in \\u escape");
+        }
+        return cp;
+    }
+
+    // Encode a Unicode scalar as UTF-8.  Unpaired surrogates and values
+    // above U+10FFFF become U+FFFD — same replacement the serializer
+    // uses for malformed input bytes.
+    static void append_utf8(std::string& out, uint32_t cp) {
+        if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            out += "\xEF\xBF\xBD";
+            return;
+        }
+        if (cp < 0x80) {
+            out += static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            out += static_cast<char>(0xC0 | (cp >> 6));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            out += static_cast<char>(0xE0 | (cp >> 12));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else {
+            out += static_cast<char>(0xF0 | (cp >> 18));
+            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    }
+
     std::shared_ptr<JsonValue> parse_value() {
         skip_ws();
         char c = peek();
@@ -194,26 +232,37 @@ struct Parser {
                     case 'r':  result += '\r'; break;
                     case 't':  result += '\t'; break;
                     case 'u': {
-                        // Basic BMP only
-                        unsigned cp = 0;
-                        for (int i = 0; i < 4; ++i) {
-                            char h = advance();
-                            cp <<= 4;
-                            if (h >= '0' && h <= '9') cp |= (h - '0');
-                            else if (h >= 'a' && h <= 'f') cp |= (h - 'a' + 10);
-                            else if (h >= 'A' && h <= 'F') cp |= (h - 'A' + 10);
-                            else error("invalid hex in \\u escape");
+                        // RFC 8259 §7: non-BMP scalars are a UTF-16
+                        // surrogate pair.  Python json.dumps (default
+                        // ensure_ascii=True) and many MCP/A2A peers emit
+                        // that form for emoji.  Encoding each half as a
+                        // 3-byte sequence is not UTF-8; escape_string then
+                        // replaces those bytes with U+FFFD on re-serialize.
+                        unsigned cp = parse_hex4();
+                        if (cp >= 0xD800 && cp <= 0xDBFF) {
+                            if (pos + 6 <= src.size() &&
+                                src[pos] == '\\' && src[pos + 1] == 'u') {
+                                advance();
+                                advance();
+                                unsigned low = parse_hex4();
+                                if (low >= 0xDC00 && low <= 0xDFFF) {
+                                    cp = 0x10000u +
+                                         ((cp - 0xD800u) << 10) +
+                                         (low - 0xDC00u);
+                                } else {
+                                    append_utf8(result, 0xFFFD);
+                                    append_utf8(result, low);
+                                    break;
+                                }
+                            } else {
+                                append_utf8(result, 0xFFFD);
+                                break;
+                            }
+                        } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                            append_utf8(result, 0xFFFD);
+                            break;
                         }
-                        if (cp < 0x80) {
-                            result += static_cast<char>(cp);
-                        } else if (cp < 0x800) {
-                            result += static_cast<char>(0xC0 | (cp >> 6));
-                            result += static_cast<char>(0x80 | (cp & 0x3F));
-                        } else {
-                            result += static_cast<char>(0xE0 | (cp >> 12));
-                            result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-                            result += static_cast<char>(0x80 | (cp & 0x3F));
-                        }
+                        append_utf8(result, cp);
                         break;
                     }
                     default: error("invalid escape");

@@ -1313,6 +1313,19 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_logger COMMAND unit_logger)
 
+    # JSON \u escapes including UTF-16 surrogate pairs (emoji via
+    # Python json.dumps / MCP-A2A peers).  Own binary so it stays
+    # independently mergeable vs unit_mcp framing tests.
+    add_executable(unit_json
+        tests/test_json.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_json PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_json COMMAND unit_json)
+
     # --- Unit tests for the structured-memory store ---
     # Pins the tenant_store CRUD contract that backs both /v1/memory/entries
     # and the agent-side /mem entries|entry|search reader.

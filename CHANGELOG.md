@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **JSON UTF-16 surrogate pairs.** `json_parse` now decodes `\uD800`–`\uDFFF`
+  pairs into a single supplementary-plane scalar (emoji, etc.) instead of
+  two invalid 3-byte sequences that `json_serialize` then replaced with
+  U+FFFD. Unpaired surrogates become U+FFFD.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
