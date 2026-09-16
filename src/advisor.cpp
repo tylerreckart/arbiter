@@ -103,4 +103,23 @@ AdvisorGateOutput run_advisor_gate(
     return parse_advisor_signal(resp.content);
 }
 
+AdvisorGateHttpAbort advisor_gate_http_abort(bool tenant_alive,
+                                             bool cancelled) {
+    AdvisorGateHttpAbort abort;
+    if (!tenant_alive) {
+        abort.status = 401;
+        abort.error = "missing or invalid bearer token";
+        return abort;
+    }
+    if (cancelled) {
+        // 409 not 401: the bearer is still valid; the in-flight call was
+        // aborted (drain, /v1/requests/:id/cancel, admin cancel without
+        // a disable).  Same cancelled taxonomy as orchestrate `done`.
+        abort.status = 409;
+        abort.error = "request cancelled";
+        return abort;
+    }
+    return abort;
+}
+
 } // namespace arbiter

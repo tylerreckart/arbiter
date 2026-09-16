@@ -4713,11 +4713,18 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     AdvisorGateOutput out = run_advisor_gate(
         orch->client(), advisor_model, prompt_override, in);
 
-    if (orch->sticky_cancelled() || orch->client().hard_cancelled() ||
-        !refresh_active_tenant(tenants, tenant)) {
+    // Post-call: distinguish tenant revoke (401) from drain / caller
+    // cancel (409).  Lumping them into bearer-invalid made a shutdown
+    // or POST /v1/requests/:id/cancel look like a bad token.
+    const bool tenant_alive =
+        refresh_active_tenant(tenants, tenant);
+    const bool cancelled =
+        orch->sticky_cancelled() || orch->client().hard_cancelled();
+    if (auto abort = advisor_gate_http_abort(tenant_alive, cancelled);
+        abort.error) {
         auto err = jobj();
-        err->as_object_mut()["error"] = jstr("missing or invalid bearer token");
-        write_json_response(fd, 401, err);
+        err->as_object_mut()["error"] = jstr(abort.error);
+        write_json_response(fd, abort.status, err);
         return;
     }
 
