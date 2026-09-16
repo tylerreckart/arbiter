@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+  mapped drain / `POST /v1/requests/:id/cancel` onto HTTP 401
+  `"missing or invalid bearer token"`, the same body as a disabled
+  tenant. Cancel now returns 409 `"request cancelled"`. Tenant
+  disable/rotate still 401 so clients cannot enumerate revoked
+  tenants.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
