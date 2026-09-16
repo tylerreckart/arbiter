@@ -207,12 +207,16 @@ struct ApiServerOptions {
 // background Scheduler.  The returned Orchestrator is fully self-contained
 // and tenant-scoped; the caller invokes `orch->send(agent_id, prompt)` to
 // run one turn.  On failure, returns null and populates `err_out`.
+//
+// `target_agent_id` is extra-fetched when it fell off the newest-200
+// catalog page so a stored agent GET /v1/agents/:id still finds can run.
 std::unique_ptr<Orchestrator>
 build_blocking_orchestrator(const ApiServerOptions& opts,
                              TenantStore& tenants,
                              const Tenant& tenant,
                              std::string& err_out,
-                             int64_t conversation_id = 0);
+                             int64_t conversation_id = 0,
+                             const std::string& target_agent_id = "");
 
 // HTTP-visible conversation rows (excludes TUI-only sidebar threads).
 bool is_http_scoped_conversation(TenantStore& tenants,

@@ -3008,6 +3008,20 @@ TenantStore::list_agent_records_for_routing(int64_t tenant_id) const {
     return out;
 }
 
+std::vector<AgentRecord>
+TenantStore::list_agent_records_for_dispatch(
+    int64_t tenant_id, const std::string& target_agent_id) const {
+    auto out = list_agent_records(tenant_id, 200);
+    if (target_agent_id.empty() || target_agent_id == "index") return out;
+    for (const auto& rec : out) {
+        if (rec.agent_id == target_agent_id) return out;
+    }
+    if (auto extra = get_agent_record(tenant_id, target_agent_id)) {
+        out.push_back(std::move(*extra));
+    }
+    return out;
+}
+
 bool TenantStore::update_agent_record(int64_t tenant_id,
                                        const std::string& agent_id,
                                        const std::string& name,
