@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
+  `cmd_fetch` and `cmd_fetch_bytes` already refused private/loopback
+  peers at connect time, but skipped `ssrf_preflight_url`. Metadata
+  hostnames that resolve public, and private/metadata URLs reached
+  through `HTTP_PROXY` (opensocket sees the proxy), were not blocked.
+  Both paths now run the shared preflight before libcurl.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
