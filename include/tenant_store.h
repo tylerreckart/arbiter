@@ -802,8 +802,9 @@ public:
 
     // PATCH-style: any std::nullopt argument leaves the field
     // untouched.  Setting status to a terminal value stamps
-    // completed_at automatically (caller can override by passing a
-    // value through completed_at).
+    // completed_at automatically; setting it to a non-terminal value
+    // clears completed_at (caller can override by passing a value
+    // through completed_at).
     bool update_todo(int64_t tenant_id, int64_t id,
                       const std::optional<std::string>& subject,
                       const std::optional<std::string>& description,

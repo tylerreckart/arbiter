@@ -7,6 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Reopened todos clear `completed_at`.** `update_todo` (HTTP PATCH and
+  batch PATCH) now zeros `completed_at` when status moves back to
+  `pending` or `in_progress`, unless the caller passes an explicit
+  timestamp. Completing then reopening left the old stamp, so the
+  documented `completed_at = 0` until terminal contract was violated.
+  Subject/description edits on a terminal row still leave the stamp.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
