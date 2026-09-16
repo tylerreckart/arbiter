@@ -7848,7 +7848,8 @@ std::unique_ptr<Orchestrator>
 build_a2a_orchestrator(const ApiServerOptions& opts,
                         TenantStore& tenants, const Tenant& tenant,
                         std::string& err_out,
-                        int64_t conversation_id = 0) {
+                        int64_t conversation_id = 0,
+                        const std::string& target_agent_id = "") {
     std::unique_ptr<Orchestrator> orch;
     try {
         orch = std::make_unique<Orchestrator>(opts.api_keys);
@@ -7860,7 +7861,11 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
     orch->client().set_circuit_breaker(opts.circuit_breaker);
     orch->client().set_metrics(opts.metrics);
 
-    const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+    // Newest-200 plus the targeted id when it fell off that page (GET
+    // /v1/agents/:id already uses get_agent_record).  Sibling /agent
+    // and /parallel still resolve from the REST list page.
+    const auto records = tenants.list_agent_records_for_dispatch(
+        tenant.id, target_agent_id);
     for (const auto& rec : records) {
         try {
             auto cfg = Constitution::from_json(rec.agent_def_json);
@@ -7932,7 +7937,8 @@ void handle_a2a_message_send(int fd,
     const std::string context_id = resolve_a2a_context_id(user_msg);
 
     std::string init_err;
-    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err,
+                                       /*conversation_id=*/0, agent_id);
     if (!orch) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
@@ -8105,7 +8111,8 @@ void handle_a2a_message_stream(int fd,
     const std::string context_id = resolve_a2a_context_id(user_msg);
 
     std::string init_err;
-    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err,
+                                       /*conversation_id=*/0, agent_id);
     if (!orch) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
@@ -9594,8 +9601,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // can resolve sibling ids during this turn.  A blob whose JSON has
     // gone bad (schema drift after an upgrade, manual DB poke) gets
     // skipped with a log line — the rest of the catalog still loads.
+    // Extra-fetch the targeted id when it fell off the newest-200 page
+    // (same gap GET /v1/agents/:id does not have).
     {
-        const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+        const auto records = tenants.list_agent_records_for_dispatch(
+            tenant.id, agent_id);
         for (const auto& rec : records) {
             try {
                 auto cfg = Constitution::from_json(rec.agent_def_json);
@@ -10309,9 +10319,10 @@ build_blocking_orchestrator(const ApiServerOptions& opts,
                              TenantStore& tenants,
                              const Tenant& tenant,
                              std::string& err_out,
-                             int64_t conversation_id) {
+                             int64_t conversation_id,
+                             const std::string& target_agent_id) {
     return build_a2a_orchestrator(opts, tenants, tenant, err_out,
-                                  conversation_id);
+                                  conversation_id, target_agent_id);
 }
 
 bool is_http_scoped_conversation(TenantStore& tenants,

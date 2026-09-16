@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Dispatch of stored agents past newest-200.** `GET /v1/agents/:id` already
+  used `get_agent_record`. `/v1/orchestrate`, `/v1/agents/:id/chat`, A2A
+  `message/send`/`message/stream`, and the scheduler installed only
+  `list_agent_records(200)` (newest `updated_at`), so a targeted id that
+  fell off that page returned `agent not found` while GET succeeded.
+  Dispatch now extra-fetches the targeted id. Sibling `/agent`/`/parallel`
+  still resolve from the newest-200 page.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
