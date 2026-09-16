@@ -4720,11 +4720,11 @@ void handle_advise_gate(int fd, const HttpRequest& req,
         refresh_active_tenant(tenants, tenant);
     const bool cancelled =
         orch->sticky_cancelled() || orch->client().hard_cancelled();
-    if (auto abort = advisor_gate_http_abort(tenant_alive, cancelled);
-        abort.error) {
+    if (auto gate_abort = advisor_gate_http_abort(tenant_alive, cancelled);
+        gate_abort.error) {
         auto err = jobj();
-        err->as_object_mut()["error"] = jstr(abort.error);
-        write_json_response(fd, abort.status, err);
+        err->as_object_mut()["error"] = jstr(gate_abort.error);
+        write_json_response(fd, gate_abort.status, err);
         return;
     }
 

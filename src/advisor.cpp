@@ -105,21 +105,21 @@ AdvisorGateOutput run_advisor_gate(
 
 AdvisorGateHttpAbort advisor_gate_http_abort(bool tenant_alive,
                                              bool cancelled) {
-    AdvisorGateHttpAbort abort;
+    AdvisorGateHttpAbort result;
     if (!tenant_alive) {
-        abort.status = 401;
-        abort.error = "missing or invalid bearer token";
-        return abort;
+        result.status = 401;
+        result.error = "missing or invalid bearer token";
+        return result;
     }
     if (cancelled) {
         // 409 not 401: the bearer is still valid; the in-flight call was
         // aborted (drain, /v1/requests/:id/cancel, admin cancel without
         // a disable).  Same cancelled taxonomy as orchestrate `done`.
-        abort.status = 409;
-        abort.error = "request cancelled";
-        return abort;
+        result.status = 409;
+        result.error = "request cancelled";
+        return result;
     }
-    return abort;
+    return result;
 }
 
 } // namespace arbiter
