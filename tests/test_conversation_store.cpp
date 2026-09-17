@@ -227,6 +227,75 @@ TEST_CASE("create_or_reuse_for with empty folder_id unfiles a reused chat") {
     fs::remove_all(dir);
 }
 
+TEST_CASE("create_or_reuse does not treat unreadable session JSON as empty") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    const std::string id = store.active_id();
+    write_session(store, id, "{ this is not valid json");
+    const std::string after = store.create_or_reuse(dir);
+    CHECK(after != id);
+    CHECK(store.session_json(id).find("not valid json") != std::string::npos);
+    CHECK(store.list().size() == 2);
+
+    // Canonical empty object still reuses (true empty, not corrupt).
+    write_session(store, after,
+                  R"({"version":2,"index":[],"agents":{},"compaction":{}})");
+    const std::string reused = store.create_or_reuse(dir);
+    CHECK(reused == after);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("create_or_reuse does not treat a JSON array session as empty") {
+    const std::string dir = make_temp_dir();
+    ConversationStore store(dir);
+
+    const std::string id = store.active_id();
+    write_session(store, id, R"([{"role":"user","content":"hi"}])");
+    const std::string after = store.create_or_reuse(dir);
+    CHECK(after != id);
+    CHECK(store.session_json(id).find("hi") != std::string::npos);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("GC keeps 24h+ Untitled conversations whose session JSON will not parse") {
+    const std::string dir = make_temp_dir();
+    std::string keep_active;
+    std::string corrupt;
+    std::string truly_empty;
+    {
+        ConversationStore store(dir);
+        keep_active = store.active_id();
+        corrupt = store.create(dir);
+        truly_empty = store.create(dir);
+        write_session(store, corrupt, "{ truncated");
+        store.set_active(keep_active);
+        const std::int64_t old = static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count()) - 48 * 3600;
+        REQUIRE(store.tenant_store().set_conversation_timestamps(
+            store.tenant_id(), to_db_id(corrupt), old, old));
+        REQUIRE(store.tenant_store().set_conversation_timestamps(
+            store.tenant_id(), to_db_id(truly_empty), old, old));
+    }
+
+    ConversationStore store(dir);
+    bool saw_corrupt = false;
+    bool saw_empty = false;
+    for (const auto& e : store.list()) {
+        if (e.id == corrupt) saw_corrupt = true;
+        if (e.id == truly_empty) saw_empty = true;
+    }
+    CHECK(saw_corrupt);
+    CHECK_FALSE(saw_empty);
+    CHECK(store.session_json(corrupt).find("truncated") != std::string::npos);
+
+    fs::remove_all(dir);
+}
+
 TEST_CASE("create with a deleted folder id files as unfiled instead of throwing") {
     const std::string dir = make_temp_dir();
     ConversationStore store(dir);
