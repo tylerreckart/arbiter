@@ -7,6 +7,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
+  dates (Feb 31, Jun 31, Feb 29 in a non-leap year) instead of letting
+  `mktime` overflow into the next month and fire on a different day.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
