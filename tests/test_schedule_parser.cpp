@@ -102,6 +102,26 @@ TEST_CASE("parse: 'on YYYY-MM-DD'") {
         auto past = parse_schedule_phrase("on 2020-01-01", now);
         CHECK(!past.ok);
     }
+
+    SUBCASE("rejects calendar-impossible dates instead of overflowing") {
+        // mktime would turn Feb 31 into early March; /schedule must fail closed.
+        auto feb31 = parse_schedule_phrase("on 2027-02-31 at 12:00", now);
+        CHECK_FALSE(feb31.ok);
+        CHECK(feb31.error.message.find("YYYY-MM-DD") != std::string::npos);
+
+        auto jun31 = parse_schedule_phrase("on 2026-06-31", now);
+        CHECK_FALSE(jun31.ok);
+
+        auto non_leap = parse_schedule_phrase("on 2027-02-29 at 09:00", now);
+        CHECK_FALSE(non_leap.ok);
+    }
+
+    SUBCASE("accepts leap-day in a leap year") {
+        auto leap = parse_schedule_phrase("on 2028-02-29 at 12:00", now);
+        CHECK(leap.ok);
+        CHECK(leap.spec.kind == ScheduleSpec::Kind::Once);
+        CHECK(leap.spec.fire_at > now);
+    }
 }
 
 TEST_CASE("parse: recurring shapes") {
