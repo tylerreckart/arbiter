@@ -122,6 +122,45 @@ TEST_CASE("RemoteSseTurnConsumer surfaces done.ok=false") {
     CHECK(result.error == "upstream failed");
 }
 
+TEST_CASE("RemoteSseTurnConsumer drops recoverable error on done.ok=true") {
+    OutputQueue queue;
+    StreamRenderer renderer(kMasterStream, queue);
+    RemoteSseTurnConsumer consumer(renderer, queue);
+    consumer.on_event("error",
+        R"({"message":"skipping stored agent 'broken' for tenant 1: invalid json"})");
+    consumer.on_event("text", R"({"delta":"ok"})");
+    consumer.on_event("done",
+        R"({"ok":true,"content":"ok","input_tokens":3,"output_tokens":1})");
+    auto result = consumer.finish(false);
+    CHECK(result.ok);
+    CHECK(result.content == "ok");
+    CHECK(result.error.empty());
+    CHECK(result.input_tokens == 3);
+    CHECK(result.output_tokens == 1);
+}
+
+TEST_CASE("RemoteSseTurnConsumer keeps SSE error when done.ok=false has no error") {
+    OutputQueue queue;
+    StreamRenderer renderer(kMasterStream, queue);
+    RemoteSseTurnConsumer consumer(renderer, queue);
+    consumer.on_event("error", R"({"message":"history load failed"})");
+    consumer.on_event("done", R"({"ok":false,"content":""})");
+    auto result = consumer.finish(false);
+    CHECK_FALSE(result.ok);
+    CHECK(result.error == "history load failed");
+}
+
+TEST_CASE("RemoteSseTurnConsumer prefers done.error over earlier SSE error") {
+    OutputQueue queue;
+    StreamRenderer renderer(kMasterStream, queue);
+    RemoteSseTurnConsumer consumer(renderer, queue);
+    consumer.on_event("error", R"({"message":"skipping stored agent 'x'"})");
+    consumer.on_event("done", R"({"ok":false,"error":"agent not found","content":""})");
+    auto result = consumer.finish(false);
+    CHECK_FALSE(result.ok);
+    CHECK(result.error == "agent not found");
+}
+
 TEST_CASE("RemoteSseTurnConsumer cancel without done") {
     OutputQueue queue;
     StreamRenderer renderer(kMasterStream, queue);
