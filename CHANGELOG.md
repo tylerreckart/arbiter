@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+  longer treats a JSON parse error (or a non-object blob) as an empty
+  transcript. Untitled 24h GC and `create_or_reuse` were hard-deleting
+  or overwriting sessions that could not be parsed.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
