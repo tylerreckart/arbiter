@@ -1712,6 +1712,19 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_remote_connect COMMAND unit_remote_connect)
 
+    # JSON number grammar (incomplete frac/exp). Separate from #342's
+    # unit_json (surrogate pairs in parse_string) so the two PRs do not
+    # share tests/test_json.cpp or the CMake insert after unit_logger.
+    add_executable(unit_json_numbers
+        tests/test_json_numbers.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_json_numbers PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_json_numbers COMMAND unit_json_numbers)
+
     # tui_design.cpp includes themes_data.h — wire every unit target that
     # compiles it to the embed generator (same header as the main binary).
     foreach(_t

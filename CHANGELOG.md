@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **JSON numbers require a complete fraction and exponent.** `json_parse`
+  no longer accepts `1.`, `1e`, `1e+`, or `-.5`. The tokenizer consumed
+  those incomplete tokens and `strtod` parsed a prefix (`"1e"` → 1.0),
+  so MCP / A2A / HTTP bodies silently coerced malformed numbers.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
