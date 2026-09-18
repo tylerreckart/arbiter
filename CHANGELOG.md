@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Session restore skips non-object message rows.** `decode_messages_json`
+  only skipped null `shared_ptr`s, so JSON `null` / strings / numbers /
+  arrays in a session history became empty-`role` `Message` rows on TUI
+  restore. Skip any element that is not a JSON object, matching
+  `tool_trace_from_json`.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed

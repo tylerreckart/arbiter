@@ -1145,6 +1145,19 @@ if(INDEX_BUILD_TESTS)
     endif()
     add_test(NAME unit_message_replay_roundtrip COMMAND unit_message_replay_roundtrip)
 
+    # Session JSON message array decode (no OpenTUI).
+    add_executable(unit_message_codec
+        tests/test_message_codec.cpp
+        src/message_codec.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_message_codec PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}  # message_codec.h → api_client.h → openssl/ssl.h
+    )
+    add_test(NAME unit_message_codec COMMAND unit_message_codec)
+
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser
         tests/test_schedule_parser.cpp
