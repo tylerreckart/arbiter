@@ -189,6 +189,19 @@ std::string fts5_escape(const std::string& q) {
     return out;
 }
 
+// Neutralise SQLite LIKE wildcards so a user query is a true substring.
+// Paired with `ESCAPE '\'` at the call site.  Backslash itself is escaped
+// so a search for `\` does not swallow the next character.
+std::string like_literal(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '\\' || c == '%' || c == '_') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+
 std::string bytes_to_hex(const unsigned char* data, size_t len) {
     std::ostringstream ss;
     ss << std::hex << std::setfill('0');
@@ -4193,20 +4206,25 @@ TenantStore::search_lessons(int64_t tenant_id,
     if (limit <= 0 || limit > 50) limit = 20;
     // Substring match — case-insensitive on lesson_text + signature.  At
     // tens-to-hundreds of rows per agent this is fine; an FTS index
-    // would be premature.
+    // would be premature.  Escape LIKE metacharacters so `100%` / `foo_bar`
+    // are literals (`GET /v1/lessons?q=` and `/lesson search`).
     std::string sql = std::string("SELECT ") + kLessonCols +
         " FROM lessons WHERE tenant_id = ?";
     if (!agent_id.empty()) sql += " AND agent_id = ?";
-    sql += " AND (lower(signature) LIKE ? OR lower(lesson_text) LIKE ?)"
+    sql += " AND (lower(signature) LIKE ? ESCAPE '\\' "
+           "OR lower(lesson_text) LIKE ? ESCAPE '\\')"
            " ORDER BY hit_count DESC, last_seen_at DESC LIMIT ?;";
     Stmt q(db_, sql.c_str());
     int idx = 1;
     q.bind(idx++, tenant_id);
     if (!agent_id.empty()) q.bind(idx++, agent_id);
-    std::string pat = "%";
-    for (char c : query) pat.push_back(static_cast<char>(std::tolower(
-        static_cast<unsigned char>(c))));
-    pat.push_back('%');
+    std::string lowered;
+    lowered.reserve(query.size());
+    for (char c : query) {
+        lowered.push_back(static_cast<char>(std::tolower(
+            static_cast<unsigned char>(c))));
+    }
+    const std::string pat = "%" + like_literal(lowered) + "%";
     q.bind(idx++, pat);
     q.bind(idx++, pat);
     q.bind(idx, static_cast<int64_t>(limit));
