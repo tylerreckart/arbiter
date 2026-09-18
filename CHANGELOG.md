@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Lesson search is a literal substring.** `search_lessons` (`GET /v1/lessons?q=`
+  and `/lesson search`) wrapped the query in `LIKE %q%` without escaping `%` /
+  `_`, so those characters acted as SQL wildcards. A search for `100%` matched
+  `1000`, and `foo_bar` matched `fooXbar`. Patterns now escape LIKE
+  metacharacters (`ESCAPE '\'`).
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
