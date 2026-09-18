@@ -16,7 +16,7 @@ Invalidated rows (those with a non-null `valid_to`) are excluded by default; pas
 | Name                | Type        | Description |
 |---------------------|-------------|-------------|
 | `type`              | csv string  | `?type=project,reference` — OR-filter on the enum in browse mode; OR-boost in search mode. Unknown values reject 400. |
-| `tag`               | string      | Single-tag substring match against the serialized JSON. Hard filter in browse mode; boost in search mode. |
+| `tag`               | string      | Single-tag substring match against the serialized JSON (`%"tag"%` around the quoted token). `%`, `_`, and `\` are literals, not SQL wildcards. Hard filter in browse mode; boost in search mode. |
 | `q`                 | string      | FTS5 query. When set, switches to ranked-search mode; tokens are AND-combined with stemming and case-folding. |
 | `conversation_id`   | int         | Scope results to one conversation. Returns rows pinned to this conversation **plus** unscoped rows (`conversation_id IS NULL`). Cross-tenant ids are silently dropped. |
 | `graduated`         | bool-ish    | Only meaningful with `q` + `conversation_id`. Routes search through `search_entries_graduated`: runs both a conversation-scoped pass and a tenant-wide pass, then [reciprocal-rank-fuses](../../../concepts/structured-memory.md#retrieval) the rankings (conversation pass weighted at 1.5×, tenant-wide at 1.0×). A strong tenant-wide hit can therefore outrank a weaker conversation-local one, fixing the multi-session case where the answer lives in another conversation. |

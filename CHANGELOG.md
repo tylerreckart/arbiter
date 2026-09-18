@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Memory `tag=` LIKE wildcards are literals.** `/mem entries tag=` and
+  `GET /v1/memory/entries?tag=` wrapped the tag in `LIKE %"tag"%` without
+  escaping, so `foo_bar` also matched `fooXbar` and `100%` also matched
+  `1000`. Escape `\`, `%`, and `_`, and pair both the browse filter and
+  the FTS tag-boost predicate with `ESCAPE '\'`.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
