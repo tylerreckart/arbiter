@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+  request text at 64 KiB (UTF-8 safe, with a `[truncated]` marker) so
+  orchestrator hybrid/llm classify cannot forward an unbounded TUI,
+  chat, or event payload to the provider. Matches the existing
+  `POST /v1/intent` message limit.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
