@@ -7,6 +7,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+  after 64 nested `\frac` / `^` / `_` / `\sqrt` / `\text` groups and emits
+  the remaining raw fragment, matching the JSON parser's nesting cap so
+  deeply nested model or user math cannot overflow the TUI/API thread stack.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
