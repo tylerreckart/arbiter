@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
+  same overflow-checked adder as `every N hours` instead of `now + 3600`.
+  `mktime` failure no longer stores `next_fire_at = -1` (always due on
+  `list_due`); parse and `next_fire_for_recur` return 0 / an error so a
+  recurring recompute cannot tight-loop.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
