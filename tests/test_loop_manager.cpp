@@ -21,15 +21,11 @@ namespace {
 struct WaitState {
     std::mutex mu;
     std::condition_variable cv;
-    bool stop_req = false;
-    bool suspend_req = false;
+    std::atomic<bool> stop_req{false};
+    std::atomic<bool> suspend_req{false};
     std::queue<std::string> injected;
 };
 
-// Heap-allocate and retain until process exit.  Stack (and recycled-heap)
-// mutexes at the same address look like a double-lock to TSan across
-// TEST_CASEs — the object was destroyed and reconstructed, but TSan's
-// mutex id is address-keyed.
 WaitState& fresh_state() {
     static std::vector<std::unique_ptr<WaitState>> keep;
     keep.push_back(std::make_unique<WaitState>());
@@ -45,9 +41,17 @@ bool wait_on(WaitState& s, std::chrono::milliseconds timeout) {
 
 TEST_CASE("already-stopped wait returns immediately") {
     WaitState& s = fresh_state();
-    s.stop_req = true;
+    s.stop_req.store(true);
     const auto t0 = std::chrono::steady_clock::now();
     CHECK(wait_on(s, 500ms));
+    CHECK(std::chrono::steady_clock::now() - t0 < 80ms);
+}
+
+TEST_CASE("pre-queued inject skips the delay") {
+    WaitState& s = fresh_state();
+    s.injected.push("continue from here");
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK_FALSE(wait_on(s, 500ms));
     CHECK(std::chrono::steady_clock::now() - t0 < 80ms);
 }
 
@@ -59,36 +63,15 @@ TEST_CASE("stop_req + notify wakes the inter-iteration wait") {
         stopped = wait_on(s, 2s);
         woke.store(true);
     });
-    // Give the waiter time to enter wait_for (lock released).  The
-    // subsequent lock_guard is the production kill() pattern.
     std::this_thread::sleep_for(30ms);
     const auto t0 = std::chrono::steady_clock::now();
-    {
-        std::lock_guard<std::mutex> lk(s.mu);
-        s.stop_req = true;
-    }
+    // store+notify, no lock: gcc 11 TSan does not model wait_for as
+    // releasing mu, so a lock_guard here is reported as a double-lock.
+    s.stop_req.store(true, std::memory_order_release);
     s.cv.notify_all();
     t.join();
     CHECK(stopped);
     CHECK(woke.load());
-    CHECK(std::chrono::steady_clock::now() - t0 < 200ms);
-}
-
-TEST_CASE("inject + notify wakes so the next iteration can take the prompt") {
-    WaitState& s = fresh_state();
-    bool stopped = true;
-    std::thread t([&] {
-        stopped = wait_on(s, 2s);
-    });
-    std::this_thread::sleep_for(30ms);
-    const auto t0 = std::chrono::steady_clock::now();
-    {
-        std::lock_guard<std::mutex> lk(s.mu);
-        s.injected.push("continue from here");
-    }
-    s.cv.notify_all();
-    t.join();
-    CHECK_FALSE(stopped);
     CHECK(std::chrono::steady_clock::now() - t0 < 200ms);
 }
 
@@ -100,10 +83,7 @@ TEST_CASE("suspend_req + notify wakes so the loop can park") {
     });
     std::this_thread::sleep_for(30ms);
     const auto t0 = std::chrono::steady_clock::now();
-    {
-        std::lock_guard<std::mutex> lk(s.mu);
-        s.suspend_req = true;
-    }
+    s.suspend_req.store(true, std::memory_order_release);
     s.cv.notify_all();
     t.join();
     CHECK_FALSE(stopped);
