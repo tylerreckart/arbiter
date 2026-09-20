@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Loop `/kill` wakes the inter-iteration pause.** After each turn,
+  `run_loop` slept 2s with uninterruptible `sleep_for`, so `/kill` join,
+  `/inject`, and `/suspend` waited out the delay even though `kill()`
+  already notified the entry `cv`. Wait on that condition variable
+  instead; `suspend()` now notifies so the loop parks immediately.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
