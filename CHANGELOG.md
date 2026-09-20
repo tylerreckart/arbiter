@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+  title-rename used a one-shot libcurl write callback that appended the
+  entire response with no limit. A `--connect` peer that omitted
+  `Content-Length` could grow the TUI heap without bound; GET/POST already
+  go through `a2a::http`. Cap is 16 MiB (`kSseMaxEventBytes`).
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
