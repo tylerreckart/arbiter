@@ -8,10 +8,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
 - **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
-  longer treats a JSON parse error (or a non-object blob) as an empty
-  transcript. Untitled 24h GC and `create_or_reuse` were hard-deleting
-  or overwriting sessions that could not be parsed.
 - **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
