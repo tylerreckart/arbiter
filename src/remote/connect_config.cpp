@@ -65,6 +65,11 @@ RemoteConnectConfig parse_connect_argv(int argc, char* argv[]) {
 std::string normalize_api_base_url(std::string_view raw) {
     std::string url = trim_copy(raw);
     if (url.empty()) return {};
+    // Control bytes (CR/LF/NUL/TAB) would split an HTTP request line or
+    // leak into TUI chrome if they survived into base_url.
+    for (unsigned char c : url) {
+        if (c < 0x20 || c == 0x7F) return {};
+    }
     // Strip a single trailing slash repeatedly.
     while (!url.empty() && url.back() == '/') url.pop_back();
     const bool http  = url.rfind("http://", 0) == 0;
@@ -73,6 +78,27 @@ std::string normalize_api_base_url(std::string_view raw) {
     // Reject empty host after scheme.
     const size_t scheme_end = http ? 7 : 8;
     if (url.size() <= scheme_end) return {};
+
+    // Authority ends at the first path / query / fragment separator.
+    size_t auth_end = url.size();
+    for (size_t i = scheme_end; i < url.size(); ++i) {
+        if (url[i] == '/' || url[i] == '?' || url[i] == '#') {
+            auth_end = i;
+            break;
+        }
+    }
+    if (auth_end == scheme_end) return {};
+    const std::string_view authority(url.data() + scheme_end,
+                                     auth_end - scheme_end);
+    // user:pass@host is not how --connect authenticates (that's --token).
+    // Leaving it in would make libcurl send HTTP basic auth and would
+    // print the password in display_host chrome.
+    if (authority.find('@') != std::string_view::npos) return {};
+    // Query/fragment on the *base* URL would concatenate into every
+    // request as `https://host?x/v1/foo` — the path never reaches the
+    // server.  Path prefixes (`https://host/arbiter`) stay valid.
+    if (url.find('?') != std::string::npos) return {};
+    if (url.find('#') != std::string::npos) return {};
     return url;
 }
 
@@ -81,11 +107,16 @@ std::string api_display_host(std::string_view base_url) {
     std::string_view rest = base_url;
     if (rest.rfind("https://", 0) == 0) rest.remove_prefix(8);
     else if (rest.rfind("http://", 0) == 0) rest.remove_prefix(7);
-    // Drop path / query if any slipped through.
+    // Drop path / query / fragment if any slipped through.
     const auto slash = rest.find('/');
     if (slash != std::string_view::npos) rest = rest.substr(0, slash);
     const auto q = rest.find('?');
     if (q != std::string_view::npos) rest = rest.substr(0, q);
+    const auto hash = rest.find('#');
+    if (hash != std::string_view::npos) rest = rest.substr(0, hash);
+    // Never show userinfo in chrome, even if a caller skipped normalize.
+    const auto at = rest.rfind('@');
+    if (at != std::string_view::npos) rest.remove_prefix(at + 1);
     return std::string(rest);
 }
 
