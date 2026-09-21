@@ -14,6 +14,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   hostnames that resolve public, and private/metadata URLs reached
   through `HTTP_PROXY` (opensocket sees the proxy), were not blocked.
   Both paths now run the shared preflight before libcurl.
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
 
 ## [0.13.6] — 2026-09-21
 
