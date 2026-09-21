@@ -53,7 +53,7 @@ ParseResult parse_schedule_phrase(const std::string& phrase, int64_t now);
 
 // Compute the next fire time for a recurring spec, given the last fire.
 // `recur_json` shape:
-//   {"every":"hour"}                      → +1h from after
+//   {"every":"hour"}                      → +1h from after (0 on overflow)
 //   {"every":"day","at":"09:00"}          → next 09:00 strictly after `after`
 //   {"every":"week","day":"mon","at":"09:00"} → next Mon 09:00 strictly after `after`
 //   {"every_minutes":N}                   → +Nm from after
