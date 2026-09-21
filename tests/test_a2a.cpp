@@ -229,6 +229,46 @@ TEST_CASE("RpcResponse parses round-tripped success and error") {
     CHECK(parsed_err.error->code == -32601);
 }
 
+TEST_CASE("format_rpc_http_error omits raw HTML bodies") {
+    const std::string html =
+        "<html><body>Internal error. cookie=secret token=sk-live</body></html>";
+    CHECK(format_rpc_http_error(500, html) == "HTTP 500");
+    CHECK(format_rpc_http_error(502, std::string(8000, 'x')) == "HTTP 502");
+    CHECK(format_rpc_http_error(401, "") == "HTTP 401");
+}
+
+TEST_CASE("format_rpc_http_error keeps a bounded JSON-RPC message") {
+    CHECK(format_rpc_http_error(
+              401, R"({"jsonrpc":"2.0","error":{"code":-32000,"message":"unauthorized"}})") ==
+          "HTTP 401: unauthorized");
+    CHECK(format_rpc_http_error(403, R"({"error":"tenant disabled"})") ==
+          "HTTP 403: tenant disabled");
+}
+
+TEST_CASE("sanitize_rpc_error_text drops controls and truncates") {
+    CHECK(sanitize_rpc_error_text("one\r\nSet-Cookie: x=1") == "oneSet-Cookie: x=1");
+    CHECK(sanitize_rpc_error_text("a\tb") == "a b");
+    const std::string exact(kMaxRpcErrorDetail, 'a');
+    CHECK(sanitize_rpc_error_text(exact) == exact);
+    CHECK(sanitize_rpc_error_text(exact + "b") == exact + "...");
+    // 199 ASCII + 2-byte UTF-8 (é) is 201 bytes — drop the incomplete char.
+    const std::string with_utf8 = std::string(199, 'a') + "\xc3\xa9";
+    CHECK(with_utf8.size() == kMaxRpcErrorDetail + 1);
+    CHECK(sanitize_rpc_error_text(with_utf8) == std::string(199, 'a') + "...");
+}
+
+TEST_CASE("format_rpc_json_error clips message the same way") {
+    CHECK(format_rpc_json_error(-32002, "not cancelable") ==
+          "JSON-RPC error -32002: not cancelable");
+    const std::string long_msg(400, 'z');
+    const std::string got = format_rpc_json_error(-32603, "oops\r\n" + long_msg);
+    CHECK(got.find('\n') == std::string::npos);
+    CHECK(got.find('\r') == std::string::npos);
+    CHECK(got.rfind("...") == got.size() - 3);
+    CHECK(got.size() == std::string("JSON-RPC error -32603: ").size() +
+                            kMaxRpcErrorDetail + 3);
+}
+
 // ── 3. SSE parser ─────────────────────────────────────────────────────
 
 TEST_CASE("SseReader dispatches one event per blank line") {

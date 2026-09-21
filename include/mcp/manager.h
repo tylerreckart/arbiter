@@ -52,7 +52,10 @@ std::vector<ServerSpec> load_server_registry(const std::string& path);
 std::string serialize_server_registry(const std::vector<ServerSpec>& specs);
 
 // Atomically write the registry to `path` (mode 0600).  Returns false on
-// I/O failure.  Empty specs writes `{ "servers": {} }`.
+// I/O failure.  Empty specs writes `{ "servers": {} }`.  The staging
+// name is opened with O_NOFOLLOW / O_EXCL after unlink (which does not
+// follow) so a planted `<path>.tmp` symlink cannot redirect the write
+// — registry env blocks may hold secrets.
 bool save_server_registry(const std::string& path,
                           const std::vector<ServerSpec>& specs);
 

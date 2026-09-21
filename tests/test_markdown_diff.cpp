@@ -648,6 +648,48 @@ TEST_CASE("latex_math_to_plain converts screenshot-style equations") {
           "N=(8.1\u00d710\u00b2\u2075)/(0.004)");
 }
 
+TEST_CASE("latex_math_to_plain converts modest nested fractions") {
+    CHECK(latex_math_to_plain(R"(\frac{\frac{a}{b}}{c})") == "(a/b)/c");
+    CHECK(latex_math_to_plain(R"(a^{b^{2}})") == "a^(b\u00b2)");
+}
+
+TEST_CASE("latex_math_to_plain caps deep nesting instead of overflowing") {
+    // 400 nested \frac groups is well past the 64-level cap and would
+    // have recursed far enough to overflow an 8 MiB thread stack.
+    std::string nested;
+    nested.reserve(400 * 16);
+    for (int i = 0; i < 400; ++i) nested += "\\frac{";
+    nested += "x";
+    for (int i = 0; i < 400; ++i) nested += "}{y}";
+
+    const std::string out = latex_math_to_plain(nested);
+    CHECK_FALSE(out.empty());
+    // Outer converted layers still emit the slash form.
+    CHECK(out.find('/') != std::string::npos);
+    // Past the cap the remaining nest is left raw rather than converted.
+    CHECK(out.find("\\frac") != std::string::npos);
+
+    std::string scripts;
+    for (int i = 0; i < 400; ++i) scripts += "a^{";
+    scripts += "n";
+    scripts += std::string(400, '}');
+    const std::string script_out = latex_math_to_plain(scripts);
+    CHECK_FALSE(script_out.empty());
+}
+
+TEST_CASE("MarkdownRenderer survives deeply nested display math") {
+    std::string body;
+    for (int i = 0; i < 400; ++i) body += "\\frac{";
+    body += "x";
+    for (int i = 0; i < 400; ++i) body += "}{y}";
+
+    MarkdownRenderer md;
+    std::string out = md.feed("\\[\n" + body + "\n\\]\n");
+    out += md.flush();
+    CHECK(out.find("\\[") == std::string::npos);
+    CHECK_FALSE(out.empty());
+}
+
 TEST_CASE("MarkdownRenderer renders display and inline math as Unicode") {
     MarkdownRenderer md;
     const char* input =

@@ -91,7 +91,10 @@ std::shared_ptr<JsonValue> Client::rpc(const std::string& method,
         return nullptr;
     }
     if (r.status_code != 200) {
-        err_out = "HTTP " + std::to_string(r.status_code) + ": " + r.body;
+        // Status plus a bounded JSON-RPC message when present — never the
+        // raw body.  /a2a call copies err_out into the calling agent's
+        // tool envelope and conversation history.
+        err_out = format_rpc_http_error(r.status_code, r.body);
         return nullptr;
     }
     std::shared_ptr<JsonValue> v;
@@ -111,8 +114,7 @@ std::shared_ptr<JsonValue> Client::rpc(const std::string& method,
         return nullptr;
     }
     if (resp.error) {
-        err_out = "JSON-RPC error " + std::to_string(resp.error->code) +
-                  ": " + resp.error->message;
+        err_out = format_rpc_json_error(resp.error->code, resp.error->message);
         return nullptr;
     }
     if (!resp.result) {

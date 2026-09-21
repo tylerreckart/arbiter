@@ -165,7 +165,15 @@ TEST_CASE("sandbox read: O_NOFOLLOW refuses leaf symlink swap after resolve") {
     cfg.workspaces_root = root + "/workspaces";
     cfg.runtime = "docker";
     cfg.idle_seconds = 0;
-    cfg.read_check_pause_ms = 80;
+    // The reader sleeps this long between resolve and the O_NOFOLLOW
+    // open, giving the planter thread room to swap the leaf for a
+    // symlink.  80ms was too tight on the loaded macos-arm64 runner:
+    // std::this_thread::sleep_for has coarse timer granularity there,
+    // so the planter's pre-swap sleep overshot the reader's open and
+    // the reader saw the still-regular decoy (ok=true, no leak, but
+    // CHECK_FALSE(ok) failed).  400ms gives the swap a wide margin to
+    // land before the open regardless of scheduler jitter.
+    cfg.read_check_pause_ms = 400;
 
     const std::string bin = root + "/bin";
     fs::create_directories(bin);
@@ -192,7 +200,14 @@ TEST_CASE("sandbox read: O_NOFOLLOW refuses leaf symlink swap after resolve") {
 
     std::atomic<bool> swapped{false};
     std::thread planter([&]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        // A tiny sleep lets the reader's resolve_within_workspace finish
+        // first (resolve is a handful of syscalls, well under a
+        // millisecond) so the swap lands *after* resolve and the open
+        // hits the O_NOFOLLOW refusal path rather than resolve-rejection.
+        // 5ms is enough to lose resolve but, with read_check_pause_ms
+        // above, far inside the reader's pre-open window even when the
+        // macOS timer coarsely oversleeps.
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
         ::unlink(decoy.c_str());
         REQUIRE(::symlink(outside.c_str(), decoy.c_str()) == 0);
         swapped.store(true);
