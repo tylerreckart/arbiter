@@ -8,6 +8,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+  request text at 64 KiB (UTF-8 safe, with a `[truncated]` marker) so
+  orchestrator hybrid/llm classify cannot forward an unbounded TUI,
+  chat, or event payload to the provider. Matches the existing
+  `POST /v1/intent` message limit.
 - **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
 - **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
 - **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
