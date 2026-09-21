@@ -30,4 +30,24 @@ std::string route_event(
 std::string route_event(const std::string& agents_dir,
                         const std::string& event_type);
 
+// Constitution JSON blob for the file-backed agent whose routing id
+// (filename stem, or Constitution::name when it is a distinct id) equals
+// agent_id. Empty if none match. POST /v1/events uses this to install the
+// routed file agent as inline agent_def — handle_orchestrate only preloads
+// the newest-200 tenant catalog and does not read agents_dir.
+std::string file_backed_agent_def_json(const std::string& agents_dir,
+                                       const std::string& agent_id);
+
+// Constitution blob that POST /v1/events should attach as agent_def so
+// orchestrate runs the agent routing selected (and stamps "id" to match
+// the override). File-backed glob wins even when a tenant row shares the
+// id — those can be different constitutions. Otherwise prefer the tenant
+// blob (explicit agent / tenant routing), then fall back to agents_dir.
+// Empty for "index" or when nothing can be loaded.
+std::string event_ingest_agent_def_json(
+    const std::string& agent_id,
+    const std::string& agents_dir,
+    const std::string& tenant_def_json,
+    bool routed_from_file);
+
 } // namespace arbiter
