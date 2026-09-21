@@ -19,7 +19,9 @@ inline constexpr size_t kDefaultSseMailboxMaxDepth = 2048;
 // Push one item into a per-connection mailbox.  Returns false when the
 // item was rejected because the client is too slow (overflowed is set).
 // When `force_deliver` is true (terminal SSE envelopes), drop the oldest
-// buffered items until there is room so the stream can close cleanly.
+// buffered items until there is room so the stream can close cleanly —
+// including after a prior overflow, which would otherwise reject the
+// terminal frame and leave the subscriber with only `slow_consumer`.
 template<typename T>
 bool sse_mailbox_push(std::deque<T>& mailbox,
                       std::mutex& mu,
@@ -28,7 +30,8 @@ bool sse_mailbox_push(std::deque<T>& mailbox,
                       T item,
                       bool force_deliver = false) {
     std::lock_guard<std::mutex> lk(mu);
-    if (overflowed.load(std::memory_order_relaxed)) return false;
+    if (overflowed.load(std::memory_order_relaxed) && !force_deliver)
+        return false;
     const size_t cap = kDefaultSseMailboxMaxDepth;
     if (mailbox.size() >= cap) {
         if (force_deliver) {
@@ -42,6 +45,10 @@ bool sse_mailbox_push(std::deque<T>& mailbox,
         }
     }
     mailbox.push_back(std::move(item));
+    // Terminal delivery wins over a prior overflow so the drain loop
+    // writes the real done/status envelope instead of aborting.
+    if (force_deliver)
+        overflowed.store(false, std::memory_order_relaxed);
     cv.notify_one();
     return true;
 }
