@@ -469,6 +469,76 @@ ParallelInvoker Orchestrator::make_parallel_invoker(const std::string& caller_id
     };
 }
 
+ApiResponse Orchestrator::run_ephemeral(const std::string& agent_id,
+                                        Constitution cfg,
+                                        const std::string& message,
+                                        const std::string& original_query) {
+    if (agent_id.empty() || agent_id == "index") {
+        ApiResponse err;
+        err.ok = false;
+        err.error = "JIT ephemeral turn cannot target index";
+        err.error_type = "invalid_agent";
+        return err;
+    }
+    if (turn_is_cancelled()) {
+        ApiResponse err;
+        err.ok = false;
+        err.error = "cancelled";
+        err.error_type = "cancelled";
+        return err;
+    }
+
+    // Subset validation is the supervisor on this path.  Advisor gate
+    // CONTINUE/REDIRECT/HALT and presence residency must not hitch a ride
+    // on a JIT clone.
+    cfg.advisor.mode = "off";
+    cfg.presence.mode = "off";
+    cfg.intent.mode = "off";
+
+    auto child = std::make_unique<ApiClient>(api_keys_);
+    child->set_circuit_breaker(client_.circuit_breaker());
+    child->set_metrics(client_.metrics());
+    child->copy_preflight_from(client_);
+    if (client_.reasoning_callback()) {
+        child->set_reasoning_callback(client_.reasoning_callback());
+    }
+
+    const auto parent_token = current_request_cancel_token();
+    {
+        std::lock_guard<std::mutex> lk(parallel_clients_mu_);
+        parallel_clients_.push_back({child.get(), parent_token});
+    }
+
+    ApiResponse out;
+    try {
+        std::unique_ptr<RequestCancelScope> child_cancel;
+        if (parent_token) {
+            child_cancel = std::make_unique<RequestCancelScope>(
+                *child, parent_token);
+        }
+        Agent ephemeral(agent_id, std::move(cfg), *child);
+        std::map<std::string, std::string> local_cache;
+        std::string orig_q = original_query.empty() ? message : original_query;
+        out = run_dispatch(ephemeral, agent_id, message, /*depth=*/1,
+                           &local_cache, orig_q);
+        // Drop clone residency explicitly; destructor would too.
+        ephemeral.reset_all_histories();
+    } catch (const std::exception& e) {
+        out.ok = false;
+        out.error = e.what();
+        out.error_type = "implement_failed";
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(parallel_clients_mu_);
+        auto it = std::find_if(
+            parallel_clients_.begin(), parallel_clients_.end(),
+            [&](const ParallelClientEntry& e) { return e.client == child.get(); });
+        if (it != parallel_clients_.end()) parallel_clients_.erase(it);
+    }
+    return out;
+}
+
 // parse_advisor_signal lives in src/advisor_gate.cpp so the gate's signal
 // parser can be unit-tested without dragging the orchestrator's heavy
 // dependency graph (Agent, ApiClient, MCP, …) into the test binary.

@@ -2,7 +2,7 @@
 
 **Auth:** tenant — _Status:_ stable
 
-Update one or more mutable fields. Any field omitted from the body is left untouched. Transitioning to a terminal `status` (`completed` or `canceled`) auto-stamps `completed_at = now()`.
+Update one or more mutable fields. Any field omitted from the body is left untouched. Transitioning to a terminal `status` (`completed` or `canceled`) auto-stamps `completed_at = now()`. Transitioning back to `pending` or `in_progress` clears `completed_at` (back to `0`).
 
 ## Request
 

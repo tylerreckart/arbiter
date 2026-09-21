@@ -413,28 +413,55 @@ TEST_CASE("mode=spoken selects TTS register and skips TUI diff format") {
     c.mode = "spoken";
     c.name = "Arthur";
     auto prompt = c.build_system_prompt();
-    CHECK(prompt.find("spoken assistant") != std::string::npos);
+    CHECK(prompt.find("voice intercom") != std::string::npos);
     CHECK(prompt.find("text-to-speech") != std::string::npos);
+    CHECK(prompt.find("Contractions") != std::string::npos);
+    CHECK(prompt.find("Cadence over compression") != std::string::npos);
     CHECK(prompt.find("No markdown") != std::string::npos);
     CHECK(prompt.find("FILES AND CODE:") != std::string::npos);
     CHECK(prompt.find("CODE CHANGE FORMAT:") == std::string::npos);
+    CHECK(prompt.find("```diff") == std::string::npos);
     CHECK(prompt.find("You are index") == std::string::npos);
     CHECK(prompt.find("dispatch, not a conversation") == std::string::npos);
+    CHECK(prompt.find("at most five") == std::string::npos);
+    CHECK(prompt.find("one to three sentences") == std::string::npos);
+    CHECK(prompt.find("Pattern: [answer]") == std::string::npos);
     CHECK(prompt.find("/exec ") != std::string::npos);
     CHECK(prompt.find("NAME: Arthur") != std::string::npos);
+    CHECK(prompt.find("Complete spoken sentences, never a field report")
+              != std::string::npos);
     // Overlay is for non-spoken modes only.
     CHECK(prompt.find("SPOKEN OUTPUT:") == std::string::npos);
+    CHECK(prompt.find("MEMORY HABIT:") == std::string::npos);
+}
+
+TEST_CASE("mode=spoken with channel=voice does not stack the overlay") {
+    auto c = make_agent({"/exec"});
+    c.mode = "spoken";
+    c.channel = "voice";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("voice intercom") != std::string::npos);
+    CHECK(prompt.find("SPOKEN OUTPUT:") == std::string::npos);
+    CHECK(prompt.find("FILES AND CODE:") != std::string::npos);
 }
 
 TEST_CASE("channel=voice overlays spoken constraints on specialist identity") {
-    auto c = make_agent({"/exec"});
+    auto c = make_agent({"/exec", "/write"});
     c.channel = "voice";
     auto prompt = c.build_system_prompt();
     CHECK(prompt.find("specialist agent within an orchestrated system")
               != std::string::npos);
+    CHECK(prompt.find("dispatch, not a conversation") != std::string::npos);
     CHECK(prompt.find("SPOKEN OUTPUT:") != std::string::npos);
+    CHECK(prompt.find("not a dispatch") != std::string::npos);
     CHECK(prompt.find("text-to-speech") != std::string::npos);
-    CHECK(prompt.find("CODE CHANGE FORMAT:") != std::string::npos);
+    CHECK(prompt.find("Contractions") != std::string::npos);
+    CHECK(prompt.find("one to three sentences") == std::string::npos);
+    CHECK(prompt.find("FILES AND CODE:") != std::string::npos);
+    CHECK(prompt.find("CODE CHANGE FORMAT:") == std::string::npos);
+    CHECK(prompt.find("```diff") == std::string::npos);
+    CHECK(prompt.find("MEMORY HABIT:") == std::string::npos);
+    CHECK(prompt.find("Personal-assistant memory") == std::string::npos);
 }
 
 TEST_CASE("channel=voice overlays spoken constraints on conversational index") {
@@ -443,7 +470,13 @@ TEST_CASE("channel=voice overlays spoken constraints on conversational index") {
     auto prompt = c.build_system_prompt();
     CHECK(prompt.find("You are index") != std::string::npos);
     CHECK(prompt.find("SPOKEN OUTPUT:") != std::string::npos);
-    CHECK(prompt.find("cannot see markdown") != std::string::npos);
+    CHECK(prompt.find("cannot see a screen") != std::string::npos);
+    CHECK(prompt.find("Cadence over compression") == std::string::npos);
+    CHECK(prompt.find("Talk like a person on a call") != std::string::npos);
+    CHECK(prompt.find("FILES AND CODE:") != std::string::npos);
+    CHECK(prompt.find("CODE CHANGE FORMAT:") == std::string::npos);
+    CHECK(prompt.find("MEMORY HABIT:") != std::string::npos);
+    CHECK(prompt.find("Personal-assistant memory") != std::string::npos);
 }
 
 TEST_CASE("channel=voice round-trips through JSON; text is omitted") {
@@ -462,6 +495,46 @@ TEST_CASE("channel=voice round-trips through JSON; text is omitted") {
 
     auto texty = Constitution::from_json(R"({"name":"x","channel":"text"})");
     CHECK(texty.channel.empty());
+}
+
+TEST_CASE("spoken with /mem teaches personal-assistant memory habit") {
+    auto c = make_agent({"/mem"});
+    c.mode = "spoken";
+    c.name = "Arthur";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("MEMORY HABIT:") != std::string::npos);
+    CHECK(prompt.find("not a goldfish") != std::string::npos);
+    CHECK(prompt.find("/mem search") != std::string::npos);
+    CHECK(prompt.find("/mem add entry") != std::string::npos);
+    CHECK(prompt.find("user      — durable facts about the human")
+              != std::string::npos);
+    CHECK(prompt.find("feedback") != std::string::npos);
+    CHECK(prompt.find("context") != std::string::npos);
+    CHECK(prompt.find("SAME turn") != std::string::npos);
+    CHECK(prompt.find("Never name /mem") != std::string::npos);
+    CHECK(prompt.find("Coffee preference") != std::string::npos);
+    CHECK(prompt.find("SPOKEN OUTPUT:") == std::string::npos);
+    CHECK(prompt.find("over re-asking") != std::string::npos);
+}
+
+TEST_CASE("spoken without mem skips memory habit") {
+    auto c = make_agent({"/exec"});
+    c.mode = "spoken";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("MEMORY HABIT:") == std::string::npos);
+    CHECK(prompt.find("not a goldfish") == std::string::npos);
+}
+
+TEST_CASE("channel=voice with mem overlays memory habit on specialist identity") {
+    auto c = make_agent({"/mem"});
+    c.channel = "voice";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("specialist agent within an orchestrated system")
+              != std::string::npos);
+    CHECK(prompt.find("SPOKEN OUTPUT:") != std::string::npos);
+    CHECK(prompt.find("Personal-assistant memory") != std::string::npos);
+    CHECK(prompt.find("MEMORY HABIT:") != std::string::npos);
+    CHECK(prompt.find("not a goldfish") != std::string::npos);
 }
 
 TEST_CASE("advisor: absent yields disabled config") {

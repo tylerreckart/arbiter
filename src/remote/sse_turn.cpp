@@ -225,6 +225,11 @@ void RemoteSseTurnConsumer::handle_done(const JsonValue& payload) {
     if (!ok_) {
         const std::string err = payload.get_string("error");
         if (!err.empty()) error_ = err;
+    } else {
+        // SSE `error` events are recoverable (catalog skip, transient
+        // upstream note). `done` is the terminal aggregate — a successful
+        // turn must not keep those strings as the result error.
+        error_.clear();
     }
     input_tokens_ = static_cast<int>(payload.get_number("input_tokens", 0));
     output_tokens_ = static_cast<int>(payload.get_number("output_tokens", 0));
@@ -251,7 +256,7 @@ RemoteTurnResult RemoteSseTurnConsumer::finish(bool transport_cancelled) {
     if (done_seen_) {
         r.ok = ok_;
         r.content = content_;
-        r.error = error_;
+        r.error = ok_ ? std::string{} : error_;
         return r;
     }
     // Stream closed without done — treat as failure.

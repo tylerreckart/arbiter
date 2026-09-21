@@ -66,7 +66,14 @@ std::vector<Message> decode_messages_json(const std::string& json) {
         auto root = json_parse(json);
         if (!root || !root->is_array()) return out;
         for (auto& v : root->as_array()) {
-            if (!v) continue;
+            // get_string() on a non-object is a silent empty default, so a
+            // JSON null / string / number / array would otherwise become a
+            // Message with empty role.  Those rows then go back into the
+            // model view on TUI/session restore and providers reject them.
+            // Skip the same way tool_trace_from_json already skips
+            // non-object trace entries.  Null shared_ptr (sparse arrays)
+            // is the same class of invalid element.
+            if (!v || !v->is_object()) continue;
             Message msg;
             msg.role = v->get_string("role");
             msg.content = v->get_string("content");

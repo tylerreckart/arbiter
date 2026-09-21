@@ -4,6 +4,7 @@
 
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
 namespace arbiter::mcp {
 
@@ -15,6 +16,30 @@ std::shared_ptr<JsonValue> envelope(const std::string& method) {
     m["jsonrpc"] = jstr("2.0");
     m["method"]  = jstr(method);
     return o;
+}
+
+// JSON-RPC 2.0 ids are String | Number | Null. We send integers
+// (`serialize_request`) and Client::rpc matches `resp.id == req.id`.
+// JS stacks commonly echo a numeric request id as `"1"`; treating that
+// as "no id" leaves Response::id at 0 (the notification skip path) and
+// the RPC loop waits until timeout, then kills the subprocess.
+bool parse_jsonrpc_id(const JsonValue& j, int64_t& out) {
+    if (j.is_number()) {
+        out = static_cast<int64_t>(j.as_number());
+        return true;
+    }
+    if (!j.is_string()) return false;
+    const std::string& s = j.as_string();
+    if (s.empty()) return false;
+    try {
+        std::size_t idx = 0;
+        long long n = std::stoll(s, &idx, 10);
+        if (idx != s.size()) return false;
+        out = static_cast<int64_t>(n);
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 } // namespace
@@ -47,23 +72,29 @@ Response parse_response(const std::string& line) {
     if (auto j = v->get("jsonrpc"); !j || !j->is_string() || j->as_string() != "2.0")
         throw std::runtime_error("missing or wrong 'jsonrpc' field");
 
-    if (auto j = v->get("id"); j && j->is_number()) {
-        r.id = static_cast<int64_t>(j->as_number());
-    } else {
-        // Notifications never have an id; if we see a response without an
-        // id it's an inbound notification from the server (tool-side
-        // signalling like notifications/cancelled).  We surface those by
-        // leaving id = 0 and letting the caller drop them — the matcher
-        // never expects id 0 since our request counter starts at 1.
+    if (auto j = v->get("id"); j) {
+        int64_t parsed = 0;
+        if (parse_jsonrpc_id(*j, parsed)) {
+            r.id = parsed;
+        }
+        // Null, non-numeric string, or other JSON types: leave id = 0.
+        // Notifications omit id entirely (same skip path). Client::rpc
+        // never expects id 0 — the request counter starts at 1.
     }
 
     auto res_v = v->get("result");
     auto err_v = v->get("error");
-    if (res_v && err_v)
+    // JSON-RPC 2.0 allows only one of result/error. Serializers (and
+    // A2A's parser) still emit the other member as JSON null. Treat
+    // null as omitted so `"result":{...},"error":null` is success and
+    // `"result":null,"error":{...}` is an error. Otherwise Client::rpc
+    // counts the throw as a parse failure and kills the MCP subprocess
+    // after five such lines.
+    const bool have_result = res_v && !res_v->is_null();
+    const bool have_error  = err_v && !err_v->is_null();
+    if (have_result && have_error)
         throw std::runtime_error("response has both 'result' and 'error'");
-    if (res_v) {
-        r.result = res_v;
-    } else if (err_v) {
+    if (have_error) {
         if (!err_v->is_object())
             throw std::runtime_error("'error' is not a JSON object");
         RpcError e;
@@ -73,8 +104,12 @@ Response parse_response(const std::string& line) {
             e.message = m->as_string();
         if (auto d = err_v->get("data")) e.data = d;
         r.error = std::move(e);
+    } else if (res_v) {
+        // Keep JSON-null `result` so a successful method that returns
+        // null is distinct from a notification (no result member).
+        r.result = res_v;
     }
-    // Empty result + empty error is allowed (e.g. notifications/initialized
+    // Empty result + empty error is allowed (e.g. notifications/initialized)
     // ack from some servers); leaves result null and error empty.
     return r;
 }
