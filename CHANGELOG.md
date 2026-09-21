@@ -7,6 +7,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Changed
+- **Spoken register is conversation for the ear.** `mode: "spoken"` no
+  longer caps replies at three-to-five sentences or shapes them as
+  `[answer]. [evidence]. [next step]`. The TTS block asks for
+  contractions, spoken cadence, turn-taking (leave space; no canned
+  closers), and punctuation a TTS engine can breathe on — still no
+  markdown, lists, LaTeX, or SSML. `channel: "voice"` overlay last-wins
+  over specialist dispatch for user-facing prose, and both knobs take
+  file delivery off the TUI ` ```diff ` path. Intercom's HTTP/SSE
+  contract is unchanged. See [Voice](docs/concepts/voice.md).
+
 ### Fixed
 - **`unit_sandbox_ssrf` leaf-swap flake on macOS CI.** The TOCTOU test
   that swaps a regular `decoy.txt` for a symlink during
