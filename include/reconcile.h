@@ -3,13 +3,16 @@
 //
 // Compiles `target_state` + `invariants` into a versioned state contract,
 // observes a bound workspace, requires verification (tests), and optionally
-// snapshots/restores on failure.  This is the Phase A facade for GitHub
-// #209 (product/SDK) over the #208 contract substrate.
+// snapshots/restores on failure.  Phase A (#209) shipped admit + observe +
+// verify + rollback.  Phase B (#208) turns mode=ensure into a JIT ΔS wave
+// loop: resolve covering agents, spawn ephemeral clones, re-observe, teardown.
 //
-// What this module does NOT do: JIT-spawn specialists, persist todos, or
-// replace /v1/orchestrate.  An optional implement hook lets tests (and a
-// later fleet shim) mutate the tree; HTTP observe-mode returns residual
-// ΔS when the workspace is not yet satisfied.
+// What this module does NOT do: rewrite POST /v1/orchestrate, persist a
+// materialized S_current table, or use advisor CONTINUE/REDIRECT/HALT as
+// the success supervisor.  Success is runtime re-observe (ΔS empty) plus
+// required verification.  An optional implement hook lets tests stub a
+// wave without a live LLM; HTTP ensure wires an orchestrator ephemeral
+// invoker (fleet shim) for real agent turns.
 //
 // Distinct from resolve_intent() (utterance classify/route).  Reconcile
 // takes a typed desired state, not a chat prompt.
@@ -17,7 +20,9 @@
 #include "json.h"
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -26,6 +31,10 @@ namespace arbiter {
 
 // Wall-clock cap for reconcile verification test runs (host and sandbox).
 constexpr int kReconcileVerifyTimeoutSec = 120;
+
+// Closed checker names.  Unknown checkers fail closed (admit on extra
+// clauses; observe residual with detail "unknown checker").
+bool reconcile_checker_known(const std::string& checker);
 
 struct ReconcileInvariant {
     enum class Tier { Expr, Named };
@@ -40,8 +49,9 @@ struct StateClause {
     std::string id;
     std::string checker;  // expr.holds | named.capability | file.exists
                           // | verification.pass | workspace.mentions
+                          // | todo.completed | artifact.exists | memory.active
     std::string arg;
-    std::string agent;    // optional agent_map hint (Phase B JIT)
+    std::string agent;    // agent_map / capability fallback (Phase B JIT)
 };
 
 struct StateContract {
@@ -50,6 +60,8 @@ struct StateContract {
     std::vector<StateClause> clauses;
     int         max_waves = 12;
     int64_t     max_wall_ms = 1'800'000;
+    int         max_agents_per_wave = 8;
+    int         max_retries_per_clause = 2;
 };
 
 struct ClauseResult {
@@ -84,6 +96,14 @@ struct ReconcileSpec {
     std::string              mode = "observe";  // observe | ensure
     int                      max_waves = 12;
     int64_t                  max_wall_ms = 1'800'000;
+    int                      max_agents_per_wave = 8;
+    int                      max_retries_per_clause = 2;
+    // clause id → agent id.  Present keys override compile defaults and
+    // capability fallback (empty value = explicitly unmapped).
+    std::map<std::string, std::string> agent_map;
+    // Optional extra clauses (tests / explicit contract slices).  Appended
+    // after compiled target_state + invariant clauses.
+    std::vector<StateClause> extra_clauses;
     std::string              snapshot_dir;  // empty → sibling .arbiter-reconcile-snapshots
 };
 
@@ -111,12 +131,28 @@ struct ReconcileResult {
     bool                     rolled_back = false;
     std::string              brief;
     std::string              snapshot_path;
+    int                      waves = 0;
+};
+
+// One covering agent for a slice of residual ΔS in a wave.
+struct ReconcileAgentCover {
+    std::string              agent_id;
+    std::string              clone_id;
+    std::vector<std::string> clause_ids;
+    std::string              prompt;
+};
+
+struct ReconcileAgentTurn {
+    std::string agent_id;
+    std::string clone_id;
+    bool        ok = true;
+    std::string note;
 };
 
 struct ReconcileHooks {
-    // Optional workspace mutator.  Return a short note (logged as
-    // reconcile.progress).  Tests inject a stub that writes files;
-    // HTTP ensure with no hook leaves residual ΔS as implement_required.
+    // Optional per-wave workspace mutator (test stub).  Invoked once per
+    // ensure wave when `agent_turn` is unset.  HTTP ensure wires
+    // `agent_turn` to orchestrator ephemeral clones instead.
     using ImplementFn = std::function<std::string(const StateContract&,
                                                   const std::string& workspace_root,
                                                   std::atomic<bool>* cancel)>;
@@ -125,8 +161,32 @@ struct ReconcileHooks {
     // container instead of on the API host.
     using VerifyExecFn = std::function<VerificationEvidence(
         const std::string& command, std::atomic<bool>* cancel)>;
+    // Per-cover ephemeral agent turn.  Must operate on a clone, never
+    // mutate canonical catalog agent history.  Stack-local clones are
+    // torn down when this returns (or throws).
+    using AgentTurnFn = std::function<ReconcileAgentTurn(
+        const ReconcileAgentCover& cover,
+        const StateContract& contract,
+        const std::string& workspace_root,
+        std::atomic<bool>* cancel)>;
+    // Live SSE/progress sink.  Used for reconcile.delta, agent.spawned,
+    // agent.teardown during the wave loop.
+    using EventFn = std::function<void(const std::string& event,
+                                       const std::shared_ptr<JsonValue>& payload)>;
+    using AgentKnownFn = std::function<bool(const std::string& agent_id)>;
+    using TodoCompletedFn = std::function<bool(const std::string& subject)>;
+    using ArtifactExistsFn = std::function<bool(const std::string& path)>;
+    using MemoryActiveFn = std::function<bool(const std::string& type,
+                                              const std::string& tag)>;
+
     ImplementFn      implement;
     VerifyExecFn     verify_exec;
+    AgentTurnFn      agent_turn;
+    EventFn          emit;
+    AgentKnownFn     agent_known;
+    TodoCompletedFn  todo_completed;
+    ArtifactExistsFn artifact_exists;
+    MemoryActiveFn   memory_active;
     std::atomic<bool>* cancel = nullptr;
 };
 
@@ -138,14 +198,31 @@ std::optional<ReconcileInvariant>
 parse_invariant(const std::string& raw, std::string* err);
 
 // Fail-closed admit: unknown names, bad expr, contradictory target_state,
-// empty/invalid workspace, unsupported mode.
+// empty/invalid workspace, unsupported mode, unknown extra checkers,
+// out-of-range budgets.
 std::optional<AdmitError> admit_reconcile(const ReconcileSpec& spec);
 
 StateContract compile_intent_contract(const ReconcileSpec& spec,
                                       const std::string& contract_id);
 
 DeltaS observe_contract(const StateContract& contract,
-                        const ReconcileSpec& spec);
+                        const ReconcileSpec& spec,
+                        const ReconcileHooks& hooks = {});
+
+// Capability fallback when neither agent_map nor StateClause.agent is set.
+std::string capability_fallback_agent(const std::string& checker);
+
+// Resolve covering agent for a clause: explicit agent_map (incl. empty),
+// else clause.agent, else capability fallback.
+std::string resolve_clause_agent(const StateClause& clause,
+                                 const ReconcileSpec& spec);
+
+// Group residual implementation clauses into ≤ max_agents covers.
+std::vector<ReconcileAgentCover>
+resolve_wave_covers(const DeltaS& delta,
+                    const StateContract& contract,
+                    const ReconcileSpec& spec,
+                    int wave_index);
 
 // Detect npm/pytest/cargo/go/ctest/make test.  Empty if undetectable.
 std::string detect_test_command(const std::string& workspace_root);
@@ -175,5 +252,6 @@ std::string format_reconcile_brief(const StateContract& c,
 std::shared_ptr<JsonValue> contract_to_json(const StateContract& c);
 std::shared_ptr<JsonValue> result_to_json(const ReconcileResult& r);
 std::shared_ptr<JsonValue> delta_to_json(const DeltaS& d);
+std::shared_ptr<JsonValue> agent_cover_to_json(const ReconcileAgentCover& c);
 
 }  // namespace arbiter

@@ -1677,8 +1677,9 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_intent COMMAND unit_intent)
 
-    # Intent reconcile: admit, contract compile, observe ΔS, verification
-    # mandate, implement stub, snapshot rollback.  No provider client.
+    # Intent reconcile: admit, contract compile, observe ΔS, JIT ensure
+    # waves, verification mandate, implement stub, snapshot rollback.
+    # No provider client.
     add_executable(unit_reconcile
         tests/test_reconcile.cpp
         src/reconcile.cpp
@@ -1723,6 +1724,27 @@ if(INDEX_BUILD_TESTS)
         OpenSSL::Crypto
     )
     add_test(NAME unit_remote_connect COMMAND unit_remote_connect)
+
+    # Unary --connect DELETE/PATCH body cap.  Separate binary so
+    # unit_remote_connect stays network-free; this one stands up a
+    # loopback server against RemoteApiClient's one-shot curl handles.
+    add_executable(unit_remote_http
+        tests/test_remote_http.cpp
+        src/remote/api_client.cpp
+        src/a2a/http.cpp
+        src/a2a/sse_reader.cpp
+        src/ssrf_guard.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_remote_http PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_remote_http PRIVATE
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_remote_http COMMAND unit_remote_http)
 
     # tui_design.cpp includes themes_data.h — wire every unit target that
     # compiles it to the embed generator (same header as the main binary).
