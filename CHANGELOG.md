@@ -8,11 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+  title-rename used a one-shot libcurl write callback that appended the
+  entire response with no limit. A `--connect` peer that omitted
+  `Content-Length` could grow the TUI heap without bound; GET/POST already
+  go through `a2a::http`. Cap is 16 MiB (`kSseMaxEventBytes`).
 - **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
-  request text at 64 KiB (UTF-8 safe, with a `[truncated]` marker) so
-  orchestrator hybrid/llm classify cannot forward an unbounded TUI,
-  chat, or event payload to the provider. Matches the existing
-  `POST /v1/intent` message limit.
 - **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
 - **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
 - **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
