@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.13.7 LANGUAGES CXX)
+project(arbiter VERSION 0.13.8 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -595,6 +595,27 @@ if(INDEX_BUILD_TESTS)
         CURL::libcurl
     )
     add_test(NAME unit_api_client_pool COMMAND unit_api_client_pool)
+
+    # Pool-cap cancel: own binary so provider_for() pins OLLAMA_HOST to this
+    # file's HoldServer rather than unit_api_client_pool's overlap port.
+    add_executable(unit_api_client_pool_cancel
+        tests/test_api_client_pool_cancel.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_api_client_pool_cancel PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_api_client_pool_cancel PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+    )
+    add_test(NAME unit_api_client_pool_cancel COMMAND unit_api_client_pool_cancel)
 
     # --- Unit tests for the tool-call stream filter ---
     # Exercises line-buffered reassembly, /cmd swallow rules, and the
@@ -1288,6 +1309,17 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_circuit_breaker COMMAND unit_circuit_breaker)
+
+    # --- Unit tests for inbound HTTP/1.1 request framing ---
+    add_executable(unit_http_request
+        tests/test_http_request.cpp
+        src/api/http_request.cpp
+    )
+    target_include_directories(unit_http_request PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_http_request COMMAND unit_http_request)
 
     # --- Unit tests for CORS allowlist policy ---
     add_executable(unit_cors
