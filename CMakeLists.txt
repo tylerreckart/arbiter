@@ -1677,8 +1677,9 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_intent COMMAND unit_intent)
 
-    # Intent reconcile: admit, contract compile, observe ΔS, verification
-    # mandate, implement stub, snapshot rollback.  No provider client.
+    # Intent reconcile: admit, contract compile, observe ΔS, JIT ensure
+    # waves, verification mandate, implement stub, snapshot rollback.
+    # No provider client.
     add_executable(unit_reconcile
         tests/test_reconcile.cpp
         src/reconcile.cpp
@@ -1724,6 +1725,20 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_remote_connect COMMAND unit_remote_connect)
 
+<<<<<<< HEAD
+    # JSON number grammar (incomplete frac/exp). Separate from #342's
+    # unit_json (surrogate pairs in parse_string) so the two PRs do not
+    # share tests/test_json.cpp or the CMake insert after unit_logger.
+    add_executable(unit_json_numbers
+        tests/test_json_numbers.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_json_numbers PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_json_numbers COMMAND unit_json_numbers)
+=======
     # Unary --connect DELETE/PATCH body cap.  Separate binary so
     # unit_remote_connect stays network-free; this one stands up a
     # loopback server against RemoteApiClient's one-shot curl handles.
@@ -1744,6 +1759,7 @@ if(INDEX_BUILD_TESTS)
         Threads::Threads
     )
     add_test(NAME unit_remote_http COMMAND unit_remote_http)
+>>>>>>> origin/main
 
     # tui_design.cpp includes themes_data.h — wire every unit target that
     # compiles it to the embed generator (same header as the main binary).

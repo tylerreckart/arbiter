@@ -29,6 +29,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
 - **Secret key/token writes do not follow a planted dest symlink.**
+- **Memory `tag=` LIKE wildcards are literals.** `/mem entries tag=` and
+- **JSON numbers require a complete fraction and exponent.** `json_parse`
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
+- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
+- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
 
 ## [0.13.6] — 2026-09-21
 
