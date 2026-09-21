@@ -169,6 +169,7 @@ set(ARBITER_SOURCES
     src/remote/api_client.cpp
     src/remote/sse_turn.cpp
     src/atomic_file.cpp
+    src/secret_file.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
     src/cli.cpp
@@ -1404,6 +1405,17 @@ if(INDEX_BUILD_TESTS)
         Threads::Threads
     )
     add_test(NAME unit_artifacts COMMAND unit_artifacts)
+
+    # Secret dest writes (API keys / admin token): O_NOFOLLOW + regular file.
+    add_executable(unit_secret_file
+        tests/test_secret_file.cpp
+        src/secret_file.cpp
+    )
+    target_include_directories(unit_secret_file PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_secret_file COMMAND unit_secret_file)
 
     # MCP layer (JSON-RPC framing, subprocess wrapper, /mcp dispatch).
     # Live-server tests are intentionally not wired here — manual smoke
