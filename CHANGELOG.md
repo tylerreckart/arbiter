@@ -13,6 +13,18 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `copy_file`, which follows a planted dest symlink (for example to
   `/etc/passwd`). Backup is skipped when `.bak` is not a regular file.
   A workspace FIFO is rejected instead of hanging `open()`.
+- **Provider pool cancel while waiting for a connection slot.** `complete()` /
+  `stream()` no longer hang on the per-provider cap (`kMaxConnsPerProvider`)
+  after Esc or `cancel()`. The wait predicate observes the request token and
+  the process-wide cancel bits; `cancel()` / `CancelToken::request_cancel()`
+  notify every pool CV. A cancelled waiter does not consume a slot.
+- **`/diff apply` directory and cross-device writes.** A directory at the
+  patch target is rejected instead of being treated as a missing file.
+  The rename fallback no longer uses `copy_file` (which followed a dest
+  symlink and reported success when only the temp file was removed).
+- **Sandbox `/read` TOCTOU test is deterministic.** The leaf-symlink-swap
+  case plants the swap via a post-resolve hook instead of a timed helper
+  thread (macos-arm64 CI was racing the 80 ms pause).
 - **Recovered `/write` bytes persist.** `send_streaming` and
   `run_dispatch` now fold `recover_truncated_writes` into the
   cumulative turn after the resume call, so HTTP/SSE conversation
