@@ -8,12 +8,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+  longer treats a JSON parse error (or a non-object blob) as an empty
+  transcript. Untitled 24h GC and `create_or_reuse` were hard-deleting
+  or overwriting sessions that could not be parsed.
 - **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
-  mapped drain / `POST /v1/requests/:id/cancel` onto HTTP 401
-  `"missing or invalid bearer token"`, the same body as a disabled
-  tenant. Cancel now returns 409 `"request cancelled"`. Tenant
-  disable/rotate still 401 so clients cannot enumerate revoked
-  tenants.
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
