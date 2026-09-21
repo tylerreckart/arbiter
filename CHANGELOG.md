@@ -13,6 +13,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `_`, so those characters acted as SQL wildcards. A search for `100%` matched
   `1000`, and `foo_bar` matched `fooXbar`. Patterns now escape LIKE
   metacharacters (`ESCAPE '\'`).
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
 
 ## [0.13.6] — 2026-09-21
 

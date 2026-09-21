@@ -10,7 +10,7 @@
 namespace arbiter {
 
 struct RemoteConnectConfig {
-    std::string base_url;   // scheme://host[:port], no trailing slash
+    std::string base_url;   // scheme://host[:port][/path], no trailing slash
     std::string token;      // atr_… bearer (required for multi-tenant --api)
     std::string display_host; // host[:port] for chrome (no credentials)
 };
@@ -28,10 +28,14 @@ RemoteConnectConfig parse_connect_argv(int argc, char* argv[]);
 // Returns an error message on failure; empty string on success.
 std::string resolve_remote_connect(RemoteConnectConfig& cfg);
 
-// Normalize a user-supplied API base URL.  Empty on unrecoverable input.
+// Normalize a user-supplied API base URL.  Empty on unrecoverable input
+// (missing scheme/host, control bytes, userinfo, query, or fragment).
+// Path prefixes are kept; trailing slashes are stripped.
 std::string normalize_api_base_url(std::string_view raw);
 
 // Host[:port] extracted from a normalized base URL for status chrome.
+// Strips userinfo / path / query / fragment so credentials cannot leak
+// into the TUI caption.
 std::string api_display_host(std::string_view base_url);
 
 } // namespace arbiter
