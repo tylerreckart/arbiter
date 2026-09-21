@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.8] — 2026-09-21
+
 ### Fixed
 - **Provider pool cancel while waiting for a connection slot.** `complete()` /
   `stream()` no longer hang on the per-provider cap (`kMaxConnsPerProvider`)
