@@ -90,7 +90,17 @@ bool parse_ymd(const std::string& s, int& y, int& mo, int& d) {
     y  = std::stoi(m[1].str());
     mo = std::stoi(m[2].str());
     d  = std::stoi(m[3].str());
-    return mo >= 1 && mo <= 12 && d >= 1 && d <= 31;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    // mktime normalizes overflow dates (Feb 31 → Mar 3).  Round-trip at
+    // noon so a DST spring-forward hole cannot reject a real calendar day.
+    std::tm tm{};
+    tm.tm_year  = y - 1900;
+    tm.tm_mon   = mo - 1;
+    tm.tm_mday  = d;
+    tm.tm_hour  = 12;
+    tm.tm_isdst = -1;
+    if (std::mktime(&tm) == static_cast<time_t>(-1)) return false;
+    return tm.tm_year == y - 1900 && tm.tm_mon == mo - 1 && tm.tm_mday == d;
 }
 
 int64_t make_local_epoch(int y, int mo, int d, int hh, int mm) {
@@ -103,6 +113,12 @@ int64_t make_local_epoch(int y, int mo, int d, int hh, int mm) {
     tm.tm_sec   = 0;
     tm.tm_isdst = -1;
     time_t t = std::mktime(&tm);
+    // POSIX uses (time_t)-1 for failure.  list_due is `next_fire_at <= now`,
+    // so -1 is always due and a recurring recompute would tight-loop.
+    // 0 is the same sentinel next_fire_for_recur already uses for "cannot
+    // compute".  A real timestamp of -1 (1969-12-31 23:59:59 UTC) is
+    // indistinguishable and is also rejected.
+    if (t == static_cast<time_t>(-1)) return 0;
     return static_cast<int64_t>(t);
 }
 
@@ -123,8 +139,9 @@ int64_t next_local_at(int64_t after, int hh, int mm) {
     int y, mo, d, h0, m0, w;
     local_date(after, y, mo, d, h0, m0, w);
     int64_t cand = make_local_epoch(y, mo, d, hh, mm);
-    if (cand <= after) cand = make_local_epoch(y, mo, d + 1, hh, mm);
-    return cand;
+    if (cand > after) return cand;
+    cand = make_local_epoch(y, mo, d + 1, hh, mm);
+    return cand > after ? cand : 0;
 }
 
 int64_t next_local_weekday_at(int64_t after, int target_wday, int hh, int mm) {
@@ -132,8 +149,9 @@ int64_t next_local_weekday_at(int64_t after, int target_wday, int hh, int mm) {
     local_date(after, y, mo, d, h0, m0, w);
     int delta = (target_wday - w + 7) % 7;
     int64_t cand = make_local_epoch(y, mo, d + delta, hh, mm);
-    if (cand <= after) cand = make_local_epoch(y, mo, d + delta + 7, hh, mm);
-    return cand;
+    if (cand > after) return cand;
+    cand = make_local_epoch(y, mo, d + delta + 7, hh, mm);
+    return cand > after ? cand : 0;
 }
 
 std::string two(int n) {
@@ -226,6 +244,8 @@ bool add_seconds(int64_t now, int64_t n, int64_t unit, int64_t& out) {
     return true;
 }
 
+constexpr const char* kFireTimeErr = "could not compute local fire time";
+
 } // namespace
 
 ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
@@ -275,11 +295,16 @@ ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
         if (std::regex_match(phrase, m, re)) {
             int hh, mm;
             if (parse_hhmm(m[1].str(), hh, mm)) {
+                const int64_t cand = next_local_at(now, hh, mm);
+                if (cand <= 0) {
+                    r.error.message = kFireTimeErr;
+                    return r;
+                }
                 r.ok                = true;
                 r.spec.kind         = ScheduleSpec::Kind::Once;
-                r.spec.fire_at      = next_local_at(now, hh, mm);
-                r.spec.next_fire_at = r.spec.fire_at;
-                r.spec.normalized   = "at " + format_local(r.spec.fire_at);
+                r.spec.fire_at      = cand;
+                r.spec.next_fire_at = cand;
+                r.spec.normalized   = "at " + format_local(cand);
                 return r;
             }
         }
@@ -298,6 +323,10 @@ ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
             int y, mo, d, h0, m0, w;
             local_date(now, y, mo, d, h0, m0, w);
             int64_t cand = make_local_epoch(y, mo, d + 1, hh, mm);
+            if (cand <= 0) {
+                r.error.message = kFireTimeErr;
+                return r;
+            }
             r.ok                = true;
             r.spec.kind         = ScheduleSpec::Kind::Once;
             r.spec.fire_at      = cand;
@@ -323,6 +352,10 @@ ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
                 return r;
             }
             int64_t cand = make_local_epoch(y, mo, d, hh, mm);
+            if (cand <= 0) {
+                r.error.message = kFireTimeErr;
+                return r;
+            }
             if (cand <= now) {
                 r.error.message = "scheduled time is in the past";
                 return r;
@@ -338,10 +371,15 @@ ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
 
     // ── "every hour" / "hourly" ─────────────────────────────────────────
     if (phrase == "every hour" || phrase == "hourly") {
+        int64_t next = 0;
+        if (!add_seconds(now, 1, 3600, next)) {
+            r.error.message = "interval too large";
+            return r;
+        }
         r.ok                = true;
         r.spec.kind         = ScheduleSpec::Kind::Recurring;
         r.spec.recur_json   = R"({"every":"hour"})";
-        r.spec.next_fire_at = now + 3600;
+        r.spec.next_fire_at = next;
         r.spec.normalized   = "every hour";
         return r;
     }
@@ -389,12 +427,17 @@ ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
                 r.error.message = "invalid HH:MM";
                 return r;
             }
+            const int64_t cand = next_local_at(now, hh, mm);
+            if (cand <= 0) {
+                r.error.message = kFireTimeErr;
+                return r;
+            }
             std::ostringstream js;
             js << "{\"every\":\"day\",\"at\":\"" << two(hh) << ":" << two(mm) << "\"}";
             r.ok                = true;
             r.spec.kind         = ScheduleSpec::Kind::Recurring;
             r.spec.recur_json   = js.str();
-            r.spec.next_fire_at = next_local_at(now, hh, mm);
+            r.spec.next_fire_at = cand;
             std::ostringstream oss;
             oss << "every day at " << two(hh) << ":" << two(mm);
             r.spec.normalized = oss.str();
@@ -432,6 +475,11 @@ ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
                 r.error.message = "invalid HH:MM";
                 return r;
             }
+            const int64_t cand = next_local_weekday_at(now, wd, hh, mm);
+            if (cand <= 0) {
+                r.error.message = kFireTimeErr;
+                return r;
+            }
             std::ostringstream js;
             js << "{\"every\":\"week\",\"day\":\""
                << lower(std::string(weekday_short(wd))) << "\",\"at\":\""
@@ -439,7 +487,7 @@ ParseResult parse_schedule_phrase(const std::string& phrase_in, int64_t now) {
             r.ok                = true;
             r.spec.kind         = ScheduleSpec::Kind::Recurring;
             r.spec.recur_json   = js.str();
-            r.spec.next_fire_at = next_local_weekday_at(now, wd, hh, mm);
+            r.spec.next_fire_at = cand;
             std::ostringstream oss;
             oss << "every " << weekday_short(wd) << " at " << two(hh) << ":" << two(mm);
             r.spec.normalized = oss.str();
@@ -472,7 +520,11 @@ int64_t next_fire_for_recur(const std::string& recur_json, int64_t after) {
     int hh = 9, mm = 0;
     if (!at.empty() && !parse_hhmm(at, hh, mm)) return 0;
 
-    if (every == "hour") return after + 3600;
+    if (every == "hour") {
+        int64_t next = 0;
+        if (!add_seconds(after, 1, 3600, next)) return 0;
+        return next;
+    }
     if (every == "day")  return next_local_at(after, hh, mm);
     if (every == "week") {
         std::string day = parse_json_str_field(recur_json, "day");

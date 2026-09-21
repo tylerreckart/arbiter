@@ -3,6 +3,7 @@
 #include "mcp/manager.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <fcntl.h>
 #include <fstream>
@@ -189,8 +190,17 @@ bool save_server_registry(const std::string& path,
 
     // Write tmp with mode 0600 up front — registry env blocks may hold
     // secrets, and umask-default create + later chmod leaves a window.
+    //
+    // Drop a leftover crash file or a planted name first. unlink(2)
+    // removes a symlink itself, so this cannot clobber the target of
+    // `<path>.tmp` → elsewhere. open(O_CREAT|O_TRUNC) used to follow
+    // that link and write secrets into the target before rename
+    // replaced only the symlink.
     const std::string tmp = path + ".tmp";
-    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    ::unlink(tmp.c_str());
+    const int fd = ::open(tmp.c_str(),
+                          O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                          0600);
     if (fd < 0) return false;
     // open(2) mode is masked by umask — force 0600 before any bytes land.
     if (::fchmod(fd, 0600) != 0) {
@@ -202,8 +212,14 @@ bool save_server_registry(const std::string& path,
     bool ok = true;
     while (ok && off < body.size()) {
         const ssize_t n = ::write(fd, body.data() + off, body.size() - off);
-        if (n <= 0) ok = false;
-        else off += static_cast<size_t>(n);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+        } else if (n == 0) {
+            ok = false;
+        } else {
+            off += static_cast<size_t>(n);
+        }
     }
     if (ok) ok = (::fsync(fd) == 0);
     ::close(fd);

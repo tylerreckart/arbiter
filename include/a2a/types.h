@@ -309,4 +309,13 @@ RpcResponse make_error_response(const std::shared_ptr<JsonValue>& request_id,
 RpcResponse make_result_response(const std::shared_ptr<JsonValue>& request_id,
                                  std::shared_ptr<JsonValue> result);
 
+// Bound, single-line text for Client::rpc err_out.  /a2a call copies that
+// string into the calling agent's tool envelope, so a remote HTTP body or
+// JSON-RPC error.message must not be forwarded wholesale (size, CR/LF, or
+// secrets echoed by a verbose 4xx/5xx page).
+constexpr size_t kMaxRpcErrorDetail = 200;
+std::string sanitize_rpc_error_text(const std::string& text);
+std::string format_rpc_http_error(long status_code, const std::string& body);
+std::string format_rpc_json_error(int code, const std::string& message);
+
 } // namespace arbiter::a2a
