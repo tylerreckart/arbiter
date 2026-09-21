@@ -26,6 +26,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
 - **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
 - **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **MCP registry writes do not follow a planted `.tmp` symlink.**
+- **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
 
 ## [0.13.7] — 2026-09-21
 
@@ -54,6 +56,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [0.13.6] — 2026-09-21
 
 ### Changed
+- **Spoken memory habit.** `mode: "spoken"` and `channel: "voice"` agents
+  with the `/mem` bundle get a `MEMORY HABIT` block: `/mem search` (and
+  expand) before answering from scratch on preferences, people, open
+  loops, or “remember/recall”; `/mem add entry` with `user` / `feedback`
+  / `context` / `project` in the same turn as the spoken reply; never
+  narrate the writs. Overlay carries a compact reminder. HTTP/SSE
+  contracts are unchanged. See [Voice](docs/concepts/voice.md#personal-assistant-memory).
 - **Spoken register is conversation for the ear.** `mode: "spoken"` no
   longer caps replies at three-to-five sentences or shapes them as
   `[answer]. [evidence]. [next step]`. The TTS block asks for
