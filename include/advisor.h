@@ -55,6 +55,20 @@ const char* default_gate_prompt();
 // POST /v1/advise/gate.
 inline constexpr const char kAdvisorProviderError[] = "advisor API error";
 
+// After run_advisor_gate, POST /v1/advise/gate must split tenant revoke
+// from caller/drain cancel.  Orchestrate already does: disable/rotate
+// stay 401 "missing or invalid bearer token" (anti-enumeration);
+// sticky/hard cancel must not reuse that bearer text — clients would
+// treat a shutdown or POST /v1/requests/:id/cancel as a bad token.
+// When both are true, revoke wins (disable/rotate also cancel in-flight).
+// status 200 + error == nullptr means return the gate verdict.
+struct AdvisorGateHttpAbort {
+    int status = 200;
+    const char* error = nullptr;
+};
+AdvisorGateHttpAbort advisor_gate_http_abort(bool tenant_alive,
+                                             bool cancelled);
+
 // On transport/model error returns kind=Halt, malformed=true, with
 // kAdvisorProviderError in `text` (raw left empty).  This function applies
 // NO fail-open / fail-closed policy on a *parseable-but-malformed* reply —

@@ -356,6 +356,62 @@ TEST_CASE("standalone classify defaults to heuristic, keeps master thresholds") 
     CHECK(cfg.model == "advisor-model");
 }
 
+TEST_CASE("llm prompt truncates request text at 64 KiB") {
+    IntentInput in;
+    in.text.assign(kIntentLlmTextMaxBytes + 4096, 'x');
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    IntentConfig cfg;
+    cfg.mode = "llm";
+
+    std::string prompt;
+    auto llm = [&](const std::string& p) {
+        prompt = p;
+        return std::string{};
+    };
+    auto out = resolve_intent(in, cfg, llm);
+    CHECK(out.llm_used);
+    REQUIRE_FALSE(prompt.empty());
+
+    const auto req = prompt.find("[REQUEST]\n");
+    const auto end = prompt.find("\n[END REQUEST]");
+    REQUIRE(req != std::string::npos);
+    REQUIRE(end != std::string::npos);
+    REQUIRE(end > req);
+    const std::string body = prompt.substr(
+        req + std::string("[REQUEST]\n").size(),
+        end - (req + std::string("[REQUEST]\n").size()));
+    CHECK(body.size() <= kIntentLlmTextMaxBytes);
+    CHECK(body.find("[truncated]") != std::string::npos);
+    CHECK(body.find(std::string(kIntentLlmTextMaxBytes, 'x')) == std::string::npos);
+}
+
+TEST_CASE("llm prompt keeps request text at the 64 KiB boundary") {
+    IntentInput in;
+    in.text.assign(kIntentLlmTextMaxBytes, 'y');
+    in.requested_agent = "index";
+    in.roster = starter_roster();
+    IntentConfig cfg;
+    cfg.mode = "llm";
+
+    std::string prompt;
+    auto llm = [&](const std::string& p) {
+        prompt = p;
+        return std::string{};
+    };
+    resolve_intent(in, cfg, llm);
+
+    const auto req = prompt.find("[REQUEST]\n");
+    const auto end = prompt.find("\n[END REQUEST]");
+    REQUIRE(req != std::string::npos);
+    REQUIRE(end != std::string::npos);
+    const std::string body = prompt.substr(
+        req + std::string("[REQUEST]\n").size(),
+        end - (req + std::string("[REQUEST]\n").size()));
+    CHECK(body == in.text);
+    CHECK(body.find("[truncated]") == std::string::npos);
+}
+
 TEST_CASE("standalone heuristic does not invoke llm on unconfident text") {
     IntentInput in;
     in.text = "Hello there, please help";

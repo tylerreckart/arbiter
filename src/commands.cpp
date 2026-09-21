@@ -1139,6 +1139,17 @@ FetchedResource cmd_fetch_bytes(const std::string& url, int64_t max_bytes) {
         return r;
     }
 
+    // Same hostname denylist / private-range resolve check /browse uses.
+    // CURLOPT_OPENSOCKETFUNCTION still re-validates every connect
+    // (including redirects). Preflight additionally blocks metadata
+    // hostnames that resolve public, and private/metadata targets that
+    // would otherwise reach a public HTTP(S)_PROXY (opensocket sees the
+    // proxy, not the URL host).
+    if (auto reject = preflight_ssrf_check(url); !reject.empty()) {
+        r.error = "refused — " + reject + " (SSRF guard)";
+        return r;
+    }
+
     CURL* curl = curl_easy_init();
     if (!curl) { r.error = "failed to initialize curl"; return r; }
 
@@ -1270,6 +1281,9 @@ std::string cmd_fetch(const std::string& url) {
     const bool is_https = url.size() >= 8 && url.compare(0, 8, "https://") == 0;
     if (!is_http && !is_https)
         return "ERR: URL must start with http:// or https://";
+
+    if (auto reject = preflight_ssrf_check(url); !reject.empty())
+        return "ERR: refused — " + reject + " (SSRF guard)";
 
     CURL* curl = curl_easy_init();
     if (!curl) return "ERR: failed to initialize curl";
@@ -2291,12 +2305,10 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                       << "[END BROWSE]\n\n";
                 cache_result = false;
             } else if (auto reject = preflight_ssrf_check(url); !reject.empty()) {
-                // Pre-flight the URL against the same SSRF blocklist
-                // /fetch enforces.  Unlike libcurl-driven fetches,
-                // /browse hands the URL off to Playwright via MCP,
-                // which does its own DNS + connect with no hook for
-                // us to intervene — without this check the SSRF guard
-                // is bypassed entirely.
+                // Same ssrf_preflight_url /fetch and cmd_fetch_bytes
+                // run before libcurl.  /browse still needs this because
+                // Playwright via MCP does its own DNS + connect with
+                // no opensocket hook.
                 block << "[/browse " << url << "]\n"
                       << "ERR: refused — " << reject << " (SSRF guard)\n"
                       << "[END BROWSE]\n\n";

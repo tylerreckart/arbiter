@@ -208,6 +208,30 @@ TEST_CASE("cmd_fetch accepts http and https") {
     CHECK(https_result.find("URL must start with") == std::string::npos);
 }
 
+TEST_CASE("cmd_fetch and cmd_fetch_bytes preflight metadata and private literals") {
+    // Hostname denylist — no DNS required.
+    CHECK(cmd_fetch("http://metadata.google.internal/").find("ERR:") == 0);
+    CHECK(cmd_fetch("http://metadata.google.internal/").find("SSRF")
+              != std::string::npos);
+    CHECK(cmd_fetch("http://metadata.google.internal/").find("denylist")
+              != std::string::npos);
+
+    // Literal blocked ranges — inet_pton, no DNS.
+    CHECK(cmd_fetch("http://127.0.0.1/").find("ERR:") == 0);
+    CHECK(cmd_fetch("http://127.0.0.1/").find("SSRF") != std::string::npos);
+    CHECK(cmd_fetch("http://169.254.169.254/latest/meta-data/").find("ERR:") == 0);
+    CHECK(cmd_fetch("http://[::1]/").find("ERR:") == 0);
+
+    auto meta = cmd_fetch_bytes("http://metadata.google.internal/", 1024);
+    CHECK_FALSE(meta.ok);
+    CHECK(meta.error.find("SSRF") != std::string::npos);
+    CHECK(meta.error.find("denylist") != std::string::npos);
+
+    auto loopback = cmd_fetch_bytes("http://127.0.0.1/", 1024);
+    CHECK_FALSE(loopback.ok);
+    CHECK(loopback.error.find("SSRF") != std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // cmd_write — path traversal protection
 // ---------------------------------------------------------------------------
