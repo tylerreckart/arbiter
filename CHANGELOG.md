@@ -21,6 +21,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   unchanged. See [`docs/concepts/reconcile.md`](docs/concepts/reconcile.md)
   and [#208](https://github.com/tylerreckart/arbiter/issues/208).
 ### Fixed
+- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
+  the remote response body into `err_out`. `/a2a call` copies that string into
+  the calling agent's tool envelope, so a verbose or hostile remote could dump
+  unbounded HTML/JSON (and any secrets it echoed) into conversation history.
+  Non-200 responses now report `HTTP <status>` plus a 200-byte, single-line
+  JSON-RPC `error.message` when present. JSON-RPC errors on HTTP 200 are
+  clipped the same way.
 - **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
   title-rename used a one-shot libcurl write callback that appended the
   entire response with no limit. A `--connect` peer that omitted

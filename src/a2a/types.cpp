@@ -68,6 +68,26 @@ std::shared_ptr<JsonValue> opt_passthrough(const JsonValue& v, const std::string
     return p ? p : nullptr;
 }
 
+bool is_utf8_continuation(unsigned char c) {
+    return (c & 0xC0) == 0x80;
+}
+
+// Prefer a JSON-RPC error.message (or a top-level string "error") over
+// dumping the raw body.  Parse failures and non-objects yield empty —
+// callers then report status alone.
+std::string extract_rpc_error_message(const std::string& body) {
+    if (body.empty()) return {};
+    try {
+        auto v = json_parse(body);
+        if (!v || !v->is_object()) return {};
+        auto err = v->get("error");
+        if (!err) return {};
+        if (err->is_string()) return err->as_string();
+        if (err->is_object()) return err->get_string("message", "");
+    } catch (...) {}
+    return {};
+}
+
 void put_if(JsonObject& m, const std::string& key, const std::optional<std::string>& v) {
     if (v) m[key] = jstr(*v);
 }
@@ -625,6 +645,52 @@ RpcResponse make_result_response(const std::shared_ptr<JsonValue>& request_id,
     r.id     = request_id;
     r.result = std::move(result);
     return r;
+}
+
+// ---------------------------------------------------------------------------
+// Client err_out shaping.  Kept next to the JSON-RPC envelope so unit_a2a
+// can pin the bound without linking the HTTP client.
+// ---------------------------------------------------------------------------
+
+std::string sanitize_rpc_error_text(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (unsigned char c : text) {
+        if (c == '\t') {
+            out.push_back(' ');
+            continue;
+        }
+        // Drop CR/LF/NUL and other ASCII controls so the detail cannot
+        // split a tool-result line or an SSE frame.
+        if (c < 0x20 || c == 0x7f) continue;
+        out.push_back(static_cast<char>(c));
+    }
+    if (out.size() <= kMaxRpcErrorDetail) return out;
+
+    size_t n = kMaxRpcErrorDetail;
+    while (n > 0 && n < out.size() &&
+           is_utf8_continuation(static_cast<unsigned char>(out[n]))) {
+        --n;
+    }
+    out.resize(n);
+    out += "...";
+    return out;
+}
+
+std::string format_rpc_http_error(long status_code, const std::string& body) {
+    const std::string detail =
+        sanitize_rpc_error_text(extract_rpc_error_message(body));
+    std::string out = "HTTP " + std::to_string(status_code);
+    if (!detail.empty()) {
+        out += ": ";
+        out += detail;
+    }
+    return out;
+}
+
+std::string format_rpc_json_error(int code, const std::string& message) {
+    return "JSON-RPC error " + std::to_string(code) + ": " +
+           sanitize_rpc_error_text(message);
 }
 
 } // namespace arbiter::a2a
