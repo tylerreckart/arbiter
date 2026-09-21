@@ -28,6 +28,7 @@
 #include "orchestrator.h"
 #include "repl/queues.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <map>
@@ -58,8 +59,8 @@ struct LoopEntry {
     int         iter    = 0;
     std::string last_output;
     std::queue<std::string> injected;
-    bool stop_req    = false;
-    bool suspend_req = false;
+    std::atomic<bool> stop_req{false};
+    std::atomic<bool> suspend_req{false};
 
     // Per-loop cancel token.  kill() request_cancel()s it so an in-flight
     // orch.send() aborts instead of running to completion.
