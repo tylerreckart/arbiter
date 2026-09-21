@@ -10,6 +10,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [0.13.10] — 2026-09-21
 
 ### Fixed
+- **List-query URL decoding.** Lesson, todo, schedule, request, run,
+  and admin-audit list handlers now go through `parse_query()` (same as
+  conversation list). Encoded spaces (`q=rate%20limit`, `+`) and
+  percent-encoded filter values no longer miss rows.
 - **Compaction boundary vs user `QUERY:` / `[` text.**
   `strip_compaction_preambles` now takes the first orchestrator
   `\n\nQUERY: ` wrapper (not the last) and strips only known

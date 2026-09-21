@@ -331,26 +331,12 @@ void handle_admin(int fd, const HttpRequest& req,
         }
         int64_t before_id = 0;
         int     limit     = 50;
-        auto qpos = req.path.find('?');
-        if (qpos != std::string::npos) {
-            std::string qs = req.path.substr(qpos + 1);
-            size_t i = 0;
-            while (i < qs.size()) {
-                size_t amp = qs.find('&', i);
-                std::string pair = qs.substr(i, amp - i);
-                auto eq = pair.find('=');
-                if (eq != std::string::npos) {
-                    std::string k = pair.substr(0, eq);
-                    std::string v = pair.substr(eq + 1);
-                    if (k == "before_id") {
-                        try { before_id = std::stoll(v); } catch (...) {}
-                    } else if (k == "limit") {
-                        try { limit = std::stoi(v); } catch (...) {}
-                    }
-                }
-                if (amp == std::string::npos) break;
-                i = amp + 1;
-            }
+        const auto qp = parse_query(req.path);
+        if (auto it = qp.find("before_id"); it != qp.end()) {
+            try { before_id = std::stoll(it->second); } catch (...) {}
+        }
+        if (auto it = qp.find("limit"); it != qp.end()) {
+            try { limit = std::stoi(it->second); } catch (...) {}
         }
         auto rows = tenants.list_admin_audit(before_id, limit);
         auto arr = jarr();
@@ -3608,22 +3594,9 @@ request_status_to_json(const TenantStore::RequestStatus& s) {
 void handle_request_list(int fd, const HttpRequest& req,
                           TenantStore& tenants, const Tenant& tenant) {
     int limit = 100;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "limit") try { limit = std::stoi(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("limit"); it != qp.end()) {
+        try { limit = std::stoi(it->second); } catch (...) {}
     }
     auto rows = tenants.list_request_status(tenant.id, limit);
     auto arr = jarr();
@@ -3690,22 +3663,9 @@ void handle_request_events(int fd, const std::string& request_id,
     }
 
     int64_t since_seq = 0;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "since_seq") try { since_seq = std::stoll(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("since_seq"); it != qp.end()) {
+        try { since_seq = std::stoll(it->second); } catch (...) {}
     }
 
     // Open the SSE response.  CORS headers + X-Accel-Buffering: no so
@@ -3929,24 +3889,14 @@ void handle_lesson_list(int fd, const HttpRequest& req,
     std::string agent_id;
     std::string query;
     int limit = 100;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if      (k == "agent_id") agent_id = v;
-                else if (k == "q")        query    = v;
-                else if (k == "limit") try { limit = std::stoi(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    // parse_query url-decodes — the previous hand-rolled split left
+    // `q=rate%20limit` as a literal, so standard clients missed rows
+    // that conversation list (already on parse_query) would find.
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("agent_id"); it != qp.end()) agent_id = it->second;
+    if (auto it = qp.find("q"); it != qp.end()) query = it->second;
+    if (auto it = qp.find("limit"); it != qp.end()) {
+        try { limit = std::stoi(it->second); } catch (...) {}
     }
     auto rows = query.empty()
         ? tenants.list_lessons(tenant.id, agent_id, limit)
@@ -4114,33 +4064,22 @@ void handle_todo_list(int fd, const HttpRequest& req,
                        TenantStore& tenants, const Tenant& tenant) {
     TenantStore::TodoFilter f;
     f.limit = 200;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "conversation_id") {
-                    // `conversation_id=tenant` is the spelled-out form
-                    // for the unscoped-only filter; numeric values pass
-                    // through directly (positive = OR-NULL fallback to
-                    // unscoped, 0 = no filter, negative = unscoped only).
-                    if (v == "tenant" || v == "unscoped") f.conversation_id = -1;
-                    else try { f.conversation_id = std::stoll(v); } catch (...) {}
-                }
-                else if (k == "status")   f.status_filter   = v;
-                else if (k == "agent_id") f.agent_id_filter = v;
-                else if (k == "limit")
-                    try { f.limit = std::stoi(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("conversation_id"); it != qp.end()) {
+        const std::string& v = it->second;
+        // `conversation_id=tenant` is the spelled-out form
+        // for the unscoped-only filter; numeric values pass
+        // through directly (positive = OR-NULL fallback to
+        // unscoped, 0 = no filter, negative = unscoped only).
+        if (v == "tenant" || v == "unscoped") f.conversation_id = -1;
+        else try { f.conversation_id = std::stoll(v); } catch (...) {}
+    }
+    if (auto it = qp.find("status"); it != qp.end())
+        f.status_filter = it->second;
+    if (auto it = qp.find("agent_id"); it != qp.end())
+        f.agent_id_filter = it->second;
+    if (auto it = qp.find("limit"); it != qp.end()) {
+        try { f.limit = std::stoi(it->second); } catch (...) {}
     }
     // Reject unknown / TUI-origin conversation ids. Clearing the filter
     // would return tenant-wide todos and leak TUI-scoped rows over HTTP.
@@ -4497,24 +4436,9 @@ void handle_schedule_create(int fd, const HttpRequest& req,
 void handle_schedule_list(int fd, const HttpRequest& req,
                            TenantStore& tenants, const Tenant& tenant) {
     std::string status_filter;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        // Tiny query-string parser — only one key we look at.
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "status") status_filter = v;
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
-    }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("status"); it != qp.end())
+        status_filter = it->second;
     auto rows = tenants.list_scheduled_tasks(tenant.id, status_filter, /*limit=*/200);
     auto arr = jarr();
     for (const auto& r : rows) arr->as_array_mut().push_back(scheduled_task_to_json(r));
@@ -5581,23 +5505,12 @@ void handle_runs_list(int fd, const HttpRequest& req,
                        TenantStore& tenants, const Tenant& tenant) {
     int64_t since = 0;
     int64_t task_id = 0;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "since")   try { since   = std::stoll(v); } catch (...) {}
-                if (k == "task_id") try { task_id = std::stoll(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("since"); it != qp.end()) {
+        try { since = std::stoll(it->second); } catch (...) {}
+    }
+    if (auto it = qp.find("task_id"); it != qp.end()) {
+        try { task_id = std::stoll(it->second); } catch (...) {}
     }
     auto runs = tenants.list_task_runs(tenant.id, task_id, since, /*limit=*/200);
     auto arr = jarr();

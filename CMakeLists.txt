@@ -1332,6 +1332,17 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_cors COMMAND unit_cors)
 
+    # --- Unit tests for query-string decode (list handlers share parse_query) ---
+    add_executable(unit_http_util
+        tests/test_http_util.cpp
+        src/api/http_util.cpp
+    )
+    target_include_directories(unit_http_util PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_http_util COMMAND unit_http_util)
+
     add_executable(unit_sse_mailbox tests/test_sse_mailbox.cpp)
     target_include_directories(unit_sse_mailbox PRIVATE
         ${CMAKE_SOURCE_DIR}/include
