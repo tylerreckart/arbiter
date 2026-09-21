@@ -8,6 +8,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Delegation pipeline memory is sibling-only.** The orchestrator's
+  `pipeline-entries` probe now lists rows pinned to the active conversation
+  (`conversation_id = ?`). Default `list_entries` still ORs in unscoped
+  (`NULL`) rows for agent `/mem` browse; that fallback was injecting HTTP
+  `/v1/memory` and CLI `/mem add` residue into sub-agent context as if
+  siblings had just written it.
+- **Sandbox FIFO no longer deadlocks a tenant.** `/write` and `/read` of a
+  named pipe used to block forever in `open()`. `/write` holds the
+  per-tenant sandbox mutex across that open, so a workspace `mkfifo`
+  stalled every same-tenant `/exec` and `/write` until restart. Both
+  paths now open `O_NONBLOCK` and reject non-regular files.
 - **A2A unary HTTP body cap.** `rpc_call` / `http_get` now refuse
   responses over 16 MiB (same ceiling as the inbound HTTP API and
   `kSseMaxEventBytes`). A remote that omitted `Content-Length` could
