@@ -8,29 +8,16 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+  `id` (`"1"`) in addition to a JSON number. JSON-RPC 2.0 allows both; JS
+  MCP servers commonly echo the integer we sent as a string. The old path
+  left `Response::id` at 0, so `Client::rpc` treated a valid reply as a
+  notification and hung until `init_timeout` / `call_timeout` then killed
+  the subprocess.
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
-  `restore_workspace` now copies the snapshot into a staging directory
-  under `.arbiter-reconcile-snapshots` before clearing the live tree.
-  If that copy fails (unreadable snapshot, I/O error), the original
-  files stay in place and restore returns false. Previously
-  `clear_dir_contents` ran first, so a subsequent `copy_tree` failure
-  left the workspace empty while `run_reconcile` reported `failed`
-  rather than `rolled_back`.
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
-  after 64 nested `\frac` / `^` / `_` / `\sqrt` / `\text` groups and emits
-  the remaining raw fragment, matching the JSON parser's nesting cap so
-  deeply nested model or user math cannot overflow the TUI/API thread stack.
 - **Secret key/token writes do not follow a planted dest symlink.**
-  `write_key_file` and admin-token generate opened
-  `~/.arbiter/{openrouter_api_key,search_api_key,admin_token}` with
-  `O_CREAT|O_TRUNC`, so a dest symlink redirected the secret into the
-  link target. Open with `O_NOFOLLOW` and require a regular file so a
-  planted symlink or FIFO cannot exfiltrate the bytes.
 - **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
-  now rejects query strings, fragments, URL userinfo, and control bytes
-  instead of concatenating them into every request (`https://host?x/v1/…`
-  never delivered the path) or printing `user:pass@` in TUI chrome.
-  Path prefixes (`https://host/arbiter`) still work.
 
 ## [0.13.6] — 2026-09-21
 
