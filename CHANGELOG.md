@@ -14,6 +14,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   first match, so registry `PATH` / `NODE_ENV` / `HTTP_PROXY` / non-secret
   keys were ignored. Inherited keys that `env` sets are now omitted so
   the registry value is the only copy.
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
 
 ## [0.13.6] — 2026-09-21
 
