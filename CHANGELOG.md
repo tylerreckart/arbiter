@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+- **Fleet dashboard pane (Phase C1).** The TUI consumes fleet SSE (`stream_id` +
+  `depth`) into an in-memory tree and paints a right-rail dashboard: depth
+  indent, agent, active tool, token totals, and a `◇` marker on reconcile JIT
+  workers. `Ctrl-w f` / click focuses the conversation pane bound to that
+  stream; Esc on a running row uses the existing in-flight cancel. Reconcile
+  `mode=ensure` waves show residual vs held plus the current wave in the same
+  pane. See [Fleet](docs/tui/fleet.md).
 - **MCP registry writes do not follow a planted `.tmp` symlink.**
   `save_server_registry` opened `<path>.tmp` with `O_CREAT|O_TRUNC`, so
   a symlink at that staging name redirected the write (including

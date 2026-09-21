@@ -203,6 +203,27 @@ void ReplSession::dispatch_chord(char cmd) {
                     sync_layout_to_terminal();
                 }
                 break;
+            case 'f':
+                if (fleet_sidebar.focused()) {
+                    fleet_sidebar.exit_focus();
+                    fleet_sidebar.toggle_visible();
+                } else if (fleet_sidebar.user_visible()
+                           && fleet_has_content()) {
+                    // Visible already — enter the tree (like ^W b).
+                    enter_fleet_focus();
+                    lk.unlock();
+                    refresh_focused_input.store(true);
+                    if (pump_notify) pump_notify();
+                    return;
+                } else {
+                    fleet_sidebar.set_visible(true);
+                    enter_fleet_focus();
+                    lk.unlock();
+                    refresh_focused_input.store(true);
+                    if (pump_notify) pump_notify();
+                    return;
+                }
+                break;
             case 'h':
                 if (layout_ptr->pane_count() >= kMaxLayoutSnapshotLeaves) {
                     layout_ptr->focused().tui.set_status(

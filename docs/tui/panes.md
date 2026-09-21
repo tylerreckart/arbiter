@@ -103,6 +103,7 @@ When `layout.mouse` is enabled in `~/.arbiter/tui.json` (the default), the TUI e
 | Wheel over scrollback | Scroll that pane (does not steal keyboard focus) |
 | Left-click a conversation in the history sidebar | Select and switch to it |
 | Drag a split gutter | Resize the two adjacent panes asymmetrically |
+| Left-click a fleet row | Focus the conversation pane bound to that stream |
 | Right sidebar | Display-only — clicks and wheel over it are ignored |
 
 Set `"layout": { "mouse": false }` to keep keyboard-only input (useful inside tmux without `set -g mouse on`, or when the host terminal fights with mouse capture). Text selection copy uses OSC 52; under tmux enable `set -g set-clipboard on` (or an equivalent clipboard passthrough).

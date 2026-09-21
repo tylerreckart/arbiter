@@ -22,10 +22,12 @@
 #include "tui/opentui/session.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
+#include "tui/opentui/fleet_frame.h"
 #include "tui/opentui/menu_frame.h"
 #include "tui/opentui/overlay_scrim.h"
 #include "tui/sidebar.h"
 #include "tui/history_sidebar.h"
+#include "tui/fleet.h"
 #include "theme.h"
 #include "config.h"
 
@@ -147,9 +149,12 @@ Rect ReplSession::layout_bounds() {
         cols, history_sidebar.enabled());
     const int panes = layout_ptr ? static_cast<int>(layout_ptr->pane_count()) : 1;
     const int session_w = sidebar.effective_width(cols, panes, leading);
-    // Reserve a trailing gutter so the session box isn't flush to the edge.
-    const int trailing = session_w > 0
-        ? session_w + SidebarState::kOuterGutter
+    const int fleet_w = fleet_sidebar.effective_width(
+        cols, leading, fleet_has_content() || fleet_sidebar.focused());
+    const int rail = std::max(session_w, fleet_w);
+    // Reserve a trailing gutter so the session/fleet box isn't flush to the edge.
+    const int trailing = rail > 0
+        ? rail + SidebarState::kOuterGutter
         : 0;
     // Full terminal height — no top header bar.
     return Rect{leading, 0, std::max(1, cols - leading - trailing), std::max(1, rows)};
@@ -288,13 +293,17 @@ void ReplSession::setup_pane_hooks() {
         const int panes = static_cast<int>(layout_ptr->pane_count());
         const int leading = HistorySidebarState::width_for_terminal(
             cols, history_sidebar.enabled());
+        const Rect fleet_r = fleet_sidebar_rect();
+        if (fleet_r.w > 0) {
+            const FleetSnapshot fs = fleet_sidebar.snapshot(fleet, cols, leading);
+            opentui::draw_fleet_sidebar(
+                frame, fs, fleet_r, outer, sidebar_input_rows, outer_bottom_pad);
+        }
+
         int sw = sidebar.effective_width(cols, panes, leading);
         if (sw > 0) {
-            int pane_x = outer.x;
-            int pane_w = outer.w;
-            int gap = cols - pane_x - pane_w;
-            if (gap >= sw) {
-                const Rect sb = {pane_x + pane_w, 0, sw, std::max(1, rows)};
+            const Rect sb = right_sidebar_rect();
+            if (sb.w > 0) {
                 Pane& focused = layout_ptr->focused();
                 sidebar.set_focus_context(focused.current_agent,
                                           focused.current_model);

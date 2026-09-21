@@ -283,11 +283,11 @@ std::unique_ptr<Pane> ReplSession::make_pane() {
         });
         // Chord prefix: Ctrl-w.  Recognized follow-ups: w (next pane),
         // h (horizontal split), v (vertical split), s (sidebar toggle),
-        // c (close pane), z (zoom), t/b (history sidebar); Ctrl-w itself
-        // is a synonym for 'w'.
+        // c (close pane), z (zoom), t/b (history sidebar), f (fleet);
+        // Ctrl-w itself is a synonym for 'w'.
         p->editor.set_chord_handler([](char cmd) -> bool {
             return cmd == 'w' || cmd == 'h' || cmd == 's' || cmd == 'v' || cmd == 'c'
-                || cmd == 'z' || cmd == 't' || cmd == 'b'
+                || cmd == 'z' || cmd == 't' || cmd == 'b' || cmd == 'f'
                 || cmd == 0x17;
         });
         p->editor.set_mouse_handler([this](const opentui::MouseEvent& ev) {
@@ -382,6 +382,9 @@ void ReplSession::install_orch_callbacks() {
                 p->tool_indicator.bump(view.label, ev.ok);
             }
         }
+        fleet.on_tool_call(orch.current_stream_id(), view.label,
+                           ev.phase == arbiter::ToolActivityEvent::Phase::Started);
+        if (pump_notify) pump_notify();
         if (ev.phase == arbiter::ToolActivityEvent::Phase::Finished) {
             // Persist for conversation-switch replay.  Pane history is what
             // apply_conversation_to_pane rebuilds (usually "index"), so the
@@ -408,6 +411,8 @@ void ReplSession::install_orch_callbacks() {
                                  const std::string& model,
                                  const arbiter::ApiResponse& resp) {
         sidebar.record_turn(agent_id, model, resp);
+        fleet.on_token_usage(orch.current_stream_id(),
+                             resp.input_tokens, resp.output_tokens);
         // Prefer the ConversationScope key — cost_cb runs on the pane exec
         // thread inside handle_line()'s scope, even when g_active_pane is unset
         // (e.g. nested /parallel workers that re-pin late).
@@ -416,10 +421,30 @@ void ReplSession::install_orch_callbacks() {
         if (delta > 0 && !cid.empty()) {
             conversation_store.add_tokens(cid, delta);
         }
+        if (pump_notify) pump_notify();
     });
-    orch.set_agent_start_callback([&](const std::string& /*agent_id*/) {
+    orch.set_agent_start_callback([&](const std::string& agent_id) {
         Pane* p = g_active_pane;
         if (p) p->thinking.start();
+        fleet.on_agent_start(agent_id, orch.current_stream_id(),
+                             orch.current_stream_depth());
+        if (pump_notify) pump_notify();
+    });
+    orch.set_stream_start_callback([&](const std::string& agent_id,
+                                         int stream_id,
+                                         int depth) {
+        if (depth == 0) fleet.clear();
+        Pane* p = g_active_pane;
+        const std::string conv = p ? p->conversation_id : std::string{};
+        const std::string pane_agent = p ? p->current_agent : std::string{};
+        fleet.on_stream_start(agent_id, stream_id, depth, {}, conv, pane_agent);
+        if (pump_notify) pump_notify();
+    });
+    orch.set_stream_end_callback([&](const std::string& /*agent_id*/,
+                                       int stream_id,
+                                       bool ok) {
+        fleet.on_stream_end(stream_id, ok);
+        if (pump_notify) pump_notify();
     });
     // Mid-turn durability: after each committed model iteration and each
     // tool-result envelope, queue an autosave so quit/cancel/SIGKILL cannot

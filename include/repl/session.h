@@ -17,6 +17,7 @@
 #include "repl/pane_history.h"
 #include "sandbox.h"
 #include "scheduler.h"
+#include "tui/fleet.h"
 #include "tui/history_sidebar.h"
 #include "tui/interactive_prompt.h"
 #include "tui/opentui/mouse_decode.h"
@@ -79,6 +80,11 @@ struct ReplSession {
         std::string folder_id;
     };
 
+    struct PendingFleetSteer {
+        bool pending = false;
+        bool cancel = false;
+    };
+
     struct PendingAfterCancel {
         enum class Kind { None, Switch, Delete } kind = Kind::None;
         bool create_new = false;
@@ -120,6 +126,8 @@ struct ReplSession {
     HistorySidebarState history_sidebar;
     MenuState overlay_menu;
     SidebarState sidebar;
+    FleetTree         fleet;
+    FleetSidebarState fleet_sidebar;
 
     std::mutex                pending_closes_mu;
     std::vector<PendingClose> pending_closes;
@@ -129,6 +137,7 @@ struct ReplSession {
     MouseDragState mouse_drag;
     MouseSelectState mouse_select;
     PendingMouseSwitch mouse_switch;
+    PendingFleetSteer mouse_fleet;
     PendingAfterCancel pending_after_cancel;
     std::atomic<bool> pending_cancel_wait{false};
 
@@ -269,9 +278,17 @@ struct ReplSession {
     void clear_all_selections();
     void scroll_pane(Pane& pane, int direction, int step);
     Rect right_sidebar_rect();
+    Rect fleet_sidebar_rect();
     int  history_visible_rows(const Rect& hb);
+    int  fleet_visible_rows(const Rect& fb, const FleetSnapshot& snap);
+    bool fleet_has_content() const;
+    void enter_fleet_focus();
+    Pane* pane_for_fleet_row(const FleetPaintRow& row);
+    bool steer_fleet_selection();
+    bool cancel_fleet_selection();
     bool route_mouse(const opentui::MouseEvent& ev);
     bool service_mouse_switch();
+    bool service_fleet_steer();
 
     // ── input_loop.cpp ─────────────────────────────────────────────────────
     void run_input_loop();

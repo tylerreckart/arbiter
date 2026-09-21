@@ -61,6 +61,7 @@ Spec-compatible A2A clients hit [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.
 
 - [A2A protocol](a2a.md) — the Agent2Agent counterpart to this catalog.
 - [Fleet streaming](fleet-streaming.md)
+- [TUI fleet dashboard](../tui/fleet.md)
 - [Advisor](advisor.md) — gate signal grammar, modes, redirect budget.
 - [Presence](presence.md) — always-on peer review and mid-turn injection.
 - [Intent](intent.md) — pre-dispatch classify/route.

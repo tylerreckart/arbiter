@@ -6,7 +6,7 @@ Rendering uses [OpenTUI](https://github.com/anomalyco/opentui) (native cell-buff
 
 A pane is to a conversation what a tab is to a browser. A new pane is a new conversation against an agent of your choosing; multiple panes run side-by-side or stacked, each independently typing, streaming, and waiting for its agent. Background loops (long-running agent processes) live alongside; foreground panes can spawn child panes (`/pane <agent> <msg>`) whose results land back in the spawner when done.
 
-Start with `arbiter`. The default layout is a single pane covering the main terminal area. A **left-hand conversation sidebar** lists prior threads and lets you start a new one (`Ctrl-w b` to enter, `Ctrl-w t` to toggle visibility). A **right-hand sidebar** shows session usage, agent/model, todos, and recent tool activity when the terminal is wide enough (MCP appears only after MCP tools are used); `Ctrl-w s` toggles it. `Ctrl-w v` / `Ctrl-w h` split the main area.
+Start with `arbiter`. The default layout is a single pane covering the main terminal area. A **left-hand conversation sidebar** lists prior threads and lets you start a new one (`Ctrl-w b` to enter, `Ctrl-w t` to toggle visibility). A **right-hand sidebar** shows session usage, agent/model, todos, and recent tool activity when the terminal is wide enough (MCP appears only after MCP tools are used); `Ctrl-w s` toggles it. A **fleet dashboard** (`Ctrl-w f`) occupies that same right rail while a multi-agent job is running — live tree of depth, agent, tool, and tokens; it stays visible with several conversation panes. `Ctrl-w v` / `Ctrl-w h` split the main area.
 
 ## Screen anatomy
 
@@ -55,6 +55,7 @@ Token totals also appear in the pane header stats row (right side of row 1) when
 - **[Slash commands](commands.md)** — the full `/cmd` catalogue, grouped by category.
 - **[Keybindings](keybindings.md)** — every key, chord, and modifier the editor recognizes.
 - **[Panes](panes.md)** — multi-pane layouts: split, focus, close, `/pane` spawn semantics.
+- **[Fleet](fleet.md)** — live multi-agent tree: depth, tools, tokens, click-to-focus.
 - **[Streaming](streaming.md)** — what you see during a turn: thinking spinner, tool-call indicator, verbose mode, cancellation.
 - **[Sessions](sessions.md)** — global conversations, autosave / mid-turn checkpoints, compaction.
 - **[Output UX](output-ux.md)** — tool timeline, thinking rows, permission cards, replay chrome.

@@ -7,6 +7,7 @@
 #include "tui/opentui/mouse_decode.h"
 #include "tui/tui.h"
 
+#include <algorithm>
 #include <optional>
 #include <vector>
 
@@ -16,6 +17,7 @@ enum class HitKind {
     Outside,
     HistorySidebar,
     RightSidebar,
+    FleetSidebar,
     SplitSeparator,
     PaneScroll,
     PaneInput,
@@ -30,6 +32,8 @@ struct HitTarget {
     // Absolute list-row index for HistorySidebar (0 = "+ New"), or -1 when
     // the click landed in sidebar chrome / empty list space.
     int history_row = -1;
+    // Absolute tree-row index for FleetSidebar, or -1 for chrome / overlay.
+    int fleet_row = -1;
 };
 
 inline bool rect_contains(const Rect& r, int x, int y) {
@@ -65,10 +69,29 @@ inline int history_sidebar_row_at(const Rect& sidebar_rect,
     return -1;
 }
 
+// Map y into a fleet tree row. Overlay lines sit below the title and are
+// not selectable (matches fleet_frame.cpp: list_top = y+3 + overlay+gap).
+inline int fleet_sidebar_row_at(const Rect& sidebar_rect,
+                                int y,
+                                int scroll_offset,
+                                int list_height_lines,
+                                int overlay_lines,
+                                int row_count) {
+    int top = sidebar_rect.y + 3;
+    if (overlay_lines > 0) top += overlay_lines + 1;
+    if (y < top || list_height_lines <= 0 || row_count <= 0) return -1;
+    const int band_end = top + list_height_lines;
+    if (y >= band_end) return -1;
+    const int idx = scroll_offset + (y - top);
+    if (idx < 0 || idx >= row_count) return -1;
+    if (idx >= scroll_offset + list_height_lines) return -1;
+    return idx;
+}
+
 // Classify which interactive region contains (x, y).
-// `history_rect` / `right_rect` may be empty (w==0) when those sidebars are off.
+// `history_rect` / `right_rect` / `fleet_rect` may be empty (w==0) when off.
 // `history_list_height` / `history_rows` clamp history list hits to painted,
-// real rows only.
+// real rows only. Fleet tree rows are height 1.
 inline HitTarget hit_test(LayoutTree& layout,
                           const Rect& history_rect,
                           const Rect& right_rect,
@@ -76,7 +99,12 @@ inline HitTarget hit_test(LayoutTree& layout,
                           int history_list_height,
                           const std::vector<HistorySidebarRow>& history_rows,
                           int x,
-                          int y) {
+                          int y,
+                          const Rect& fleet_rect = {},
+                          int fleet_scroll_offset = 0,
+                          int fleet_list_height = 0,
+                          int fleet_overlay_lines = 0,
+                          int fleet_row_count = 0) {
     HitTarget hit;
 
     if (history_rect.w > 0 && rect_contains(history_rect, x, y)) {
@@ -84,6 +112,13 @@ inline HitTarget hit_test(LayoutTree& layout,
         hit.history_row = history_sidebar_row_at(
             history_rect, y, history_scroll_offset, history_list_height,
             history_rows);
+        return hit;
+    }
+    if (fleet_rect.w > 0 && rect_contains(fleet_rect, x, y)) {
+        hit.kind = HitKind::FleetSidebar;
+        hit.fleet_row = fleet_sidebar_row_at(
+            fleet_rect, y, fleet_scroll_offset, fleet_list_height,
+            fleet_overlay_lines, fleet_row_count);
         return hit;
     }
     if (right_rect.w > 0 && rect_contains(right_rect, x, y)) {

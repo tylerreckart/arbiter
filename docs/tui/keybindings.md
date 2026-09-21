@@ -12,6 +12,7 @@ Arbiter ships its own line editor. Bindings below are the complete set the edito
 | Wheel | Scroll pane / history list under the pointer |
 | Drag split gutter | Resize adjacent panes |
 | Left-click history row | Switch to that conversation |
+| Left-click fleet row | Focus the pane bound to that stream |
 | Right sidebar | Ignored (display-only) |
 
 Disable with `"mouse": false` under `layout` in `~/.arbiter/tui.json`.
@@ -85,8 +86,20 @@ cards. See [output-ux.md](output-ux.md).
 | `^W c`       | Close the focused pane. Its exec thread is joined; in-flight turn is cancelled. Last remaining pane cannot be closed. |
 | `^W t`       | Toggle the conversation-history sidebar (left rail). Preference is saved to `~/.arbiter/tui.json`. |
 | `^W b`       | Enter the conversation sidebar for selection. Auto-shows the sidebar if hidden. Use `↑`/`↓` and `Enter`; `Esc` cancels. |
+| `^W f`       | Show the fleet dashboard and enter it. Second press hides it. Click a row or `Enter` to focus that stream's pane; `Esc` on a running row cancels that pane's turn. |
 
 If the chord byte doesn't match any of the above, it's silently dropped — the editor returns to the normal input state. `^W` followed by a regular character does *not* fall through to insertion; the chord window always consumes its byte.
+
+## Fleet dashboard (when focused via `^W f` or a click)
+
+| Key       | Action |
+|-----------|--------|
+| `↑` / `↓` | Move selection (`j` / `k` aliases). |
+| `Enter`   | Focus the conversation pane bound to that stream. |
+| `Esc`     | Cancel the selected in-flight turn if it is running; otherwise leave fleet focus. |
+| `PgUp` / `PgDn` | Page the tree. |
+
+See [Fleet](fleet.md).
 
 ## Conversation sidebar (when focused via `^W b`)
 

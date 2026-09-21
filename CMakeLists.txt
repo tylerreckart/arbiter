@@ -353,9 +353,11 @@ target_sources(arbiter PRIVATE
     src/tui/sidebar.cpp
     src/tui/sidebar_format.cpp
     src/tui/history_sidebar.cpp
+    src/tui/fleet.cpp
     src/tui/menu.cpp
     src/tui/opentui/sidebar_frame.cpp
     src/tui/opentui/history_sidebar_frame.cpp
+    src/tui/opentui/fleet_frame.cpp
     src/tui/opentui/menu_frame.cpp
     src/tui/opentui/pane_frame.cpp
 )
@@ -899,6 +901,26 @@ if(INDEX_BUILD_TESTS)
         ${OPENSSL_INCLUDE_DIR}
     )
     add_test(NAME unit_sidebar COMMAND unit_sidebar)
+
+    # Fleet tree state machine: SSE/event → rows, JIT teardown, tokens.
+    add_executable(unit_fleet
+        tests/test_fleet.cpp
+        src/tui/fleet.cpp
+        src/tui/sidebar_format.cpp
+        src/model_catalog.cpp
+        src/model_context.cpp
+        src/styled_text.cpp
+        src/theme.cpp
+        src/tui/tui_design.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_fleet PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_compile_definitions(unit_fleet PRIVATE
+        ARBITER_THEMES_DIR="${CMAKE_SOURCE_DIR}/themes")
+    add_test(NAME unit_fleet COMMAND unit_fleet)
 
     add_executable(unit_todo_resolve
         tests/test_todo_resolve.cpp
@@ -1736,7 +1758,6 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_remote_connect COMMAND unit_remote_connect)
 
-<<<<<<< HEAD
     # JSON number grammar (incomplete frac/exp). Separate from #342's
     # unit_json (surrogate pairs in parse_string) so the two PRs do not
     # share tests/test_json.cpp or the CMake insert after unit_logger.
@@ -1749,7 +1770,7 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_json_numbers COMMAND unit_json_numbers)
-=======
+
     # Unary --connect DELETE/PATCH body cap.  Separate binary so
     # unit_remote_connect stays network-free; this one stands up a
     # loopback server against RemoteApiClient's one-shot curl handles.
@@ -1770,7 +1791,6 @@ if(INDEX_BUILD_TESTS)
         Threads::Threads
     )
     add_test(NAME unit_remote_http COMMAND unit_remote_http)
->>>>>>> origin/main
 
     # tui_design.cpp includes themes_data.h — wire every unit target that
     # compiles it to the embed generator (same header as the main binary).
@@ -1790,6 +1810,7 @@ if(INDEX_BUILD_TESTS)
         unit_conversation_titling
         unit_message_replay_roundtrip
         unit_remote_connect
+        unit_fleet
     )
         arbiter_use_embedded_themes(${_t})
     endforeach()
