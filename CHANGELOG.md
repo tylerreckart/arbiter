@@ -12,6 +12,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   longer treats a JSON parse error (or a non-object blob) as an empty
   transcript. Untitled 24h GC and `create_or_reuse` were hard-deleting
   or overwriting sessions that could not be parsed.
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
 
 ## [0.13.6] — 2026-09-21
 

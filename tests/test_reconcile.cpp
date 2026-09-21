@@ -227,6 +227,53 @@ TEST_CASE("broken tests never satisfy") {
     CHECK_FALSE(r.verification.passed);
 }
 
+TEST_CASE("restore_workspace does not wipe the live tree when snapshot copy fails") {
+    TempDir dir;
+    const fs::path root = dir.path / "ws";
+    const fs::path snap = dir.path / "snap";
+    fs::create_directories(root);
+    fs::create_directories(snap);
+    write_file(root / "keep.txt", "original\n");
+    write_file(snap / "secret.txt", "from-snap\n");
+    fs::permissions(snap / "secret.txt", fs::perms::none);
+
+    std::string err;
+    CHECK_FALSE(restore_workspace(snap.string(), root.string(), &err));
+    CHECK(fs::exists(root / "keep.txt"));
+    CHECK_FALSE(fs::exists(root / "secret.txt"));
+    {
+        std::ifstream in(root / "keep.txt");
+        std::string body((std::istreambuf_iterator<char>(in)), {});
+        CHECK(body == "original\n");
+    }
+
+    std::error_code ec;
+    fs::permissions(snap / "secret.txt",
+                    fs::perms::owner_read | fs::perms::owner_write, ec);
+}
+
+TEST_CASE("restore_workspace replaces live files from a readable snapshot") {
+    TempDir dir;
+    const fs::path root = dir.path / "ws";
+    const fs::path snap = dir.path / "snap";
+    fs::create_directories(root);
+    fs::create_directories(snap);
+    write_file(root / "keep.txt", "original\n");
+    write_file(root / "debris.py", "partial\n");
+    write_file(snap / "keep.txt", "restored\n");
+
+    std::string err;
+    CHECK(restore_workspace(snap.string(), root.string(), &err));
+    CHECK(fs::exists(root / "keep.txt"));
+    CHECK_FALSE(fs::exists(root / "debris.py"));
+    {
+        std::ifstream in(root / "keep.txt");
+        std::string body((std::istreambuf_iterator<char>(in)), {});
+        CHECK(body == "restored\n");
+    }
+    CHECK_FALSE(fs::exists(root / ".arbiter-reconcile-snapshots" / ".restore-staging"));
+}
+
 TEST_CASE("rollbackOnFailure restores pre-run tree") {
     TempDir dir;
     write_file(dir.path / "keep.txt", "original\n");

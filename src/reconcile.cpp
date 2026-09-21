@@ -926,8 +926,31 @@ bool restore_workspace(const std::string& snapshot,
         if (err) *err = "workspace root is missing";
         return false;
     }
+
+    // Stage the snapshot copy first.  clear_dir_contents(root) is not
+    // reversible, so a copy_tree failure after clearing used to leave
+    // the live workspace empty (or partial) even though restore
+    // returned false.  Staging lives under .arbiter-reconcile-snapshots
+    // so clear_dir_contents skips it (same rule as the `pre` snapshot).
+    const fs::path snap_dir = fs::path(root) / ".arbiter-reconcile-snapshots";
+    const fs::path staging = snap_dir / ".restore-staging";
+    fs::create_directories(snap_dir, ec);
+    if (ec) {
+        if (err) *err = "cannot create snapshot dir: " + ec.message();
+        return false;
+    }
+    fs::remove_all(staging, ec);
+    if (!copy_tree(snapshot, staging.string(), err)) {
+        fs::remove_all(staging, ec);
+        return false;
+    }
+
     clear_dir_contents(root);
-    return copy_tree(snapshot, root, err);
+    const bool ok = copy_tree(staging.string(), root, err);
+    if (ok) fs::remove_all(staging, ec);
+    // On a failed install into root, leave staging in place so the
+    // staged tree is still recoverable under .restore-staging.
+    return ok;
 }
 
 std::string format_reconcile_brief(const StateContract& c,
