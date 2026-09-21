@@ -11,6 +11,7 @@ List the tenant's conversations, newest-`updated_at` first. Drives the frontend'
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `before_updated_at` | int (epoch s) | none | Returns conversations updated strictly before this. Use the previous page's last `updated_at` to paginate backward. |
+| `before_id`         | int | none | Tie-break for rows that share `before_updated_at`. Pass the previous page's last `id`. Without it, same-second siblings of the cursor are skipped. |
 | `limit`             | int | 50 | Page size. Max 200. |
 | `folder_id`         | int \| `"null"` | none | When set, only conversations in that folder. Use `null`, empty, or `0` for unfiled. Omit to return all. |
 
@@ -22,6 +23,12 @@ curl -H "Authorization: Bearer atr_…" \
 ```bash
 curl -H "Authorization: Bearer atr_…" \
   "http://arbiter.example.com/v1/conversations?folder_id=3"
+```
+
+```bash
+# Next page after a row with updated_at=1777088752, id=12
+curl -H "Authorization: Bearer atr_…" \
+  "http://arbiter.example.com/v1/conversations?before_updated_at=1777088752&before_id=12&limit=20"
 ```
 
 ## Response
