@@ -8,6 +8,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+  `restore_workspace` now copies the snapshot into a staging directory
+  under `.arbiter-reconcile-snapshots` before clearing the live tree.
+  If that copy fails (unreadable snapshot, I/O error), the original
+  files stay in place and restore returns false. Previously
+  `clear_dir_contents` ran first, so a subsequent `copy_tree` failure
+  left the workspace empty while `run_reconcile` reported `failed`
+  rather than `rolled_back`.
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
   after 64 nested `\frac` / `^` / `_` / `\sqrt` / `\text` groups and emits
   the remaining raw fragment, matching the JSON parser's nesting cap so
