@@ -10,6 +10,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [0.13.8] — 2026-09-21
 
 ### Fixed
+- **TUI `/write` backup no longer follows a dest symlink.** Overwriting
+  `notes.md` copied the pre-image through `notes.md.bak` via
+  `copy_file`, which follows a planted dest symlink (for example to
+  `/etc/passwd`). Backup is skipped when `.bak` is not a regular file.
+  A workspace FIFO is rejected instead of hanging `open()`.
 - **Provider pool cancel while waiting for a connection slot.** `complete()` /
   `stream()` no longer hang on the per-provider cap (`kMaxConnsPerProvider`)
   after Esc or `cancel()`. The wait predicate observes the request token and
