@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Event ingest hydrates the routed constitution.** `POST /v1/events`
+  attaches the selected agent's `agent_def` on the synthetic orchestrate
+  body. File-backed matches and tenant agents off the newest-200 catalog
+  page no longer 404 `agent not found`. When a file-backed id collides
+  with a tenant row, the file constitution is the one that runs (file
+  routing won).
 - **Nested artifact routes honor `:cid`.** `GET`/`DELETE`
   `/v1/conversations/:id/artifacts/:aid` (and `/raw`) 404 when the
   conversation is missing or TUI-origin, or when the artifact belongs
