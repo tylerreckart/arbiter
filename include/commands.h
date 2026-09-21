@@ -414,8 +414,8 @@ using TodoInvoker = std::function<std::string(const std::string& kind,
 //   /schedule <phrase>: <message>   — create a scheduled task
 //   /schedule list                  — render the active schedules
 //   /schedule cancel <id>           — delete a scheduled task
-//   /schedule pause <id>            — set status='paused'
-//   /schedule resume <id>           — set status='active' and recompute next_fire_at
+//   /schedule pause <id>            — active/running → paused (not terminal)
+//   /schedule resume <id>           — paused → active; recompute next_fire_at if due
 // The callback receives (kind, rest-of-line, caller_agent_id) where kind
 // is the leading subcommand keyword and rest-of-line is everything after
 // it.  For the implicit "create" form (no recognised subcommand), kind

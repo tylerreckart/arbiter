@@ -81,6 +81,27 @@ TEST_CASE("replay_user_echo_text strips master AGENTS/QUERY preamble") {
     // QUERY marker without an AGENTS roster is not stripped.
     m.content = "see\n\nQUERY: docs";
     CHECK(replay_user_echo_text(m) == "see\n\nQUERY: docs");
+
+    // User text after the orchestrator marker may embed the same
+    // substring. The first QUERY (after AGENTS) is the boundary;
+    // rfind would echo only the suffix.
+    m.content =
+        "AGENTS — delegate with /agent <id> <task>:\n"
+        "  research [research-analyst]\n"
+        "\n"
+        "QUERY: compare\n\nQUERY: docs vs the README";
+    CHECK(replay_user_echo_text(m) == "compare\n\nQUERY: docs vs the README");
+
+    m.content =
+        "[OPEN TODOS] (mark progress as you go):\n"
+        "1. ship it\n"
+        "[END OPEN TODOS]\n"
+        "\n"
+        "AGENTS: none loaded\n"
+        "\n"
+        "QUERY: \n"
+        "see\n\nQUERY: docs";
+    CHECK(replay_user_echo_text(m) == "see\n\nQUERY: docs");
 }
 
 TEST_CASE("claim_pane_transcript_replay dedupes shared conversation siblings") {
