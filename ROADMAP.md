@@ -41,7 +41,7 @@ calendar commitments.
 - [x] **Workspace / repo map writ-** Cheap structural index (`/map` tree; outline/inject follow-up); not a full LSP server in-process if avoidable
 - [x] **`/diff` + apply workflow-** First-class apply/reject for ` ```diff ` proposals; keep rendering; staged apply **with** undo; interactive `/diff` review (`[a]`/`[r]`); create missing files on apply without a separate write confirm
 - [ ] **Git status surface-** Git branch, dirty files, last agent touches surfaced in session sidebar
-- [ ] **PR helper agent pattern-** Agent constitution + MCP Github
+- [ ] ~~*PR helper agent pattern-** Agent constitution + MCP Github~~
 - [ ] **Project lessons boostrap-** On first open of a cwd, optional scan of lessons/memory seeds
 
 **Acceptance criteria:** 
@@ -64,7 +64,7 @@ calendar commitments.
 - [ ] **Fleet dashboard pane-** Live tree of depth, agent, tools, tokens; click-to-focus/Ctrl-W bindings
 - [ ] **Plan to execution observability-** Planner plans as first-class objects with progress against todos
 - [ ] **Delegation policies-** Consitutions declare max depth, allowed callees, budget caps (tokens/$)
-- [ ] **Workflow recipes-** Checked-in “crews” (JSON): ordered/parallel graphs of agents + shared todo board
+- [ ] ~~**Workflow recipes-** Checked-in “crews” (JSON): ordered/parallel graphs of agents + shared todo board~~
 - [ ] **Advisor policy packs-** Reusable gate profiles (strict / coding / research)
 
 **Acceptance criteria:** 
