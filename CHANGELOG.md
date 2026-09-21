@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+- **Secret key/token writes do not follow a planted dest symlink.**
+  `write_key_file` and admin-token generate opened
+  `~/.arbiter/{openrouter_api_key,search_api_key,admin_token}` with
+  `O_CREAT|O_TRUNC`, so a dest symlink redirected the secret into the
+  link target. Open with `O_NOFOLLOW` and require a regular file so a
+  planted symlink or FIFO cannot exfiltrate the bytes.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
