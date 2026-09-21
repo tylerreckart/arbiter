@@ -378,18 +378,29 @@ private:
     // socket I/O runs on the leased Conn with no pool lock held, so leases on
     // different Conns proceed fully concurrently.  Nested so it can reach the
     // private Conn / ProviderPool types.
+    //
+    // Cancel (process-wide or the thread's RequestCancelScope token) aborts
+    // the CV wait without taking a slot — valid() is false and conn() must
+    // not be called.  Esc on a saturated pool used to hang until another
+    // lease returned.
     class ConnLease {
     public:
         ConnLease(ApiClient& owner, const std::string& provider);
         ~ConnLease();
         ConnLease(const ConnLease&) = delete;
         ConnLease& operator=(const ConnLease&) = delete;
+        [[nodiscard]] bool valid() const { return conn_ != nullptr; }
         Conn& conn() { return *conn_; }
     private:
         ApiClient& owner_;
         ProviderPool& pool_;
         Conn* conn_;
     };
+
+    // Wake every provider-pool waiter.  cancel() and CancelToken::request_cancel
+    // call this so a thread blocked in ConnLease at the cap observes the
+    // cancel bit instead of waiting for a lease to free.
+    void wake_all_pool_waiters();
 
     std::atomic<int>  total_in_{0};
     std::atomic<int>  total_out_{0};

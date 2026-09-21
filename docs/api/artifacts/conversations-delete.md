@@ -30,7 +30,8 @@ curl -X DELETE \
 | Status | When | Body |
 |--------|------|------|
 | 401    | Missing / invalid bearer. | `{"error": "..."}` |
-| 404    | Id doesn't exist for this tenant + conversation pair. | `{"error": "artifact not found"}` |
+| 404    | Conversation is missing or TUI-origin. | `{"error": "conversation not found"}` |
+| 404    | Artifact missing or belongs to another conversation. | `{"error": "artifact not found"}` |
 
 ## See also
 
