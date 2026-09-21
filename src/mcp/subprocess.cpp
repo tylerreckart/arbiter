@@ -60,8 +60,11 @@ void purge_stdio_buffers() {
 }
 
 // True when an inherited env KEY should be stripped from MCP children.
-// Registry `env_extra` is appended after the scrub and is allowed through
+// Registry `env_extra` is applied after the scrub and is allowed through
 // even when the key would otherwise match — operators opt into those.
+// Extra keys replace inherited parent keys of the same name so getenv /
+// execvp PATH search / Node process.env see the registry value rather
+// than a duplicate later in environ (glibc getenv is first-match).
 bool is_secret_env_key(std::string_view key) {
     if (key.empty()) return true;
     auto has_suffix = [&](std::string_view suf) {
@@ -140,20 +143,37 @@ Subprocess::Subprocess(const std::vector<std::string>& argv,
 
         purge_stdio_buffers();
 
-        // Inherit parent environ minus secret-shaped keys, then append
+        // Inherit parent environ minus secret-shaped keys, then apply
         // registry env_extra.  MCP children (often untrusted npx packages)
         // must not see provider/admin credentials from the arbiter process.
+        // Extra keys override inherited ones: glibc/macOS getenv and
+        // execvp's PATH search use the first KEY= in environ, so appending
+        // a duplicate left PATH / NODE_ENV / HTTP_PROXY / etc. stuck on
+        // the parent value.  Skip parent keys that env_extra sets, then
+        // append extra (secrets in extra still pass — operator opt-in).
         // Done this way (rather than execvpe) because macOS doesn't expose
         // execvpe and we need the PATH-search behaviour for `npx`.
+        auto extra_key = [](const std::string& s) -> std::string_view {
+            const auto eq = s.find('=');
+            return eq == std::string::npos ? std::string_view(s)
+                                           : std::string_view(s.data(), eq);
+        };
+        auto extra_has_key = [&](std::string_view key) {
+            for (const auto& s : env_extra) {
+                if (extra_key(s) == key) return true;
+            }
+            return false;
+        };
         std::vector<std::string> env_storage;
         for (char** e = environ; e && *e; ++e) {
             const char* eq = std::strchr(*e, '=');
             std::string_view key = eq ? std::string_view(*e, static_cast<size_t>(eq - *e))
                                       : std::string_view(*e);
             if (is_secret_env_key(key)) continue;
+            if (extra_has_key(key)) continue;
             env_storage.emplace_back(*e);
         }
-        for (auto& s : env_extra) env_storage.push_back(s);
+        for (const auto& s : env_extra) env_storage.push_back(s);
         std::vector<char*> envp;
         envp.reserve(env_storage.size() + 1);
         for (auto& s : env_storage) envp.push_back(s.data());
