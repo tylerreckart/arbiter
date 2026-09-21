@@ -477,6 +477,21 @@ TEST_CASE("apply_unified_diff refuses files over kMaxDiffFileBytes") {
     CHECK(r.error.find("10 MiB") != std::string::npos);
 }
 
+TEST_CASE("apply_unified_diff: refuses a directory target as a new file") {
+    TempDir dir;
+    fs::create_directory(dir.path / "foo.txt");
+    const char* patch =
+        "--- /dev/null\n"
+        "+++ b/foo.txt\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+hello\n";
+    auto r = apply_unified_diff(patch, dir.path.string());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("directory") != std::string::npos);
+    CHECK(fs::is_directory(dir.path / "foo.txt"));
+    CHECK_FALSE(fs::exists(dir.path / "foo.txt.arbiter-diff.tmp"));
+}
+
 TEST_CASE("apply_unified_diff: refuses to read through symlink") {
     TempDir dir;
     write_text(dir.path / "secret.txt", "secret\n");
