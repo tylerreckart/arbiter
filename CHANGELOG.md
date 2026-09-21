@@ -8,6 +8,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Bearer scheme matches RFC 6750 / RFC 9110.** `extract_bearer` now
+  treats the auth-scheme as case-insensitive and skips `1*SP` after it,
+  so `bearer` / `BEARER` and extra spaces no longer 401 a valid token.
 - **Inbound HTTP body honors Content-Length.** `parse_http_request` now
   takes at most `Content-Length` bytes from the header-read leftover, so
   `Content-Length: 0` stays empty and extra pipelined or smuggled bytes
