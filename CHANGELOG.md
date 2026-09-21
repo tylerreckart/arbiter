@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.10] — 2026-09-21
+
 ### Fixed
 - **Compaction boundary vs user `QUERY:` / `[` text.**
   `strip_compaction_preambles` now takes the first orchestrator
