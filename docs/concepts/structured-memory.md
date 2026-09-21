@@ -72,6 +72,8 @@ The closed `type` enum is the primary axis along which agents navigate the graph
 
 Picking the right type is what makes `/mem entries type=project` useful — filing every research output as `reference` defeats the partitioning. Agents see the type legend in their system prompt and pick deliberately.
 
+Spoken / Intercom agents get an extra **MEMORY HABIT** push on top of those COMMAND RULES: recall (`/mem search`) before answering from scratch when the user refers to preferences, people, or past decisions, and `/mem add entry` (`user` / `feedback` / `context` / `project`) in the same turn as the spoken reply. Writs stay silent; see [Voice → Personal-assistant memory](voice.md#personal-assistant-memory).
+
 ### Relations (edges)
 
 A relation is a directed labeled edge between two entries. Symmetric semantics like `contradicts` are still stored directed; consumers dedupe at render time. The closed enum:
@@ -274,7 +276,7 @@ Beyond search, four read commands let agents navigate the graph structurally:
 
 ### `/mem entries`
 
-Browse the current active set. Newest-first. Optional `type=foo,bar` and `tag=baz` filters apply as hard `WHERE` clauses (browse mode, not search mode). Use this for "show me my recent project entries" — not for finding a specific fact.
+Browse the current active set. Newest-first. Optional `type=foo,bar` and `tag=baz` filters apply as hard `WHERE` clauses (browse mode, not search mode). `tag=` is a literal substring of the serialized tags JSON (`%` / `_` / `\` are not wildcards). Use this for "show me my recent project entries" — not for finding a specific fact.
 
 ### `/mem entry <id>`
 
@@ -450,3 +452,4 @@ The reader and writer are both bound to a tenant — sub-agents invoked via `/ag
 - [`GET /v1/memory/graph`](../api/memory/graph.md)
 - [Artifacts](artifacts.md) — for the memory↔artifact link
 - [Data model](data-model.md#memoryentry) — exact field shapes
+- [Voice](voice.md#personal-assistant-memory) — spoken PA habit (`/mem search` / `/mem add entry` without narrating tools)

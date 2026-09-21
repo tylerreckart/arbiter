@@ -1,6 +1,7 @@
 // arbiter/src/loop_manager.cpp — see loop_manager.h
 
 #include "loop_manager.h"
+#include "loop_wait.h"
 #include "markdown.h"
 #include "styled_text.h"
 #include "theme.h"
@@ -160,6 +161,7 @@ bool LoopManager::suspend(const std::string& lid) {
     if (it->second->state != LoopState::Running) return false;
     it->second->suspend_req = true;
     it->second->state = LoopState::Suspended;
+    it->second->cv.notify_all();
     return true;
 }
 
@@ -463,9 +465,13 @@ void LoopManager::run_loop(LoopEntry* e, Orchestrator& orch,
         if (first) first = false;
         prompt = kLoopContinuation;
 
-        { std::lock_guard<std::mutex> lk(e->mu); if (e->stop_req) { stopped_by_request = true; break; } }
-
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        // kill()/inject()/suspend() notify cv; do not sleep_for here or
+        // /kill join freezes the TUI for the remainder of the pause.
+        if (loop_wait_interruptible(e->mu, e->cv, e->stop_req, e->suspend_req,
+                                    e->injected, std::chrono::seconds(2))) {
+            stopped_by_request = true;
+            break;
+        }
     }
 
     (void)stopped_by_request;
