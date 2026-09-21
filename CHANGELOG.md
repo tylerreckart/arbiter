@@ -15,33 +15,20 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   Non-200 responses now report `HTTP <status>` plus a 200-byte, single-line
   JSON-RPC `error.message` when present. JSON-RPC errors on HTTP 200 are
   clipped the same way.
-- **Reconcile rollback no longer wipes the workspace on a failed restore.**
-  `restore_workspace` now copies the snapshot into a staging directory
-  under `.arbiter-reconcile-snapshots` before clearing the live tree.
-  If that copy fails (unreadable snapshot, I/O error), the original
-  files stay in place and restore returns false. Previously
-  `clear_dir_contents` ran first, so a subsequent `copy_tree` failure
-  left the workspace empty while `run_reconcile` reported `failed`
-  rather than `rolled_back`.
-- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
-  after 64 nested `\frac` / `^` / `_` / `\sqrt` / `\text` groups and emits
-  the remaining raw fragment, matching the JSON parser's nesting cap so
-  deeply nested model or user math cannot overflow the TUI/API thread stack.
-- **Secret key/token writes do not follow a planted dest symlink.**
-  `write_key_file` and admin-token generate opened
-  `~/.arbiter/{openrouter_api_key,search_api_key,admin_token}` with
-  `O_CREAT|O_TRUNC`, so a dest symlink redirected the secret into the
-  link target. Open with `O_NOFOLLOW` and require a regular file so a
-  planted symlink or FIFO cannot exfiltrate the bytes.
-- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
-  now rejects query strings, fragments, URL userinfo, and control bytes
-  instead of concatenating them into every request (`https://host?x/v1/…`
-  never delivered the path) or printing `user:pass@` in TUI chrome.
-  Path prefixes (`https://host/arbiter`) still work.
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+  title-rename used a one-shot libcurl write callback that appended the
+  entire response with no limit. A `--connect` peer that omitted
+  `Content-Length` could grow the TUI heap without bound; GET/POST already
+  go through `a2a::http`. Cap is 16 MiB (`kSseMaxEventBytes`).
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
 - **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
 - **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
 - **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
 
 ## [0.13.6] — 2026-09-21
 

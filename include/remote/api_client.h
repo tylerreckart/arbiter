@@ -11,11 +11,18 @@
 #include "repl/prompt_attachments.h"
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace arbiter {
+
+// Unary DELETE/PATCH body cap.  Matches kSseMaxEventBytes and the inbound
+// HTTP API so a --connect peer that omits Content-Length cannot grow the
+// TUI heap without bound.  GET/POST already go through a2a::http_get /
+// rpc_call; these two verbs still use a one-shot curl handle.
+inline constexpr size_t kRemoteHttpMaxBodyBytes = a2a::kSseMaxEventBytes;
 
 struct RemoteAgentInfo {
     std::string id;
