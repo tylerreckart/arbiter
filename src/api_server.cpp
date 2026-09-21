@@ -8089,7 +8089,8 @@ std::unique_ptr<Orchestrator>
 build_a2a_orchestrator(const ApiServerOptions& opts,
                         TenantStore& tenants, const Tenant& tenant,
                         std::string& err_out,
-                        int64_t conversation_id = 0) {
+                        int64_t conversation_id = 0,
+                        const std::string& target_agent_id = "") {
     std::unique_ptr<Orchestrator> orch;
     try {
         orch = std::make_unique<Orchestrator>(opts.api_keys);
@@ -8101,7 +8102,11 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
     orch->client().set_circuit_breaker(opts.circuit_breaker);
     orch->client().set_metrics(opts.metrics);
 
-    const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+    // Newest-200 plus the targeted id when it fell off that page (GET
+    // /v1/agents/:id already uses get_agent_record).  Sibling /agent
+    // and /parallel still resolve from the REST list page.
+    const auto records = tenants.list_agent_records_for_dispatch(
+        tenant.id, target_agent_id);
     for (const auto& rec : records) {
         try {
             auto cfg = Constitution::from_json(rec.agent_def_json);
@@ -8173,7 +8178,8 @@ void handle_a2a_message_send(int fd,
     const std::string context_id = resolve_a2a_context_id(user_msg);
 
     std::string init_err;
-    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err,
+                                       /*conversation_id=*/0, agent_id);
     if (!orch) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
@@ -8274,14 +8280,31 @@ void handle_a2a_message_send(int fd,
     // Message — history/artifacts can be reconstructed by combining
     // the user's input (which the client already has) with the
     // assistant's reply.  Smaller column, simpler reads.
+    //
+    // tasks/cancel may have persisted canceled while send() was still
+    // unwinding.  update_a2a_task refuses to overwrite canceled; if
+    // that CAS misses, surface the same cancelled RPC as the
+    // error_type=="cancelled" path instead of returning a completed
+    // Task that tasks/get would contradict.
     std::string final_msg_json;
     if (task.status.message) {
         final_msg_json = json_serialize(*a2a::to_json(*task.status.message));
     }
-    tenants.update_a2a_task(tenant.id, task_id,
-                             a2a::task_state_to_string(task.status.state),
-                             final_msg_json,
-                             resp.ok ? "" : sanitised_api_response_error(resp));
+    const std::string terminal =
+        a2a::task_state_to_string(task.status.state);
+    if (!tenants.update_a2a_task(tenant.id, task_id,
+                                 terminal,
+                                 final_msg_json,
+                                 resp.ok ? "" : sanitised_api_response_error(resp))) {
+        if (auto rec = tenants.get_a2a_task(tenant.id, task_id);
+            rec && rec->state ==
+                       a2a::task_state_to_string(a2a::TaskState::canceled)) {
+            write_a2a_rpc(fd, a2a::make_error_response(
+                rpc_id, a2a::RPC_INVALID_REQUEST,
+                "request cancelled"));
+            return;
+        }
+    }
 
     write_a2a_rpc(fd, a2a::make_result_response(rpc_id, a2a::to_json(task)));
 }
@@ -8346,7 +8369,8 @@ void handle_a2a_message_stream(int fd,
     const std::string context_id = resolve_a2a_context_id(user_msg);
 
     std::string init_err;
-    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err,
+                                       /*conversation_id=*/0, agent_id);
     if (!orch) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
@@ -8744,9 +8768,9 @@ void handle_a2a_tasks_cancel(int fd,
 
     if (cancelled_in_flight) {
         // Persist canceled state so a follow-up tasks/get reflects the
-        // outcome.  The orchestrator's send may still be unwinding —
-        // its terminal-state update will run, but we want canceled to
-        // win over completed/failed for clarity.  Re-update.
+        // outcome.  The orchestrator's send may still be unwinding;
+        // update_a2a_task keeps canceled sticky so a later
+        // completed/failed persist cannot clobber this write.
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::canceled),
                                  "", "canceled by tasks/cancel");
@@ -9835,8 +9859,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // can resolve sibling ids during this turn.  A blob whose JSON has
     // gone bad (schema drift after an upgrade, manual DB poke) gets
     // skipped with a log line — the rest of the catalog still loads.
+    // Extra-fetch the targeted id when it fell off the newest-200 page
+    // (same gap GET /v1/agents/:id does not have).
     {
-        const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+        const auto records = tenants.list_agent_records_for_dispatch(
+            tenant.id, agent_id);
         for (const auto& rec : records) {
             try {
                 auto cfg = Constitution::from_json(rec.agent_def_json);
@@ -10550,9 +10577,10 @@ build_blocking_orchestrator(const ApiServerOptions& opts,
                              TenantStore& tenants,
                              const Tenant& tenant,
                              std::string& err_out,
-                             int64_t conversation_id) {
+                             int64_t conversation_id,
+                             const std::string& target_agent_id) {
     return build_a2a_orchestrator(opts, tenants, tenant, err_out,
-                                  conversation_id);
+                                  conversation_id, target_agent_id);
 }
 
 bool is_http_scoped_conversation(TenantStore& tenants,

@@ -189,6 +189,19 @@ std::string fts5_escape(const std::string& q) {
     return out;
 }
 
+// Neutralise SQLite LIKE wildcards so a user query is a true substring.
+// Paired with `ESCAPE '\'` at the call site.  Backslash itself is escaped
+// so a search for `\` does not swallow the next character.
+std::string like_literal(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '\\' || c == '%' || c == '_') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+
 std::string bytes_to_hex(const unsigned char* data, size_t len) {
     std::ostringstream ss;
     ss << std::hex << std::setfill('0');
@@ -2375,6 +2388,25 @@ MemoryEntry row_to_entry(Stmt& q) {
     return e;
 }
 
+// Neutralise SQLite LIKE wildcards so EntryFilter::tag is a literal
+// substring of the serialized tags JSON (`["foo_bar"]`).  Without this,
+// `_` matches any character and `%` matches any run, so tag=foo_bar
+// also hits `"fooXbar"`.  Paired with `ESCAPE '\'` at the SQL site.
+// Named apart from search_lessons' helper so sibling PRs stay independent.
+std::string escape_like_wildcards(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '\\' || c == '%' || c == '_') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::string tag_like_pattern(const std::string& tag) {
+    return "%\"" + escape_like_wildcards(tag) + "\"%";
+}
+
 constexpr const char* kRelationCols =
     "id, tenant_id, source_id, target_id, relation, created_at";
 
@@ -2530,7 +2562,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
                    " ELSE 1.0 END";
         }
         if (!f.tag.empty()) {
-            sql += " * CASE WHEN e.tags LIKE ? THEN " +
+            sql += " * CASE WHEN e.tags LIKE ? ESCAPE '\\' THEN " +
                    std::to_string(kTagBoost) + " ELSE 1.0 END";
         }
         // Age-decay multiplier.  Multiplying by a fraction <1 makes a
@@ -2578,7 +2610,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         for (auto& t : f.types) q.bind(idx++, t);
         std::string tag_pat;
         if (!f.tag.empty()) {
-            tag_pat = "%\"" + f.tag + "\"%";
+            tag_pat = tag_like_pattern(f.tag);
             q.bind(idx++, tag_pat);
         }
         if (apply_decay) {
@@ -2629,7 +2661,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         }
         sql += ")";
     }
-    if (!f.tag.empty())          sql += " AND tags LIKE ?";
+    if (!f.tag.empty())          sql += " AND tags LIKE ? ESCAPE '\\'";
     if (f.as_of > 0) {
         sql += " AND valid_from <= ? "
                " AND (valid_to IS NULL OR valid_to > ?)";
@@ -2649,7 +2681,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
     for (auto& t : f.types) q.bind(idx++, t);
     std::string tag_pat;
     if (!f.tag.empty()) {
-        tag_pat = "%\"" + f.tag + "\"%";
+        tag_pat = tag_like_pattern(f.tag);
         q.bind(idx++, tag_pat);
     }
     if (f.as_of > 0) {
@@ -3046,6 +3078,20 @@ TenantStore::list_agent_records_for_routing(int64_t tenant_id) const {
     return out;
 }
 
+std::vector<AgentRecord>
+TenantStore::list_agent_records_for_dispatch(
+    int64_t tenant_id, const std::string& target_agent_id) const {
+    auto out = list_agent_records(tenant_id, 200);
+    if (target_agent_id.empty() || target_agent_id == "index") return out;
+    for (const auto& rec : out) {
+        if (rec.agent_id == target_agent_id) return out;
+    }
+    if (auto extra = get_agent_record(tenant_id, target_agent_id)) {
+        out.push_back(std::move(*extra));
+    }
+    return out;
+}
+
 bool TenantStore::update_agent_record(int64_t tenant_id,
                                        const std::string& agent_id,
                                        const std::string& name,
@@ -3111,17 +3157,27 @@ bool TenantStore::update_a2a_task(int64_t tenant_id,
                                     const std::string& error_message) {
     if (!db_) return false;
     const int64_t ts = now_epoch();
+    // `canceled` is sticky: message/send and message/stream persist
+    // completed/failed after the RPC returns, and that write races
+    // tasks/cancel.  The stream path already refused the overwrite
+    // after a GET; the unary path did not.  Enforcing it here so
+    // every caller (including exception / tenant-disabled paths)
+    // keeps cancel as the durable outcome.  Re-writing canceled
+    // (tasks/cancel itself) is still allowed so updated_at / error
+    // stay current.
     Stmt q(db_,
         "UPDATE a2a_tasks "
         "   SET state = ?, updated_at = ?, "
         "       final_message_json = ?, error_message = ? "
-        " WHERE tenant_id = ? AND task_id = ?;");
+        " WHERE tenant_id = ? AND task_id = ? "
+        "   AND (state != 'canceled' OR ? = 'canceled');");
     q.bind(1, state);
     q.bind(2, ts);
     q.bind(3, final_message_json);
     q.bind(4, error_message);
     q.bind(5, tenant_id);
     q.bind(6, task_id);
+    q.bind(7, state);
     q.step();
     return sqlite3_changes(db_) > 0;
 }
@@ -4240,20 +4296,25 @@ TenantStore::search_lessons(int64_t tenant_id,
     if (limit <= 0 || limit > 50) limit = 20;
     // Substring match — case-insensitive on lesson_text + signature.  At
     // tens-to-hundreds of rows per agent this is fine; an FTS index
-    // would be premature.
+    // would be premature.  Escape LIKE metacharacters so `100%` / `foo_bar`
+    // are literals (`GET /v1/lessons?q=` and `/lesson search`).
     std::string sql = std::string("SELECT ") + kLessonCols +
         " FROM lessons WHERE tenant_id = ?";
     if (!agent_id.empty()) sql += " AND agent_id = ?";
-    sql += " AND (lower(signature) LIKE ? OR lower(lesson_text) LIKE ?)"
+    sql += " AND (lower(signature) LIKE ? ESCAPE '\\' "
+           "OR lower(lesson_text) LIKE ? ESCAPE '\\')"
            " ORDER BY hit_count DESC, last_seen_at DESC LIMIT ?;";
     Stmt q(db_, sql.c_str());
     int idx = 1;
     q.bind(idx++, tenant_id);
     if (!agent_id.empty()) q.bind(idx++, agent_id);
-    std::string pat = "%";
-    for (char c : query) pat.push_back(static_cast<char>(std::tolower(
-        static_cast<unsigned char>(c))));
-    pat.push_back('%');
+    std::string lowered;
+    lowered.reserve(query.size());
+    for (char c : query) {
+        lowered.push_back(static_cast<char>(std::tolower(
+            static_cast<unsigned char>(c))));
+    }
+    const std::string pat = "%" + like_literal(lowered) + "%";
     q.bind(idx++, pat);
     q.bind(idx++, pat);
     q.bind(idx, static_cast<int64_t>(limit));
@@ -4457,10 +4518,13 @@ bool TenantStore::update_todo(int64_t tenant_id, int64_t id,
     if (!db_) return false;
     const int64_t ts = now_epoch();
 
-    // Auto-stamp completed_at when transitioning to a terminal status,
-    // unless the caller passed completed_at explicitly.
+    // Keep completed_at aligned with status unless the caller passed an
+    // explicit stamp. Terminal statuses get now(); a reopen to pending
+    // or in_progress zeros the column so "0 until terminal" stays true.
     std::optional<int64_t> ca = completed_at;
-    if (status && is_terminal_todo_status(*status) && !ca) ca = ts;
+    if (status && !ca) {
+        ca = is_terminal_todo_status(*status) ? ts : int64_t{0};
+    }
 
     std::string sql = "UPDATE todos SET updated_at = ?";
     if (subject)     sql += ", subject = ?";

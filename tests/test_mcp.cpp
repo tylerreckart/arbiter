@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <atomic>
 #include <string>
 #include <sys/stat.h>
@@ -472,6 +473,21 @@ TEST_CASE("Subprocess: strips secret-shaped parent env; keeps env_extra") {
     ::unsetenv("ARBITER_ADMIN_TOKEN");
 }
 
+TEST_CASE("Subprocess: env_extra overrides inherited parent keys") {
+    // Non-secret parent keys used to stay first in environ; getenv and
+    // `printenv KEY` then returned the parent value despite env_extra.
+    ::setenv("MCP_ENV_OVERRIDE_PROBE", "from-parent", 1);
+    Subprocess proc({"/usr/bin/printenv", "MCP_ENV_OVERRIDE_PROBE"},
+                    {"MCP_ENV_OVERRIDE_PROBE=from-registry"});
+    auto line = proc.recv_line(500ms);
+    REQUIRE(line.has_value());
+    CHECK(*line == "from-registry");
+    // No leftover parent copy for programs that iterate environ.
+    auto extra = proc.recv_line(200ms);
+    CHECK_FALSE(extra.has_value());
+    ::unsetenv("MCP_ENV_OVERRIDE_PROBE");
+}
+
 // ── 3. /mcp slash dispatch ─────────────────────────────────────────
 
 TEST_CASE("parse_agent_commands recognises /mcp") {
@@ -819,6 +835,101 @@ TEST_CASE("save_server_registry rejects empty argv without throwing") {
     s.name = "broken";
     // argv empty → serialize would throw; save must return false.
     CHECK_FALSE(save_server_registry("/tmp/arbiter-mcp-should-not-exist.json", {s}));
+}
+
+TEST_CASE("save_server_registry does not follow a planted path.tmp symlink") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path()
+        / ("arbiter-mcp-tmp-link-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    const auto path = (dir / "mcp_servers.json").string();
+    const auto victim = (dir / "secret.txt").string();
+    {
+        std::ofstream f(victim);
+        f << "do-not-clobber";
+    }
+    fs::create_symlink(victim, path + ".tmp");
+
+    ServerSpec s;
+    s.name = "playwright";
+    s.argv = {"npx"};
+    s.env_extra = {"TOKEN=super-secret"};
+    REQUIRE(save_server_registry(path, {s}));
+
+    {
+        std::ifstream f(victim);
+        std::ostringstream buf;
+        buf << f.rdbuf();
+        CHECK(buf.str() == "do-not-clobber");
+    }
+    CHECK(fs::is_regular_file(path));
+    CHECK_FALSE(fs::is_symlink(path));
+    CHECK_FALSE(fs::exists(path + ".tmp"));
+    struct stat st{};
+    REQUIRE(::stat(path.c_str(), &st) == 0);
+    CHECK((st.st_mode & 0777) == 0600);
+    auto loaded = load_server_registry(path);
+    REQUIRE(loaded.size() == 1);
+    REQUIRE(loaded[0].env_extra.size() == 1);
+    CHECK(loaded[0].env_extra[0] == "TOKEN=super-secret");
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("save_server_registry replaces a leftover regular tmp") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path()
+        / ("arbiter-mcp-tmp-stale-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    const auto path = (dir / "mcp_servers.json").string();
+    {
+        std::ofstream f(path + ".tmp");
+        f << "stale crash leftover";
+    }
+
+    ServerSpec s;
+    s.name = "ok";
+    s.argv = {"npx"};
+    REQUIRE(save_server_registry(path, {s}));
+    CHECK_FALSE(fs::exists(path + ".tmp"));
+    auto loaded = load_server_registry(path);
+    REQUIRE(loaded.size() == 1);
+    CHECK(loaded[0].name == "ok");
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("save_server_registry rename replaces a dest symlink instead of writing through it") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path()
+        / ("arbiter-mcp-dest-link-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    const auto path = (dir / "mcp_servers.json").string();
+    const auto victim = (dir / "outside.txt").string();
+    {
+        std::ofstream f(victim);
+        f << "keep-me";
+    }
+    fs::create_symlink(victim, path);
+
+    ServerSpec s;
+    s.name = "ok";
+    s.argv = {"npx"};
+    REQUIRE(save_server_registry(path, {s}));
+
+    {
+        std::ifstream f(victim);
+        std::ostringstream buf;
+        buf << f.rdbuf();
+        CHECK(buf.str() == "keep-me");
+    }
+    CHECK(fs::is_regular_file(path));
+    CHECK_FALSE(fs::is_symlink(path));
+    auto loaded = load_server_registry(path);
+    REQUIRE(loaded.size() == 1);
+    CHECK(loaded[0].name == "ok");
+
+    fs::remove_all(dir);
 }
 
 TEST_CASE("serialize_server_registry escapes quotes in names and args") {
