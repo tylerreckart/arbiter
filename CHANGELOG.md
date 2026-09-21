@@ -28,6 +28,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
 - **MCP registry writes do not follow a planted `.tmp` symlink.**
 - **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
+- **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
+- **JSON numbers require a complete fraction and exponent.** `json_parse`
+- **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
 
 ## [0.13.7] — 2026-09-21
 
