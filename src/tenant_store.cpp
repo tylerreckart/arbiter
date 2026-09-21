@@ -1478,11 +1478,13 @@ Conversation TenantStore::create_conversation(int64_t tenant_id,
 
 std::vector<Conversation>
 TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
-                                 int limit, int64_t folder_id_filter) const {
+                                 int limit, int64_t folder_id_filter,
+                                 int64_t before_id) const {
     std::vector<Conversation> out;
     if (!db_) return out;
 
     const int cap = (limit > 0 && limit <= 200) ? limit : 50;
+    const bool keyed = before_updated_at > 0 && before_id > 0;
 
     std::string sql = std::string("SELECT ") + kConvCols +
                        " FROM conversations WHERE tenant_id = ?"
@@ -1490,14 +1492,26 @@ TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
                        " AND origin != 'tui'";
     if (folder_id_filter == 0) sql += " AND folder_id = 0";
     else if (folder_id_filter > 0) sql += " AND folder_id = ?";
-    if (before_updated_at > 0) sql += " AND updated_at < ?";
-    sql += " ORDER BY updated_at DESC LIMIT ?;";
+    if (keyed) {
+        // Composite cursor: same-second siblings after the last id stay
+        // visible.  Timestamp-only `updated_at < ?` skips them.
+        sql += " AND (updated_at < ? OR (updated_at = ? AND id < ?))";
+    } else if (before_updated_at > 0) {
+        sql += " AND updated_at < ?";
+    }
+    sql += " ORDER BY updated_at DESC, id DESC LIMIT ?;";
 
     Stmt q(db_, sql.c_str());
     int idx = 1;
     q.bind(idx++, tenant_id);
     if (folder_id_filter > 0) q.bind(idx++, folder_id_filter);
-    if (before_updated_at > 0) q.bind(idx++, before_updated_at);
+    if (keyed) {
+        q.bind(idx++, before_updated_at);
+        q.bind(idx++, before_updated_at);
+        q.bind(idx++, before_id);
+    } else if (before_updated_at > 0) {
+        q.bind(idx++, before_updated_at);
+    }
     q.bind(idx, static_cast<int64_t>(cap));
 
     while (q.step() == SQLITE_ROW) out.push_back(row_to_conversation(q));
@@ -3143,17 +3157,27 @@ bool TenantStore::update_a2a_task(int64_t tenant_id,
                                     const std::string& error_message) {
     if (!db_) return false;
     const int64_t ts = now_epoch();
+    // `canceled` is sticky: message/send and message/stream persist
+    // completed/failed after the RPC returns, and that write races
+    // tasks/cancel.  The stream path already refused the overwrite
+    // after a GET; the unary path did not.  Enforcing it here so
+    // every caller (including exception / tenant-disabled paths)
+    // keeps cancel as the durable outcome.  Re-writing canceled
+    // (tasks/cancel itself) is still allowed so updated_at / error
+    // stay current.
     Stmt q(db_,
         "UPDATE a2a_tasks "
         "   SET state = ?, updated_at = ?, "
         "       final_message_json = ?, error_message = ? "
-        " WHERE tenant_id = ? AND task_id = ?;");
+        " WHERE tenant_id = ? AND task_id = ? "
+        "   AND (state != 'canceled' OR ? = 'canceled');");
     q.bind(1, state);
     q.bind(2, ts);
     q.bind(3, final_message_json);
     q.bind(4, error_message);
     q.bind(5, tenant_id);
     q.bind(6, task_id);
+    q.bind(7, state);
     q.step();
     return sqlite3_changes(db_) > 0;
 }

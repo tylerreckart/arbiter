@@ -1170,6 +1170,7 @@ void handle_conversation_list(int fd, const HttpRequest& req,
         try { return std::stoll(it->second); } catch (...) { return 0; }
     };
     const int64_t before = as_int64("before_updated_at");
+    const int64_t before_id = as_int64("before_id");
     const int     limit  = static_cast<int>(as_int64("limit"));
 
     // folder_id query: absent → no filter; "null"/empty/0 → unfiled;
@@ -1203,7 +1204,7 @@ void handle_conversation_list(int fd, const HttpRequest& req,
     }
 
     auto convs = tenants.list_conversations(tenant.id, before, limit,
-                                            folder_filter);
+                                            folder_filter, before_id);
     auto arr = jarr();
     auto& a = arr->as_array_mut();
     for (auto& c : convs) a.push_back(conversation_to_json(c));
@@ -8300,14 +8301,31 @@ void handle_a2a_message_send(int fd,
     // Message — history/artifacts can be reconstructed by combining
     // the user's input (which the client already has) with the
     // assistant's reply.  Smaller column, simpler reads.
+    //
+    // tasks/cancel may have persisted canceled while send() was still
+    // unwinding.  update_a2a_task refuses to overwrite canceled; if
+    // that CAS misses, surface the same cancelled RPC as the
+    // error_type=="cancelled" path instead of returning a completed
+    // Task that tasks/get would contradict.
     std::string final_msg_json;
     if (task.status.message) {
         final_msg_json = json_serialize(*a2a::to_json(*task.status.message));
     }
-    tenants.update_a2a_task(tenant.id, task_id,
-                             a2a::task_state_to_string(task.status.state),
-                             final_msg_json,
-                             resp.ok ? "" : sanitised_api_response_error(resp));
+    const std::string terminal =
+        a2a::task_state_to_string(task.status.state);
+    if (!tenants.update_a2a_task(tenant.id, task_id,
+                                 terminal,
+                                 final_msg_json,
+                                 resp.ok ? "" : sanitised_api_response_error(resp))) {
+        if (auto rec = tenants.get_a2a_task(tenant.id, task_id);
+            rec && rec->state ==
+                       a2a::task_state_to_string(a2a::TaskState::canceled)) {
+            write_a2a_rpc(fd, a2a::make_error_response(
+                rpc_id, a2a::RPC_INVALID_REQUEST,
+                "request cancelled"));
+            return;
+        }
+    }
 
     write_a2a_rpc(fd, a2a::make_result_response(rpc_id, a2a::to_json(task)));
 }
@@ -8771,9 +8789,9 @@ void handle_a2a_tasks_cancel(int fd,
 
     if (cancelled_in_flight) {
         // Persist canceled state so a follow-up tasks/get reflects the
-        // outcome.  The orchestrator's send may still be unwinding —
-        // its terminal-state update will run, but we want canceled to
-        // win over completed/failed for clarity.  Re-update.
+        // outcome.  The orchestrator's send may still be unwinding;
+        // update_a2a_task keeps canceled sticky so a later
+        // completed/failed persist cannot clobber this write.
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::canceled),
                                  "", "canceled by tasks/cancel");
