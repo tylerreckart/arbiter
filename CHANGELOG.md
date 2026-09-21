@@ -8,12 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Token cancel is not a client-wide kill-switch.** `complete()` /
+  `stream()` no longer set `hard_cancelled_` when only the thread's
+  `CancelToken` is set. Esc on one TUI pane or `/kill` of a `/loop`
+  was aborting sibling streams that share the same `ApiClient`
+  (#46 / #48). `cancel()` and kill-switch preflight stay sticky.
 - **A2A `tasks/cancel` survives `message/send`.** `update_a2a_task` no
-  longer overwrites a persisted `canceled` row with `completed`/`failed`
-  when an in-flight unary send finishes after `tasks/cancel`. The stream
-  path already refused that overwrite; the send path now matches, and the
-  RPC returns `request cancelled` instead of a completed Task that
-  `tasks/get` would contradict.
 - **Reopened todos clear `completed_at`.** `update_todo` (HTTP PATCH and
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
