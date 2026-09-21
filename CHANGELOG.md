@@ -34,6 +34,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Loop `/kill` wakes the inter-iteration pause.** After each turn,
 - **Memory `tag=` LIKE wildcards are literals.** `/mem entries tag=` and
 - **Dispatch of stored agents past newest-200.** `GET /v1/agents/:id` already
+- **Lesson search is a literal substring.** `search_lessons` (`GET /v1/lessons?q=`
 
 ## [0.13.7] — 2026-09-21
 
