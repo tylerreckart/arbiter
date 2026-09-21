@@ -33,9 +33,35 @@ TEST_CASE("normalize_api_base_url strips trailing slashes") {
           "http://127.0.0.1:8080");
 }
 
+TEST_CASE("normalize_api_base_url keeps a path prefix") {
+    CHECK(normalize_api_base_url("https://arbiter.example.com/v1/") ==
+          "https://arbiter.example.com/v1");
+}
+
+TEST_CASE("normalize_api_base_url rejects query, fragment, userinfo, and controls") {
+    // Query on the *base* concatenates into every request as
+    // `https://host?x/v1/foo` — the path never reaches the server.
+    CHECK(normalize_api_base_url("https://arbiter.example.com?x=1").empty());
+    CHECK(normalize_api_base_url("https://arbiter.example.com/v1?x=1").empty());
+    CHECK(normalize_api_base_url("https://arbiter.example.com#frag").empty());
+    // --connect authenticates with --token, not URL userinfo.  Leaving
+    // user:pass@ in would send HTTP basic auth and print the password.
+    CHECK(normalize_api_base_url("https://user:pass@arbiter.example.com").empty());
+    CHECK(normalize_api_base_url("https://atr_leaked@host.example").empty());
+    CHECK(normalize_api_base_url("https://host.example\r\nX: y").empty());
+    CHECK(normalize_api_base_url(std::string("https://host.example") + '\0' + "x").empty());
+}
+
 TEST_CASE("api_display_host extracts host:port") {
     CHECK(api_display_host("https://arbiter.example.com") == "arbiter.example.com");
     CHECK(api_display_host("http://127.0.0.1:8080") == "127.0.0.1:8080");
+}
+
+TEST_CASE("api_display_host strips userinfo and path leftovers") {
+    CHECK(api_display_host("https://user:secret@arbiter.example.com:8443/v1") ==
+          "arbiter.example.com:8443");
+    CHECK(api_display_host("http://127.0.0.1:8080?x=1") == "127.0.0.1:8080");
+    CHECK(api_display_host("https://arbiter.example.com#frag") == "arbiter.example.com");
 }
 
 TEST_CASE("resolve_remote_connect requires URL") {
@@ -120,6 +146,45 @@ TEST_CASE("RemoteSseTurnConsumer surfaces done.ok=false") {
     auto result = consumer.finish(false);
     CHECK_FALSE(result.ok);
     CHECK(result.error == "upstream failed");
+}
+
+TEST_CASE("RemoteSseTurnConsumer drops recoverable error on done.ok=true") {
+    OutputQueue queue;
+    StreamRenderer renderer(kMasterStream, queue);
+    RemoteSseTurnConsumer consumer(renderer, queue);
+    consumer.on_event("error",
+        R"({"message":"skipping stored agent 'broken' for tenant 1: invalid json"})");
+    consumer.on_event("text", R"({"delta":"ok"})");
+    consumer.on_event("done",
+        R"({"ok":true,"content":"ok","input_tokens":3,"output_tokens":1})");
+    auto result = consumer.finish(false);
+    CHECK(result.ok);
+    CHECK(result.content == "ok");
+    CHECK(result.error.empty());
+    CHECK(result.input_tokens == 3);
+    CHECK(result.output_tokens == 1);
+}
+
+TEST_CASE("RemoteSseTurnConsumer keeps SSE error when done.ok=false has no error") {
+    OutputQueue queue;
+    StreamRenderer renderer(kMasterStream, queue);
+    RemoteSseTurnConsumer consumer(renderer, queue);
+    consumer.on_event("error", R"({"message":"history load failed"})");
+    consumer.on_event("done", R"({"ok":false,"content":""})");
+    auto result = consumer.finish(false);
+    CHECK_FALSE(result.ok);
+    CHECK(result.error == "history load failed");
+}
+
+TEST_CASE("RemoteSseTurnConsumer prefers done.error over earlier SSE error") {
+    OutputQueue queue;
+    StreamRenderer renderer(kMasterStream, queue);
+    RemoteSseTurnConsumer consumer(renderer, queue);
+    consumer.on_event("error", R"({"message":"skipping stored agent 'x'"})");
+    consumer.on_event("done", R"({"ok":false,"error":"agent not found","content":""})");
+    auto result = consumer.finish(false);
+    CHECK_FALSE(result.ok);
+    CHECK(result.error == "agent not found");
 }
 
 TEST_CASE("RemoteSseTurnConsumer cancel without done") {
