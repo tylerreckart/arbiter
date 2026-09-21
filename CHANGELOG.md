@@ -16,6 +16,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `clear_dir_contents` ran first, so a subsequent `copy_tree` failure
   left the workspace empty while `run_reconcile` reported `failed`
   rather than `rolled_back`.
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+  after 64 nested `\frac` / `^` / `_` / `\sqrt` / `\text` groups and emits
+  the remaining raw fragment, matching the JSON parser's nesting cap so
+  deeply nested model or user math cannot overflow the TUI/API thread stack.
 - **Secret key/token writes do not follow a planted dest symlink.**
   `write_key_file` and admin-token generate opened
   `~/.arbiter/{openrouter_api_key,search_api_key,admin_token}` with
