@@ -7,20 +7,17 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-- **MCP registry writes do not follow a planted `.tmp` symlink.**
-  `save_server_registry` opened `<path>.tmp` with `O_CREAT|O_TRUNC`, so
-  a symlink at that staging name redirected the write (including
-  registry `env` secrets) into the link target before `rename` replaced
-  only the symlink. Open the staging file with `O_NOFOLLOW` / `O_EXCL`
-  after `unlink` (which does not follow). Dest-symlink `rename` already
-  replaced the link, not its target.
-- **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
-- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+### Fixed
+- **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
+  `cmd_fetch` and `cmd_fetch_bytes` already refused private/loopback
+  peers at connect time, but skipped `ssrf_preflight_url`. Metadata
+  hostnames that resolve public, and private/metadata URLs reached
+  through `HTTP_PROXY` (opensocket sees the proxy), were not blocked.
+  Both paths now run the shared preflight before libcurl.
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
 - **Secret key/token writes do not follow a planted dest symlink.**
 - **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
-- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
 - **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
 - **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
 - **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
@@ -28,6 +25,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
 - **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
 - **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **MCP registry writes do not follow a planted `.tmp` symlink.**
+- **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
 
 ## [0.13.7] — 2026-09-21
 
