@@ -11,6 +11,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Bearer scheme matches RFC 6750 / RFC 9110.** `extract_bearer` now
   treats the auth-scheme as case-insensitive and skips `1*SP` after it,
   so `bearer` / `BEARER` and extra spaces no longer 401 a valid token.
+- **Recovered `/write` bytes persist.** `send_streaming` and
+  `run_dispatch` now fold `recover_truncated_writes` into the
+  cumulative turn after the resume call, so HTTP/SSE conversation
+  saves and token/cost totals include the resumed file body instead
+  of dropping it when `resp.content` is overwritten with
+  `total_content`.
 - **Conversation list cursor.** `GET /v1/conversations` now orders by
   `updated_at DESC, id DESC` and accepts `before_id` so pages that share
   an epoch second no longer skip or duplicate rows. Timestamp-only
