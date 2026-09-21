@@ -8,6 +8,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **JSON UTF-16 surrogate pairs.** `json_parse` now decodes `\uD800`–`\uDFFF`
+  pairs into a single supplementary-plane scalar (emoji, etc.) instead of
+  two invalid 3-byte sequences that `json_serialize` then replaced with
+  U+FFFD. Unpaired surrogates become U+FFFD.
 - **TUI replay QUERY boundary.** `replay_user_echo_text` now strips the
   first `\n\nQUERY: ` after the AGENTS roster (not the last). User text
   that embeds that marker no longer replays as only the suffix after it.
