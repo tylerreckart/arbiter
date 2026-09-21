@@ -8,6 +8,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **`/diff apply` directory and cross-device writes.** A directory at the
+  patch target is rejected instead of being treated as a missing file.
+  The rename fallback no longer uses `copy_file` (which followed a dest
+  symlink and reported success when only the temp file was removed).
+- **Sandbox `/read` TOCTOU test is deterministic.** The leaf-symlink-swap
+  case plants the swap via a post-resolve hook instead of a timed helper
+  thread (macos-arm64 CI was racing the 80 ms pause).
 - **Recovered `/write` bytes persist.** `send_streaming` and
   `run_dispatch` now fold `recover_truncated_writes` into the
   cumulative turn after the resume call, so HTTP/SSE conversation
