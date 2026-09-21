@@ -14,6 +14,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   (`NULL`) rows for agent `/mem` browse; that fallback was injecting HTTP
   `/v1/memory` and CLI `/mem add` residue into sub-agent context as if
   siblings had just written it.
+- **Recovered `/write` bytes persist.** `send_streaming` and
+  `run_dispatch` now fold `recover_truncated_writes` into the
+  cumulative turn after the resume call, so HTTP/SSE conversation
+  saves and token/cost totals include the resumed file body instead
+  of dropping it when `resp.content` is overwritten with
+  `total_content`.
 - **Conversation list cursor.** `GET /v1/conversations` now orders by
   `updated_at DESC, id DESC` and accepts `before_id` so pages that share
   an epoch second no longer skip or duplicate rows. Timestamp-only
