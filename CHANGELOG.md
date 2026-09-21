@@ -32,6 +32,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
 - **JSON numbers require a complete fraction and exponent.** `json_parse`
 - **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
+- **Loop `/kill` wakes the inter-iteration pause.** After each turn,
+- **Memory `tag=` LIKE wildcards are literals.** `/mem entries tag=` and
+- **Dispatch of stored agents past newest-200.** `GET /v1/agents/:id` already
 
 ## [0.13.7] — 2026-09-21
 
