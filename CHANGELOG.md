@@ -30,6 +30,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
 - **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
 - **MCP registry writes do not follow a planted `.tmp` symlink.**
+- **Dispatch of stored agents past newest-200.** `GET /v1/agents/:id` already
+- **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
+- **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
 
 ## [0.13.7] — 2026-09-21
 

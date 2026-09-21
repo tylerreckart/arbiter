@@ -498,6 +498,14 @@ public:
     std::vector<AgentRecord> list_agent_records_for_routing(
         int64_t tenant_id) const;
 
+    // Newest-200 catalog plus a targeted id that fell off that page.
+    // GET /v1/agents/:id uses get_agent_record; orchestrate / A2A /
+    // scheduler used to install only the REST list page and 404 a stored
+    // agent GET still found.  Empty / "index" skip the extra fetch.
+    // Sibling /agent and /parallel still resolve from the newest-200 page.
+    std::vector<AgentRecord> list_agent_records_for_dispatch(
+        int64_t tenant_id, const std::string& target_agent_id) const;
+
     // Wholesale replace.  Bumps updated_at.  Returns false if the row
     // doesn't exist for this tenant.
     bool update_agent_record(int64_t tenant_id,

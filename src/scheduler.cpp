@@ -265,7 +265,8 @@ bool Scheduler::fire_task(const TenantStore::ScheduledTask& task) {
 
     std::string init_err;
     auto orch = build_blocking_orchestrator(*opts_, *tenants_, *tenant_opt,
-                                            init_err, task.conversation_id);
+                                            init_err, task.conversation_id,
+                                            task.agent_id);
 
     if (!orch) {
         const int64_t completed_at = now_epoch();
