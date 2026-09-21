@@ -30,7 +30,21 @@ Spoken mode is now **conversational speech for the ear**:
 
 `channel: "voice"` on a specialist or on `index` does **not** replace identity. The overlay at the end of the prompt tells the model the dispatch / screen register does not apply to what is said out loud.
 
-Dedicated voice agents should set `brevity: "lite"` and a slightly higher `temperature` (Arthur uses `0.55`) in `agent_def`. Those are agent knobs, not channel semantics.
+Dedicated voice agents should set `brevity: "lite"` and a slightly higher `temperature` (Arthur uses `0.55`) in `agent_def`. Those are agent knobs, not channel semantics. Give them the `/mem` capability (Arthur already does) so the spoken **memory habit** fires.
+
+## Personal-assistant memory
+
+`/mem` already exists for every agent that lists it. Research-shaped COMMAND RULES tell specialists to probe the graph before a literature review. Spoken agents were not pushed to use the same tools as a PA — preferences, people, open loops, “remember that.”
+
+When `mode: "spoken"` or `channel: "voice"` **and** the mem bundle is on, the constitution grows a **MEMORY HABIT** block (plus a compact overlay bullet on non-spoken voice turns):
+
+- **Recall first.** If the user refers to preferences, past decisions, open loops, people, or says remember / recall, emit `/mem search` (and `/mem expand` when a hit looks right) *before* answering from scratch. A lookup turn may be writs-only; speak after `[TOOL RESULTS]`. Skip the search when this conversation already holds the fact. Prefer memory + history over re-asking.
+- **Write as you go.** After learning a durable fact, `/mem add entry` with the right type (`user`, `feedback`, `context`, `project`) in the **same turn** as the spoken reply. Body required. Don't file small talk; don't dump everything as `reference`. Prefer entries over `/mem write` scratchpad for facts that should surface next week.
+- **Speech stays natural.** Writs on their own lines; `StreamFilter` strips them. Never name `/mem`. Use what you found (`You take the coffee black, so…`). A short “I'll keep that” is enough when they asked you to remember.
+
+Types are the same closed enum as [structured memory](structured-memory.md). Voice just weights the personal ones (`user` / `feedback` / `context` / `project`) instead of the research triple (`project` / `reference` / `learning`).
+
+Intercom already keeps a conversation per device, so conversation-scoped entries rank on the next PTT and unscoped rows remain visible. No bridge-contract change.
 
 ## What the bridge owns
 
@@ -63,7 +77,9 @@ The HTTP / SSE contract is unchanged (`channel: "voice"`, `mode: "spoken"`, dept
 On the Intercom side, optional follow-ups that *help* the new register:
 
 - Drop stacked “one to three sentences unless they asked for more” (and similar caps) from `config/arthur.agent.json` `rules`. The constitution now owns cadence; a second cap fights it.
-- Keep Arthur's identity (`sir`, British, leave space). Keep `to_speakable`, instant-ack fillers, and `early_flush_words` — those are edge TTS, not LLM shaping.
+- Keep `/mem` on Arthur's `capabilities` (already there). Do not add a “remember this” suffix to `message` — MEMORY HABIT is the reminder.
+- Optional: `memory.auto_tag` / `search_expand` on Arthur if an advisor is configured — retrieval quality, not habit.
+- Keep Arthur's identity (`sir`, British, leave space). Keep `to_speakable`, instant-ack fillers, and `early_flush_words` — those are edge TTS, not LLM shaping. Filler PCM on `tool_call` covers the silent `/mem search` lookup turn.
 - Do not inject SSML into Arbiter `text` events, and do not expect Arbiter to emit it.
 
 ## Events the bridge should consume
@@ -93,6 +109,7 @@ A named agent with `mode: "conversational"` is **not** told it is `index`. Spoke
 ## See also
 
 - [#207](https://github.com/tylerreckart/arbiter/issues/207) — first-class audio modality (PCM stream, tenant VoiceConfig)
+- [Structured memory](structured-memory.md) — entry types and `/mem` retrieval the spoken habit uses
 - [SSE event catalog](sse-events.md)
 - [Intent](intent.md) — voice channel skips classify+reroute
 - [`POST /v1/orchestrate`](../api/orchestrate.md)
