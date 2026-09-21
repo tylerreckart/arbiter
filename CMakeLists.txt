@@ -1665,8 +1665,9 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_intent COMMAND unit_intent)
 
-    # Intent reconcile: admit, contract compile, observe ΔS, verification
-    # mandate, implement stub, snapshot rollback.  No provider client.
+    # Intent reconcile: admit, contract compile, observe ΔS, JIT ensure
+    # waves, verification mandate, implement stub, snapshot rollback.
+    # No provider client.
     add_executable(unit_reconcile
         tests/test_reconcile.cpp
         src/reconcile.cpp

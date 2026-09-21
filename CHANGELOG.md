@@ -7,6 +7,20 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
+  runs a wave loop: observe → spawn ephemeral agent clones for residual
+  covers → execute in the bound workspace → teardown → re-observe, until ΔS
+  is empty or a budget/cancel/rollback fires. Success is runtime re-observe
+  plus required verification — not model self-claim or advisor
+  CONTINUE/REDIRECT/HALT. `agent_map` (or `StateClause.agent` / capability
+  fallback) is required to resolve ensure residuals; no LLM mapper.
+  Budgets: `max_waves`, `max_wall_ms`, `max_agents_per_wave`,
+  `max_retries_per_clause`. SSE: `agent.spawned` / `agent.teardown` plus
+  `reconcile.delta` each wave. Observe mode and `POST /v1/orchestrate` are
+  unchanged. See [`docs/concepts/reconcile.md`](docs/concepts/reconcile.md)
+  and [#208](https://github.com/tylerreckart/arbiter/issues/208).
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
