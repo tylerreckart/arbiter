@@ -26,6 +26,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
 - **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **MCP registry writes do not follow a planted `.tmp` symlink.**
+- **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
 
 ## [0.13.7] — 2026-09-21
 
@@ -54,6 +57,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [0.13.6] — 2026-09-21
 
 ### Changed
+- **Spoken memory habit.** `mode: "spoken"` and `channel: "voice"` agents
+  with the `/mem` bundle get a `MEMORY HABIT` block: `/mem search` (and
+  expand) before answering from scratch on preferences, people, open
+  loops, or “remember/recall”; `/mem add entry` with `user` / `feedback`
+  / `context` / `project` in the same turn as the spoken reply; never
+  narrate the writs. Overlay carries a compact reminder. HTTP/SSE
+  contracts are unchanged. See [Voice](docs/concepts/voice.md#personal-assistant-memory).
 - **Spoken register is conversation for the ear.** `mode: "spoken"` no
   longer caps replies at three-to-five sentences or shapes them as
   `[answer]. [evidence]. [next step]`. The TTS block asks for
