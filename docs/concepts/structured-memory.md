@@ -72,7 +72,7 @@ The closed `type` enum is the primary axis along which agents navigate the graph
 
 Picking the right type is what makes `/mem entries type=project` useful — filing every research output as `reference` defeats the partitioning. Agents see the type legend in their system prompt and pick deliberately.
 
-Spoken / Intercom agents get an extra **MEMORY HABIT** push on top of those COMMAND RULES: recall (`/mem search`) before answering from scratch when the user refers to preferences, people, or past decisions, and `/mem add entry` (`user` / `feedback` / `context` / `project`) in the same turn as the spoken reply. Writs stay silent; see [Voice → Personal-assistant memory](voice.md#personal-assistant-memory).
+Spoken / Intercom agents get an extra **MEMORY HABIT** push on top of those COMMAND RULES: recall (`/mem search`) before answering from scratch when the user refers to preferences, people, or past decisions, and `/mem add entry` (`user` / `feedback` / `context` / `project`) in the same turn as the spoken reply. Writs stay silent; raw entries, ids, titles, and search dumps are never spoken — see [Voice → Personal-assistant memory](voice.md#personal-assistant-memory).
 
 ### Relations (edges)
 

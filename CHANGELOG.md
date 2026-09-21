@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Spoken memory stays silent.** `MEMORY HABIT` now hard-bans reading
+  entries, ids, titles-as-labels, type names, search rankings, or
+  “according to my notes / I found in memory” aloud. Spoken COMMAND
+  RULES skip Honeycomb-style graph dumps so research examples cannot
+  dominate TTS. The listener should only hear natural speech that
+  *uses* the fact. HTTP/SSE contracts are unchanged. See
+  [Voice](docs/concepts/voice.md#personal-assistant-memory).
+
 ## [0.13.11] — 2026-09-21
 
 - **Fleet dashboard pane (Phase C1).** The TUI consumes fleet SSE (`stream_id` +
