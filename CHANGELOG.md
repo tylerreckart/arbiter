@@ -8,6 +8,25 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **`/schedule resume` is paused-only.** The writ no longer flips
+  `completed`, `failed`, `canceled`, `running`, or already-`active` rows
+  back to `active`, and `/schedule pause` refuses those terminal
+  statuses so pause-then-resume cannot re-queue a finished one-shot
+  (`next_fire_at` is still in the past after a successful fire; the old
+  resume path set `next=now+1`). Recreate a finished one-shot to run it
+  again; operators still PATCH failed one-shots to `active` to retry.
+- **Event ingest hydrates the routed constitution.** `POST /v1/events`
+  attaches the selected agent's `agent_def` on the synthetic orchestrate
+  body. File-backed matches and tenant agents off the newest-200 catalog
+  page no longer 404 `agent not found`. When a file-backed id collides
+  with a tenant row, the file constitution is the one that runs (file
+  routing won).
+- **Nested artifact routes honor `:cid`.** `GET`/`DELETE`
+  `/v1/conversations/:id/artifacts/:aid` (and `/raw`) 404 when the
+  conversation is missing or TUI-origin, or when the artifact belongs
+  to a different conversation. Matches the documented tenant+conversation
+  pair and the list/create prefix. Tenant-wide `/v1/artifacts/:aid`
+  is unchanged.
 - **Delegation pipeline memory is sibling-only.** The orchestrator's
   `pipeline-entries` probe now lists rows pinned to the active conversation
   (`conversation_id = ?`). Default `list_entries` still ORs in unscoped

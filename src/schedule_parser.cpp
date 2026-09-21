@@ -549,4 +549,31 @@ std::string schedule_parser_help() {
         "  every (Mon|Tue|...) [at HH:MM]";
 }
 
+std::string schedule_pause_block_reason(const std::string& status) {
+    if (status == "active" || status == "running" || status == "paused")
+        return {};
+    if (status == "completed")
+        return "is completed and cannot be paused";
+    if (status == "failed")
+        return "is failed and cannot be paused";
+    if (status == "canceled")
+        return "is canceled";
+    return "has status '" + status + "' and cannot be paused";
+}
+
+std::string schedule_resume_block_reason(const std::string& status) {
+    if (status == "paused") return {};
+    if (status == "running")
+        return "is running; wait for completion before resuming";
+    if (status == "completed")
+        return "is completed; recreate the schedule to run it again";
+    if (status == "failed")
+        return "is failed; recreate the schedule to retry";
+    if (status == "canceled")
+        return "is canceled";
+    if (status == "active")
+        return "is already active";
+    return "has status '" + status + "' and cannot be resumed";
+}
+
 } // namespace arbiter
