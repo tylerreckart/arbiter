@@ -8,12 +8,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+  mapped drain / `POST /v1/requests/:id/cancel` onto HTTP 401
+  `"missing or invalid bearer token"`, the same body as a disabled
+  tenant. Cancel now returns 409 `"request cancelled"`. Tenant
+  disable/rotate still 401 so clients cannot enumerate revoked
+  tenants.
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
-  `id` (`"1"`) in addition to a JSON number. JSON-RPC 2.0 allows both; JS
-  MCP servers commonly echo the integer we sent as a string. The old path
-  left `Response::id` at 0, so `Client::rpc` treated a valid reply as a
-  notification and hung until `init_timeout` / `call_timeout` then killed
-  the subprocess.
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
 - **Secret key/token writes do not follow a planted dest symlink.**
