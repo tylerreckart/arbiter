@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Nested artifact routes honor `:cid`.** `GET`/`DELETE`
+  `/v1/conversations/:id/artifacts/:aid` (and `/raw`) 404 when the
+  conversation is missing or TUI-origin, or when the artifact belongs
+  to a different conversation. Matches the documented tenant+conversation
+  pair and the list/create prefix. Tenant-wide `/v1/artifacts/:aid`
+  is unchanged.
 - **Sandbox FIFO no longer deadlocks a tenant.** `/write` and `/read` of a
   named pipe used to block forever in `open()`. `/write` holds the
   per-tenant sandbox mutex across that open, so a workspace `mkfifo`
