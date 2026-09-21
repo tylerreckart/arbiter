@@ -70,4 +70,5 @@ The master orchestrator's provider deltas stream live (same as sub-agents). Inco
 ## See also
 
 - [SSE event catalog](sse-events.md)
+- [TUI fleet dashboard](../tui/fleet.md)
 - [`POST /v1/orchestrate`](../api/orchestrate.md)

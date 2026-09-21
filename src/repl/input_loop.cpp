@@ -30,7 +30,9 @@
 #include "tui/opentui/session.h"
 #include "tui/opentui/sidebar_frame.h"
 #include "tui/opentui/history_sidebar_frame.h"
+#include "tui/opentui/fleet_frame.h"
 #include "tui/opentui/menu_frame.h"
+#include "tui/fleet.h"
 #include "model_catalog.h"
 #include "model_context.h"
 #include "tui/opentui/mouse_decode.h"
@@ -87,6 +89,7 @@ void ReplSession::run_input_loop() {
         while (service_pending_closes()) {}
         while (service_pending_conv_ops()) {}
         while (service_mouse_switch()) {}
+        while (service_fleet_steer()) {}
         while (service_pending_after_cancel()) {}
 
         // A wake arrived while we were draining services (no active
@@ -217,6 +220,73 @@ void ReplSession::run_input_loop() {
                                                  visible_rows)) {
                     preview_theme();
                 }
+                continue;
+            }
+            continue;
+        }
+
+        if (fleet_sidebar.focused()) {
+            if (pump_notify) pump_notify();
+            const int cols = arbiter::term_cols();
+            const int rows = arbiter::term_rows();
+            const int leading = HistorySidebarState::width_for_terminal(
+                cols, history_sidebar.enabled());
+            const Rect fb = fleet_sidebar_rect();
+            const auto snap = fleet_sidebar.snapshot(fleet, cols, leading);
+            const int visible_rows = fleet_visible_rows(fb, snap);
+
+            char csi = 0;
+            std::string csi_params;
+            const int key = read_history_sidebar_key(csi, csi_params);
+            if (key < 0) break;
+
+            if (key == 0x1B && (csi == 'M' || csi == 'm')
+                && !csi_params.empty() && csi_params[0] == '<') {
+                if (auto ev = arbiter::opentui::decode_sgr_mouse(csi_params, csi)) {
+                    (void)route_mouse(*ev);
+                }
+                continue;
+            }
+
+            FleetKey action = fleet_sidebar.handle_key(key, csi, csi_params);
+            if (action == FleetKey::Escape) {
+                bool running = false;
+                if (snap.selected >= 0
+                    && snap.selected < static_cast<int>(snap.rows.size())) {
+                    running = snap.rows[static_cast<size_t>(snap.selected)].running;
+                }
+                if (running) {
+                    cancel_fleet_selection();
+                    if (pump_notify) pump_notify();
+                    continue;
+                }
+                fleet_sidebar.exit_focus();
+                refresh_focused_input.store(true);
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == FleetKey::Up) {
+                fleet_sidebar.move_selection(-1, visible_rows);
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == FleetKey::Down) {
+                fleet_sidebar.move_selection(1, visible_rows);
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == FleetKey::PageUp) {
+                fleet_sidebar.page_selection(-1, visible_rows);
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == FleetKey::PageDown) {
+                fleet_sidebar.page_selection(1, visible_rows);
+                if (pump_notify) pump_notify();
+                continue;
+            }
+            if (action == FleetKey::Enter) {
+                steer_fleet_selection();
                 continue;
             }
             continue;
@@ -430,6 +500,7 @@ void ReplSession::run_input_loop() {
             if (service_pending_closes()) continue;
             if (service_pending_conv_ops()) continue;
             if (service_mouse_switch()) continue;
+            if (service_fleet_steer()) continue;
             if (service_pending_after_cancel()) continue;
             if (overlay_menu.active()) continue;
             // Layout mutation woke us up just to repaint the focused

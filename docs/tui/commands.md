@@ -42,6 +42,7 @@ Each pane is an independent conversation view. See [panes.md](panes.md) for the 
 | `Ctrl-w c`                 | Close the focused pane. The pane's exec thread is joined cleanly; in-flight turn is cancelled. |
 | `Ctrl-w t`                 | Toggle the conversation-history sidebar (left rail).                    |
 | `Ctrl-w b`                 | Enter the sidebar to pick a prior conversation or start a new one.    |
+| `Ctrl-w f`                 | Show the fleet dashboard (live multi-agent tree) and enter it.        |
 
 ## Background loops
 

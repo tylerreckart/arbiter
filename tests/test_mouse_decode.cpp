@@ -148,3 +148,17 @@ TEST_CASE("allocate_weighted_sizes zero available yields all zeros") {
     CHECK(sizes[1] == 0);
     CHECK(sizes[2] == 0);
 }
+
+TEST_CASE("fleet_sidebar_row_at skips overlay and uses height-1 rows") {
+    using arbiter::opentui::fleet_sidebar_row_at;
+    Rect r{0, 0, 28, 40};
+    // No overlay: list starts at y+3 = 3.
+    CHECK(fleet_sidebar_row_at(r, 3, 0, 5, 0, 3) == 0);
+    CHECK(fleet_sidebar_row_at(r, 4, 0, 5, 0, 3) == 1);
+    CHECK(fleet_sidebar_row_at(r, 2, 0, 5, 0, 3) == -1);
+    // Overlay of 2 lines + gap: list starts at 3+2+1 = 6.
+    CHECK(fleet_sidebar_row_at(r, 6, 0, 4, 2, 3) == 0);
+    CHECK(fleet_sidebar_row_at(r, 5, 0, 4, 2, 3) == -1);
+    CHECK(fleet_sidebar_row_at(r, 7, 1, 4, 2, 3) == 2);
+    CHECK(fleet_sidebar_row_at(r, 10, 0, 4, 2, 3) == -1);
+}

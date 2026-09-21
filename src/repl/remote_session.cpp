@@ -5,6 +5,7 @@
 #include "remote/sse_turn.h"
 #include "render_policy.h"
 #include "stream_renderer.h"
+#include "json.h"
 #include "tui/tui_design.h"
 
 #include <algorithm>
@@ -258,6 +259,20 @@ ApiResponse ReplSession::run_remote_turn(Pane& pane, const std::string& line,
         std::move(attachments),
         [&](const std::string& ev, const std::string& data) {
             consumer.on_event(ev, data);
+            fleet.ingest_sse(ev, data);
+            if (ev == "stream_start") {
+                try {
+                    auto parsed = json_parse(data);
+                    if (parsed) {
+                        const int sid = parsed->get_int("stream_id", -1);
+                        if (sid >= 0) {
+                            fleet.bind_host(sid, pane.conversation_id,
+                                            pane.current_agent);
+                        }
+                    }
+                } catch (...) {}
+            }
+            if (pump_notify) pump_notify();
         },
         gate->stream_cancel);
 
