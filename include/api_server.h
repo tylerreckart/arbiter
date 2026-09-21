@@ -85,7 +85,7 @@ struct InFlightRegistry {
     struct Entry {
         Orchestrator*      orch        = nullptr;
         int64_t            tenant_id   = 0;
-        std::atomic<bool>* cancel_flag = nullptr;  // reconcile (no Orchestrator)
+        std::atomic<bool>* cancel_flag = nullptr;  // reconcile; JIT ensure also sets orch
     };
     std::mutex                           mu;
     std::unordered_map<std::string, Entry> by_id;

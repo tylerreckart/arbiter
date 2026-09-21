@@ -626,6 +626,9 @@ public:
         bool        rollback_on_failure = false;
         std::string snapshot_path;
         std::string result_json;
+        std::string mode;
+        std::string agent_map_json;
+        std::string budgets_json;
         int64_t     created_at = 0;
         int64_t     updated_at = 0;
     };
