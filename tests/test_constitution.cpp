@@ -432,6 +432,7 @@ TEST_CASE("mode=spoken selects TTS register and skips TUI diff format") {
               != std::string::npos);
     // Overlay is for non-spoken modes only.
     CHECK(prompt.find("SPOKEN OUTPUT:") == std::string::npos);
+    CHECK(prompt.find("MEMORY HABIT:") == std::string::npos);
 }
 
 TEST_CASE("mode=spoken with channel=voice does not stack the overlay") {
@@ -459,6 +460,8 @@ TEST_CASE("channel=voice overlays spoken constraints on specialist identity") {
     CHECK(prompt.find("FILES AND CODE:") != std::string::npos);
     CHECK(prompt.find("CODE CHANGE FORMAT:") == std::string::npos);
     CHECK(prompt.find("```diff") == std::string::npos);
+    CHECK(prompt.find("MEMORY HABIT:") == std::string::npos);
+    CHECK(prompt.find("Personal-assistant memory") == std::string::npos);
 }
 
 TEST_CASE("channel=voice overlays spoken constraints on conversational index") {
@@ -472,6 +475,8 @@ TEST_CASE("channel=voice overlays spoken constraints on conversational index") {
     CHECK(prompt.find("Talk like a person on a call") != std::string::npos);
     CHECK(prompt.find("FILES AND CODE:") != std::string::npos);
     CHECK(prompt.find("CODE CHANGE FORMAT:") == std::string::npos);
+    CHECK(prompt.find("MEMORY HABIT:") != std::string::npos);
+    CHECK(prompt.find("Personal-assistant memory") != std::string::npos);
 }
 
 TEST_CASE("channel=voice round-trips through JSON; text is omitted") {
@@ -490,6 +495,46 @@ TEST_CASE("channel=voice round-trips through JSON; text is omitted") {
 
     auto texty = Constitution::from_json(R"({"name":"x","channel":"text"})");
     CHECK(texty.channel.empty());
+}
+
+TEST_CASE("spoken with /mem teaches personal-assistant memory habit") {
+    auto c = make_agent({"/mem"});
+    c.mode = "spoken";
+    c.name = "Arthur";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("MEMORY HABIT:") != std::string::npos);
+    CHECK(prompt.find("not a goldfish") != std::string::npos);
+    CHECK(prompt.find("/mem search") != std::string::npos);
+    CHECK(prompt.find("/mem add entry") != std::string::npos);
+    CHECK(prompt.find("user      — durable facts about the human")
+              != std::string::npos);
+    CHECK(prompt.find("feedback") != std::string::npos);
+    CHECK(prompt.find("context") != std::string::npos);
+    CHECK(prompt.find("SAME turn") != std::string::npos);
+    CHECK(prompt.find("Never name /mem") != std::string::npos);
+    CHECK(prompt.find("Coffee preference") != std::string::npos);
+    CHECK(prompt.find("SPOKEN OUTPUT:") == std::string::npos);
+    CHECK(prompt.find("over re-asking") != std::string::npos);
+}
+
+TEST_CASE("spoken without mem skips memory habit") {
+    auto c = make_agent({"/exec"});
+    c.mode = "spoken";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("MEMORY HABIT:") == std::string::npos);
+    CHECK(prompt.find("not a goldfish") == std::string::npos);
+}
+
+TEST_CASE("channel=voice with mem overlays memory habit on specialist identity") {
+    auto c = make_agent({"/mem"});
+    c.channel = "voice";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("specialist agent within an orchestrated system")
+              != std::string::npos);
+    CHECK(prompt.find("SPOKEN OUTPUT:") != std::string::npos);
+    CHECK(prompt.find("Personal-assistant memory") != std::string::npos);
+    CHECK(prompt.find("MEMORY HABIT:") != std::string::npos);
+    CHECK(prompt.find("not a goldfish") != std::string::npos);
 }
 
 TEST_CASE("advisor: absent yields disabled config") {
