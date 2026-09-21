@@ -15,6 +15,16 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   Non-200 responses now report `HTTP <status>` plus a 200-byte, single-line
   JSON-RPC `error.message` when present. JSON-RPC errors on HTTP 200 are
   clipped the same way.
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+  after 64 nested `\frac` / `^` / `_` / `\sqrt` / `\text` groups and emits
+  the remaining raw fragment, matching the JSON parser's nesting cap so
+  deeply nested model or user math cannot overflow the TUI/API thread stack.
+- **Secret key/token writes do not follow a planted dest symlink.**
+  `write_key_file` and admin-token generate opened
+  `~/.arbiter/{openrouter_api_key,search_api_key,admin_token}` with
+  `O_CREAT|O_TRUNC`, so a dest symlink redirected the secret into the
+  link target. Open with `O_NOFOLLOW` and require a regular file so a
+  planted symlink or FIFO cannot exfiltrate the bytes.
 - **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
   now rejects query strings, fragments, URL userinfo, and control bytes
   instead of concatenating them into every request (`https://host?x/v1/…`
