@@ -7,6 +7,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
 - **MCP registry writes do not follow a planted `.tmp` symlink.**
   `save_server_registry` opened `<path>.tmp` with `O_CREAT|O_TRUNC`, so
   a symlink at that staging name redirected the write (including
@@ -14,6 +15,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   only the symlink. Open the staging file with `O_NOFOLLOW` / `O_EXCL`
   after `unlink` (which does not follow). Dest-symlink `rename` already
   replaced the link, not its target.
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+  now rejects query strings, fragments, URL userinfo, and control bytes
+  instead of concatenating them into every request (`https://host?x/v1/…`
+  never delivered the path) or printing `user:pass@` in TUI chrome.
+  Path prefixes (`https://host/arbiter`) still work.
 
 ## [0.13.6] — 2026-09-21
 
