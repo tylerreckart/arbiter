@@ -20,11 +20,18 @@
 #include "a2a/sse_reader.h"
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace arbiter::a2a {
+
+// Unary rpc_call / http_get body cap.  Matches kSseMaxEventBytes and the
+// inbound HTTP API body limit so a remote cannot OOM the process by
+// streaming without a Content-Length.  SSE already caps per-event and
+// diagnostic raw buffers; these calls previously appended unbounded.
+inline constexpr size_t kHttpMaxBodyBytes = 16 * 1024 * 1024;
 
 struct HttpHeader {
     std::string name;

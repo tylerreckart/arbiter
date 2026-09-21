@@ -7,6 +7,64 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **A2A unary HTTP body cap.** `rpc_call` / `http_get` now refuse
+  responses over 16 MiB (same ceiling as the inbound HTTP API and
+  `kSseMaxEventBytes`). A remote that omitted `Content-Length` could
+  previously grow the client buffer without bound; SSE was already
+  capped (#317).
+- **Provider pool cancel while waiting for a connection slot.** `complete()` /
+  `stream()` no longer hang on the per-provider cap (`kMaxConnsPerProvider`)
+  after Esc or `cancel()`. The wait predicate observes the request token and
+  the process-wide cancel bits; `cancel()` / `CancelToken::request_cancel()`
+  notify every pool CV. A cancelled waiter does not consume a slot.
+- **`/diff apply` directory and cross-device writes.** A directory at the
+  patch target is rejected instead of being treated as a missing file.
+  The rename fallback no longer uses `copy_file` (which followed a dest
+  symlink and reported success when only the temp file was removed).
+- **Sandbox `/read` TOCTOU test is deterministic.** The leaf-symlink-swap
+  case plants the swap via a post-resolve hook instead of a timed helper
+  thread (macos-arm64 CI was racing the 80 ms pause).
+- **Recovered `/write` bytes persist.** `send_streaming` and
+  `run_dispatch` now fold `recover_truncated_writes` into the
+  cumulative turn after the resume call, so HTTP/SSE conversation
+  saves and token/cost totals include the resumed file body instead
+  of dropping it when `resp.content` is overwritten with
+  `total_content`.
+- **Conversation list cursor.** `GET /v1/conversations` now orders by
+  `updated_at DESC, id DESC` and accepts `before_id` so pages that share
+  an epoch second no longer skip or duplicate rows. Timestamp-only
+  `before_updated_at` stays valid for old clients.
+- **Token cancel is not a client-wide kill-switch.** `complete()` /
+  `stream()` no longer set `hard_cancelled_` when only the thread's
+  `CancelToken` is set. Esc on one TUI pane or `/kill` of a `/loop`
+  was aborting sibling streams that share the same `ApiClient`
+  (#46 / #48). `cancel()` and kill-switch preflight stay sticky.
+- **A2A `tasks/cancel` survives `message/send`.** `update_a2a_task` no
+- **Reopened todos clear `completed_at`.** `update_todo` (HTTP PATCH and
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
+- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP registry writes do not follow a planted `.tmp` symlink.**
+- **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
+- **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
+- **JSON numbers require a complete fraction and exponent.** `json_parse`
+- **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
+- **Loop `/kill` wakes the inter-iteration pause.** After each turn,
+- **Memory `tag=` LIKE wildcards are literals.** `/mem entries tag=` and
+- **Dispatch of stored agents past newest-200.** `GET /v1/agents/:id` already
+- **Session restore skips non-object message rows.** `decode_messages_json`
+- **Lesson search is a literal substring.** `search_lessons` (`GET /v1/lessons?q=`
 ## [0.13.9] — 2026-09-21
 
 ### Fixed
