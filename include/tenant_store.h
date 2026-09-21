@@ -285,14 +285,16 @@ public:
                                       const std::string& agent_id,
                                       const std::string& agent_def_json = "");
 
-    // List newest first.  `before_updated_at == 0` means "from the latest";
-    // pass the previous page's last `updated_at` to paginate backward.
-    // `limit` is hard-capped at 200.
+    // List newest first.  `before_updated_at == 0` means "from the latest".
+    // Pass the previous page's last `updated_at` (and `before_id`, the last
+    // row's id) to paginate backward.  Without `before_id`, rows that share
+    // a second with the cursor are skipped.  `limit` is hard-capped at 200.
     // `folder_id_filter`: -1 = no filter; 0 = unfiled only; >0 = that folder.
     std::vector<Conversation> list_conversations(int64_t tenant_id,
                                                   int64_t before_updated_at,
                                                   int     limit,
-                                                  int64_t folder_id_filter = -1) const;
+                                                  int64_t folder_id_filter = -1,
+                                                  int64_t before_id = 0) const;
 
     std::optional<Conversation> get_conversation(int64_t tenant_id, int64_t id) const;
 
@@ -497,6 +499,14 @@ public:
     // agents that fell off the newest-200 list page.
     std::vector<AgentRecord> list_agent_records_for_routing(
         int64_t tenant_id) const;
+
+    // Newest-200 catalog plus a targeted id that fell off that page.
+    // GET /v1/agents/:id uses get_agent_record; orchestrate / A2A /
+    // scheduler used to install only the REST list page and 404 a stored
+    // agent GET still found.  Empty / "index" skip the extra fetch.
+    // Sibling /agent and /parallel still resolve from the newest-200 page.
+    std::vector<AgentRecord> list_agent_records_for_dispatch(
+        int64_t tenant_id, const std::string& target_agent_id) const;
 
     // Wholesale replace.  Bumps updated_at.  Returns false if the row
     // doesn't exist for this tenant.
@@ -805,8 +815,9 @@ public:
 
     // PATCH-style: any std::nullopt argument leaves the field
     // untouched.  Setting status to a terminal value stamps
-    // completed_at automatically (caller can override by passing a
-    // value through completed_at).
+    // completed_at automatically; setting it to a non-terminal value
+    // clears completed_at (caller can override by passing a value
+    // through completed_at).
     bool update_todo(int64_t tenant_id, int64_t id,
                       const std::optional<std::string>& subject,
                       const std::optional<std::string>& description,
@@ -989,7 +1000,9 @@ public:
                           const std::string& state);
 
     // Update state + payload columns.  No-op if the row is missing for
-    // this tenant; returns true on actual change.
+    // this tenant, or if the row is already `canceled` and `state` is
+    // not `canceled` (tasks/cancel must win over an in-flight
+    // message/send terminal persist).  Returns true on actual change.
     bool update_a2a_task(int64_t tenant_id,
                           const std::string& task_id,
                           const std::string& state,
@@ -1026,14 +1039,20 @@ public:
                                     const std::string& mime_type);
 
     // Metadata-only fetch — does NOT load the BLOB.  Use this for list
-    // pages, the JSON metadata endpoint, agent /list, etc.
+    // pages, the JSON metadata endpoint, agent /list, etc.  When
+    // `conversation_id > 0`, the row must also belong to that
+    // conversation (nested /v1/conversations/:cid/artifacts/:aid).
+    // `conversation_id == 0` is tenant-wide by id.
     std::optional<ArtifactRecord>
-    get_artifact_meta(int64_t tenant_id, int64_t id) const;
+    get_artifact_meta(int64_t tenant_id, int64_t id,
+                      int64_t conversation_id = 0) const;
 
     // BLOB fetch — separate so list paths don't pull megabytes.  Returns
-    // nullopt if the row doesn't exist for this tenant.
+    // nullopt if the row doesn't exist for this tenant (and, when
+    // `conversation_id > 0`, for that conversation).
     std::optional<std::string>
-    get_artifact_content(int64_t tenant_id, int64_t id) const;
+    get_artifact_content(int64_t tenant_id, int64_t id,
+                         int64_t conversation_id = 0) const;
 
     // Lookup by (tenant, conversation, path) — used by the agent
     // /read slash command to address artifacts the way they were
@@ -1052,7 +1071,12 @@ public:
     std::vector<ArtifactRecord>
     list_artifacts_tenant(int64_t tenant_id, int limit) const;
 
-    bool delete_artifact(int64_t tenant_id, int64_t id);
+    // Tenant-scoped by default.  When `conversation_id > 0`, refuse (and
+    // do not nullify memory links) unless the row belongs to that
+    // conversation — so DELETE /v1/conversations/:cid/artifacts/:aid
+    // cannot remove a sibling thread's blob.
+    bool delete_artifact(int64_t tenant_id, int64_t id,
+                         int64_t conversation_id = 0);
 
     // SUM(size) — used by put_artifact for quota math and by HTTP
     // callers exposing "you have used X of Y" surfaces.
@@ -1155,6 +1179,14 @@ public:
         // unscoped (`conversation_id IS NULL`); the OR-NULL fallback
         // keeps pre-migration entries visible everywhere.
         int64_t                  conversation_id       = 0;
+        // When true, a positive `conversation_id` matches only that
+        // conversation (`conversation_id = ?`).  The default OR-NULL
+        // fallback is for agent /mem browse and HTTP list, where
+        // unscoped / pre-migration rows should stay visible.  The
+        // delegation pipeline snapshot must opt out: HTTP `/v1/memory`
+        // and CLI `/mem add` rows with NULL conversation_id would
+        // otherwise be injected as "what siblings just wrote."
+        bool                     exact_conversation    = false;
         // Age-decay multiplier on BM25 scores.  When `age_now_epoch`
         // is non-zero, the search SQL multiplies each row's score by
         // a piecewise factor that drops from 1.0 at `valid_from = now`

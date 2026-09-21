@@ -53,7 +53,7 @@ ParseResult parse_schedule_phrase(const std::string& phrase, int64_t now);
 
 // Compute the next fire time for a recurring spec, given the last fire.
 // `recur_json` shape:
-//   {"every":"hour"}                      → +1h from after
+//   {"every":"hour"}                      → +1h from after (0 on overflow)
 //   {"every":"day","at":"09:00"}          → next 09:00 strictly after `after`
 //   {"every":"week","day":"mon","at":"09:00"} → next Mon 09:00 strictly after `after`
 //   {"every_minutes":N}                   → +Nm from after
@@ -65,5 +65,15 @@ int64_t next_fire_for_recur(const std::string& recur_json, int64_t after);
 // accepted forms gives the agent enough surface to retry without a round
 // trip to the human.
 std::string schedule_parser_help();
+
+// /schedule pause / resume status gates.  Empty return = allowed.
+// Terminal one-shots (completed / failed / canceled) stay terminal so
+// pause-then-resume cannot re-queue them: next_fire_at is still in the
+// past after a successful fire, and the old resume writ set next=now+1.
+// Failed one-shots stay on HTTP PATCH-to-active, which scheduler.h
+// documents as the operator retry.  Pause of running is allowed (the
+// in-flight finalize CAS will not clobber it).
+std::string schedule_pause_block_reason(const std::string& status);
+std::string schedule_resume_block_reason(const std::string& status);
 
 } // namespace arbiter

@@ -1139,6 +1139,17 @@ FetchedResource cmd_fetch_bytes(const std::string& url, int64_t max_bytes) {
         return r;
     }
 
+    // Same hostname denylist / private-range resolve check /browse uses.
+    // CURLOPT_OPENSOCKETFUNCTION still re-validates every connect
+    // (including redirects). Preflight additionally blocks metadata
+    // hostnames that resolve public, and private/metadata targets that
+    // would otherwise reach a public HTTP(S)_PROXY (opensocket sees the
+    // proxy, not the URL host).
+    if (auto reject = preflight_ssrf_check(url); !reject.empty()) {
+        r.error = "refused — " + reject + " (SSRF guard)";
+        return r;
+    }
+
     CURL* curl = curl_easy_init();
     if (!curl) { r.error = "failed to initialize curl"; return r; }
 
@@ -1270,6 +1281,9 @@ std::string cmd_fetch(const std::string& url) {
     const bool is_https = url.size() >= 8 && url.compare(0, 8, "https://") == 0;
     if (!is_http && !is_https)
         return "ERR: URL must start with http:// or https://";
+
+    if (auto reject = preflight_ssrf_check(url); !reject.empty())
+        return "ERR: refused — " + reject + " (SSRF guard)";
 
     CURL* curl = curl_easy_init();
     if (!curl) return "ERR: failed to initialize curl";
@@ -1435,25 +1449,40 @@ std::string cmd_write(const std::string& path, const std::string& content,
             return "ERR: refusing to write through symlink: " + path;
     }
 
-    // Back up existing file before overwriting.
+    // Back up existing file before overwriting.  lstat so a FIFO is
+    // rejected instead of hanging in copy_file/open, and so a planted
+    // dest symlink at path.bak is not followed (copy_file would write
+    // the pre-image through notes.md.bak -> /etc/passwd).
     bool overwrite = false;
     std::string bak_note;
-    if (fs::exists(resolved)) {
+    struct stat src_st{};
+    if (::lstat(resolved.c_str(), &src_st) == 0) {
+        if (!S_ISREG(src_st.st_mode))
+            return "ERR: write target is not a regular file: " + path;
         overwrite = true;
         fs::path bak = resolved;
         bak += ".bak";
-        std::error_code ec;
-        fs::copy_file(resolved, bak, fs::copy_options::overwrite_existing, ec);
-        if (!ec) bak_note = " (previous saved to " + bak.string() + ")";
+        struct stat bak_st{};
+        if (::lstat(bak.c_str(), &bak_st) == 0 && !S_ISREG(bak_st.st_mode)) {
+            // Skip backup — dest is a symlink, fifo, or other special.
+        } else {
+            std::error_code ec;
+            fs::copy_file(resolved, bak, fs::copy_options::overwrite_existing, ec);
+            if (!ec) bak_note = " (previous saved to " + bak.string() + ")";
+        }
     }
 
     // O_NOFOLLOW so a symlink swap between the prefix check and open
-    // cannot redirect the write outside the workspace.
+    // cannot redirect the write outside the workspace.  O_NONBLOCK so a
+    // FIFO swapped in after the lstat returns ENXIO instead of hanging.
     const int fd = ::open(resolved.c_str(),
-                          O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+                          O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK,
+                          0644);
     if (fd < 0) {
         if (errno == ELOOP)
             return "ERR: refusing to write through symlink: " + path;
+        if (errno == ENXIO)
+            return "ERR: write target is not a regular file: " + path;
         int err = errno;
         return std::string("ERR: cannot open for writing: ") + path
              + " (" + std::strerror(err) + ")";
@@ -2276,12 +2305,10 @@ std::string execute_agent_commands(const std::vector<AgentCommand>& cmds,
                       << "[END BROWSE]\n\n";
                 cache_result = false;
             } else if (auto reject = preflight_ssrf_check(url); !reject.empty()) {
-                // Pre-flight the URL against the same SSRF blocklist
-                // /fetch enforces.  Unlike libcurl-driven fetches,
-                // /browse hands the URL off to Playwright via MCP,
-                // which does its own DNS + connect with no hook for
-                // us to intervene — without this check the SSRF guard
-                // is bypassed entirely.
+                // Same ssrf_preflight_url /fetch and cmd_fetch_bytes
+                // run before libcurl.  /browse still needs this because
+                // Playwright via MCP does its own DNS + connect with
+                // no opensocket hook.
                 block << "[/browse " << url << "]\n"
                       << "ERR: refused — " << reject << " (SSRF guard)\n"
                       << "[END BROWSE]\n\n";

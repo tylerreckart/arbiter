@@ -189,6 +189,19 @@ std::string fts5_escape(const std::string& q) {
     return out;
 }
 
+// Neutralise SQLite LIKE wildcards so a user query is a true substring.
+// Paired with `ESCAPE '\'` at the call site.  Backslash itself is escaped
+// so a search for `\` does not swallow the next character.
+std::string like_literal(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '\\' || c == '%' || c == '_') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+
 std::string bytes_to_hex(const unsigned char* data, size_t len) {
     std::ostringstream ss;
     ss << std::hex << std::setfill('0');
@@ -1465,11 +1478,13 @@ Conversation TenantStore::create_conversation(int64_t tenant_id,
 
 std::vector<Conversation>
 TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
-                                 int limit, int64_t folder_id_filter) const {
+                                 int limit, int64_t folder_id_filter,
+                                 int64_t before_id) const {
     std::vector<Conversation> out;
     if (!db_) return out;
 
     const int cap = (limit > 0 && limit <= 200) ? limit : 50;
+    const bool keyed = before_updated_at > 0 && before_id > 0;
 
     std::string sql = std::string("SELECT ") + kConvCols +
                        " FROM conversations WHERE tenant_id = ?"
@@ -1477,14 +1492,26 @@ TenantStore::list_conversations(int64_t tenant_id, int64_t before_updated_at,
                        " AND origin != 'tui'";
     if (folder_id_filter == 0) sql += " AND folder_id = 0";
     else if (folder_id_filter > 0) sql += " AND folder_id = ?";
-    if (before_updated_at > 0) sql += " AND updated_at < ?";
-    sql += " ORDER BY updated_at DESC LIMIT ?;";
+    if (keyed) {
+        // Composite cursor: same-second siblings after the last id stay
+        // visible.  Timestamp-only `updated_at < ?` skips them.
+        sql += " AND (updated_at < ? OR (updated_at = ? AND id < ?))";
+    } else if (before_updated_at > 0) {
+        sql += " AND updated_at < ?";
+    }
+    sql += " ORDER BY updated_at DESC, id DESC LIMIT ?;";
 
     Stmt q(db_, sql.c_str());
     int idx = 1;
     q.bind(idx++, tenant_id);
     if (folder_id_filter > 0) q.bind(idx++, folder_id_filter);
-    if (before_updated_at > 0) q.bind(idx++, before_updated_at);
+    if (keyed) {
+        q.bind(idx++, before_updated_at);
+        q.bind(idx++, before_updated_at);
+        q.bind(idx++, before_id);
+    } else if (before_updated_at > 0) {
+        q.bind(idx++, before_updated_at);
+    }
     q.bind(idx, static_cast<int64_t>(cap));
 
     while (q.step() == SQLITE_ROW) out.push_back(row_to_conversation(q));
@@ -2566,11 +2593,16 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
             sql += " AND e.valid_to IS NULL";
         }
         if (f.conversation_id > 0) {
-            // OR-NULL fallback: rows pinned to this conversation OR rows
-            // that are unscoped stay reachable.  Pre-migration entries
-            // (NULL conversation_id) are visible from every conversation.
-            sql += " AND (e.conversation_id = ? "
-                   "      OR e.conversation_id IS NULL)";
+            if (f.exact_conversation) {
+                sql += " AND e.conversation_id = ?";
+            } else {
+                // OR-NULL fallback: rows pinned to this conversation OR
+                // rows that are unscoped stay reachable.  Pre-migration
+                // entries (NULL conversation_id) are visible from every
+                // conversation.
+                sql += " AND (e.conversation_id = ? "
+                       "      OR e.conversation_id IS NULL)";
+            }
         }
         if (f.since > 0)             sql += " AND e.created_at >= ?";
         if (f.before_updated_at > 0) sql += " AND e.updated_at < ?";
@@ -2642,7 +2674,11 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         sql += " AND valid_to IS NULL";
     }
     if (f.conversation_id > 0) {
-        sql += " AND (conversation_id = ? OR conversation_id IS NULL)";
+        if (f.exact_conversation) {
+            sql += " AND conversation_id = ?";
+        } else {
+            sql += " AND (conversation_id = ? OR conversation_id IS NULL)";
+        }
     }
     if (f.since > 0)             sql += " AND created_at >= ?";
     if (f.before_updated_at > 0) sql += " AND updated_at < ?";
@@ -3051,6 +3087,20 @@ TenantStore::list_agent_records_for_routing(int64_t tenant_id) const {
     return out;
 }
 
+std::vector<AgentRecord>
+TenantStore::list_agent_records_for_dispatch(
+    int64_t tenant_id, const std::string& target_agent_id) const {
+    auto out = list_agent_records(tenant_id, 200);
+    if (target_agent_id.empty() || target_agent_id == "index") return out;
+    for (const auto& rec : out) {
+        if (rec.agent_id == target_agent_id) return out;
+    }
+    if (auto extra = get_agent_record(tenant_id, target_agent_id)) {
+        out.push_back(std::move(*extra));
+    }
+    return out;
+}
+
 bool TenantStore::update_agent_record(int64_t tenant_id,
                                        const std::string& agent_id,
                                        const std::string& name,
@@ -3116,17 +3166,27 @@ bool TenantStore::update_a2a_task(int64_t tenant_id,
                                     const std::string& error_message) {
     if (!db_) return false;
     const int64_t ts = now_epoch();
+    // `canceled` is sticky: message/send and message/stream persist
+    // completed/failed after the RPC returns, and that write races
+    // tasks/cancel.  The stream path already refused the overwrite
+    // after a GET; the unary path did not.  Enforcing it here so
+    // every caller (including exception / tenant-disabled paths)
+    // keeps cancel as the durable outcome.  Re-writing canceled
+    // (tasks/cancel itself) is still allowed so updated_at / error
+    // stay current.
     Stmt q(db_,
         "UPDATE a2a_tasks "
         "   SET state = ?, updated_at = ?, "
         "       final_message_json = ?, error_message = ? "
-        " WHERE tenant_id = ? AND task_id = ?;");
+        " WHERE tenant_id = ? AND task_id = ? "
+        "   AND (state != 'canceled' OR ? = 'canceled');");
     q.bind(1, state);
     q.bind(2, ts);
     q.bind(3, final_message_json);
     q.bind(4, error_message);
     q.bind(5, tenant_id);
     q.bind(6, task_id);
+    q.bind(7, state);
     q.step();
     return sqlite3_changes(db_) > 0;
 }
@@ -3577,23 +3637,33 @@ TenantStore::put_artifact(int64_t tenant_id, int64_t conversation_id,
 }
 
 std::optional<ArtifactRecord>
-TenantStore::get_artifact_meta(int64_t tenant_id, int64_t id) const {
+TenantStore::get_artifact_meta(int64_t tenant_id, int64_t id,
+                                int64_t conversation_id) const {
     if (!db_) return std::nullopt;
-    Stmt q(db_, (std::string("SELECT ") + kArtifactMetaCols +
-                 " FROM tenant_artifacts WHERE tenant_id = ? AND id = ?;").c_str());
+    std::string sql = std::string("SELECT ") + kArtifactMetaCols +
+                      " FROM tenant_artifacts WHERE tenant_id = ? AND id = ?";
+    if (conversation_id > 0) sql += " AND conversation_id = ?";
+    sql += ";";
+    Stmt q(db_, sql.c_str());
     q.bind(1, tenant_id);
     q.bind(2, id);
+    if (conversation_id > 0) q.bind(3, conversation_id);
     if (q.step() != SQLITE_ROW) return std::nullopt;
     return row_to_artifact(q);
 }
 
 std::optional<std::string>
-TenantStore::get_artifact_content(int64_t tenant_id, int64_t id) const {
+TenantStore::get_artifact_content(int64_t tenant_id, int64_t id,
+                                   int64_t conversation_id) const {
     if (!db_) return std::nullopt;
-    Stmt q(db_, "SELECT content FROM tenant_artifacts "
-                 "WHERE tenant_id = ? AND id = ?;");
+    std::string sql = "SELECT content FROM tenant_artifacts "
+                      "WHERE tenant_id = ? AND id = ?";
+    if (conversation_id > 0) sql += " AND conversation_id = ?";
+    sql += ";";
+    Stmt q(db_, sql.c_str());
     q.bind(1, tenant_id);
     q.bind(2, id);
+    if (conversation_id > 0) q.bind(3, conversation_id);
     if (q.step() != SQLITE_ROW) return std::nullopt;
     const void* blob = sqlite3_column_blob(q.raw(), 0);
     int n = sqlite3_column_bytes(q.raw(), 0);
@@ -3649,8 +3719,15 @@ TenantStore::list_artifacts_tenant(int64_t tenant_id, int limit) const {
     return out;
 }
 
-bool TenantStore::delete_artifact(int64_t tenant_id, int64_t id) {
+bool TenantStore::delete_artifact(int64_t tenant_id, int64_t id,
+                                  int64_t conversation_id) {
     if (!db_) return false;
+    // Nested HTTP routes pass conversation_id so a mismatched :cid
+    // cannot nullify memory links or drop a sibling conversation's row.
+    if (conversation_id > 0 &&
+        !get_artifact_meta(tenant_id, id, conversation_id)) {
+        return false;
+    }
     // Soft cascade: nullify memory_entries.artifact_id referencing this
     // row before deleting it.  The schema-level FK couldn't be added by
     // ALTER TABLE (SQLite limitation), so we do the SET NULL ourselves.
@@ -4245,20 +4322,25 @@ TenantStore::search_lessons(int64_t tenant_id,
     if (limit <= 0 || limit > 50) limit = 20;
     // Substring match — case-insensitive on lesson_text + signature.  At
     // tens-to-hundreds of rows per agent this is fine; an FTS index
-    // would be premature.
+    // would be premature.  Escape LIKE metacharacters so `100%` / `foo_bar`
+    // are literals (`GET /v1/lessons?q=` and `/lesson search`).
     std::string sql = std::string("SELECT ") + kLessonCols +
         " FROM lessons WHERE tenant_id = ?";
     if (!agent_id.empty()) sql += " AND agent_id = ?";
-    sql += " AND (lower(signature) LIKE ? OR lower(lesson_text) LIKE ?)"
+    sql += " AND (lower(signature) LIKE ? ESCAPE '\\' "
+           "OR lower(lesson_text) LIKE ? ESCAPE '\\')"
            " ORDER BY hit_count DESC, last_seen_at DESC LIMIT ?;";
     Stmt q(db_, sql.c_str());
     int idx = 1;
     q.bind(idx++, tenant_id);
     if (!agent_id.empty()) q.bind(idx++, agent_id);
-    std::string pat = "%";
-    for (char c : query) pat.push_back(static_cast<char>(std::tolower(
-        static_cast<unsigned char>(c))));
-    pat.push_back('%');
+    std::string lowered;
+    lowered.reserve(query.size());
+    for (char c : query) {
+        lowered.push_back(static_cast<char>(std::tolower(
+            static_cast<unsigned char>(c))));
+    }
+    const std::string pat = "%" + like_literal(lowered) + "%";
     q.bind(idx++, pat);
     q.bind(idx++, pat);
     q.bind(idx, static_cast<int64_t>(limit));
@@ -4462,10 +4544,13 @@ bool TenantStore::update_todo(int64_t tenant_id, int64_t id,
     if (!db_) return false;
     const int64_t ts = now_epoch();
 
-    // Auto-stamp completed_at when transitioning to a terminal status,
-    // unless the caller passed completed_at explicitly.
+    // Keep completed_at aligned with status unless the caller passed an
+    // explicit stamp. Terminal statuses get now(); a reopen to pending
+    // or in_progress zeros the column so "0 until terminal" stays true.
     std::optional<int64_t> ca = completed_at;
-    if (status && is_terminal_todo_status(*status) && !ca) ca = ts;
+    if (status && !ca) {
+        ca = is_terminal_todo_status(*status) ? ts : int64_t{0};
+    }
 
     std::string sql = "UPDATE todos SET updated_at = ?";
     if (subject)     sql += ", subject = ?";

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.13.7 LANGUAGES CXX)
+project(arbiter VERSION 0.13.10 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -598,6 +598,27 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_api_client_pool COMMAND unit_api_client_pool)
 
+    # Pool-cap cancel: own binary so provider_for() pins OLLAMA_HOST to this
+    # file's HoldServer rather than unit_api_client_pool's overlap port.
+    add_executable(unit_api_client_pool_cancel
+        tests/test_api_client_pool_cancel.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_api_client_pool_cancel PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_api_client_pool_cancel PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+    )
+    add_test(NAME unit_api_client_pool_cancel COMMAND unit_api_client_pool_cancel)
+
     # --- Unit tests for the tool-call stream filter ---
     # Exercises line-buffered reassembly, /cmd swallow rules, and the
     # verbose pass-through path without needing a TUI or the real orchestrator.
@@ -1168,6 +1189,19 @@ if(INDEX_BUILD_TESTS)
     endif()
     add_test(NAME unit_message_replay_roundtrip COMMAND unit_message_replay_roundtrip)
 
+    # Session JSON message array decode (no OpenTUI).
+    add_executable(unit_message_codec
+        tests/test_message_codec.cpp
+        src/message_codec.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_message_codec PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}  # message_codec.h → api_client.h → openssl/ssl.h
+    )
+    add_test(NAME unit_message_codec COMMAND unit_message_codec)
+
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser
         tests/test_schedule_parser.cpp
@@ -1243,6 +1277,20 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_tenant_limiter COMMAND unit_tenant_limiter)
 
+    # Inter-iteration pause must wake on /kill /inject /suspend — the
+    # helper is header-only so this target does not pull Orchestrator.
+    add_executable(unit_loop_manager
+        tests/test_loop_manager.cpp
+    )
+    target_include_directories(unit_loop_manager PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_loop_manager PRIVATE
+        Threads::Threads
+    )
+    add_test(NAME unit_loop_manager COMMAND unit_loop_manager)
+
     # --- Unit tests for the Idempotency-Key dedup cache ---
     add_executable(unit_idempotency_cache
         tests/test_idempotency_cache.cpp
@@ -1284,6 +1332,17 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_circuit_breaker COMMAND unit_circuit_breaker)
 
+    # --- Unit tests for inbound HTTP/1.1 request framing ---
+    add_executable(unit_http_request
+        tests/test_http_request.cpp
+        src/api/http_request.cpp
+    )
+    target_include_directories(unit_http_request PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_http_request COMMAND unit_http_request)
+
     # --- Unit tests for CORS allowlist policy ---
     add_executable(unit_cors
         tests/test_cors.cpp
@@ -1295,6 +1354,17 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_cors COMMAND unit_cors)
 
+    # --- Unit tests for query-string decode (list handlers share parse_query) ---
+    add_executable(unit_http_util
+        tests/test_http_util.cpp
+        src/api/http_util.cpp
+    )
+    target_include_directories(unit_http_util PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_http_util COMMAND unit_http_util)
+
     add_executable(unit_sse_mailbox tests/test_sse_mailbox.cpp)
     target_include_directories(unit_sse_mailbox PRIVATE
         ${CMAKE_SOURCE_DIR}/include
@@ -1302,6 +1372,17 @@ if(INDEX_BUILD_TESTS)
     )
     target_link_libraries(unit_sse_mailbox PRIVATE Threads::Threads)
     add_test(NAME unit_sse_mailbox COMMAND unit_sse_mailbox)
+
+    # --- Unit tests for RFC 6750 / RFC 9110 Bearer field parsing ---
+    add_executable(unit_auth
+        tests/test_auth.cpp
+        src/api/http_util.cpp
+    )
+    target_include_directories(unit_auth PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_auth COMMAND unit_auth)
 
     # --- Unit tests for /v1/events agent routing ---
     add_executable(unit_route_event
@@ -1335,6 +1416,19 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_logger COMMAND unit_logger)
+
+    # JSON \u escapes including UTF-16 surrogate pairs (emoji via
+    # Python json.dumps / MCP-A2A peers).  Own binary so it stays
+    # independently mergeable vs unit_mcp framing tests.
+    add_executable(unit_json
+        tests/test_json.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_json PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_json COMMAND unit_json)
 
     # --- Unit tests for the structured-memory store ---
     # Pins the tenant_store CRUD contract that backs both /v1/memory/entries
@@ -1535,6 +1629,24 @@ if(INDEX_BUILD_TESTS)
         CURL::libcurl
     )
     add_test(NAME unit_a2a COMMAND unit_a2a)
+
+    # Unary A2A HTTP body cap.  Separate binary so the in-process unit_a2a
+    # suite stays network-free; this one stands up a loopback server.
+    add_executable(unit_a2a_http
+        tests/test_a2a_http.cpp
+        src/a2a/http.cpp
+        src/a2a/sse_reader.cpp
+        src/ssrf_guard.cpp
+    )
+    target_include_directories(unit_a2a_http PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_a2a_http PRIVATE
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_a2a_http COMMAND unit_a2a_http)
 
     # Constitution / prompt composer.  Pins the capability-bundle resolution
     # and verifies that empty-capabilities still emits the legacy surface

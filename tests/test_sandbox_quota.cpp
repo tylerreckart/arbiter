@@ -837,3 +837,80 @@ TEST_CASE("sandbox exec: holds quota mutex so parallel /write cannot interleave"
 
     fs::remove_all(root);
 }
+
+// A workspace FIFO used to block forever in open() — /write holds
+// tenant_mu across that open, so same-tenant /exec and /write stalled
+// until restart.  O_NONBLOCK + S_ISREG must fail the op quickly.
+TEST_CASE("sandbox write_to_workspace: FIFO returns without hanging") {
+    const std::string root = make_temp_root("fifo-write");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+
+    SandboxConfig cfg = make_quota_config(root, 0);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 21;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+
+    const std::string fifo = ws + "/hang.txt";
+    REQUIRE(::mkfifo(fifo.c_str(), 0644) == 0);
+
+    std::atomic<bool> finished{false};
+    bool ok = true;
+    std::string err;
+    std::thread thr([&]() {
+        ok = mgr.write_to_workspace(tid, "hang.txt", "hello", err);
+        finished.store(true, std::memory_order_release);
+    });
+    for (int i = 0; i < 50 && !finished.load(std::memory_order_acquire); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (!finished.load(std::memory_order_acquire)) {
+        thr.detach();
+        fs::remove_all(root);
+        FAIL("write_to_workspace hung on a FIFO");
+    }
+    thr.join();
+    CHECK_FALSE(ok);
+    CHECK(err.find("regular file") != std::string::npos);
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("sandbox read_from_workspace: FIFO returns without hanging") {
+    const std::string root = make_temp_root("fifo-read");
+    install_docker_stub(root);
+    PathGuard path_guard(root);
+
+    SandboxConfig cfg = make_quota_config(root, 0);
+    cfg.quota_check_pause_ms = 0;
+    SandboxManager mgr(cfg);
+    REQUIRE(mgr.usable());
+    const int64_t tid = 22;
+    const std::string ws = mgr.ensure_workspace(tid);
+    REQUIRE_FALSE(ws.empty());
+
+    const std::string fifo = ws + "/hang.txt";
+    REQUIRE(::mkfifo(fifo.c_str(), 0644) == 0);
+
+    std::atomic<bool> finished{false};
+    bool ok = true;
+    std::string content, mime, err;
+    std::thread thr([&]() {
+        ok = mgr.read_from_workspace(tid, "hang.txt", content, mime, err);
+        finished.store(true, std::memory_order_release);
+    });
+    for (int i = 0; i < 50 && !finished.load(std::memory_order_acquire); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (!finished.load(std::memory_order_acquire)) {
+        thr.detach();
+        fs::remove_all(root);
+        FAIL("read_from_workspace hung on a FIFO");
+    }
+    thr.join();
+    CHECK_FALSE(ok);
+    CHECK(content.empty());
+
+    fs::remove_all(root);
+}

@@ -23,6 +23,7 @@
 #include "commands.h"
 #include "config.h"
 #include "constitution.h"
+#include "event_routing.h"
 #include "context_compaction.h"
 #include "file_cap.h"
 #include "json.h"
@@ -330,26 +331,12 @@ void handle_admin(int fd, const HttpRequest& req,
         }
         int64_t before_id = 0;
         int     limit     = 50;
-        auto qpos = req.path.find('?');
-        if (qpos != std::string::npos) {
-            std::string qs = req.path.substr(qpos + 1);
-            size_t i = 0;
-            while (i < qs.size()) {
-                size_t amp = qs.find('&', i);
-                std::string pair = qs.substr(i, amp - i);
-                auto eq = pair.find('=');
-                if (eq != std::string::npos) {
-                    std::string k = pair.substr(0, eq);
-                    std::string v = pair.substr(eq + 1);
-                    if (k == "before_id") {
-                        try { before_id = std::stoll(v); } catch (...) {}
-                    } else if (k == "limit") {
-                        try { limit = std::stoi(v); } catch (...) {}
-                    }
-                }
-                if (amp == std::string::npos) break;
-                i = amp + 1;
-            }
+        const auto qp = parse_query(req.path);
+        if (auto it = qp.find("before_id"); it != qp.end()) {
+            try { before_id = std::stoll(it->second); } catch (...) {}
+        }
+        if (auto it = qp.find("limit"); it != qp.end()) {
+            try { limit = std::stoi(it->second); } catch (...) {}
         }
         auto rows = tenants.list_admin_audit(before_id, limit);
         auto arr = jarr();
@@ -1170,6 +1157,7 @@ void handle_conversation_list(int fd, const HttpRequest& req,
         try { return std::stoll(it->second); } catch (...) { return 0; }
     };
     const int64_t before = as_int64("before_updated_at");
+    const int64_t before_id = as_int64("before_id");
     const int     limit  = static_cast<int>(as_int64("limit"));
 
     // folder_id query: absent → no filter; "null"/empty/0 → unfiled;
@@ -1203,7 +1191,7 @@ void handle_conversation_list(int fd, const HttpRequest& req,
     }
 
     auto convs = tenants.list_conversations(tenant.id, before, limit,
-                                            folder_filter);
+                                            folder_filter, before_id);
     auto arr = jarr();
     auto& a = arr->as_array_mut();
     for (auto& c : convs) a.push_back(conversation_to_json(c));
@@ -3465,20 +3453,35 @@ void handle_artifact_list_tenant(int fd, TenantStore& tenants, const Tenant& ten
     write_json_response(fd, 200, body);
 }
 
+// conversation_id == 0 is the tenant-wide /v1/artifacts/:aid surface.
+// Nested /v1/conversations/:cid/artifacts/:aid passes :cid so a
+// sibling-thread (or TUI-origin) id cannot be read or deleted through
+// the conversation-scoped path.  Missing / TUI conversations 404 like
+// list/create on the same prefix.
 void handle_artifact_get_meta(int fd, int64_t artifact_id,
-                                TenantStore& tenants, const Tenant& tenant) {
-    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id);
+                                TenantStore& tenants, const Tenant& tenant,
+                                int64_t conversation_id = 0) {
+    if (conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conversation_id)) {
+        return write_artifact_error(fd, 404, "conversation not found");
+    }
+    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id, conversation_id);
     if (!rec) return write_artifact_error(fd, 404, "artifact not found");
     write_json_response(fd, 200, artifact_to_json(*rec));
 }
 
 // GET /v1/artifacts/:id/raw — content body with proper Content-Type +
 // ETag (= sha256) for conditional GETs.  Tenant-scoped lookup; cross-
-// tenant id surfaces as 404.
+// tenant id surfaces as 404.  Nested callers pass conversation_id.
 void handle_artifact_get_raw(int fd, int64_t artifact_id,
                               const HttpRequest& req,
-                              TenantStore& tenants, const Tenant& tenant) {
-    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id);
+                              TenantStore& tenants, const Tenant& tenant,
+                              int64_t conversation_id = 0) {
+    if (conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conversation_id)) {
+        return write_artifact_error(fd, 404, "conversation not found");
+    }
+    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id, conversation_id);
     if (!rec) return write_artifact_error(fd, 404, "artifact not found");
 
     // ETag honors the strong-validator semantics — sha256 of the bytes.
@@ -3496,7 +3499,8 @@ void handle_artifact_get_raw(int fd, int64_t artifact_id,
         return;
     }
 
-    auto blob = tenants.get_artifact_content(tenant.id, artifact_id);
+    auto blob = tenants.get_artifact_content(tenant.id, artifact_id,
+                                              conversation_id);
     if (!blob) return write_artifact_error(fd, 404, "artifact content missing");
 
     std::ostringstream ss;
@@ -3511,8 +3515,13 @@ void handle_artifact_get_raw(int fd, int64_t artifact_id,
 }
 
 void handle_artifact_delete(int fd, int64_t artifact_id,
-                              TenantStore& tenants, const Tenant& tenant) {
-    if (!tenants.delete_artifact(tenant.id, artifact_id))
+                              TenantStore& tenants, const Tenant& tenant,
+                              int64_t conversation_id = 0) {
+    if (conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conversation_id)) {
+        return write_artifact_error(fd, 404, "conversation not found");
+    }
+    if (!tenants.delete_artifact(tenant.id, artifact_id, conversation_id))
         return write_artifact_error(fd, 404, "artifact not found");
     auto body = jobj();
     body->as_object_mut()["deleted"] = jbool(true);
@@ -3585,22 +3594,9 @@ request_status_to_json(const TenantStore::RequestStatus& s) {
 void handle_request_list(int fd, const HttpRequest& req,
                           TenantStore& tenants, const Tenant& tenant) {
     int limit = 100;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "limit") try { limit = std::stoi(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("limit"); it != qp.end()) {
+        try { limit = std::stoi(it->second); } catch (...) {}
     }
     auto rows = tenants.list_request_status(tenant.id, limit);
     auto arr = jarr();
@@ -3667,22 +3663,9 @@ void handle_request_events(int fd, const std::string& request_id,
     }
 
     int64_t since_seq = 0;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "since_seq") try { since_seq = std::stoll(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("since_seq"); it != qp.end()) {
+        try { since_seq = std::stoll(it->second); } catch (...) {}
     }
 
     // Open the SSE response.  CORS headers + X-Accel-Buffering: no so
@@ -3906,24 +3889,14 @@ void handle_lesson_list(int fd, const HttpRequest& req,
     std::string agent_id;
     std::string query;
     int limit = 100;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if      (k == "agent_id") agent_id = v;
-                else if (k == "q")        query    = v;
-                else if (k == "limit") try { limit = std::stoi(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    // parse_query url-decodes — the previous hand-rolled split left
+    // `q=rate%20limit` as a literal, so standard clients missed rows
+    // that conversation list (already on parse_query) would find.
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("agent_id"); it != qp.end()) agent_id = it->second;
+    if (auto it = qp.find("q"); it != qp.end()) query = it->second;
+    if (auto it = qp.find("limit"); it != qp.end()) {
+        try { limit = std::stoi(it->second); } catch (...) {}
     }
     auto rows = query.empty()
         ? tenants.list_lessons(tenant.id, agent_id, limit)
@@ -4091,33 +4064,22 @@ void handle_todo_list(int fd, const HttpRequest& req,
                        TenantStore& tenants, const Tenant& tenant) {
     TenantStore::TodoFilter f;
     f.limit = 200;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "conversation_id") {
-                    // `conversation_id=tenant` is the spelled-out form
-                    // for the unscoped-only filter; numeric values pass
-                    // through directly (positive = OR-NULL fallback to
-                    // unscoped, 0 = no filter, negative = unscoped only).
-                    if (v == "tenant" || v == "unscoped") f.conversation_id = -1;
-                    else try { f.conversation_id = std::stoll(v); } catch (...) {}
-                }
-                else if (k == "status")   f.status_filter   = v;
-                else if (k == "agent_id") f.agent_id_filter = v;
-                else if (k == "limit")
-                    try { f.limit = std::stoi(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("conversation_id"); it != qp.end()) {
+        const std::string& v = it->second;
+        // `conversation_id=tenant` is the spelled-out form
+        // for the unscoped-only filter; numeric values pass
+        // through directly (positive = OR-NULL fallback to
+        // unscoped, 0 = no filter, negative = unscoped only).
+        if (v == "tenant" || v == "unscoped") f.conversation_id = -1;
+        else try { f.conversation_id = std::stoll(v); } catch (...) {}
+    }
+    if (auto it = qp.find("status"); it != qp.end())
+        f.status_filter = it->second;
+    if (auto it = qp.find("agent_id"); it != qp.end())
+        f.agent_id_filter = it->second;
+    if (auto it = qp.find("limit"); it != qp.end()) {
+        try { f.limit = std::stoi(it->second); } catch (...) {}
     }
     // Reject unknown / TUI-origin conversation ids. Clearing the filter
     // would return tenant-wide todos and leak TUI-scoped rows over HTTP.
@@ -4474,24 +4436,9 @@ void handle_schedule_create(int fd, const HttpRequest& req,
 void handle_schedule_list(int fd, const HttpRequest& req,
                            TenantStore& tenants, const Tenant& tenant) {
     std::string status_filter;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        // Tiny query-string parser — only one key we look at.
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "status") status_filter = v;
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
-    }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("status"); it != qp.end())
+        status_filter = it->second;
     auto rows = tenants.list_scheduled_tasks(tenant.id, status_filter, /*limit=*/200);
     auto arr = jarr();
     for (const auto& r : rows) arr->as_array_mut().push_back(scheduled_task_to_json(r));
@@ -5558,23 +5505,12 @@ void handle_runs_list(int fd, const HttpRequest& req,
                        TenantStore& tenants, const Tenant& tenant) {
     int64_t since = 0;
     int64_t task_id = 0;
-    auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
-        std::string qs = req.path.substr(qpos + 1);
-        size_t i = 0;
-        while (i < qs.size()) {
-            size_t amp = qs.find('&', i);
-            std::string pair = qs.substr(i, amp - i);
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                std::string k = pair.substr(0, eq);
-                std::string v = pair.substr(eq + 1);
-                if (k == "since")   try { since   = std::stoll(v); } catch (...) {}
-                if (k == "task_id") try { task_id = std::stoll(v); } catch (...) {}
-            }
-            if (amp == std::string::npos) break;
-            i = amp + 1;
-        }
+    const auto qp = parse_query(req.path);
+    if (auto it = qp.find("since"); it != qp.end()) {
+        try { since = std::stoll(it->second); } catch (...) {}
+    }
+    if (auto it = qp.find("task_id"); it != qp.end()) {
+        try { task_id = std::stoll(it->second); } catch (...) {}
     }
     auto runs = tenants.list_task_runs(tenant.id, task_id, since, /*limit=*/200);
     auto arr = jarr();
@@ -5948,19 +5884,23 @@ SchedulerInvoker make_scheduler_invoker_callback(
                 return "ERR: schedule #" + std::to_string(id) + " not found";
             }
 
-            // Pause or resume: PATCH status.  Resume also recomputes
-            // next_fire_at for a recurring task whose previous fire is
-            // now in the past.
+            // Pause or resume: PATCH status.  Terminal one-shots stay
+            // terminal so pause-then-resume cannot re-queue them
+            // (next_fire_at is still in the past after a successful
+            // fire).  Recurring resume still recomputes next_fire_at
+            // when the previous fire is now in the past.
             std::string new_status = (kind == "pause") ? "paused" : "active";
             std::optional<int64_t> next;
-            if (kind == "resume") {
+            if (kind == "pause" || kind == "resume") {
                 auto row = tenants.get_scheduled_task(tenant_id, id);
                 if (!row) return "ERR: schedule #" + std::to_string(id) + " not found";
-                if (row->status == "running") {
-                    return "ERR: schedule #" + std::to_string(id) +
-                           " is running; wait for completion before resuming";
+                const std::string reason = (kind == "pause")
+                    ? schedule_pause_block_reason(row->status)
+                    : schedule_resume_block_reason(row->status);
+                if (!reason.empty()) {
+                    return "ERR: schedule #" + std::to_string(id) + " " + reason;
                 }
-                if (row->next_fire_at <= now) {
+                if (kind == "resume" && row->next_fire_at <= now) {
                     if (row->schedule_kind == "recurring") {
                         int64_t n = next_fire_for_recur(row->recur_json, now);
                         if (n > 0) next = n;
@@ -6841,6 +6781,14 @@ StructuredMemoryReader make_structured_memory_reader_callback(
                 TenantStore::EntryFilter f;
                 f.limit = 15;
                 f.conversation_id = reader_conversation_id;
+                // Sibling snapshot only.  Default list_entries ORs in
+                // NULL conversation_id (HTTP admin / CLI unscoped
+                // rows, pre-migration residue).  Those are not sibling
+                // output; including them reintroduces the tenant-wide
+                // bleed this probe exists to prevent.  Must be in the
+                // SQL WHERE — post-filtering after LIMIT 15 can drop
+                // the actual sibling rows behind unscoped recency.
+                f.exact_conversation = true;
                 auto entries = tenants.list_entries(reader_tenant_id, f);
                 if (entries.empty()) return "(no entries)";
                 std::ostringstream out;
@@ -8088,7 +8036,8 @@ std::unique_ptr<Orchestrator>
 build_a2a_orchestrator(const ApiServerOptions& opts,
                         TenantStore& tenants, const Tenant& tenant,
                         std::string& err_out,
-                        int64_t conversation_id = 0) {
+                        int64_t conversation_id = 0,
+                        const std::string& target_agent_id = "") {
     std::unique_ptr<Orchestrator> orch;
     try {
         orch = std::make_unique<Orchestrator>(opts.api_keys);
@@ -8100,7 +8049,11 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
     orch->client().set_circuit_breaker(opts.circuit_breaker);
     orch->client().set_metrics(opts.metrics);
 
-    const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+    // Newest-200 plus the targeted id when it fell off that page (GET
+    // /v1/agents/:id already uses get_agent_record).  Sibling /agent
+    // and /parallel still resolve from the REST list page.
+    const auto records = tenants.list_agent_records_for_dispatch(
+        tenant.id, target_agent_id);
     for (const auto& rec : records) {
         try {
             auto cfg = Constitution::from_json(rec.agent_def_json);
@@ -8172,7 +8125,8 @@ void handle_a2a_message_send(int fd,
     const std::string context_id = resolve_a2a_context_id(user_msg);
 
     std::string init_err;
-    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err,
+                                       /*conversation_id=*/0, agent_id);
     if (!orch) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
@@ -8273,14 +8227,31 @@ void handle_a2a_message_send(int fd,
     // Message — history/artifacts can be reconstructed by combining
     // the user's input (which the client already has) with the
     // assistant's reply.  Smaller column, simpler reads.
+    //
+    // tasks/cancel may have persisted canceled while send() was still
+    // unwinding.  update_a2a_task refuses to overwrite canceled; if
+    // that CAS misses, surface the same cancelled RPC as the
+    // error_type=="cancelled" path instead of returning a completed
+    // Task that tasks/get would contradict.
     std::string final_msg_json;
     if (task.status.message) {
         final_msg_json = json_serialize(*a2a::to_json(*task.status.message));
     }
-    tenants.update_a2a_task(tenant.id, task_id,
-                             a2a::task_state_to_string(task.status.state),
-                             final_msg_json,
-                             resp.ok ? "" : sanitised_api_response_error(resp));
+    const std::string terminal =
+        a2a::task_state_to_string(task.status.state);
+    if (!tenants.update_a2a_task(tenant.id, task_id,
+                                 terminal,
+                                 final_msg_json,
+                                 resp.ok ? "" : sanitised_api_response_error(resp))) {
+        if (auto rec = tenants.get_a2a_task(tenant.id, task_id);
+            rec && rec->state ==
+                       a2a::task_state_to_string(a2a::TaskState::canceled)) {
+            write_a2a_rpc(fd, a2a::make_error_response(
+                rpc_id, a2a::RPC_INVALID_REQUEST,
+                "request cancelled"));
+            return;
+        }
+    }
 
     write_a2a_rpc(fd, a2a::make_result_response(rpc_id, a2a::to_json(task)));
 }
@@ -8345,7 +8316,8 @@ void handle_a2a_message_stream(int fd,
     const std::string context_id = resolve_a2a_context_id(user_msg);
 
     std::string init_err;
-    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err,
+                                       /*conversation_id=*/0, agent_id);
     if (!orch) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
@@ -8743,9 +8715,9 @@ void handle_a2a_tasks_cancel(int fd,
 
     if (cancelled_in_flight) {
         // Persist canceled state so a follow-up tasks/get reflects the
-        // outcome.  The orchestrator's send may still be unwinding —
-        // its terminal-state update will run, but we want canceled to
-        // win over completed/failed for clarity.  Re-update.
+        // outcome.  The orchestrator's send may still be unwinding;
+        // update_a2a_task keeps canceled sticky so a later
+        // completed/failed persist cannot clobber this write.
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::canceled),
                                  "", "canceled by tasks/cancel");
@@ -9834,8 +9806,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // can resolve sibling ids during this turn.  A blob whose JSON has
     // gone bad (schema drift after an upgrade, manual DB poke) gets
     // skipped with a log line — the rest of the catalog still loads.
+    // Extra-fetch the targeted id when it fell off the newest-200 page
+    // (same gap GET /v1/agents/:id does not have).
     {
-        const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+        const auto records = tenants.list_agent_records_for_dispatch(
+            tenant.id, agent_id);
         for (const auto& rec : records) {
             try {
                 auto cfg = Constitution::from_json(rec.agent_def_json);
@@ -10549,9 +10524,10 @@ build_blocking_orchestrator(const ApiServerOptions& opts,
                              TenantStore& tenants,
                              const Tenant& tenant,
                              std::string& err_out,
-                             int64_t conversation_id) {
+                             int64_t conversation_id,
+                             const std::string& target_agent_id) {
     return build_a2a_orchestrator(opts, tenants, tenant, err_out,
-                                  conversation_id);
+                                  conversation_id, target_agent_id);
 }
 
 bool is_http_scoped_conversation(TenantStore& tenants,
@@ -10872,10 +10848,17 @@ void handle_event_ingest(int fd, HttpRequest req,
 
     // Route: explicit override wins; otherwise file-backed agents first,
     // then tenant-stored agents (POST /v1/agents) by stable agent_id order.
+    // Remember which tier won so we hydrate *that* constitution — a
+    // file-backed id can collide with a tenant row that handle_orchestrate
+    // would otherwise install from the newest-200 catalog.
     std::string agent_id = agent;
+    std::string tenant_def_json;
+    bool routed_from_file = false;
     if (agent_id.empty()) {
         agent_id = route_event(opts.agents_dir, event_type);
-        if (agent_id.empty()) {
+        if (!agent_id.empty()) {
+            routed_from_file = true;
+        } else {
             // Full scan ordered by agent_id — not the newest-200 REST page.
             auto records = tenants.list_agent_records_for_routing(tenant.id);
             std::vector<std::pair<std::string, std::vector<std::string>>>
@@ -10895,8 +10878,17 @@ void handle_event_ingest(int fd, HttpRequest req,
                 }
             }
             std::string matched = route_event(tenant_agents, event_type);
-            agent_id = matched.empty() ? std::string("index") : matched;
+            if (matched.empty()) {
+                agent_id = "index";
+            } else {
+                agent_id = matched;
+                if (auto rec = tenants.get_agent_record(tenant.id, agent_id)) {
+                    tenant_def_json = rec->agent_def_json;
+                }
+            }
         }
+    } else if (auto rec = tenants.get_agent_record(tenant.id, agent_id)) {
+        tenant_def_json = rec->agent_def_json;
     }
 
     // Format event as a natural-language message the agent can reason about.
@@ -10908,9 +10900,26 @@ void handle_event_ingest(int fd, HttpRequest req,
     // handle_orchestrate reads req.body["message"] and uses agent_override
     // to target the routed agent; everything else (SSE, auth, writ execution)
     // flows through the existing path unchanged.
+    //
+    // Attach the routed constitution as inline agent_def. Orchestrate only
+    // preloads list_agent_records(..., 200) and never reads agents_dir, so
+    // a file-backed match or a tenant agent off that page would otherwise
+    // 404 "agent not found" — or, on an id clash, run the tenant blob.
     auto synth = jobj();
     synth->as_object_mut()["message"] = jstr(message);
     synth->as_object_mut()["intent_source"] = jstr("event");
+    const std::string def_json = event_ingest_agent_def_json(
+        agent_id, opts.agents_dir, tenant_def_json, routed_from_file);
+    if (!def_json.empty()) {
+        try {
+            auto def = json_parse(def_json);
+            if (def && def->is_object()) {
+                synth->as_object_mut()["agent_def"] = def;
+            }
+        } catch (...) {
+            // Leave unhydrated; orchestrate reports agent not found.
+        }
+    }
     req.body = json_serialize(*synth);
 
     handle_orchestrate(fd, req, opts, tenants, in_flight,
@@ -11607,13 +11616,16 @@ void ApiServer::handle_connection(int fd) {
                                                   "method not allowed\n");
                             return;
                         }
-                        return handle_artifact_get_raw(fd, aid, req, tenants_, *tenant);
+                        return handle_artifact_get_raw(fd, aid, req, tenants_,
+                                                       *tenant, id);
                     }
                     if (segs.size() == 5) {
                         if (req.method == "GET")
-                            return handle_artifact_get_meta(fd, aid, tenants_, *tenant);
+                            return handle_artifact_get_meta(fd, aid, tenants_,
+                                                           *tenant, id);
                         if (req.method == "DELETE")
-                            return handle_artifact_delete(fd, aid, tenants_, *tenant);
+                            return handle_artifact_delete(fd, aid, tenants_,
+                                                          *tenant, id);
                         write_plain_response(fd, 405, "Method Not Allowed",
                                               "method not allowed\n");
                         return;

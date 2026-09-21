@@ -46,3 +46,27 @@ TEST_CASE("sse_mailbox_push force_deliver makes room for terminal item") {
     CHECK(mailbox.back() == "terminal");
     CHECK(mailbox.front() == "1");
 }
+
+TEST_CASE("sse_mailbox_push force_deliver still lands after overflow") {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<std::string> mailbox;
+    std::atomic<bool> overflowed{false};
+
+    for (size_t i = 0; i < kDefaultSseMailboxMaxDepth; ++i) {
+        REQUIRE(sse_mailbox_push(mailbox, mu, cv, overflowed,
+                                 std::to_string(i)));
+    }
+    CHECK_FALSE(sse_mailbox_push(mailbox, mu, cv, overflowed,
+                                 std::string("dropped")));
+    REQUIRE(overflowed.load());
+    CHECK(mailbox.size() == kDefaultSseMailboxMaxDepth);
+    CHECK(mailbox.back() != "dropped");
+
+    REQUIRE(sse_mailbox_push(mailbox, mu, cv, overflowed,
+                               std::string("terminal"), /*force_deliver=*/true));
+    CHECK_FALSE(overflowed.load());
+    CHECK(mailbox.size() == kDefaultSseMailboxMaxDepth);
+    CHECK(mailbox.back() == "terminal");
+    CHECK(mailbox.front() == "1");
+}
