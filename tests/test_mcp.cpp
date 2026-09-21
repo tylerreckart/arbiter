@@ -247,6 +247,36 @@ TEST_CASE("parse_response rejects malformed envelopes") {
     CHECK_THROWS(parse_response(R"({"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"x"}})")); // both
 }
 
+TEST_CASE("parse_response treats JSON-null result/error as omitted") {
+    auto ok = parse_response(
+        R"({"jsonrpc":"2.0","id":5,"result":{"x":1},"error":null})");
+    CHECK(ok.id == 5);
+    REQUIRE(ok.result);
+    CHECK_FALSE(ok.result->is_null());
+    CHECK(static_cast<int>(ok.result->get_number("x", 0)) == 1);
+    CHECK_FALSE(ok.error.has_value());
+
+    auto err = parse_response(
+        R"({"jsonrpc":"2.0","id":6,"result":null,"error":{"code":-32601,"message":"no such method"}})");
+    CHECK(err.id == 6);
+    CHECK_FALSE(static_cast<bool>(err.result));
+    REQUIRE(err.error.has_value());
+    CHECK(err.error->code == -32601);
+    CHECK(err.error->message == "no such method");
+
+    auto null_result = parse_response(
+        R"({"jsonrpc":"2.0","id":7,"result":null})");
+    CHECK(null_result.id == 7);
+    REQUIRE(null_result.result);
+    CHECK(null_result.result->is_null());
+    CHECK_FALSE(null_result.error.has_value());
+
+    auto empty = parse_response(R"({"jsonrpc":"2.0","id":8,"error":null})");
+    CHECK(empty.id == 8);
+    CHECK_FALSE(static_cast<bool>(empty.result));
+    CHECK_FALSE(empty.error.has_value());
+}
+
 TEST_CASE("parse_tools_list extracts name + description + schema") {
     auto resp_v = json_parse(R"({"jsonrpc":"2.0","id":1,"result":{"tools":[
         {"name":"navigate","description":"Open a URL","inputSchema":{"type":"object"}},
