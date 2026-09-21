@@ -42,7 +42,9 @@ struct Constitution {
     // "voice" = the reply will be read aloud (Intercom, phone, ESP). Spoken
     // mode already covers this; on other modes a SPOKEN OUTPUT overlay is
     // appended so user-facing prose stays a conversation for the ear (and
-    // file delivery leaves the TUI ```diff path). Not an identity field.
+    // file delivery leaves the TUI ```diff path). With the mem bundle, a
+    // MEMORY HABIT block is appended so the agent recalls/writes like a PA.
+    // Not an identity field.
     std::string channel;
 
     // Optional advisor model (beta: advisor-tool-2026-03-01).
