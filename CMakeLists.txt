@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.13.4 LANGUAGES CXX)
+project(arbiter VERSION 0.13.7 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -169,6 +169,7 @@ set(ARBITER_SOURCES
     src/remote/api_client.cpp
     src/remote/sse_turn.cpp
     src/atomic_file.cpp
+    src/secret_file.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
     src/cli.cpp
@@ -1145,6 +1146,19 @@ if(INDEX_BUILD_TESTS)
     endif()
     add_test(NAME unit_message_replay_roundtrip COMMAND unit_message_replay_roundtrip)
 
+    # Session JSON message array decode (no OpenTUI).
+    add_executable(unit_message_codec
+        tests/test_message_codec.cpp
+        src/message_codec.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_message_codec PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}  # message_codec.h → api_client.h → openssl/ssl.h
+    )
+    add_test(NAME unit_message_codec COMMAND unit_message_codec)
+
     # --- Unit tests for the natural-language schedule parser ---
     add_executable(unit_schedule_parser
         tests/test_schedule_parser.cpp
@@ -1219,6 +1233,20 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_tenant_limiter COMMAND unit_tenant_limiter)
+
+    # Inter-iteration pause must wake on /kill /inject /suspend — the
+    # helper is header-only so this target does not pull Orchestrator.
+    add_executable(unit_loop_manager
+        tests/test_loop_manager.cpp
+    )
+    target_include_directories(unit_loop_manager PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_loop_manager PRIVATE
+        Threads::Threads
+    )
+    add_test(NAME unit_loop_manager COMMAND unit_loop_manager)
 
     # --- Unit tests for the Idempotency-Key dedup cache ---
     add_executable(unit_idempotency_cache
@@ -1375,6 +1403,17 @@ if(INDEX_BUILD_TESTS)
     target_link_libraries(unit_file_cap PRIVATE Threads::Threads)
     add_test(NAME unit_file_cap COMMAND unit_file_cap)
 
+    # Crash-safe writes must not follow a planted <path>.tmp symlink.
+    add_executable(unit_atomic_file
+        tests/test_atomic_file.cpp
+        src/atomic_file.cpp
+    )
+    target_include_directories(unit_atomic_file PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_atomic_file COMMAND unit_atomic_file)
+
     # Per-tenant + per-conversation artifact store (POST/GET/DELETE
     # /v1/.../artifacts and the agent /write --persist surface).
     add_executable(unit_artifacts
@@ -1393,6 +1432,17 @@ if(INDEX_BUILD_TESTS)
         Threads::Threads
     )
     add_test(NAME unit_artifacts COMMAND unit_artifacts)
+
+    # Secret dest writes (API keys / admin token): O_NOFOLLOW + regular file.
+    add_executable(unit_secret_file
+        tests/test_secret_file.cpp
+        src/secret_file.cpp
+    )
+    target_include_directories(unit_secret_file PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_secret_file COMMAND unit_secret_file)
 
     # MCP layer (JSON-RPC framing, subprocess wrapper, /mcp dispatch).
     # Live-server tests are intentionally not wired here — manual smoke
@@ -1683,8 +1733,9 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_intent COMMAND unit_intent)
 
-    # Intent reconcile: admit, contract compile, observe ΔS, verification
-    # mandate, implement stub, snapshot rollback.  No provider client.
+    # Intent reconcile: admit, contract compile, observe ΔS, JIT ensure
+    # waves, verification mandate, implement stub, snapshot rollback.
+    # No provider client.
     add_executable(unit_reconcile
         tests/test_reconcile.cpp
         src/reconcile.cpp
@@ -1729,6 +1780,42 @@ if(INDEX_BUILD_TESTS)
         OpenSSL::Crypto
     )
     add_test(NAME unit_remote_connect COMMAND unit_remote_connect)
+
+<<<<<<< HEAD
+    # JSON number grammar (incomplete frac/exp). Separate from #342's
+    # unit_json (surrogate pairs in parse_string) so the two PRs do not
+    # share tests/test_json.cpp or the CMake insert after unit_logger.
+    add_executable(unit_json_numbers
+        tests/test_json_numbers.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_json_numbers PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_json_numbers COMMAND unit_json_numbers)
+=======
+    # Unary --connect DELETE/PATCH body cap.  Separate binary so
+    # unit_remote_connect stays network-free; this one stands up a
+    # loopback server against RemoteApiClient's one-shot curl handles.
+    add_executable(unit_remote_http
+        tests/test_remote_http.cpp
+        src/remote/api_client.cpp
+        src/a2a/http.cpp
+        src/a2a/sse_reader.cpp
+        src/ssrf_guard.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_remote_http PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_remote_http PRIVATE
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_remote_http COMMAND unit_remote_http)
+>>>>>>> origin/main
 
     # tui_design.cpp includes themes_data.h — wire every unit target that
     # compiles it to the embed generator (same header as the main binary).

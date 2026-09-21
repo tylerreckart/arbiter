@@ -231,9 +231,24 @@ std::vector<std::string> cue_kinds(const std::string& norm) {
     return kinds;
 }
 
+std::string cap_intent_llm_text(std::string text) {
+    if (text.size() <= kIntentLlmTextMaxBytes) return text;
+    static constexpr char kMark[] = "\n[truncated]";
+    constexpr std::size_t kMarkLen = sizeof(kMark) - 1;
+    std::size_t keep = (kIntentLlmTextMaxBytes > kMarkLen)
+        ? (kIntentLlmTextMaxBytes - kMarkLen) : 0;
+    while (keep > 0 &&
+           (static_cast<unsigned char>(text[keep]) & 0xC0) == 0x80) {
+        --keep;
+    }
+    text.resize(keep);
+    text += kMark;
+    return text;
+}
+
 std::string build_llm_user_prompt(const IntentInput& in, const Intent& hint) {
     std::ostringstream q;
-    q << "[REQUEST]\n" << in.text << "\n[END REQUEST]\n\n";
+    q << "[REQUEST]\n" << cap_intent_llm_text(in.text) << "\n[END REQUEST]\n\n";
     q << "[ROSTER]\n";
     if (in.roster.empty()) {
         q << "(none)\n";
