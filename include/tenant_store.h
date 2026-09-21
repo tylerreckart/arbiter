@@ -285,14 +285,16 @@ public:
                                       const std::string& agent_id,
                                       const std::string& agent_def_json = "");
 
-    // List newest first.  `before_updated_at == 0` means "from the latest";
-    // pass the previous page's last `updated_at` to paginate backward.
-    // `limit` is hard-capped at 200.
+    // List newest first.  `before_updated_at == 0` means "from the latest".
+    // Pass the previous page's last `updated_at` (and `before_id`, the last
+    // row's id) to paginate backward.  Without `before_id`, rows that share
+    // a second with the cursor are skipped.  `limit` is hard-capped at 200.
     // `folder_id_filter`: -1 = no filter; 0 = unfiled only; >0 = that folder.
     std::vector<Conversation> list_conversations(int64_t tenant_id,
                                                   int64_t before_updated_at,
                                                   int     limit,
-                                                  int64_t folder_id_filter = -1) const;
+                                                  int64_t folder_id_filter = -1,
+                                                  int64_t before_id = 0) const;
 
     std::optional<Conversation> get_conversation(int64_t tenant_id, int64_t id) const;
 

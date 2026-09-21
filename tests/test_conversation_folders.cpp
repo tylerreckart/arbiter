@@ -9,6 +9,10 @@
 #include <filesystem>
 #include <random>
 #include <sstream>
+#include <string>
+#include <vector>
+
+#include <sqlite3.h>
 
 using namespace arbiter;
 namespace fs = std::filesystem;
@@ -64,6 +68,50 @@ TEST_CASE("conversation folder CRUD and membership") {
     got = s.get_conversation(tid, api.id);
     REQUIRE(got);
     CHECK(got->folder_id == 0);
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("list_conversations composite cursor keeps same-second siblings") {
+    const std::string dir = make_temp_dir();
+    TenantStore s;
+    const std::string db_path = dir + "/tenants.db";
+    s.open(db_path);
+    const int64_t tid = s.create_tenant("acme").tenant.id;
+
+    auto a = s.create_conversation(tid, "first", "index");
+    auto b = s.create_conversation(tid, "second", "index");
+    auto c = s.create_conversation(tid, "third", "index");
+    REQUIRE(a.id > 0);
+    REQUIRE(b.id > a.id);
+    REQUIRE(c.id > b.id);
+
+    // Force the three rows onto one epoch second so timestamp-only paging
+    // would skip the siblings of the cursor.
+    {
+        sqlite3* raw = nullptr;
+        REQUIRE(sqlite3_open(db_path.c_str(), &raw) == SQLITE_OK);
+        char* err = nullptr;
+        REQUIRE(sqlite3_exec(raw,
+                             "UPDATE conversations SET updated_at = 1000 "
+                             "WHERE origin != 'tui';",
+                             nullptr, nullptr, &err) == SQLITE_OK);
+        sqlite3_free(err);
+        sqlite3_close(raw);
+    }
+
+    auto newest = s.list_conversations(tid, 0, 2, -1);
+    REQUIRE(newest.size() == 2);
+    CHECK(newest[0].id == c.id);
+    CHECK(newest[1].id == b.id);
+
+    // Timestamp-only cursor skips every row that shares second 1000.
+    auto skipped = s.list_conversations(tid, 1000, 2, -1);
+    CHECK(skipped.empty());
+
+    auto page2 = s.list_conversations(tid, 1000, 2, -1, newest.back().id);
+    REQUIRE(page2.size() == 1);
+    CHECK(page2[0].id == a.id);
 
     fs::remove_all(dir);
 }

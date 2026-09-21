@@ -14,6 +14,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   saves and token/cost totals include the resumed file body instead
   of dropping it when `resp.content` is overwritten with
   `total_content`.
+- **Conversation list cursor.** `GET /v1/conversations` now orders by
+  `updated_at DESC, id DESC` and accepts `before_id` so pages that share
+  an epoch second no longer skip or duplicate rows. Timestamp-only
+  `before_updated_at` stays valid for old clients.
+- **Token cancel is not a client-wide kill-switch.** `complete()` /
+  `stream()` no longer set `hard_cancelled_` when only the thread's
+  `CancelToken` is set. Esc on one TUI pane or `/kill` of a `/loop`
+  was aborting sibling streams that share the same `ApiClient`
+  (#46 / #48). `cancel()` and kill-switch preflight stay sticky.
 - **A2A `tasks/cancel` survives `message/send`.** `update_a2a_task` no
 - **Reopened todos clear `completed_at`.** `update_todo` (HTTP PATCH and
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
