@@ -188,3 +188,24 @@ TEST_CASE("run_advisor_gate: provider failure does not echo raw error") {
     CHECK(out.text.find("Authentication") == std::string::npos);
     CHECK(out.text.find("offline") == std::string::npos);
 }
+
+TEST_CASE("advisor_gate_http_abort: revoke stays 401; cancel is not a bad token") {
+    auto ok = advisor_gate_http_abort(true, false);
+    CHECK(ok.status == 200);
+    CHECK(ok.error == nullptr);
+
+    auto revoke = advisor_gate_http_abort(false, false);
+    CHECK(revoke.status == 401);
+    CHECK(std::string(revoke.error) == "missing or invalid bearer token");
+
+    auto cancel = advisor_gate_http_abort(true, true);
+    CHECK(cancel.status == 409);
+    CHECK(std::string(cancel.error) == "request cancelled");
+    CHECK(std::string(cancel.error).find("bearer") == std::string::npos);
+
+    // Disable/rotate also cancel in-flight; revoke wins so clients
+    // cannot tell a disabled tenant from a bad token.
+    auto both = advisor_gate_http_abort(false, true);
+    CHECK(both.status == 401);
+    CHECK(std::string(both.error) == "missing or invalid bearer token");
+}

@@ -192,6 +192,44 @@ TEST_CASE("memory entries: type / tag / q filters and cursor") {
     }
 }
 
+TEST_CASE("tag filter treats LIKE wildcards as literals") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "tag-like");
+
+    auto snake = s.create_entry(tid, "project", "snake", "s", "",
+                                R"(["foo_bar"])");
+    auto sibling = s.create_entry(tid, "project", "sib", "s", "",
+                                  R"(["fooXbar"])");
+    auto pct = s.create_entry(tid, "project", "pct", "s", "",
+                              R"(["100%"])");
+    auto thou = s.create_entry(tid, "project", "thou", "s", "",
+                               R"(["1000"])");
+    // Serialized JSON stores a backslash as two backslash chars.
+    auto slash = s.create_entry(tid, "project", "slash", "s", "",
+                                R"(["foo\\bar"])");
+
+    TenantStore::EntryFilter f;
+    f.tag = "foo_bar";
+    auto rows = s.list_entries(tid, f);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].id == snake.id);
+
+    f.tag = "100%";
+    rows = s.list_entries(tid, f);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].id == pct.id);
+
+    f.tag = "foo\\\\bar";  // two backslashes, matching the JSON text
+    rows = s.list_entries(tid, f);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].id == slash.id);
+
+    (void)sibling;
+    (void)thou;
+}
+
 TEST_CASE("memory relations: create / list / unique conflict / delete") {
     TempDb db;
     TenantStore s;

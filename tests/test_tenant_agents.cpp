@@ -7,7 +7,8 @@
 //   DELETE /v1/agents/:id
 // and the per-request orchestrator's "install stored agents on every
 // /v1/orchestrate call so /agent and /parallel can resolve siblings by
-// id" wiring.
+// id" wiring — plus extra-fetch of a targeted id that fell off the
+// newest-200 list page (list_agent_records_for_dispatch).
 //
 // HTTP-layer concerns (Constitution::from_json validation, agent_id
 // safety, "index" being reserved) are enforced inside api_server.cpp
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <set>
 #include <thread>
 
 namespace fs = std::filesystem;
@@ -230,4 +232,59 @@ TEST_CASE("list_agent_records_for_routing returns all agents by agent_id") {
     }
     CHECK(all.front().agent_id == "agent-000");
     CHECK(all.back().agent_id == "agent-200");
+}
+
+TEST_CASE("list_agent_records_for_dispatch extra-fetches a targeted id past newest-200") {
+    TempDb db;
+    TenantStore s;
+    s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t other = make_tenant(s, "other");
+
+    for (int i = 0; i < 201; ++i) {
+        char id[32];
+        std::snprintf(id, sizeof(id), "agent-%03d", i);
+        REQUIRE(s.create_agent_record(tid, id, id, "r", "m", kBlobV1).has_value());
+    }
+    REQUIRE(s.create_agent_record(other, "agent-000", "x", "r", "m", kBlobV1).has_value());
+    REQUIRE(s.create_agent_record(other, "secret", "s", "r", "m", kBlobV1).has_value());
+
+    auto page = s.list_agent_records(tid, 200);
+    REQUIRE(page.size() == 200);
+    std::set<std::string> on_page;
+    for (const auto& rec : page) on_page.insert(rec.agent_id);
+    std::string missing;
+    for (int i = 0; i < 201; ++i) {
+        char id[32];
+        std::snprintf(id, sizeof(id), "agent-%03d", i);
+        if (!on_page.count(id)) {
+            missing = id;
+            break;
+        }
+    }
+    REQUIRE_FALSE(missing.empty());
+    CHECK(s.get_agent_record(tid, missing).has_value());
+
+    auto dispatched = s.list_agent_records_for_dispatch(tid, missing);
+    REQUIRE(dispatched.size() == 201);
+    bool saw_missing = false;
+    for (const auto& rec : dispatched) {
+        if (rec.agent_id == missing) saw_missing = true;
+    }
+    CHECK(saw_missing);
+
+    auto already_on_page = s.list_agent_records_for_dispatch(tid, page[0].agent_id);
+    CHECK(already_on_page.size() == 200);
+    int copies = 0;
+    for (const auto& rec : already_on_page) {
+        if (rec.agent_id == page[0].agent_id) ++copies;
+    }
+    CHECK(copies == 1);
+
+    CHECK(s.list_agent_records_for_dispatch(tid, "").size() == 200);
+    CHECK(s.list_agent_records_for_dispatch(tid, "index").size() == 200);
+    CHECK(s.list_agent_records_for_dispatch(tid, "does-not-exist").size() == 200);
+    // Extra-fetch is tenant-scoped: another tenant's id is not appended.
+    CHECK(s.list_agent_records_for_dispatch(tid, "secret").size() == 200);
+    CHECK(s.get_agent_record(other, "secret").has_value());
 }
