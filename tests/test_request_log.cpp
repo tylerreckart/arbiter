@@ -630,6 +630,30 @@ TEST_CASE("reconcile_runs: upsert / get is tenant-scoped") {
     CHECK(again->reason == "ok");
 }
 
+TEST_CASE("reconcile_runs persist agent_map and budgets tenant-scoped") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t a = make_tenant(s, "acme");
+    const int64_t b = make_tenant(s, "beta");
+
+    TenantStore::ReconcileRun row;
+    row.request_id = "rec-map";
+    row.tenant_id = a;
+    row.status = "running";
+    row.mode = "ensure";
+    row.target_state_json = R"({"system":"demo"})";
+    row.workspace_kind = "path";
+    row.agent_map_json = R"({"system":"nexus"})";
+    row.budgets_json = R"({"max_waves":3,"max_agents_per_wave":2})";
+    s.upsert_reconcile_run(row);
+
+    auto got = s.get_reconcile_run(a, "rec-map");
+    REQUIRE(got);
+    CHECK(got->mode == "ensure");
+    CHECK(got->agent_map_json.find("nexus") != std::string::npos);
+    CHECK(got->budgets_json.find("max_waves") != std::string::npos);
+    CHECK_FALSE(s.get_reconcile_run(b, "rec-map"));
+}
+
 TEST_CASE("reconcile_runs recovery sweep flips running rows") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");

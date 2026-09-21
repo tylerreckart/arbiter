@@ -6,9 +6,13 @@
 #include "json.h"
 #include "reconcile.h"
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <thread>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -227,6 +231,53 @@ TEST_CASE("broken tests never satisfy") {
     CHECK_FALSE(r.verification.passed);
 }
 
+TEST_CASE("restore_workspace does not wipe the live tree when snapshot copy fails") {
+    TempDir dir;
+    const fs::path root = dir.path / "ws";
+    const fs::path snap = dir.path / "snap";
+    fs::create_directories(root);
+    fs::create_directories(snap);
+    write_file(root / "keep.txt", "original\n");
+    write_file(snap / "secret.txt", "from-snap\n");
+    fs::permissions(snap / "secret.txt", fs::perms::none);
+
+    std::string err;
+    CHECK_FALSE(restore_workspace(snap.string(), root.string(), &err));
+    CHECK(fs::exists(root / "keep.txt"));
+    CHECK_FALSE(fs::exists(root / "secret.txt"));
+    {
+        std::ifstream in(root / "keep.txt");
+        std::string body((std::istreambuf_iterator<char>(in)), {});
+        CHECK(body == "original\n");
+    }
+
+    std::error_code ec;
+    fs::permissions(snap / "secret.txt",
+                    fs::perms::owner_read | fs::perms::owner_write, ec);
+}
+
+TEST_CASE("restore_workspace replaces live files from a readable snapshot") {
+    TempDir dir;
+    const fs::path root = dir.path / "ws";
+    const fs::path snap = dir.path / "snap";
+    fs::create_directories(root);
+    fs::create_directories(snap);
+    write_file(root / "keep.txt", "original\n");
+    write_file(root / "debris.py", "partial\n");
+    write_file(snap / "keep.txt", "restored\n");
+
+    std::string err;
+    CHECK(restore_workspace(snap.string(), root.string(), &err));
+    CHECK(fs::exists(root / "keep.txt"));
+    CHECK_FALSE(fs::exists(root / "debris.py"));
+    {
+        std::ifstream in(root / "keep.txt");
+        std::string body((std::istreambuf_iterator<char>(in)), {});
+        CHECK(body == "restored\n");
+    }
+    CHECK_FALSE(fs::exists(root / ".arbiter-reconcile-snapshots" / ".restore-staging"));
+}
+
 TEST_CASE("rollbackOnFailure restores pre-run tree") {
     TempDir dir;
     write_file(dir.path / "keep.txt", "original\n");
@@ -290,4 +341,314 @@ TEST_CASE("path workspace missing fails admit") {
     auto adm = admit_reconcile(s);
     REQUIRE(adm);
     CHECK(adm->code == "bad_workspace");
+}
+
+TEST_CASE("admit rejects unknown extra checker") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    StateClause cl;
+    cl.id = "invent";
+    cl.checker = "not.a.checker";
+    cl.arg = "x";
+    s.extra_clauses.push_back(cl);
+    auto adm = admit_reconcile(s);
+    REQUIRE(adm);
+    CHECK(adm->code == "unknown_checker");
+}
+
+TEST_CASE("agent_map compiles onto StateClause.agent") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo","status":"SETTLED"})");
+    s.invariants = {"require_readme"};
+    s.agent_map["system"] = "quill";
+    s.agent_map["inv-1"] = "writer";
+    auto c = compile_intent_contract(s, "x");
+    bool saw_quill = false, saw_writer = false;
+    for (const auto& cl : c.clauses) {
+        if (cl.id == "system") { CHECK(cl.agent == "quill"); saw_quill = true; }
+        if (cl.id == "inv-1") { CHECK(cl.agent == "writer"); saw_writer = true; }
+    }
+    CHECK(saw_quill);
+    CHECK(saw_writer);
+}
+
+TEST_CASE("observe extra checkers fail closed without projection") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    s.verification.require_tests = false;
+    StateContract c;
+    StateClause todo;
+    todo.id = "t1";
+    todo.checker = "todo.completed";
+    todo.arg = "CI green";
+    c.clauses.push_back(todo);
+    StateClause art;
+    art.id = "a1";
+    art.checker = "artifact.exists";
+    art.arg = "runbook.md";
+    c.clauses.push_back(art);
+    StateClause mem;
+    mem.id = "m1";
+    mem.checker = "memory.active";
+    mem.arg = "project:deploy-42";
+    c.clauses.push_back(mem);
+    auto d = observe_contract(c, s);
+    CHECK(d.residual.size() == 3);
+    for (const auto& r : d.residual) CHECK_FALSE(r.satisfied);
+}
+
+TEST_CASE("observe extra checkers hold when projections say so") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    s.verification.require_tests = false;
+    StateContract c;
+    StateClause todo;
+    todo.id = "t1";
+    todo.checker = "todo.completed";
+    todo.arg = "CI green";
+    c.clauses.push_back(todo);
+    ReconcileHooks hooks;
+    hooks.todo_completed = [](const std::string& subject) {
+        return subject == "CI green";
+    };
+    auto d = observe_contract(c, s, hooks);
+    CHECK(d.empty());
+}
+
+TEST_CASE("ensure without resolvable agents is unmapped_clauses") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    s.invariants = {"require_readme"};
+    s.mode = "ensure";
+    s.verification.require_tests = false;
+    s.agent_map["system"] = "";
+    s.agent_map["inv-1"] = "";
+    ReconcileHooks hooks;
+    hooks.agent_turn = [](const ReconcileAgentCover&, const StateContract&,
+                          const std::string&, std::atomic<bool>*) {
+        ReconcileAgentTurn t;
+        t.ok = true;
+        return t;
+    };
+    auto r = run_reconcile(s, hooks);
+    CHECK(r.status == "failed");
+    CHECK(r.reason == "unmapped_clauses");
+}
+
+TEST_CASE("ensure + fake agents: residual closes, teardown, satisfied") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo","status":"SETTLED"})");
+    s.invariants = {"require_readme", "require_two_factor_auth_prompt"};
+    s.mode = "ensure";
+    std::map<std::string, int> catalog_history{{"nexus", 7}, {"forge", 3}};
+    const auto catalog_before = catalog_history;
+    std::vector<std::string> spawned, torn;
+    int max_covers = 0;
+    ReconcileHooks hooks;
+    hooks.emit = [&](const std::string& ev, const std::shared_ptr<JsonValue>& p) {
+        if (ev == "agent.spawned" && p)
+            spawned.push_back(p->get_string("clone_id", ""));
+        if (ev == "agent.teardown" && p)
+            torn.push_back(p->get_string("clone_id", ""));
+    };
+    hooks.agent_turn = [&](const ReconcileAgentCover& cover,
+                           const StateContract&,
+                           const std::string& root,
+                           std::atomic<bool>*) {
+        max_covers = std::max(max_covers, static_cast<int>(cover.clause_ids.size()));
+        int clone_hist = 0;
+        ++clone_hist;
+        (void)clone_hist;
+        write_file(fs::path(root) / "README.md", "demo SETTLED 2fa totp\n");
+        write_file(fs::path(root) / "app.py",
+                   "demo portal SETTLED two_factor totp\n");
+        write_file(fs::path(root) / "Makefile", "test:\n\ttrue\n");
+        ReconcileAgentTurn t;
+        t.agent_id = cover.agent_id;
+        t.clone_id = cover.clone_id;
+        t.ok = true;
+        t.note = "clone-only";
+        return t;
+    };
+    auto r = run_reconcile(s, hooks);
+    CHECK(r.status == "satisfied");
+    CHECK(r.waves >= 1);
+    CHECK_FALSE(spawned.empty());
+    CHECK(spawned.size() == torn.size());
+    CHECK(catalog_history == catalog_before);
+    CHECK(r.verification.passed);
+}
+
+TEST_CASE("checker miss retries then clause_retry_exhausted") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    s.invariants = {"require_readme"};
+    s.mode = "ensure";
+    s.max_retries_per_clause = 1;
+    s.max_waves = 12;
+    s.verification.require_tests = false;
+    int turns = 0;
+    ReconcileHooks hooks;
+    hooks.agent_turn = [&](const ReconcileAgentCover& cover, const StateContract&,
+                           const std::string&, std::atomic<bool>*) {
+        ++turns;
+        ReconcileAgentTurn t;
+        t.agent_id = cover.agent_id;
+        t.clone_id = cover.clone_id;
+        t.ok = true;
+        t.note = "no-op";
+        return t;
+    };
+    auto r = run_reconcile(s, hooks);
+    CHECK(r.status == "failed");
+    CHECK(r.reason == "clause_retry_exhausted");
+    CHECK(r.waves == 2);
+    CHECK(turns == 2);
+}
+
+TEST_CASE("max_waves halt") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    s.invariants = {"require_readme"};
+    s.mode = "ensure";
+    s.max_waves = 2;
+    s.max_retries_per_clause = 16;
+    s.verification.require_tests = false;
+    ReconcileHooks hooks;
+    hooks.implement = [](const StateContract&, const std::string&,
+                         std::atomic<bool>*) { return std::string("noop"); };
+    auto r = run_reconcile(s, hooks);
+    CHECK(r.status == "failed");
+    CHECK(r.reason == "max_waves");
+    CHECK(r.waves == 2);
+}
+
+TEST_CASE("max_wall_ms halt") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    s.invariants = {"require_readme"};
+    s.mode = "ensure";
+    s.max_wall_ms = 5;
+    s.max_retries_per_clause = 16;
+    s.max_waves = 12;
+    s.verification.require_tests = false;
+    ReconcileHooks hooks;
+    hooks.implement = [](const StateContract&, const std::string&,
+                         std::atomic<bool>*) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return std::string("slow");
+    };
+    auto r = run_reconcile(s, hooks);
+    CHECK(r.status == "failed");
+    CHECK(r.reason == "max_wall_ms");
+    CHECK(r.waves >= 1);
+}
+
+TEST_CASE("cancel mid-wave tears down clones") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    s.invariants = {"require_readme"};
+    s.mode = "ensure";
+    s.verification.require_tests = false;
+    std::atomic<bool> cancel{false};
+    std::vector<std::string> torn;
+    std::map<std::string, int> catalog_history{{"nexus", 5}};
+    const auto catalog_before = catalog_history;
+    ReconcileHooks hooks;
+    hooks.cancel = &cancel;
+    hooks.emit = [&](const std::string& ev, const std::shared_ptr<JsonValue>& p) {
+        if (ev == "agent.teardown" && p)
+            torn.push_back(p->get_string("clone_id", ""));
+    };
+    hooks.agent_turn = [&](const ReconcileAgentCover& cover, const StateContract&,
+                           const std::string&, std::atomic<bool>*) {
+        cancel.store(true);
+        ReconcileAgentTurn t;
+        t.agent_id = cover.agent_id;
+        t.clone_id = cover.clone_id;
+        return t;
+    };
+    auto r = run_reconcile(s, hooks);
+    CHECK(r.status == "canceled");
+    CHECK_FALSE(torn.empty());
+    CHECK(catalog_history == catalog_before);
+}
+
+TEST_CASE("max_agents_per_wave caps covers") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({})");
+    s.verification.require_tests = false;
+    s.mode = "ensure";
+    s.max_agents_per_wave = 1;
+    s.max_retries_per_clause = 4;
+    StateClause a;
+    a.id = "file-a";
+    a.checker = "file.exists";
+    a.arg = "A.txt";
+    a.agent = "writer";
+    StateClause b;
+    b.id = "file-b";
+    b.checker = "file.exists";
+    b.arg = "B.txt";
+    b.agent = "devops";
+    s.extra_clauses.push_back(a);
+    s.extra_clauses.push_back(b);
+    int max_spawned_wave = 0;
+    int current_wave_spawns = 0;
+    ReconcileHooks hooks;
+    hooks.emit = [&](const std::string& ev, const std::shared_ptr<JsonValue>&) {
+        if (ev == "agent.spawned") ++current_wave_spawns;
+        if (ev == "reconcile.delta") {
+            max_spawned_wave = std::max(max_spawned_wave, current_wave_spawns);
+            current_wave_spawns = 0;
+        }
+    };
+    hooks.agent_turn = [&](const ReconcileAgentCover& cover, const StateContract&,
+                           const std::string& root, std::atomic<bool>*) {
+        for (const auto& id : cover.clause_ids) {
+            if (id == "file-a") write_file(fs::path(root) / "A.txt", "a\n");
+            if (id == "file-b") write_file(fs::path(root) / "B.txt", "b\n");
+        }
+        ReconcileAgentTurn t;
+        t.agent_id = cover.agent_id;
+        t.clone_id = cover.clone_id;
+        t.ok = true;
+        return t;
+    };
+    auto r = run_reconcile(s, hooks);
+    CHECK(r.status == "satisfied");
+    CHECK(r.waves >= 2);
+    CHECK(max_spawned_wave <= 1);
+}
+
+TEST_CASE("observe mode is unchanged with agent_map present") {
+    TempDir dir;
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    s.invariants = {"require_readme"};
+    s.agent_map["system"] = "quill";
+    auto r = run_reconcile(s);
+    CHECK(r.status == "failed");
+    CHECK(r.reason == "delta_unresolved");
+    CHECK(r.waves == 0);
+}
+
+TEST_CASE("rollback_on_failure still restores after a wave") {
+    TempDir dir;
+    write_file(dir.path / "keep.txt", "original\n");
+    auto s = base_spec(dir.path, R"({"system":"demo"})");
+    s.invariants = {"require_readme"};
+    s.mode = "ensure";
+    s.rollback_on_failure = true;
+    ReconcileHooks hooks;
+    hooks.implement = [](const StateContract&, const std::string& root,
+                         std::atomic<bool>*) {
+        write_file(fs::path(root) / "debris.py", "partial work\n");
+        write_file(fs::path(root) / "Makefile", "test:\n\tfalse\n");
+        return std::string("partial");
+    };
+    auto r = run_reconcile(s, hooks);
+    CHECK(r.status == "rolled_back");
+    CHECK(r.rolled_back);
+    CHECK(fs::exists(dir.path / "keep.txt"));
+    CHECK_FALSE(fs::exists(dir.path / "debris.py"));
 }

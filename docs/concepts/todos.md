@@ -18,7 +18,7 @@ A conversation-scoped read sees both — pinned rows plus the unscoped pool — 
 | `completed`    | Done. Stamps `completed_at` and disappears from the active list.       |
 | `canceled`     | Won't be done. Same archive treatment as `completed`.                  |
 
-Status is the only column that auto-stamps anything else: any transition into `completed` or `canceled` sets `completed_at = now()` unless the caller passes a value explicitly. Pending → in_progress → completed is the canonical flow; you can also skip straight from pending to canceled when scope changes mid-task.
+Status is the only column that auto-stamps anything else: any transition into `completed` or `canceled` sets `completed_at = now()` unless the caller passes a value explicitly. A later PATCH back to `pending` or `in_progress` clears `completed_at` (back to `0`) so the column stays `0` until terminal. Pending → in_progress → completed is the canonical flow; you can also skip straight from pending to canceled when scope changes mid-task. HTTP PATCH is the reopen path — `/todo start` only resolves against open rows.
 
 ## The `/todo` writ
 

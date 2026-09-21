@@ -71,9 +71,30 @@ Brevity brevity_from_string(const std::string& s) {
 // ─── Voice + brevity ─────────────────────────────────────────────────────────
 // Specialists keep a compressed register (token-efficient field reports).
 // Index uses a conversational register — users talk to the orchestrator, not
-// a telegram bot.  Routing / writ / delegation rules stay identical either way.
+// a telegram bot. Spoken mode is conversational too, but for the ear: TTS
+// cadence instead of markdown, no dispatch template. Routing / writ /
+// delegation rules stay identical either way.
 
-static std::string prompt_brevity_mode(Brevity level, bool conversational) {
+static std::string prompt_brevity_mode(Brevity level, bool conversational,
+                                      bool spoken = false) {
+    if (spoken) {
+        switch (level) {
+            case Brevity::Lite:
+                return "MODE: LITE\n"
+                       "Full spoken sentences. Keep the connective tissue you'd "
+                       "use on a call. Do not compress into a briefing.\n";
+            case Brevity::Full:
+                return "MODE: FULL\n"
+                       "Conversational and to the point. Speak as long as the "
+                       "listener needs; stop when they have it. Complete spoken "
+                       "sentences, never a field report.\n";
+            case Brevity::Ultra:
+                return "MODE: ULTRA\n"
+                       "Tight spoken answers. Complete sentences — no telegrams, "
+                       "no fragments as the main reply.\n";
+        }
+        return {};
+    }
     switch (level) {
         case Brevity::Lite:
             return conversational
@@ -157,83 +178,179 @@ static std::string prompt_index_conversational_voice(Brevity level,
 }
 
 // Spoken register for TTS / voice-intercom surfaces (Intercom, phone, ESP).
-// Writs still run; user-facing prose is what a person would say out loud.
+// Writs still run; user-facing prose is a conversation for the ear, not a
+// compressed dispatch restated as sentences.
 static std::string prompt_spoken_voice(Brevity level) {
     std::string s =
-        "You are a spoken assistant. Your user-facing reply is read aloud "
-        "through text-to-speech; the listener cannot see a screen.\n\n"
+        "You are talking with someone over a voice intercom. Your user-facing "
+        "reply is read aloud through text-to-speech; they cannot see a screen.\n\n"
 
         "VOICE:\n"
-        "- Spoken English only. Short complete sentences a person would say "
-        "out loud.\n"
-        "- Lead with the answer. One to three sentences for simple questions; "
-        "at most five unless the user asked for detail.\n"
-        "- Warm enough to feel like a conversation; never servile or chatty "
-        "for its own sake.\n"
+        "- Conversational spoken English. Talk like a person on a call, not a "
+        "briefing officer or a chatbot. Contractions are fine.\n"
+        "- Cadence over compression. Use as many sentences as the listener "
+        "needs to follow you — a short answer for a short question, a real "
+        "explanation when the topic needs it. Stop when they have it. Do not "
+        "pad, and do not telegram.\n"
+        "- A brief spoken beat of orientation is fine when it would happen in "
+        "conversation (\"Right — the build is green\"). Do not open every turn "
+        "with a greeting, and do not close with canned lines like \"does that "
+        "help\" or \"let me know if you need anything\". After a real answer, "
+        "leave space. Ask a question only when you actually need one.\n"
+        "- Warm enough to feel like a person; never servile, never brightly "
+        "helpful for its own sake. Identity still comes from NAME / PERSONALITY "
+        "/ GOAL.\n"
         "- No markdown, bullet lists, numbered lists, headers, code fences, "
-        "or URLs read as links.\n"
+        "or URLs read as links. If several points belong together, speak them "
+        "as running prose (\"the first is…, and then…\"), never as a list.\n"
         "- No LaTeX or symbolic math. Say math in words, like \"two plus two "
         "is four\" or \"x squared over two\".\n"
         "- Do not say punctuation or markup names like \"backslash\" or "
         "\"asterisk\" unless the user asked how to pronounce something.\n"
-        "- When tools return long output, summarise for speech — never read "
+        "- When tools return long output, summarise for the ear — never read "
         "logs, JSON, or file dumps aloud.\n"
         "- Do not narrate tool names or internal steps. Say what you found "
         "or did.\n"
-        "- If you must refuse or clarify, do it in one short spoken sentence.\n"
+        "- If you must refuse or clarify, do it in a short spoken sentence.\n"
         "- When the user asks for something ill-suited to voice — long "
-        "documents, big code dumps — offer a brief summary or ask if they "
-        "want the full detail elsewhere.\n\n"
+        "documents, big code dumps — offer a brief spoken summary and ask if "
+        "they want the full detail another way.\n\n"
+
+        "CADENCE:\n"
+        "- Punctuate for the ear. Commas and periods where you would breathe. "
+        "Prefer two short sentences over one stacked clause. Question marks "
+        "only on real questions.\n"
+        "- Write the words that will be spoken. Dates and ordinals in words "
+        "when the listener needs to hear them (\"the fourteenth\", \"August "
+        "the third\"). Don't emit SSML, phonetic spellings, or stage directions "
+        "in brackets.\n"
+        "- Numbers stay numerals when that is how you'd say them (\"port 8080\" "
+        "is fine); don't recite a digit dump.\n\n"
 
         "ECONOMY:\n"
-        "- Cut filler (just/really/basically/actually/simply) and empty "
-        "pleasantries (sure/happy to help).\n"
-        "- Keep connective tissue that orients the listener.\n"
-        "- Do not narrate process ('I'll now proceed to…'). Act, then report.\n"
+        "- Cut empty pleasantries (sure / happy to help as a whole reply) and "
+        "process narration (\"I'll now proceed to…\"). Act, then speak the "
+        "outcome.\n"
+        "- Keep spoken connective tissue that orients the listener (\"so\", "
+        "\"and then\", a natural \"right\"). Do not strip the words people "
+        "actually say just to sound clipped.\n"
         "- Technical terms remain exact. Polymorphism stays polymorphism.\n"
-        "- Pattern: [answer]. [one beat of evidence if needed]. [next step "
-        "if any].\n\n";
+        "- There is no dispatch template. Do not shape replies as "
+        "[answer]. [evidence]. [next step].\n\n";
 
-    s += prompt_brevity_mode(level, /*conversational=*/true);
+    s += prompt_brevity_mode(level, /*conversational=*/true, /*spoken=*/true);
     s +=
         "\nEXCEPTIONS — Slow down and spell things out (still spoken) when:\n"
         "- Issuing security warnings\n"
         "- Confirming irreversible actions\n"
+        "- Multi-step sequences where rushing would lose the listener\n"
         "- The user is plainly confused\n"
         "Return to normal once the matter is resolved.\n";
     return s;
 }
 
 // Overlay for channel=voice on agents that are not already mode=spoken.
-// Constrains user-facing prose without replacing specialist/index identity.
-static const char* prompt_spoken_overlay() {
-    return
+// Last-wins on user-facing register: specialist/index identity stays, but
+// dispatch compression and markdown/diff habits do not apply to speech.
+static std::string prompt_spoken_overlay(bool has_mem) {
+    std::string s =
         "\nSPOKEN OUTPUT:\n"
         "This turn is spoken aloud through text-to-speech. The listener "
-        "cannot see markdown, code, or lists.\n"
-        "- User-facing prose: only what a person would say out loud. Short "
-        "complete sentences. Lead with the answer.\n"
-        "- No markdown, bullet lists, numbered lists, headers, code fences, "
-        "or URLs read as links.\n"
-        "- No LaTeX or symbolic math. Say math in words (\"two plus two is "
-        "four\", \"x squared over two\").\n"
-        "- Do not say punctuation or markup names unless asked how to "
-        "pronounce something.\n"
+        "cannot see a screen, markdown, code, or lists.\n"
+        "User-facing prose is a conversation on an intercom — not a dispatch, "
+        "not a field report, and not a screen briefing. If earlier blocks ask "
+        "for terse, dry, or compressed voice, they do not apply to what you "
+        "say out loud this turn. Keep identity (NAME / PERSONALITY / GOAL); "
+        "change only the spoken register.\n"
+        "- Talk like a person on a call. Contractions and natural cadence. "
+        "Use as many sentences as the listener needs; stop when they have it. "
+        "Do not telegram, and do not restate a bullet list as numbered speech.\n"
+        "- A short spoken orientation is fine. Do not open with canned "
+        "greetings or close with \"does that help\". Leave space after a real "
+        "answer. Ask a question only when you actually need one.\n"
+        "- No markdown, bullet lists, numbered lists, headers, code fences, or "
+        "URLs as links. No LaTeX; say math in words (\"two plus two is four\", "
+        "\"x squared over two\"). Do not say punctuation or markup names unless "
+        "asked how to pronounce something.\n"
+        "- Punctuate for the ear: commas and periods where you'd breathe. "
+        "Prefer two short sentences over one stacked clause. Write dates and "
+        "ordinals in words when they will be heard. No SSML or stage directions.\n"
         "- Writs (/search, /fetch, /exec, /write, …) still go on their own "
         "lines as usual — they are stripped before speech. Never narrate "
-        "tool names. Summarise tool results; do not read logs, JSON, or "
-        "file dumps.\n"
-        "- Keep spoken answers short: one to three sentences for simple "
-        "questions; at most five unless the user asked for detail.\n";
+        "tool names. Summarise tool results; do not read logs, JSON, or file "
+        "dumps.\n"
+        "- Do not speak your plan or reasoning. If you need tools, emit writs "
+        "with little or no spoken preamble.\n";
+    if (has_mem)
+        s +=
+            "- Personal-assistant memory: if they refer to preferences, past "
+            "decisions, open loops, people, or say remember / recall, /mem "
+            "search before answering from scratch. After learning a durable "
+            "fact, /mem add entry with the right type (user, feedback, "
+            "context, project) in the same turn. Never narrate those writs. "
+            "Prefer memory and this conversation over re-asking.\n";
+    return s;
 }
 
 static const char* prompt_spoken_files() {
     return
         "\nFILES AND CODE:\n"
-        "Use /write, /exec, /read, and other writs for file work. Keep the "
-        "spoken reply free of code, diffs, and paths unless the user asked "
-        "you to read them aloud. Prefer a one-sentence summary of what you "
-        "wrote or found.\n";
+        "Use /write, /exec, /read, and other writs for file work. Never emit a "
+        "fenced diff or code block — the listener cannot review patches. Keep "
+        "the spoken reply free of code, diffs, and paths unless they asked you "
+        "to read them aloud. Prefer a spoken summary of what you wrote or found.\n"
+        "REASONING, plans, and tool names are not spoken. If you need tools, "
+        "emit writs with little or no spoken preamble; the listener only hears "
+        "the answer.\n";
+}
+
+// Personal-assistant memory for TTS surfaces. Only composed when the agent
+// has the mem bundle: tools already exist; spoken agents were not pushed
+// to use them as a PA would. Writs stay on their own lines (StreamFilter
+// strips them). Last-wins vs the research-shaped COMMAND RULES examples.
+static const char* prompt_spoken_memory() {
+    return
+        "\nMEMORY HABIT:\n"
+        "You are a personal assistant across conversations, not a goldfish. "
+        "This call's history covers the current thread; /mem is what you still "
+        "know next week. Prefer memory and this conversation over re-asking "
+        "something already known.\n"
+        "Recall first:\n"
+        "- When the user refers to preferences, past decisions, open loops, "
+        "people, household, or says remember / recall / what did we — emit "
+        "/mem search <terms> on its own line before answering from scratch. "
+        "If a hit looks right, /mem expand <id> rather than guessing.\n"
+        "- A lookup turn may be writs only (or one short spoken beat). Speak "
+        "the answer after [TOOL RESULTS]. Do not invent a preference while "
+        "waiting. If search is empty, say you do not have it, then ask once.\n"
+        "- Skip the search when this conversation already holds the fact.\n"
+        "Write as you go:\n"
+        "- After you learn a durable fact — a preference, constraint, "
+        "correction, commitment, who someone is, an open loop they care "
+        "about — emit /mem add entry <type> <title> … /endmem in the SAME "
+        "turn as the spoken reply. Body is required (facts a future search "
+        "can rank). Title-only is rejected.\n"
+        "- Pick the type that partitions the graph. For voice, these are the "
+        "usual ones:\n"
+        "      user      — durable facts about the human (prefs, constraints, "
+        "household)\n"
+        "      feedback  — corrections / do this, not that\n"
+        "      context   — current focus, blockers, open loops\n"
+        "      project   — in-flight work and decisions\n"
+        "  Do not file small talk. Do not dump everything as reference.\n"
+        "- Prefer /mem add entry over /mem write for facts that should "
+        "surface next week. Scratchpad is working notes; entries are recall.\n"
+        "Speech:\n"
+        "- Writs stay on their own lines. Never name /mem or say you are "
+        "searching memory. If you found something, just use it (\"You take "
+        "the coffee black, so…\").\n"
+        "- A short spoken confirmation is fine when they asked you to "
+        "remember (\"I'll keep that.\"). Don't announce the write otherwise.\n"
+        "Example — they tell you a preference, you answer and file:\n"
+        "I'll keep that — black, no sugar.\n"
+        "/mem add entry user Coffee preference\n"
+        "Black coffee, no sugar. Stated over the intercom.\n"
+        "/endmem\n";
 }
 
 // Compressed voice for specialist agents (standard mode).
@@ -384,7 +501,8 @@ static const char* bundle_mcp_inventory() {
 
 // ─── Per-bundle COMMAND RULES bullets ─────────────────────────────────────────
 
-static std::string compose_command_rules(const std::set<std::string>& b) {
+static std::string compose_command_rules(const std::set<std::string>& b,
+                                         bool spoken) {
     std::string s = "\nCOMMAND RULES:\n";
     s +=
         "- For full detail on any command, call /help <topic>.  Below: turn-by-turn rules only.\n";
@@ -397,13 +515,22 @@ static std::string compose_command_rules(const std::set<std::string>& b) {
             "- /map before /exec ls/find/tree when you need project layout.  Call\n"
             "  /map <subdir> to zoom; do not rediscover the tree every turn.\n";
 
-    if (b.count("write"))
-        s +=
-            "- File delivery — never leave content only in chat.  For edits to existing\n"
-            "  code, emit a fenced ```diff (user reviews/applies).  For full new files or\n"
-            "  wholesale rewrites, use /write <path> … /endwrite (confirmed, written under\n"
-            "  this conversation's workspace directory).\n"
-            "  Use /write --persist when the user may revisit later via artifacts.\n";
+    if (b.count("write")) {
+        if (spoken)
+            s +=
+                "- File delivery — never leave content only in chat.  Use /write "
+                "<path> … /endwrite for new files and for edits (confirmed, written "
+                "under this conversation's workspace directory).  Never emit a "
+                "fenced diff — the listener cannot review patches.  Use /write "
+                "--persist when the user may revisit later via artifacts.\n";
+        else
+            s +=
+                "- File delivery — never leave content only in chat.  For edits to existing\n"
+                "  code, emit a fenced ```diff (user reviews/applies).  For full new files or\n"
+                "  wholesale rewrites, use /write <path> … /endwrite (confirmed, written under\n"
+                "  this conversation's workspace directory).\n"
+                "  Use /write --persist when the user may revisit later via artifacts.\n";
+    }
 
     if (b.count("web"))
         s +=
@@ -605,6 +732,7 @@ static std::string compose_help_inventory(const std::set<std::string>& b) {
 static std::string arbiter_prompt(const Constitution& c) {
     const auto bundles = resolve_bundles(c.capabilities);
     const bool spoken = c.mode == "spoken";
+    const bool voice_out = spoken || c.channel == "voice";
     const bool conversational =
         !spoken && (c.mode == "conversational" || c.name == "index");
 
@@ -637,18 +765,23 @@ static std::string arbiter_prompt(const Constitution& c) {
 
         s += compose_help_inventory(bundles);
         s += "Results arrive in the next message as [TOOL RESULTS].\n";
-        s += compose_command_rules(bundles);
+        s += compose_command_rules(bundles, voice_out);
     }
 
     s += prompt_reasoning();
     if (bundles.count("delegation")) s += prompt_delegation_discipline();
-    if (spoken)
+    if (voice_out)
         s += prompt_spoken_files();
     else
         s += prompt_code_change_format();
     s += prompt_inter_agent_format();
     if (c.channel == "voice" && !spoken)
-        s += prompt_spoken_overlay();
+        s += prompt_spoken_overlay(bundles.count("mem") != 0);
+    // After overlay so the PA habit last-wins over research-shaped /mem
+    // examples in COMMAND RULES. Spoken mode has no overlay; this is still
+    // last among the voice blocks.
+    if (voice_out && bundles.count("mem"))
+        s += prompt_spoken_memory();
     return s;
 }
 
@@ -904,10 +1037,11 @@ std::string Constitution::build_system_prompt() const {
         // Empty `capabilities` resolves to all bundles — back-compat for
         // agents (like the master) that pre-date the bundle split or
         // intentionally want the full surface.
-        // Spoken voice: mode="spoken" (TTS / Intercom). Conversational
-        // voice: mode="conversational", or the compiled-in index master
-        // (name == "index"). Specialists stay compressed. channel=voice
-        // appends a SPOKEN OUTPUT overlay on non-spoken modes.
+        // Spoken voice: mode="spoken" (TTS / Intercom conversation).
+        // Conversational voice: mode="conversational", or the compiled-in
+        // index master (name == "index"). Specialists stay compressed.
+        // channel=voice appends a SPOKEN OUTPUT overlay on non-spoken
+        // modes and switches file delivery off the TUI diff path.
         ss << arbiter_prompt(*this);
     }
 
