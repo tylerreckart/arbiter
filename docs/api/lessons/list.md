@@ -11,7 +11,7 @@ List the calling tenant's lessons. Newest `last_seen_at` first by default; with 
 | Param      | Description |
 |------------|-------------|
 | `agent_id` | Filter to one agent's lessons. Omit for the tenant's full set. |
-| `q`        | Substring match against signature OR lesson_text (case-insensitive). |
+| `q`        | Literal substring match against signature OR lesson_text (case-insensitive). `%` and `_` are literals, not wildcards. |
 | `limit`    | Cap; max 200 for browse, 50 for search. |
 
 ```bash
