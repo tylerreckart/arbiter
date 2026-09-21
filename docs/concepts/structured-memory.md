@@ -274,7 +274,7 @@ Beyond search, four read commands let agents navigate the graph structurally:
 
 ### `/mem entries`
 
-Browse the current active set. Newest-first. Optional `type=foo,bar` and `tag=baz` filters apply as hard `WHERE` clauses (browse mode, not search mode). Use this for "show me my recent project entries" — not for finding a specific fact.
+Browse the current active set. Newest-first. Optional `type=foo,bar` and `tag=baz` filters apply as hard `WHERE` clauses (browse mode, not search mode). `tag=` is a literal substring of the serialized tags JSON (`%` / `_` / `\` are not wildcards). Use this for "show me my recent project entries" — not for finding a specific fact.
 
 ### `/mem entry <id>`
 
