@@ -8,6 +8,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Provider pool cancel while waiting for a connection slot.** `complete()` /
+  `stream()` no longer hang on the per-provider cap (`kMaxConnsPerProvider`)
+  after Esc or `cancel()`. The wait predicate observes the request token and
+  the process-wide cancel bits; `cancel()` / `CancelToken::request_cancel()`
+  notify every pool CV. A cancelled waiter does not consume a slot.
 - **`/diff apply` directory and cross-device writes.** A directory at the
   patch target is rejected instead of being treated as a missing file.
   The rename fallback no longer uses `copy_file` (which followed a dest
