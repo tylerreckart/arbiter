@@ -7,6 +7,7 @@
 #include "logger.h"
 #include "orchestrator.h"
 #include "sandbox.h"
+#include "secret_file.h"
 #include "starters.h"
 #include "tenant_store.h"
 #include "tui/tui_design.h"
@@ -29,7 +30,6 @@
 #include <system_error>
 #include <thread>
 
-#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -50,7 +50,8 @@ void signal_handler(int) { g_running = 0; }
 // tenant tokens.  Resolution order on every `arbiter --api` startup:
 //   1. $ARBITER_ADMIN_TOKEN              (overrides the file)
 //   2. ~/.arbiter/admin_token  (file)    (owner-only; re-tightens perms)
-//   3. generate a fresh one, write it to #2 at mode 0600, print at startup
+//   3. generate a fresh one, write it to #2 at mode 0600 (O_NOFOLLOW),
+//      print at startup
 //
 // A `true` in `freshly_generated` tells the caller to announce the new
 // token prominently — this is the only time the operator sees the
@@ -99,18 +100,9 @@ std::string resolve_admin_token(const std::string& config_dir,
     static const char* hex = "0123456789abcdef";
     for (unsigned char c : buf) { tok += hex[c >> 4]; tok += hex[c & 0xF]; }
 
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) {
+    if (!write_secret_file(path, tok + "\n")) {
         std::cerr << "ERR: could not write " << path << ": "
                   << std::strerror(errno) << "\n";
-        std::exit(1);
-    }
-    const std::string out = tok + "\n";
-    ssize_t w = ::write(fd, out.data(), out.size());
-    ::close(fd);
-    ::chmod(path.c_str(), 0600);
-    if (w != static_cast<ssize_t>(out.size())) {
-        std::cerr << "ERR: short write to " << path << "\n";
         std::exit(1);
     }
     freshly_generated = true;
