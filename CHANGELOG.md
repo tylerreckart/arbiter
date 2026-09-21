@@ -8,12 +8,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **A2A `tasks/cancel` survives `message/send`.** `update_a2a_task` no
+  longer overwrites a persisted `canceled` row with `completed`/`failed`
+  when an in-flight unary send finishes after `tasks/cancel`. The stream
+  path already refused that overwrite; the send path now matches, and the
+  RPC returns `request cancelled` instead of a completed Task that
+  `tasks/get` would contradict.
 - **Reopened todos clear `completed_at`.** `update_todo` (HTTP PATCH and
-  batch PATCH) now zeros `completed_at` when status moves back to
-  `pending` or `in_progress`, unless the caller passes an explicit
-  timestamp. Completing then reopening left the old stamp, so the
-  documented `completed_at = 0` until terminal contract was violated.
-  Subject/description edits on a terminal row still leave the stamp.
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
