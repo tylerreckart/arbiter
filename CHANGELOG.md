@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+  now rejects query strings, fragments, URL userinfo, and control bytes
+  instead of concatenating them into every request (`https://host?x/v1/…`
+  never delivered the path) or printing `user:pass@` in TUI chrome.
+  Path prefixes (`https://host/arbiter`) still work.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
