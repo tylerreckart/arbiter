@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+  now rejects query strings, fragments, URL userinfo, and control bytes
+  instead of concatenating them into every request (`https://host?x/v1/…`
+  never delivered the path) or printing `user:pass@` in TUI chrome.
+  Path prefixes (`https://host/arbiter`) still work.
+
 ## [0.13.6] — 2026-09-21
 
 ### Changed
@@ -92,7 +99,6 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.13.1] — 2026-08-31
 
-
 ## [0.13.0] — 2026-08-31
 
 ### Changed
@@ -106,18 +112,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.12.16] — 2026-08-28
 
-
 ## [0.12.15] — 2026-08-27
-
 
 ## [0.12.14] — 2026-08-24
 
-
 ## [0.12.13] — 2026-08-23
 
-
 ## [0.12.12] — 2026-08-22
-
 
 ## [0.12.11] — 2026-08-20
 
@@ -133,9 +134,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.12.10] — 2026-08-20
 
-
 ## [0.12.9] — 2026-08-18
-
 
 ## [0.12.8] — 2026-08-15
 
@@ -1137,8 +1136,6 @@ from the README as a worked example of consuming the HTTP+SSE API.
   missing constitution bundle, never thought to ask.  Net effect was
   a feature that essentially did not exist for the master agent
   through the API.  See the bundle + injection items in **Added**.
-
-
 
 This is a **beta** release.  The feature surface is operational
 hardening — none of it changes existing agent or HTTP semantics — but
