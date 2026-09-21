@@ -62,6 +62,8 @@ After that resolution, the same [intent engine](../concepts/intent.md) that fron
 
 Keep routing patterns distinct. If multiple agents in the same tier match an event, the first match in scan order wins (directory iteration for files; sorted `agent_id` for tenant agents).
 
+After routing, Arbiter attaches that agent's constitution as inline `agent_def` on the orchestrate request. `/v1/orchestrate` only preloads the newest-200 tenant catalog and does not read disk-side `*.json` definitions, so without the hydrate a file-backed match or a tenant agent off that page would 404 `agent not found`. If a file-backed id collides with a tenant-stored row, the file constitution is the one that runs — file routing already won.
+
 ## What the agent receives
 
 Arbiter presents the event to the selected agent as a normal turn:
