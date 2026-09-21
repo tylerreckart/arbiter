@@ -14,6 +14,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   left `Response::id` at 0, so `Client::rpc` treated a valid reply as a
   notification and hung until `init_timeout` / `call_timeout` then killed
   the subprocess.
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
 
 ## [0.13.6] — 2026-09-21
 
