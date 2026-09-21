@@ -8,28 +8,31 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
-- **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
-  same overflow-checked adder as `every N hours` instead of `now + 3600`.
-  `mktime` failure no longer stores `next_fire_at = -1` (always due on
-  `list_due`); parse and `next_fire_for_recur` return 0 / an error so a
-  recurring recompute cannot tight-loop.
-- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
-- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
-- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
-- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Dispatch of stored agents past newest-200.** `GET /v1/agents/:id` already
+  used `get_agent_record`. `/v1/orchestrate`, `/v1/agents/:id/chat`, A2A
+  `message/send`/`message/stream`, and the scheduler installed only
+  `list_agent_records(200)` (newest `updated_at`), so a targeted id that
+  fell off that page returned `agent not found` while GET succeeded.
+  Dispatch now extra-fetches the targeted id. Sibling `/agent`/`/parallel`
+  still resolve from the newest-200 page.
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
 - **Secret key/token writes do not follow a planted dest symlink.**
 - **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
-- **JSON numbers require a complete fraction and exponent.** `json_parse`
-- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
 - **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
 - **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
 - **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
 - **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
 - **MCP registry writes do not follow a planted `.tmp` symlink.**
 - **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
 - **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
+- **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
+- **JSON numbers require a complete fraction and exponent.** `json_parse`
 
 ## [0.13.7] — 2026-09-21
 
