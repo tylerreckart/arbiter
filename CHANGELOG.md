@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.10] — 2026-09-21
+
 ### Fixed
 - **`/schedule resume` is paused-only.** The writ no longer flips
   `completed`, `failed`, `canceled`, `running`, or already-`active` rows
