@@ -4494,10 +4494,13 @@ bool TenantStore::update_todo(int64_t tenant_id, int64_t id,
     if (!db_) return false;
     const int64_t ts = now_epoch();
 
-    // Auto-stamp completed_at when transitioning to a terminal status,
-    // unless the caller passed completed_at explicitly.
+    // Keep completed_at aligned with status unless the caller passed an
+    // explicit stamp. Terminal statuses get now(); a reopen to pending
+    // or in_progress zeros the column so "0 until terminal" stays true.
     std::optional<int64_t> ca = completed_at;
-    if (status && is_terminal_todo_status(*status) && !ca) ca = ts;
+    if (status && !ca) {
+        ca = is_terminal_todo_status(*status) ? ts : int64_t{0};
+    }
 
     std::string sql = "UPDATE todos SET updated_at = ?";
     if (subject)     sql += ", subject = ?";

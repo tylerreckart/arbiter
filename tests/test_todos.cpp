@@ -79,6 +79,76 @@ TEST_CASE("todo round-trip: create / get / update / delete") {
         CHECK(v->completed_at > 0);    // auto-stamped
     }
 
+    SUBCASE("reopen from a terminal status clears completed_at") {
+        bool ok = s.update_todo(tid, t.id, std::nullopt, std::nullopt,
+            std::optional<std::string>("completed"),
+            std::nullopt, std::nullopt);
+        CHECK(ok);
+        auto done = s.get_todo(tid, t.id);
+        REQUIRE(done);
+        CHECK(done->status == "completed");
+        CHECK(done->completed_at > 0);
+
+        ok = s.update_todo(tid, t.id, std::nullopt, std::nullopt,
+            std::optional<std::string>("pending"),
+            std::nullopt, std::nullopt);
+        CHECK(ok);
+        auto reopened = s.get_todo(tid, t.id);
+        REQUIRE(reopened);
+        CHECK(reopened->status == "pending");
+        CHECK(reopened->completed_at == 0);
+
+        ok = s.update_todo(tid, t.id, std::nullopt, std::nullopt,
+            std::optional<std::string>("canceled"),
+            std::nullopt, std::nullopt);
+        CHECK(ok);
+        ok = s.update_todo(tid, t.id, std::nullopt, std::nullopt,
+            std::optional<std::string>("in_progress"),
+            std::nullopt, std::nullopt);
+        CHECK(ok);
+        auto restarted = s.get_todo(tid, t.id);
+        REQUIRE(restarted);
+        CHECK(restarted->status == "in_progress");
+        CHECK(restarted->completed_at == 0);
+    }
+
+    SUBCASE("explicit completed_at on reopen is honored") {
+        bool ok = s.update_todo(tid, t.id, std::nullopt, std::nullopt,
+            std::optional<std::string>("completed"),
+            std::nullopt, std::nullopt);
+        CHECK(ok);
+
+        ok = s.update_todo(tid, t.id, std::nullopt, std::nullopt,
+            std::optional<std::string>("pending"),
+            std::nullopt, std::optional<int64_t>(12345));
+        CHECK(ok);
+        auto u = s.get_todo(tid, t.id);
+        REQUIRE(u);
+        CHECK(u->status == "pending");
+        CHECK(u->completed_at == 12345);
+    }
+
+    SUBCASE("subject edit after completed does not clear completed_at") {
+        bool ok = s.update_todo(tid, t.id, std::nullopt, std::nullopt,
+            std::optional<std::string>("completed"),
+            std::nullopt, std::nullopt);
+        CHECK(ok);
+        auto done = s.get_todo(tid, t.id);
+        REQUIRE(done);
+        const int64_t stamped = done->completed_at;
+        CHECK(stamped > 0);
+
+        ok = s.update_todo(tid, t.id,
+            std::optional<std::string>("renamed"),
+            std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        CHECK(ok);
+        auto u = s.get_todo(tid, t.id);
+        REQUIRE(u);
+        CHECK(u->status == "completed");
+        CHECK(u->subject == "renamed");
+        CHECK(u->completed_at == stamped);
+    }
+
     SUBCASE("update edits subject/description without touching status") {
         bool ok = s.update_todo(tid, t.id,
             std::optional<std::string>("new subject"),

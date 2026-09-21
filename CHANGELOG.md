@@ -8,32 +8,34 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
-- **Session restore skips non-object message rows.** `decode_messages_json`
-  only skipped null `shared_ptr`s, so JSON `null` / strings / numbers /
-  arrays in a session history became empty-`role` `Message` rows on TUI
-  restore. Skip any element that is not a JSON object, matching
-  `tool_trace_from_json`.
-- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
-- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **Reopened todos clear `completed_at`.** `update_todo` (HTTP PATCH and
+  batch PATCH) now zeros `completed_at` when status moves back to
+  `pending` or `in_progress`, unless the caller passes an explicit
+  timestamp. Completing then reopening left the old stamp, so the
+  documented `completed_at = 0` until terminal contract was violated.
+  Subject/description edits on a terminal row still leave the stamp.
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
 - **Secret key/token writes do not follow a planted dest symlink.**
 - **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
-- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
 - **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
 - **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
 - **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
 - **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
 - **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
 - **MCP registry writes do not follow a planted `.tmp` symlink.**
 - **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
 - **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
 - **JSON numbers require a complete fraction and exponent.** `json_parse`
 - **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
 - **Loop `/kill` wakes the inter-iteration pause.** After each turn,
 - **Memory `tag=` LIKE wildcards are literals.** `/mem entries tag=` and
 - **Dispatch of stored agents past newest-200.** `GET /v1/agents/:id` already
+- **Session restore skips non-object message rows.** `decode_messages_json`
 - **Lesson search is a literal substring.** `search_lessons` (`GET /v1/lessons?q=`
 
 ## [0.13.7] — 2026-09-21
