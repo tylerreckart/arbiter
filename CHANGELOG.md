@@ -14,6 +14,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   only the symlink. Open the staging file with `O_NOFOLLOW` / `O_EXCL`
   after `unlink` (which does not follow). Dest-symlink `rename` already
   replaced the link, not its target.
+
+## [0.13.7] — 2026-09-21
+
 - **Atomic writes do not follow a planted `.tmp` symlink.** `atomic_write_file`
   used `fopen("wb")` on `<path>.tmp`, so a symlink at that staging name
   redirected the write (session JSON, layout snapshot, migration markers)
