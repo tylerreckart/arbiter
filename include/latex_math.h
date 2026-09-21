@@ -10,6 +10,9 @@ namespace arbiter {
 // Unicode approximation for the TUI. Handles common LLM output: fractions,
 // superscripts/subscripts, \times/\approx/\text{}, and Greek letters.
 // Unrecognized commands are stripped to their name or arguments when safe.
+// Nesting deeper than 64 (\frac / ^ / _ / \sqrt / \text) stops converting
+// and emits the remaining raw fragment so a hostile or accidental nest
+// cannot overflow the renderer thread stack.
 [[nodiscard]] std::string latex_math_to_plain(std::string_view latex);
 
 } // namespace arbiter
