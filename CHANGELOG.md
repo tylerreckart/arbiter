@@ -20,6 +20,55 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   `reconcile.delta` each wave. Observe mode and `POST /v1/orchestrate` are
   unchanged. See [`docs/concepts/reconcile.md`](docs/concepts/reconcile.md)
   and [#208](https://github.com/tylerreckart/arbiter/issues/208).
+### Fixed
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+  title-rename used a one-shot libcurl write callback that appended the
+  entire response with no limit. A `--connect` peer that omitted
+  `Content-Length` could grow the TUI heap without bound; GET/POST already
+  go through `a2a::http`. Cap is 16 MiB (`kSseMaxEventBytes`).
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+
+## [0.13.6] — 2026-09-21
+
+### Changed
+- **Spoken register is conversation for the ear.** `mode: "spoken"` no
+  longer caps replies at three-to-five sentences or shapes them as
+  `[answer]. [evidence]. [next step]`. The TTS block asks for
+  contractions, spoken cadence, turn-taking (leave space; no canned
+  closers), and punctuation a TTS engine can breathe on — still no
+  markdown, lists, LaTeX, or SSML. `channel: "voice"` overlay last-wins
+  over specialist dispatch for user-facing prose, and both knobs take
+  file delivery off the TUI ` ```diff ` path. Intercom's HTTP/SSE
+  contract is unchanged. See [Voice](docs/concepts/voice.md).
+
+### Fixed
+- **`unit_sandbox_ssrf` leaf-swap flake on macOS CI.** The TOCTOU test
+  that swaps a regular `decoy.txt` for a symlink during
+  `read_from_workspace`'s re-check pause used an 80ms reader window and
+  a 20ms planter sleep. On the loaded `macos-arm64` runner,
+  `std::this_thread::sleep_for` coarsely overshot, the planter swapped
+  after the reader's `O_NOFOLLOW` open, and the reader saw the
+  still-regular decoy — `CHECK_FALSE(ok)` failed even though no host
+  bytes leaked. Widened the reader's pre-open window to 400ms and
+  shrank the planter's pre-swap sleep to 5ms so the swap reliably lands
+  after `resolve_within_workspace` and before the open.
+
+## [0.13.5] — 2026-09-21
+
+### Fixed
+- **MCP JSON-RPC null members.** `parse_response` now treats `"error": null`
+  / `"result": null` as omitted, matching A2A and serializers that emit
+  optional fields as null. A success envelope with `"error": null` (or an
+  error envelope with `"result": null`) no longer throws and no longer
+  burns the client's 5-parse-failure budget.
 
 ## [0.13.4] — 2026-09-10
 
@@ -72,7 +121,6 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.13.1] — 2026-08-31
 
-
 ## [0.13.0] — 2026-08-31
 
 ### Changed
@@ -86,18 +134,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.12.16] — 2026-08-28
 
-
 ## [0.12.15] — 2026-08-27
-
 
 ## [0.12.14] — 2026-08-24
 
-
 ## [0.12.13] — 2026-08-23
 
-
 ## [0.12.12] — 2026-08-22
-
 
 ## [0.12.11] — 2026-08-20
 
@@ -113,9 +156,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.12.10] — 2026-08-20
 
-
 ## [0.12.9] — 2026-08-18
-
 
 ## [0.12.8] — 2026-08-15
 
@@ -1117,8 +1158,6 @@ from the README as a worked example of consuming the HTTP+SSE API.
   missing constitution bundle, never thought to ask.  Net effect was
   a feature that essentially did not exist for the master agent
   through the API.  See the bundle + injection items in **Added**.
-
-
 
 This is a **beta** release.  The feature surface is operational
 hardening — none of it changes existing agent or HTTP semantics — but

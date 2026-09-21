@@ -236,6 +236,9 @@ VerificationEvidence run_verification(const ReconcileSpec& spec,
 bool snapshot_workspace(const std::string& root,
                         const std::string& dest,
                         std::string* err);
+// Copy `snapshot` into `root`.  The snapshot is staged first so a
+// failed copy cannot clear the live tree; only a successful stage
+// replaces workspace contents (`.arbiter-reconcile-snapshots` is kept).
 bool restore_workspace(const std::string& snapshot,
                        const std::string& root,
                        std::string* err);

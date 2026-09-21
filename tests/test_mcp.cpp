@@ -213,11 +213,68 @@ TEST_CASE("parse_response: error case") {
     CHECK(resp.error->message == "no such method");
 }
 
+TEST_CASE("parse_response accepts string JSON-RPC ids") {
+    auto ok = parse_response(R"({"jsonrpc":"2.0","id":"3","result":{"x":1}})");
+    CHECK(ok.id == 3);
+    REQUIRE(ok.result);
+    CHECK(static_cast<int>(ok.result->get_number("x", 0)) == 1);
+    CHECK_FALSE(ok.error.has_value());
+
+    auto err = parse_response(
+        R"({"jsonrpc":"2.0","id":"4","error":{"code":-32601,"message":"no such method"}})");
+    CHECK(err.id == 4);
+    REQUIRE(err.error.has_value());
+    CHECK(err.error->code == -32601);
+
+    // Non-numeric / empty / null ids cannot match our integer counter.
+    auto skip = parse_response(R"({"jsonrpc":"2.0","id":"abc","result":{}})");
+    CHECK(skip.id == 0);
+    auto empty = parse_response(R"({"jsonrpc":"2.0","id":"","result":{}})");
+    CHECK(empty.id == 0);
+    auto nil = parse_response(R"({"jsonrpc":"2.0","id":null,"result":{}})");
+    CHECK(nil.id == 0);
+    auto frac = parse_response(R"({"jsonrpc":"2.0","id":"1.0","result":{}})");
+    CHECK(frac.id == 0);
+
+    auto note = parse_response(R"({"jsonrpc":"2.0","method":"notifications/cancelled"})");
+    CHECK(note.id == 0);
+}
+
 TEST_CASE("parse_response rejects malformed envelopes") {
     CHECK_THROWS(parse_response("not json"));
     CHECK_THROWS(parse_response(R"({"id":1,"result":{}})"));         // missing jsonrpc
     CHECK_THROWS(parse_response(R"({"jsonrpc":"1.0","id":1,"result":{}})")); // wrong version
     CHECK_THROWS(parse_response(R"({"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"x"}})")); // both
+}
+
+TEST_CASE("parse_response treats JSON-null result/error as omitted") {
+    auto ok = parse_response(
+        R"({"jsonrpc":"2.0","id":5,"result":{"x":1},"error":null})");
+    CHECK(ok.id == 5);
+    REQUIRE(ok.result);
+    CHECK_FALSE(ok.result->is_null());
+    CHECK(static_cast<int>(ok.result->get_number("x", 0)) == 1);
+    CHECK_FALSE(ok.error.has_value());
+
+    auto err = parse_response(
+        R"({"jsonrpc":"2.0","id":6,"result":null,"error":{"code":-32601,"message":"no such method"}})");
+    CHECK(err.id == 6);
+    CHECK_FALSE(static_cast<bool>(err.result));
+    REQUIRE(err.error.has_value());
+    CHECK(err.error->code == -32601);
+    CHECK(err.error->message == "no such method");
+
+    auto null_result = parse_response(
+        R"({"jsonrpc":"2.0","id":7,"result":null})");
+    CHECK(null_result.id == 7);
+    REQUIRE(null_result.result);
+    CHECK(null_result.result->is_null());
+    CHECK_FALSE(null_result.error.has_value());
+
+    auto empty = parse_response(R"({"jsonrpc":"2.0","id":8,"error":null})");
+    CHECK(empty.id == 8);
+    CHECK_FALSE(static_cast<bool>(empty.result));
+    CHECK_FALSE(empty.error.has_value());
 }
 
 TEST_CASE("parse_tools_list extracts name + description + schema") {
