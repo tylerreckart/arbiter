@@ -2,22 +2,18 @@
 
 #include "api/auth.h"
 #include "api/http_response.h"
+#include "api/http_util.h"
 
 #include "tenant_store.h"
 
 namespace arbiter {
 
-// Extract the bearer token from an Authorization header, or empty if missing.
+// Header lookup only — scheme grammar lives in parse_bearer_authorization
+// (RFC 6750 / RFC 9110: case-insensitive scheme, 1*SP).
 std::string extract_bearer(const HttpRequest& req) {
     auto it = req.headers.find("authorization");
     if (it == req.headers.end()) return {};
-    static constexpr const char* kPrefix = "Bearer ";
-    static constexpr size_t      kPrefixLen = 7;
-    const std::string& hdr = it->second;
-    if (hdr.size() <= kPrefixLen ||
-        hdr.compare(0, kPrefixLen, kPrefix) != 0)
-        return {};
-    return hdr.substr(kPrefixLen);
+    return parse_bearer_authorization(it->second);
 }
 
 // Single-threaded helper for request handlers: refresh a Tenant snapshot
