@@ -8,11 +8,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
-- **Lesson search is a literal substring.** `search_lessons` (`GET /v1/lessons?q=`
-  and `/lesson search`) wrapped the query in `LIKE %q%` without escaping `%` /
-  `_`, so those characters acted as SQL wildcards. A search for `100%` matched
-  `1000`, and `foo_bar` matched `fooXbar`. Patterns now escape LIKE
-  metacharacters (`ESCAPE '\'`).
+- **Session restore skips non-object message rows.** `decode_messages_json`
+  only skipped null `shared_ptr`s, so JSON `null` / strings / numbers /
+  arrays in a session history became empty-`role` `Message` rows on TUI
+  restore. Skip any element that is not a JSON object, matching
+  `tool_trace_from_json`.
 - **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
 - **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
@@ -34,6 +34,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **Loop `/kill` wakes the inter-iteration pause.** After each turn,
 - **Memory `tag=` LIKE wildcards are literals.** `/mem entries tag=` and
 - **Dispatch of stored agents past newest-200.** `GET /v1/agents/:id` already
+- **Lesson search is a literal substring.** `search_lessons` (`GET /v1/lessons?q=`
 
 ## [0.13.7] — 2026-09-21
 
