@@ -28,7 +28,11 @@ std::string_view replay_user_echo_text(const Message& m) {
     //   AGENTS …\n\nQUERY: <user text>
     // for the master ("index") agent. Live UI echoes only <user text>.
     static constexpr std::string_view kQueryMark = "\n\nQUERY: ";
-    const auto q = content.rfind(kQueryMark);
+    // Orchestrator::send_streaming / send_internal emit exactly one
+    // "\n\nQUERY: " after global_status() (always starts with AGENTS).
+    // find — not rfind — so user text that itself contains that marker
+    // is not truncated to the suffix after the last occurrence.
+    const auto q = content.find(kQueryMark);
     if (q == std::string_view::npos) return content;
     const std::string_view head = content.substr(0, q);
     // Require an AGENTS roster line in the preamble so a user who literally
