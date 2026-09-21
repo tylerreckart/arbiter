@@ -1221,6 +1221,20 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_tenant_limiter COMMAND unit_tenant_limiter)
 
+    # Inter-iteration pause must wake on /kill /inject /suspend — the
+    # helper is header-only so this target does not pull Orchestrator.
+    add_executable(unit_loop_manager
+        tests/test_loop_manager.cpp
+    )
+    target_include_directories(unit_loop_manager PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_loop_manager PRIVATE
+        Threads::Threads
+    )
+    add_test(NAME unit_loop_manager COMMAND unit_loop_manager)
+
     # --- Unit tests for the Idempotency-Key dedup cache ---
     add_executable(unit_idempotency_cache
         tests/test_idempotency_cache.cpp
