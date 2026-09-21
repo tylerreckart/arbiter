@@ -11,6 +11,96 @@ namespace arbiter {
 
 namespace {
 
+// libcurl write callback for the one-shot DELETE/PATCH handles.  Returning
+// 0 aborts with CURLE_WRITE_ERROR once the unary size cap is hit so a
+// remote without Content-Length cannot grow `body` without bound (GET
+// and POST already go through a2a::http_get / rpc_call).
+struct BodyBuf {
+    std::string* body     = nullptr;
+    bool         overflow = false;
+};
+
+size_t write_capped(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* buf = static_cast<BodyBuf*>(userdata);
+    const size_t n = size * nmemb;
+    if (!buf || !buf->body || buf->overflow) return 0;
+    if (n > kRemoteHttpMaxBodyBytes ||
+        buf->body->size() > kRemoteHttpMaxBodyBytes - n) {
+        buf->overflow = true;
+        return 0;
+    }
+    buf->body->append(ptr, n);
+    return n;
+}
+
+struct CustomHttpResult {
+    long        status = 0;
+    std::string body;
+    std::string error;
+};
+
+// One-shot curl for verbs a2a::http does not wrap.  Same TLS / timeout /
+// user-agent posture as the previous inline DELETE/PATCH blocks, plus
+// the unary size cap (write callback + CURLOPT_MAXFILESIZE_LARGE).
+CustomHttpResult custom_http(const std::string& url,
+                             const std::string& method,
+                             const std::string& token,
+                             const std::string* payload,
+                             long timeout_secs) {
+    CustomHttpResult out;
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        out.error = "curl_easy_init failed";
+        return out;
+    }
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Accept: application/json");
+    if (payload) {
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+    }
+    std::string auth;
+    if (!token.empty()) {
+        auth = "Authorization: Bearer " + token;
+        headers = curl_slist_append(headers, auth.c_str());
+    }
+
+    BodyBuf buf{&out.body, false};
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method.c_str());
+    if (payload) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload->c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
+                         static_cast<long>(payload->size()));
+    }
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_capped);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_secs);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "arbiter-remote/1.0");
+    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE,
+                     static_cast<curl_off_t>(kRemoteHttpMaxBodyBytes));
+
+    CURLcode rc = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &out.status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (buf.overflow || rc == CURLE_FILESIZE_EXCEEDED) {
+        out.error = "response exceeded size limit";
+        out.body.clear();
+        return out;
+    }
+    if (rc != CURLE_OK) {
+        out.error = curl_easy_strerror(rc);
+        return out;
+    }
+    return out;
+}
+
 std::string json_error_message(const std::string& body) {
     if (body.empty()) return {};
     try {
@@ -233,50 +323,18 @@ std::string RemoteApiClient::create_conversation(std::string* error_out,
 
 bool RemoteApiClient::delete_conversation(const std::string& id,
                                            std::string* error_out) const {
-    // a2a::http has no DELETE helper — use rpc_call with a custom method
-    // via curl is awkward; use GET-style workaround: libcurl DELETE.
-    // Implement with a one-shot curl here.
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        if (error_out) *error_out = "curl_easy_init failed";
+    // a2a::http has no DELETE helper — one-shot curl via custom_http.
+    auto r = custom_http(url("/v1/conversations/" + id), "DELETE",
+                         cfg_.token, /*payload=*/nullptr, /*timeout=*/15);
+    if (!r.error.empty()) {
+        if (error_out) *error_out = r.error;
         return false;
     }
-    const std::string u = url("/v1/conversations/" + id);
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Accept: application/json");
-    if (!cfg_.token.empty()) {
-        const std::string auth = "Authorization: Bearer " + cfg_.token;
-        headers = curl_slist_append(headers, auth.c_str());
-    }
-    std::string body;
-    curl_easy_setopt(curl, CURLOPT_URL, u.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
-        +[](char* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
-            static_cast<std::string*>(userdata)->append(ptr, size * nmemb);
-            return size * nmemb;
-        });
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "arbiter-remote/1.0");
-    CURLcode rc = curl_easy_perform(curl);
-    long status = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) {
-        if (error_out) *error_out = curl_easy_strerror(rc);
-        return false;
-    }
-    if (status != 200 && status != 204) {
+    if (r.status != 200 && r.status != 204) {
         if (error_out) {
             a2a::HttpResponse fake;
-            fake.status_code = status;
-            fake.body = body;
+            fake.status_code = r.status;
+            fake.body = r.body;
             *error_out = http_fail(fake, "delete conversation failed");
         }
         return false;
@@ -289,52 +347,18 @@ bool RemoteApiClient::patch_conversation_title(const std::string& id,
                                                 std::string* error_out) const {
     auto body = jobj();
     body->as_object_mut()["title"] = jstr(title);
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        if (error_out) *error_out = "curl_easy_init failed";
-        return false;
-    }
-    const std::string u = url("/v1/conversations/" + id);
     const std::string payload = json_serialize(*body);
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: application/json");
-    if (!cfg_.token.empty()) {
-        const std::string auth = "Authorization: Bearer " + cfg_.token;
-        headers = curl_slist_append(headers, auth.c_str());
-    }
-    std::string resp_body;
-    curl_easy_setopt(curl, CURLOPT_URL, u.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
-                     static_cast<long>(payload.size()));
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
-        +[](char* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
-            static_cast<std::string*>(userdata)->append(ptr, size * nmemb);
-            return size * nmemb;
-        });
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp_body);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "arbiter-remote/1.0");
-    CURLcode rc = curl_easy_perform(curl);
-    long status = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) {
-        if (error_out) *error_out = curl_easy_strerror(rc);
+    auto r = custom_http(url("/v1/conversations/" + id), "PATCH",
+                         cfg_.token, &payload, /*timeout=*/15);
+    if (!r.error.empty()) {
+        if (error_out) *error_out = r.error;
         return false;
     }
-    if (status != 200) {
+    if (r.status != 200) {
         if (error_out) {
             a2a::HttpResponse fake;
-            fake.status_code = status;
-            fake.body = resp_body;
+            fake.status_code = r.status;
+            fake.body = r.body;
             *error_out = http_fail(fake, "rename conversation failed");
         }
         return false;
