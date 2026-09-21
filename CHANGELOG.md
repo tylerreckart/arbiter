@@ -7,6 +7,18 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **`unit_sandbox_ssrf` leaf-swap flake on macOS CI.** The TOCTOU test
+  that swaps a regular `decoy.txt` for a symlink during
+  `read_from_workspace`'s re-check pause used an 80ms reader window and
+  a 20ms planter sleep. On the loaded `macos-arm64` runner,
+  `std::this_thread::sleep_for` coarsely overshot, the planter swapped
+  after the reader's `O_NOFOLLOW` open, and the reader saw the
+  still-regular decoy — `CHECK_FALSE(ok)` failed even though no host
+  bytes leaked. Widened the reader's pre-open window to 400ms and
+  shrank the planter's pre-swap sleep to 5ms so the swap reliably lands
+  after `resolve_within_workspace` and before the open.
+
 ## [0.13.5] — 2026-09-21
 
 ### Fixed
