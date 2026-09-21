@@ -15,6 +15,11 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   Non-200 responses now report `HTTP <status>` plus a 200-byte, single-line
   JSON-RPC `error.message` when present. JSON-RPC errors on HTTP 200 are
   clipped the same way.
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+  now rejects query strings, fragments, URL userinfo, and control bytes
+  instead of concatenating them into every request (`https://host?x/v1/…`
+  never delivered the path) or printing `user:pass@` in TUI chrome.
+  Path prefixes (`https://host/arbiter`) still work.
 
 ## [0.13.6] — 2026-09-21
 
