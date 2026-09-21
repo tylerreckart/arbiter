@@ -110,7 +110,13 @@ bool parse_http_request(int fd, HttpRequest& req) {
         }
         static constexpr size_t kMaxBody = 16 * 1024 * 1024;  // hard cap
         if (want > kMaxBody) return false;
-        req.body = leftover;
+        // TCP often delivers the header sentinel plus extra bytes in one
+        // recv.  leftover is that prefix — take at most `want` so CL:0
+        // stays empty and pipelined/smuggled bytes past Content-Length
+        // never become this request's body.  Connection: close drops the
+        // rest (same framing as ApiClient::read_response_body).
+        if (leftover.size() > want) leftover.resize(want);
+        req.body = std::move(leftover);
         char buf[4096];
         while (req.body.size() < want) {
             size_t remaining = want - req.body.size();
