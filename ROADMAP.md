@@ -41,7 +41,7 @@ calendar commitments.
 - [x] **Workspace / repo map writ-** Cheap structural index (`/map` tree; outline/inject follow-up); not a full LSP server in-process if avoidable
 - [x] **`/diff` + apply workflow-** First-class apply/reject for ` ```diff ` proposals; keep rendering; staged apply **with** undo; interactive `/diff` review (`[a]`/`[r]`); create missing files on apply without a separate write confirm
 - [ ] **Git status surface-** Git branch, dirty files, last agent touches surfaced in session sidebar
-- [ ] **PR helper agent pattern-** Agent constitution + MCP Github
+- [ ] ~~*PR helper agent pattern-** Agent constitution + MCP Github~~
 - [ ] **Project lessons boostrap-** On first open of a cwd, optional scan of lessons/memory seeds
 
 **Acceptance criteria:** 
@@ -51,19 +51,20 @@ calendar commitments.
 - [x] **Model catalog UX-** Richer `/model` / `GET /v1/models` with context limits used by compaction
 - [ ] **MCP setup UX-** Improve `--setup-tools`; TUI browser for enable/disable servers; clearer tool error cards and statuses
 - [ ] **A2A pushNotificationConfig-** Scheduling bus for agent notifications
-- [x] **Spoken voice channel-** `mode: "spoken"` + request `channel: "voice"` so Intercom-style bridges get speakable prose without stuffing reminders into user turns ([docs](docs/concepts/voice.md)). In-process STT/TTS remains [#207](https://github.com/tylerreckart/arbiter/issues/207)
+- [x] **Spoken voice channel-** `mode: "spoken"` + request `channel: "voice"` so Intercom-style bridges get conversational TTS prose without stuffing reminders into user turns ([docs](docs/concepts/voice.md)). In-process STT/TTS remains [#207](https://github.com/tylerreckart/arbiter/issues/207)
 
 **Acceptance criteria:** 
 - [x] New user setup zero to first message < 2 minutes
 
 ### Phase 5 — Multi-agent mission control
 - [x] **Intent engine foundations-** Hybrid classify/route before dispatch (heuristic, then advisor-model LLM); seed slots for plans/todos; fail-open into index; `POST /v1/intent` + SSE `intent` event
-- [x] **Intent reconcile (Phase A)-** `POST /v1/reconcile`: compile `target_state` + invariants into a state contract, observe a bound workspace, require verification, optional snapshot rollback; `@arbiter/sdk` `IntentClient`; durable `reconcile_runs` + SSE. JIT $\Delta S$ waves remain [#208](https://github.com/tylerreckart/arbiter/issues/208) / Phase B
+- [x] **Intent reconcile (Phase A)-** `POST /v1/reconcile`: compile `target_state` + invariants into a state contract, observe a bound workspace, require verification, optional snapshot rollback; `@arbiter/sdk` `IntentClient`; durable `reconcile_runs` + SSE
+- [x] **JIT ΔS waves (Phase B / #208)-** `mode=ensure` wave loop: resolve `agent_map` / clause.agent / capability fallback, spawn ephemeral clones for active ΔS only, re-observe as success proof, teardown before the next wave; budgets `max_waves` / `max_wall_ms` / `max_agents_per_wave` / `max_retries_per_clause`; SSE `agent.spawned` / `agent.teardown`. Observe mode and `/v1/orchestrate` unchanged. Fleet UI remains Phase C
 - [x] **Always-on presence-** Constitution `presence.mode: always_on`; a pair colleague looks over a peer's shoulder after each tool batch and may inject `[PRESENCE: …]` context. Fail-open; cannot halt. SSE `presence` + TUI `◎ presence`. Opposite lifetime of JIT (#208).
 - [ ] **Fleet dashboard pane-** Live tree of depth, agent, tools, tokens; click-to-focus/Ctrl-W bindings
 - [ ] **Plan to execution observability-** Planner plans as first-class objects with progress against todos
 - [ ] **Delegation policies-** Consitutions declare max depth, allowed callees, budget caps (tokens/$)
-- [ ] **Workflow recipes-** Checked-in “crews” (JSON): ordered/parallel graphs of agents + shared todo board
+- [ ] ~~**Workflow recipes-** Checked-in “crews” (JSON): ordered/parallel graphs of agents + shared todo board~~
 - [ ] **Advisor policy packs-** Reusable gate profiles (strict / coding / research)
 
 **Acceptance criteria:** 

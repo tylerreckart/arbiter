@@ -29,6 +29,21 @@ export type ReconcileRequest = {
   verification?: { requireTests?: boolean; command?: string };
   rollbackOnFailure?: boolean;
   mode?: "observe" | "ensure";
+  /** clause id → agent id. Empty string explicitly unmaps a clause. */
+  agentMap?: Record<string, string>;
+  budgets?: {
+    maxWaves?: number;
+    maxWallMs?: number;
+    maxAgentsPerWave?: number;
+    maxRetriesPerClause?: number;
+  };
+  /** Extra contract clauses appended after compile (fail-closed checkers). */
+  clauses?: Array<{
+    id: string;
+    checker: string;
+    arg?: string;
+    agent?: string;
+  }>;
   idempotencyKey?: string;
 };
 
@@ -38,6 +53,17 @@ export type ReconcileStatus =
   | "rolled_back"
   | "canceled"
   | "running";
+
+export type ReconcileSseEvent =
+  | "request_received"
+  | "reconcile.progress"
+  | "reconcile.delta"
+  | "reconcile.verification"
+  | "reconcile.rollback"
+  | "reconcile.done"
+  | "agent.spawned"
+  | "agent.teardown"
+  | "done";
 
 export type ReconcileResult = {
   request_id?: string;
@@ -56,6 +82,7 @@ export type ReconcileResult = {
   files_changed?: string[];
   rolled_back?: boolean;
   brief?: string;
+  waves?: number;
 };
 
 export type SseFrame = {
@@ -179,6 +206,18 @@ export class IntentClient {
     };
     if (req.invariants) body.invariants = req.invariants;
     if (req.mode) body.mode = req.mode;
+    if (req.agentMap) body.agent_map = req.agentMap;
+    if (req.clauses) body.clauses = req.clauses;
+    if (req.budgets) {
+      const b: Record<string, unknown> = {};
+      if (req.budgets.maxWaves !== undefined) b.max_waves = req.budgets.maxWaves;
+      if (req.budgets.maxWallMs !== undefined) b.max_wall_ms = req.budgets.maxWallMs;
+      if (req.budgets.maxAgentsPerWave !== undefined)
+        b.max_agents_per_wave = req.budgets.maxAgentsPerWave;
+      if (req.budgets.maxRetriesPerClause !== undefined)
+        b.max_retries_per_clause = req.budgets.maxRetriesPerClause;
+      body.budgets = b;
+    }
     if (req.verification) {
       body.verification = {
         require_tests: req.verification.requireTests !== false,
