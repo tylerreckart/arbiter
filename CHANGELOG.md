@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.6] — 2026-09-21
+
 ### Changed
 - **Spoken register is conversation for the ear.** `mode: "spoken"` no
   longer caps replies at three-to-five sentences or shapes them as
