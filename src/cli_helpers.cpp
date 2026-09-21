@@ -4,6 +4,7 @@
 #include "commands.h"
 #include "mcp/manager.h"
 #include "model_catalog.h"
+#include "secret_file.h"
 #include "starters.h"
 #include "theme.h"
 #include "tui/opentui/engine.h"
@@ -659,26 +660,11 @@ std::string read_secret_line() {
     return line;
 }
 
-// Write the key to ~/.arbiter/<filename> with mode 0600.  Opens with the
-// restrictive mode upfront so the file is never world-readable in between.
+// Write the key to ~/.arbiter/<filename> with mode 0600.  Opens with
+// O_NOFOLLOW so a planted dest symlink cannot exfiltrate the key.
 bool write_key_file(const std::string& filename, const std::string& key) {
     const std::string path = get_config_dir() + "/" + filename;
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return false;
-    // open(2) mode is masked by umask — fchmod so the key is never
-    // briefly group/world-readable.
-    if (::fchmod(fd, 0600) != 0) { ::close(fd); return false; }
-    size_t off = 0;
-    while (off < key.size()) {
-        const ssize_t n = ::write(fd, key.data() + off, key.size() - off);
-        if (n <= 0) { ::close(fd); return false; }
-        off += static_cast<size_t>(n);
-    }
-    ::write(fd, "\n", 1);
-    ::close(fd);
-    // Re-apply mode in case the file pre-existed with wider perms.
-    ::chmod(path.c_str(), 0600);
-    return true;
+    return write_secret_file(path, key + "\n");
 }
 
 // Read a trimmed line.  Exits(1) on EOF/Ctrl-D so the wizard can't spin.

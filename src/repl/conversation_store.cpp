@@ -119,7 +119,10 @@ bool session_json_is_empty(const std::string& raw) {
     if (raw.empty()) return true;
     try {
         auto root = json_parse(raw);
-        if (!root || !root->is_object()) return true;
+        // Wrong shape is unreadable, not "no turns".  Treating it as empty
+        // would let GC hard-delete Untitled rows and let create_or_reuse
+        // overwrite the blob.
+        if (!root || !root->is_object()) return false;
         auto idx = root->get("index");
         if (idx && idx->is_array() && !idx->as_array().empty()) return false;
         auto agents = root->get("agents");
@@ -127,7 +130,8 @@ bool session_json_is_empty(const std::string& raw) {
             return false;
         return true;
     } catch (...) {
-        return true;
+        // Parse failure is the same class of unreadable blob — fail closed.
+        return false;
     }
 }
 
