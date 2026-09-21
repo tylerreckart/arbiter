@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.13.6 LANGUAGES CXX)
+project(arbiter VERSION 0.13.7 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -1389,6 +1389,17 @@ if(INDEX_BUILD_TESTS)
     )
     target_link_libraries(unit_file_cap PRIVATE Threads::Threads)
     add_test(NAME unit_file_cap COMMAND unit_file_cap)
+
+    # Crash-safe writes must not follow a planted <path>.tmp symlink.
+    add_executable(unit_atomic_file
+        tests/test_atomic_file.cpp
+        src/atomic_file.cpp
+    )
+    target_include_directories(unit_atomic_file PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_atomic_file COMMAND unit_atomic_file)
 
     # Per-tenant + per-conversation artifact store (POST/GET/DELETE
     # /v1/.../artifacts and the agent /write --persist surface).
