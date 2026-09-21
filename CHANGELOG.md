@@ -15,6 +15,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   fell off that page returned `agent not found` while GET succeeded.
   Dispatch now extra-fetches the targeted id. Sibling `/agent`/`/parallel`
   still resolve from the newest-200 page.
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
 
 ## [0.13.6] — 2026-09-21
 
