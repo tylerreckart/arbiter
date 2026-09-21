@@ -8,6 +8,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **Compaction boundary vs user `QUERY:` / `[` text.**
+  `strip_compaction_preambles` now takes the first orchestrator
+  `\n\nQUERY: ` wrapper (not the last) and strips only known
+  `[OPEN TODOS]` / `[KNOWN PITFALLS]` / `[INTENT]` envelopes. A user
+  turn that embeds that delimiter or starts with `[` no longer stores a
+  truncated boundary that fails remap after reload.
 - **`/schedule resume` is paused-only.** The writ no longer flips
   `completed`, `failed`, `canceled`, `running`, or already-`active` rows
   back to `active`, and `/schedule pause` refuses those terminal

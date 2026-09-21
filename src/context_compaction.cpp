@@ -108,28 +108,45 @@ std::string compaction_boundary_content(std::string_view content) {
     return std::string(content.substr(0, kCompactionBoundaryMax));
 }
 
-std::string strip_compaction_preambles(std::string_view content) {
-    std::string s(content);
-    // Drop [OPEN TODOS]…[END OPEN TODOS] blocks injected before the turn.
+namespace {
+
+void erase_marked_block(std::string& s, std::string_view start_mark,
+                        std::string_view end_mark) {
     for (;;) {
-        const auto start = s.find("[OPEN TODOS]");
+        const auto start = s.find(start_mark);
         if (start == std::string::npos) break;
-        const auto end = s.find("[END OPEN TODOS]", start);
+        const auto end = s.find(end_mark, start);
         if (end == std::string::npos) break;
-        size_t erase_to = end + std::string_view("[END OPEN TODOS]").size();
+        size_t erase_to = end + end_mark.size();
         while (erase_to < s.size() &&
                (s[erase_to] == '\n' || s[erase_to] == '\r'))
             ++erase_to;
         s.erase(start, erase_to - start);
     }
-    // Index master wraps the user line as "…\n\nQUERY: <text>".
+}
+
+}  // namespace
+
+std::string strip_compaction_preambles(std::string_view content) {
+    std::string s(content);
+    // Orchestrator injects these as whole marked blocks before the turn.
+    // Strip by start/end markers — not "leading '[' + first blank line" —
+    // so user text that starts with '[' or contains "\n\nQUERY: " survives.
+    erase_marked_block(s, "[OPEN TODOS]", "[END OPEN TODOS]");
+    erase_marked_block(s, "[KNOWN PITFALLS", "[END KNOWN PITFALLS]");
+    // Index master wraps the user line as "…\n\nQUERY: <text>".  Use the
+    // first mark: a user who typed that same delimiter must keep it, or
+    // the stored boundary will not match the raw DB row and remap fails
+    // open (covered_until=0, full history + summary).
     static constexpr std::string_view kQuery = "\n\nQUERY: ";
-    const auto q = s.rfind(kQuery);
+    const auto q = s.find(kQuery);
     if (q != std::string::npos)
         s = s.substr(q + kQuery.size());
-    // Known-pitfalls / lesson blocks end before the real user text; if a
-    // double newline remains after a leading bracket block, keep the tail.
-    if (!s.empty() && s.front() == '[') {
+    // Specialist ingress: "[INTENT] …\n\n" + user text.  Only this known
+    // prefix — a user turn that begins with '[' is not a preamble.
+    static constexpr std::string_view kIntent = "[INTENT]";
+    if (s.size() >= kIntent.size() &&
+        s.compare(0, kIntent.size(), kIntent) == 0) {
         const auto sep = s.find("\n\n");
         if (sep != std::string::npos) s = s.substr(sep + 2);
     }
