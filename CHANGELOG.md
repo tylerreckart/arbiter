@@ -12,6 +12,12 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   no longer accepts `1.`, `1e`, `1e+`, or `-.5`. The tokenizer consumed
   those incomplete tokens and `strtod` parsed a prefix (`"1e"` → 1.0),
   so MCP / A2A / HTTP bodies silently coerced malformed numbers.
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
 
 ## [0.13.6] — 2026-09-21
 
