@@ -7,6 +7,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Fixed
+- **MCP JSON-RPC null members.** `parse_response` now treats `"error": null`
+  / `"result": null` as omitted, matching A2A and serializers that emit
+  optional fields as null. A success envelope with `"error": null` (or an
+  error envelope with `"result": null`) no longer throws and no longer
+  burns the client's 5-parse-failure budget.
+
 ## [0.13.4] — 2026-09-10
 
 ### Fixed
