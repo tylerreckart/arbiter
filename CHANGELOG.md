@@ -8,6 +8,9 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
+- **TUI replay QUERY boundary.** `replay_user_echo_text` now strips the
+  first `\n\nQUERY: ` after the AGENTS roster (not the last). User text
+  that embeds that marker no longer replays as only the suffix after it.
 - **Bearer scheme matches RFC 6750 / RFC 9110.** `extract_bearer` now
   treats the auth-scheme as case-insensitive and skips `1*SP` after it,
   so `bearer` / `BEARER` and extra spaces no longer 401 a valid token.
