@@ -11,6 +11,105 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **TUI replay QUERY boundary.** `replay_user_echo_text` now strips the
   first `\n\nQUERY: ` after the AGENTS roster (not the last). User text
   that embeds that marker no longer replays as only the suffix after it.
+- **Conversation list cursor.** `GET /v1/conversations` now orders by
+  `updated_at DESC, id DESC` and accepts `before_id` so pages that share
+  an epoch second no longer skip or duplicate rows. Timestamp-only
+  `before_updated_at` stays valid for old clients.
+- **Token cancel is not a client-wide kill-switch.** `complete()` /
+  `stream()` no longer set `hard_cancelled_` when only the thread's
+  `CancelToken` is set. Esc on one TUI pane or `/kill` of a `/loop`
+  was aborting sibling streams that share the same `ApiClient`
+  (#46 / #48). `cancel()` and kill-switch preflight stay sticky.
+- **A2A `tasks/cancel` survives `message/send`.** `update_a2a_task` no
+- **Reopened todos clear `completed_at`.** `update_todo` (HTTP PATCH and
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
+- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP registry writes do not follow a planted `.tmp` symlink.**
+- **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
+- **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
+- **JSON numbers require a complete fraction and exponent.** `json_parse`
+- **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
+- **Loop `/kill` wakes the inter-iteration pause.** After each turn,
+- **Memory `tag=` LIKE wildcards are literals.** `/mem entries tag=` and
+- **Dispatch of stored agents past newest-200.** `GET /v1/agents/:id` already
+- **Session restore skips non-object message rows.** `decode_messages_json`
+- **Lesson search is a literal substring.** `search_lessons` (`GET /v1/lessons?q=`
+
+## [0.13.7] — 2026-09-21
+
+- **Atomic writes do not follow a planted `.tmp` symlink.** `atomic_write_file`
+  used `fopen("wb")` on `<path>.tmp`, so a symlink at that staging name
+  redirected the write (session JSON, layout snapshot, migration markers)
+  into the link target before `rename` replaced only the symlink. Open the
+  staging file with `O_NOFOLLOW` / `O_EXCL` after `unlink` (which does not
+  follow). Dest-symlink `rename` already replaced the link, not its target.
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+- **Memory `tag=` LIKE wildcards are literals.** `/mem entries tag=` and
+- **JSON numbers require a complete fraction and exponent.** `json_parse`
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
+- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
+- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+
+## [0.13.6] — 2026-09-21
+
+### Changed
+- **Spoken memory habit.** `mode: "spoken"` and `channel: "voice"` agents
+  with the `/mem` bundle get a `MEMORY HABIT` block: `/mem search` (and
+  expand) before answering from scratch on preferences, people, open
+  loops, or “remember/recall”; `/mem add entry` with `user` / `feedback`
+  / `context` / `project` in the same turn as the spoken reply; never
+  narrate the writs. Overlay carries a compact reminder. HTTP/SSE
+  contracts are unchanged. See [Voice](docs/concepts/voice.md#personal-assistant-memory).
+- **Spoken register is conversation for the ear.** `mode: "spoken"` no
+  longer caps replies at three-to-five sentences or shapes them as
+  `[answer]. [evidence]. [next step]`. The TTS block asks for
+  contractions, spoken cadence, turn-taking (leave space; no canned
+  closers), and punctuation a TTS engine can breathe on — still no
+  markdown, lists, LaTeX, or SSML. `channel: "voice"` overlay last-wins
+  over specialist dispatch for user-facing prose, and both knobs take
+  file delivery off the TUI ` ```diff ` path. Intercom's HTTP/SSE
+  contract is unchanged. See [Voice](docs/concepts/voice.md).
+
+### Fixed
+- **`unit_sandbox_ssrf` leaf-swap flake on macOS CI.** The TOCTOU test
+  that swaps a regular `decoy.txt` for a symlink during
+  `read_from_workspace`'s re-check pause used an 80ms reader window and
+  a 20ms planter sleep. On the loaded `macos-arm64` runner,
+  `std::this_thread::sleep_for` coarsely overshot, the planter swapped
+  after the reader's `O_NOFOLLOW` open, and the reader saw the
+  still-regular decoy — `CHECK_FALSE(ok)` failed even though no host
+  bytes leaked. Widened the reader's pre-open window to 400ms and
+  shrank the planter's pre-swap sleep to 5ms so the swap reliably lands
+  after `resolve_within_workspace` and before the open.
+
+## [0.13.5] — 2026-09-21
+
+### Fixed
+- **MCP JSON-RPC null members.** `parse_response` now treats `"error": null`
+  / `"result": null` as omitted, matching A2A and serializers that emit
+  optional fields as null. A success envelope with `"error": null` (or an
+  error envelope with `"result": null`) no longer throws and no longer
+  burns the client's 5-parse-failure budget.
 
 ## [0.13.4] — 2026-09-10
 
@@ -63,7 +162,6 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.13.1] — 2026-08-31
 
-
 ## [0.13.0] — 2026-08-31
 
 ### Changed
@@ -77,18 +175,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.12.16] — 2026-08-28
 
-
 ## [0.12.15] — 2026-08-27
-
 
 ## [0.12.14] — 2026-08-24
 
-
 ## [0.12.13] — 2026-08-23
 
-
 ## [0.12.12] — 2026-08-22
-
 
 ## [0.12.11] — 2026-08-20
 
@@ -104,9 +197,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [0.12.10] — 2026-08-20
 
-
 ## [0.12.9] — 2026-08-18
-
 
 ## [0.12.8] — 2026-08-15
 
@@ -1108,8 +1199,6 @@ from the README as a worked example of consuming the HTTP+SSE API.
   missing constitution bundle, never thought to ask.  Net effect was
   a feature that essentially did not exist for the master agent
   through the API.  See the bundle + injection items in **Added**.
-
-
 
 This is a **beta** release.  The feature surface is operational
 hardening — none of it changes existing agent or HTTP semantics — but
