@@ -169,6 +169,7 @@ set(ARBITER_SOURCES
     src/remote/api_client.cpp
     src/remote/sse_turn.cpp
     src/atomic_file.cpp
+    src/secret_file.cpp
     src/loop_manager.cpp
     src/title_generator.cpp
     src/cli.cpp
@@ -1394,6 +1395,17 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_artifacts COMMAND unit_artifacts)
 
+    # Secret dest writes (API keys / admin token): O_NOFOLLOW + regular file.
+    add_executable(unit_secret_file
+        tests/test_secret_file.cpp
+        src/secret_file.cpp
+    )
+    target_include_directories(unit_secret_file PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_secret_file COMMAND unit_secret_file)
+
     # MCP layer (JSON-RPC framing, subprocess wrapper, /mcp dispatch).
     # Live-server tests are intentionally not wired here — manual smoke
     # via `arbiter --api` covers the playwright path.
@@ -1711,6 +1723,27 @@ if(INDEX_BUILD_TESTS)
         OpenSSL::Crypto
     )
     add_test(NAME unit_remote_connect COMMAND unit_remote_connect)
+
+    # Unary --connect DELETE/PATCH body cap.  Separate binary so
+    # unit_remote_connect stays network-free; this one stands up a
+    # loopback server against RemoteApiClient's one-shot curl handles.
+    add_executable(unit_remote_http
+        tests/test_remote_http.cpp
+        src/remote/api_client.cpp
+        src/a2a/http.cpp
+        src/a2a/sse_reader.cpp
+        src/ssrf_guard.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_remote_http PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    target_link_libraries(unit_remote_http PRIVATE
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_remote_http COMMAND unit_remote_http)
 
     # tui_design.cpp includes themes_data.h — wire every unit target that
     # compiles it to the embed generator (same header as the main binary).
