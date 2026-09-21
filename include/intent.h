@@ -16,11 +16,18 @@
 // Distinct from Constitution::MemoryConfig::intent_routing, which only
 // boosts /mem search types.
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace arbiter {
+
+// HTTP POST /v1/intent already rejects messages above this size.  The
+// orchestrator ingress path does not, so the LLM prompt builder must
+// truncate here or a large TUI / chat / event payload is forwarded
+// wholesale to the provider.
+inline constexpr std::size_t kIntentLlmTextMaxBytes = 64 * 1024;
 
 struct IntentConfig {
     // off | heuristic | hybrid | llm

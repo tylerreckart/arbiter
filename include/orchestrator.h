@@ -422,6 +422,17 @@ public:
     // keep streaming.
     void cancel_token(const std::shared_ptr<CancelToken>& token);
 
+    // JIT / reconcile: run one always-ephemeral clone (same construction as
+    // /parallel children).  Copies `cfg`, forces advisor.mode=off and
+    // presence.mode=off so subset checkers — not CONTINUE/REDIRECT/HALT —
+    // supervise success.  Never inserts into agents_ and never mutates a
+    // canonical catalog Agent's history_.  The clone is destroyed before
+    // this returns.
+    ApiResponse run_ephemeral(const std::string& agent_id,
+                              Constitution cfg,
+                              const std::string& message,
+                              const std::string& original_query = "");
+
     // True after cancel() until the next send()/send_streaming() exits.
     // Survives ApiClient::stream()/complete() clearing their own cancelled
     // flag at call entry — used so an admin kill-switch during pre-send

@@ -28,11 +28,33 @@ namespace arbiter {
 namespace {
 
 constexpr std::size_t kMaxInvariants     = 32;
+constexpr std::size_t kMaxExtraClauses   = 32;
 constexpr std::size_t kMaxTargetJson     = 64 * 1024;
 constexpr std::size_t kMaxWalkFiles      = 2000;
 constexpr std::size_t kMaxReadBytes      = 64 * 1024;
 constexpr std::size_t kMaxVerifyLog      = 32 * 1024;
 constexpr std::size_t kMaxFilesChanged   = 256;
+constexpr std::size_t kMaxAgentMap       = 64;
+
+constexpr int kMinWaves = 1;
+constexpr int kMaxWavesAdmit = 64;
+constexpr int kMinAgentsPerWave = 1;
+constexpr int kMaxAgentsPerWaveAdmit = 32;
+constexpr int kMinRetriesPerClause = 0;
+constexpr int kMaxRetriesPerClauseAdmit = 16;
+constexpr int64_t kMinWallMs = 1;
+constexpr int64_t kMaxWallMsAdmit = 86'400'000;  // 24h
+
+const std::unordered_set<std::string> kKnownCheckers = {
+    "expr.holds",
+    "named.capability",
+    "file.exists",
+    "verification.pass",
+    "workspace.mentions",
+    "todo.completed",
+    "artifact.exists",
+    "memory.active",
+};
 
 const std::unordered_set<std::string> kSkipDirNames = {
     ".git", "node_modules", "target", "dist", "build", ".cache",
@@ -486,6 +508,31 @@ std::vector<std::string> diff_files(const std::vector<std::string>& before,
     return out;
 }
 
+bool clause_id_ok(const std::string& id) {
+    if (id.empty() || id.size() > 64) return false;
+    for (char c : id) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
+            return false;
+    }
+    return true;
+}
+
+bool agent_token_ok(const std::string& id) {
+    if (id.empty()) return true;  // explicit unmap
+    return agent_id_is_safe(id);
+}
+
+void parse_memory_arg(const std::string& arg, std::string* type, std::string* tag) {
+    auto pos = arg.find(':');
+    if (pos == std::string::npos) {
+        if (type) *type = "";
+        if (tag) *tag = arg;
+        return;
+    }
+    if (type) *type = arg.substr(0, pos);
+    if (tag) *tag = arg.substr(pos + 1);
+}
+
 std::shared_ptr<JsonValue> clause_to_json(const StateClause& c) {
     auto o = jobj();
     auto& m = o->as_object_mut();
@@ -510,6 +557,10 @@ std::shared_ptr<JsonValue> clause_result_to_json(const ClauseResult& r) {
 
 bool named_invariant_known(const std::string& name) {
     return find_named(name) != nullptr;
+}
+
+bool reconcile_checker_known(const std::string& checker) {
+    return kKnownCheckers.count(checker) > 0;
 }
 
 const std::vector<std::string>& named_invariant_catalog() {
@@ -671,6 +722,78 @@ std::optional<AdmitError> admit_reconcile(const ReconcileSpec& spec) {
         e.message = "verification.command contains disallowed shell characters";
         return e;
     }
+    if (spec.max_waves < kMinWaves || spec.max_waves > kMaxWavesAdmit) {
+        e.code = "bad_budget";
+        e.message = "max_waves must be between 1 and 64";
+        return e;
+    }
+    if (spec.max_wall_ms < kMinWallMs || spec.max_wall_ms > kMaxWallMsAdmit) {
+        e.code = "bad_budget";
+        e.message = "max_wall_ms must be between 1 and 86400000";
+        return e;
+    }
+    if (spec.max_agents_per_wave < kMinAgentsPerWave ||
+        spec.max_agents_per_wave > kMaxAgentsPerWaveAdmit) {
+        e.code = "bad_budget";
+        e.message = "max_agents_per_wave must be between 1 and 32";
+        return e;
+    }
+    if (spec.max_retries_per_clause < kMinRetriesPerClause ||
+        spec.max_retries_per_clause > kMaxRetriesPerClauseAdmit) {
+        e.code = "bad_budget";
+        e.message = "max_retries_per_clause must be between 0 and 16";
+        return e;
+    }
+    if (spec.agent_map.size() > kMaxAgentMap) {
+        e.code = "bad_agent_map";
+        e.message = "agent_map exceeds 64 entries";
+        return e;
+    }
+    for (const auto& [cid, aid] : spec.agent_map) {
+        if (!clause_id_ok(cid)) {
+            e.code = "bad_agent_map";
+            e.message = "invalid agent_map clause id: " + cid;
+            return e;
+        }
+        if (!agent_token_ok(aid)) {
+            e.code = "bad_agent_map";
+            e.message = "invalid agent_map agent id: " + aid;
+            return e;
+        }
+    }
+    if (spec.extra_clauses.size() > kMaxExtraClauses) {
+        e.code = "too_many_clauses";
+        e.message = "at most 32 extra clauses";
+        return e;
+    }
+    std::unordered_set<std::string> extra_ids;
+    for (const auto& cl : spec.extra_clauses) {
+        if (!clause_id_ok(cl.id)) {
+            e.code = "bad_clause";
+            e.message = "invalid extra clause id";
+            return e;
+        }
+        if (!extra_ids.insert(cl.id).second) {
+            e.code = "bad_clause";
+            e.message = "duplicate extra clause id: " + cl.id;
+            return e;
+        }
+        if (!reconcile_checker_known(cl.checker)) {
+            e.code = "unknown_checker";
+            e.message = "unknown checker: " + cl.checker;
+            return e;
+        }
+        if (!cl.agent.empty() && !agent_id_is_safe(cl.agent)) {
+            e.code = "bad_clause";
+            e.message = "invalid extra clause agent: " + cl.agent;
+            return e;
+        }
+        if (cl.arg.size() > 512) {
+            e.code = "bad_clause";
+            e.message = "clause arg exceeds 512 bytes";
+            return e;
+        }
+    }
     return std::nullopt;
 }
 
@@ -680,6 +803,8 @@ StateContract compile_intent_contract(const ReconcileSpec& spec,
     c.id = contract_id.empty() ? "intent" : contract_id;
     c.max_waves = spec.max_waves;
     c.max_wall_ms = spec.max_wall_ms;
+    c.max_agents_per_wave = spec.max_agents_per_wave;
+    c.max_retries_per_clause = spec.max_retries_per_clause;
 
     std::string jerr;
     auto target = parse_target(spec.target_state_json, &jerr);
@@ -732,11 +857,21 @@ StateContract compile_intent_contract(const ReconcileSpec& spec,
         cl.agent = "forge";
         c.clauses.push_back(std::move(cl));
     }
+
+    for (const auto& extra : spec.extra_clauses) {
+        c.clauses.push_back(extra);
+    }
+
+    for (auto& cl : c.clauses) {
+        auto it = spec.agent_map.find(cl.id);
+        if (it != spec.agent_map.end()) cl.agent = it->second;
+    }
     return c;
 }
 
 DeltaS observe_contract(const StateContract& contract,
-                        const ReconcileSpec& spec) {
+                        const ReconcileSpec& spec,
+                        const ReconcileHooks& hooks) {
     DeltaS d;
     std::string jerr;
     auto target = parse_target(spec.target_state_json, &jerr);
@@ -784,6 +919,35 @@ DeltaS observe_contract(const StateContract& contract,
         } else if (cl.checker == "named.capability") {
             r.satisfied = workspace_mentions(root, {cl.arg});
             r.detail = r.satisfied ? "capability present" : "capability missing";
+        } else if (cl.checker == "todo.completed") {
+            if (hooks.todo_completed) {
+                r.satisfied = hooks.todo_completed(cl.arg);
+                r.detail = r.satisfied ? ("todo completed: " + cl.arg)
+                                       : ("todo open: " + cl.arg);
+            } else {
+                r.satisfied = false;
+                r.detail = "no todo projection";
+            }
+        } else if (cl.checker == "artifact.exists") {
+            if (hooks.artifact_exists) {
+                r.satisfied = hooks.artifact_exists(cl.arg);
+                r.detail = r.satisfied ? ("artifact exists: " + cl.arg)
+                                       : ("artifact missing: " + cl.arg);
+            } else {
+                r.satisfied = false;
+                r.detail = "no artifact projection";
+            }
+        } else if (cl.checker == "memory.active") {
+            std::string type, tag;
+            parse_memory_arg(cl.arg, &type, &tag);
+            if (hooks.memory_active) {
+                r.satisfied = hooks.memory_active(type, tag);
+                r.detail = r.satisfied ? ("memory active: " + cl.arg)
+                                       : ("memory inactive: " + cl.arg);
+            } else {
+                r.satisfied = false;
+                r.detail = "no memory projection";
+            }
         } else {
             r.satisfied = false;
             r.detail = "unknown checker";
@@ -792,6 +956,59 @@ DeltaS observe_contract(const StateContract& contract,
         else             d.residual.push_back(std::move(r));
     }
     return d;
+}
+
+std::string capability_fallback_agent(const std::string& checker) {
+    if (checker == "file.exists" || checker == "workspace.mentions" ||
+        checker == "named.capability" || checker == "todo.completed" ||
+        checker == "artifact.exists" || checker == "memory.active") {
+        return "nexus";
+    }
+    if (checker == "verification.pass") return "forge";
+    return {};
+}
+
+std::string resolve_clause_agent(const StateClause& clause,
+                                 const ReconcileSpec& spec) {
+    auto it = spec.agent_map.find(clause.id);
+    if (it != spec.agent_map.end()) return it->second;
+    if (!clause.agent.empty()) return clause.agent;
+    return capability_fallback_agent(clause.checker);
+}
+
+std::vector<ReconcileAgentCover>
+resolve_wave_covers(const DeltaS& delta,
+                    const StateContract& contract,
+                    const ReconcileSpec& spec,
+                    int wave_index) {
+    std::unordered_map<std::string, const StateClause*> by_id;
+    for (const auto& cl : contract.clauses) by_id[cl.id] = &cl;
+
+    std::vector<ReconcileAgentCover> covers;
+    std::unordered_map<std::string, std::size_t> index_of;
+    for (const auto& r : delta.residual) {
+        if (r.checker == "verification.pass") continue;
+        auto it = by_id.find(r.id);
+        if (it == by_id.end()) continue;
+        std::string agent = resolve_clause_agent(*it->second, spec);
+        if (agent.empty()) continue;
+        auto seen = index_of.find(agent);
+        if (seen == index_of.end()) {
+            if (static_cast<int>(covers.size()) >= spec.max_agents_per_wave) {
+                continue;
+            }
+            ReconcileAgentCover cover;
+            cover.agent_id = agent;
+            cover.clone_id = agent + "-jit-" + std::to_string(wave_index) +
+                             "-" + std::to_string(covers.size());
+            cover.clause_ids.push_back(r.id);
+            index_of[agent] = covers.size();
+            covers.push_back(std::move(cover));
+        } else {
+            covers[seen->second].clause_ids.push_back(r.id);
+        }
+    }
+    return covers;
 }
 
 std::string detect_test_command(const std::string& workspace_root) {
@@ -985,7 +1202,20 @@ std::shared_ptr<JsonValue> contract_to_json(const StateContract& c) {
     auto b = jobj();
     b->as_object_mut()["max_waves"] = jnum(c.max_waves);
     b->as_object_mut()["max_wall_ms"] = jnum(static_cast<double>(c.max_wall_ms));
+    b->as_object_mut()["max_agents_per_wave"] = jnum(c.max_agents_per_wave);
+    b->as_object_mut()["max_retries_per_clause"] = jnum(c.max_retries_per_clause);
     m["budgets"] = b;
+    return o;
+}
+
+std::shared_ptr<JsonValue> agent_cover_to_json(const ReconcileAgentCover& c) {
+    auto o = jobj();
+    auto& m = o->as_object_mut();
+    m["agent"] = jstr(c.agent_id);
+    m["clone_id"] = jstr(c.clone_id);
+    auto ids = jarr();
+    for (const auto& id : c.clause_ids) ids->as_array_mut().push_back(jstr(id));
+    m["clauses"] = ids;
     return o;
 }
 
@@ -1025,6 +1255,7 @@ std::shared_ptr<JsonValue> result_to_json(const ReconcileResult& r) {
     m["rolled_back"] = jbool(r.rolled_back);
     if (!r.brief.empty()) m["brief"] = jstr(r.brief);
     if (!r.snapshot_path.empty()) m["snapshot_path"] = jstr(r.snapshot_path);
+    m["waves"] = jnum(r.waves);
     return o;
 }
 
@@ -1033,6 +1264,17 @@ ReconcileResult run_reconcile(const ReconcileSpec& spec,
     ReconcileResult out;
     auto canceled = [&]() {
         return hooks.cancel && hooks.cancel->load();
+    };
+    auto emit = [&](const std::string& event,
+                    const std::shared_ptr<JsonValue>& payload) {
+        if (hooks.emit) {
+            try { hooks.emit(event, payload); } catch (...) {}
+        }
+    };
+    auto emit_delta = [&](const DeltaS& d, int wave) {
+        auto payload = delta_to_json(d);
+        payload->as_object_mut()["wave"] = jnum(wave);
+        emit("reconcile.delta", payload);
     };
 
     if (auto adm = admit_reconcile(spec)) {
@@ -1093,6 +1335,23 @@ ReconcileResult run_reconcile(const ReconcileSpec& spec,
         return false;
     };
 
+    auto unmapped_residual = [&](const DeltaS& d) -> std::vector<std::string> {
+        std::unordered_map<std::string, const StateClause*> by_id;
+        for (const auto& cl : out.contract.clauses) by_id[cl.id] = &cl;
+        std::vector<std::string> ids;
+        for (const auto& r : d.residual) {
+            if (r.checker == "verification.pass") continue;
+            auto it = by_id.find(r.id);
+            if (it == by_id.end()) {
+                ids.push_back(r.id);
+                continue;
+            }
+            if (resolve_clause_agent(*it->second, bound).empty())
+                ids.push_back(r.id);
+        }
+        return ids;
+    };
+
     auto finish_fail = [&](const std::string& reason) {
         if (canceled()) {
             out.status = "canceled";
@@ -1114,29 +1373,141 @@ ReconcileResult run_reconcile(const ReconcileSpec& spec,
 
     if (canceled()) return finish_fail("canceled");
 
-    out.delta = observe_contract(out.contract, bound);
+    out.delta = observe_contract(out.contract, bound, hooks);
+    emit_delta(out.delta, 0);
 
     if (implementation_residual(out.delta)) {
-        if (bound.mode == "ensure" && hooks.implement) {
-            try {
-                hooks.implement(out.contract, bound.workspace.root, hooks.cancel);
-            } catch (const std::exception& e) {
-                out.delta = observe_contract(out.contract, bound);
-                return finish_fail(std::string("implement_failed: ") + e.what());
-            }
-            if (canceled()) return finish_fail("canceled");
-            out.delta = observe_contract(out.contract, bound);
-        } else if (bound.mode == "ensure" && !hooks.implement) {
-            return finish_fail("implement_required");
-        } else {
-            // observe: residual is a failed (not rolled back unless
-            // we mutated — we didn't).
+        if (bound.mode == "observe") {
             out.verification.reason = "not_run";
             apply_verify_to_delta(out.delta, out.verification);
             out.status = "failed";
             out.reason = "delta_unresolved";
             out.files_changed = diff_files(before, list_rel_files(bound.workspace.root));
             return out;
+        }
+
+        // mode=ensure: wave loop.  A stub `implement` or fleet `agent_turn`
+        // is required; otherwise this is still implement_required.
+        if (!hooks.implement && !hooks.agent_turn) {
+            return finish_fail("implement_required");
+        }
+
+        auto missing = unmapped_residual(out.delta);
+        if (!missing.empty()) {
+            out.brief = "unmapped residual clauses: " +
+                        missing.front() +
+                        (missing.size() > 1 ? " (and others)" : "");
+            return finish_fail("unmapped_clauses");
+        }
+
+        if (hooks.agent_known) {
+            std::unordered_map<std::string, const StateClause*> by_id;
+            for (const auto& cl : out.contract.clauses) by_id[cl.id] = &cl;
+            for (const auto& r : out.delta.residual) {
+                if (r.checker == "verification.pass") continue;
+                auto it = by_id.find(r.id);
+                if (it == by_id.end()) continue;
+                std::string agent = resolve_clause_agent(*it->second, bound);
+                if (agent.empty()) continue;
+                bool known = false;
+                try { known = hooks.agent_known(agent); } catch (...) {}
+                if (!known) {
+                    out.brief = "unknown agent '" + agent + "' for clause " + r.id;
+                    return finish_fail("unknown_agent");
+                }
+            }
+        }
+
+        auto wall_start = std::chrono::steady_clock::now();
+        std::unordered_map<std::string, int> clause_attempts;
+
+        while (implementation_residual(out.delta)) {
+            if (canceled()) return finish_fail("canceled");
+            if (out.waves >= bound.max_waves) {
+                return finish_fail("max_waves");
+            }
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - wall_start).count();
+            if (out.waves > 0 && elapsed_ms >= bound.max_wall_ms) {
+                return finish_fail("max_wall_ms");
+            }
+
+            int wave = out.waves + 1;
+            auto covers = resolve_wave_covers(out.delta, out.contract, bound, wave);
+            if (covers.empty()) {
+                return finish_fail("unmapped_clauses");
+            }
+
+            auto wave_prompt = [&](ReconcileAgentCover& cover) {
+                std::ostringstream os;
+                os << out.brief << "\nThis wave you cover clauses:";
+                for (const auto& id : cover.clause_ids) os << " " << id;
+                os << ".\nClose them with /write (and tests) in the bound "
+                      "workspace. Success is runtime re-observe of ΔS, not "
+                      "a self-claim. Do not wait for advisor CONTINUE.";
+                cover.prompt = os.str();
+            };
+
+            std::vector<ReconcileAgentCover> spawned;
+            auto teardown = [&]() {
+                for (const auto& cover : spawned) {
+                    emit("agent.teardown", agent_cover_to_json(cover));
+                }
+                spawned.clear();
+            };
+
+            try {
+                if (hooks.agent_turn) {
+                    for (auto& cover : covers) {
+                        if (canceled()) break;
+                        wave_prompt(cover);
+                        emit("agent.spawned", agent_cover_to_json(cover));
+                        spawned.push_back(cover);
+                        hooks.agent_turn(cover, out.contract,
+                                         bound.workspace.root, hooks.cancel);
+                    }
+                } else if (hooks.implement) {
+                    for (auto& cover : covers) {
+                        wave_prompt(cover);
+                        emit("agent.spawned", agent_cover_to_json(cover));
+                        spawned.push_back(cover);
+                    }
+                    hooks.implement(out.contract, bound.workspace.root,
+                                    hooks.cancel);
+                }
+            } catch (const std::exception& e) {
+                teardown();
+                out.delta = observe_contract(out.contract, bound, hooks);
+                emit_delta(out.delta, wave);
+                return finish_fail(std::string("implement_failed: ") + e.what());
+            }
+            teardown();
+            ++out.waves;
+
+            if (canceled()) return finish_fail("canceled");
+
+            out.delta = observe_contract(out.contract, bound, hooks);
+            emit_delta(out.delta, wave);
+
+            std::unordered_set<std::string> covered;
+            for (const auto& cover : covers)
+                for (const auto& id : cover.clause_ids) covered.insert(id);
+            bool retry_exhausted = false;
+            std::string exhausted_id;
+            for (const auto& r : out.delta.residual) {
+                if (r.checker == "verification.pass") continue;
+                if (!covered.count(r.id)) continue;
+                int n = ++clause_attempts[r.id];
+                if (n > bound.max_retries_per_clause) {
+                    retry_exhausted = true;
+                    exhausted_id = r.id;
+                    break;
+                }
+            }
+            if (retry_exhausted) {
+                out.brief = "clause retry exhausted: " + exhausted_id;
+                return finish_fail("clause_retry_exhausted");
+            }
         }
     }
 
