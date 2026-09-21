@@ -67,6 +67,7 @@ The gate is one history-less `complete()` on `advisor_model`. Transport or provi
 |--------|------|------|
 | 400 | Body is not a JSON object, or `advisor_model` / `original_task` / `terminating_text` is missing. | `{"error":"..."}` |
 | 401 | Bearer token missing/invalid, or tenant disabled. | `{"error":"..."}` |
+| 409 | In-flight gate call was cancelled (server drain, or `POST /v1/requests/:id/cancel`). Not an auth failure — the bearer is still valid. | `{"error":"request cancelled"}` |
 | 405 | Method is not POST. | plain text |
 | 429 | Per-tenant rate or concurrency limiter rejected the call. | `{"error":"rate limit exceeded","reason":"rate_limit"\|"concurrent_request_limit","retry_after_seconds":N}` |
 | 500 | Orchestrator / client init failed. | `{"error":"..."}` |
