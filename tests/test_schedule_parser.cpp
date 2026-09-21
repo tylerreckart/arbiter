@@ -7,6 +7,7 @@
 #include "schedule_parser.h"
 
 #include <ctime>
+#include <limits>
 #include <string>
 
 using namespace arbiter;
@@ -103,6 +104,14 @@ TEST_CASE("parse: 'on YYYY-MM-DD'") {
         CHECK(!past.ok);
     }
 
+<<<<<<< HEAD
+    SUBCASE("year 1 does not persist next_fire_at=-1") {
+        // mktime fails or yields a pre-epoch value; either way we fail
+        // closed instead of storing -1 (which list_due treats as always due).
+        auto r = parse_schedule_phrase("on 0001-01-01 at 09:00", now);
+        CHECK_FALSE(r.ok);
+        CHECK(r.spec.next_fire_at == 0);
+=======
     SUBCASE("rejects calendar-impossible dates instead of overflowing") {
         // mktime would turn Feb 31 into early March; /schedule must fail closed.
         auto feb31 = parse_schedule_phrase("on 2027-02-31 at 12:00", now);
@@ -121,6 +130,7 @@ TEST_CASE("parse: 'on YYYY-MM-DD'") {
         CHECK(leap.ok);
         CHECK(leap.spec.kind == ScheduleSpec::Kind::Once);
         CHECK(leap.spec.fire_at > now);
+>>>>>>> origin/main
     }
 }
 
@@ -212,6 +222,13 @@ TEST_CASE("next_fire_for_recur: advances daily, hourly, weekly correctly") {
             R"({"every_minutes":200000000000000000})", now);
         CHECK(n == 0);
     }
+
+    SUBCASE("every hour near int64 max returns 0 rather than wrapping") {
+        // `after + 3600` overflowed; same fail-closed contract as every_hours.
+        const int64_t huge = std::numeric_limits<int64_t>::max() - 100;
+        int64_t n = next_fire_for_recur(R"({"every":"hour"})", huge);
+        CHECK(n == 0);
+    }
 }
 
 TEST_CASE("parse: huge intervals fail closed without throwing") {
@@ -235,6 +252,14 @@ TEST_CASE("parse: huge intervals fail closed without throwing") {
             "every 99999999999999999999 hours", now);
         CHECK_FALSE(r.ok);
         CHECK(r.error.message.find("too large") != std::string::npos);
+    }
+
+    SUBCASE("every hour near int64 max fails closed") {
+        const int64_t huge = std::numeric_limits<int64_t>::max() - 100;
+        auto r = parse_schedule_phrase("every hour", huge);
+        CHECK_FALSE(r.ok);
+        CHECK(r.error.message.find("too large") != std::string::npos);
+        CHECK(r.spec.next_fire_at == 0);
     }
 
     SUBCASE("ordinary values still parse") {

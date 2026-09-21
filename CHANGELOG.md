@@ -31,6 +31,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
 - **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
 - **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
+- **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
+- **JSON numbers require a complete fraction and exponent.** `json_parse`
 
 ## [0.13.7] — 2026-09-21
 
