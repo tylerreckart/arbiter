@@ -7,6 +7,8 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+## [0.13.5] — 2026-09-21
+
 ### Fixed
 - **MCP JSON-RPC null members.** `parse_response` now treats `"error": null`
   / `"result": null` as omitted, matching A2A and serializers that emit
