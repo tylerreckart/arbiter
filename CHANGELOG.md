@@ -30,6 +30,7 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **MCP registry writes do not follow a planted `.tmp` symlink.**
 - **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
 - **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
+- **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
 
 ## [0.13.7] — 2026-09-21
 
