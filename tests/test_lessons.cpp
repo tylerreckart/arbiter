@@ -117,6 +117,39 @@ TEST_CASE("substring search hits signature OR lesson_text, case-insensitive") {
     CHECK(d.empty());
 }
 
+TEST_CASE("substring search treats LIKE wildcards as literals") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+
+    s.create_lesson(tid, "x", "use 100% CPU for encode",
+                     "cap ffmpeg threads");
+    s.create_lesson(tid, "x", "use 1000 CPU for encode",
+                     "percent sibling without the sign");
+    s.create_lesson(tid, "x", "foo_bar retry",
+                     "underscore signature");
+    s.create_lesson(tid, "x", "fooXbar retry",
+                     "single-char sibling");
+    s.create_lesson(tid, "x", "path\\windows",
+                     "backslash in signature");
+
+    auto pct = s.search_lessons(tid, "x", "100%", 50);
+    REQUIRE(pct.size() == 1);
+    CHECK(pct[0].signature == "use 100% CPU for encode");
+
+    auto us = s.search_lessons(tid, "x", "foo_bar", 50);
+    REQUIRE(us.size() == 1);
+    CHECK(us[0].signature == "foo_bar retry");
+
+    auto bs = s.search_lessons(tid, "x", "path\\windows", 50);
+    REQUIRE(bs.size() == 1);
+    CHECK(bs[0].signature == "path\\windows");
+
+    // Still a substring, not an anchored match.
+    auto sub = s.search_lessons(tid, "x", "100% CPU", 50);
+    REQUIRE(sub.size() == 1);
+    CHECK(sub[0].signature == "use 100% CPU for encode");
+}
+
 TEST_CASE("hit bump tracks last_seen_at and ranks by hit_count") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");
