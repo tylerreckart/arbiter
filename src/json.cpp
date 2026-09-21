@@ -232,15 +232,31 @@ struct Parser {
     std::shared_ptr<JsonValue> parse_number() {
         size_t start = pos;
         if (peek() == '-') advance();
-        while (pos < src.size() && std::isdigit(static_cast<unsigned char>(peek()))) advance();
+        // RFC 8259: number = [ minus ] int [ frac ] [ exp ]
+        //   int  = 1*DIGIT (leading zeros remain accepted — existing)
+        //   frac = decimal-point 1*DIGIT
+        //   exp  = e [ minus / plus ] 1*DIGIT
+        // The previous tokenizer consumed `1.` / `1e` / `1e+` / `-.5`.
+        // strtod then parsed a prefix (`"1e"` → 1.0, end at `'e'`) so
+        // the document was accepted. Fail closed: every present frac
+        // or exp must include at least one digit, and strtod must
+        // consume the whole token.
+        auto is_digit = [&]() {
+            return pos < src.size() &&
+                   std::isdigit(static_cast<unsigned char>(peek()));
+        };
+        if (!is_digit()) error("invalid number");
+        while (is_digit()) advance();
         if (peek() == '.') {
             advance();
-            while (pos < src.size() && std::isdigit(static_cast<unsigned char>(peek()))) advance();
+            if (!is_digit()) error("invalid number");
+            while (is_digit()) advance();
         }
         if (peek() == 'e' || peek() == 'E') {
             advance();
             if (peek() == '+' || peek() == '-') advance();
-            while (pos < src.size() && std::isdigit(static_cast<unsigned char>(peek()))) advance();
+            if (!is_digit()) error("invalid number");
+            while (is_digit()) advance();
         }
         // std::from_chars(double) isn't implemented in AppleClang's
         // libc++ (Xcode 15.x ships only the integral overloads, with
@@ -254,14 +270,14 @@ struct Parser {
         //
         // Copy the digit run into a small std::string so strtod can
         // walk a null-terminated buffer without us mutating the
-        // source.  pre-validation by the loop above guarantees the
-        // substring is well-formed; the only error we have to detect
-        // here is overflow via ERANGE.
+        // source.  The loops above make the substring JSON-shaped;
+        // ERANGE still catches overflow, and a full-consume check
+        // rejects any leftover that a looser libc might leave.
         std::string num_str(src.data() + start, pos - start);
         errno = 0;
         char* end_ptr = nullptr;
         double val = std::strtod(num_str.c_str(), &end_ptr);
-        if (end_ptr == num_str.c_str() || errno == ERANGE) {
+        if (end_ptr != num_str.c_str() + num_str.size() || errno == ERANGE) {
             error("invalid number");
         }
         return jnum(val);
