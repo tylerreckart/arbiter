@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(arbiter VERSION 0.13.7 LANGUAGES CXX)
+project(arbiter VERSION 0.13.9 LANGUAGES CXX)
 
 # CMake's project(... VERSION x.y.z) only accepts numeric semver, so the
 # prerelease suffix (-beta2, -rc1, …) lives in its own variable and is
@@ -1310,6 +1310,17 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_circuit_breaker COMMAND unit_circuit_breaker)
 
+    # --- Unit tests for inbound HTTP/1.1 request framing ---
+    add_executable(unit_http_request
+        tests/test_http_request.cpp
+        src/api/http_request.cpp
+    )
+    target_include_directories(unit_http_request PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_http_request COMMAND unit_http_request)
+
     # --- Unit tests for CORS allowlist policy ---
     add_executable(unit_cors
         tests/test_cors.cpp
@@ -1328,6 +1339,17 @@ if(INDEX_BUILD_TESTS)
     )
     target_link_libraries(unit_sse_mailbox PRIVATE Threads::Threads)
     add_test(NAME unit_sse_mailbox COMMAND unit_sse_mailbox)
+
+    # --- Unit tests for RFC 6750 / RFC 9110 Bearer field parsing ---
+    add_executable(unit_auth
+        tests/test_auth.cpp
+        src/api/http_util.cpp
+    )
+    target_include_directories(unit_auth PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_auth COMMAND unit_auth)
 
     # --- Unit tests for /v1/events agent routing ---
     add_executable(unit_route_event
@@ -1361,6 +1383,19 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
     )
     add_test(NAME unit_logger COMMAND unit_logger)
+
+    # JSON \u escapes including UTF-16 surrogate pairs (emoji via
+    # Python json.dumps / MCP-A2A peers).  Own binary so it stays
+    # independently mergeable vs unit_mcp framing tests.
+    add_executable(unit_json
+        tests/test_json.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_json PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_json COMMAND unit_json)
 
     # --- Unit tests for the structured-memory store ---
     # Pins the tenant_store CRUD contract that backs both /v1/memory/entries

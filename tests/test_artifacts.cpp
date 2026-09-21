@@ -279,6 +279,54 @@ TEST_CASE("artifacts are tenant-isolated") {
     CHECK(s.bytes_used_tenant(b) == 6);
 }
 
+TEST_CASE("id lookup and delete honor optional conversation_id") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+    const int64_t c1  = make_conversation(s, tid, "thread-1");
+    const int64_t c2  = make_conversation(s, tid, "thread-2");
+
+    auto p1 = s.put_artifact(tid, c1, "a.txt", "from-c1", "text/plain");
+    auto p2 = s.put_artifact(tid, c2, "b.txt", "from-c2", "text/plain");
+    REQUIRE(p1.record.has_value());
+    REQUIRE(p2.record.has_value());
+    const int64_t aid1 = p1.record->id;
+    const int64_t aid2 = p2.record->id;
+
+    // Tenant-wide (conversation_id == 0) still finds either row.
+    REQUIRE(s.get_artifact_meta(tid, aid1).has_value());
+    REQUIRE(s.get_artifact_content(tid, aid2).has_value());
+
+    // Matching conversation_id returns the row.
+    auto scoped = s.get_artifact_meta(tid, aid1, c1);
+    REQUIRE(scoped.has_value());
+    CHECK(scoped->path == "a.txt");
+    auto blob = s.get_artifact_content(tid, aid1, c1);
+    REQUIRE(blob.has_value());
+    CHECK(*blob == "from-c1");
+
+    // Sibling :cid is a miss — same 404 the nested HTTP route must emit.
+    CHECK_FALSE(s.get_artifact_meta(tid, aid1, c2).has_value());
+    CHECK_FALSE(s.get_artifact_content(tid, aid1, c2).has_value());
+    CHECK_FALSE(s.get_artifact_meta(tid, aid2, c1).has_value());
+
+    // Mismatched delete is a no-op: row and memory link stay put.
+    auto entry = s.create_entry(tid, "reference", "Refers", "", "", "[]", aid1);
+    REQUIRE(entry.artifact_id == aid1);
+    CHECK_FALSE(s.delete_artifact(tid, aid1, c2));
+    REQUIRE(s.get_artifact_meta(tid, aid1, c1).has_value());
+    auto still_linked = s.get_entry(tid, entry.id);
+    REQUIRE(still_linked.has_value());
+    CHECK(still_linked->artifact_id == aid1);
+
+    // Matching conversation_id deletes only that row.
+    REQUIRE(s.delete_artifact(tid, aid1, c1));
+    CHECK_FALSE(s.get_artifact_meta(tid, aid1).has_value());
+    REQUIRE(s.get_artifact_meta(tid, aid2, c2).has_value());
+    auto cleared = s.get_entry(tid, entry.id);
+    REQUIRE(cleared.has_value());
+    CHECK(cleared->artifact_id == 0);
+}
+
 TEST_CASE("deleting a conversation cascades to its artifacts") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");

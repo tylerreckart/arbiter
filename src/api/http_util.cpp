@@ -2,6 +2,7 @@
 
 #include "api/http_util.h"
 
+#include <cctype>
 #include <string>
 #include <utility>
 #include <vector>
@@ -65,6 +66,32 @@ std::map<std::string, std::string> parse_query(const std::string& path) {
         start = (amp == std::string::npos) ? qs.size() : amp + 1;
     }
     return out;
+}
+
+std::string parse_bearer_authorization(const std::string& field_value) {
+    // RFC 9110 §11.1: authentication schemes are case-insensitive.
+    // RFC 6750 §2.1: credentials = "Bearer" 1*SP token68
+    //
+    // A literal "Bearer " prefix 401s clients that send `bearer`,
+    // `BEARER`, or two spaces after the scheme.  Trailing OWS on
+    // the field value is stripped so a proxy-appended space does not
+    // become part of the token hash.
+    static constexpr char kScheme[] = "bearer";
+    static constexpr size_t kSchemeLen = 6;
+    if (field_value.size() < kSchemeLen + 2) return {};
+    for (size_t i = 0; i < kSchemeLen; ++i) {
+        const unsigned char c = static_cast<unsigned char>(field_value[i]);
+        if (static_cast<char>(std::tolower(c)) != kScheme[i]) return {};
+    }
+    size_t i = kSchemeLen;
+    if (i >= field_value.size() || field_value[i] != ' ') return {};
+    while (i < field_value.size() && field_value[i] == ' ') ++i;
+    if (i >= field_value.size()) return {};
+    size_t end = field_value.size();
+    while (end > i && (field_value[end - 1] == ' ' || field_value[end - 1] == '\t'))
+        --end;
+    if (end <= i) return {};
+    return field_value.substr(i, end - i);
 }
 
 } // namespace arbiter
