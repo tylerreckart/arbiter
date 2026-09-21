@@ -23,6 +23,7 @@
 #include "commands.h"
 #include "config.h"
 #include "constitution.h"
+#include "event_routing.h"
 #include "context_compaction.h"
 #include "file_cap.h"
 #include "json.h"
@@ -3452,20 +3453,35 @@ void handle_artifact_list_tenant(int fd, TenantStore& tenants, const Tenant& ten
     write_json_response(fd, 200, body);
 }
 
+// conversation_id == 0 is the tenant-wide /v1/artifacts/:aid surface.
+// Nested /v1/conversations/:cid/artifacts/:aid passes :cid so a
+// sibling-thread (or TUI-origin) id cannot be read or deleted through
+// the conversation-scoped path.  Missing / TUI conversations 404 like
+// list/create on the same prefix.
 void handle_artifact_get_meta(int fd, int64_t artifact_id,
-                                TenantStore& tenants, const Tenant& tenant) {
-    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id);
+                                TenantStore& tenants, const Tenant& tenant,
+                                int64_t conversation_id = 0) {
+    if (conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conversation_id)) {
+        return write_artifact_error(fd, 404, "conversation not found");
+    }
+    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id, conversation_id);
     if (!rec) return write_artifact_error(fd, 404, "artifact not found");
     write_json_response(fd, 200, artifact_to_json(*rec));
 }
 
 // GET /v1/artifacts/:id/raw — content body with proper Content-Type +
 // ETag (= sha256) for conditional GETs.  Tenant-scoped lookup; cross-
-// tenant id surfaces as 404.
+// tenant id surfaces as 404.  Nested callers pass conversation_id.
 void handle_artifact_get_raw(int fd, int64_t artifact_id,
                               const HttpRequest& req,
-                              TenantStore& tenants, const Tenant& tenant) {
-    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id);
+                              TenantStore& tenants, const Tenant& tenant,
+                              int64_t conversation_id = 0) {
+    if (conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conversation_id)) {
+        return write_artifact_error(fd, 404, "conversation not found");
+    }
+    auto rec = tenants.get_artifact_meta(tenant.id, artifact_id, conversation_id);
     if (!rec) return write_artifact_error(fd, 404, "artifact not found");
 
     // ETag honors the strong-validator semantics — sha256 of the bytes.
@@ -3483,7 +3499,8 @@ void handle_artifact_get_raw(int fd, int64_t artifact_id,
         return;
     }
 
-    auto blob = tenants.get_artifact_content(tenant.id, artifact_id);
+    auto blob = tenants.get_artifact_content(tenant.id, artifact_id,
+                                              conversation_id);
     if (!blob) return write_artifact_error(fd, 404, "artifact content missing");
 
     std::ostringstream ss;
@@ -3498,8 +3515,13 @@ void handle_artifact_get_raw(int fd, int64_t artifact_id,
 }
 
 void handle_artifact_delete(int fd, int64_t artifact_id,
-                              TenantStore& tenants, const Tenant& tenant) {
-    if (!tenants.delete_artifact(tenant.id, artifact_id))
+                              TenantStore& tenants, const Tenant& tenant,
+                              int64_t conversation_id = 0) {
+    if (conversation_id > 0 &&
+        !get_http_conversation(tenants, tenant.id, conversation_id)) {
+        return write_artifact_error(fd, 404, "conversation not found");
+    }
+    if (!tenants.delete_artifact(tenant.id, artifact_id, conversation_id))
         return write_artifact_error(fd, 404, "artifact not found");
     auto body = jobj();
     body->as_object_mut()["deleted"] = jbool(true);
@@ -10814,10 +10836,17 @@ void handle_event_ingest(int fd, HttpRequest req,
 
     // Route: explicit override wins; otherwise file-backed agents first,
     // then tenant-stored agents (POST /v1/agents) by stable agent_id order.
+    // Remember which tier won so we hydrate *that* constitution — a
+    // file-backed id can collide with a tenant row that handle_orchestrate
+    // would otherwise install from the newest-200 catalog.
     std::string agent_id = agent;
+    std::string tenant_def_json;
+    bool routed_from_file = false;
     if (agent_id.empty()) {
         agent_id = route_event(opts.agents_dir, event_type);
-        if (agent_id.empty()) {
+        if (!agent_id.empty()) {
+            routed_from_file = true;
+        } else {
             // Full scan ordered by agent_id — not the newest-200 REST page.
             auto records = tenants.list_agent_records_for_routing(tenant.id);
             std::vector<std::pair<std::string, std::vector<std::string>>>
@@ -10837,8 +10866,17 @@ void handle_event_ingest(int fd, HttpRequest req,
                 }
             }
             std::string matched = route_event(tenant_agents, event_type);
-            agent_id = matched.empty() ? std::string("index") : matched;
+            if (matched.empty()) {
+                agent_id = "index";
+            } else {
+                agent_id = matched;
+                if (auto rec = tenants.get_agent_record(tenant.id, agent_id)) {
+                    tenant_def_json = rec->agent_def_json;
+                }
+            }
         }
+    } else if (auto rec = tenants.get_agent_record(tenant.id, agent_id)) {
+        tenant_def_json = rec->agent_def_json;
     }
 
     // Format event as a natural-language message the agent can reason about.
@@ -10850,9 +10888,26 @@ void handle_event_ingest(int fd, HttpRequest req,
     // handle_orchestrate reads req.body["message"] and uses agent_override
     // to target the routed agent; everything else (SSE, auth, writ execution)
     // flows through the existing path unchanged.
+    //
+    // Attach the routed constitution as inline agent_def. Orchestrate only
+    // preloads list_agent_records(..., 200) and never reads agents_dir, so
+    // a file-backed match or a tenant agent off that page would otherwise
+    // 404 "agent not found" — or, on an id clash, run the tenant blob.
     auto synth = jobj();
     synth->as_object_mut()["message"] = jstr(message);
     synth->as_object_mut()["intent_source"] = jstr("event");
+    const std::string def_json = event_ingest_agent_def_json(
+        agent_id, opts.agents_dir, tenant_def_json, routed_from_file);
+    if (!def_json.empty()) {
+        try {
+            auto def = json_parse(def_json);
+            if (def && def->is_object()) {
+                synth->as_object_mut()["agent_def"] = def;
+            }
+        } catch (...) {
+            // Leave unhydrated; orchestrate reports agent not found.
+        }
+    }
     req.body = json_serialize(*synth);
 
     handle_orchestrate(fd, req, opts, tenants, in_flight,
@@ -11549,13 +11604,16 @@ void ApiServer::handle_connection(int fd) {
                                                   "method not allowed\n");
                             return;
                         }
-                        return handle_artifact_get_raw(fd, aid, req, tenants_, *tenant);
+                        return handle_artifact_get_raw(fd, aid, req, tenants_,
+                                                       *tenant, id);
                     }
                     if (segs.size() == 5) {
                         if (req.method == "GET")
-                            return handle_artifact_get_meta(fd, aid, tenants_, *tenant);
+                            return handle_artifact_get_meta(fd, aid, tenants_,
+                                                           *tenant, id);
                         if (req.method == "DELETE")
-                            return handle_artifact_delete(fd, aid, tenants_, *tenant);
+                            return handle_artifact_delete(fd, aid, tenants_,
+                                                          *tenant, id);
                         write_plain_response(fd, 405, "Method Not Allowed",
                                               "method not allowed\n");
                         return;
