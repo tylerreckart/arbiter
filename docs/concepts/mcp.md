@@ -34,7 +34,7 @@ Configure available servers via `~/.arbiter/mcp_servers.json` (path comes from `
 |-------------------|----------------|----------|-------------|
 | `command`         | string         | yes      | Executable to run. PATH-resolved via `execvp`. |
 | `args`            | array<string>  | no       | Arguments after `command`. |
-| `env`             | object         | no       | Extra `KEY: "VALUE"` strings appended to the parent environment. |
+| `env`             | object         | no       | Extra `KEY: "VALUE"` strings merged into the child environment. Same-name keys override the parent (secret-shaped parent keys are stripped; registry secrets are still passed through). |
 | `init_timeout_ms` | int            | no       | Wall-clock budget for the JSON-RPC `initialize` handshake. Defaults to 60s — first-run `npx` may install. |
 | `call_timeout_ms` | int            | no       | Per-`tools/call` timeout. Defaults to 30s. Playwright snapshots/navigation routinely take 5–15s. |
 
