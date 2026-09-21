@@ -56,6 +56,13 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [0.13.6] — 2026-09-21
 
 ### Changed
+- **Spoken memory habit.** `mode: "spoken"` and `channel: "voice"` agents
+  with the `/mem` bundle get a `MEMORY HABIT` block: `/mem search` (and
+  expand) before answering from scratch on preferences, people, open
+  loops, or “remember/recall”; `/mem add entry` with `user` / `feedback`
+  / `context` / `project` in the same turn as the spoken reply; never
+  narrate the writs. Overlay carries a compact reminder. HTTP/SSE
+  contracts are unchanged. See [Voice](docs/concepts/voice.md#personal-assistant-memory).
 - **Spoken register is conversation for the ear.** `mode: "spoken"` no
   longer caps replies at three-to-five sentences or shapes them as
   `[answer]. [evidence]. [next step]`. The TTS block asks for
