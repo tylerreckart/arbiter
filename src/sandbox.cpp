@@ -1663,7 +1663,9 @@ bool SandboxManager::read_from_workspace(int64_t tenant_id,
         err_out = "no such file in workspace: " + clean;
         return false;
     }
-    if (cfg_.read_check_pause_ms > 0) {
+    if (cfg_.read_check_hook) {
+        cfg_.read_check_hook();
+    } else if (cfg_.read_check_pause_ms > 0) {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(cfg_.read_check_pause_ms));
     }
