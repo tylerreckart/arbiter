@@ -16,6 +16,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
 - **Secret key/token writes do not follow a planted dest symlink.**
 - **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
+- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
+- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
 
 ## [0.13.6] — 2026-09-21
 
