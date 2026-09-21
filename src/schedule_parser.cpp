@@ -90,7 +90,17 @@ bool parse_ymd(const std::string& s, int& y, int& mo, int& d) {
     y  = std::stoi(m[1].str());
     mo = std::stoi(m[2].str());
     d  = std::stoi(m[3].str());
-    return mo >= 1 && mo <= 12 && d >= 1 && d <= 31;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    // mktime normalizes overflow dates (Feb 31 → Mar 3).  Round-trip at
+    // noon so a DST spring-forward hole cannot reject a real calendar day.
+    std::tm tm{};
+    tm.tm_year  = y - 1900;
+    tm.tm_mon   = mo - 1;
+    tm.tm_mday  = d;
+    tm.tm_hour  = 12;
+    tm.tm_isdst = -1;
+    if (std::mktime(&tm) == static_cast<time_t>(-1)) return false;
+    return tm.tm_year == y - 1900 && tm.tm_mon == mo - 1 && tm.tm_mday == d;
 }
 
 int64_t make_local_epoch(int y, int mo, int d, int hh, int mm) {
