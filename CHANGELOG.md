@@ -7,47 +7,30 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-### Added
-- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
-  runs a wave loop: observe → spawn ephemeral agent clones for residual
-  covers → execute in the bound workspace → teardown → re-observe, until ΔS
-  is empty or a budget/cancel/rollback fires. Success is runtime re-observe
-  plus required verification — not model self-claim or advisor
-  CONTINUE/REDIRECT/HALT. `agent_map` (or `StateClause.agent` / capability
-  fallback) is required to resolve ensure residuals; no LLM mapper.
-  Budgets: `max_waves`, `max_wall_ms`, `max_agents_per_wave`,
-  `max_retries_per_clause`. SSE: `agent.spawned` / `agent.teardown` plus
-  `reconcile.delta` each wave. Observe mode and `POST /v1/orchestrate` are
-  unchanged. See [`docs/concepts/reconcile.md`](docs/concepts/reconcile.md)
-  and [#208](https://github.com/tylerreckart/arbiter/issues/208).
 ### Fixed
 - **Conversation list cursor.** `GET /v1/conversations` now orders by
   `updated_at DESC, id DESC` and accepts `before_id` so pages that share
   an epoch second no longer skip or duplicate rows. Timestamp-only
   `before_updated_at` stays valid for old clients.
-- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
-  the remote response body into `err_out`. `/a2a call` copies that string into
-  the calling agent's tool envelope, so a verbose or hostile remote could dump
-  unbounded HTML/JSON (and any secrets it echoed) into conversation history.
-  Non-200 responses now report `HTTP <status>` plus a 200-byte, single-line
-  JSON-RPC `error.message` when present. JSON-RPC errors on HTTP 200 are
-  clipped the same way.
-- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
-  title-rename used a one-shot libcurl write callback that appended the
-  entire response with no limit. A `--connect` peer that omitted
-  `Content-Length` could grow the TUI heap without bound; GET/POST already
-  go through `a2a::http`. Cap is 16 MiB (`kSseMaxEventBytes`).
-- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
-- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
-- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
-- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **Token cancel is not a client-wide kill-switch.** `complete()` /
+  `stream()` no longer set `hard_cancelled_` when only the thread's
+  `CancelToken` is set. Esc on one TUI pane or `/kill` of a `/loop`
+  was aborting sibling streams that share the same `ApiClient`
+  (#46 / #48). `cancel()` and kill-switch preflight stay sticky.
+- **A2A `tasks/cancel` survives `message/send`.** `update_a2a_task` no
+- **Reopened todos clear `completed_at`.** `update_todo` (HTTP PATCH and
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
 - **Secret key/token writes do not follow a planted dest symlink.**
 - **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
-- **A2A `tasks/cancel` survives `message/send`.** `update_a2a_task` no
-- **Reopened todos clear `completed_at`.** `update_todo` (HTTP PATCH and
+- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
+- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
 - **MCP registry writes do not follow a planted `.tmp` symlink.**
 - **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
 - **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
