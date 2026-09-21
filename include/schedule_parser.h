@@ -66,4 +66,14 @@ int64_t next_fire_for_recur(const std::string& recur_json, int64_t after);
 // trip to the human.
 std::string schedule_parser_help();
 
+// /schedule pause / resume status gates.  Empty return = allowed.
+// Terminal one-shots (completed / failed / canceled) stay terminal so
+// pause-then-resume cannot re-queue them: next_fire_at is still in the
+// past after a successful fire, and the old resume writ set next=now+1.
+// Failed one-shots stay on HTTP PATCH-to-active, which scheduler.h
+// documents as the operator retry.  Pause of running is allowed (the
+// in-flight finalize CAS will not clobber it).
+std::string schedule_pause_block_reason(const std::string& status);
+std::string schedule_resume_block_reason(const std::string& status);
+
 } // namespace arbiter

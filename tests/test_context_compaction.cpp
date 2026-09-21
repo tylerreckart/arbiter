@@ -212,6 +212,63 @@ TEST_CASE("strip_compaction_preambles removes todos and QUERY wrapper") {
                                        strip_compaction_preambles(raw))));
 }
 
+TEST_CASE("strip_compaction_preambles keeps user-embedded QUERY delimiter") {
+    // Index wrap uses the first "\n\nQUERY: ".  rfind would keep only
+    // "docs" and fail to match the raw DB row on remap.
+    const std::string raw =
+        "AGENTS: none loaded\n"
+        "\n"
+        "QUERY: see\n\nQUERY: docs";
+    CHECK(strip_compaction_preambles(raw) == "see\n\nQUERY: docs");
+    CHECK(boundary_content_matches("see\n\nQUERY: docs",
+                                   compaction_boundary_content(
+                                       strip_compaction_preambles(raw))));
+}
+
+TEST_CASE("strip_compaction_preambles keeps user text that starts with '['") {
+    const std::string raw =
+        "[KNOWN PITFALLS — your prior lessons]\n"
+        "  - [sig] body with a blank line\n"
+        "\n"
+        "still in the lesson (#1)\n"
+        "[END KNOWN PITFALLS]\n"
+        "\n"
+        "[NOTE]\n"
+        "\n"
+        "actual question";
+    CHECK(strip_compaction_preambles(raw) == "[NOTE]\n\nactual question");
+    CHECK(boundary_content_matches("[NOTE]\n\nactual question",
+                                   compaction_boundary_content(
+                                       strip_compaction_preambles(raw))));
+}
+
+TEST_CASE("strip_compaction_preambles drops specialist INTENT envelope only") {
+    const std::string raw =
+        "[INTENT] kind=implement conf=0.80 source=heuristic\n"
+        "GOAL: ship it\n"
+        "\n"
+        "[NOTE]\n"
+        "\n"
+        "keep this";
+    CHECK(strip_compaction_preambles(raw) == "[NOTE]\n\nkeep this");
+}
+
+TEST_CASE("remap unique boundary survives user-embedded QUERY") {
+    auto hist = make_history(8);
+    hist[4].role = "user";
+    hist[4].content = "see\n\nQUERY: docs";
+    CompactionState st;
+    st.summary = "prior";
+    st.covered_until = 99;
+    st.generation = 1;
+    st.boundary_role = "user";
+    st.boundary_content = compaction_boundary_content(
+        strip_compaction_preambles(
+            "AGENTS: none loaded\n\nQUERY: see\n\nQUERY: docs"));
+    remap_compaction_onto_history(st, hist, /*keep=*/16);
+    CHECK(st.covered_until == 4);
+}
+
 TEST_CASE("remap_compaction_onto_history clears empty summary") {
     auto hist = make_history(20);
     CompactionState st;
