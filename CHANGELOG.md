@@ -8,27 +8,28 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 ## [Unreleased]
 
 ### Fixed
-- **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
-  `cmd_fetch` and `cmd_fetch_bytes` already refused private/loopback
-  peers at connect time, but skipped `ssrf_preflight_url`. Metadata
-  hostnames that resolve public, and private/metadata URLs reached
-  through `HTTP_PROXY` (opensocket sees the proxy), were not blocked.
-  Both paths now run the shared preflight before libcurl.
-- **Reconcile rollback no longer wipes the workspace on a failed restore.**
-- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
-- **Secret key/token writes do not follow a planted dest symlink.**
-- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
-- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
-- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
-- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
-- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
+- **`/schedule` time math fail-closed.** `every hour` / `hourly` now use the
+  same overflow-checked adder as `every N hours` instead of `now + 3600`.
+  `mktime` failure no longer stores `next_fire_at = -1` (always due on
+  `list_due`); parse and `next_fire_for_recur` return 0 / an error so a
+  recurring recompute cannot tight-loop.
 - **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
 - **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
 - **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
+- **Reconcile rollback no longer wipes the workspace on a failed restore.**
+- **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
+- **Secret key/token writes do not follow a planted dest symlink.**
+- **Remote `--connect` base URL query/userinfo.** `normalize_api_base_url`
+- **JSON numbers require a complete fraction and exponent.** `json_parse`
+- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
+- **Intent reconcile Phase B (JIT ΔS waves).** `POST /v1/reconcile` `mode=ensure`
+- **A2A unary HTTP errors stay bounded.** `Client::rpc` no longer concatenates
+- **Remote `--connect` DELETE/PATCH body cap.** Conversation delete and
+- **Intent LLM prompt text cap.** `build_llm_user_prompt` now truncates
 - **MCP registry writes do not follow a planted `.tmp` symlink.**
 - **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
-- **MCP registry `env` overrides parent keys.** Subprocess spawn skipped
+- **`/fetch` uses the same SSRF hostname preflight as `/browse`.**
 
 ## [0.13.7] — 2026-09-21
 
