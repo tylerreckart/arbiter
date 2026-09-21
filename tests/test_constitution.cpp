@@ -12,6 +12,10 @@
 #include "constitution.h"
 #include "presence.h"
 
+#include <stdexcept>
+#include <string>
+#include <vector>
+
 using namespace arbiter;
 
 // Helper: construct a minimal Constitution and run the composer.  Anchored
@@ -581,4 +585,149 @@ TEST_CASE("file_backed_agent_id prefers stem for Title Case display names") {
 
     c.name = "research";
     CHECK(file_backed_agent_id(c, "scout") == "research");
+}
+
+TEST_CASE("delegation: absent yields unrestricted defaults") {
+    auto c = Constitution::from_json(R"({"name":"scout","model":"claude-sonnet-4-6"})");
+    CHECK(c.delegation.is_default());
+    CHECK_FALSE(c.delegation.max_depth.has_value());
+    CHECK(c.delegation.effective_max_depth() ==
+          Constitution::DelegationPolicy::kGlobalMaxDepth);
+    CHECK(c.delegation.allowed_callees.empty());
+    CHECK(c.delegation.denied_callees.empty());
+    CHECK_FALSE(c.delegation.max_subtree_tokens.has_value());
+    CHECK_FALSE(c.delegation.max_subtree_usd.has_value());
+    CHECK(c.to_json().find("\"delegation\"") == std::string::npos);
+    CHECK(c.build_system_prompt().find("DELEGATION POLICY") == std::string::npos);
+}
+
+TEST_CASE("delegation: round-trip allowlist, denylist, depth, budgets") {
+    std::string js = R"({
+        "name": "lead",
+        "model": "claude-sonnet-4-6",
+        "delegation": {
+            "max_depth": 1,
+            "allowed_callees": ["scout", "vera"],
+            "denied_callees": ["forge"],
+            "max_subtree_tokens": 8000,
+            "max_subtree_usd": 0.5
+        }
+    })";
+    auto c = Constitution::from_json(js);
+    CHECK(c.delegation.max_depth == 1);
+    CHECK(c.delegation.effective_max_depth() == 1);
+    CHECK(c.delegation.allowed_callees == std::vector<std::string>({"scout", "vera"}));
+    CHECK(c.delegation.denied_callees == std::vector<std::string>({"forge"}));
+    CHECK(c.delegation.max_subtree_tokens == 8000);
+    CHECK(c.delegation.max_subtree_usd == doctest::Approx(0.5));
+    auto again = Constitution::from_json(c.to_json());
+    CHECK(again.delegation.max_depth == 1);
+    CHECK(again.delegation.allowed_callees == c.delegation.allowed_callees);
+    CHECK(again.delegation.denied_callees == c.delegation.denied_callees);
+    CHECK(again.delegation.max_subtree_tokens == 8000);
+    CHECK(again.delegation.max_subtree_usd == doctest::Approx(0.5));
+    CHECK(c.build_system_prompt().find("DELEGATION POLICY") != std::string::npos);
+    CHECK(c.build_system_prompt().find("must not spawn: forge") != std::string::npos);
+}
+
+TEST_CASE("delegation: unknown and malformed fields fail closed") {
+    auto throws = [](const std::string& js) {
+        CHECK_THROWS_AS(Constitution::from_json(js), std::runtime_error);
+    };
+    throws(R"({"name":"x","delegation":"deny"})");
+    throws(R"({"name":"x","delegation":[]})");
+    throws(R"({"name":"x","delegation":{"max_depth":3}})");
+    throws(R"({"name":"x","delegation":{"max_depth":-1}})");
+    throws(R"({"name":"x","delegation":{"max_depth":1.5}})");
+    throws(R"({"name":"x","delegation":{"max_depth":"1"}})");
+    throws(R"({"name":"x","delegation":{"allowed_callees":"scout"}})");
+    throws(R"({"name":"x","delegation":{"allowed_callees":[1]}})");
+    throws(R"({"name":"x","delegation":{"allowed_callees":[""]}})");
+    throws(R"({"name":"x","delegation":{"allowed_callees":["bad id"]}})");
+    throws(R"({"name":"x","delegation":{"denied_callees":{"forge":true}}})");
+    throws(R"({"name":"x","delegation":{"max_subtree_tokens":-5}})");
+    throws(R"({"name":"x","delegation":{"max_subtree_usd":-0.1}})");
+    throws(R"({"name":"x","delegation":{"max_tokens":100}})");
+    throws(R"({"name":"x","delegation":{"allow_list":["scout"]}})");
+}
+
+TEST_CASE("delegation_spawn_error: defaults allow depth 1-2") {
+    Constitution caller;
+    CHECK(delegation_spawn_error(caller, nullptr, "forge", 1, {}).empty());
+    CHECK(delegation_spawn_error(caller, nullptr, "forge", 2, {}).empty());
+    CHECK(delegation_spawn_error(caller, nullptr, "forge", 3, {}).find("ERR:") == 0);
+}
+
+TEST_CASE("delegation_spawn_error: max_depth 0/1 and forbidden callee") {
+    Constitution caller;
+    caller.delegation.max_depth = 0;
+    auto err = delegation_spawn_error(caller, nullptr, "forge", 1, {});
+    CHECK(err.find("ERR:") == 0);
+    CHECK(err.find("max_depth 0") != std::string::npos);
+
+    caller.delegation.max_depth = 1;
+    CHECK(delegation_spawn_error(caller, nullptr, "forge", 1, {}).empty());
+    err = delegation_spawn_error(caller, nullptr, "forge", 2, {});
+    CHECK(err.find("max_depth 1") != std::string::npos);
+
+    caller.delegation = {};
+    caller.delegation.denied_callees = {"forge"};
+    err = delegation_spawn_error(caller, nullptr, "forge", 1, {});
+    CHECK(err.find("denied_callees") != std::string::npos);
+    CHECK(delegation_spawn_error(caller, nullptr, "scout", 1, {}).empty());
+
+    caller.delegation = {};
+    caller.delegation.allowed_callees = {"scout", "vera"};
+    CHECK(delegation_spawn_error(caller, nullptr, "scout", 1, {}).empty());
+    err = delegation_spawn_error(caller, nullptr, "forge", 1, {});
+    CHECK(err.find("allowed_callees") != std::string::npos);
+}
+
+TEST_CASE("delegation_spawn_error: callee max_depth and budgets") {
+    Constitution caller;
+    Constitution child;
+    child.delegation.max_depth = 0;
+    auto err = delegation_spawn_error(caller, &child, "scout", 1, {});
+    CHECK(err.find("cannot run at depth 1") != std::string::npos);
+
+    child.delegation.max_depth = 1;
+    CHECK(delegation_spawn_error(caller, &child, "scout", 1, {}).empty());
+    err = delegation_spawn_error(caller, &child, "scout", 2, {});
+    CHECK(err.find("cannot run at depth 2") != std::string::npos);
+
+    caller.delegation.max_subtree_tokens = 1000;
+    CHECK(delegation_spawn_error(caller, nullptr, "forge", 1, {999, 0}).empty());
+    err = delegation_spawn_error(caller, nullptr, "forge", 1, {1000, 0});
+    CHECK(err.find("token budget") != std::string::npos);
+
+    caller.delegation = {};
+    caller.delegation.max_subtree_usd = 0.25;
+    CHECK(delegation_spawn_error(caller, nullptr, "forge", 1, {0, 0.24}).empty());
+    err = delegation_spawn_error(caller, nullptr, "forge", 1, {0, 0.25});
+    CHECK(err.find("spend budget") != std::string::npos);
+}
+
+TEST_CASE("stock agents parse without a delegation block") {
+    // Starters must keep today's behavior unless an operator adds policy.
+#ifdef ARBITER_AGENTS_DIR
+    const std::string dir = ARBITER_AGENTS_DIR;
+#else
+    const std::string dir = "agents";
+#endif
+    const char* files[] = {
+        "scout.json", "forge.json", "vera.json", "quill.json", "nexus.json",
+        "loom.json", "compass.json", "beacon.json", "echo.json", "jules.json"
+    };
+    int loaded = 0;
+    for (auto* f : files) {
+        std::string path = dir + "/" + f;
+        try {
+            auto c = Constitution::from_file(path);
+            CHECK(c.delegation.is_default());
+            ++loaded;
+        } catch (const std::exception& e) {
+            FAIL("failed to load " << path << ": " << e.what());
+        }
+    }
+    CHECK(loaded == 10);
 }

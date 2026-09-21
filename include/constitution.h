@@ -141,6 +141,51 @@ struct Constitution {
     // docs/concepts/presence.md.
     PresenceConfig presence;
 
+    // Runtime-enforced spawn gates for `/agent`, `/parallel`, and JIT
+    // ensure covers.  Distinct from `max_tokens` (per-turn response size).
+    // Absent / default = today's behaviour (global depth cap 2, any
+    // catalog callee, no subtree budget).  The runtime fail-closes with
+    // an `ERR:` tool result — do not rely on the model to obey this text.
+    // See docs/concepts/delegation.md.
+    struct DelegationPolicy {
+        static constexpr int kGlobalMaxDepth = 2;
+
+        // Absolute pipeline depth this agent may spawn to (child depth).
+        // 0 = cannot spawn (and cannot itself run as a delegated / JIT
+        // worker).  Omitted → kGlobalMaxDepth.  Must not exceed 2.
+        std::optional<int> max_depth;
+
+        // Primary allowlist of agent ids this constitution may `/agent`
+        // or `/parallel` (and that JIT covers may instantiate when this
+        // constitution is the caller).  Empty / omitted = no extra
+        // restriction beyond catalog existence.
+        std::vector<std::string> allowed_callees;
+
+        // Optional denylist applied after the allowlist.  Empty / omitted
+        // = nobody extra is forbidden.  Use this to forbid one callee
+        // (e.g. `forge`) without listing the rest of the roster.
+        std::vector<std::string> denied_callees;
+
+        // Caps on delegated work (children + their descendants) for the
+        // current top-level turn.  Omitted = unlimited.  0 = no further
+        // spawn allowed.  Fail closed when spent >= cap.
+        std::optional<int>    max_subtree_tokens;
+        std::optional<double> max_subtree_usd;
+
+        int effective_max_depth() const {
+            int d = max_depth.value_or(kGlobalMaxDepth);
+            if (d < 0) return 0;
+            if (d > kGlobalMaxDepth) return kGlobalMaxDepth;
+            return d;
+        }
+
+        bool is_default() const {
+            return !max_depth && allowed_callees.empty() &&
+                   denied_callees.empty() && !max_subtree_tokens &&
+                   !max_subtree_usd;
+        }
+    } delegation;
+
     // --- System prompt pieces ---
     std::string goal;               // what this agent is trying to accomplish
     std::vector<std::string> rules; // explicit behavioral constraints
@@ -180,5 +225,25 @@ Constitution master_constitution();
 
 std::string brevity_to_string(Brevity b);
 Brevity brevity_from_string(const std::string& s);
+
+// Spend so far on delegated work attributed to `caller_id` this turn.
+struct DelegationSpend {
+    int    tokens = 0;
+    double usd    = 0.0;
+};
+
+// Crude USD estimate for constitution spend caps.  Same family rates the
+// TUI sidebar uses (Haiku / Sonnet / Opus / GPT / local=0); unknown hosted
+// models fall back to Sonnet-equivalent.  Not a billing ledger.
+double delegation_estimate_usd(std::string_view model, int in_tokens, int out_tokens);
+
+// Runtime spawn gate.  Empty = allowed.  Otherwise a tool `ERR:` line
+// (already prefixed).  `callee` may be null when the catalog row has not
+// been loaded yet — callee-side max_depth is skipped in that case.
+std::string delegation_spawn_error(const Constitution& caller,
+                                   const Constitution* callee,
+                                   const std::string& callee_id,
+                                   int child_depth,
+                                   const DelegationSpend& spent);
 
 } // namespace arbiter

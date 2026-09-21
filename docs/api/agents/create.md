@@ -47,6 +47,7 @@ Either a bare constitution or wrapped under `agent_def`:
 | `memory`        | object | no  | Per-agent memory enrichment toggles for `/mem search` and `/mem add entry`. See schema below and [Memory enrichment](../../concepts/structured-memory.md#memory-enrichment) in the structured-memory concept. |
 | `intent`        | object | no  | Pre-dispatch classify/route. Distinct from `memory.intent_routing`. File agents default `mode: "off"`; the built-in `index` master defaults `hybrid`. See [Intent](../../concepts/intent.md). |
 | `presence`      | object \| string | no | Always-on residency. Object form: `{mode?, watch?, interject?, model?, prompt?, max_notes_per_turn?}`. String `"always_on"` is `{mode: "always_on"}`. See [Presence](../../concepts/presence.md). |
+| `delegation`    | object | no | Runtime spawn gates for `/agent`, `/parallel`, and JIT ensure covers. Absent keeps today's behaviour (global depth 2, any catalog callee, no subtree budget). Unknown keys fail closed. See [Delegation policies](../../concepts/delegation.md) and the schema below. |
 | `personality`   | string | no  | Free-form personality overlay. |
 
 #### `advisor` object schema
@@ -93,6 +94,18 @@ Always-on peer observation. Absent / `mode: "off"` keeps a request-scoped specia
 | `model` | string | watcher's `model` | Optional review-call override. |
 | `prompt` | string | built-in | Override the review system prompt. |
 | `max_notes_per_turn` | int | `1` | Cap on `CONTEXT` notes per working-agent `stream_id` (1–4). |
+
+#### `delegation` object schema
+
+Runtime-enforced spawn policy. Distinct from `max_tokens` (per-turn response size). Empty / omitted fields do not tighten the stock roster.
+
+| Sub-field | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `max_depth` | int | `2` | Absolute child depth this agent may spawn to (0..2). `0` = cannot spawn and cannot run as a delegated / JIT worker. |
+| `allowed_callees` | array\<string\> | `[]` | Primary allowlist of agent ids. Empty / omitted = no extra restriction beyond catalog existence. |
+| `denied_callees` | array\<string\> | `[]` | Optional denylist applied after the allowlist. |
+| `max_subtree_tokens` | int | unlimited | Cap on delegated work (children + descendants) for the current top-level turn. Fail closed with `ERR:` when spent ≥ cap. |
+| `max_subtree_usd` | number | unlimited | Same window; coarse model-family USD estimate, not a billing ledger. |
 
 ```bash
 curl -X POST \

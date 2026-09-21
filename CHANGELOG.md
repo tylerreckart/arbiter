@@ -7,6 +7,15 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
+### Added
+- **Constitution delegation policies.** Optional `delegation` object on an
+  agent constitution (`max_depth`, `allowed_callees`, `denied_callees`,
+  `max_subtree_tokens`, `max_subtree_usd`). The runtime fail-closes at
+  `/agent`, `/parallel`, and JIT `run_ephemeral` spawn with a tool `ERR:`
+  (same posture as the global depth cap of 2). Unknown/malformed policy
+  fields throw at parse. Stock `agents/*.json` stay unrestricted unless
+  an operator adds a block. Presence review does not consult the gate.
+  See [Delegation policies](docs/concepts/delegation.md).
 - **Fleet dashboard pane (Phase C1).** The TUI consumes fleet SSE (`stream_id` +
   `depth`) into an in-memory tree and paints a right-rail dashboard: depth
   indent, agent, active tool, token totals, and a `◇` marker on reconcile JIT

@@ -130,6 +130,8 @@ Same SSE fabric as orchestrate. Persist + replay via `request_status` / `request
 | `reconcile.done` | Structured result (`status`, `contract`, `delta`, `evidence`, `waves`). |
 | `done` | Terminal aggregate (`ok` true only when `status=satisfied`). |
 
+JIT covers honour the covering agent's constitution **and** index's `delegation` policy: a constitution that forbids calling `forge` or `max_depth: 0` fail-closes `run_ephemeral` with `error_type: delegation_policy` before the clone's LLM turn. Nested `/agent` from a clone uses that clone's policy. See [Delegation policies](delegation.md).
+
 TUI / `--send` do not call this path yet. Use [`POST /v1/reconcile`](../api/reconcile.md) or [`@arbiter/sdk`](../../sdk/ts/README.md).
 
 ## See also
@@ -137,6 +139,7 @@ TUI / `--send` do not call this path yet. Use [`POST /v1/reconcile`](../api/reco
 - [`POST /v1/reconcile`](../api/reconcile.md)
 - [Intent](intent.md) — classify/route, not reconcile
 - [Presence](presence.md) — always-on residency; opposite of JIT
+- [Delegation policies](delegation.md) — spawn gates on JIT covers
 - [Sandbox](sandbox.md)
 - [Durable execution](durable-execution.md)
 - ROADMAP Phase 5

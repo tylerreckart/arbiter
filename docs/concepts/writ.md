@@ -54,8 +54,9 @@ Every agent's [Constitution](../api/agents/create.md) declares a `capabilities` 
 
 - **Rules** (soft, prompt-level) tell the model *when* to use a writ.
 - **Capabilities** (hard, runtime-level) decide whether a writ the model emits will do anything.
+- **Delegation policy** (hard, runtime-level) decides *which agents* a permitted `/agent` / `/parallel` may spawn, how deep, and on what subtree budget. See [Delegation policies](delegation.md).
 
-You can't social-engineer a `/exec` out of an agent that doesn't have it in its warrant. A research agent emits the same writ syntax as a backend agent; only the dispatched subset differs.
+You can't social-engineer a `/exec` out of an agent that doesn't have it in its warrant. You also can't `/agent forge` past a constitution that forbids that callee — the runtime returns `ERR:` the same way it refuses `depth >= 2`. A research agent emits the same writ syntax as a backend agent; only the dispatched subset (and the callee/budget gate) differs.
 
 ## Image content in tool results
 

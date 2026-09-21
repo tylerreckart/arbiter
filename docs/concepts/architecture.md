@@ -37,7 +37,7 @@ flowchart LR
             subgraph EXECUTION["Agent execution"]
                 direction TB
 
-                CONSTITUTION["Constitution<br/>model · role · rules · tool allowlist"]
+                CONSTITUTION["Constitution<br/>model · role · rules · tool allowlist<br/>delegation policy"]
 
                 AGENT["Agent"]
 
@@ -124,6 +124,7 @@ For implementation details and deeper explanations, see:
 - [Reconcile](reconcile.md)
 - [Advisor](advisor.md)
 - [Presence](presence.md)
+- [Delegation policies](delegation.md)
 - [Structured memory](structured-memory.md)
 - [MCP](mcp.md)
 - [A2A](a2a.md)

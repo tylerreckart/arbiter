@@ -433,6 +433,21 @@ public:
                               const std::string& message,
                               const std::string& original_query = "");
 
+    // Runtime spawn gate used by `/agent`, `/parallel`, and JIT
+    // `run_ephemeral`.  Empty = allowed.  Non-empty is a tool `ERR:` line.
+    // Looks up the callee constitution when the id is registered (so a
+    // child's own max_depth is honoured).  Does not call the model.
+    std::string check_delegation_spawn(const std::string& caller_id,
+                                       const Constitution& caller_cfg,
+                                       const std::string& callee_id,
+                                       int child_depth) const;
+
+    // Attribute delegated-work spend to `caller_id` for this top-level
+    // turn.  Tests seed this to exercise budget denial without an LLM.
+    void record_delegation_spend(const std::string& caller_id,
+                                 int tokens, double usd);
+    DelegationSpend delegation_spend_for(const std::string& caller_id) const;
+
     // True after cancel() until the next send()/send_streaming() exits.
     // Survives ApiClient::stream()/complete() clearing their own cancelled
     // flag at call entry — used so an admin kill-switch during pre-send
@@ -552,6 +567,13 @@ private:
     int                 next_stream_id();
     void fire_history_checkpoint();
 
+    // Delegated-work spend this top-level turn, keyed by caller agent id.
+    // Cleared at send() / send_streaming() / run_ephemeral entry.
+    mutable std::mutex delegation_spend_mu_;
+    std::map<std::string, DelegationSpend> delegation_spend_;
+    void clear_delegation_spend();
+    const Constitution* find_constitution(const std::string& id) const;
+
     // True when this turn should stop: sticky cancel, hard-cancel, or the
     // thread-local RequestCancelScope token.  Rechecked at each dispatch
     // iteration so a kill during tools does not start another LLM call.
@@ -600,11 +622,13 @@ private:
                               const std::string& original_query);
 
     // Build an AgentInvoker lambda for use in command dispatch.
-    // depth is the current nesting level; invoker refuses beyond depth 2.
+    // depth is the current nesting level; invoker refuses beyond depth 2
+    // and honours the caller's constitution.delegation policy.
     // shared_cache and original_query propagate through the delegation chain.
     AgentInvoker make_invoker(const std::string& caller_id, int depth,
                               std::map<std::string, std::string>* shared_cache,
-                              const std::string& original_query);
+                              const std::string& original_query,
+                              const Constitution& caller_cfg);
 
     // Build a ParallelInvoker for /parallel fan-out.  Each child runs on its
     // own std::thread at depth+1 with a fresh dedup cache (shared caches
@@ -614,7 +638,8 @@ private:
     // before the returned vector is filled — /parallel blocks the calling
     // turn until every child completes.
     ParallelInvoker make_parallel_invoker(const std::string& caller_id, int depth,
-                                          const std::string& original_query);
+                                          const std::string& original_query,
+                                          const Constitution& caller_cfg);
 
     // Consult always-on watchers whose `watch` globs match `working_agent_id`
     // and prepend any CONTEXT notes.  Fail-open; budget-capped.  `notes_used`

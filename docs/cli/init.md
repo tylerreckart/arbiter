@@ -32,7 +32,7 @@ Index speaks in a **conversational** register (complete sentences, collaborative
 
 The starter JSON files are the **single source of truth** for what gets written. They live in `agents/` in the source tree and are embedded into the binary at build time. `--init` writes them verbatim — pretty-printed, in source order, byte-identical to the source tree — so the file you see on disk matches what a maintainer would see in the repo.
 
-Each file is a plain JSON document — a model id, system prompt, tool allowlist, optional advisor block, optional `presence` residency, optional cost-attribution metadata. `jules` is the bundled [always-on presence](../concepts/presence.md) example (pair colleague, not a second advisor). Edit them in place, or copy one as the basis for your own agent. Drop a new `agents/<id>.json` into the source tree and it'll show up in `--init` automatically on the next build (no code changes required).
+Each file is a plain JSON document — a model id, system prompt, tool allowlist, optional advisor block, optional `presence` residency, optional `delegation` spawn policy, optional cost-attribution metadata. `jules` is the bundled [always-on presence](../concepts/presence.md) example (pair colleague, not a second advisor). Starters omit `delegation`, so they keep the global depth cap of 2 and may call any catalog agent; add a block to tighten. Edit them in place, or copy one as the basis for your own agent. Drop a new `agents/<id>.json` into the source tree and it'll show up in `--init` automatically on the next build (no code changes required).
 
 ## Re-seeding from defaults
 

@@ -18,7 +18,7 @@ Every event on the `/v1/orchestrate` stream has an `event:` line and a `data:` l
 | `stream_start` | Opens each turn. Fires for master + every delegated or parallel child. | `agent`, `stream_id`, `depth` (0 = master, 1 = delegated, 2 = sub-sub). |
 | `agent_start` | Just before each turn's outbound LLM request. | `agent`, `stream_id`, `depth`. |
 | `text` | Each clean (tool-call lines filtered out) delta from the model. Partial prose lines are emitted as they arrive; `/cmd` lines are held until a newline confirms them. After a delegation writ is parsed, a `→ delegating: …` status line is also emitted. | `agent`, `stream_id`, `depth` (master only — sub-agent text events only have `agent` + `stream_id`), `delta`. |
-| `tool_call` | After each `/cmd` (fetch, search, browse, write, agent, parallel, mem, advise, exec) finishes. | `tool`, `ok`, `stream_id`, `depth`, `agent`. |
+| `tool_call` | After each `/cmd` (fetch, search, browse, write, agent, parallel, mem, advise, exec) finishes. | `tool`, `ok`, `stream_id`, `depth`, `agent`. Denied `/agent` / `/parallel` spawns (depth cap, constitution `delegation`) still emit `ok: false` with the `ERR:` in the tool envelope. |
 | `file` | Each time the agent emits a `/write` block; content is captured in-memory and forwarded here instead of written to disk. | `path`, `size`, `encoding` (always `"utf-8"`), `content`, `stream_id`, `depth`, `agent`. |
 | `sub_agent_response` | After a delegated turn completes (depth > 0). The full turn body in one payload — useful for consumers that don't want to reconstruct from deltas. | `agent`, `stream_id`, `depth`, `content`. |
 | `token_usage` | After each turn completes. | `agent`, `stream_id`, `depth`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens?`, `cache_create_tokens?`. |
@@ -64,6 +64,7 @@ Spec-compatible A2A clients hit [`POST /v1/a2a/agents/:id`](../api/a2a/dispatch.
 - [TUI fleet dashboard](../tui/fleet.md)
 - [Advisor](advisor.md) — gate signal grammar, modes, redirect budget.
 - [Presence](presence.md) — always-on peer review and mid-turn injection.
+- [Delegation policies](delegation.md) — constitution spawn gates (`ERR:` on `/agent` / `/parallel` / JIT).
 - [Intent](intent.md) — pre-dispatch classify/route.
 - [Reconcile](reconcile.md) — desired-end-state contract, tests, rollback.
 - [Voice](voice.md) — spoken constitution register and `channel: "voice"` for TTS bridges.

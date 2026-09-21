@@ -12,7 +12,7 @@ Open a UI slot on `stream_start`, route every subsequent event with matching `st
 | 1 | A delegated sub-agent (via `/agent` or `/parallel`). |
 | 2 | A sub-sub-agent (delegation by a depth-1 agent). |
 
-The depth cap is 2; attempts to delegate past depth 2 surface to the requesting agent as an `ERR:` tool result.
+The depth cap is 2; attempts to delegate past depth 2 surface to the requesting agent as an `ERR:` tool result. A constitution may tighten that further with `delegation.max_depth` (0..2) and restrict callees / subtree budget — see [Delegation policies](delegation.md). Those gates also return `ERR:` and do not invent a third depth.
 
 ## When `/parallel` is in play
 
@@ -59,7 +59,7 @@ done              ok=true
 ## Parallel safety rails
 
 - **Same `agent_id` reused in `/parallel` is allowed.** Each child runs on an ephemeral `Agent` instance built from the canonical agent's `Constitution`, so siblings have independent `history_` vectors and don't race. (This was a constraint pre-2026-04 but is now lifted.)
-- **Depth cap.** A depth-2 turn cannot `/parallel`; attempts return an ERR tool result.
+- **Depth cap.** A depth-2 turn cannot `/parallel`; attempts return an ERR tool result. A constitution `delegation.max_depth` of 0 or 1 refuses earlier, with a constitution-scoped ERR.
 - **Each parallel child gets its own dedup cache.** Sibling threads fetching the same URL both fetch — accept the duplicate over a `std::map` data race.
 - **SSE writes are serialized.** A shared mutex on the wire-writer means events interleave cleanly even when N threads emit at once.
 

@@ -65,7 +65,7 @@ The review is history-less — one snapshot in, one signal out — matching the 
 <note>one or two sentences the working agent should see now</note>
 ```
 
-`SILENT` is the default. Surrounding prose is tolerated. Missing `<signal>`, an unknown token, or `CONTEXT` without `<note>` is **malformed Silent** (fail-open). Presence cannot `HALT` or `REDIRECT` — that remains the advisor's job.
+`SILENT` is the default. Surrounding prose is tolerated. Missing `<signal>`, an unknown token, or `CONTEXT` without `<note>` is **malformed Silent** (fail-open). Presence cannot `HALT` or `REDIRECT` — that remains the advisor's job. Constitution `delegation` policy does not apply to presence review.
 
 ## Runtime control flow
 

@@ -1664,12 +1664,56 @@ if(INDEX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/third_party/doctest
         ${OPENSSL_INCLUDE_DIR}
     )
+    target_compile_definitions(unit_constitution PRIVATE
+        ARBITER_AGENTS_DIR="${CMAKE_SOURCE_DIR}/agents")
     target_link_libraries(unit_constitution PRIVATE
         OpenSSL::SSL
         OpenSSL::Crypto
         CURL::libcurl
     )
     add_test(NAME unit_constitution COMMAND unit_constitution)
+
+    # Delegation policy: parse lives in unit_constitution; this binary
+    # drives Orchestrator spawn denial (/agent, /parallel, JIT ephemeral)
+    # without a live LLM (gates return ERR before send_internal).
+    add_executable(unit_delegation
+        tests/test_delegation.cpp
+        src/orchestrator.cpp
+        src/agent.cpp
+        src/constitution.cpp
+        src/commands.cpp
+        src/context_compaction.cpp
+        src/model_catalog.cpp
+        src/model_context.cpp
+        src/advisor.cpp
+        src/advisor_gate.cpp
+        src/presence.cpp
+        src/intent.cpp
+        src/atomic_file.cpp
+        src/message_codec.cpp
+        src/tui/stream_filter.cpp
+        src/tui/block_parser.cpp
+        src/workspace_root.cpp
+        src/workspace_map.cpp
+        src/ssrf_guard.cpp
+        src/event_routing.cpp
+        src/api_client.cpp
+        src/circuit_breaker.cpp
+        src/metrics.cpp
+        src/json.cpp
+    )
+    target_include_directories(unit_delegation PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+        ${OPENSSL_INCLUDE_DIR}
+    )
+    target_link_libraries(unit_delegation PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        CURL::libcurl
+        Threads::Threads
+    )
+    add_test(NAME unit_delegation COMMAND unit_delegation)
 
     # Per-conversation Agent history isolation (ConversationScope / #40).
     add_executable(unit_agent_conversation

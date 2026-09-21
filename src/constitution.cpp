@@ -2,7 +2,9 @@
 #include "constitution.h"
 #include "api_client.h"   // is_weak_executor
 #include "json.h"
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -66,6 +68,177 @@ Brevity brevity_from_string(const std::string& s) {
     if (s == "lite")  return Brevity::Lite;
     if (s == "ultra") return Brevity::Ultra;
     return Brevity::Full;
+}
+
+namespace {
+
+bool starts_with_ci(std::string_view hay, std::string_view needle) {
+    if (hay.size() < needle.size()) return false;
+    for (size_t i = 0; i < needle.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(hay[i]))
+            != std::tolower(static_cast<unsigned char>(needle[i])))
+            return false;
+    }
+    return true;
+}
+
+bool json_is_int(const JsonValue& v) {
+    if (!v.is_number()) return false;
+    double d = v.as_number();
+    if (!std::isfinite(d)) return false;
+    return d == std::floor(d);
+}
+
+bool valid_callee_id(std::string_view id) {
+    if (id.empty() || id.size() > 64) return false;
+    for (char c : id) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
+            return false;
+    }
+    return true;
+}
+
+std::vector<std::string> parse_callee_ids(const JsonValue& arr, const char* field) {
+    if (!arr.is_array())
+        throw std::runtime_error(std::string("constitution: delegation.") + field
+                                 + " must be an array of agent ids");
+    std::vector<std::string> out;
+    for (auto& v : arr.as_array()) {
+        if (!v || !v->is_string())
+            throw std::runtime_error(std::string("constitution: delegation.") + field
+                                     + " entries must be strings");
+        const std::string& id = v->as_string();
+        if (!valid_callee_id(id))
+            throw std::runtime_error(std::string("constitution: delegation.") + field
+                                     + " contains invalid agent id '" + id + "'");
+        out.push_back(id);
+    }
+    return out;
+}
+
+Constitution::DelegationPolicy parse_delegation(const JsonValue& obj) {
+    static const std::set<std::string> kKnown = {
+        "max_depth", "allowed_callees", "denied_callees",
+        "max_subtree_tokens", "max_subtree_usd"
+    };
+    for (const auto& [key, val] : obj.as_object()) {
+        if (!kKnown.count(key))
+            throw std::runtime_error(
+                "constitution: delegation unknown field '" + key + "'");
+        (void)val;
+    }
+
+    Constitution::DelegationPolicy p;
+
+    if (auto v = obj.get("max_depth")) {
+        if (!json_is_int(*v))
+            throw std::runtime_error(
+                "constitution: delegation.max_depth must be an integer 0..2");
+        int d = static_cast<int>(v->as_number());
+        if (d < 0 || d > Constitution::DelegationPolicy::kGlobalMaxDepth)
+            throw std::runtime_error(
+                "constitution: delegation.max_depth must be an integer 0..2");
+        p.max_depth = d;
+    }
+    if (auto v = obj.get("allowed_callees"))
+        p.allowed_callees = parse_callee_ids(*v, "allowed_callees");
+    if (auto v = obj.get("denied_callees"))
+        p.denied_callees = parse_callee_ids(*v, "denied_callees");
+    if (auto v = obj.get("max_subtree_tokens")) {
+        if (!json_is_int(*v) || v->as_number() < 0)
+            throw std::runtime_error(
+                "constitution: delegation.max_subtree_tokens must be a "
+                "non-negative integer");
+        p.max_subtree_tokens = static_cast<int>(v->as_number());
+    }
+    if (auto v = obj.get("max_subtree_usd")) {
+        if (!v->is_number() || !std::isfinite(v->as_number()) || v->as_number() < 0)
+            throw std::runtime_error(
+                "constitution: delegation.max_subtree_usd must be a "
+                "non-negative number");
+        p.max_subtree_usd = v->as_number();
+    }
+    return p;
+}
+
+} // namespace
+
+double delegation_estimate_usd(std::string_view model, int in_tokens, int out_tokens) {
+    if (in_tokens <= 0 && out_tokens <= 0) return 0.0;
+    double in_per_m = 3.0;
+    double out_per_m = 15.0;
+    if (starts_with_ci(model, "ollama/") || starts_with_ci(model, "local/")) {
+        in_per_m = 0.0;
+        out_per_m = 0.0;
+    } else if (model.find("haiku") != std::string_view::npos) {
+        in_per_m = 0.8;
+        out_per_m = 4.0;
+    } else if (model.find("opus") != std::string_view::npos) {
+        in_per_m = 15.0;
+        out_per_m = 75.0;
+    } else if (model.find("sonnet") != std::string_view::npos) {
+        in_per_m = 3.0;
+        out_per_m = 15.0;
+    } else if (model.find("gpt-4o-mini") != std::string_view::npos) {
+        in_per_m = 0.15;
+        out_per_m = 0.6;
+    } else if (model.find("gpt-4o") != std::string_view::npos ||
+               model.find("gpt-") != std::string_view::npos) {
+        in_per_m = 2.5;
+        out_per_m = 10.0;
+    }
+    return (static_cast<double>(std::max(0, in_tokens)) / 1'000'000.0) * in_per_m
+         + (static_cast<double>(std::max(0, out_tokens)) / 1'000'000.0) * out_per_m;
+}
+
+std::string delegation_spawn_error(const Constitution& caller,
+                                   const Constitution* callee,
+                                   const std::string& callee_id,
+                                   int child_depth,
+                                   const DelegationSpend& spent) {
+    const auto& pol = caller.delegation;
+    const int cap = pol.effective_max_depth();
+    if (child_depth > cap) {
+        if (cap >= Constitution::DelegationPolicy::kGlobalMaxDepth)
+            return "ERR: delegation depth limit reached (max 2 levels)";
+        return "ERR: delegation depth limit reached (constitution max_depth "
+               + std::to_string(cap) + ")";
+    }
+    if (!pol.allowed_callees.empty()) {
+        bool ok = false;
+        for (const auto& id : pol.allowed_callees) {
+            if (id == callee_id) { ok = true; break; }
+        }
+        if (!ok)
+            return "ERR: callee '" + callee_id +
+                   "' is not permitted by constitution.delegation.allowed_callees";
+    }
+    for (const auto& id : pol.denied_callees) {
+        if (id == callee_id)
+            return "ERR: callee '" + callee_id +
+                   "' is forbidden by constitution.delegation.denied_callees";
+    }
+    if (callee) {
+        int callee_cap = callee->delegation.effective_max_depth();
+        if (child_depth > callee_cap) {
+            return "ERR: agent '" + callee_id +
+                   "' cannot run at depth " + std::to_string(child_depth) +
+                   " (constitution max_depth " + std::to_string(callee_cap) + ")";
+        }
+    }
+    if (pol.max_subtree_tokens &&
+        spent.tokens >= *pol.max_subtree_tokens) {
+        return "ERR: delegation token budget exceeded (max_subtree_tokens "
+               + std::to_string(*pol.max_subtree_tokens) + ")";
+    }
+    if (pol.max_subtree_usd &&
+        spent.usd >= *pol.max_subtree_usd) {
+        std::ostringstream os;
+        os << "ERR: delegation spend budget exceeded (max_subtree_usd "
+           << *pol.max_subtree_usd << ")";
+        return os.str();
+    }
+    return {};
 }
 
 // ─── Voice + brevity ─────────────────────────────────────────────────────────
@@ -1062,6 +1235,40 @@ std::string Constitution::build_system_prompt() const {
             ss << "- " << r << "\n";
     }
 
+    // Layer 3a: runtime delegation policy.  Stock agents omit this so
+    // their prompt is unchanged.  When present, tell the model the
+    // runtime will ERR rather than hoping it remembers the JSON.
+    if (!delegation.is_default()) {
+        ss << "\nDELEGATION POLICY (runtime-enforced — violating it returns ERR):\n";
+        ss << "- Pipeline depth cap: " << delegation.effective_max_depth()
+           << " (global max "
+           << Constitution::DelegationPolicy::kGlobalMaxDepth << ").\n";
+        if (!delegation.allowed_callees.empty()) {
+            ss << "- You may spawn only: ";
+            for (size_t i = 0; i < delegation.allowed_callees.size(); ++i) {
+                if (i) ss << ", ";
+                ss << delegation.allowed_callees[i];
+            }
+            ss << ".\n";
+        }
+        if (!delegation.denied_callees.empty()) {
+            ss << "- You must not spawn: ";
+            for (size_t i = 0; i < delegation.denied_callees.size(); ++i) {
+                if (i) ss << ", ";
+                ss << delegation.denied_callees[i];
+            }
+            ss << ".\n";
+        }
+        if (delegation.max_subtree_tokens)
+            ss << "- Delegated subtree token cap: "
+               << *delegation.max_subtree_tokens << ".\n";
+        if (delegation.max_subtree_usd)
+            ss << "- Delegated subtree spend cap: $"
+               << *delegation.max_subtree_usd << ".\n";
+        ss << "- Do not retry a spawn that returned ERR: the runtime will "
+              "refuse it again.\n";
+    }
+
     // Layer 3b: always-on presence.  The dedicated review prompt is what
     // the runtime actually calls; this block tells a directly-addressed
     // presence agent what its residency means so it does not start acting
@@ -1393,6 +1600,34 @@ std::string Constitution::to_json() const {
         m["intent"] = ic;
     }
 
+    // Delegation policy — only emit when it tightens the default (global
+    // depth 2, no callee list, no subtree budget) so stock agents stay
+    // compact.
+    if (!delegation.is_default()) {
+        auto dc = jobj();
+        auto& dco = dc->as_object_mut();
+        if (delegation.max_depth)
+            dco["max_depth"] = jnum(static_cast<double>(*delegation.max_depth));
+        if (!delegation.allowed_callees.empty()) {
+            auto a = jarr();
+            for (auto& id : delegation.allowed_callees)
+                a->as_array_mut().push_back(jstr(id));
+            dco["allowed_callees"] = a;
+        }
+        if (!delegation.denied_callees.empty()) {
+            auto a = jarr();
+            for (auto& id : delegation.denied_callees)
+                a->as_array_mut().push_back(jstr(id));
+            dco["denied_callees"] = a;
+        }
+        if (delegation.max_subtree_tokens)
+            dco["max_subtree_tokens"] =
+                jnum(static_cast<double>(*delegation.max_subtree_tokens));
+        if (delegation.max_subtree_usd)
+            dco["max_subtree_usd"] = jnum(*delegation.max_subtree_usd);
+        m["delegation"] = dc;
+    }
+
     return json_serialize(*obj);
 }
 
@@ -1542,6 +1777,17 @@ Constitution Constitution::from_json(const std::string& json_str) {
                 "WARN: agent '%s' has unknown presence shorthand '%s' — treating as off.\n",
                 c.name.c_str(), tok.c_str());
         }
+    }
+
+    // Delegation policy.  Absent → defaults (global depth 2, no extra
+    // callee/budget gates).  Present but malformed → throw (admit fail
+    // closed).  Unknown keys are rejected so a typo cannot silently
+    // disable a gate.
+    auto delegation_val = root->get("delegation");
+    if (delegation_val) {
+        if (!delegation_val->is_object())
+            throw std::runtime_error("constitution: delegation must be an object");
+        c.delegation = parse_delegation(*delegation_val);
     }
 
     auto rules_val = root->get("rules");
