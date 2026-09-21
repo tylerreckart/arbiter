@@ -9,7 +9,9 @@ Every event on the `/v1/orchestrate` stream has an `event:` line and a `data:` l
 | `request_received` | Exactly once, first event on the stream. | `agent`, `tenant`, `tenant_id`, `message` (first 200 chars, ellipsis added if truncated), `channel?` (`"voice"` when the request asked for spoken output). |
 | `intent` | Pre-dispatch classify/route on **fresh** ingress (`original_query` omitted) when the ingress agent's `intent.mode` is not `off`. After `request_received`, before `stream_start`. See [Intent](intent.md). | `kind`, `confidence`, `source`, `target_agent`, `applied`, `requested_agent`, `applied_agent`, `brief?`, `todo_seed_count`, `plan_seed_count`, `llm_used?`, `malformed?`. |
 | `reconcile.progress` | Phase note on [`POST /v1/reconcile`](../api/reconcile.md). | `request_id`, `phase`, `detail?`. |
-| `reconcile.delta` | Contract observation: residual vs held clauses. | `residual`, `held`, `empty`. |
+| `reconcile.delta` | Contract observation: residual vs held clauses. Emitted after the initial observe and after every ensure wave. | `residual`, `held`, `empty`, `wave`. |
+| `agent.spawned` | JIT ephemeral clone created for a ΔS cover (`mode=ensure` waves). | `agent`, `clone_id`, `clauses`. |
+| `agent.teardown` | Clone dropped after the wave (always, including cancel). | `agent`, `clone_id`, `clauses`. |
 | `reconcile.verification` | Test runner outcome. | `ran`, `passed`, `command`, `reason`, `exit_code`. |
 | `reconcile.rollback` | Snapshot restored after failure. | `ok`, `snapshot_path`. |
 | `reconcile.done` | Structured reconcile result (before the stream's `done`). | Same shape as `GET /v1/reconcile/:id`. |

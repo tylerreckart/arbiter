@@ -630,6 +630,30 @@ TEST_CASE("reconcile_runs: upsert / get is tenant-scoped") {
     CHECK(again->reason == "ok");
 }
 
+TEST_CASE("reconcile_runs persist agent_map and budgets tenant-scoped") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t a = make_tenant(s, "acme");
+    const int64_t b = make_tenant(s, "beta");
+
+    TenantStore::ReconcileRun row;
+    row.request_id = "rec-map";
+    row.tenant_id = a;
+    row.status = "running";
+    row.mode = "ensure";
+    row.target_state_json = R"({"system":"demo"})";
+    row.workspace_kind = "path";
+    row.agent_map_json = R"({"system":"nexus"})";
+    row.budgets_json = R"({"max_waves":3,"max_agents_per_wave":2})";
+    s.upsert_reconcile_run(row);
+
+    auto got = s.get_reconcile_run(a, "rec-map");
+    REQUIRE(got);
+    CHECK(got->mode == "ensure");
+    CHECK(got->agent_map_json.find("nexus") != std::string::npos);
+    CHECK(got->budgets_json.find("max_waves") != std::string::npos);
+    CHECK_FALSE(s.get_reconcile_run(b, "rec-map"));
+}
+
 TEST_CASE("reconcile_runs recovery sweep flips running rows") {
     TempDb db; TenantStore s; s.open(db.path.string());
     const int64_t tid = make_tenant(s, "acme");
@@ -685,5 +709,44 @@ TEST_CASE("should_persist_conversation_turn keeps unfinished-but-useful turns") 
     provider.error_type = "rate_limit_error";
     provider.content = "partial";
     CHECK_FALSE(should_persist_conversation_turn(provider));
+}
+
+TEST_CASE("a2a task: canceled is not overwritten by completed or failed") {
+    TempDb db; TenantStore s; s.open(db.path.string());
+    const int64_t tid = make_tenant(s, "acme");
+
+    s.create_a2a_task(tid, "task-send", "index", "ctx-1", "working");
+    CHECK(s.update_a2a_task(tid, "task-send", "canceled", "",
+                            "canceled by tasks/cancel"));
+
+    // Unary message/send finishing after tasks/cancel must not revive
+    // the row as completed/failed — same contract the stream path
+    // already enforced in the handler.
+    CHECK_FALSE(s.update_a2a_task(tid, "task-send", "completed",
+                                  R"({"role":"agent"})", ""));
+    CHECK_FALSE(s.update_a2a_task(tid, "task-send", "failed", "",
+                                  "internal error"));
+
+    auto rec = s.get_a2a_task(tid, "task-send");
+    REQUIRE(rec);
+    CHECK(rec->state == "canceled");
+    CHECK(rec->error_message == "canceled by tasks/cancel");
+    CHECK(rec->final_message_json.empty());
+
+    // Re-writing canceled (tasks/cancel itself) still lands so
+    // updated_at / error stay current.
+    CHECK(s.update_a2a_task(tid, "task-send", "canceled", "",
+                            "canceled by tasks/cancel"));
+    rec = s.get_a2a_task(tid, "task-send");
+    REQUIRE(rec);
+    CHECK(rec->state == "canceled");
+
+    // Working → completed still works when cancel never landed.
+    s.create_a2a_task(tid, "task-ok", "index", "ctx-2", "working");
+    CHECK(s.update_a2a_task(tid, "task-ok", "completed", "{}", ""));
+    auto ok = s.get_a2a_task(tid, "task-ok");
+    REQUIRE(ok);
+    CHECK(ok->state == "completed");
+    CHECK(ok->final_message_json == "{}");
 }
 

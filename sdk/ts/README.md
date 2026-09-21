@@ -36,6 +36,9 @@ const result = await client.reconcile({
   workspace: { kind: 'sandbox' },
   verification: { requireTests: true, command: 'auto' },
   rollbackOnFailure: true,
+  mode: 'ensure',
+  agentMap: { system: 'nexus' },
+  budgets: { maxWaves: 8, maxAgentsPerWave: 4, maxRetriesPerClause: 2 },
 });
 
 // result.status: "satisfied" | "failed" | "rolled_back" | "canceled"

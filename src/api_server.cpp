@@ -1156,6 +1156,7 @@ void handle_conversation_list(int fd, const HttpRequest& req,
         try { return std::stoll(it->second); } catch (...) { return 0; }
     };
     const int64_t before = as_int64("before_updated_at");
+    const int64_t before_id = as_int64("before_id");
     const int     limit  = static_cast<int>(as_int64("limit"));
 
     // folder_id query: absent → no filter; "null"/empty/0 → unfiled;
@@ -1189,7 +1190,7 @@ void handle_conversation_list(int fd, const HttpRequest& req,
     }
 
     auto convs = tenants.list_conversations(tenant.id, before, limit,
-                                            folder_filter);
+                                            folder_filter, before_id);
     auto arr = jarr();
     auto& a = arr->as_array_mut();
     for (auto& c : convs) a.push_back(conversation_to_json(c));
@@ -4637,11 +4638,18 @@ void handle_advise_gate(int fd, const HttpRequest& req,
     AdvisorGateOutput out = run_advisor_gate(
         orch->client(), advisor_model, prompt_override, in);
 
-    if (orch->sticky_cancelled() || orch->client().hard_cancelled() ||
-        !refresh_active_tenant(tenants, tenant)) {
+    // Post-call: distinguish tenant revoke (401) from drain / caller
+    // cancel (409).  Lumping them into bearer-invalid made a shutdown
+    // or POST /v1/requests/:id/cancel look like a bad token.
+    const bool tenant_alive =
+        refresh_active_tenant(tenants, tenant);
+    const bool cancelled =
+        orch->sticky_cancelled() || orch->client().hard_cancelled();
+    if (auto gate_abort = advisor_gate_http_abort(tenant_alive, cancelled);
+        gate_abort.error) {
         auto err = jobj();
-        err->as_object_mut()["error"] = jstr("missing or invalid bearer token");
-        write_json_response(fd, 401, err);
+        err->as_object_mut()["error"] = jstr(gate_abort.error);
+        write_json_response(fd, gate_abort.status, err);
         return;
     }
 
@@ -4943,6 +4951,22 @@ void persist_reconcile_row(TenantStore& tenants, int64_t tenant_id,
     row.workspace_kind = spec.workspace.kind;
     row.workspace_root = spec.workspace.root;
     row.rollback_on_failure = spec.rollback_on_failure;
+    row.mode = spec.mode;
+    {
+        auto am = jobj();
+        for (const auto& [cid, aid] : spec.agent_map)
+            am->as_object_mut()[cid] = jstr(aid);
+        row.agent_map_json = json_serialize(*am);
+    }
+    {
+        auto b = jobj();
+        auto& m = b->as_object_mut();
+        m["max_waves"] = jnum(spec.max_waves);
+        m["max_wall_ms"] = jnum(static_cast<double>(spec.max_wall_ms));
+        m["max_agents_per_wave"] = jnum(spec.max_agents_per_wave);
+        m["max_retries_per_clause"] = jnum(spec.max_retries_per_clause);
+        row.budgets_json = json_serialize(*b);
+    }
     tenants.upsert_reconcile_run(row);
 }
 
@@ -5054,6 +5078,76 @@ void handle_reconcile_post(int fd, const HttpRequest& req,
         spec.max_waves = b->get_int("max_waves", spec.max_waves);
         spec.max_wall_ms = static_cast<int64_t>(
             b->get_number("max_wall_ms", static_cast<double>(spec.max_wall_ms)));
+        spec.max_agents_per_wave =
+            b->get_int("max_agents_per_wave", spec.max_agents_per_wave);
+        spec.max_retries_per_clause =
+            b->get_int("max_retries_per_clause", spec.max_retries_per_clause);
+    }
+    if (auto am = body->get("agent_map"); am) {
+        if (am->is_object()) {
+            for (const auto& [cid, v] : am->as_object()) {
+                if (!v || !v->is_string()) {
+                    auto err = jobj();
+                    err->as_object_mut()["error"] =
+                        jstr("agent_map values must be strings");
+                    write_json_response(fd, 400, err);
+                    return;
+                }
+                spec.agent_map[cid] = v->as_string();
+            }
+        } else if (am->is_array()) {
+            for (const auto& entry : am->as_array()) {
+                if (!entry || !entry->is_object()) {
+                    auto err = jobj();
+                    err->as_object_mut()["error"] =
+                        jstr("agent_map array entries must be objects");
+                    write_json_response(fd, 400, err);
+                    return;
+                }
+                std::string agent = entry->get_string("agent", "");
+                auto clauses = entry->get("clauses");
+                if (!clauses || !clauses->is_array()) {
+                    auto err = jobj();
+                    err->as_object_mut()["error"] =
+                        jstr("agent_map entry needs clauses[]");
+                    write_json_response(fd, 400, err);
+                    return;
+                }
+                for (const auto& c : clauses->as_array()) {
+                    if (!c || !c->is_string()) {
+                        auto err = jobj();
+                        err->as_object_mut()["error"] =
+                            jstr("agent_map clauses must be strings");
+                        write_json_response(fd, 400, err);
+                        return;
+                    }
+                    spec.agent_map[c->as_string()] = agent;
+                }
+            }
+        } else {
+            auto err = jobj();
+            err->as_object_mut()["error"] =
+                jstr("agent_map must be an object or array");
+            write_json_response(fd, 400, err);
+            return;
+        }
+    }
+    if (auto extra = body->get("clauses"); extra && extra->is_array()) {
+        for (const auto& v : extra->as_array()) {
+            if (!v || !v->is_object()) {
+                auto err = jobj();
+                err->as_object_mut()["error"] =
+                    jstr("clauses must be an array of objects");
+                write_json_response(fd, 400, err);
+                return;
+            }
+            StateClause cl;
+            cl.id = v->get_string("id", "");
+            cl.checker = v->get_string("checker", "");
+            cl.arg = v->get_string("arg", "");
+            cl.agent = v->get_string("agent", "");
+            spec.extra_clauses.push_back(std::move(cl));
+        }
     }
 
     auto ws = body->get("workspace");
@@ -5132,8 +5226,27 @@ void handle_reconcile_post(int fd, const HttpRequest& req,
     persist_reconcile_row(tenants, tenant.id, request_id, spec, nullptr, "running");
 
     std::atomic<bool> cancel_flag{false};
-    InFlightScope in_flight_scope(in_flight, request_id, nullptr, tenant.id,
-                                  &cancel_flag);
+    std::unique_ptr<Orchestrator> jit_orch;
+    if (spec.mode == "ensure") {
+        try {
+            jit_orch = std::make_unique<Orchestrator>(opts.api_keys);
+            jit_orch->client().set_circuit_breaker(opts.circuit_breaker);
+            jit_orch->client().set_metrics(opts.metrics);
+        } catch (const std::exception& e) {
+            log_operator_error("reconcile orchestrator init failed", e);
+            auto err = jobj();
+            err->as_object_mut()["error"] = jstr(kTenantInternalError);
+            write_json_response(fd, 500, err);
+            return;
+        }
+    }
+    InFlightScope in_flight_scope(in_flight, request_id, jit_orch.get(),
+                                  tenant.id, &cancel_flag);
+    std::optional<TenantPreflight> jit_preflight;
+    if (jit_orch) {
+        jit_preflight.emplace(TenantGate::create(tenants, tenant),
+                              jit_orch->client());
+    }
 
     SseStream sse(fd);
     sse.set_persistence(&tenants, bus, tenant.id, request_id);
@@ -5160,6 +5273,10 @@ void handle_reconcile_post(int fd, const HttpRequest& req,
 
     ReconcileHooks hooks;
     hooks.cancel = &cancel_flag;
+    hooks.emit = [&sse](const std::string& event,
+                        const std::shared_ptr<JsonValue>& payload) {
+        sse.emit(event, payload);
+    };
     if (spec.workspace.kind == "sandbox" && opts.sandbox) {
         SandboxManager* mgr = opts.sandbox;
         const int64_t sandbox_tid = tenant.id;
@@ -5193,10 +5310,134 @@ void handle_reconcile_post(int fd, const HttpRequest& req,
             return ev;
         };
     }
+
+    const int64_t tenant_id = tenant.id;
+    hooks.todo_completed = [&tenants, tenant_id](const std::string& subject) {
+        TenantStore::TodoFilter f;
+        f.status_filter = "completed";
+        f.limit = 200;
+        auto rows = tenants.list_todos(tenant_id, f);
+        for (const auto& t : rows) {
+            if (t.subject == subject) return true;
+        }
+        return false;
+    };
+    hooks.artifact_exists = [&tenants, tenant_id](const std::string& path) {
+        auto rows = tenants.list_artifacts_tenant(tenant_id, 200);
+        for (const auto& a : rows) {
+            if (a.path == path) return true;
+        }
+        return false;
+    };
+    hooks.memory_active = [&tenants, tenant_id](const std::string& type,
+                                                const std::string& tag) {
+        TenantStore::EntryFilter f;
+        if (!type.empty()) f.types.push_back(type);
+        f.tag = tag;
+        f.limit = 50;
+        auto rows = tenants.list_entries(tenant_id, f);
+        for (const auto& e : rows) {
+            if (e.valid_to != 0) continue;
+            if (!tag.empty() && e.tags_json.find(tag) == std::string::npos &&
+                e.title.find(tag) == std::string::npos) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    };
+
+    if (jit_orch) {
+        Orchestrator* orch = jit_orch.get();
+        wire_orchestrator_tools(*orch, opts, tenants, tenant.id,
+                                /*conversation_id=*/0);
+        const std::string ws_root = spec.workspace.root;
+        orch->set_workspace_root_provider([ws_root]() { return ws_root; });
+        orch->set_write_interceptor(
+            [ws_root](const std::string& path, const std::string& content) {
+                return cmd_write(path, content, ws_root);
+            });
+        orch->set_artifact_reader(
+            [ws_root](const std::string& path, int64_t, int64_t) {
+                ArtifactReadResult ar;
+                if (path.empty()) {
+                    ar.body = "ERR: path required";
+                    return ar;
+                }
+                std::string werr;
+                auto root = canonical_workspace_root(ws_root, &werr);
+                if (root.empty()) {
+                    ar.body = "ERR: " + (werr.empty() ? "workspace unavailable" : werr);
+                    return ar;
+                }
+                // Reuse /write path safety by attempting a bounded read
+                // of a relative path under the workspace.
+                std::error_code ec;
+                std::filesystem::path abs =
+                    std::filesystem::path(root) / path;
+                auto canon = std::filesystem::weakly_canonical(abs, ec);
+                if (ec || !path_within_canonical_root(root, canon.string())) {
+                    ar.body = "ERR: path escapes workspace";
+                    return ar;
+                }
+                if (!std::filesystem::is_regular_file(canon, ec)) {
+                    ar.body = "ERR: not a file";
+                    return ar;
+                }
+                std::ifstream in(canon, std::ios::binary);
+                if (!in) {
+                    ar.body = "ERR: cannot read";
+                    return ar;
+                }
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                ar.body = ss.str();
+                ar.media_type = "text/plain";
+                return ar;
+            });
+
+        TenantStore* store = &tenants;
+        hooks.agent_known = [store, tenant_id](const std::string& agent_id) {
+            return store->get_agent_record(tenant_id, agent_id).has_value();
+        };
+        hooks.agent_turn = [orch, store, tenant_id](
+                               const ReconcileAgentCover& cover,
+                               const StateContract&,
+                               const std::string&,
+                               std::atomic<bool>* cancel) {
+            ReconcileAgentTurn out;
+            out.agent_id = cover.agent_id;
+            out.clone_id = cover.clone_id;
+            if (cancel && cancel->load()) {
+                out.ok = false;
+                out.note = "canceled";
+                return out;
+            }
+            auto rec = store->get_agent_record(tenant_id, cover.agent_id);
+            if (!rec) {
+                out.ok = false;
+                out.note = "unknown agent";
+                return out;
+            }
+            Constitution cfg;
+            try {
+                cfg = Constitution::from_json(rec->agent_def_json);
+            } catch (const std::exception& e) {
+                out.ok = false;
+                out.note = std::string("bad constitution: ") + e.what();
+                return out;
+            }
+            ApiResponse resp = orch->run_ephemeral(
+                cover.agent_id, std::move(cfg), cover.prompt, cover.prompt);
+            out.ok = resp.ok;
+            out.note = resp.ok ? resp.content : resp.error;
+            return out;
+        };
+    }
+
     ReconcileResult result = run_reconcile(spec, hooks);
     persist_reconcile_row(tenants, tenant.id, request_id, spec, &result);
 
-    sse.emit("reconcile.delta", delta_to_json(result.delta));
     {
         auto v = jobj();
         v->as_object_mut()["ran"] = jbool(result.verification.ran);
@@ -7761,7 +8002,8 @@ std::unique_ptr<Orchestrator>
 build_a2a_orchestrator(const ApiServerOptions& opts,
                         TenantStore& tenants, const Tenant& tenant,
                         std::string& err_out,
-                        int64_t conversation_id = 0) {
+                        int64_t conversation_id = 0,
+                        const std::string& target_agent_id = "") {
     std::unique_ptr<Orchestrator> orch;
     try {
         orch = std::make_unique<Orchestrator>(opts.api_keys);
@@ -7773,7 +8015,11 @@ build_a2a_orchestrator(const ApiServerOptions& opts,
     orch->client().set_circuit_breaker(opts.circuit_breaker);
     orch->client().set_metrics(opts.metrics);
 
-    const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+    // Newest-200 plus the targeted id when it fell off that page (GET
+    // /v1/agents/:id already uses get_agent_record).  Sibling /agent
+    // and /parallel still resolve from the REST list page.
+    const auto records = tenants.list_agent_records_for_dispatch(
+        tenant.id, target_agent_id);
     for (const auto& rec : records) {
         try {
             auto cfg = Constitution::from_json(rec.agent_def_json);
@@ -7845,7 +8091,8 @@ void handle_a2a_message_send(int fd,
     const std::string context_id = resolve_a2a_context_id(user_msg);
 
     std::string init_err;
-    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err,
+                                       /*conversation_id=*/0, agent_id);
     if (!orch) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
@@ -7946,14 +8193,31 @@ void handle_a2a_message_send(int fd,
     // Message — history/artifacts can be reconstructed by combining
     // the user's input (which the client already has) with the
     // assistant's reply.  Smaller column, simpler reads.
+    //
+    // tasks/cancel may have persisted canceled while send() was still
+    // unwinding.  update_a2a_task refuses to overwrite canceled; if
+    // that CAS misses, surface the same cancelled RPC as the
+    // error_type=="cancelled" path instead of returning a completed
+    // Task that tasks/get would contradict.
     std::string final_msg_json;
     if (task.status.message) {
         final_msg_json = json_serialize(*a2a::to_json(*task.status.message));
     }
-    tenants.update_a2a_task(tenant.id, task_id,
-                             a2a::task_state_to_string(task.status.state),
-                             final_msg_json,
-                             resp.ok ? "" : sanitised_api_response_error(resp));
+    const std::string terminal =
+        a2a::task_state_to_string(task.status.state);
+    if (!tenants.update_a2a_task(tenant.id, task_id,
+                                 terminal,
+                                 final_msg_json,
+                                 resp.ok ? "" : sanitised_api_response_error(resp))) {
+        if (auto rec = tenants.get_a2a_task(tenant.id, task_id);
+            rec && rec->state ==
+                       a2a::task_state_to_string(a2a::TaskState::canceled)) {
+            write_a2a_rpc(fd, a2a::make_error_response(
+                rpc_id, a2a::RPC_INVALID_REQUEST,
+                "request cancelled"));
+            return;
+        }
+    }
 
     write_a2a_rpc(fd, a2a::make_result_response(rpc_id, a2a::to_json(task)));
 }
@@ -8018,7 +8282,8 @@ void handle_a2a_message_stream(int fd,
     const std::string context_id = resolve_a2a_context_id(user_msg);
 
     std::string init_err;
-    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err);
+    auto orch = build_a2a_orchestrator(opts, tenants, tenant, init_err,
+                                       /*conversation_id=*/0, agent_id);
     if (!orch) {
         write_a2a_rpc(fd, a2a::make_error_response(
             rpc_id, a2a::RPC_INTERNAL_ERROR, init_err));
@@ -8416,9 +8681,9 @@ void handle_a2a_tasks_cancel(int fd,
 
     if (cancelled_in_flight) {
         // Persist canceled state so a follow-up tasks/get reflects the
-        // outcome.  The orchestrator's send may still be unwinding —
-        // its terminal-state update will run, but we want canceled to
-        // win over completed/failed for clarity.  Re-update.
+        // outcome.  The orchestrator's send may still be unwinding;
+        // update_a2a_task keeps canceled sticky so a later
+        // completed/failed persist cannot clobber this write.
         tenants.update_a2a_task(tenant.id, task_id,
                                  a2a::task_state_to_string(a2a::TaskState::canceled),
                                  "", "canceled by tasks/cancel");
@@ -9507,8 +9772,11 @@ void handle_orchestrate(int fd, const HttpRequest& req,
     // can resolve sibling ids during this turn.  A blob whose JSON has
     // gone bad (schema drift after an upgrade, manual DB poke) gets
     // skipped with a log line — the rest of the catalog still loads.
+    // Extra-fetch the targeted id when it fell off the newest-200 page
+    // (same gap GET /v1/agents/:id does not have).
     {
-        const auto records = tenants.list_agent_records(tenant.id, /*limit=*/200);
+        const auto records = tenants.list_agent_records_for_dispatch(
+            tenant.id, agent_id);
         for (const auto& rec : records) {
             try {
                 auto cfg = Constitution::from_json(rec.agent_def_json);
@@ -10222,9 +10490,10 @@ build_blocking_orchestrator(const ApiServerOptions& opts,
                              TenantStore& tenants,
                              const Tenant& tenant,
                              std::string& err_out,
-                             int64_t conversation_id) {
+                             int64_t conversation_id,
+                             const std::string& target_agent_id) {
     return build_a2a_orchestrator(opts, tenants, tenant, err_out,
-                                  conversation_id);
+                                  conversation_id, target_agent_id);
 }
 
 bool is_http_scoped_conversation(TenantStore& tenants,
