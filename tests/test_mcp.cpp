@@ -472,6 +472,21 @@ TEST_CASE("Subprocess: strips secret-shaped parent env; keeps env_extra") {
     ::unsetenv("ARBITER_ADMIN_TOKEN");
 }
 
+TEST_CASE("Subprocess: env_extra overrides inherited parent keys") {
+    // Non-secret parent keys used to stay first in environ; getenv and
+    // `printenv KEY` then returned the parent value despite env_extra.
+    ::setenv("MCP_ENV_OVERRIDE_PROBE", "from-parent", 1);
+    Subprocess proc({"/usr/bin/printenv", "MCP_ENV_OVERRIDE_PROBE"},
+                    {"MCP_ENV_OVERRIDE_PROBE=from-registry"});
+    auto line = proc.recv_line(500ms);
+    REQUIRE(line.has_value());
+    CHECK(*line == "from-registry");
+    // No leftover parent copy for programs that iterate environ.
+    auto extra = proc.recv_line(200ms);
+    CHECK_FALSE(extra.has_value());
+    ::unsetenv("MCP_ENV_OVERRIDE_PROBE");
+}
+
 // ── 3. /mcp slash dispatch ─────────────────────────────────────────
 
 TEST_CASE("parse_agent_commands recognises /mcp") {

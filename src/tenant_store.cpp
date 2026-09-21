@@ -995,6 +995,9 @@ void TenantStore::open(const std::string& path) {
             result_json         TEXT    NOT NULL DEFAULT '',
             created_at          INTEGER NOT NULL,
             updated_at          INTEGER NOT NULL,
+            mode                TEXT    NOT NULL DEFAULT 'observe',
+            agent_map_json      TEXT    NOT NULL DEFAULT '{}',
+            budgets_json        TEXT    NOT NULL DEFAULT '{}',
             FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
         );
     )SQL");
@@ -1006,6 +1009,27 @@ void TenantStore::open(const std::string& path) {
         CREATE INDEX IF NOT EXISTS reconcile_runs_status
             ON reconcile_runs(status, created_at);
     )SQL");
+
+    // Phase B (#208): persist agent_map + budgets + mode on reconcile runs.
+    {
+        auto rec_col_exists = [this](const char* col) -> bool {
+            Stmt q(db_, "PRAGMA table_info(reconcile_runs);");
+            while (q.step() == SQLITE_ROW) {
+                if (q.column_text(1) == col) return true;
+            }
+            return false;
+        };
+        auto add_rec_col = [this, &rec_col_exists](const char* col,
+                                                   const char* defn) {
+            if (rec_col_exists(col)) return;
+            std::string sql = std::string("ALTER TABLE reconcile_runs ADD COLUMN ") +
+                              col + " " + defn + ";";
+            exec_sql(db_, sql.c_str());
+        };
+        add_rec_col("mode", "TEXT NOT NULL DEFAULT 'observe'");
+        add_rec_col("agent_map_json", "TEXT NOT NULL DEFAULT '{}'");
+        add_rec_col("budgets_json", "TEXT NOT NULL DEFAULT '{}'");
+    }
 
     // Lessons: agent-scoped "learned-from-failure" record.  Indexed by
     // (tenant, agent, last_seen_at DESC) for the agent's at-a-glance
@@ -2337,6 +2361,25 @@ MemoryEntry row_to_entry(Stmt& q) {
     return e;
 }
 
+// Neutralise SQLite LIKE wildcards so EntryFilter::tag is a literal
+// substring of the serialized tags JSON (`["foo_bar"]`).  Without this,
+// `_` matches any character and `%` matches any run, so tag=foo_bar
+// also hits `"fooXbar"`.  Paired with `ESCAPE '\'` at the SQL site.
+// Named apart from search_lessons' helper so sibling PRs stay independent.
+std::string escape_like_wildcards(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '\\' || c == '%' || c == '_') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::string tag_like_pattern(const std::string& tag) {
+    return "%\"" + escape_like_wildcards(tag) + "\"%";
+}
+
 constexpr const char* kRelationCols =
     "id, tenant_id, source_id, target_id, relation, created_at";
 
@@ -2492,7 +2535,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
                    " ELSE 1.0 END";
         }
         if (!f.tag.empty()) {
-            sql += " * CASE WHEN e.tags LIKE ? THEN " +
+            sql += " * CASE WHEN e.tags LIKE ? ESCAPE '\\' THEN " +
                    std::to_string(kTagBoost) + " ELSE 1.0 END";
         }
         // Age-decay multiplier.  Multiplying by a fraction <1 makes a
@@ -2540,7 +2583,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         for (auto& t : f.types) q.bind(idx++, t);
         std::string tag_pat;
         if (!f.tag.empty()) {
-            tag_pat = "%\"" + f.tag + "\"%";
+            tag_pat = tag_like_pattern(f.tag);
             q.bind(idx++, tag_pat);
         }
         if (apply_decay) {
@@ -2591,7 +2634,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
         }
         sql += ")";
     }
-    if (!f.tag.empty())          sql += " AND tags LIKE ?";
+    if (!f.tag.empty())          sql += " AND tags LIKE ? ESCAPE '\\'";
     if (f.as_of > 0) {
         sql += " AND valid_from <= ? "
                " AND (valid_to IS NULL OR valid_to > ?)";
@@ -2611,7 +2654,7 @@ TenantStore::list_entries(int64_t tenant_id, const EntryFilter& f) const {
     for (auto& t : f.types) q.bind(idx++, t);
     std::string tag_pat;
     if (!f.tag.empty()) {
-        tag_pat = "%\"" + f.tag + "\"%";
+        tag_pat = tag_like_pattern(f.tag);
         q.bind(idx++, tag_pat);
     }
     if (f.as_of > 0) {
@@ -3843,7 +3886,7 @@ constexpr const char* kReconcileRunCols =
     "request_id, tenant_id, status, reason, target_state_json, "
     "invariants_json, contract_json, workspace_kind, workspace_root, "
     "verification_json, rollback_on_failure, snapshot_path, result_json, "
-    "created_at, updated_at";
+    "created_at, updated_at, mode, agent_map_json, budgets_json";
 
 TenantStore::ReconcileRun row_to_reconcile_run(Stmt& q) {
     TenantStore::ReconcileRun r;
@@ -3862,6 +3905,9 @@ TenantStore::ReconcileRun row_to_reconcile_run(Stmt& q) {
     r.result_json         = q.column_text(12);
     r.created_at          = q.column_int64(13);
     r.updated_at          = q.column_int64(14);
+    r.mode                = q.column_text(15);
+    r.agent_map_json      = q.column_text(16);
+    r.budgets_json        = q.column_text(17);
     return r;
 }
 
@@ -3877,8 +3923,8 @@ void TenantStore::upsert_reconcile_run(const ReconcileRun& row) {
         "(request_id, tenant_id, status, reason, target_state_json, "
         " invariants_json, contract_json, workspace_kind, workspace_root, "
         " verification_json, rollback_on_failure, snapshot_path, result_json, "
-        " created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        " created_at, updated_at, mode, agent_map_json, budgets_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(request_id) DO UPDATE SET "
         " status = excluded.status, "
         " reason = excluded.reason, "
@@ -3891,7 +3937,10 @@ void TenantStore::upsert_reconcile_run(const ReconcileRun& row) {
         " rollback_on_failure = excluded.rollback_on_failure, "
         " snapshot_path = excluded.snapshot_path, "
         " result_json = excluded.result_json, "
-        " updated_at = excluded.updated_at;");
+        " updated_at = excluded.updated_at, "
+        " mode = excluded.mode, "
+        " agent_map_json = excluded.agent_map_json, "
+        " budgets_json = excluded.budgets_json;");
     q.bind(1, row.request_id);
     q.bind(2, row.tenant_id);
     q.bind(3, row.status);
@@ -3907,6 +3956,9 @@ void TenantStore::upsert_reconcile_run(const ReconcileRun& row) {
     q.bind(13, row.result_json);
     q.bind(14, created);
     q.bind(15, updated);
+    q.bind(16, row.mode.empty() ? std::string("observe") : row.mode);
+    q.bind(17, row.agent_map_json.empty() ? std::string("{}") : row.agent_map_json);
+    q.bind(18, row.budgets_json.empty() ? std::string("{}") : row.budgets_json);
     int rc = q.step();
     if (rc != SQLITE_DONE) check_sqlite(db_, rc, "upsert reconcile_run");
 }

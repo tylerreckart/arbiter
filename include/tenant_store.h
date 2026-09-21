@@ -618,6 +618,9 @@ public:
         bool        rollback_on_failure = false;
         std::string snapshot_path;
         std::string result_json;
+        std::string mode;
+        std::string agent_map_json;
+        std::string budgets_json;
         int64_t     created_at = 0;
         int64_t     updated_at = 0;
     };
@@ -1135,7 +1138,7 @@ public:
         // `types` and `tag` become *boost factors* — matching rows score
         // higher rather than non-matching rows being excluded.
         std::vector<std::string> types;             // OR-set; boost when q is set
-        std::string              tag;               // single-tag substring match
+        std::string              tag;               // single-tag JSON substring; LIKE wildcards are literals
         std::string              q;                 // FTS5 query when set
         int64_t                  since                 = 0;  // created_at >= since
         int64_t                  before_updated_at     = 0;  // cursor; 0 = latest
