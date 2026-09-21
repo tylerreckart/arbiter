@@ -1310,6 +1310,17 @@ if(INDEX_BUILD_TESTS)
     )
     add_test(NAME unit_circuit_breaker COMMAND unit_circuit_breaker)
 
+    # --- Unit tests for inbound HTTP/1.1 request framing ---
+    add_executable(unit_http_request
+        tests/test_http_request.cpp
+        src/api/http_request.cpp
+    )
+    target_include_directories(unit_http_request PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/doctest
+    )
+    add_test(NAME unit_http_request COMMAND unit_http_request)
+
     # --- Unit tests for CORS allowlist policy ---
     add_executable(unit_cors
         tests/test_cors.cpp
