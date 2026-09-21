@@ -85,10 +85,12 @@ std::string serialize_request(const Request& r);
 std::string serialize_notification(const Notification& n);
 
 // Parse one line of JSON into a Response.  Throws std::runtime_error on
-// malformed framing (missing jsonrpc/id, both result+error, etc.).  The
-// id is required to be an integer in our usage — we never send string
-// ids ourselves.  The MCP spec allows string ids on incoming responses,
-// but every implementation in the wild echoes the int we sent.
+// malformed framing (missing jsonrpc, both result+error, etc.).  Request
+// ids we send are integers; inbound responses may echo the same value as
+// a JSON number or as a decimal string (JSON-RPC 2.0 allows both).  String
+// ids that parse as integers are stored as that integer so Client::rpc
+// can match them.  Missing, null, or non-numeric string ids leave id=0
+// (the notification / skip path).
 Response parse_response(const std::string& line);
 
 // Pull the tool array out of a tools/list response.  Throws if the

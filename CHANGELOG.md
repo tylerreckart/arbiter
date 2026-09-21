@@ -38,6 +38,10 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
   instead of concatenating them into every request (`https://host?x/v1/…`
   never delivered the path) or printing `user:pass@` in TUI chrome.
   Path prefixes (`https://host/arbiter`) still work.
+- **Remote TUI: recoverable SSE `error` is not a failed turn.** `RemoteSseTurnConsumer::finish` copied accumulated `error` event text even when the terminal `done` event had `ok: true` (e.g. catalog skip of a stored agent whose JSON failed validation). `done` is authoritative: success clears the result error; failure still prefers `done.error` and falls back to prior `error` events when that field is empty.
+- **Unreadable TUI sessions are not empty.** `session_json_is_empty` no
+- **Advise-gate cancel is not a bad bearer.** `POST /v1/advise/gate`
+- **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
 
 ## [0.13.6] — 2026-09-21
 
