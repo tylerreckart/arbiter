@@ -7,10 +7,14 @@ loosely while pre-1.0 (breaking changes can land on minor bumps).
 
 ## [Unreleased]
 
-### Fixed
+- **MCP registry writes do not follow a planted `.tmp` symlink.**
+  `save_server_registry` opened `<path>.tmp` with `O_CREAT|O_TRUNC`, so
+  a symlink at that staging name redirected the write (including
+  registry `env` secrets) into the link target before `rename` replaced
+  only the symlink. Open the staging file with `O_NOFOLLOW` / `O_EXCL`
+  after `unlink` (which does not follow). Dest-symlink `rename` already
+  replaced the link, not its target.
 - **`/schedule` calendar dates.** `on YYYY-MM-DD` now rejects impossible
-  dates (Feb 31, Jun 31, Feb 29 in a non-leap year) instead of letting
-  `mktime` overflow into the next month and fire on a different day.
 - **MCP string JSON-RPC ids.** `parse_response` now accepts a decimal-string
 - **Reconcile rollback no longer wipes the workspace on a failed restore.**
 - **LaTeX math recursion depth.** `latex_math_to_plain` now stops converting
