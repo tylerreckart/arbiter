@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <atomic>
 #include <string>
 #include <sys/stat.h>
@@ -213,11 +214,68 @@ TEST_CASE("parse_response: error case") {
     CHECK(resp.error->message == "no such method");
 }
 
+TEST_CASE("parse_response accepts string JSON-RPC ids") {
+    auto ok = parse_response(R"({"jsonrpc":"2.0","id":"3","result":{"x":1}})");
+    CHECK(ok.id == 3);
+    REQUIRE(ok.result);
+    CHECK(static_cast<int>(ok.result->get_number("x", 0)) == 1);
+    CHECK_FALSE(ok.error.has_value());
+
+    auto err = parse_response(
+        R"({"jsonrpc":"2.0","id":"4","error":{"code":-32601,"message":"no such method"}})");
+    CHECK(err.id == 4);
+    REQUIRE(err.error.has_value());
+    CHECK(err.error->code == -32601);
+
+    // Non-numeric / empty / null ids cannot match our integer counter.
+    auto skip = parse_response(R"({"jsonrpc":"2.0","id":"abc","result":{}})");
+    CHECK(skip.id == 0);
+    auto empty = parse_response(R"({"jsonrpc":"2.0","id":"","result":{}})");
+    CHECK(empty.id == 0);
+    auto nil = parse_response(R"({"jsonrpc":"2.0","id":null,"result":{}})");
+    CHECK(nil.id == 0);
+    auto frac = parse_response(R"({"jsonrpc":"2.0","id":"1.0","result":{}})");
+    CHECK(frac.id == 0);
+
+    auto note = parse_response(R"({"jsonrpc":"2.0","method":"notifications/cancelled"})");
+    CHECK(note.id == 0);
+}
+
 TEST_CASE("parse_response rejects malformed envelopes") {
     CHECK_THROWS(parse_response("not json"));
     CHECK_THROWS(parse_response(R"({"id":1,"result":{}})"));         // missing jsonrpc
     CHECK_THROWS(parse_response(R"({"jsonrpc":"1.0","id":1,"result":{}})")); // wrong version
     CHECK_THROWS(parse_response(R"({"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"x"}})")); // both
+}
+
+TEST_CASE("parse_response treats JSON-null result/error as omitted") {
+    auto ok = parse_response(
+        R"({"jsonrpc":"2.0","id":5,"result":{"x":1},"error":null})");
+    CHECK(ok.id == 5);
+    REQUIRE(ok.result);
+    CHECK_FALSE(ok.result->is_null());
+    CHECK(static_cast<int>(ok.result->get_number("x", 0)) == 1);
+    CHECK_FALSE(ok.error.has_value());
+
+    auto err = parse_response(
+        R"({"jsonrpc":"2.0","id":6,"result":null,"error":{"code":-32601,"message":"no such method"}})");
+    CHECK(err.id == 6);
+    CHECK_FALSE(static_cast<bool>(err.result));
+    REQUIRE(err.error.has_value());
+    CHECK(err.error->code == -32601);
+    CHECK(err.error->message == "no such method");
+
+    auto null_result = parse_response(
+        R"({"jsonrpc":"2.0","id":7,"result":null})");
+    CHECK(null_result.id == 7);
+    REQUIRE(null_result.result);
+    CHECK(null_result.result->is_null());
+    CHECK_FALSE(null_result.error.has_value());
+
+    auto empty = parse_response(R"({"jsonrpc":"2.0","id":8,"error":null})");
+    CHECK(empty.id == 8);
+    CHECK_FALSE(static_cast<bool>(empty.result));
+    CHECK_FALSE(empty.error.has_value());
 }
 
 TEST_CASE("parse_tools_list extracts name + description + schema") {
@@ -413,6 +471,21 @@ TEST_CASE("Subprocess: strips secret-shaped parent env; keeps env_extra") {
 
     ::unsetenv("OPENROUTER_API_KEY");
     ::unsetenv("ARBITER_ADMIN_TOKEN");
+}
+
+TEST_CASE("Subprocess: env_extra overrides inherited parent keys") {
+    // Non-secret parent keys used to stay first in environ; getenv and
+    // `printenv KEY` then returned the parent value despite env_extra.
+    ::setenv("MCP_ENV_OVERRIDE_PROBE", "from-parent", 1);
+    Subprocess proc({"/usr/bin/printenv", "MCP_ENV_OVERRIDE_PROBE"},
+                    {"MCP_ENV_OVERRIDE_PROBE=from-registry"});
+    auto line = proc.recv_line(500ms);
+    REQUIRE(line.has_value());
+    CHECK(*line == "from-registry");
+    // No leftover parent copy for programs that iterate environ.
+    auto extra = proc.recv_line(200ms);
+    CHECK_FALSE(extra.has_value());
+    ::unsetenv("MCP_ENV_OVERRIDE_PROBE");
 }
 
 // ── 3. /mcp slash dispatch ─────────────────────────────────────────
@@ -762,6 +835,101 @@ TEST_CASE("save_server_registry rejects empty argv without throwing") {
     s.name = "broken";
     // argv empty → serialize would throw; save must return false.
     CHECK_FALSE(save_server_registry("/tmp/arbiter-mcp-should-not-exist.json", {s}));
+}
+
+TEST_CASE("save_server_registry does not follow a planted path.tmp symlink") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path()
+        / ("arbiter-mcp-tmp-link-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    const auto path = (dir / "mcp_servers.json").string();
+    const auto victim = (dir / "secret.txt").string();
+    {
+        std::ofstream f(victim);
+        f << "do-not-clobber";
+    }
+    fs::create_symlink(victim, path + ".tmp");
+
+    ServerSpec s;
+    s.name = "playwright";
+    s.argv = {"npx"};
+    s.env_extra = {"TOKEN=super-secret"};
+    REQUIRE(save_server_registry(path, {s}));
+
+    {
+        std::ifstream f(victim);
+        std::ostringstream buf;
+        buf << f.rdbuf();
+        CHECK(buf.str() == "do-not-clobber");
+    }
+    CHECK(fs::is_regular_file(path));
+    CHECK_FALSE(fs::is_symlink(path));
+    CHECK_FALSE(fs::exists(path + ".tmp"));
+    struct stat st{};
+    REQUIRE(::stat(path.c_str(), &st) == 0);
+    CHECK((st.st_mode & 0777) == 0600);
+    auto loaded = load_server_registry(path);
+    REQUIRE(loaded.size() == 1);
+    REQUIRE(loaded[0].env_extra.size() == 1);
+    CHECK(loaded[0].env_extra[0] == "TOKEN=super-secret");
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("save_server_registry replaces a leftover regular tmp") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path()
+        / ("arbiter-mcp-tmp-stale-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    const auto path = (dir / "mcp_servers.json").string();
+    {
+        std::ofstream f(path + ".tmp");
+        f << "stale crash leftover";
+    }
+
+    ServerSpec s;
+    s.name = "ok";
+    s.argv = {"npx"};
+    REQUIRE(save_server_registry(path, {s}));
+    CHECK_FALSE(fs::exists(path + ".tmp"));
+    auto loaded = load_server_registry(path);
+    REQUIRE(loaded.size() == 1);
+    CHECK(loaded[0].name == "ok");
+
+    fs::remove_all(dir);
+}
+
+TEST_CASE("save_server_registry rename replaces a dest symlink instead of writing through it") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path()
+        / ("arbiter-mcp-dest-link-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    const auto path = (dir / "mcp_servers.json").string();
+    const auto victim = (dir / "outside.txt").string();
+    {
+        std::ofstream f(victim);
+        f << "keep-me";
+    }
+    fs::create_symlink(victim, path);
+
+    ServerSpec s;
+    s.name = "ok";
+    s.argv = {"npx"};
+    REQUIRE(save_server_registry(path, {s}));
+
+    {
+        std::ifstream f(victim);
+        std::ostringstream buf;
+        buf << f.rdbuf();
+        CHECK(buf.str() == "keep-me");
+    }
+    CHECK(fs::is_regular_file(path));
+    CHECK_FALSE(fs::is_symlink(path));
+    auto loaded = load_server_registry(path);
+    REQUIRE(loaded.size() == 1);
+    CHECK(loaded[0].name == "ok");
+
+    fs::remove_all(dir);
 }
 
 TEST_CASE("serialize_server_registry escapes quotes in names and args") {
