@@ -287,8 +287,10 @@ static std::string prompt_spoken_overlay(bool has_mem) {
             "decisions, open loops, people, or say remember / recall, /mem "
             "search before answering from scratch. After learning a durable "
             "fact, /mem add entry with the right type (user, feedback, "
-            "context, project) in the same turn. Never narrate those writs. "
-            "Prefer memory and this conversation over re-asking.\n";
+            "context, project) in the same turn. Never narrate those writs, "
+            "never read entries aloud, never speak ids or search hits. "
+            "Answer as if you simply know. Prefer memory and this "
+            "conversation over re-asking.\n";
     return s;
 }
 
@@ -307,7 +309,8 @@ static const char* prompt_spoken_files() {
 // Personal-assistant memory for TTS surfaces. Only composed when the agent
 // has the mem bundle: tools already exist; spoken agents were not pushed
 // to use them as a PA would. Writs stay on their own lines (StreamFilter
-// strips them). Last-wins vs the research-shaped COMMAND RULES examples.
+// strips them). Last-wins vs the research-shaped COMMAND RULES examples:
+// memory informs the reply; it never becomes spoken content.
 static const char* prompt_spoken_memory() {
     return
         "\nMEMORY HABIT:\n"
@@ -315,6 +318,11 @@ static const char* prompt_spoken_memory() {
         "This call's history covers the current thread; /mem is what you still "
         "know next week. Prefer memory and this conversation over re-asking "
         "something already known.\n"
+        "This block last-wins: it overrides COMMAND RULES and inventory that "
+        "tell you to print /mem entry, /mem expand, /mem density, show the "
+        "graph, or list search hits. Those are TUI behaviours. On this spoken "
+        "turn, memory informs the reply silently — it never becomes spoken "
+        "content.\n"
         "Recall first:\n"
         "- When the user refers to preferences, past decisions, open loops, "
         "people, household, or says remember / recall / what did we — emit "
@@ -340,14 +348,29 @@ static const char* prompt_spoken_memory() {
         "  Do not file small talk. Do not dump everything as reference.\n"
         "- Prefer /mem add entry over /mem write for facts that should "
         "surface next week. Scratchpad is working notes; entries are recall.\n"
-        "Speech:\n"
-        "- Writs stay on their own lines. Never name /mem or say you are "
-        "searching memory. If you found something, just use it (\"You take "
-        "the coffee black, so…\").\n"
-        "- A short spoken confirmation is fine when they asked you to "
-        "remember (\"I'll keep that.\"). Don't announce the write otherwise.\n"
-        "Example — they tell you a preference, you answer and file:\n"
-        "I'll keep that — black, no sugar.\n"
+        "Speech — memory is silent:\n"
+        "- Answer as if you simply know. Weave recalled facts into natural "
+        "speech. Never read entries aloud.\n"
+        "- Writs stay on their own lines (StreamFilter strips them). Never "
+        "name /mem. Never say you are searching memory.\n"
+        "- Hard bans on spoken prose (silent writs are fine): "
+        "entry ids (#42, id 12); titles as labels (\"Coffee preference:\"); "
+        "type names spoken as categories; search rankings or hit lists; "
+        "\"I found in memory\", \"according to my notes\", \"according to my "
+        "memory\"; verbatim entry bodies; [TOOL RESULTS] or /mem search "
+        "dumps; graph dumps; neighbour lists; /mem expand or density output; "
+        "listing multiple hits for the listener to pick from.\n"
+        "- If they asked you to remember: one short confirmation only "
+        "(\"I'll keep that.\"). Don't announce the write otherwise. Don't "
+        "read the filing title or body aloud — that block is a writ.\n"
+        "Example — they ask how they take coffee; a search hit is in "
+        "[TOOL RESULTS]. Only the first line is heard:\n"
+        "You take it black, no sugar.\n"
+        "Never speak: I found in memory: #12 user Coffee preference — black, "
+        "no sugar.\n"
+        "Example — they tell you a preference; answer and file. Only the "
+        "first line is heard:\n"
+        "I'll keep that.\n"
         "/mem add entry user Coffee preference\n"
         "Black coffee, no sugar. Stated over the intercom.\n"
         "/endmem\n";
@@ -578,58 +601,79 @@ static std::string compose_command_rules(const std::set<std::string>& b,
             "  turns surface it as a KNOWN PITFALL.  Don't re-discover the same failure.\n";
 
     // Artifact pairing pattern requires write + mem (and read to retrieve).
-    if (b.count("write") && b.count("mem"))
-        s +=
-            "- For files the user may want to refine later: /write --persist FIRST, then\n"
-            "  /mem add entry <type> <title> --artifact #<id> in the SAME turn (artifact id\n"
-            "  is in the /write OK line; pick `project` for active deliverables, `reference`\n"
-            "  for sourced research, `learning` for synthesised conclusions).  Future\n"
-            "  /mem search finds it; /mem entry <id> prints the /read line to retrieve it.\n";
+    if (b.count("write") && b.count("mem")) {
+        if (spoken)
+            s +=
+                "- For files the user may want to refine later: /write --persist FIRST, then\n"
+                "  /mem add entry <type> <title> --artifact #<id> in the SAME turn (artifact id\n"
+                "  is in the /write OK line; pick `project` for active deliverables, `reference`\n"
+                "  for sourced research, `learning` for synthesised conclusions).  Future\n"
+                "  /mem search finds it.  Do not speak the entry, the id, or a /read line.\n";
+        else
+            s +=
+                "- For files the user may want to refine later: /write --persist FIRST, then\n"
+                "  /mem add entry <type> <title> --artifact #<id> in the SAME turn (artifact id\n"
+                "  is in the /write OK line; pick `project` for active deliverables, `reference`\n"
+                "  for sourced research, `learning` for synthesised conclusions).  Future\n"
+                "  /mem search finds it; /mem entry <id> prints the /read line to retrieve it.\n";
+    }
 
-    if (b.count("mem"))
-        s +=
-            "- BEFORE doing fresh research on a topic, probe the existing graph: /mem search the\n"
-            "  topic terms; if any hits look relevant, follow with /mem expand <top-hit-id> to see\n"
-            "  the surrounding cluster in one turn.  /mem density <id> tells you whether the area\n"
-            "  is already richly connected (skip redundant work) or sparse (research adds value).\n"
-            "- BE PROACTIVE about the structured graph.  When you learn a durable fact, identify\n"
-            "  a project decision, or notice a relationship between entries, write it.  Each\n"
-            "  /mem add entry is a BLOCK: header, body, /endmem.  The body is REQUIRED — it's\n"
-            "  the text /mem search ranks against, so synthesise the substance (facts, numbers,\n"
-            "  sources), don't just stub a title.\n"
-            "- PICK THE RIGHT TYPE — they partition the graph and make /mem entries [type=...]\n"
-            "  filtering useful.  Default to `reference` ONLY for cited external sources.\n"
-            "  Most write-ups are NOT references:\n"
-            "      user       — durable facts about the human (role, prefs, constraints)\n"
-            "      feedback   — corrections or 'do this / don't do that' guidance from the user\n"
-            "      project    — active deliverables, decisions, in-flight initiatives, briefs\n"
-            "      reference  — external sources you cited (papers, docs, vendor pages)\n"
-            "      learning   — synthesised conclusions you reached from multiple sources\n"
-            "      context    — situational state worth retaining (current focus, blockers)\n"
-            "  Spread across types as the work warrants.  A research-and-write turn typically\n"
-            "  produces: 1 `project` (the deliverable), N `reference` (cited sources), and\n"
-            "  1 `learning` (the recommendation / synthesis).  Filing everything as `reference`\n"
-            "  makes /mem entries type=project return nothing — defeats the partitioning.\n"
-            "  Examples (each is a full block):\n"
-            "      /mem add entry project Observability brief: Datadog vs Honeycomb vs OTel\n"
-            "      Recommendation: Honeycomb.  Predictable $130–2k/mo at 100M traces, 4–12h\n"
-            "      setup, OTEL-native.  Open questions: existing metrics stack, growth curve,\n"
-            "      compliance posture.  Linked artifact: observability-brief.md.\n"
-            "      /endmem\n"
-            "      /mem add entry reference Honeycomb pricing page (live fetch 2026-04)\n"
-            "      Pro tier: $130/mo for 100M events flat.  Past 1B spans → Enterprise (no\n"
-            "      public pricing).  Refinery is separate; required for cost control at scale.\n"
-            "      Source: honeycomb.io/pricing.\n"
-            "      /endmem\n"
-            "      /mem add entry learning Honeycomb is the right call for trace-first teams\n"
-            "      Linear pricing + OTEL portability outweighs the metrics/logs gap when the\n"
-            "      team is small and tracing is the dominant signal.  Flips to OTel+Grafana\n"
-            "      if compliance forces self-hosting or growth pushes past 1B spans/mo.\n"
-            "      /endmem\n"
-            "      /mem add link 88 supports 42\n"
-            "  Adds are cheap and immediately searchable.  Aim for ≥1 entry per substantive\n"
-            "  finding, link related entries so the graph encodes the reasoning, and spread\n"
-            "  across types so future /mem entries filtering surfaces what you actually want.\n";
+    if (b.count("mem")) {
+        // Spoken/TTS: skip Honeycomb-style graph examples so they cannot
+        // dominate. MEMORY HABIT (composed later) last-wins on how /mem is
+        // used; this bullet only tells the model not to print the graph.
+        if (spoken)
+            s +=
+                "- Structured-graph writs (/mem search, add entry, expand, density) still\n"
+                "  work.  MEMORY HABIT (later in this prompt) last-wins over any inventory\n"
+                "  that says print /mem entry, show the graph, or list hits.  Never dump\n"
+                "  search results, entry bodies, ids, titles-as-labels, or graph structure\n"
+                "  into spoken prose — answer as if you simply know.\n";
+        else
+            s +=
+                "- BEFORE doing fresh research on a topic, probe the existing graph: /mem search the\n"
+                "  topic terms; if any hits look relevant, follow with /mem expand <top-hit-id> to see\n"
+                "  the surrounding cluster in one turn.  /mem density <id> tells you whether the area\n"
+                "  is already richly connected (skip redundant work) or sparse (research adds value).\n"
+                "- BE PROACTIVE about the structured graph.  When you learn a durable fact, identify\n"
+                "  a project decision, or notice a relationship between entries, write it.  Each\n"
+                "  /mem add entry is a BLOCK: header, body, /endmem.  The body is REQUIRED — it's\n"
+                "  the text /mem search ranks against, so synthesise the substance (facts, numbers,\n"
+                "  sources), don't just stub a title.\n"
+                "- PICK THE RIGHT TYPE — they partition the graph and make /mem entries [type=...]\n"
+                "  filtering useful.  Default to `reference` ONLY for cited external sources.\n"
+                "  Most write-ups are NOT references:\n"
+                "      user       — durable facts about the human (role, prefs, constraints)\n"
+                "      feedback   — corrections or 'do this / don't do that' guidance from the user\n"
+                "      project    — active deliverables, decisions, in-flight initiatives, briefs\n"
+                "      reference  — external sources you cited (papers, docs, vendor pages)\n"
+                "      learning   — synthesised conclusions you reached from multiple sources\n"
+                "      context    — situational state worth retaining (current focus, blockers)\n"
+                "  Spread across types as the work warrants.  A research-and-write turn typically\n"
+                "  produces: 1 `project` (the deliverable), N `reference` (cited sources), and\n"
+                "  1 `learning` (the recommendation / synthesis).  Filing everything as `reference`\n"
+                "  makes /mem entries type=project return nothing — defeats the partitioning.\n"
+                "  Examples (each is a full block):\n"
+                "      /mem add entry project Observability brief: Datadog vs Honeycomb vs OTel\n"
+                "      Recommendation: Honeycomb.  Predictable $130–2k/mo at 100M traces, 4–12h\n"
+                "      setup, OTEL-native.  Open questions: existing metrics stack, growth curve,\n"
+                "      compliance posture.  Linked artifact: observability-brief.md.\n"
+                "      /endmem\n"
+                "      /mem add entry reference Honeycomb pricing page (live fetch 2026-04)\n"
+                "      Pro tier: $130/mo for 100M events flat.  Past 1B spans → Enterprise (no\n"
+                "      public pricing).  Refinery is separate; required for cost control at scale.\n"
+                "      Source: honeycomb.io/pricing.\n"
+                "      /endmem\n"
+                "      /mem add entry learning Honeycomb is the right call for trace-first teams\n"
+                "      Linear pricing + OTEL portability outweighs the metrics/logs gap when the\n"
+                "      team is small and tracing is the dominant signal.  Flips to OTel+Grafana\n"
+                "      if compliance forces self-hosting or growth pushes past 1B spans/mo.\n"
+                "      /endmem\n"
+                "      /mem add link 88 supports 42\n"
+                "  Adds are cheap and immediately searchable.  Aim for ≥1 entry per substantive\n"
+                "  finding, link related entries so the graph encodes the reasoning, and spread\n"
+                "  across types so future /mem entries filtering surfaces what you actually want.\n";
+    }
 
     return s;
 }

@@ -515,6 +515,46 @@ TEST_CASE("spoken with /mem teaches personal-assistant memory habit") {
     CHECK(prompt.find("Coffee preference") != std::string::npos);
     CHECK(prompt.find("SPOKEN OUTPUT:") == std::string::npos);
     CHECK(prompt.find("over re-asking") != std::string::npos);
+
+    // Hard bans: memory never becomes spoken content.
+    CHECK(prompt.find("Never read entries aloud") != std::string::npos);
+    CHECK(prompt.find("entry ids") != std::string::npos);
+    CHECK(prompt.find("searching memory") != std::string::npos);
+    CHECK(prompt.find("as if you simply know") != std::string::npos);
+    CHECK(prompt.find("never becomes spoken content") != std::string::npos);
+    CHECK(prompt.find("according to my notes") != std::string::npos);
+
+    // Last-wins: MEMORY HABIT after COMMAND RULES; research Honeycomb
+    // examples must not appear on spoken turns (TUI mem UX stays on text).
+    auto commands = prompt.find("COMMAND RULES:");
+    auto habit = prompt.find("MEMORY HABIT:");
+    CHECK(commands != std::string::npos);
+    CHECK(habit != std::string::npos);
+    CHECK(habit > commands);
+    CHECK(prompt.find("Honeycomb") == std::string::npos);
+    CHECK(prompt.find("prints the /read line") == std::string::npos);
+    CHECK(prompt.find("show the graph") != std::string::npos);
+}
+
+TEST_CASE("spoken+mem with write still bans printing the /read line") {
+    auto c = make_agent({"/write", "/mem"});
+    c.mode = "spoken";
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("MEMORY HABIT:") != std::string::npos);
+    CHECK(prompt.find("For files the user may want to refine later")
+              != std::string::npos);
+    CHECK(prompt.find("Do not speak the entry, the id, or a /read line")
+              != std::string::npos);
+    CHECK(prompt.find("prints the /read line") == std::string::npos);
+    CHECK(prompt.find("Honeycomb") == std::string::npos);
+}
+
+TEST_CASE("text mem constitution still shows research graph examples") {
+    auto c = make_agent({"/mem"});
+    auto prompt = c.build_system_prompt();
+    CHECK(prompt.find("MEMORY HABIT:") == std::string::npos);
+    CHECK(prompt.find("Honeycomb") != std::string::npos);
+    CHECK(prompt.find("BEFORE doing fresh research") != std::string::npos);
 }
 
 TEST_CASE("spoken without mem skips memory habit") {
@@ -533,8 +573,12 @@ TEST_CASE("channel=voice with mem overlays memory habit on specialist identity")
               != std::string::npos);
     CHECK(prompt.find("SPOKEN OUTPUT:") != std::string::npos);
     CHECK(prompt.find("Personal-assistant memory") != std::string::npos);
+    CHECK(prompt.find("never read entries aloud") != std::string::npos);
     CHECK(prompt.find("MEMORY HABIT:") != std::string::npos);
     CHECK(prompt.find("not a goldfish") != std::string::npos);
+    CHECK(prompt.find("Never read entries aloud") != std::string::npos);
+    CHECK(prompt.find("searching memory") != std::string::npos);
+    CHECK(prompt.find("Honeycomb") == std::string::npos);
 }
 
 TEST_CASE("advisor: absent yields disabled config") {
