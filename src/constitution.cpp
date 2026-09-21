@@ -252,8 +252,8 @@ static std::string prompt_spoken_voice(Brevity level) {
 // Overlay for channel=voice on agents that are not already mode=spoken.
 // Last-wins on user-facing register: specialist/index identity stays, but
 // dispatch compression and markdown/diff habits do not apply to speech.
-static const char* prompt_spoken_overlay() {
-    return
+static std::string prompt_spoken_overlay(bool has_mem) {
+    std::string s =
         "\nSPOKEN OUTPUT:\n"
         "This turn is spoken aloud through text-to-speech. The listener "
         "cannot see a screen, markdown, code, or lists.\n"
@@ -281,6 +281,15 @@ static const char* prompt_spoken_overlay() {
         "dumps.\n"
         "- Do not speak your plan or reasoning. If you need tools, emit writs "
         "with little or no spoken preamble.\n";
+    if (has_mem)
+        s +=
+            "- Personal-assistant memory: if they refer to preferences, past "
+            "decisions, open loops, people, or say remember / recall, /mem "
+            "search before answering from scratch. After learning a durable "
+            "fact, /mem add entry with the right type (user, feedback, "
+            "context, project) in the same turn. Never narrate those writs. "
+            "Prefer memory and this conversation over re-asking.\n";
+    return s;
 }
 
 static const char* prompt_spoken_files() {
@@ -293,6 +302,55 @@ static const char* prompt_spoken_files() {
         "REASONING, plans, and tool names are not spoken. If you need tools, "
         "emit writs with little or no spoken preamble; the listener only hears "
         "the answer.\n";
+}
+
+// Personal-assistant memory for TTS surfaces. Only composed when the agent
+// has the mem bundle: tools already exist; spoken agents were not pushed
+// to use them as a PA would. Writs stay on their own lines (StreamFilter
+// strips them). Last-wins vs the research-shaped COMMAND RULES examples.
+static const char* prompt_spoken_memory() {
+    return
+        "\nMEMORY HABIT:\n"
+        "You are a personal assistant across conversations, not a goldfish. "
+        "This call's history covers the current thread; /mem is what you still "
+        "know next week. Prefer memory and this conversation over re-asking "
+        "something already known.\n"
+        "Recall first:\n"
+        "- When the user refers to preferences, past decisions, open loops, "
+        "people, household, or says remember / recall / what did we — emit "
+        "/mem search <terms> on its own line before answering from scratch. "
+        "If a hit looks right, /mem expand <id> rather than guessing.\n"
+        "- A lookup turn may be writs only (or one short spoken beat). Speak "
+        "the answer after [TOOL RESULTS]. Do not invent a preference while "
+        "waiting. If search is empty, say you do not have it, then ask once.\n"
+        "- Skip the search when this conversation already holds the fact.\n"
+        "Write as you go:\n"
+        "- After you learn a durable fact — a preference, constraint, "
+        "correction, commitment, who someone is, an open loop they care "
+        "about — emit /mem add entry <type> <title> … /endmem in the SAME "
+        "turn as the spoken reply. Body is required (facts a future search "
+        "can rank). Title-only is rejected.\n"
+        "- Pick the type that partitions the graph. For voice, these are the "
+        "usual ones:\n"
+        "      user      — durable facts about the human (prefs, constraints, "
+        "household)\n"
+        "      feedback  — corrections / do this, not that\n"
+        "      context   — current focus, blockers, open loops\n"
+        "      project   — in-flight work and decisions\n"
+        "  Do not file small talk. Do not dump everything as reference.\n"
+        "- Prefer /mem add entry over /mem write for facts that should "
+        "surface next week. Scratchpad is working notes; entries are recall.\n"
+        "Speech:\n"
+        "- Writs stay on their own lines. Never name /mem or say you are "
+        "searching memory. If you found something, just use it (\"You take "
+        "the coffee black, so…\").\n"
+        "- A short spoken confirmation is fine when they asked you to "
+        "remember (\"I'll keep that.\"). Don't announce the write otherwise.\n"
+        "Example — they tell you a preference, you answer and file:\n"
+        "I'll keep that — black, no sugar.\n"
+        "/mem add entry user Coffee preference\n"
+        "Black coffee, no sugar. Stated over the intercom.\n"
+        "/endmem\n";
 }
 
 // Compressed voice for specialist agents (standard mode).
@@ -718,7 +776,12 @@ static std::string arbiter_prompt(const Constitution& c) {
         s += prompt_code_change_format();
     s += prompt_inter_agent_format();
     if (c.channel == "voice" && !spoken)
-        s += prompt_spoken_overlay();
+        s += prompt_spoken_overlay(bundles.count("mem") != 0);
+    // After overlay so the PA habit last-wins over research-shaped /mem
+    // examples in COMMAND RULES. Spoken mode has no overlay; this is still
+    // last among the voice blocks.
+    if (voice_out && bundles.count("mem"))
+        s += prompt_spoken_memory();
     return s;
 }
 
